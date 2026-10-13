@@ -97,6 +97,21 @@ describe("Direct completion", () => {
     await t.trigger("keydown", { key: "Enter" });
     expect(w.emitted("send")?.[0]).toEqual(["/reload ", []]);
   });
+  it("reopens the mention menu after a committed slash dismissed it", async () => {
+    const w = input(),
+      t = w.get("textarea");
+    // Tab commits the first match and marks the menu dismissed.
+    await t.setValue("/re");
+    await flushPromises();
+    await t.trigger("keydown", { key: "Tab" });
+    expect((t.element as HTMLTextAreaElement).value).toBe("/review ");
+    // A fresh `@` in a new draft must reopen the menu: the dismissal belongs to
+    // the committed token, not to the composer.
+    await t.setValue("😀 @");
+    await flushPromises();
+    expect(w.find('[role="listbox"]').exists()).toBe(true);
+    expect(t.attributes("aria-expanded")).toBe("true");
+  });
   it("chooses duplicate names by handle with mouse/touch click and edit removes identity", async () => {
     const deliver = vi.fn().mockResolvedValue("uncertain");
     const w = input({ deliver }),

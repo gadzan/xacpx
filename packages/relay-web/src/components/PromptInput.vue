@@ -8,14 +8,12 @@ import {
   watch,
 } from "vue";
 import {
-  ArrowUp,
   Brain,
   Check,
   ChevronDown,
   Gauge,
   Paperclip,
   SlidersHorizontal,
-  Square,
   X,
 } from "lucide-vue-next";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
@@ -28,6 +26,7 @@ import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { createDebouncedFlush } from "../lib/debounce-flush";
 import { clampPanelWidth, createBottomPanelResize } from "../lib/resize-panel";
 import UsagePopover from "./UsagePopover.vue";
+import ConversationComposer from "./ConversationComposer.vue";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
@@ -134,15 +133,6 @@ function toggleEffortMenu() {
   effortMenuOpen.value = !effortMenuOpen.value;
 }
 const text = ref(loadDraft(props.draftKey ?? ""));
-
-const hasSendable = computed(
-  () => !!text.value.trim() || composer.pending.some((p) => p.status === "ready"),
-);
-// While a turn is running the send button doubles as Stop: with an empty composer it
-// cancels the in-flight turn; once the user types (or readies an attachment) it reverts
-// to Send and the message queues server-side (chat.send's busy path). Esc still cancels.
-const showStop = computed(() => !!props.busy && !hasSendable.value);
-const textarea = ref<HTMLTextAreaElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 
 // Desktop-only: drag the strip above the composer to resize the textarea height.
@@ -228,8 +218,8 @@ function pickCommand(name: string) {
   text.value = replaced.text;
   cmdMenuOpen.value = false;
   void nextTick(() => {
-    textarea.value?.focus();
-    textarea.value?.setSelectionRange(replaced.cursor, replaced.cursor);
+    composerCard.value?.focus();
+    composerCard.value?.setSelectionRange(replaced.cursor, replaced.cursor);
   });
 }
 
@@ -444,13 +434,13 @@ interface BoundMention {
   end: number;
 }
 const recordedMentions = ref<BoundMention[]>([]);
-function updateMentionState() {
-  const el = textarea.value;
-  if (!el) {
-    mentionMenuOpen.value = false;
-    return;
-  }
-  const pos = el.selectionStart ?? 0;
+const composerCard = ref<InstanceType<typeof ConversationComposer> | null>(null);
+const caretStart = ref(0);
+const caretEnd = ref(0);
+function onCaret(selection: { start: number; end: number }) {
+  caretStart.value = selection.start;
+  caretEnd.value = selection.end;
+  const pos = selection.start;
   mentionCursorPos.value = pos;
   const query = mentionQueryAt(text.value, pos);
   if (!query) {
@@ -495,10 +485,8 @@ function pickMention(agentItem: AgentMentionItem) {
   mentionQuery.value = null;
   mentionStartPos.value = -1;
   void nextTick(() => {
-    if (textarea.value) {
-      textarea.value.focus();
-      textarea.value.setSelectionRange(replaced.cursor, replaced.cursor);
-    }
+    composerCard.value?.focus();
+    composerCard.value?.setSelectionRange(replaced.cursor, replaced.cursor);
   });
 }
 
@@ -577,13 +565,20 @@ watch(
     text.value = text.value.trim()
       ? `${text.value.trimEnd()} ${req.text}`
       : req.text;
-    void nextTick(() => textarea.value?.focus());
+    void nextTick(() => composerCard.value?.focus());
   },
 );
 
 // Sent-message history (↑/↓ recall, à la a shell prompt).
 const history = ref<string[]>([]);
 let historyIdx = -1; // -1 = editing a fresh line
+
+// A keystroke means the user is writing a new line, so the recall cursor goes
+// back to rest. Without this, ArrowUp then typing keeps ArrowDown navigating
+// history the user already left.
+function onInput(): void {
+  historyIdx = -1;
+}
 
 function submit() {
   if (composer.uploading) return;
@@ -657,10 +652,8 @@ function recallHistory(dir: -1 | 1) {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  const caretAtStart =
-    (textarea.value?.selectionStart ?? 0) === 0 &&
-    (textarea.value?.selectionEnd ?? 0) === 0;
-  const collapsed = (textarea.value?.selectionStart ?? 0) === (textarea.value?.selectionEnd ?? 0);
+  const caretAtStart = caretStart.value === 0 && caretEnd.value === 0;
+  const collapsed = caretStart.value === caretEnd.value;
   const mentionOpen = mentionMenuOpen.value && mentionMatches.value.length > 0;
   const slashOpen = !mentionOpen && cmdMenuOpen.value && cmdMatches.value.length > 0;
   const action = completionKey({
@@ -721,10 +714,6 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-function onInput() {
-  historyIdx = -1;
-  updateMentionState();
-}
 </script>
 
 <template>
@@ -749,161 +738,151 @@ function onInput() {
       data-test="attach-input"
       @change="onFilesPicked"
     />
-    <!-- COMPOSER — single elevated card: textarea on top, controls row below.
-         `relative` so the slash-command menu can float above the card (bottom-full)
-         instead of pushing the textarea down.
-         This card is the ONLY layer of the composer stack carrying real elevation
-         (`shadow-dock`, softer + downward-biased than e2); the status/plan/queue
-         strips above it stay at shadow-e1 so their shadows don't band on each other. -->
-    <div
-      class="relative rounded-2xl border border-border bg-surface shadow-dock focus-within:border-accent/50 transition-colors"
+    <ConversationComposer
+      ref="composerCard"
+      v-model="text"
+      :busy="busy"
+      :disabled="false"
+      :send-disabled="composer.uploading"
+      :placeholder="busy ? $t('chat.working') : $t('chat.message')"
+      :height="isDesktop ? composerHeight : undefined"
+      send-test-id="composer-send"
+      stop-test-id="cancel-turn"
+      @send="submit"
+      @cancel="emit('cancel')"
+      @keydown="onKeydown"
+      @input="onInput"
+      @paste="onPaste"
+      @caret="onCaret"
+      @compositionstart="composing = true"
+      @compositionend="composing = false"
     >
-      <!-- Resize handle: thin grab strip on the card's top edge (desktop only). Anchored
-           inside the card so status/plan stack layers baseline to the real message-box
-           top, not a gutter/handle above it. touch-none keeps a touch from scrolling;
-           aria-hidden (pointer-only over rows="2"); title gives a hover hint. -->
-      <div
-        data-test="composer-resize"
-        aria-hidden="true"
-        :title="$t('chat.resizeComposer')"
-        class="absolute inset-x-0 top-0 z-10 hidden h-2 cursor-row-resize touch-none select-none rounded-t-2xl transition-colors lg:block"
-        :class="heightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
-        @pointerdown.prevent="heightResize.onPointerDown"
-      />
-      <!-- Pending attachment chips -->
-      <div
-        v-if="composer.pending.length"
-        class="flex flex-wrap gap-2 px-2.5 pt-2.5 pb-1"
-      >
+      <template #menus>
         <div
-          v-for="p in composer.pending"
-          :key="p.id"
-          class="flex items-center gap-1.5 rounded-md border border-border bg-raised px-2 py-1 text-[12px]"
+          data-test="composer-resize"
+          aria-hidden="true"
+          :title="$t('chat.resizeComposer')"
+          class="absolute inset-x-0 top-0 z-10 hidden h-2 cursor-row-resize touch-none select-none rounded-t-2xl transition-colors lg:block"
+          :class="heightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
+          @pointerdown.prevent="heightResize.onPointerDown"
+        />
+        <!-- Pending attachment chips -->
+        <div
+          v-if="composer.pending.length"
+          class="flex flex-wrap gap-2 px-2.5 pt-2.5 pb-1"
         >
-          <img
-            v-if="p.previewUrl"
-            :src="p.previewUrl"
-            class="h-6 w-6 rounded object-cover"
-            :alt="p.filename"
-          />
-          <span class="max-w-[120px] truncate text-fg">{{ p.filename }}</span>
-          <span v-if="p.status === 'uploading'" class="text-fg-muted">…</span>
-          <span
-            v-else-if="p.status === 'error'"
-            class="text-danger font-semibold"
-            >!</span
+          <div
+            v-for="p in composer.pending"
+            :key="p.id"
+            class="flex items-center gap-1.5 rounded-md border border-border bg-raised px-2 py-1 text-[12px]"
           >
-          <button
-            type="button"
-            :title="$t('chat.attach.remove')"
-            class="text-fg-muted hover:text-fg transition-colors"
-            @click="composer.removeAttachment(p.id)"
-          >
-            <X :size="12" />
-          </button>
-        </div>
-      </div>
-      <!-- Inline feedback when an attachment is rejected (cap or size limit). -->
-      <span
-        v-if="composer.rejection"
-        data-test="attach-rejected"
-        class="block px-3 pt-2 text-xs text-danger"
-      >
-        {{
-          composer.rejection.reason === "too-many"
-            ? $t("chat.attach.tooMany")
-            : $t("chat.attach.tooLarge", { name: composer.rejection.filename })
-        }}
-      </span>
-      <!-- Agent slash-command autocomplete: floats above the composer card (bottom-full)
-           so it never grows the input box; pinned to the card's horizontal edges. -->
-      <!-- Agent slash-command autocomplete -->
-      <ul
-        v-if="cmdMenuOpen && cmdMatches.length"
-        data-test="cmd-menu"
-        role="listbox"
-        class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2"
-      >
-        <li
-          v-for="(c, i) in cmdMatches"
-          :key="c.name"
-          data-test="cmd-item"
-          role="option"
-          :aria-selected="i === cmdActiveIdx"
-          class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-[13px]"
-          :class="i === cmdActiveIdx ? 'bg-accent/10' : ''"
-          @mousedown.prevent="pickCommand(c.name)"
-          @mouseenter="cmdActiveIdx = i"
-        >
-          <span class="shrink-0 font-medium text-fg">/{{ c.name }}</span>
-          <span v-if="c.description" class="truncate text-fg-muted">{{
-            c.description
-          }}</span>
-        </li>
-      </ul>
-      <!-- Agent @ mention autocomplete: floats above the composer card -->
-      <ul
-        v-if="mentionMenuOpen && mentionMatches.length"
-        data-test="mention-menu"
-        role="listbox"
-        class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2"
-      >
-        <li
-          v-for="(agentItem, i) in mentionMatches"
-          :key="agentItem.handle"
-          data-test="mention-item"
-          role="option"
-          :aria-selected="i === mentionActiveIdx"
-          class="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-[13px]"
-          :class="i === mentionActiveIdx ? 'bg-accent/10' : ''"
-          @mousedown.prevent="pickMention(agentItem)"
-          @mouseenter="mentionActiveIdx = i"
-        >
-          <div class="flex min-w-0 flex-1 flex-col">
-            <div class="flex min-w-0 items-center justify-between gap-2">
-              <span
-                class="font-semibold text-accent truncate"
-                data-test="mention-primary"
-                >@{{ agentItem.displayName }}</span
-              >
-              <span
-                v-if="activityLabel(agentItem.activity)"
-                data-test="mention-activity"
-                :data-status="agentItem.activity?.status"
-                class="shrink-0 text-[11px] font-medium"
-                :class="activityClass(agentItem.activity?.status)"
-              >
-                {{ activityLabel(agentItem.activity) }}
-              </span>
-            </div>
-            <div
-              v-if="formatSecondaryLine(agentItem, availableAgents)"
-              data-test="mention-secondary"
-              class="truncate text-[11px] text-fg-muted"
+            <img
+              v-if="p.previewUrl"
+              :src="p.previewUrl"
+              class="h-6 w-6 rounded object-cover"
+              :alt="p.filename"
+            />
+            <span class="max-w-[120px] truncate text-fg">{{ p.filename }}</span>
+            <span v-if="p.status === 'uploading'" class="text-fg-muted">…</span>
+            <span
+              v-else-if="p.status === 'error'"
+              class="text-danger font-semibold"
+              >!</span
             >
-              {{ formatSecondaryLine(agentItem, availableAgents) }}
-            </div>
+            <button
+              type="button"
+              :title="$t('chat.attach.remove')"
+              class="text-fg-muted hover:text-fg transition-colors"
+              @click="composer.removeAttachment(p.id)"
+            >
+              <X :size="12" />
+            </button>
           </div>
-        </li>
-      </ul>
-      <!-- Stays enabled while busy: sending here queues server-side (no client-side
-           blocking) and Esc still cancels the in-flight turn. -->
-      <textarea
-        ref="textarea"
-        v-model="text"
-        rows="2"
-        class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-[14px] lg:placeholder:text-[12.5px] placeholder:text-fg-muted focus:outline-none"
-        :style="isDesktop ? { height: composerHeight + 'px' } : undefined"
-        :placeholder="busy ? $t('chat.working') : $t('chat.message')"
-        @input="onInput"
-        @click="updateMentionState"
-        @keyup="updateMentionState"
-        @keydown="onKeydown"
-        @compositionstart="composing = true"
-        @compositionend="composing = false"
-        @paste="onPaste"
-      />
-      <div class="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-0.5">
+        </div>
+        <!-- Inline feedback when an attachment is rejected (cap or size limit). -->
+        <span
+          v-if="composer.rejection"
+          data-test="attach-rejected"
+          class="block px-3 pt-2 text-xs text-danger"
+        >
+          {{
+            composer.rejection.reason === "too-many"
+              ? $t("chat.attach.tooMany")
+              : $t("chat.attach.tooLarge", { name: composer.rejection.filename })
+          }}
+        </span>
+        <!-- Agent slash-command autocomplete -->
+        <ul
+          v-if="cmdMenuOpen && cmdMatches.length"
+          data-test="cmd-menu"
+          role="listbox"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2"
+        >
+          <li
+            v-for="(c, i) in cmdMatches"
+            :key="c.name"
+            data-test="cmd-item"
+            role="option"
+            :aria-selected="i === cmdActiveIdx"
+            class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-[13px]"
+            :class="i === cmdActiveIdx ? 'bg-accent/10' : ''"
+            @mousedown.prevent="pickCommand(c.name)"
+            @mouseenter="cmdActiveIdx = i"
+          >
+            <span class="shrink-0 font-medium text-fg">/{{ c.name }}</span>
+            <span v-if="c.description" class="truncate text-fg-muted">{{
+              c.description
+            }}</span>
+          </li>
+        </ul>
+        <!-- Agent @ mention autocomplete -->
+        <ul
+          v-if="mentionMenuOpen && mentionMatches.length"
+          data-test="mention-menu"
+          role="listbox"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2"
+        >
+          <li
+            v-for="(agentItem, i) in mentionMatches"
+            :key="agentItem.handle"
+            data-test="mention-item"
+            role="option"
+            :aria-selected="i === mentionActiveIdx"
+            class="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-[13px]"
+            :class="i === mentionActiveIdx ? 'bg-accent/10' : ''"
+            @mousedown.prevent="pickMention(agentItem)"
+            @mouseenter="mentionActiveIdx = i"
+          >
+            <div class="flex min-w-0 flex-1 flex-col">
+              <div class="flex min-w-0 items-center justify-between gap-2">
+                <span
+                  class="font-semibold text-accent truncate"
+                  data-test="mention-primary"
+                  >@{{ agentItem.displayName }}</span
+                >
+                <span
+                  v-if="activityLabel(agentItem.activity)"
+                  data-test="mention-activity"
+                  :data-status="agentItem.activity?.status"
+                  class="shrink-0 text-[11px] font-medium"
+                  :class="activityClass(agentItem.activity?.status)"
+                >
+                  {{ activityLabel(agentItem.activity) }}
+                </span>
+              </div>
+              <div
+                v-if="formatSecondaryLine(agentItem, availableAgents)"
+                data-test="mention-secondary"
+                class="truncate text-[11px] text-fg-muted"
+              >
+                {{ formatSecondaryLine(agentItem, availableAgents) }}
+              </div>
+            </div>
+          </li>
+        </ul>
+      </template>
+
+      <template #controls>
         <!-- model chip (left) -->
         <div
           v-if="instanceId && sessionAlias"
@@ -1055,43 +1034,20 @@ function onInput() {
           />
         </div>
         <span v-else />
+      </template>
 
-        <!-- send / stop (right) -->
-        <div class="flex shrink-0 items-center gap-1.5">
-          <!-- attach button -->
-          <button
-            type="button"
-            data-test="attach-btn"
-            :title="$t('chat.attach.add')"
-            class="flex items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors"
-            @click="openPicker"
-          >
-            <Paperclip :size="15" />
-          </button>
-          <button
-            v-if="showStop"
-            type="button"
-            data-test="cancel-turn"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-danger text-white shadow-e1 transition-all hover:opacity-90 hover:shadow-e2"
-            :aria-label="$t('common.cancel')"
-            :title="$t('common.cancel')"
-            @click="emit('cancel')"
-          >
-            <Square :size="10" fill="currentColor" />
-          </button>
-          <button
-            v-else
-            type="submit"
-            data-test="composer-send"
-            :disabled="composer.uploading || !hasSendable"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent text-white shadow-e1 transition-all hover:bg-accent-hover hover:shadow-e2 disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none"
-            :aria-label="$t('chat.send')"
-            :title="$t('chat.send')"
-          >
-            <ArrowUp :size="13" :stroke-width="2.5" />
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #actions>
+        <!-- attach button -->
+        <button
+          type="button"
+          data-test="attach-btn"
+          :title="$t('chat.attach.add')"
+          class="flex items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors"
+          @click="openPicker"
+        >
+          <Paperclip :size="15" />
+        </button>
+      </template>
+    </ConversationComposer>
   </form>
 </template>

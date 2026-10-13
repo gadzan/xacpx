@@ -131,22 +131,20 @@ const worktreeRunId = computed(() => {
 
 <template>
   <div class="flex h-full flex-col bg-bg text-fg">
-    <header class="flex shrink-0 items-center justify-between border-b border-border bg-surface px-4 py-2.5">
-      <div class="flex min-w-0 items-center gap-3">
-        <div class="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-accent/20 bg-accent/10 text-accent">
-          <Users :size="18" />
-        </div>
-        <div class="flex min-w-0 flex-col">
-          <h2 class="truncate text-sm font-semibold">{{ group?.title ?? $t("group.nav.title") }}</h2>
-          <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
-            <span>{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
-            <span v-if="groupsStore.currentTopic">· {{ groupsStore.currentTopic.title }}</span>
-            <span v-if="group?.lifecycle === 'deleting'"
-                  data-test="group-pane-deleting-badge"
-                  class="rounded bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
-              {{ $t("group.list.deleting") }}
-            </span>
-          </div>
+    <header class="flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+      <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
+        <Users :size="15" />
+      </div>
+      <div class="flex min-w-0 flex-col">
+        <h2 class="truncate text-[14px] font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
+        <div class="flex flex-wrap items-center gap-2 text-[10.5px] text-fg-muted">
+          <span>{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
+          <span v-if="groupsStore.currentTopic">· {{ groupsStore.currentTopic.title }}</span>
+          <span v-if="group?.lifecycle === 'deleting'"
+                data-test="group-pane-deleting-badge"
+                class="rounded bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
+            {{ $t("group.list.deleting") }}
+          </span>
         </div>
       </div>
       <button
@@ -155,14 +153,14 @@ const worktreeRunId = computed(() => {
         data-test="group-edit-button"
         :title="$t('group.manage.editTitle')"
         :aria-label="$t('group.manage.editTitle')"
-        class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+        class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg"
         @click="groupDialogOpen = true"
       >
-        <Pencil :size="15" />
+        <Pencil :size="14" />
       </button>
     </header>
 
-    <div class="flex items-center border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
+    <div class="flex shrink-0 items-center border-b border-border bg-surface/60 px-3 lg:px-5 py-1 text-xs backdrop-blur-md">
       <TopicManager
         variant="group"
         :topics="groupsStore.currentTopics"
@@ -178,7 +176,7 @@ const worktreeRunId = computed(() => {
       />
     </div>
 
-    <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between border-b border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
+    <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between border-b border-danger/20 bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>
       <button type="button" @click="groupsStore.generalError = null; groupsStore.generalErrorCode = null">
         <X :size="14" />
@@ -186,7 +184,7 @@ const worktreeRunId = computed(() => {
     </div>
 
     <div v-if="memberStatus" data-test="group-member-status"
-         class="space-y-0.5 border-b border-warn/20 bg-warn/10 px-4 py-1.5 text-xs text-fg">
+         class="space-y-0.5 border-b border-warn/20 bg-warn/10 px-3 lg:px-5 py-1.5 text-xs text-fg">
       <p v-if="memberStatus.kind === 'none-enabled'">{{ $t("group.members.noneEnabled") }}</p>
       <template v-else>
         <p data-test="group-disabled-members">{{ $t("group.members.disabled", { names: memberStatus.names }) }}</p>
@@ -205,7 +203,7 @@ const worktreeRunId = computed(() => {
       <button
         type="button"
         data-test="group-first-topic-button"
-        class="mt-1 flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90"
+        class="mt-1 flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
         @click="newTopicDialogOpen = true"
       >
         <Plus :size="13" />
@@ -225,7 +223,7 @@ const worktreeRunId = computed(() => {
       @cancel="handleCancel"
     />
     <div v-if="groupsStore.historyError && groupsStore.activeTopicId"
-         class="flex items-center justify-between border-t border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
+         class="flex items-center justify-between border-t border-danger/20 bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.historyErrorDetail ?? groupsStore.historyError }}</span>
       <button type="button"
               class="rounded bg-danger/20 px-2 py-0.5 font-medium transition-colors hover:bg-danger/30"
