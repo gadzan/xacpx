@@ -84,6 +84,13 @@ There are two session concepts:
 2. Bundled `acpx` in `node_modules`
 3. `acpx` in shell `PATH`
 
+The bundled `acpx` dependency is pinned to an exact version (no caret). Session
+records on disk are discovered by the canonical scan in
+`src/transport/acpx-record-discovery.ts` — acpx 0.19+ ignores the legacy
+`~/.acpx/sessions/index.json`, so never treat that file as authoritative.
+Queue-owner termination requires birth-identity proof of the lease
+(`src/transport/queue-owner-identity.ts`); never kill or unlink on a bare pid.
+
 ### Managed ACP Adapters
 
 - `src/adapters/` owns xacpx's exact Codex/Claude adapter defaults, the `xacpx adapter` CLI, adapter-only npm registry policy, and the ACP initialize probe used before saving a local version override.

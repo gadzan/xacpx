@@ -5,13 +5,16 @@ import type { RuntimePermissionConfig, RuntimePermissionRequest } from "../../..
 
 /**
  * Pinned-reference differential — acpx@0.16.0 (frozen copy, not black-box CLI execution)
- * Source: node_modules/acpx/dist/live-checkpoint-BEfxBKCh.js (acpx 0.16.0)
+ * Source: tests/fixtures/acpx-0.16.0-live-checkpoint.js (vendored from the acpx 0.16.0
+ * package; the frozen oracle no longer lives in node_modules once the pin moves on).
  * Helpers pinned: normalizeMatcher, permissionMatchTokens, findPolicyRule, matchPermissionPolicy, isAutoApprovedReadKind.
  * This file is a frozen oracle for resolver parity. A true black-box differential would drive the real CLI/MCP and is deferred to activation.
  * Rebased 0.13.1 → 0.15.1 → 0.16.0: upstream inferToolKind is now the full canonical-kind
  * needle table (read/cat, search/find/grep, edit/write/patch, delete/remove,
  * move/rename, execute/run/bash, fetch/http/url, think) with an "other" fallback,
  * replacing the minimal read/search/think substring table.
+ * A 0.19.x re-pin of this oracle is separate work: upstream permission matching must be
+ * re-diffed against the new version before this reference is rebased.
  */
 
 function req(text: string, kind?: string): RuntimePermissionRequest {
@@ -128,10 +131,8 @@ function expectParity(cfg: RuntimePermissionConfig, r: RuntimePermissionRequest)
   expect(ours.outcome).toBe(theirs.outcome);
 }
 
-test("acpx@0.16.0 pinned version still 0.16.0", () => {
-  const pkg = JSON.parse(readFileSync("node_modules/acpx/package.json", "utf8"));
-  expect(pkg.version).toBe("0.16.0");
-  const dist = readFileSync("node_modules/acpx/dist/live-checkpoint-BEfxBKCh.js", "utf8");
+test("frozen 0.16.0 oracle fixture still carries the pinned permission helpers", () => {
+  const dist = readFileSync("tests/fixtures/acpx-0.16.0-live-checkpoint.js", "utf8");
   expect(dist).toContain("function findPolicyRule");
   expect(dist).toContain("permissionMatchTokens");
 });
