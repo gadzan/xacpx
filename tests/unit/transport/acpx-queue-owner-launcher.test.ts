@@ -550,3 +550,137 @@ test("verified termination fails closed when the lock is unverifiable (non-ENOEN
   })).rejects.toThrow(/cannot verify queue owner lock state/);
   await rm(dir, { recursive: true, force: true });
 });
+
+const LSTART_UTC = "2026-10-13T09:15:30.000Z";
+const psFor = (output: string | null) => async (): Promise<string | null> => output;
+
+function verifiedLease(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    pid: 4242,
+    sessionId: "rec-1",
+    ownerGeneration: 7,
+    processIdentity: { kind: "posix-lstart", value: LSTART_UTC },
+    ...overrides,
+  };
+}
+
+test("POSIX termination kills and unlinks only a birth-identity-verified lease", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-proof-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify(verifiedLease()));
+  const killed: number[] = [];
+
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor("Tue Oct 13 09:15:30 2026") },
+    terminate: async (pid: number) => { killed.push(pid); },
+  });
+
+  expect(killed).toEqual([4242]);
+  await expect(access(lockPath)).rejects.toThrow();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("POSIX termination refuses a lease whose pid was reused", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-proof-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify(verifiedLease()));
+  const killed: number[] = [];
+
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor("Wed Oct 14 11:00:00 2026") },
+    terminate: async (pid: number) => { killed.push(pid); },
+  });
+
+  expect(killed).toEqual([]);
+  expect(await readFile(lockPath, "utf8")).toContain('"pid":4242');
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("POSIX termination refuses a legacy 0.16 lease without birth identity", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-proof-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify({ pid: 4242, sessionId: "rec-1", ownerGeneration: 7 }));
+  const killed: number[] = [];
+
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor("Tue Oct 13 09:15:30 2026") },
+    terminate: async (pid: number) => { killed.push(pid); },
+  });
+
+  expect(killed).toEqual([]);
+  expect(await readFile(lockPath, "utf8")).toContain('"pid":4242');
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("POSIX termination refuses a retiring owner and a foreign-session lease", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-proof-"));
+  const lockPath = join(dir, "owner.lock");
+  const killed: number[] = [];
+
+  await writeFile(lockPath, JSON.stringify(verifiedLease({ retirement: { state: "pending" } })));
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor("Tue Oct 13 09:15:30 2026") },
+    terminate: async (pid: number) => { killed.push(pid); },
+  });
+
+  await writeFile(lockPath, JSON.stringify(verifiedLease({ sessionId: "other-rec" })));
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor("Tue Oct 13 09:15:30 2026") },
+    terminate: async (pid: number) => { killed.push(pid); },
+  });
+
+  expect(killed).toEqual([]);
+  expect(await readFile(lockPath, "utf8")).toContain('"sessionId":"other-rec"');
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("POSIX termination removes a stale lease whose owner is gone", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-proof-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify(verifiedLease()));
+  const killed: number[] = [];
+
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor(null) },
+    terminate: async (pid: number) => { killed.push(pid); },
+  });
+
+  expect(killed).toEqual([]);
+  await expect(access(lockPath)).rejects.toThrow();
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("POSIX termination leaves a lease a successor rewrote mid-termination", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-proof-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify(verifiedLease()));
+
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor("Tue Oct 13 09:15:30 2026") },
+    terminate: async () => {
+      // A successor owner claims the session while the old one is dying.
+      await writeFile(lockPath, JSON.stringify(verifiedLease({
+        pid: 5555,
+        ownerGeneration: 8,
+        processIdentity: { kind: "posix-lstart", value: "2026-10-13T09:20:00.000Z" },
+      })));
+    },
+  });
+
+  expect(JSON.parse(await readFile(lockPath, "utf8"))).toMatchObject({ pid: 5555, ownerGeneration: 8 });
+  await rm(dir, { recursive: true, force: true });
+});
