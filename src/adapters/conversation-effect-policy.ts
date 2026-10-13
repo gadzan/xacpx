@@ -10,6 +10,20 @@ export const CLAUDE_READ_ONLY_POLICY = "claude-read-only-v1" as const;
 export type EnforcedExecutionPolicy = typeof CLAUDE_READ_ONLY_POLICY;
 export type RequestedFilesystemPolicy = "read-only" | "read-write";
 
+/**
+ * Bundled acpx executor version the read-only contract is verified against.
+ * The guard is xacpx-owned, but the contract also covers how the executor
+ * launches and drives the guarded agent, so it is attested per exact version.
+ *
+ * The dependency pin moved to 0.19.5 while this contract was verified only on
+ * 0.16.0. Re-verification needs the vendored native-SDK compat run
+ * (tests/compat/conversation-read-only.test.ts with
+ * XACPX_CLAUDE_READ_ONLY_TEST_ROOT); until that passes, the gate stays at
+ * 0.16.0 and fails closed, which surfaces as runtime_revision_mismatch for
+ * read-only Runs rather than an unverified enforcement claim.
+ */
+export const ENFORCED_READ_ONLY_EXECUTOR_VERSION = "0.16.0" as const;
+
 export function supportsEnforcedReadOnly(
   agent: Pick<AgentConfig, "driver" | "command" | "argv"> | undefined,
   transport?: Pick<TransportConfig, "command" | "adapterVersions" | "adapterRegistry">,
@@ -19,7 +33,7 @@ export function supportsEnforcedReadOnly(
     // Proof includes the actual startup executor: arbitrary acpx programs can
     // ignore guarded agent argv. Do not attest a custom/PATH binary by version.
     && transport?.command === undefined
-    && executor?.source === "bundled" && executor.packageVersion === "0.16.0"
+    && executor?.source === "bundled" && executor.packageVersion === ENFORCED_READ_ONLY_EXECUTOR_VERSION
     && effectiveAdapterVersion("claude", transport?.adapterVersions) === "0.78.0"
     && effectiveAdapterRegistry(transport?.adapterRegistry) === DEFAULT_ADAPTER_REGISTRY;
 }

@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { harness, deferred, until, HUMAN } from "./fixtures/concurrency-harness";
-import { CLAUDE_READ_ONLY_POLICY, isReadOnlyAgentArgv, supportsEnforcedReadOnly } from "../../../src/adapters/conversation-effect-policy";
+import { CLAUDE_READ_ONLY_POLICY, ENFORCED_READ_ONLY_EXECUTOR_VERSION, isReadOnlyAgentArgv, supportsEnforcedReadOnly } from "../../../src/adapters/conversation-effect-policy";
 import { parseMemberPolicies } from "../../../src/conversations/conversation-effect-request";
 import { parseState } from "../../../src/state/state-store";
 import { parseRoutingDecision } from "../../../src/conversations/conversation-router-types";
@@ -105,10 +105,27 @@ for (const transport of [{ adapterVersions: { claude: "0.77.0" } }, { adapterReg
 test("read-only classification requires trusted executor metadata as well as the adapter contract", () => {
   const agent = { driver: "claude" }, transport = { adapterVersions: { claude: "0.78.0" } };
   expect(supportsEnforcedReadOnly(agent, transport)).toBe(false);
-  expect(supportsEnforcedReadOnly(agent, transport, resolveAcpxCommandMetadata())).toBe(true);
+  expect(supportsEnforcedReadOnly(agent, transport, {
+    command: "bundled-acpx",
+    source: "bundled",
+    explanation: "verified enforcement contract executor",
+    packageVersion: ENFORCED_READ_ONLY_EXECUTOR_VERSION,
+  })).toBe(true);
   for (const source of ["config", "PATH"] as const) {
-    expect(supportsEnforcedReadOnly(agent, transport, { source, packageVersion: "0.16.0" })).toBe(false);
+    expect(supportsEnforcedReadOnly(agent, transport, { source, packageVersion: ENFORCED_READ_ONLY_EXECUTOR_VERSION })).toBe(false);
   }
+});
+
+test("the installed-but-unverified bundled executor cannot mint read-only proof yet", () => {
+  // The dependency pin moved to 0.19.5 while this contract is verified only on
+  // ENFORCED_READ_ONLY_EXECUTOR_VERSION. Until the vendored native-SDK compat
+  // run passes against 0.19.5, the gate fails closed for the real bundled
+  // executor: read-only Runs are rejected instead of under-attested.
+  const installed = resolveAcpxCommandMetadata();
+  const agent = { driver: "claude" }, transport = { adapterVersions: { claude: "0.78.0" } };
+  expect(installed.source).toBe("bundled");
+  expect(installed.packageVersion).not.toBe(ENFORCED_READ_ONLY_EXECUTOR_VERSION);
+  expect(supportsEnforcedReadOnly(agent, transport, installed)).toBe(false);
 });
 
 test("executor snapshot cannot be upgraded by mutating the startup metadata object", async () => {
@@ -156,7 +173,8 @@ test("PATH fallback cannot acquire read-only proof when a bundled executor is la
 });
 
 test("clearing custom transport config cannot replace the executor captured at startup", async () => {
-  const h = await harness({ transport: { command: "custom-acpx" } }); const { group, topic } = await h.group(2);
+  const startup = resolveAcpxCommandMetadata({ configuredCommand: "custom-acpx" });
+  const h = await harness({ transport: { command: "custom-acpx" }, acpxCommandMetadata: startup }); const { group, topic } = await h.group(2);
   try {
     delete h.config.transport.command;
     await expect(accept(h, group.id, topic.id, ["read-only"]))

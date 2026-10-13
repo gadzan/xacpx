@@ -1,4 +1,15 @@
 # Changelog
+## [Unreleased]
+
+### Changed
+
+- **acpx dependency pinned 0.16.0 → 0.19.5** (exact pin, no caret). CLI and Bridge lanes absorb the 0.19.x queue-owner shutdown race: owner-IPC control commands (`cancel`, `sessions close`, `set-mode`, `set`) retry only a failed attempt whose output matches the retryable `QUEUE_OWNER_CLOSED` window, on a bounded 250 ms..4 s backoff, and still surface a failure that outlives it. Session history and the session agent command are now discovered by canonical record scan (acpx 0.19 ignores the legacy `sessions/index.json`), with shape, filename-identity, and I/O bounds plus diagnostics. Queue-owner termination now requires birth-identity proof of the lease (posix-lstart or linux-proc) before any kill or lock unlink; unprovable leases (0.16-era, retiring, or a reused pid) are left to their idle TTL instead of being killed on a bare pid, and Windows stays fail-closed.
+
+### Known gaps
+
+- **Enforced read-only is not yet attested on the 0.19.5 executor.** `ENFORCED_READ_ONLY_EXECUTOR_VERSION` stays at `0.16.0`, so read-only Runs fail closed (`effect_policy_unsupported` / `runtime_revision_mismatch`) until the vendored native-SDK compat run passes against 0.19.5. Ordinary execution is unaffected.
+- The permission resolver differential oracle remains pinned to the frozen acpx 0.16.0 fixture (`tests/fixtures/acpx-0.16.0-live-checkpoint.js`); a 0.19.x re-diff is separate work.
+
 ## [0.24.10-beta.0] - 2026-10-13
 
 ### Added

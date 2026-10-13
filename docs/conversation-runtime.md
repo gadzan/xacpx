@@ -268,6 +268,16 @@ Custom agent launches, other adapter versions and other drivers also cannot
 receive this proof. Codex ACP 1.12.0's mode named `read-only` uses
 `workspaceWrite`; its name is not an enforcement contract.
 
+**Executor version status.** The bundled executor is pinned at 0.19.5. The
+contract above is verified only against 0.16.0, so on the current pin
+`supportsEnforcedReadOnly` fails closed: new read-only Runs are rejected with
+`effect_policy_unsupported`, and persisted read-only sessions fail resolution
+with `runtime_revision_mismatch`. Re-attestation requires the vendored
+native-SDK run (`tests/compat/conversation-read-only.test.ts` with
+`XACPX_CLAUDE_READ_ONLY_TEST_ROOT`) against the 0.19.5 executor; until that
+passes, the version gate in `ENFORCED_READ_ONLY_EXECUTOR_VERSION` stays at
+0.16.0. Ordinary (unrestricted) execution is unaffected.
+
 Policy belongs to an accepted execution, not a Bot identity. The server freezes
 `effect` and `effectProvenance` in the existing MemberTurn columns. Only
 `read-only` + `declared-enforced` is a reader. Explicit read-write policy is
