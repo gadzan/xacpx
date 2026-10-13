@@ -16,8 +16,10 @@ import { join } from "node:path";
 
 const SESSION_RECORD_SCHEMA = "acpx.session.v1";
 
-/** Bounds so a user-writable directory cannot cause unbounded I/O. */
-const DEFAULT_MAX_FILES = 512;
+/** Per-file bound so a user-writable directory cannot cause unbounded I/O.
+ *  There is deliberately no file-count cap: acpx's own discovery walks every
+ *  canonical record, and truncating the scan would silently make sessions past
+ *  the cut unreachable for history and agent-command resolution. */
 const DEFAULT_MAX_FILE_BYTES = 32 * 1024 * 1024;
 const READ_BATCH_SIZE = 8;
 
@@ -41,7 +43,6 @@ export interface AcpxSessionRecord {
 
 export interface ScanAcpxSessionRecordsOptions {
   sessionsDir: string;
-  maxFiles?: number;
   maxFileBytes?: number;
   /** Observability seam: skipped/unreadable candidates and bound violations. */
   onDiagnostic?: (diagnostic: string) => void;
@@ -157,7 +158,6 @@ async function readRecordFile(
 export async function scanAcpxSessionRecords(
   options: ScanAcpxSessionRecordsOptions,
 ): Promise<AcpxSessionRecord[]> {
-  const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const onDiagnostic = options.onDiagnostic ?? (() => {});
 
@@ -177,13 +177,6 @@ export async function scanAcpxSessionRecords(
       );
     }
     return [];
-  }
-
-  if (entries.length > maxFiles) {
-    onDiagnostic(
-      `sessions directory "${options.sessionsDir}" holds ${entries.length} records; scanning the first ${maxFiles}`,
-    );
-    entries = entries.slice(0, maxFiles);
   }
 
   const records: AcpxSessionRecord[] = [];

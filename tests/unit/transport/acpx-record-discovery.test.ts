@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -115,21 +115,20 @@ describe("scanAcpxSessionRecords", () => {
     expect(diagnostics).toEqual([expect.stringContaining("oversized")]);
   });
 
-  test("bounds the number of scanned files with a diagnostic", async () => {
+  test("scans every canonical record, including the 513th", async () => {
+    // acpx's own discovery has no file-count cap; truncating here would make
+    // sessions past the cut unreachable for history and agent-command lookup.
     const dir = mkdtempSync(join(tmpdir(), "acpx-scan-"));
-    const diagnostics: string[] = [];
-    for (const id of ["rec-1", "rec-2", "rec-3"]) {
+    const ids = Array.from({ length: 600 }, (_, i) => `rec-${String(i + 1).padStart(4, "0")}`);
+    for (const id of ids) {
       writeFileSync(join(dir, `${id}.json`), JSON.stringify(validRecord({ acpx_record_id: id, acp_session_id: `acp-${id}` })));
     }
 
-    const records = await scanAcpxSessionRecords({
-      sessionsDir: dir,
-      maxFiles: 2,
-      onDiagnostic: (d) => diagnostics.push(d),
-    });
+    const records = await scanAcpxSessionRecords({ sessionsDir: dir });
 
-    expect(records.map((r) => r.acpxRecordId)).toEqual(["rec-1", "rec-2"]);
-    expect(diagnostics).toEqual([expect.stringContaining("scanning the first 2")]);
+    expect(records).toHaveLength(ids.length);
+    expect(records.map((r) => r.acpxRecordId)).toEqual(ids);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   test("a missing directory yields no records without diagnostics; other readdir failures report", async () => {

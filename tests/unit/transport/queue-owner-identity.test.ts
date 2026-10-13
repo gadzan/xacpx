@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   parseQueueOwnerLock,
+  posixLstartProbeEnv,
   posixLstartToUtc,
   proveQueueOwnerLock,
   sameQueueOwnerLock,
@@ -57,6 +58,16 @@ describe("sameQueueOwnerLock", () => {
     expect(sameQueueOwnerLock(lock(), lock({ ownerGeneration: 8 }))).toBe(false);
     expect(sameQueueOwnerLock(lock(), lock({ pid: 4243 }))).toBe(false);
   });
+
+  test("a retirement receipt appearing between reads is a difference", () => {
+    // Lifecycle state, not a heartbeat: an unlink decision must not treat a
+    // lease that gained a receipt as the state it proved earlier.
+    const receipt = { state: "pending" };
+    expect(sameQueueOwnerLock(lock({ retirement: receipt }), lock({ retirement: receipt }))).toBe(true);
+    expect(sameQueueOwnerLock(lock(), lock({ retirement: receipt }))).toBe(false);
+    expect(sameQueueOwnerLock(lock({ retirement: receipt }), lock())).toBe(false);
+    expect(sameQueueOwnerLock(lock({ retirement: { state: "pending" } }), lock({ retirement: { state: "draining" } }))).toBe(false);
+  });
 });
 
 describe("posixLstartToUtc", () => {
@@ -68,6 +79,18 @@ describe("posixLstartToUtc", () => {
   test("rejects unparseable output", () => {
     expect(posixLstartToUtc("garbage")).toBeUndefined();
     expect(posixLstartToUtc("Tue Xxx 13 09:15:30 2026")).toBeUndefined();
+  });
+});
+
+describe("posixLstartProbeEnv", () => {
+  test("renders lstart under the same locale and timezone acpx records it in", () => {
+    // A missing TZ makes `ps lstart` render host-local time; the lease holds
+    // UTC, so the mismatch reads as a reused pid on non-UTC hosts.
+    const env = posixLstartProbeEnv();
+    expect(env.TZ).toBe("UTC");
+    expect(env.LC_ALL).toBe("C");
+    // Inherited variables stay reachable (PATH and friends) without shadowing.
+    expect(env.PATH).toBe(process.env.PATH);
   });
 });
 
@@ -177,8 +200,62 @@ describe("proveQueueOwnerLock", () => {
     });
     expect(await proveQueueOwnerLock(linuxLock, "rec-1", {
       readProcFile: async (path) => (path.endsWith("boot_id") ? "boot-1\n" : null),
-      readProcLink: async () => null,
+      readProcLink: async (path) => (path.endsWith("ns/pid") ? "pid:[4026531836]" : null),
+      isPidGone: () => true,
     })).toEqual({ kind: "stale-owner" });
+  });
+
+  test("linux-proc: an invisible pid in another namespace keeps the lock", async () => {
+    // Shared HOME, owner in a different PID namespace: the pid is not visible
+    // here, but the owner is alive. Unproven scope MUST NOT read as stale.
+    const linuxLock = lock({
+      processIdentity: {
+        kind: "linux-proc",
+        bootId: "boot-1",
+        pidNamespace: "pid:[4026531844]",
+        timeNamespace: "unsupported",
+        startTicks: "987654",
+      },
+    });
+    expect(await proveQueueOwnerLock(linuxLock, "rec-1", {
+      readProcFile: async (path) => (path.endsWith("boot_id") ? "boot-1\n" : null),
+      readProcLink: async (path) => (path.endsWith("ns/pid") ? "pid:[4026531836]" : null),
+      isPidGone: () => true,
+    })).toEqual({ kind: "unverifiable", reason: "observer pid namespace differs from the lease" });
+  });
+
+  test("linux-proc: invisibility without confirmed death fails closed", async () => {
+    const linuxLock = lock({
+      processIdentity: {
+        kind: "linux-proc",
+        bootId: "boot-1",
+        pidNamespace: "pid:[4026531836]",
+        timeNamespace: "unsupported",
+        startTicks: "987654",
+      },
+    });
+    expect(await proveQueueOwnerLock(linuxLock, "rec-1", {
+      readProcFile: async (path) => (path.endsWith("boot_id") ? "boot-1\n" : null),
+      readProcLink: async (path) => (path.endsWith("ns/pid") ? "pid:[4026531836]" : null),
+      isPidGone: () => false,
+    })).toEqual({ kind: "unverifiable", reason: "owner pid is not visible and death is unconfirmed" });
+  });
+
+  test("linux-proc: malformed lease scope fails closed instead of stale", async () => {
+    const linuxLock = lock({
+      processIdentity: {
+        kind: "linux-proc",
+        bootId: "",
+        pidNamespace: "pid:[4026531836]",
+        timeNamespace: "unsupported",
+        startTicks: "987654",
+      },
+    });
+    expect(await proveQueueOwnerLock(linuxLock, "rec-1", {
+      readProcFile: async (path) => (path.endsWith("boot_id") ? "boot-1\n" : null),
+      readProcLink: async (path) => (path.endsWith("ns/pid") ? "pid:[4026531836]" : null),
+      isPidGone: () => true,
+    })).toEqual({ kind: "unverifiable", reason: "malformed boot id in lease" });
   });
 
   test("unsupported identity kinds fail closed", async () => {

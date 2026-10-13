@@ -554,6 +554,30 @@ test("verified termination fails closed when the lock is unverifiable (non-ENOEN
 const LSTART_UTC = "2026-10-13T09:15:30.000Z";
 const psFor = (output: string | null) => async (): Promise<string | null> => output;
 
+test("POSIX termination keeps the lock when acpx publishes a retirement receipt mid-terminate", async () => {
+  // acpx can move the owner into retirement while our SIGTERM is in flight.
+  // pid/session/generation still match, so a receipt-blind re-read would unlink
+  // the lease and destroy upstream's descendant-cleanup evidence.
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-retire-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify(verifiedLease()));
+  const killed: number[] = [];
+
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor("Tue Oct 13 09:15:30 2026") },
+    terminate: async (pid: number) => {
+      killed.push(pid);
+      await writeFile(lockPath, JSON.stringify(verifiedLease({ retirement: { state: "pending" } })));
+    },
+  });
+
+  expect(killed).toEqual([4242]);
+  expect(JSON.parse(await readFile(lockPath, "utf8")).retirement).toEqual({ state: "pending" });
+  await rm(dir, { recursive: true, force: true });
+});
+
 function verifiedLease(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     pid: 4242,

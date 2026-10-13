@@ -22,7 +22,8 @@ import { promisify } from "node:util";
 const CANONICAL_POSIX_LSTART = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/;
 const LSTART_OUTPUT = /^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/;
 const POSIX_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const NAMESPACE_LINK = /^(?:pid|time):\[[1-9]\d*\]$/;
+const PID_NAMESPACE_LINK = /^pid:\[[1-9]\d*\]$/;
+const TIME_NAMESPACE_LINK = /^time:\[[1-9]\d*\]$/;
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +59,8 @@ export interface ProveQueueOwnerLockDeps {
   readProcFile?: (path: string) => Promise<string | null>;
   /** Reads a /proc symlink target; null on ENOENT. */
   readProcLink?: (path: string) => Promise<string | null>;
+  /** Kernel death probe (`kill(pid, 0)` → ESRCH). Defaults to the real syscall. */
+  isPidGone?: (pid: number) => boolean;
 }
 
 export function parseQueueOwnerLock(raw: unknown): QueueOwnerLock | null {
@@ -104,14 +107,22 @@ export function parseQueueOwnerLock(raw: unknown): QueueOwnerLock | null {
   };
 }
 
-/** True when two parsed locks describe the same lease (heartbeat-exempt). */
+/** True when two parsed locks describe the same lease (heartbeat-exempt). A
+ *  retirement receipt is lifecycle state, not a heartbeat: a lease that gains
+ *  one between reads is no longer the state that was proven, so callers must
+ *  not act on it as if it were. */
 export function sameQueueOwnerLock(left: QueueOwnerLock, right: QueueOwnerLock): boolean {
   return (
     left.pid === right.pid &&
     left.sessionId === right.sessionId &&
     left.ownerGeneration === right.ownerGeneration &&
+    retirementReceipt(left) === retirementReceipt(right) &&
     JSON.stringify(left.processIdentity) === JSON.stringify(right.processIdentity)
   );
+}
+
+function retirementReceipt(lock: QueueOwnerLock): string {
+  return lock.retirement == null ? "" : JSON.stringify(lock.retirement);
 }
 
 /** Mirrors acpx `posixBirth`: parse `ps lstart` fields as UTC wall time. */
@@ -185,7 +196,72 @@ async function proveLinuxProc(
 ): Promise<QueueOwnerLockProof> {
   const readProcFile = deps.readProcFile ?? defaultReadProcFile;
   const readProcLink = deps.readProcLink ?? defaultReadProcLink;
+  const isPidGone = deps.isPidGone ?? defaultIsPidGone;
 
+  // Observer scope first (acpx `verifiedLinuxScope` + `compareLinuxScope`): an
+  // unproven scope turns every negative answer into "unverifiable". A pid that
+  // is invisible here can still be alive in another PID namespace while sharing
+  // this HOME, and unlinking that lease would orphan a live owner.
+  let observerBootId: string;
+  let observerPidNamespace: string | null;
+  let observerTimeNamespace: string | null;
+  try {
+    [observerBootId, observerPidNamespace, observerTimeNamespace] = await Promise.all([
+      readProcFile("/proc/sys/kernel/random/boot_id").then((value) =>
+        typeof value === "string" ? value.trim() : ""),
+      readProcLink("/proc/self/ns/pid"),
+      readProcLink("/proc/self/ns/time"),
+    ]);
+  } catch {
+    return { kind: "unverifiable", reason: "cannot read observer /proc scope" };
+  }
+  if (!observerBootId) {
+    return { kind: "unverifiable", reason: "cannot read observer boot id" };
+  }
+
+  if (typeof identity.bootId !== "string" || !identity.bootId.trim()) {
+    return { kind: "unverifiable", reason: "malformed boot id in lease" };
+  }
+  if (observerBootId !== identity.bootId.trim()) {
+    // A different boot means the lock predates this boot; its pid is meaningless.
+    return { kind: "stale-owner" };
+  }
+
+  // Namespace scope: pid visibility only means anything inside a namespace the
+  // observer shares with the owner. acpx never records "unsupported" for the pid
+  // namespace (its scope parser requires a link), so that value is malformed.
+  const namespaces: Array<[string, string | undefined, string | null]> = [
+    ["pid", identity.pidNamespace, observerPidNamespace],
+    ["time", identity.timeNamespace, observerTimeNamespace],
+  ];
+  for (const [ns, expected, observed] of namespaces) {
+    if (ns === "pid") {
+      if (typeof expected !== "string" || !PID_NAMESPACE_LINK.test(expected)) {
+        return { kind: "unverifiable", reason: "malformed pid namespace scope in lease" };
+      }
+      if (observed !== expected) {
+        return { kind: "unverifiable", reason: "observer pid namespace differs from the lease" };
+      }
+      continue;
+    }
+    if (expected === "unsupported") {
+      // Kernels without a time namespace: the lease could not record one.
+      if (observed !== null) {
+        return { kind: "unverifiable", reason: "lease time namespace is unsupported but the observer has one" };
+      }
+      continue;
+    }
+    if (typeof expected !== "string" || !TIME_NAMESPACE_LINK.test(expected)) {
+      return { kind: "unverifiable", reason: "malformed time namespace scope in lease" };
+    }
+    if (observed !== expected) {
+      return { kind: "unverifiable", reason: "observer time namespace differs from the lease" };
+    }
+  }
+
+  // Scope proven: within a shared namespace the kernel's /proc visibility is
+  // authoritative for the pid, so ENOENT here really means the owner is gone —
+  // still confirmed by the kernel's own ESRCH before the lease is called stale.
   let stat: string | null;
   try {
     stat = await readProcFile(`/proc/${pid}/stat`);
@@ -193,52 +269,30 @@ async function proveLinuxProc(
     return { kind: "unverifiable", reason: "cannot read /proc stat for owner pid" };
   }
   if (stat === null) {
-    return { kind: "stale-owner" };
+    return isPidGone(pid)
+      ? { kind: "stale-owner" }
+      : { kind: "unverifiable", reason: "owner pid is not visible and death is unconfirmed" };
   }
   const startTicks = linuxStartTicks(stat);
   if (!startTicks) {
     return { kind: "unverifiable", reason: "cannot parse /proc stat start time" };
   }
-
-  let bootId: string | null;
-  try {
-    bootId = await readProcFile("/proc/sys/kernel/random/boot_id");
-  } catch {
-    return { kind: "unverifiable", reason: "cannot read boot id" };
+  if (typeof identity.startTicks !== "string" || !/^(?:0|[1-9]\d*)$/.test(identity.startTicks)) {
+    return { kind: "unverifiable", reason: "malformed start ticks in lease" };
   }
-  if (typeof identity.bootId !== "string" || !bootId || bootId.trim() !== identity.bootId) {
-    // A different boot means the lock predates this boot; its pid is meaningless.
-    return { kind: "stale-owner" };
-  }
-
-  for (const [ns, expected] of [
-    ["pid", identity.pidNamespace],
-    ["time", identity.timeNamespace],
-  ] as const) {
-    let observed: string | null;
-    try {
-      observed = await readProcLink(`/proc/${pid}/ns/${ns}`);
-    } catch {
-      return { kind: "unverifiable", reason: `cannot read /proc ${ns} namespace` };
-    }
-    if (typeof expected !== "string" || !(expected === "unsupported" || NAMESPACE_LINK.test(expected))) {
-      return { kind: "unverifiable", reason: "malformed namespace scope in lease" };
-    }
-    if (observed === null) {
-      // Kernels without the namespace report ENOENT; acpx records "unsupported".
-      if (expected !== "unsupported") {
-        return { kind: "unverifiable", reason: `owner ${ns} namespace is gone` };
-      }
-      continue;
-    }
-    if (observed !== expected) {
-      return { kind: "unverifiable", reason: `owner ${ns} namespace differs` };
-    }
-  }
-
   return startTicks === identity.startTicks
     ? { kind: "current-owner" }
     : { kind: "unverifiable", reason: "pid was reused by a different process" };
+}
+
+/** Mirrors acpx `isProcessDefinitelyDead`: only ESRCH is a death statement. */
+function defaultIsPidGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ESRCH";
+  }
 }
 
 function linuxStartTicks(stat: string): string | undefined {
@@ -251,6 +305,15 @@ function linuxStartTicks(stat: string): string | undefined {
   return typeof startTicks === "string" && /^(?:0|[1-9]\d*)$/.test(startTicks) ? startTicks : undefined;
 }
 
+/** Environment for the `ps lstart` probe. acpx `readProcessTable` renders
+ *  `lstart` under LC_ALL=C + TZ=UTC and the lease stores UTC wall time, so the
+ *  observer must render identically: a local-time rendering parses to a
+ *  different instant and reads as a reused pid, failing cooling and restarts
+ *  on any non-UTC host. */
+export function posixLstartProbeEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, LC_ALL: "C", TZ: "UTC" };
+}
+
 /** null = no such process; undefined = probe unavailable. */
 async function runPs(pid: number, deps: ProveQueueOwnerLockDeps): Promise<string | null | undefined> {
   if (deps.runPs) {
@@ -258,7 +321,7 @@ async function runPs(pid: number, deps: ProveQueueOwnerLockDeps): Promise<string
   }
   try {
     const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "lstart="], {
-      env: { ...process.env, LC_ALL: "C" },
+      env: posixLstartProbeEnv(),
       timeout: 5_000,
       maxBuffer: 4_096,
     });
