@@ -20,6 +20,7 @@ import { createEmptyState, type AppState } from "../../../../src/state/types";
 import { AsyncMutex } from "../../../../src/orchestration/async-mutex";
 import { ConversationWorktreeManager, type WorktreeManagerHooks } from "../../../../src/conversations/conversation-worktree-manager";
 import { WorktreeIntegrationService } from "../../../../src/conversations/worktree-integration-service";
+import { ENFORCED_READ_ONLY_EXECUTOR_VERSION } from "../../../../src/adapters/conversation-effect-policy";
 
 export const NOW = "2026-10-07T00:00:00.000Z";
 export const HUMAN = { chatKey: "relay:human", accountId: "human", senderId: "human", isOwner: true };
@@ -81,7 +82,20 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
     transport: { type: "acpx-cli", adapterVersions: { claude: "0.78.0" }, ...options.transport },
   } as AppConfig;
   const stateMutex = new AsyncMutex();
-  const sessions = new SessionService(config, stateStore, state, { stateMutex, acpxCommandMetadata: options.acpxCommandMetadata });
+  // The enforcement contract is attested per exact executor version, so the
+  // harness pins the verified one instead of inheriting whichever acpx the
+  // repo currently installs. Drift tests inject their own metadata; the
+  // fail-closed behavior for the installed-but-unverified version is asserted
+  // directly against supportsEnforcedReadOnly.
+  const sessions = new SessionService(config, stateStore, state, {
+    stateMutex,
+    acpxCommandMetadata: options.acpxCommandMetadata ?? {
+      command: "bundled-acpx",
+      source: "bundled",
+      explanation: "verified enforcement contract executor",
+      packageVersion: ENFORCED_READ_ONLY_EXECUTOR_VERSION,
+    },
+  });
   const releaseOwnedSession = createStrictOwnedSessionRelease({ sessions, transport: { async deleteSession() {}, async releaseLogicalSession() {} } });
   let id = Object.keys(state.bots).length;
   const bots = new BotService(config, state, stateStore, { stateMutex, createId: () => `bot_limit_${++id}` });

@@ -9,7 +9,12 @@ const root = process.argv[2] ?? "tests/unit";
 // job timeout — burning ~30min and hiding which file is at fault. Fail the step
 // here instead, naming the command, so CI fails fast and points at the culprit.
 // Declared before the first runOne() call below (const is not hoisted).
-const STEP_TIMEOUT_MS = Number(process.env.RUN_TESTS_STEP_TIMEOUT_MS ?? 180_000);
+// tests/compat spawns real acpx processes with a mock ACP agent (ensure, prompt,
+// cancel, close per transport); the full file legitimately runs past the unit
+// budget, so it gets its own larger cap.
+const STEP_TIMEOUT_MS = Number(
+  process.env.RUN_TESTS_STEP_TIMEOUT_MS ?? (root === "tests/compat" ? 600_000 : 180_000),
+);
 
 // Channel-package tests import `packages/*/src`, which value-import the bare
 // specifier "weacpx/plugin-api". That resolves via the workspace-root exports

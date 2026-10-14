@@ -10,6 +10,14 @@ import { terminateProcessTree } from "../process/terminate-process-tree";
 import { quoteIfNeeded } from "../util/text.js";
 import { getLocale } from "../i18n";
 import { resolveAcpxHomeDir } from "./acpx-session-files";
+import {
+  parseQueueOwnerLock,
+  proveQueueOwnerLock,
+  sameQueueOwnerLock,
+  type ProveQueueOwnerLockDeps,
+  type QueueOwnerLock,
+  type QueueOwnerLockProof,
+} from "./queue-owner-identity";
 import { isProcessAlive } from "../daemon/daemon-files";
 import { coreEnv } from "../runtime/core-env";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
@@ -519,6 +527,13 @@ export interface QueueOwnerTerminationDeps {
   lockPath?: string;
   probeIdentity?: typeof probeWindowsProcessIdentity;
   terminate?: typeof terminateProcessTree;
+  /** Seams for birth-identity proof of the lease (see proveQueueOwnerLock). */
+  proveLock?: (
+    lock: QueueOwnerLock,
+    sessionId: string,
+    deps: ProveQueueOwnerLockDeps,
+  ) => Promise<QueueOwnerLockProof>;
+  proveLockDeps?: ProveQueueOwnerLockDeps;
 }
 
 export async function terminateAcpxQueueOwnerWithDeps(
@@ -526,20 +541,55 @@ export async function terminateAcpxQueueOwnerWithDeps(
   deps: QueueOwnerTerminationDeps,
 ): Promise<void> {
   const lockPath = deps.lockPath ?? queueLockFilePath(sessionId);
-  let owner: { pid?: unknown } | undefined;
+  let owner: unknown;
   try {
-    owner = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: unknown };
+    owner = JSON.parse(await readFile(lockPath, "utf8"));
   } catch {
+    return; // no lock → no owner
+  }
+  // Windows stays fail-closed: the lease's windows-creation birth identity is
+  // not verifiable from here, so a live owner blocks the operation instead of
+  // being killed on a bare PID. Registered Windows owners are reconciled by
+  // windows-orphan-reaper.
+  if ((deps.platform ?? process.platform) === "win32") return;
+
+  const lock = parseQueueOwnerLock(owner);
+  if (!lock) {
+    return; // malformed lease: not provable
+  }
+  const prove = deps.proveLock ?? proveQueueOwnerLock;
+  const proof = await prove(lock, sessionId, deps.proveLockDeps ?? {});
+  if (proof.kind === "unverifiable") {
+    // A 0.16-era lease (no birth identity), a retiring owner, or a reused PID:
+    // never kill on a bare PID and never unlink a lock we cannot prove ours.
+    // Such owners exit by their idle TTL instead.
     return;
   }
-  // A queue lock written by the current acpx lease store has no provenance
-  // that xacpx can verify yet. Never consume legacy or sidecar identity data;
-  // retain the lock until acpx publishes an atomic, versioned identity record.
-  if ((deps.platform ?? process.platform) === "win32") return;
-  if (typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0) {
-    await terminateProcessTree(owner.pid, { detachedProcessGroup: true });
+  if (proof.kind === "current-owner") {
+    await (deps.terminate ?? terminateProcessTree)(lock.pid, { detachedProcessGroup: true });
   }
-  await unlink(lockPath).catch(() => {});
+  // Unlink only a lease that still records the owner just proven: a successor
+  // owner may have rewritten the lock while termination was in flight, and
+  // deleting its lease would orphan a live session.
+  if (await lockStillRecords(lockPath, lock)) {
+    await unlink(lockPath).catch(() => {});
+  }
+}
+
+async function lockStillRecords(lockPath: string, proven: QueueOwnerLock): Promise<boolean> {
+  try {
+    const current = parseQueueOwnerLock(JSON.parse(await readFile(lockPath, "utf8")));
+    // A retirement receipt — or `retirement: null`, acpx's incomplete-retirement
+    // state — published while termination was in flight means the owner moved
+    // under acpx custody: its lock is upstream cleanup evidence and MUST
+    // survive our unlink, even though pid/session/generation still match.
+    if (current === null || Object.hasOwn(current, "retirement")) {
+      return false;
+    }
+    return sameQueueOwnerLock(current, proven);
+  } catch {
+    return false;
+  }
 }
 
 function queueLockFilePath(sessionId: string): string {

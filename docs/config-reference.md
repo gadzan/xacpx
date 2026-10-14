@@ -114,12 +114,14 @@ How xacpx communicates with the acpx backend.
 
 ### Managed ACP adapter versions
 
-Conversation enforced read-only additionally requires the bundled acpx 0.16.0
+Conversation enforced read-only additionally requires the bundled acpx 0.19.5
 executor, managed Claude ACP 0.78.0 and the default registry. Explicit
 `transport.command`, PATH fallback, and unknown or different bundled executor
-versions reject read-only policy before Run acceptance. Ordinary requests retain
-the existing command resolution and execution behavior. See
-[execution effects](conversation-runtime.md#enforced-execution-effects-phase-10b).
+versions reject read-only policy before Run acceptance. The 0.19.5 executor is
+attested by the vendored native-SDK compat run
+(`tests/compat/conversation-read-only.test.ts`), which CI gates on Linux and
+macOS. Ordinary requests retain the existing command resolution and execution
+behavior.
 
 xacpx does not install the Codex or Claude adapter as a package dependency by default. For these two drivers it normally passes an exact `npx -y --registry=<registry> <package>@<version>` command to acpx. Users may opt in to an immutable local release with `xacpx adapter preinstall <codex|claude> [version]`; a validated active local release then replaces the generated npx command. Resolution priority is:
 

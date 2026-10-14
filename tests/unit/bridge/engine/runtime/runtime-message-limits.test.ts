@@ -105,19 +105,22 @@ test("raising the override fixes new runtimes; warm runtimes retain startup sett
     const adapter = makeAdapter();
     const handle = await adapter.ensure({ sessionKey: "warm-same", agent: "huge", cwd: stateDir });
     expect((await runTurn(adapter, handle)).status).toBe("failed");
-    // ...and STILL enforces 1 MiB after the process env moves to 8 MiB: the
-    // warm runtime retains its construction-time setting. (On a session
-    // reused after a limit failure the ceiling surfaces as a thrown
-    // ACP_MESSAGE_TOO_LARGE rather than a failed result — either way the
-    // raised env did not take effect. Re-ensure mirrors engine behavior and
-    // returns the same warm handle.)
+    // ...and STILL refuses the 2 MiB chunk after the process env moves to
+    // 8 MiB. On 0.16 the warm runtime re-connected and failed against its
+    // construction-time ceiling. On 0.19.x a session reused after a limit
+    // failure must be resumed, and an agent that does not advertise
+    // session/resume cannot be — the warm turn throws
+    // SESSION_RESUME_REQUIRED instead of running. Either way the raised env
+    // did not take effect on the warm runtime: the chunk never completes, so
+    // a silent ceiling widening is still a regression here.
     process.env.ACPX_MAX_ACP_MESSAGE_BYTES = String(8 * MIB);
     const warmHandle = await adapter.ensure({ sessionKey: "warm-same", agent: "huge", cwd: stateDir });
     let retained = false;
     try {
       retained = (await runTurn(adapter, warmHandle)).status === "failed";
     } catch (error) {
-      retained = (error as { detailCode?: unknown })?.detailCode === "ACP_MESSAGE_TOO_LARGE";
+      const code = (error as { detailCode?: unknown })?.detailCode;
+      retained = code === "ACP_MESSAGE_TOO_LARGE" || code === "SESSION_RESUME_REQUIRED";
     }
     expect(retained).toBe(true);
     await adapter.close(handle, { discardPersistentState: true }).catch(() => {});

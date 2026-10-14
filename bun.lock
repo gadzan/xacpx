@@ -6,7 +6,7 @@
       "name": "@ganglion/xacpx",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
-        "acpx": "0.16.0",
+        "acpx": "0.19.5",
         "ajv": "^8.17.1",
         "ajv-formats": "^3.0.1",
         "node-pty": "^1.1.0",
@@ -179,7 +179,7 @@
     "fs-ext",
   ],
   "packages": {
-    "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@1.4.0", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-/eufudw+aFY1LKLolT6yFE6UMmYRl7fMJ/DEONSIyR6wI3slHWITBsANRGqXEY8FRzqUxwh7QEaGiZHcJPVThg=="],
+    "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@1.8.0", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-fbP7qHZsFyTJVT0/RPrcWJ8An26qLXHEuGCHHEKDyxD1xpXV+Ejyh2LAE6vBAFePkpVjZeeohnbgvuEhZ7wLMg=="],
 
     "@algolia/abtesting": ["@algolia/abtesting@1.19.0", "https://registry.npmmirror.com/@algolia/abtesting/-/abtesting-1.19.0.tgz", { "dependencies": { "@algolia/client-common": "5.53.0", "@algolia/requester-browser-xhr": "5.53.0", "@algolia/requester-fetch": "5.53.0", "@algolia/requester-node-http": "5.53.0" } }, ""],
 
@@ -619,21 +619,21 @@
 
     "@one-ini/wasm": ["@one-ini/wasm@0.1.1", "https://registry.npmmirror.com/@one-ini/wasm/-/wasm-0.1.1.tgz", {}, ""],
 
-    "@openclaw/fs-safe": ["@openclaw/fs-safe@0.10.0", "", { "optionalDependencies": { "@openclaw/fs-safe-darwin-arm64": "0.10.0", "@openclaw/fs-safe-darwin-x64": "0.10.0", "@openclaw/fs-safe-linux-arm64-gnu": "0.10.0", "@openclaw/fs-safe-linux-arm64-musl": "0.10.0", "@openclaw/fs-safe-linux-x64-gnu": "0.10.0", "@openclaw/fs-safe-linux-x64-musl": "0.10.0", "@openclaw/fs-safe-win32-x64-msvc": "0.10.0", "jszip": "^3.10.2" } }, "sha512-tZW2fR6TgLAYfsaYx+ewC4zoPLO6EicRfx7f6kke4N/jIb8ZkteBEq2cD4Y6jMeNgVM7YClVzQuzcaAIkan3Dg=="],
+    "@openclaw/fs-safe": ["@openclaw/fs-safe@0.22.0", "", { "optionalDependencies": { "@openclaw/fs-safe-darwin-arm64": "0.22.0", "@openclaw/fs-safe-darwin-x64": "0.22.0", "@openclaw/fs-safe-linux-arm64-gnu": "0.22.0", "@openclaw/fs-safe-linux-arm64-musl": "0.22.0", "@openclaw/fs-safe-linux-x64-gnu": "0.22.0", "@openclaw/fs-safe-linux-x64-musl": "0.22.0", "@openclaw/fs-safe-win32-x64-msvc": "0.22.0", "jszip": "^3.10.2" } }, "sha512-CW/T0NUcdn8PLVBgyXUbIn90a16uhP3YtKdd+eqJjmg0FR01KCCjCI3PxrvK1ygrUb/BfQsJJe+hXA9+/0rqKQ=="],
 
-    "@openclaw/fs-safe-darwin-arm64": ["@openclaw/fs-safe-darwin-arm64@0.10.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-WgBo6nRh/F+aQohBx1Txx1x9q5VaxrB7KcDu+550ju3rnQJ9NIgCWsDJNeIHBmkcokNaEfvZJZhxtfWiuOSa+w=="],
+    "@openclaw/fs-safe-darwin-arm64": ["@openclaw/fs-safe-darwin-arm64@0.22.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-u7HSbjJAIiWZ0iFJzoXymMJUn0EMzJGMFtX7aIbQk2W6Sz+UxTuXszJk79yYNF46kxKXjlu9Vkx3oazT/6mE5g=="],
 
-    "@openclaw/fs-safe-darwin-x64": ["@openclaw/fs-safe-darwin-x64@0.10.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-CRpODRgQYkWWPr1uBZqZ21szrMAfreTOQf1Elwd1F8cxLJa783ynKDZAm/1r9xg6BGraLtGoLRctgaKx7Y6aEA=="],
+    "@openclaw/fs-safe-darwin-x64": ["@openclaw/fs-safe-darwin-x64@0.22.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-rkcMsgbQQzNFcEjq74J0hbwMoHlVXtQzC5owdAU6QG1O2UTGIPROpwNXmo1Phmz4tSTXwCKlH5vxxSgSHMv8Mw=="],
 
-    "@openclaw/fs-safe-linux-arm64-gnu": ["@openclaw/fs-safe-linux-arm64-gnu@0.10.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-oa4NA9HMJxl5Ub7Em7CdWUwS+XQJm2ICbBMHLxCIVhIS8zwikLqm+yWndArfMU5J5mgpaDXWhZ1pS7oe/Air1A=="],
+    "@openclaw/fs-safe-linux-arm64-gnu": ["@openclaw/fs-safe-linux-arm64-gnu@0.22.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-nwZl03/waPnBh7lKFnDiF7RfT85D9Ngbw23LL7jb2ilXu32zge4gqufYYIoLXk0EGL3bLkwssgnpxy7ErRQWow=="],
 
-    "@openclaw/fs-safe-linux-arm64-musl": ["@openclaw/fs-safe-linux-arm64-musl@0.10.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-wY4MbUNzH8BT8QRcby6riYw+GJzPddPiTzYj8eyebuta82VrB39ZpFyqQpsO4K9mqahbUnTxpbeYUUO34fRnHQ=="],
+    "@openclaw/fs-safe-linux-arm64-musl": ["@openclaw/fs-safe-linux-arm64-musl@0.22.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-2Gvr1vUvSpbdkAeUuYU8DmgzRGPx88V4quX1AWNZdFuip9SsGkbaBLx3kZlR4OFlEo6HxgGPS7KZanaG17nKSg=="],
 
-    "@openclaw/fs-safe-linux-x64-gnu": ["@openclaw/fs-safe-linux-x64-gnu@0.10.0", "", { "os": "linux", "cpu": "x64" }, "sha512-0860Rm/gfbVKoAVDr92mUVums0HL2l+UTKbEA07agxS0RDKZdCA1SQVTduyMBwirY0cqrMjzpygAIt5SJAtOKg=="],
+    "@openclaw/fs-safe-linux-x64-gnu": ["@openclaw/fs-safe-linux-x64-gnu@0.22.0", "", { "os": "linux", "cpu": "x64" }, "sha512-xTb3icn5X+SREL30NNXy1ZgjkGGWanRm9Wsk5pGm96Iy1DWY18HRyjnhDHCthZ402JiVBXCJR/8nsdHI0loaRg=="],
 
-    "@openclaw/fs-safe-linux-x64-musl": ["@openclaw/fs-safe-linux-x64-musl@0.10.0", "", { "os": "linux", "cpu": "x64" }, "sha512-cTBNOKKp0LB3ZonavOxbpK5VHNsrZ0NlWf09GS8/KN+z0gNHyiSjJ2SQMgX8nwvjAV2OVr2JEaQJ3INzYML2fQ=="],
+    "@openclaw/fs-safe-linux-x64-musl": ["@openclaw/fs-safe-linux-x64-musl@0.22.0", "", { "os": "linux", "cpu": "x64" }, "sha512-oOxSQNtPxEJRDUsydXX4TVw/vGXKxUR1bW8wieEsxlhJob+fbRcSZb6YyznPkGiirhcpCwwXgQwQbaD+9Ho9Hg=="],
 
-    "@openclaw/fs-safe-win32-x64-msvc": ["@openclaw/fs-safe-win32-x64-msvc@0.10.0", "", { "os": "win32", "cpu": "x64" }, "sha512-WlIJYtLumnWkZZ9pqoegri1DuOw+t9WaWZPzt83QVBS5HquyMRbJMw4RlPuwOgTE0X0vrv+g7GuFsOtmmg8g7w=="],
+    "@openclaw/fs-safe-win32-x64-msvc": ["@openclaw/fs-safe-win32-x64-msvc@0.22.0", "", { "os": "win32", "cpu": "x64" }, "sha512-V0MR0A3nYbvJofxdcKfgp8sU46UDAESV2wxh4w4+coxPkfEFfedJa2tz0L1Fc1wFEcZPXIbywXNhOy2qF6QZug=="],
 
     "@pkgjs/parseargs": ["@pkgjs/parseargs@0.11.0", "https://registry.npmmirror.com/@pkgjs/parseargs/-/parseargs-0.11.0.tgz", {}, ""],
 
@@ -913,7 +913,7 @@
 
     "acorn": ["acorn@8.17.0", "https://registry.npmmirror.com/acorn/-/acorn-8.17.0.tgz", { "bin": "bin/acorn" }, ""],
 
-    "acpx": ["acpx@0.16.0", "", { "dependencies": { "@agentclientprotocol/sdk": "^1.4.0", "@openclaw/fs-safe": "^0.10.0", "commander": "^15.0.0", "skillflag": "^0.2.1", "tsx": "^4.23.13", "zod": "^4.6.2" }, "bin": { "acpx": "dist/cli.js" } }, "sha512-HvCmlNc9JHUbAZfnk/m46RXV6WNLBM6zGZYWsHpcFaHFT4tShFbsb8qoh7J+nGc8aAYDqHiJEZggCRGIeXYUvQ=="],
+    "acpx": ["acpx@0.19.5", "", { "dependencies": { "@agentclientprotocol/sdk": "^1.5.0", "@openclaw/fs-safe": "^0.22.0", "commander": "^15.0.0", "skillflag": "^0.2.1", "tsx": "^4.23.15", "zod": "^4.6.5" }, "bin": { "acpx": "dist/cli.js" } }, "sha512-V88l8w3Opv1xWmMmFyO4RrR6Y695RrRJ/q5WgIlE/BNetQgxRaM4p8h7BsKPjdDHVBKpesCnXNd3r5Cwzz2Lmw=="],
 
     "agent-base": ["agent-base@7.1.4", "https://registry.npmmirror.com/agent-base/-/agent-base-7.1.4.tgz", {}, ""],
 
@@ -1947,7 +1947,7 @@
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
 
-    "tsx": ["tsx@4.23.13", "", { "dependencies": { "esbuild": "~0.28.0" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "bin": { "tsx": "dist/cli.mjs" } }, "sha512-BL5MGkRln6aDYhb0xbQlEAGw743BaZYWdbWtdJOBriYJboKgUUYCadFp2/FpBBZquBC/ezNBn7wMMPx7FDZUDw=="],
+    "tsx": ["tsx@4.23.15", "", { "dependencies": { "esbuild": "~0.28.0" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "bin": { "tsx": "dist/cli.mjs" } }, "sha512-Yiex1Ovn8z2xPpOWckIiysV1SSyRMY9BkLF++q0yKiDxCqRhosKfMg3janKkiLBwZ5c/YryloKwGZcrEmtwxKw=="],
 
     "type-fest": ["type-fest@0.16.0", "https://registry.npmmirror.com/type-fest/-/type-fest-0.16.0.tgz", {}, ""],
 

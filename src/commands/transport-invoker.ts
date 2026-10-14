@@ -3,7 +3,7 @@ import type { AppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentCommand, EnsureSessionProgress, PromptMediaInput, PromptUsage, ReplyQuotaContext, ResolvedSession, SessionTransport } from "../transport/types";
 import type { PerfSpan } from "../perf/perf-tracer";
-import type { SessionAgentCommandResolver } from "../transport/acpx-session-index";
+import type { SessionAgentCommandResolver } from "../transport/acpx-session-agent-command";
 import { PromptCommandError } from "../transport/prompt-output";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import { AutoInstallFailedError, MissingOptionalDepError } from "../recovery/errors";

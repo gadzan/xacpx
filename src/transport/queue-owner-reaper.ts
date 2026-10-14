@@ -57,11 +57,12 @@ export async function reapQueueOwners(
 ): Promise<{ terminated: number; attempted: number }> {
   const resolveRecordId = deps.resolveRecordId ?? defaultResolveRecordId;
   const platform = deps.platform ?? process.platform;
-  // The legacy terminator ultimately accepts only a queue-lock PID. That remains
-  // valid on Unix (process-group semantics), but is intentionally disabled on
-  // Windows: token-less pre-upgrade owners are reusable/degraded evidence, never
-  // candidates for an automatic bare-PID kill. Registered Windows owners are
-  // reconciled by windows-orphan-reaper instead.
+  // The terminator requires birth-identity proof of the lease (see
+  // proveQueueOwnerLock): a lease whose owner process cannot be proven current
+  // is left to exit by its idle TTL, never killed on a bare PID. Windows goes
+  // further and refuses outright — token-less pre-upgrade owners are
+  // reusable/degraded evidence, never candidates for an automatic bare-PID
+  // kill. Registered Windows owners are reconciled by windows-orphan-reaper.
   const terminate = deps.terminate ?? (platform === "win32"
     ? async () => { throw new LegacyOwnerUnverifiableError(); }
     : terminateAcpxQueueOwner);

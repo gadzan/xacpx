@@ -46,24 +46,53 @@ test("non-array / junk input yields empty history without throwing", () => {
   expect(mapAcpxMessagesToHistory([42, "Resume", { Unknown: 1 }])).toEqual([]);
 });
 
-test("readNativeSessionHistory reads the record file via the index, picking the richest match", async () => {
+function record(acpxRecordId: string, acpSessionId: string, messages: unknown[]): string {
+  return JSON.stringify({
+    schema: "acpx.session.v1",
+    acpx_record_id: acpxRecordId,
+    acp_session_id: acpSessionId,
+    agent_command: "opencode acp",
+    cwd: "C:\\ws",
+    name: "demo",
+    created_at: "2026-10-01T00:00:00Z",
+    last_used_at: "2026-10-02T00:00:00Z",
+    last_seq: messages.length,
+    updated_at: "2026-10-02T00:00:00Z",
+    messages,
+  });
+}
+
+test("readNativeSessionHistory discovers records by canonical scan without an index, picking the richest match", async () => {
   const dir = mkdtempSync(join(tmpdir(), "acpx-sessions-"));
   // Two records share the acp_session_id: the empty fresh attach stub + the real source.
-  writeFileSync(join(dir, "stub.json"), JSON.stringify({ acpSessionId: "ses_X", messages: [] }));
-  writeFileSync(join(dir, "src.json"), JSON.stringify({ acpSessionId: "ses_X", messages: [{ User: { id: "u", content: [{ Text: "hi" }] } }] }));
-  writeFileSync(join(dir, "index.json"), JSON.stringify({
-    schema: "acpx.session-index.v1",
-    entries: [
-      { file: "stub.json", acpSessionId: "ses_X", agentCommand: "opencode acp" },
-      { file: "src.json", acpSessionId: "ses_X", agentCommand: "opencode acp" },
-      { file: "other.json", acpSessionId: "ses_Y", agentCommand: "opencode acp" },
-    ],
-  }));
+  writeFileSync(join(dir, "stub.json"), record("stub", "ses_X", []));
+  writeFileSync(join(dir, "src.json"), record("src", "ses_X", [{ User: { id: "u", content: [{ Text: "hi" }] } }]));
 
-  const history = await readNativeSessionHistory({ agentSessionId: "ses_X", agentCommand: "opencode acp", sessionsDir: dir });
+  const history = await readNativeSessionHistory({ agentSessionId: "ses_X", sessionsDir: dir });
   expect(history).toEqual([{ role: "user", text: "hi" }]); // the non-empty source wins over the stub
 });
 
-test("readNativeSessionHistory returns [] when nothing matches or the dir is missing", async () => {
-  expect(await readNativeSessionHistory({ agentSessionId: "nope", sessionsDir: "/no/such/dir" })).toEqual([]);
+test("readNativeSessionHistory reports a diagnostic when nothing matches or the directory is unreadable", async () => {
+  const diagnostics: string[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "acpx-sessions-"));
+  writeFileSync(join(dir, "src.json"), record("src", "ses_X", [{ User: { id: "u", content: [{ Text: "hi" }] } }]));
+
+  expect(await readNativeSessionHistory({
+    agentSessionId: "ses_missing",
+    sessionsDir: dir,
+    onDiagnostic: (d) => diagnostics.push(d),
+  })).toEqual([]);
+  expect(diagnostics).toEqual([expect.stringContaining("no acpx record matches")]);
+
+  diagnostics.length = 0;
+  // A regular file is not a readable sessions directory (ENOTDIR) — the failure
+  // MUST be observable, never silently identical to "no history".
+  expect(await readNativeSessionHistory({
+    agentSessionId: "ses_X",
+    sessionsDir: join(dir, "src.json"),
+    onDiagnostic: (d) => diagnostics.push(d),
+  })).toEqual([]);
+  expect(diagnostics.some((d) => d.includes("cannot read sessions directory"))).toBe(true);
+  // The follow-on no-match line still reports the scan truth (0 records).
+  expect(diagnostics.some((d) => d.includes("(0 record(s) scanned)"))).toBe(true);
 });
