@@ -184,12 +184,16 @@ for (const distance of ["nearby", "distant"] as const) {
     await jump.focus();
     await page.keyboard.press("Enter");
     const target = page.locator('[data-message-id="reply_second"]');
-    await expect(target).toBeInViewport({ ratio: 1 });
+    const offset = await target.evaluate((row) => row.getBoundingClientRect().top
+      - row.closest('[data-test="group-transcript-scroller"]')!.getBoundingClientRect().top);
+    expect(Math.abs(offset)).toBeLessThanOrEqual(1);
+    const replyText = target.getByText("SECOND ASSIGNMENT RESULT", { exact: true });
+    await expect(replyText).toBeInViewport({ ratio: 1 });
     const focusedAfterJump = await page.evaluate(() => document.activeElement?.getAttribute("data-message-id"));
     await page.keyboard.press("Tab");
     await page.screenshot({ path: info.outputPath(`result-${distance}-keyboard.png`) });
     expect(focusedAfterJump).toBe("reply_second");
     await expect(target.getByRole("button", { name: "Copy", exact: true })).toBeFocused();
-    await expect(target).toBeInViewport({ ratio: 1 });
+    await expect(replyText).toBeInViewport({ ratio: 1 });
   });
 }

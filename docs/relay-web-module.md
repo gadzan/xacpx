@@ -803,6 +803,8 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 详情包含发送方、接收方、任务、可选期望输出和目标 MemberTurn 的实际状态。`indeterminate` 显示为结果未知。任务和结果预览通过 Vue 文本插值渲染。结果最多预览 240 个 UTF-16 单位，并可跳到已有的原始回复。
 
+结果跳转给目标消息设置 `tabindex="-1"` 并转移焦点，再定位视口。后续 Tab 从目标消息内的操作继续，不返回交接面板。只有被跳转到的消息获得程序化焦点能力，不增加消息行的常规 Tab 停靠点。
+
 结果关联必须满足 `handoff.memberTurnId`、Conversation、Topic、Run、Bot 和非冲突 assignment 身份，再通过 MemberTurn 的 `promptRequestId` 找到唯一的后续 Bot 回复。没有精确证据、存在歧义或结果不在已加载历史中时，显示结果不可用，不按同 Bot 或消息位置猜测。
 
 `groups.loadHandoffRunDetail()` 按需查询历史 `runs.get`。只读缓存按实例、Conversation、Topic、Run 隔离，最多保留 20 个详情，同 Run 的并发请求合并。切换选择、相关事件、重连或删除使缓存失效，并丢弃迟到响应。`handoffDetailRevision` 通知已展开组件重新读取。此路径不更新 active Run、composer、取消状态、计划或历史游标。普通 `agent_send` 和私聊消息不会复制到 Group。

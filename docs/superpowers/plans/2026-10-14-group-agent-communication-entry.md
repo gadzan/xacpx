@@ -257,7 +257,7 @@ The feature is ready only when **all** of the following hold:
 
 A broader "Agent communication" view might eventually include point-to-point `agent_send` traffic and Direct peer message history, but **that is a different visibility and authorization contract**. Before implementation, decide whose communication is eligible, where it may be displayed, how the user opts in, whether it is durably retained, who can read it, and how message/response provenance is proven. Keep that decision separate from the first Group UI delivery.
 
-## 11. Implementation and verification record
+## 11. Initial implementation and verification record (c8381467)
 
 Tasks 0 through 4 are complete in this PR.
 
@@ -279,3 +279,23 @@ The following commands ran from `packages/relay-web`. Native Node invoked the pr
 Browser checks cover both locales, collapsed visible text, avatar geometry, accessible names, `aria-expanded`, Enter, Space, Escape, focus restoration, real touch activation, 320px and landscape layouts, safe task rendering, historical result attribution, reload, duplicate WebSocket delivery, history prepend, active Run preservation, and a new WebSocket connection followed by durable history reload. Playwright writes collapsed and expanded screenshots to each handoff scenario's `test-results` directory.
 
 Vite reports large chunks after minification. No native screen-reader application, real acpx, or WeChat smoke run was performed. Accessibility semantics were checked in Chromium. The reviewers inspected fixed implementation snapshots with an inherited reviewer model, not a cross-family model run. No backend, wire schema, storage, authorization, or private-message visibility changes were needed.
+
+## 12. Independent review follow-up: result navigation focus
+
+The independent review found that `GroupTranscript.jumpToMessage()` moved the viewport without moving keyboard focus. Desktop and mobile Chromium reproduced the reported transition for both nearby and distant replies. After Enter activated the result jump, the target message was not focused, and the next Tab focused the original handoff's collapse button.
+
+The failing browser regression was committed first in `62af7b5a`. The fix makes only the selected target row programmatically focusable with `tabIndex = -1`, calls `focus({ preventScroll: true })`, and then preserves the existing viewport positioning. It does not add every transcript row to the Tab sequence or change the shared `TranscriptRow` API. The existing component regression now also asserts focus ownership.
+
+The distant fixture places 80 messages of differing heights between the handoff and its canonical reply. Browser assertions check the target message receives focus, the next Tab focuses the reply's Copy button, the reply text remains fully visible, and positioning differs from the scroller's top by at most one CSS pixel. Desktop measurement found a half-pixel container-edge difference while the text was fully visible, not a substantive offscreen-height navigation defect. No extra scrolling, cache, recovery, or result-association changes were added.
+
+The follow-up checks ran from `packages/relay-web`.
+
+| Check | Actual command | Result |
+| --- | --- | --- |
+| Group entry, transcript and store regressions | `node ../../node_modules/vitest/vitest.mjs run src/__tests__/group-handoff-entry.test.ts src/__tests__/group-components.test.ts src/__tests__/groups-store.test.ts` | 178 tests passed |
+| Typed production build | `node ../../node_modules/vue-tsc/bin/vue-tsc.js --noEmit && node ../../node_modules/vite/bin/vite.js build` | Passed |
+| Desktop and mobile handoff browser scenarios | `cmd /c "set CI=&& node ../../node_modules/@playwright/test/cli.js test e2e/group-handoff.spec.ts --project=chromium-desktop --project=chromium-mobile"` | 10 scenarios passed |
+
+Before the fix, all four new keyboard scenarios failed with `Expected: "reply_second"` and `Received: null`. After the fix, both nearby and distant keyboard scenarios passed on desktop and mobile. The corresponding `result-nearby-keyboard.png` and `result-distant-keyboard.png` screenshots were inspected.
+
+One preliminary browser run failed before reaching the Group, with a font stylesheet `net::ERR_NO_BUFFER_SPACE` error in its trace. The final isolated run passed without adding retry or fallback code. The full-suite results in section 11 describe the initial implementation, not a new full-suite run for this focused follow-up. Vite's large-chunk warning remains.

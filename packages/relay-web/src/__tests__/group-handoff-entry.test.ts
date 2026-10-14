@@ -318,5 +318,6 @@ describe("Public Group handoff entries", () => {
     scroller.scrollTop = 25;
     await details.get('[data-test="group-handoff-jump"]').trigger("click");
     expect(scroller.scrollTop).toBe(225);
+    expect(document.activeElement).toBe(canonical);
   });
 });

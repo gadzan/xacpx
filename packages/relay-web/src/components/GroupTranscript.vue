@@ -171,7 +171,10 @@ function jumpToMessage(messageId: string): void {
   if (!el) return;
   const row = Array.from(el.querySelectorAll<HTMLElement>("[data-message-id]"))
     .find((candidate) => candidate.dataset["messageId"] === messageId);
-  if (row) el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top;
+  if (!row) return;
+  row.tabIndex = -1;
+  row.focus({ preventScroll: true });
+  el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top;
 }
 
 // History that lands in the store (Topic open, history switch, reconnect) must put
