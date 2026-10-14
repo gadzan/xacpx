@@ -797,6 +797,16 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - **超时语义**：`timeout` / `instance-offline` / `instance-reconnected` 的创建与保存结果未知（`groups.create` 没有 requestId），界面提示先查看已刷新的列表，不显示为成功或失败。
 - **跨页面同步**：`conversations-changed` 会刷新任何已加载过的实例群组列表，即使当前没有选中群组。
 
+### Group 公开交接入口（PR #411）
+
+`GroupTranscript.vue` 在公开 `group_send` 消息的原始位置渲染 `GroupHandoffEntry.vue`。默认只显示两个重叠的 24px Agent 图标，重叠 8px，按钮触控高度 44px。不会额外显示行头像或说话人文本。Enter、Space 或点击展开详情，Escape 或收起按钮关闭并恢复焦点。名称使用当前 Bot 资料，已移除或不可用的 Bot 保留名称或 ID 回退。
+
+详情包含发送方、接收方、任务、可选期望输出和目标 MemberTurn 的实际状态。`indeterminate` 显示为结果未知。任务和结果预览通过 Vue 文本插值渲染。结果最多预览 240 个 UTF-16 单位，并可跳到已有的原始回复。
+
+结果关联必须满足 `handoff.memberTurnId`、Conversation、Topic、Run、Bot 和非冲突 assignment 身份，再通过 MemberTurn 的 `promptRequestId` 找到唯一的后续 Bot 回复。没有精确证据、存在歧义或结果不在已加载历史中时，显示结果不可用，不按同 Bot 或消息位置猜测。
+
+`groups.loadHandoffRunDetail()` 按需查询历史 `runs.get`。只读缓存按实例、Conversation、Topic、Run 隔离，最多保留 20 个详情，同 Run 的并发请求合并。切换选择、相关事件、重连或删除使缓存失效，并丢弃迟到响应。`handoffDetailRevision` 通知已展开组件重新读取。此路径不更新 active Run、composer、取消状态、计划或历史游标。普通 `agent_send` 和私聊消息不会复制到 Group。
+
 ## 阶段范围边界
 
 Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。

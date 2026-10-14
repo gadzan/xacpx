@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   MSG,
   isErrorPayload,
@@ -457,6 +457,37 @@ export const useGroupsStore = defineStore("groups", () => {
   const selectedGroupId = ref<string | null>(null);
   const activeConversationId = ref<string | null>(null);
   const activeTopicId = ref<string | null>(null);
+
+  const handoffRunDetails = new Map<string, ConversationRunDetailDto>();
+  const handoffRunRequests = new Map<string, Promise<ConversationRunDetailDto | null>>();
+  const handoffDetailRevision = ref(0);
+
+  function clearHandoffRunDetails(): void {
+    handoffRunDetails.clear();
+    handoffRunRequests.clear();
+    handoffDetailRevision.value += 1;
+  }
+
+  function handoffRunKey(iId: string, conversationId: string, topicId: string, runId: string): string {
+    return JSON.stringify([iId, conversationId, topicId, runId]);
+  }
+
+  function invalidateHandoffRunDetail(run: { conversationId: string; topicId: string; id: string }): void {
+    if (
+      !instanceId.value || run.conversationId !== activeConversationId.value
+      || run.topicId !== activeTopicId.value
+    ) return;
+    const key = handoffRunKey(instanceId.value, run.conversationId, run.topicId, run.id);
+    handoffRunDetails.delete(key);
+    handoffRunRequests.delete(key);
+    handoffDetailRevision.value += 1;
+  }
+
+  watch(
+    [instanceId, selectedGroupId, activeConversationId, activeTopicId],
+    clearHandoffRunDetails,
+    { flush: "sync" },
+  );
 
   const groupsByInstance = ref<Record<string, GroupSummaryDto[]>>({});
   const groupDetails = ref<Record<string, GroupDetailDto>>({});
@@ -951,6 +982,7 @@ export const useGroupsStore = defineStore("groups", () => {
         retiredTopicIds[key] = retired;
       }
     }
+    if (droppedAny && key === `${instanceId.value}:${activeConversationId.value}`) clearHandoffRunDetails();
     topicsByConversation.value = { ...topicsByConversation.value, [key]: visible };
     return visible;
   }
@@ -1126,6 +1158,7 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   function retireGroupTopic(targetInstanceId: string, conversationId: string, topicId: string): void {
+    if (instanceId.value === targetInstanceId && activeConversationId.value === conversationId) clearHandoffRunDetails();
     const key = `${targetInstanceId}:${conversationId}`;
     const retired = retiredTopicIds[key] ?? new Set<string>();
     retired.add(topicId);
@@ -1207,6 +1240,7 @@ export const useGroupsStore = defineStore("groups", () => {
       confirm: true,
       ...(releaseBindings ? { releaseBindings: true } : {}),
     }));
+    if (instanceId.value === targetInstanceId && activeConversationId.value === conversationId) clearHandoffRunDetails();
     upsertGroupTopic(targetInstanceId, res.topic);
     if (instanceId.value === targetInstanceId && activeTopicId.value === topicId) {
       messages.value = [];
@@ -1985,6 +2019,72 @@ export const useGroupsStore = defineStore("groups", () => {
     if (cancelError.value === "ownershipChecking") cancelError.value = null;
   }
 
+  async function loadHandoffRunDetail(message: ConversationMessageDto): Promise<ConversationRunDetailDto | null> {
+    const iId = instanceId.value;
+    const groupId = selectedGroupId.value;
+    const { conversationId, topicId, runId, handoff } = message;
+    if (
+      !iId || !groupId || !runId || !handoff?.memberTurnId || !handoff.to
+      || conversationId !== activeConversationId.value || topicId !== activeTopicId.value
+      || retiredTopicIds[`${iId}:${conversationId}`]?.has(topicId)
+    ) return null;
+    const generation = currentSelectionGeneration;
+    const isCurrent = (): boolean =>
+      generation === currentSelectionGeneration
+      && instanceId.value === iId && selectedGroupId.value === groupId
+      && activeConversationId.value === conversationId && activeTopicId.value === topicId;
+    const key = handoffRunKey(iId, conversationId, topicId, runId);
+    let detail = handoffRunDetails.get(key);
+    if (!detail) {
+      let request = handoffRunRequests.get(key);
+      if (!request) {
+        const pending: Promise<ConversationRunDetailDto | null> = api
+          .rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId })
+          .then((response) => {
+            const { run } = unwrapRpc(response);
+            if (
+              !isCurrent() || handoffRunRequests.get(key) !== pending
+              || !run || run.id !== runId || run.conversationId !== conversationId
+              || run.topicId !== topicId || !Array.isArray(run.memberTurns)
+            ) return null;
+            handoffRunDetails.set(key, run);
+            if (handoffRunDetails.size > 20) {
+              const oldestKey = handoffRunDetails.keys().next().value;
+              if (oldestKey !== undefined) handoffRunDetails.delete(oldestKey);
+            }
+            return run;
+          })
+          .catch(() => null);
+        handoffRunRequests.set(key, pending);
+        void pending.finally(() => {
+          if (handoffRunRequests.get(key) === pending) handoffRunRequests.delete(key);
+        });
+        request = pending;
+      }
+      detail = await request ?? undefined;
+    }
+    if (!detail || !isCurrent() || handoffRunDetails.get(key) !== detail) return null;
+    let target: MemberTurnSummaryDto | undefined;
+    for (const turn of detail.memberTurns) {
+      if (turn?.id !== handoff.memberTurnId) continue;
+      if (target) {
+        handoffRunDetails.delete(key);
+        return null;
+      }
+      target = turn;
+    }
+    if (
+      !target
+      || target.conversationId !== conversationId || target.topicId !== topicId
+      || target.runId !== runId || target.botId !== handoff.to
+      || (target.assignmentId !== undefined && target.assignmentId !== handoff.assignmentId)
+    ) {
+      handoffRunDetails.delete(key);
+      return null;
+    }
+    return detail;
+  }
+
   /** Best-effort detail enrichment. `runs.list` summaries carry no memberTurns,
    *  so a terminal Run reconciled from a list has a card with no per-member rows
    *  until a successful `runs.get` restores them. This call never decides
@@ -2474,6 +2574,7 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   async function reconcileOnReconnect(): Promise<void> {
+    clearHandoffRunDetails();
     const barrierIds: Record<string, true> = {};
     for (const id of Object.keys(groupsLoaded.value)) barrierIds[id] = true;
     for (const id of Object.keys(groupsByInstance.value)) barrierIds[id] = true;
@@ -2577,6 +2678,7 @@ export const useGroupsStore = defineStore("groups", () => {
     useConversationCommandsStore().ingest(event);
     if (event.kind === "instance-status") {
       if (event.instanceId === instanceId.value) {
+        clearHandoffRunDetails();
         if (!event.online) {
           generalErrorCode.value = "instanceOffline";
           generalError.value = null;
@@ -2589,6 +2691,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (event.kind === "state-snapshot") {
       if (event.instanceId !== instanceId.value) return;
+      clearHandoffRunDetails();
       if (activeConversationId.value && activeTopicId.value) {
         const matchingTurns = event.turns.filter(
           (t: LiveTurnSnapshotDto) =>
@@ -2730,6 +2833,7 @@ export const useGroupsStore = defineStore("groups", () => {
     }
 
     if (e.type === "conversations-changed") {
+      clearHandoffRunDetails();
       const groupIdAtEvent = selectedGroupId.value;
       const generationAtEvent = currentSelectionGeneration;
       if (groupIdAtEvent) {
@@ -2757,6 +2861,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (e.type === "conversation-topic-changed") {
       const topic = e.topic;
+      if (topic.conversationId === activeConversationId.value && topic.id === activeTopicId.value) clearHandoffRunDetails();
       const retiredKey = `${event.instanceId}:${topic.conversationId}`;
       if (retiredTopicIds[retiredKey]?.has(topic.id)) return;
       if (topic.conversationId === activeConversationId.value) {
@@ -2778,6 +2883,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (e.type === "conversation-message") {
       const msg = e.message;
+      if (msg.runId) invalidateHandoffRunDetail({ conversationId: msg.conversationId, topicId: msg.topicId, id: msg.runId });
       if (msg.conversationId === activeConversationId.value && msg.topicId === activeTopicId.value) {
         const existing = messages.value.find((m) => m.id === msg.id);
         if (!existing) {
@@ -2801,6 +2907,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (e.type === "conversation-run-changed") {
       const run = e.run;
+      invalidateHandoffRunDetail(run);
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         if (
           (activeRun.value && activeRun.value.id === run.id) ||
@@ -2862,6 +2969,7 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     if (e.type === "member-turn-started") {
       const { run, memberTurn } = e;
+      invalidateHandoffRunDetail(run);
       const priorMember = memberTurnsById.value[memberTurn.id];
       if (priorMember && memberAttemptOrder(priorMember, memberTurn) < 0) return;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
@@ -2917,6 +3025,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (e.type === "member-turn-finished") {
       const { run, memberTurn } = e;
+      invalidateHandoffRunDetail(run);
       const priorMember = memberTurnsById.value[memberTurn.id];
       if (priorMember && memberAttemptOrder(priorMember, memberTurn) < 0) return;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
@@ -3040,6 +3149,7 @@ export const useGroupsStore = defineStore("groups", () => {
     selectedGroupId,
     activeConversationId,
     activeTopicId,
+    handoffDetailRevision,
     groupsByInstance,
     groupDetails,
     loadingGroups,
@@ -3117,6 +3227,7 @@ export const useGroupsStore = defineStore("groups", () => {
     teardownTopic,
     clearTopic,
     loadHistory,
+    loadHandoffRunDetail,
     loadOlder,
     selectGroup,
     switchTopic,

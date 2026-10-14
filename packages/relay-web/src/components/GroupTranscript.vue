@@ -26,6 +26,7 @@ import StreamMarkdown from "./StreamMarkdown.vue";
 import TurnParts from "./TurnParts.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
+import GroupHandoffEntry from "./GroupHandoffEntry.vue";
 import CopyButton from "./CopyButton.vue";
 import AgentIcon from "./AgentIcon.vue";
 import PlanPanel from "./PlanPanel.vue";
@@ -68,19 +69,6 @@ function senderName(botId: string | undefined): string {
 }
 
 const runningNames = computed(() => turns.value.map((turn) => senderName(turn.botId)).join(", "));
-
-function handoffResult(message: ConversationMessageDto): string | null {
-  const handoff = message.handoff;
-  if (!handoff) return null;
-  const later = groupsStore.messages.find((row) =>
-    row.role === "bot"
-    && row.senderBotId === handoff.to
-    && row.runId === message.runId
-    && row.seq > message.seq
-    && row.content.trim().length > 0,
-  );
-  return later?.content ?? null;
-}
 
 function turnStateLabel(state: MemberTurnSummaryDto["state"]): string {
   switch (state) {
@@ -178,6 +166,14 @@ function scrollToBottom(): void {
   el.scrollTop = el.scrollHeight - el.clientHeight;
 }
 
+function jumpToMessage(messageId: string): void {
+  const el = scroller.value;
+  if (!el) return;
+  const row = Array.from(el.querySelectorAll<HTMLElement>("[data-message-id]"))
+    .find((candidate) => candidate.dataset["messageId"] === messageId);
+  if (row) el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top;
+}
+
 // History that lands in the store (Topic open, history switch, reconnect) must put
 // the reader at the newest message: the DOM starts at scrollTop 0, which is the
 // OLDEST of the loaded page rather than the end of the transcript.
@@ -272,9 +268,15 @@ async function handleLoadOlder(): Promise<void> {
     await groupsStore.loadOlder();
   } finally {
     await nextTick();
-    if (el && pendingAnchor.value !== null) {
-      restoreAnchor(pendingAnchor.value);
-      pendingAnchor.value = null;
+    const anchor = pendingAnchor.value;
+    if (el && anchor !== null) {
+      restoreAnchor(anchor);
+      // Offscreen rows replace intrinsic heights after the restored viewport paints.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      if (pendingAnchor.value === anchor) {
+        restoreAnchor(anchor);
+        pendingAnchor.value = null;
+      }
     }
   }
 }
@@ -311,9 +313,19 @@ async function handleLoadOlder(): Promise<void> {
         :row-id="m.id"
         :own="m.role === 'human'"
         :driver="m.role === 'bot' && m.senderBotId ? driverForBot(m.senderBotId) : undefined"
-        :speaker="m.role === 'bot' ? senderName(m.senderBotId) : undefined"
+        :speaker="!m.handoff && m.role === 'bot' ? senderName(m.senderBotId) : undefined"
+        :hide-leading-avatar="!!m.handoff"
       >
-        <template v-if="m.role === 'human'">
+        <GroupHandoffEntry
+          v-if="m.handoff"
+          :message="m"
+          :from-name="senderName(m.senderBotId)"
+          :to-name="senderName(m.handoff.to)"
+          :from-driver="m.senderBotId ? driverForBot(m.senderBotId) : undefined"
+          :to-driver="driverForBot(m.handoff.to)"
+          @jump="jumpToMessage"
+        />
+        <template v-else-if="m.role === 'human'">
           <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2 text-[14px] leading-relaxed text-fg">
             {{ m.content }}
           </div>
@@ -337,17 +349,6 @@ async function handleLoadOlder(): Promise<void> {
           <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
             <CopyButton :text="m.content" />
             <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
-          </div>
-        </template>
-
-        <template v-else-if="m.handoff">
-          <div data-test="group-handoff" class="w-full rounded-xl border border-border bg-surface/70 px-3 py-2 text-left text-xs text-fg">
-            <p class="font-medium">{{ $t("group.handoff.relationship", { from: senderName(m.senderBotId), to: senderName(m.handoff.to) }) }}</p>
-            <p class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.task") }}: </span>{{ m.handoff.task }}</p>
-            <p v-if="m.handoff.expectedOutput" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.expected") }}: </span>{{ m.handoff.expectedOutput }}</p>
-            <p v-if="handoffResult(m)" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.result") }}: </span>{{ handoffResult(m) }}</p>
-            <p v-else class="mt-1 text-fg-muted">{{ $t("group.handoff.pending", { name: senderName(m.handoff.to) }) }}</p>
-            <p class="mt-1 text-fg-muted">{{ $t("group.handoff.hint") }}</p>
           </div>
         </template>
 
