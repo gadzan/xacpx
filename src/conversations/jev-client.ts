@@ -170,12 +170,13 @@ function openTunnel(proxy: URL, target: URL, timeoutMs: number): Promise<Socket>
   };
   socket.setTimeout(timeoutMs, () => fail(new Error(`proxy CONNECT to ${proxy.hostname} timed out`)));
   socket.on("error", (error) => fail(error instanceof Error ? error : new Error(String(error))));
-  let buffer = "";
-  socket.on("data", (chunk: Buffer) => {
-    buffer += chunk.toString("latin1");
-    const end = buffer.indexOf("\r\n\r\n");
+  let buffer = Buffer.alloc(0);
+  const onData = (chunk: Buffer) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    const end = buffer.indexOf("\r\n\r\n", 0, "latin1");
     if (end === -1) return;
-    const statusLine = buffer.slice(0, buffer.indexOf("\r\n"));
+    socket.off("data", onData);
+    const statusLine = buffer.subarray(0, buffer.indexOf("\r\n", 0, "latin1")).toString("latin1");
     settled = true;
     socket.setTimeout(0);
     if (!/^HTTP\/1\.[01] 200/.test(statusLine)) {
@@ -183,8 +184,14 @@ function openTunnel(proxy: URL, target: URL, timeoutMs: number): Promise<Socket>
       reject(new Error(`proxy CONNECT failed: ${statusLine}`));
       return;
     }
+    // Bytes after the CONNECT response belong to the tunnelled stream (e.g. a
+    // TLS ServerHello in the same chunk): hand them back, never drop them.
+    const rest = buffer.subarray(end + 4);
+    if (rest.length > 0) socket.unshift(rest);
+    socket.pause();
     resolve(socket);
-  });
+  };
+  socket.on("data", onData);
   const auth = proxy.username
     ? `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString("base64")}\r\n`
     : "";
@@ -252,6 +259,9 @@ async function sendOverSocket(
     chunks.push(chunk);
   });
   socket.on("error", (error) => fail(error instanceof Error ? error : new Error(String(error))));
+  // openTunnel leaves the socket paused (so no tunnelled byte is emitted to a
+  // missing listener); resume now that the reader is attached.
+  socket.resume();
   socket.on("end", () => {
     if (settled) return;
     const raw = Buffer.concat(chunks);
@@ -286,7 +296,12 @@ async function postThroughProxy(
   timeoutMs: number,
 ): Promise<JevHttpResponse> {
   const proxy = new URL(proxyUrl);
-  if (proxy.protocol !== "http:" && proxy.protocol !== "https:") {
+  if (proxy.protocol === "https:") {
+    // A TLS connection to the proxy itself is not implemented; refusing is
+    // safer than speaking plaintext CONNECT to port 80 of an https proxy.
+    throw new Error("https:// proxy URLs are not supported; use an http:// proxy URL");
+  }
+  if (proxy.protocol !== "http:") {
     throw new Error(`unsupported proxy protocol: ${proxy.protocol}`);
   }
   const target = new URL(request.url);
@@ -320,11 +335,12 @@ export async function askJevChoice(input: JevAskInput): Promise<JevAskResult> {
   // An explicit proxy wins; empty falls back to the daemon process env. The
   // platform fetch does not honor HTTPS_PROXY on its own, so the fallback is
   // resolved here and routed through the same CONNECT tunnel.
-  const proxyUrl = resolveJevProxyUrl(input.proxyUrl, input.env ?? process.env);
+  const proxyUrl = resolveJevProxyUrl(input.proxyUrl, input.env ?? process.env, request.url);
   let response: JevHttpResponse;
   try {
-    // `fetchImpl` wins (tests). Otherwise the platform fetch already honors the
-    // process proxy env; an explicit proxy URL goes through the CONNECT tunnel.
+    // `fetchImpl` wins (tests). Otherwise any resolved proxy (explicit or from
+    // the env, see above) goes through the CONNECT tunnel; with none the
+    // request goes direct via the platform fetch.
     response = input.fetchImpl
       ? await input.fetchImpl(request.url, {
         method: request.method,
@@ -359,10 +375,63 @@ export async function askJevChoice(input: JevAskInput): Promise<JevAskResult> {
 }
 
 /** The proxy a Jev call uses: the explicit setting, else `HTTPS_PROXY` /
- *  `https_proxy` from the environment, else none. */
-export function resolveJevProxyUrl(explicit: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
-  const candidate = explicit?.trim() || env.HTTPS_PROXY?.trim() || env.https_proxy?.trim();
-  return candidate ? candidate : undefined;
+ *  `https_proxy` from the environment (skipped when `NO_PROXY` / `no_proxy`
+ *  matches the target host), else none. An explicit setting always wins. */
+export function resolveJevProxyUrl(
+  explicit: string | undefined,
+  env: NodeJS.ProcessEnv,
+  targetUrl?: string,
+): string | undefined {
+  const direct = explicit?.trim();
+  if (direct) return direct;
+  const candidate = env.HTTPS_PROXY?.trim() || env.https_proxy?.trim();
+  if (!candidate) return undefined;
+  if (targetUrl && noProxyMatches(targetUrl, env.NO_PROXY ?? env.no_proxy)) return undefined;
+  return candidate;
+}
+
+/** Conventional NO_PROXY matching: `*`, exact host, or domain suffix
+ *  (`example.com` / `.example.com` both match `api.example.com`), with an
+ *  optional `:port` restriction. */
+export function noProxyMatches(targetUrl: string, noProxy: string | undefined): boolean {
+  if (!noProxy?.trim()) return false;
+  let target: URL;
+  try {
+    target = new URL(targetUrl);
+  } catch {
+    return false;
+  }
+  const host = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const port = target.port || (target.protocol === "https:" ? "443" : "80");
+  for (const raw of noProxy.split(/[\s,]+/)) {
+    const entry = raw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry === "*") return true;
+    let name = entry;
+    let entryPort: string | undefined;
+    const portMatch = /^(.*):(\d+)$/.exec(entry);
+    if (portMatch && !entry.includes("]") ) {
+      name = portMatch[1]!;
+      entryPort = portMatch[2];
+    }
+    name = name.replace(/^\*?\./, "").replace(/^\[|\]$/g, "");
+    if (entryPort && entryPort !== port) continue;
+    if (host === name || host.endsWith(`.${name}`)) return true;
+  }
+  return false;
+}
+
+/** A proxy URL safe to log or return over the wire: any userinfo
+ *  (`user:pass@`) is replaced with `***@`. Unparseable input is redacted. */
+export function maskProxyUrl(proxyUrl: string | undefined | null): string | undefined {
+  if (typeof proxyUrl !== "string" || proxyUrl.length === 0) return undefined;
+  try {
+    const url = new URL(proxyUrl);
+    if (!url.username && !url.password) return proxyUrl;
+    return `${url.protocol}//***@${url.host}${url.pathname === "/" && !proxyUrl.endsWith("/") ? "" : url.pathname}${url.search}`;
+  } catch {
+    return proxyUrl.includes("@") ? "***" : proxyUrl;
+  }
 }
 
 /** Mask a stored key for display: at most a 3-character prefix plus the last 4.

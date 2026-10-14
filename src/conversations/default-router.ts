@@ -244,7 +244,9 @@ export async function decideJevRouterAssignment(
     const target = lead ?? enabled[0]!;
     const why = lead
       ? "the group lead"
-      : "no group lead is configured";
+      : input.leadBotId === undefined
+        ? "the first enabled member (no group lead is configured)"
+        : "the first enabled member (the group lead is not enabled)";
     return dispatchTo(
       target,
       input,

@@ -126,7 +126,7 @@ import {
 import { resolveProductionRouter, type JevRouterHandoff } from "./conversations/production-router";
 import { resolveDefaultRouterEntry } from "./conversations/default-router";
 import { JevSettingsStore, resolveJevSettingsPath, type JevSettingsFile } from "./conversations/jev-settings-store";
-import { askJevChoice, DEFAULT_JEV_ENDPOINT, DEFAULT_JEV_MODEL } from "./conversations/jev-client";
+import { askJevChoice, DEFAULT_JEV_ENDPOINT, DEFAULT_JEV_MODEL, maskProxyUrl } from "./conversations/jev-client";
 import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
@@ -2274,7 +2274,7 @@ export async function buildApp(
               ? {}
               : { code: resolution.availability.reason.code }),
             endpoint: next.endpoint,
-            proxyUrl: next.proxyUrl ?? null,
+            proxyUrl: maskProxyUrl(next.proxyUrl) ?? null,
             keyConfigured: next.keyConfigured,
           });
           controlEvents.emit({ type: "conversation-router-changed" });

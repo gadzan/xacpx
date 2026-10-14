@@ -539,3 +539,45 @@ test("--decide runs the Jev policy when the env carries a key", async () => {
     server.stop(true);
   }
 });
+
+test("confidence exactly at the 0.6 floor dispatches to the pick", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.6 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_reviewer");
+  expect(decision.reason).toContain("0.60");
+});
+
+test("confidence 0.59 (just under the floor) falls back to the lead", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.59 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("low confidence 0.59");
+});
+
+test("a pick with no confidence in the answer falls back to the lead", async () => {
+  // askJevChoice maps a missing confidence to 0 (see jev-client tests).
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("low confidence");
+});
+
+test("a disabled group lead falls back to the first enabled member with an accurate reason", async () => {
+  const { ask } = fakeAsk({ ok: false, code: "network" });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_lead", false), member("bot_first"), member("bot_second")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_first");
+  expect(decision.reason).toContain("the group lead is not enabled");
+  expect(decision.reason).not.toContain("no group lead is configured");
+});

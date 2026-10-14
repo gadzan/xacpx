@@ -3404,16 +3404,16 @@ export class SqliteConversationStore implements ConversationStore {
   /**
    * Durable routing-decision rationale on the Run itself, so the latest
    * dispatch reason survives reconnect/restart without replaying the audit
-   * table. Backfilled from the newest dispatch routing_decision row on
-   * upgrade (the same seam `waiting_question` uses); repeated on open so an
-   * interrupted migration cannot lose it.
+   * table. Backfilled once, from the newest dispatch routing_decision row, in
+   * the same transaction that adds the column: the ALTER and the backfill
+   * commit or roll back together, so an interrupted upgrade simply reruns
+   * both, and an already-migrated store pays only a PRAGMA on open.
    */
   private ensureRoutingReasonColumn(): void {
     this.sqlite.transaction(() => {
       const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)");
-      if (!cols.some((col) => col.name === "routing_reason")) {
-        this.sqlite.exec("ALTER TABLE runs ADD COLUMN routing_reason TEXT");
-      }
+      if (cols.some((col) => col.name === "routing_reason")) return;
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN routing_reason TEXT");
       this.sqlite.exec(`UPDATE runs SET routing_reason = (
         SELECT reason FROM routing_decisions WHERE run_id = runs.id AND decision_type = 'dispatch'
         ORDER BY created_at DESC, rowid DESC LIMIT 1

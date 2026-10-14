@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import type { JevSettingsDto } from "@ganglion/xacpx-relay-protocol";
 
 import { ConversationError } from "./conversation-error";
-import { DEFAULT_JEV_ENDPOINT, DEFAULT_JEV_MODEL, maskJevKey } from "./jev-client";
+import { DEFAULT_JEV_ENDPOINT, DEFAULT_JEV_MODEL, maskJevKey, maskProxyUrl } from "./jev-client";
 import { withPrivateFileLock } from "../util/private-file";
 
 /**
@@ -103,7 +103,7 @@ export class JevSettingsStore {
     const stored = await this.read();
     return {
       endpoint: stored.endpoint ?? DEFAULT_JEV_ENDPOINT,
-      ...(stored.proxyUrl !== undefined ? { proxyUrl: stored.proxyUrl } : {}),
+      ...(stored.proxyUrl !== undefined ? { proxyUrl: maskProxyUrl(stored.proxyUrl) ?? "" } : {}),
       model: stored.model ?? DEFAULT_JEV_MODEL,
       keyConfigured: typeof stored.apiKey === "string" && stored.apiKey.length > 0,
       keyMasked: maskJevKey(stored.apiKey),
@@ -136,7 +136,12 @@ export class JevSettingsStore {
       const merged: JevSettingsFile = { ...stored };
       if (nextEndpoint !== undefined) merged.endpoint = nextEndpoint;
       if (clearProxy) delete merged.proxyUrl;
-      else if (nextProxy !== undefined) merged.proxyUrl = nextProxy;
+      // The wire only ever shows a credential-masked proxy URL; a client that
+      // echoes that masked value back unchanged must not overwrite the real one.
+      else if (nextProxy !== undefined && !(stored.proxyUrl !== undefined
+        && nextProxy !== stored.proxyUrl && nextProxy === maskProxyUrl(stored.proxyUrl))) {
+        merged.proxyUrl = nextProxy;
+      }
       if (clearKey) delete merged.apiKey;
       else if (nextKey !== undefined) merged.apiKey = nextKey;
       await writeLocked(`${JSON.stringify(merged, null, 2)}\n`);

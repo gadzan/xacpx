@@ -13,7 +13,8 @@ import {
   createConversationRuntime,
   createProductionOwnedSessionRelease,
 } from "../../../src/conversations/conversation-composition";
-import { classifyCapabilityReport, resolveProductionRouter } from "../../../src/conversations/production-router";
+import { classifyCapabilityReport, isBundledDefaultRouter,
+  resolveProductionRouter } from "../../../src/conversations/production-router";
 import { canMintHumanPermissionInteraction } from "../../../src/conversations/conversation-execution";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
@@ -652,6 +653,7 @@ test("the decision process receives the Jev settings through its environment", a
     const resolution = await resolveProductionRouter({
       config: createConfig(command),
       env: { PATH: process.env.PATH ?? "", ROUTER_LOG: log },
+      bundledRouterEntry: command,
       jev: {
         endpoint: "https://api.typesafe.ai/v1/systemone",
         apiKey: "sk-env-test-key",
@@ -679,6 +681,7 @@ test("an absent proxy override is handed over as an empty variable", async () =>
     const resolution = await resolveProductionRouter({
       config: createConfig(command),
       env: { PATH: process.env.PATH ?? "", ROUTER_LOG: log },
+      bundledRouterEntry: command,
       jev: { endpoint: "https://api.typesafe.ai/v1/systemone", apiKey: "sk-x", model: "jev-1.13.0" },
     });
     expect(resolution.availability.status).toBe("ready");
@@ -688,4 +691,32 @@ test("an absent proxy override is handed over as an empty variable", async () =>
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a custom (non-bundled) router command never receives the Jev key", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-jev-custom-"));
+  try {
+    const command = join(dir, "env-router.mjs");
+    const log = join(dir, "env.log");
+    await writeFile(command, JEV_ENV_ROUTER_SOURCE);
+    await writeFile(log, "");
+    const resolution = await resolveProductionRouter({
+      config: createConfig(command),
+      env: { PATH: process.env.PATH ?? "", ROUTER_LOG: log },
+      bundledRouterEntry: join(dir, "some-other-bundled-entry.js"),
+      jev: { endpoint: "https://api.typesafe.ai/v1/systemone", apiKey: "sk-secret-key", model: "jev-1.13.0" },
+    });
+    expect(resolution.availability.status).toBe("ready");
+    await resolution.router?.decide(routingInputForDecide());
+    expect((await readLog(log)).at(-1)).toBe("|||");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("isBundledDefaultRouter matches only the bundled entry path", () => {
+  expect(isBundledDefaultRouter("/opt/x/dist/conversations/default-router-main.js", "/opt/x/dist/conversations/default-router-main.js")).toBe(true);
+  expect(isBundledDefaultRouter("/opt/x/dist/conversations/../conversations/default-router-main.js", "/opt/x/dist/conversations/default-router-main.js")).toBe(true);
+  expect(isBundledDefaultRouter("/usr/local/bin/my-router", "/opt/x/dist/conversations/default-router-main.js")).toBe(false);
+  expect(isBundledDefaultRouter("", "/opt/x/dist/conversations/default-router-main.js")).toBe(false);
 });

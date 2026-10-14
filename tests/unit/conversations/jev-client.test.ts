@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { connect as netConnect } from "node:net";
 
-import { askJevChoice, maskJevKey, resolveJevProxyUrl, type JevAskInput } from "../../../src/conversations/jev-client";
+import { askJevChoice, maskJevKey, maskProxyUrl, noProxyMatches, resolveJevProxyUrl, type JevAskInput } from "../../../src/conversations/jev-client";
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 
@@ -241,4 +241,53 @@ test("an empty proxy setting falls back to HTTPS_PROXY, then https_proxy", () =>
   expect(resolveJevProxyUrl("  ", { HTTPS_PROXY: "http://env:2" })).toBe("http://env:2");
   expect(resolveJevProxyUrl(undefined, { https_proxy: "http://lower:3" })).toBe("http://lower:3");
   expect(resolveJevProxyUrl(undefined, {})).toBeUndefined();
+});
+
+test("a JSON answer with no confidence maps to confidence 0", async () => {
+  const result = await askJevChoice({
+    endpoint: "https://jev.test/v1/systemone",
+    apiKey: "sk-test-key",
+    model: "jev-1.13.0",
+    message: "m",
+    question: "q",
+    choices: [{ key: "a", description: "A" }],
+    fetchImpl: (async () => new Response(JSON.stringify({ answers: { bot: { choice: "a" } } }), { status: 200 })) as unknown as typeof fetch,
+  });
+  expect(result).toMatchObject({ ok: true, choice: "a", confidence: 0 });
+});
+
+test("maskProxyUrl hides proxy credentials and leaves plain URLs alone", () => {
+  expect(maskProxyUrl("http://user:s3cret@proxy.local:7890")).toBe("http://***@proxy.local:7890");
+  expect(maskProxyUrl("http://user:s3cret@proxy.local:7890")).not.toContain("s3cret");
+  expect(maskProxyUrl("http://onlyuser@proxy.local:7890")).toBe("http://***@proxy.local:7890");
+  expect(maskProxyUrl("http://127.0.0.1:7890")).toBe("http://127.0.0.1:7890");
+  expect(maskProxyUrl(undefined)).toBeUndefined();
+  expect(maskProxyUrl("")).toBeUndefined();
+});
+
+test("NO_PROXY skips the env proxy for matching hosts, never an explicit proxy", () => {
+  const url = "https://api.typesafe.ai/v1/systemone";
+  const env = { HTTPS_PROXY: "http://env:2", NO_PROXY: "localhost,.typesafe.ai" };
+  expect(resolveJevProxyUrl(undefined, env, url)).toBeUndefined();
+  expect(resolveJevProxyUrl(undefined, { ...env, NO_PROXY: undefined, no_proxy: "typesafe.ai" }, url)).toBeUndefined();
+  expect(resolveJevProxyUrl(undefined, { ...env, NO_PROXY: "*" }, url)).toBeUndefined();
+  expect(resolveJevProxyUrl(undefined, { ...env, NO_PROXY: "example.com" }, url)).toBe("http://env:2");
+  expect(resolveJevProxyUrl("http://explicit:1", env, url)).toBe("http://explicit:1");
+  expect(noProxyMatches(url, "api.typesafe.ai:443")).toBe(true);
+  expect(noProxyMatches(url, "api.typesafe.ai:8443")).toBe(false);
+  expect(noProxyMatches(url, "notypesafe.ai")).toBe(false);
+});
+
+test("an https:// proxy URL is rejected clearly instead of spoken to in plaintext", async () => {
+  const result = await askJevChoice({
+    endpoint: "https://jev.test/v1/systemone",
+    apiKey: "sk-test-key",
+    proxyUrl: "https://proxy.invalid:8443",
+    model: "jev-1.13.0",
+    message: "m",
+    question: "q",
+    choices: [{ key: "a", description: "A" }],
+  });
+  expect(result).toMatchObject({ ok: false, code: "network" });
+  expect(result.ok ? "" : result.message).toContain("https:// proxy URLs are not supported");
 });
