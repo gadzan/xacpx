@@ -2037,6 +2037,7 @@ function readyCapability(source, models, draft) {
     efforts: draft.efforts ?? { status: "unavailable" },
     fetchedAt: draft.fetchedAt,
     source,
+    ...draft.reason ? { reason: { code: draft.reason.code, message: draft.reason.message } } : {},
     ...appliedModelId ? { appliedModelId } : {},
     ...selectedModelId ? { selectedModelId } : {},
     ...normalizeOptional(draft.selectedEffort) ? { selectedEffort: draft.selectedEffort.trim() } : {},
@@ -2101,7 +2102,8 @@ function parseReady(value) {
       selectedModelId: optionalString(value.selectedModelId),
       selectedEffort: optionalString(value.selectedEffort),
       appliedModelId: value.source === "runtime" ? optionalString(value.appliedModelId) : undefined,
-      efforts: parseEfforts(value.efforts)
+      efforts: parseEfforts(value.efforts),
+      reason: parseReason(value.reason)
     });
   } catch {
     return stale("ready capability could not be constructed");

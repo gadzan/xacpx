@@ -80,6 +80,22 @@ describe("ModelPicker", () => {
     expect(wrapper.find('[data-test="model-option"]').exists()).toBe(false);
   });
 
+  it("keeps a saved list usable while naming the failed refresh, and offers a retry", async () => {
+    const saved = readyCapability("cache", [{ modelId: "gpt-saved", name: "GPT Saved" }], {
+      fetchedAt: FETCHED,
+      reason: { code: "unauthenticated", message: "the adapter requires authentication before it can list models" },
+    });
+    const wrapper = mountPicker(saved);
+    // The models stay selectable — a failed refresh must not look like no list.
+    await wrapper.get('[data-test="ns-model"]').trigger("focus");
+    expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-saved");
+    // The stale-ness is stated, not hidden behind a plain ready list.
+    expect(wrapper.get('[data-test="model-picker-reason"]').text()).toContain("Saved list");
+    expect(wrapper.get('[data-test="model-picker-reason"]').text()).toContain("requires authentication");
+    await wrapper.get('[data-test="model-picker-fetch"]').trigger("click");
+    expect(wrapper.emitted("fetch")).toBeTruthy();
+  });
+
   it("does not present an unadvertised custom id as the model that took effect", () => {
     const state = readyCapability("runtime", [{ modelId: "gpt-real" }], {
       fetchedAt: FETCHED,

@@ -72,6 +72,18 @@ export interface NativeSessionListCacheRecord {
   next_cursor?: string | null;
 }
 
+/**
+ * Persisted adapter model list for one capability fingerprint. `fetched_at` is
+ * the original discovery time — a reload reports the same timestamp instead of
+ * implying the list was re-verified now.
+ */
+export interface CapabilityCacheRecord {
+  models: Array<{ model_id: string; name?: string }>;
+  efforts: string[];
+  effort_known: boolean;
+  fetched_at: string;
+}
+
 export interface LogicalSession {
   /** Core-owned resource identity; never an arbitrary client cwd override. */
   execution_worktree?: import("../conversations/conversation-worktree-types").ConversationWorktreeRef;
@@ -138,6 +150,8 @@ export interface AppState {
   sessions: Record<string, LogicalSession>;
   chat_contexts: Record<string, ChatContextState>;
   native_session_lists: Record<string, NativeSessionListCacheRecord>;
+  /** Adapter model lists keyed by capability fingerprint. Regenerable cache. */
+  capability_lists: Record<string, CapabilityCacheRecord>;
   orchestration: OrchestrationState;
   scheduled_tasks: Record<string, ScheduledTaskRecord>;
   bots: Record<string, BotProfile>;
@@ -153,6 +167,7 @@ export function createEmptyState(): AppState {
     sessions: {},
     chat_contexts: {},
     native_session_lists: {},
+    capability_lists: {},
     orchestration: createEmptyOrchestrationState(),
     scheduled_tasks: {},
     bots: {},

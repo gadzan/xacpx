@@ -987,5 +987,6 @@ export default {
     effectCustom: "自定义 id {model} 不是适配器公布的模型。",
     effectFellBack: "所选 {model} 未生效。实际生效：{applied}。",
     appliesLater: "Bot 的模型变更作用于保存之后接受的运行。已经接受的运行保持当时的配置快照。",
+    savedListUnverified: "已保存的列表。上次刷新失败：{message}",
   },
 };

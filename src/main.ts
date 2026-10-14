@@ -81,6 +81,7 @@ import {
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
 import type { AppState } from "./state/types";
+import { StateCapabilityCache } from "./agents/capability-cache";
 import { spawnAcpxBridgeClient } from "./transport/acpx-bridge/acpx-bridge-client";
 import { AcpxBridgeTransport } from "./transport/acpx-bridge/acpx-bridge-transport";
 import { AcpxCliTransport } from "./transport/acpx-cli/acpx-cli-transport";
@@ -581,6 +582,10 @@ export async function buildApp(
     },
   });
   const runtimeRoot = dirname(paths.configPath);
+  // Adapter model lists survive a daemon restart through the regenerable
+  // capability_lists state section. Persistence rides the same debounced
+  // writer every other mutation uses, serialized by the shared state mutex.
+  const capabilityCache = new StateCapabilityCache(state, (next) => stateMutex.run(() => debouncedStateStore.save(next)));
   const messagingNodeIdentity = await new MessagingNodeIdentityStore(
     join(runtimeRoot, "agent-messaging", "node.json"),
   ).loadOrCreate();
@@ -2006,6 +2011,7 @@ export async function buildApp(
     logger,
     agent,
     sessions,
+    capabilityCache,
     transport,
     createSessionWithTransport: (internalAlias, agent, workspace, model) =>
       router.createSessionWithTransport(internalAlias, agent, workspace, model),

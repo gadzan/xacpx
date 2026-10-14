@@ -7,6 +7,8 @@ import {
   launchFingerprint,
   type AgentCapabilityDeps,
   type CapabilityAdvertisement,
+  type CapabilityCacheStore,
+  type CachedCapability,
   type CapabilityTarget,
 } from "../../../src/agents/capability-discovery";
 import type { AgentCapabilityProbeResult, ResolvedSession } from "../../../src/transport/types";
@@ -46,6 +48,16 @@ function deps(partial: Partial<AgentCapabilityDeps> & Pick<AgentCapabilityDeps, 
     getBot: () => undefined,
     readAdvertisement: async () => undefined,
     ...partial,
+  };
+}
+
+/** In-memory CapabilityCacheStore over a Map, standing in for the StateStore. */
+function store(persisted: Map<string, CachedCapability>): CapabilityCacheStore {
+  return {
+    get: (key) => persisted.get(key),
+    set: (key, value) => { persisted.set(key, value); },
+    load: (key) => persisted.get(key),
+    persist: (key, value) => { persisted.set(key, value); },
   };
 }
 
@@ -229,6 +241,98 @@ test("adapter pin and auth material change the cache key", () => {
   expect(launchFingerprint({ agentCommand: "npx codex@1" })).not.toBe(launchFingerprint({ agentCommand: "npx codex@2" }));
   expect(authFingerprint({ OPENAI_API_KEY: "one" })).not.toBe(authFingerprint({ OPENAI_API_KEY: "two" }));
   expect(authFingerprint({ OPENAI_API_KEY: "one" })).not.toContain("one");
+});
+
+test("a persisted list is served after the cache object is replaced", async () => {
+  const persisted = new Map<string, CachedCapability>();
+  const first = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    probe: async () => ({ ok: true, models: [{ modelId: "gpt-persisted", name: "GPT Persisted" }], efforts: ["high"], currentEffort: "high" }),
+  }), store(persisted));
+  const probed = await first.get({ agent: "codex", workspace: "backend", probe: true });
+  expect(probed.status).toBe("ready");
+  if (probed.status === "ready") expect(probed.source).toBe("probe");
+  expect([...persisted.keys()].length).toBe(1);
+
+  // A new service instance (daemon restart) must read the durable entry.
+  const second = new AgentCapabilityService(deps({ listTargets: () => [] }), store(persisted));
+  const state = await second.get({ agent: "codex", workspace: "backend" });
+  expect(state.status).toBe("ready");
+  if (state.status !== "ready") return;
+  expect(state.source).toBe("cache");
+  expect(state.models.map((model) => model.modelId)).toEqual(["gpt-persisted"]);
+  expect(state.fetchedAt).toBe(NOW);
+});
+
+test("an explicit probe refreshes instead of replaying a saved list", async () => {
+  const persisted = new Map<string, CachedCapability>();
+  let probes = 0;
+  const service = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    probe: async () => {
+      probes += 1;
+      return { ok: true, models: [{ modelId: probes === 1 ? "gpt-old" : "gpt-new" }], efforts: [] };
+    },
+  }), store(persisted));
+  await service.get({ agent: "codex", workspace: "backend", probe: true });
+  const refreshed = await service.get({ agent: "codex", workspace: "backend", probe: true });
+  expect(probes).toBe(2);
+  expect(refreshed.status).toBe("ready");
+  if (refreshed.status !== "ready") return;
+  expect(refreshed.models.map((model) => model.modelId)).toEqual(["gpt-new"]);
+});
+
+test("a failed refresh keeps the saved list and reports the live failure", async () => {
+  const persisted = new Map<string, CachedCapability>();
+  let probes = 0;
+  const service = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    probe: async () => {
+      probes += 1;
+      return probes === 1
+        ? { ok: true, models: [{ modelId: "gpt-saved" }], efforts: [] }
+        : { ok: false, failure: "unauthenticated", message: "the adapter requires authentication before it can list models" };
+    },
+  }), store(persisted));
+  await service.get({ agent: "codex", workspace: "backend", probe: true });
+  const denied = await service.get({ agent: "codex", workspace: "backend", probe: true });
+  expect(probes).toBe(2);
+  // The list survives, but the state must not claim it was just verified.
+  expect(denied.status).toBe("ready");
+  if (denied.status !== "ready") return;
+  expect(denied.source).toBe("cache");
+  expect(denied.models.map((model) => model.modelId)).toEqual(["gpt-saved"]);
+  expect(denied.reason?.code).toBe("unauthenticated");
+});
+
+test("a failed first fetch with no saved list stays needs-setup", async () => {
+  const service = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    probe: async () => ({ ok: false, failure: "unauthenticated", message: "login required" }),
+  }), store(new Map()));
+  const state = await service.get({ agent: "codex", workspace: "backend", probe: true });
+  expect(state.status).toBe("needs-setup");
+  if (state.status === "needs-setup") expect(state.reason.code).toBe("unauthenticated");
+});
+
+test("a persisted list is not reused for a different adapter pin", async () => {
+  const persisted = new Map<string, CachedCapability>();
+  const first = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    resolve: () => ({ cwd: "/repo", driver: "codex", launch: { agentCommand: "npx codex@1" }, suggestions: [] }),
+    probe: async () => ({ ok: true, models: [{ modelId: "gpt-old-pin" }], efforts: [] }),
+  }), store(persisted));
+  await first.get({ agent: "codex", workspace: "backend", probe: true });
+
+  const second = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    resolve: () => ({ cwd: "/repo", driver: "codex", launch: { agentCommand: "npx codex@2" }, suggestions: [] }),
+    probe: async () => ({ ok: true, models: [{ modelId: "gpt-new-pin" }], efforts: [] }),
+  }), store(persisted));
+  const state = await second.get({ agent: "codex", workspace: "backend", probe: true });
+  expect(state.status).toBe("ready");
+  if (state.status !== "ready") return;
+  expect(state.models.map((model) => model.modelId)).toEqual(["gpt-new-pin"]);
 });
 
 test("an accepted bot profile snapshot keeps the model from accept time", () => {

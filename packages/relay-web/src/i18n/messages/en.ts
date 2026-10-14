@@ -990,5 +990,6 @@ export default {
     effectCustom: "Custom id {model} is not an adapter-advertised model.",
     effectFellBack: "Selected {model} did not take effect. In effect: {applied}.",
     appliesLater: "A bot model change applies to runs accepted after you save. An accepted run keeps its profile.",
+    savedListUnverified: "Saved list. The last refresh failed: {message}",
   },
 } as const;

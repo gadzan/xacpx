@@ -66,9 +66,26 @@ const effectText = computed(() => {
     ? t("capability.effectSavedApplied", { model: current.modelId, applied: current.appliedModelId })
     : t("capability.effectSaved", { model: current.modelId });
 });
-const reason = computed(() => settled.value && settled.value.status !== "ready" ? settled.value.reason.message : "");
-const recovery = computed(() => settled.value && settled.value.status !== "ready" ? settled.value.recovery : "");
-const canFetch = computed(() => settled.value?.status === "needs-setup" && settled.value.reason.code === "discovery-available");
+const reason = computed(() => {
+  const state = settled.value;
+  if (!state) return "";
+  if (state.status === "error") return state.reason.message;
+  if (state.status === "ready") {
+    return state.reason ? t("capability.savedListUnverified", { message: state.reason.message }) : "";
+  }
+  return state.reason.message;
+});
+const recovery = computed(() => {
+  const state = settled.value;
+  if (!state || state.status === "error") return "";
+  return state.status === "ready" ? "" : state.recovery;
+});
+const canFetch = computed(() => {
+  const state = settled.value;
+  if (!state) return false;
+  if (state.status === "needs-setup") return state.reason.code === "discovery-available";
+  return state.status === "ready" && state.reason !== undefined;
+});
 
 function pickModel(modelId: string): void {
   emit("update:model", modelId);

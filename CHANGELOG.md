@@ -5,6 +5,10 @@
 
 - **Configless automatic collaboration switch in the instance dialog (PR #402 follow-up):** the per-instance control on the session tab is now the only control surface for group automatic collaboration, and it needs no operator-supplied router. Turning the switch on with no `command` configured writes this repository's own bundled router (`dist/conversations/default-router-main.js`) and probes it, so a fresh install enables the feature on its own — the same `--capabilities` proof and the same `production-router.ts` bounds as any operator-supplied router, never a second routing path. The bundled router is deterministic: it fans the Run's request out to every enabled member once, in parallel, then completes, and never synthesizes. The dialog drops the command and auth-environment fields entirely and never shows a config path: a status short of `ready` reads as one fixed sentence. `.get` and `.set` keep their exact wire shapes, so released dashboards and the Group composer are unaffected; an older daemon answers `unknown-type` and the dialog falls back to `.get` with a read-only panel and an upgrade notice.
 
+### Fixed
+
+- **Adapter model lists survive a daemon restart, and an explicit fetch always re-probes:** a verified list is persisted in the regenerable `capability_lists` section of `state.json`, keyed by agent + workspace cwd + launch identity (adapter pin / `command` / `argv`) + auth material, so reopening a Bot editor no longer shows "no saved model list for this agent, workspace, and adapter" after a restart. `probe: true` no longer short-circuits on the saved list or a sibling session — clicking "Fetch model list" runs a real adapter probe. When that refresh fails, the saved list is still returned with an optional `reason` on the ready state marking it as not freshly verified, and Relay Web shows it plus a retry instead of an empty picker. A malformed cache entry is dropped on load, never blocking startup.
+
 ## [0.24.10-beta.0] - 2026-10-13
 
 ### Added
