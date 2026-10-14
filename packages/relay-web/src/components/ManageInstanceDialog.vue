@@ -11,7 +11,7 @@ import AgentsManager from "./AgentsManager.vue";
 const props = defineProps<{ instanceId: string; instanceName: string }>();
 const emit = defineEmits<{ close: [] }>();
 const store = useInstancesStore();
-const { t } = useI18n();
+const { t, te } = useI18n();
 
 const coreVersion = computed(() => store.byId(props.instanceId)?.coreVersion ?? null);
 
@@ -92,6 +92,18 @@ const routerStatus = computed(() => {
   // Every other status (`unsupported`, `failed`) reads as one fixed sentence: the
   // daemon's reason text and config path are implementation detail, not product copy.
   return t("instance.autoCollabFailed");
+});
+
+/** For `unsupported`/`failed`, a localized per-code explanation with an actionable
+ *  hint, plus the daemon's raw message as secondary detail. */
+const routerReason = computed<{ explain: string; detail: string } | null>(() => {
+  const state = panel.value;
+  if (state.phase === "loading") return null;
+  const availability = state.availability;
+  if (availability.status !== "unsupported" && availability.status !== "failed") return null;
+  const { code, message } = availability.reason;
+  const key = `instance.autoCollabReason.${code}`;
+  return { explain: te(key) ? t(key) : t("instance.autoCollabReason.unknown"), detail: message };
 });
 
 const routerHint = computed(() => {
@@ -196,6 +208,10 @@ onMounted(async () => {
                         :class="routerEnabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
                 </button>
                 <p data-test="router-status" class="text-sm text-fg-muted">{{ routerStatus }}</p>
+              </div>
+              <div v-if="routerReason" data-test="router-reason" class="space-y-1 rounded bg-fg/5 px-3 py-2">
+                <p data-test="router-reason-explain" class="text-xs text-fg">{{ routerReason.explain }}</p>
+                <p v-if="routerReason.detail" data-test="router-reason-detail" class="break-words font-mono text-xs text-fg-muted">{{ routerReason.detail }}</p>
               </div>
               <p data-test="router-hint" class="text-xs text-fg-muted">{{ routerHint }}</p>
               <p v-if="routerErrorText" data-test="router-error" class="text-xs text-error">{{ routerErrorText }}</p>
