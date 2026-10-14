@@ -1,6 +1,6 @@
 # Group Agent Communication Entry — Implementation Plan
 
-Status: Implementation planned  
+Status: Implemented and verified  
 Date: 2026-10-14  
 Area: Relay Web / Group Conversations  
 Tracking PR: the feature PR containing this document
@@ -235,13 +235,13 @@ Record exact test counts and any environment limitations in the PR. Do not say a
 
 The feature is ready only when **all** of the following hold:
 
-- [ ] In the Group transcript, every authorized **public** `group_send` handoff visible in loaded history has one small default-collapsed two-avatar entry.
-- [ ] The expanded entry exposes the actual sender, recipient, request and expected output, and a truthful status/result where available.
-- [ ] No result is attributed without exact durable identity evidence. Repeat-to-same-target is tested.
-- [ ] Existing Group history, active Run, message ordering, cancellation, composer, and responsive chat UX have no regressions.
-- [ ] No private Direct / generic `agent_send` traffic is copied into a Group by default.
-- [ ] Both supported locales, keyboard semantics, mobile interaction and regression tests pass.
-- [ ] The PR description reports implemented tasks and actual verification evidence before review/merge.
+- [x] In the Group transcript, every authorized **public** `group_send` handoff visible in loaded history has one small default-collapsed two-avatar entry.
+- [x] The expanded entry exposes the actual sender, recipient, request and expected output, and a truthful status/result where available.
+- [x] No result is attributed without exact durable identity evidence. Repeat-to-same-target is tested.
+- [x] Existing Group history, active Run, message ordering, cancellation, composer, and responsive chat UX have no regressions.
+- [x] No private Direct / generic `agent_send` traffic is copied into a Group by default.
+- [x] Both supported locales, keyboard semantics, mobile interaction and regression tests pass.
+- [x] The PR description reports implemented tasks and actual verification evidence before review/merge.
 
 ## 9. Change discipline / review guardrails
 
@@ -251,8 +251,31 @@ The feature is ready only when **all** of the following hold:
 - Prefer one focused presentation component and a small read-only helper over a generic cross-system "communication framework".
 - Avoid broad refactors, style churn and speculative recovery features.
 - A wrong result association is worse than a clearly labeled unavailable result.
-- This plan defines the implementation sequence; it is not evidence that code is already implemented.
+- The execution record below reports implemented behavior and observed verification. The sections above remain the acceptance contract.
 
 ## 10. Future extension boundary
 
 A broader "Agent communication" view might eventually include point-to-point `agent_send` traffic and Direct peer message history, but **that is a different visibility and authorization contract**. Before implementation, decide whose communication is eligible, where it may be displayed, how the user opts in, whether it is durably retained, who can read it, and how message/response provenance is proven. Keep that decision separate from the first Group UI delivery.
+
+## 11. Implementation and verification record
+
+Tasks 0 through 4 are complete in this PR.
+
+- Task 0 reproduced the baseline in Chromium with two handoffs to the same Bot and only the second assignment's reply. Both old cards incorrectly displayed that reply.
+- Task 1 added `GroupHandoffEntry.vue`, the optional `TranscriptRow.hideLeadingAvatar` presentation control, and mirrored locale keys. The default artwork is two 24px driver icons with 8px overlap and a 44px touch target. Existing UI has no Bot profile-avatar renderer, so the entry uses the existing driver icon or generic Bot fallback.
+- Task 2 replaced the same-Bot heuristic with exact MemberTurn and prompt correlation. `groups.loadHandoffRunDetail()` reads historical Runs without execution-state writes. Its cache retains at most 20 details, coalesces concurrent reads, and discards stale scope or invalidated responses. Explicit re-expansion can retry a failed read. Missing results outside loaded pages remain unavailable.
+- Task 3 added 84 handoff component/store regression tests and desktop/mobile browser scenarios. Pagination verification exposed delayed `content-visibility` height replacement after an initially correct anchor restoration. The transcript now keeps that anchor through viewport paint and corrects once against actual geometry, without allowing an older handler to clear a newer anchor.
+- Task 4 exercised the actual dashboard, inspected desktop/mobile screenshots, completed the checks below, and completed independent read-only Standards and Spec reviews without behavioral findings.
+
+The following commands ran from `packages/relay-web`. Native Node invoked the project binaries because the local supervised script shell attempted an unavailable WSL installation.
+
+| Check | Actual command | Result |
+| --- | --- | --- |
+| Full web unit suite | `node ../../node_modules/vitest/vitest.mjs run` | 161 files, 2,192 tests passed |
+| Focused Group and locale regression suites | `node ../../node_modules/vitest/vitest.mjs run src/__tests__/group-handoff-entry.test.ts src/__tests__/group-handoff-history.test.ts src/__tests__/group-components.test.ts src/__tests__/groups-store.test.ts src/__tests__/i18n-parity.test.ts` | 219 tests passed |
+| Typed production build | `node ../../node_modules/vue-tsc/bin/vue-tsc.js --noEmit && node ../../node_modules/vite/bin/vite.js build` | Passed |
+| Desktop and mobile browser checks | `cmd /c "set CI=&& node ../../node_modules/@playwright/test/cli.js test e2e/group-handoff.spec.ts e2e/bot-group-dialogs.spec.ts e2e/direct-completions.spec.ts --project=chromium-desktop --project=chromium-mobile"` | 16 scenarios passed |
+
+Browser checks cover both locales, collapsed visible text, avatar geometry, accessible names, `aria-expanded`, Enter, Space, Escape, focus restoration, real touch activation, 320px and landscape layouts, safe task rendering, historical result attribution, reload, duplicate WebSocket delivery, history prepend, active Run preservation, and a new WebSocket connection followed by durable history reload. Playwright writes collapsed and expanded screenshots to each handoff scenario's `test-results` directory.
+
+Vite reports large chunks after minification. No native screen-reader application, real acpx, or WeChat smoke run was performed. Accessibility semantics were checked in Chromium. The reviewers inspected fixed implementation snapshots with an inherited reviewer model, not a cross-family model run. No backend, wire schema, storage, authorization, or private-message visibility changes were needed.
