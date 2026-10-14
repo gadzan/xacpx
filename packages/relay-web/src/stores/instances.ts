@@ -6,6 +6,8 @@ import {
   isErrorPayload,
   parseAgentCapabilityState,
   parseConversationRouterState,
+  parseJevSettings,
+  parseJevTestResult,
   parseRouterAvailability,
   ROUTER_CONFIG_PATH,
   type RouterAvailability,
@@ -16,6 +18,9 @@ import {
   type ConversationRouterConfigState,
   type ConversationRouterState,
   type ConversationRouterUpdatePayload,
+  type JevSettingsDto,
+  type JevTestResult,
+  type JevUpdatePayload,
   type NativeSessionDto,
   type PublishedAgentEndpointDto,
   type SessionDto,
@@ -163,6 +168,34 @@ export type RouterPanelModel =
 /** The read-only notice shown for an older daemon. The store carries the i18n
  *  key, not translated copy, so the view renders it in the active locale. */
 const ROUTER_UPGRADE_NOTICE = "instance.autoCollabUpgradeNotice";
+
+/** The write state of one Jev settings form, kept beside the settings it writes. */
+export type JevSaveState =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "failed"; message: string };
+
+/** The outcome of the last connection test for one instance's Jev settings. */
+export type JevTestState =
+  | { kind: "idle" }
+  | { kind: "testing" }
+  | { kind: "ok"; latencyMs: number }
+  | { kind: "failed"; code: string; message: string };
+
+/**
+ * The instance dialog's Jev settings panel: one discriminated model per
+ * instance. `loading` has nothing read yet; `read-only` is an older daemon
+ * (unknown-type) or a failed read, so no form is rendered; `editable` pairs the
+ * daemon's masked settings view with the form's write and test state. The key
+ * itself never reaches the web: the form seeds from `keyMasked`.
+ */
+export type JevPanelModel =
+  | { phase: "loading" }
+  | { phase: "read-only"; notice: string }
+  | { phase: "editable"; settings: JevSettingsDto; save: JevSaveState; test: JevTestState };
+
+/** The i18n key the dialog renders when the daemon does not advertise the Jev RPCs. */
+const JEV_UPGRADE_NOTICE = "instance.jevUpgradeNotice";
 
 export const useInstancesStore = defineStore("instances", () => {
   const agentDirectory = ref<WebAgentDirectoryEndpointDto[]>([]);
@@ -910,6 +943,91 @@ export const useInstancesStore = defineStore("instances", () => {
     return state.availability;
   }
 
+  // --- Jev routing settings (one panel per instance, same shape as the router panel) ---
+
+  const jevPanelById = ref<Record<string, JevPanelModel>>({});
+
+  function jevPanelFor(instanceId: string): JevPanelModel {
+    return jevPanelById.value[instanceId] ?? { phase: "loading" };
+  }
+
+  function storeJevPanel(instanceId: string, panel: JevPanelModel): void {
+    jevPanelById.value = { ...jevPanelById.value, [instanceId]: panel };
+  }
+
+  /** Land a parsed settings view as an editable panel. */
+  function applyJevSettings(instanceId: string, settings: JevSettingsDto): void {
+    const current = jevPanelById.value[instanceId];
+    // A re-read never clears an in-flight test result or a failed save the user
+    // still needs to see; only the settings themselves are replaced.
+    storeJevPanel(instanceId, current?.phase === "editable"
+      ? { ...current, settings }
+      : { phase: "editable", settings, save: { kind: "idle" }, test: { kind: "idle" } });
+  }
+
+  /**
+   * Read the instance's Jev settings. An older daemon answers `unknown-type`;
+   * the section then renders read-only with the upgrade notice instead of a
+   * form that cannot save. Any other failure degrades the same way, so a failed
+   * read never pretends a key is configured.
+   */
+  async function loadJevSettings(instanceId: string): Promise<void> {
+    if (!jevPanelById.value[instanceId]) storeJevPanel(instanceId, { phase: "loading" });
+    try {
+      const raw = unwrap(await api.rpc(instanceId, "control.jev.get", {}));
+      applyJevSettings(instanceId, parseJevSettings(raw));
+    } catch (error) {
+      const notice = error instanceof Error && error.message.includes("newer connector")
+        ? JEV_UPGRADE_NOTICE
+        : "";
+      storeJevPanel(instanceId, { phase: "read-only", notice });
+    }
+  }
+
+  /** Write a patch and store the masked view the daemon answers with. A rejected
+   *  RPC propagates; the caller marks the failure so the draft survives. */
+  async function saveJevSettings(instanceId: string, patch: JevUpdatePayload): Promise<JevSettingsDto> {
+    const raw = unwrap(await api.rpc(instanceId, "control.jev.update", patch));
+    const settings = parseJevSettings(raw);
+    applyJevSettings(instanceId, settings);
+    return settings;
+  }
+
+  /** Mark a write in flight or failed without touching the stored settings. */
+  function setJevSaveState(instanceId: string, save: JevSaveState): void {
+    const current = jevPanelById.value[instanceId];
+    if (current?.phase !== "editable") return;
+    storeJevPanel(instanceId, { ...current, save });
+  }
+
+  /** Mark the connection test in flight or settled. */
+  function setJevTestState(instanceId: string, test: JevTestState): void {
+    const current = jevPanelById.value[instanceId];
+    if (current?.phase !== "editable") return;
+    storeJevPanel(instanceId, { ...current, test });
+  }
+
+  /**
+   * Live connection test. `apiKey` tests a key the user typed but has not saved
+   * yet; omitted uses the stored key. The answer is the daemon's classified
+   * result — the web maps codes to copy, never to a guessed cause.
+   */
+  async function testJevConnection(instanceId: string, apiKey?: string): Promise<JevTestResult> {
+    setJevTestState(instanceId, { kind: "testing" });
+    try {
+      const raw = unwrap(await api.rpc(instanceId, "control.jev.test", { ...(apiKey ? { apiKey } : {}) }));
+      const result = parseJevTestResult(raw);
+      setJevTestState(instanceId, result.ok
+        ? { kind: "ok", latencyMs: result.latencyMs }
+        : { kind: "failed", code: result.code, message: result.message });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setJevTestState(instanceId, { kind: "failed", code: "network", message });
+      throw error;
+    }
+  }
+
   async function getAgentCapabilities(
     instanceId: string,
     input: { agent: string; workspace: string; botId?: string; probe?: boolean },
@@ -1120,9 +1238,11 @@ export const useInstancesStore = defineStore("instances", () => {
       // Automatic collaboration was switched on another client/surface — re-read so the
       // composer's automatic target and the instance dialog's panel converge. The panel
       // is only re-read once a dialog has asked for it, so a client with no dialog
-      // open still pays the single `.get`.
+      // open still pays the single `.get`. A Jev settings write re-resolves the
+      // router and emits this same event, so the Jev panel re-reads here too.
       void loadRouterAvailability(event.instanceId).catch(() => {});
       if (routerPanelById.value[event.instanceId]) void loadRouterPanel(event.instanceId).catch(() => {});
+      if (jevPanelById.value[event.instanceId]) void loadJevSettings(event.instanceId).catch(() => {});
     } else if (event.kind === "agent-directory") {
       agentDirectory.value = event.endpoints;
     }
@@ -1149,5 +1269,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });
