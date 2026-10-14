@@ -367,13 +367,13 @@ async function handleLoadOlder(): Promise<void> {
         :data-run-id="run.id"
         class="rounded-xl border border-border bg-surface/60 p-3 shadow-sm"
       >
-        <div class="flex items-center justify-between gap-2">
-          <div class="flex items-center gap-2 text-xs font-semibold text-fg">
-            <Users :size="13" class="text-accent" />
-            <span>{{ $t("group.run.title") }}</span>
-            <span v-if="runningNames" data-test="group-running-members" class="font-normal text-fg-muted">{{ $t("group.run.runningMembers", { names: runningNames }) }}</span>
+        <div class="flex items-start justify-between gap-2">
+          <div data-test="group-run-header" class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-semibold text-fg">
+            <Users :size="13" class="shrink-0 text-accent" />
+            <span data-test="group-run-title" class="shrink-0 whitespace-nowrap">{{ $t("group.run.title") }}</span>
+            <span v-if="runningNames" data-test="group-running-members" class="min-w-0 break-words font-normal text-fg-muted">{{ $t("group.run.runningMembers", { names: runningNames }) }}</span>
             <span
-              class="rounded-full px-2 py-0.5 text-[10.5px] font-medium"
+              class="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-medium"
               :class="{
                 'bg-run/15 text-run': run.state === 'running',
                 'bg-warning/15 text-warning': run.state === 'queued' || run.state === 'waiting-human',
@@ -388,7 +388,7 @@ async function handleLoadOlder(): Promise<void> {
             v-if="run.state === 'queued' || run.state === 'running' || run.state === 'waiting-human'"
             type="button"
             data-test="group-stop-run-button"
-            class="flex items-center gap-1 rounded border border-danger/40 bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger transition-colors hover:bg-danger/20"
+            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-danger/40 bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger transition-colors hover:bg-danger/20"
             @click="handleCancel"
           >
             <CircleStop :size="11" />
@@ -425,7 +425,7 @@ async function handleLoadOlder(): Promise<void> {
             data-test="group-member-row"
             :data-bot-id="turn.botId"
             :data-state="turn.state"
-            class="rounded-lg border border-border/60 bg-bg/60 px-2.5 py-1.5"
+            class="min-w-0 rounded-lg border border-border/60 bg-bg/60 px-2.5 py-1.5"
           >
             <button
               type="button"
@@ -456,7 +456,7 @@ async function handleLoadOlder(): Promise<void> {
               </span>
               <ChevronDown :size="12" class="shrink-0 text-fg-muted transition-transform" :class="isExpanded(turn.id) ? 'rotate-180' : ''" />
             </button>
-            <div v-if="turn.assignmentId || turn.task || turn.dependsOn?.length || turn.blockedReason" class="mt-1 space-y-0.5 pl-8 text-[11px] text-fg-muted">
+            <div v-if="turn.assignmentId || turn.task || turn.dependsOn?.length || turn.blockedReason" data-test="group-member-details" class="mt-1 min-w-0 space-y-0.5 break-words pl-8 text-[11px] text-fg-muted [overflow-wrap:anywhere]">
               <p v-if="turn.assignmentId" data-test="group-member-assignment">{{ $t("group.run.assignment") }} {{ turn.assignmentId }}</p>
               <p v-if="turn.task" data-test="group-member-task">{{ turn.task }}</p>
               <p v-if="turn.dependsOn?.length" data-test="group-member-depends">{{ $t("group.run.dependsOn") }} {{ turn.dependsOn.join(", ") }}</p>
