@@ -857,6 +857,39 @@ async function dispatchControlRequest(
       }
       return await control.updateConversationRouter(input);
     }
+    case MSG.jevGet: {
+      const input = parseControlPayload(MSG.jevGet, payload ?? {});
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.jevGet}: malformed payload`,
+        );
+      }
+      if (typeof control.getJevSettings !== "function") return errorPayload("unsupported", "Jev settings require a newer daemon");
+      return await control.getJevSettings();
+    }
+    case MSG.jevUpdate: {
+      const input = parseControlPayload(MSG.jevUpdate, payload);
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.jevUpdate}: malformed payload`,
+        );
+      }
+      if (typeof control.updateJevSettings !== "function") return errorPayload("unsupported", "Jev settings require a newer daemon");
+      return await control.updateJevSettings(input);
+    }
+    case MSG.jevTest: {
+      const input = parseControlPayload(MSG.jevTest, payload ?? {});
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.jevTest}: malformed payload`,
+        );
+      }
+      if (typeof control.testJevConnection !== "function") return errorPayload("unsupported", "Jev settings require a newer daemon");
+      return await control.testJevConnection(input);
+    }
     case MSG.agentsCapabilitiesGet: {
       const input = parseControlPayload(MSG.agentsCapabilitiesGet, payload);
       if (!input) {

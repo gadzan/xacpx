@@ -123,8 +123,10 @@ import {
   resolveConversationStorePath,
   type ConversationRuntime,
 } from "./conversations/conversation-composition";
-import { resolveProductionRouter } from "./conversations/production-router";
+import { resolveProductionRouter, type JevRouterHandoff } from "./conversations/production-router";
 import { resolveDefaultRouterEntry } from "./conversations/default-router";
+import { JevSettingsStore, resolveJevSettingsPath, type JevSettingsFile } from "./conversations/jev-settings-store";
+import { askJevChoice, DEFAULT_JEV_ENDPOINT, DEFAULT_JEV_MODEL } from "./conversations/jev-client";
 import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
@@ -435,6 +437,9 @@ export async function buildApp(
   bootstrapBuiltinChannels();
   await ensureConfigExists(paths.configPath);
   const configStore = new ConfigStore(paths.configPath);
+  // Jev secrets live beside the config, never inside it: config.json is logged
+  // in doctor output and copied into bug reports, the key must not be.
+  const jevSettings = new JevSettingsStore(resolveJevSettingsPath(paths.configPath));
   const config = await loadConfig(paths.configPath, {
     defaultLoggingLevel: deps.defaultLoggingLevel,
   });
@@ -1983,6 +1988,24 @@ export async function buildApp(
   // bound kernel), but the router switch applies to the live runtime. This ref
   // is the seam: set once the runtime exists, read by the switch.
   let conversationRuntimeRef: ConversationRuntime | undefined;
+  // The Jev handoff the router spawn receives. A read failure (corrupt secrets
+  // file) resolves to "no Jev", which surfaces as `jev-not-configured` rather
+  // than a crash: the operator can then fix or rewrite the file.
+  const readJevHandoff = async (): Promise<JevRouterHandoff | undefined> => {
+    let stored: JevSettingsFile;
+    try {
+      stored = await jevSettings.read();
+    } catch {
+      return undefined;
+    }
+    if (typeof stored.apiKey !== "string" || stored.apiKey.trim().length === 0) return undefined;
+    return {
+      endpoint: stored.endpoint ?? DEFAULT_JEV_ENDPOINT,
+      apiKey: stored.apiKey,
+      ...(stored.proxyUrl !== undefined ? { proxyUrl: stored.proxyUrl } : {}),
+      model: stored.model ?? DEFAULT_JEV_MODEL,
+    };
+  };
   // The switch must enable automatic collaboration on a fresh install with no
   // operator-supplied command, so the daemon itself writes the bundled default
   // router entry when a patch would otherwise leave the feature on with nothing
@@ -2170,6 +2193,7 @@ export async function buildApp(
           const resolution = await resolveProductionRouter({
             config: updated,
             env: process.env,
+            jev: await readJevHandoff(),
           });
           // The runtime is constructed after ControlService; a patch that lands
           // before it exists is persisted and reflected at startup instead.
@@ -2209,6 +2233,7 @@ export async function buildApp(
           const resolution = await resolveProductionRouter({
             config: updated,
             env: process.env,
+            jev: await readJevHandoff(),
           });
           // The runtime is constructed after ControlService; a flip that lands
           // before it exists is persisted and reflected at startup instead.
@@ -2224,6 +2249,56 @@ export async function buildApp(
           controlEvents.emit({ type: "conversation-router-changed" });
           return resolution.availability;
         });
+      },
+    },
+    jev: {
+      get: () => jevSettings.view(),
+      update: async (patch) => {
+        const view = await configMutationMutex.run(async () => {
+          const next = await jevSettings.update(patch);
+          // A new key (or a cleared one) changes whether automatic
+          // collaboration can be `ready`, so re-resolve exactly like a router
+          // patch and let the web converge on the new state.
+          const resolution = await resolveProductionRouter({
+            config,
+            env: process.env,
+            jev: await readJevHandoff(),
+          });
+          conversationRuntimeRef?.applyRouterResolution(resolution);
+          void logger.info("conversations.router", "jev settings updated", {
+            status: resolution.availability.status,
+            configPath: resolution.availability.configPath,
+            ...(resolution.availability.status === "ready"
+              ? {}
+              : { code: resolution.availability.reason.code }),
+            endpoint: next.endpoint,
+            proxyUrl: next.proxyUrl ?? null,
+            keyConfigured: next.keyConfigured,
+          });
+          controlEvents.emit({ type: "conversation-router-changed" });
+          return next;
+        });
+        return view;
+      },
+      test: async (payload) => {
+        const stored = await jevSettings.read();
+        const apiKey = payload.apiKey ?? stored.apiKey;
+        if (typeof apiKey !== "string" || apiKey.trim().length === 0) {
+          return { ok: false, code: "no-key", message: "No Jev API key is configured for this instance." };
+        }
+        const endpoint = stored.endpoint ?? DEFAULT_JEV_ENDPOINT;
+        const model = stored.model ?? DEFAULT_JEV_MODEL;
+        const answer = await askJevChoice({
+          endpoint,
+          apiKey,
+          ...(stored.proxyUrl !== undefined ? { proxyUrl: stored.proxyUrl } : {}),
+          model,
+          message: "ping",
+          question: "Reply with the first choice.",
+          choices: [{ key: "ping", description: "Connection test" }],
+        });
+        if (answer.ok) return { ok: true, latencyMs: answer.latencyMs };
+        return { ok: false, code: answer.code, message: answer.message };
       },
     },
     uploadStore,
@@ -2299,7 +2374,11 @@ export async function buildApp(
     },
   });
   controlRef = control;
-  const routerResolution = await resolveProductionRouter({ config, env: process.env });
+  const routerResolution = await resolveProductionRouter({
+    config,
+    env: process.env,
+    jev: await readJevHandoff(),
+  });
   void logger.info("conversations.router", "conversation router availability", {
     status: routerResolution.availability.status,
     configPath: routerResolution.availability.configPath,
