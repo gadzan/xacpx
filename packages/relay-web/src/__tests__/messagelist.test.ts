@@ -1473,4 +1473,54 @@ describe("working quip bubble", () => {
     expect(wrapper.find('[data-avatar-key="live"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="hud-quip"]').exists()).toBe(false);
   });
+
+  it("flips the bubble beside the icon when the sentinel reports no room above", async () => {
+    const observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(cb: (entries: Array<{ isIntersecting: boolean }>) => void) { observers.push(cb); }
+      observe(): void {}
+      disconnect(): void {}
+    });
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: live([]) } });
+    const liveAvatar = wrapper.find('[data-avatar-key="live"]');
+    expect(observers).toHaveLength(1);
+    observers[0]!([{ isIntersecting: false }]); // sentinel clipped: icon pinned at the top
+    await wrapper.vm.$nextTick();
+    expect(liveAvatar.classes()).toContain("quip-beside");
+    expect(liveAvatar.find('[data-test="hud-quip"]').exists()).toBe(true);
+    observers[0]!([{ isIntersecting: true }]); // room above the head again
+    await wrapper.vm.$nextTick();
+    expect(liveAvatar.classes()).not.toContain("quip-beside");
+    wrapper.unmount();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps exactly one bubble while older rows are still revealing", async () => {
+    const rafQueue: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: { parts: [], status: "working", startedAt: 0, slotAfterIndex: 0 } },
+    });
+    await wrapper.setProps({
+      messages: Array.from({ length: 40 }, (_, i) => msg({ direction: "in", text: `m${i}`, id: i + 1 })),
+    });
+    await wrapper.vm.$nextTick();
+    // Live slot above the visible window: the bubble rides the live row at the top of
+    // the window, not the one after its anchor row.
+    expect(wrapper.findAll('[data-test="hud-quip"]')).toHaveLength(1);
+    expect(wrapper.find('[data-avatar-key="live"] [data-test="hud-quip"]').exists()).toBe(true);
+    // Drain the reveal: the live row moves after its anchor row — still one bubble.
+    while (rafQueue.length) {
+      for (const cb of rafQueue.splice(0)) cb(0);
+      await wrapper.vm.$nextTick();
+    }
+    expect(wrapper.findAll('[data-test="hud-quip"]')).toHaveLength(1);
+    expect(wrapper.find('[data-avatar-key="live"] [data-test="hud-quip"]').exists()).toBe(true);
+    wrapper.unmount();
+    vi.unstubAllGlobals();
+  });
 });
