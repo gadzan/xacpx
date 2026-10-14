@@ -38,9 +38,22 @@ export interface ProductionRouterResolution {
   router?: ConversationRouter;
 }
 
+/** The instance's Jev connection settings, passed to the bundled router's
+ *  `--decide` process through the environment. Absent when the instance has
+ *  no Jev configuration. */
+export interface JevRouterHandoff {
+  endpoint: string;
+  apiKey: string;
+  proxyUrl?: string;
+  model: string;
+}
+
 export interface ResolveProductionRouterInput {
   config: Pick<AppConfig, "conversations">;
   env: NodeJS.ProcessEnv;
+  /** Per-instance Jev settings. Automatic collaboration is only `ready` with a
+   *  configured key; otherwise it resolves to `failed` / `jev-not-configured`. */
+  jev?: JevRouterHandoff;
   probeTimeoutMs?: number;
 }
 
@@ -65,6 +78,13 @@ export function unprovenRouterAvailability(): RouterAvailability {
 
 function failedAvailability(code: RouterFailedCode, message: string): RouterAvailability {
   return { status: "failed", configPath: ROUTER_CONFIG_PATH, reason: { code, message } };
+}
+
+function jevNotConfiguredAvailability(): RouterAvailability {
+  return failedAvailability(
+    "jev-not-configured",
+    "Automatic collaboration needs a Jev API key. Configure it in the instance's automatic collaboration settings.",
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -204,14 +224,28 @@ function runCommand(input: {
   });
 }
 
-function routerFor(command: string, env: NodeJS.ProcessEnv, restriction: RouterCapabilityRestriction): ConversationRouter {
+function routerFor(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  restriction: RouterCapabilityRestriction,
+  jev: JevRouterHandoff,
+): ConversationRouter {
+  // The Jev settings reach the decision process through the environment, never
+  // argv: argv is world-readable through the process table on this machine.
+  const jevEnv: NodeJS.ProcessEnv = {
+    ...env,
+    XACPX_JEV_ENDPOINT: jev.endpoint,
+    XACPX_JEV_API_KEY: jev.apiKey,
+    XACPX_JEV_PROXY: jev.proxyUrl ?? "",
+    XACPX_JEV_MODEL: jev.model,
+  };
   return {
     capabilityRestriction: restriction,
     async decide(input: RoutingInput, options?: { signal: AbortSignal }) {
       const result = await runCommand({
         command,
         args: ["--decide"],
-        env,
+        env: jevEnv,
         stdin: JSON.stringify(input),
         signal: options?.signal,
         maxStdout: DECIDE_STDOUT_LIMIT,
@@ -234,7 +268,15 @@ async function resolveEnabled(
   router: ConversationRouterConfig,
   env: NodeJS.ProcessEnv,
   probeTimeoutMs: number,
+  jev: JevRouterHandoff | undefined,
 ): Promise<ProductionRouterResolution> {
+  // The Jev key is the routing brain of the bundled router: without one there
+  // is nothing to decide with, so the switch cannot reach `ready`. Checked
+  // before the probe so an unconfigured instance fails without spawning a
+  // process.
+  if (!jev || typeof jev.apiKey !== "string" || jev.apiKey.trim().length === 0) {
+    return { availability: jevNotConfiguredAvailability() };
+  }
   if (!router.command) {
     return { availability: failedAvailability("command-missing", "conversations.router.command is missing.") };
   }
@@ -280,7 +322,7 @@ async function resolveEnabled(
   if (report.kind === "unproven") return { availability: unprovenRouterAvailability() };
   return {
     availability: { status: "ready", configPath: ROUTER_CONFIG_PATH },
-    router: routerFor(router.command, env, report.restriction),
+    router: routerFor(router.command, env, report.restriction, jev),
   };
 }
 
@@ -291,7 +333,7 @@ export async function resolveProductionRouter(input: ResolveProductionRouterInpu
     return { availability: disabledRouterAvailability() };
   }
   try {
-    return await resolveEnabled(router, input.env, input.probeTimeoutMs ?? PROBE_TIMEOUT_MS);
+    return await resolveEnabled(router, input.env, input.probeTimeoutMs ?? PROBE_TIMEOUT_MS, input.jev);
   } catch {
     return { availability: failedAvailability("probe-failed", "The router check failed before initialization.") };
   }

@@ -400,6 +400,10 @@ export class ConversationRouterEngine {
       topicId: run.topicId,
       request: request.content,
       requestMessageId: request.id,
+      // The Group's configured lead: the default 负责人 dispatch target, so a
+      // policy that cannot decide on its own falls back to the Group's own
+      // choice instead of an arbitrary member.
+      ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
       publicTranscript: transcript,
       memberMetadata,
       ...(conversation.botIds.length > memberMetadata.length ? { omittedMemberCount: conversation.botIds.length - memberMetadata.length } : {}),
@@ -492,6 +496,7 @@ export class ConversationRouterEngine {
       type: "dispatch",
       mode: decision.mode,
       assignments,
+      ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
     };
   }
 

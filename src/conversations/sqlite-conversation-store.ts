@@ -136,6 +136,7 @@ interface RunRow {
   completion_reason: string | null;
   waiting_question?: string | null;
   routing_state?: string | null;
+  routing_reason?: string | null;
   routing_generation?: number;
   generation: number;
   active_batch: number | null;
@@ -536,6 +537,12 @@ function mapRun(row: RunRow): ConversationRun {
     ...(mode === "automatic" && optionalString(row.routing_state)
       ? { routingState: row.routing_state as ConversationRoutingState }
       : {}),
+    // The latest routing decision's human-readable rationale. Automatic Runs
+    // only: explicit Runs never route, so the field stays absent rather than
+    // carrying a stale value from an earlier mode.
+    ...(mode === "automatic" && optionalString(row.routing_reason)
+      ? { routingReason: row.routing_reason as string }
+      : {}),
     generation: Number(row.generation),
     ...(mode === "automatic" ? { routingGeneration: Number(row.routing_generation ?? 0) } : {}),
     ...(row.active_batch !== null && row.active_batch !== undefined
@@ -744,6 +751,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureMemberTurnBlockedColumn();
     this.ensureRoutingDecisionTable();
     this.ensureWaitingQuestionColumn();
+    this.ensureRoutingReasonColumn();
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
     this.ensureExternalStopIngress();
@@ -2791,9 +2799,10 @@ export class SqliteConversationStore implements ConversationStore {
         }
         this.sqlite.run(
           `UPDATE runs SET state = 'running', routing_state = 'dispatching', active_batch = ?,
-             failed_bot_ids_json = '[]', unavailable_bot_ids_json = '[]', started_at = COALESCE(started_at, ?)
+             failed_bot_ids_json = '[]', unavailable_bot_ids_json = '[]', started_at = COALESCE(started_at, ?),
+             routing_reason = ?
            WHERE id = ?`,
-          [nextBatch, input.now, run.id],
+          [nextBatch, input.now, input.decision.reason ?? null, run.id],
         );
         this.writeRoutingDecisionRow(run.id, input.decision, input.now);
         return { run: this.requireRun(run.id), memberTurns, dispatches };
@@ -2928,7 +2937,13 @@ export class SqliteConversationStore implements ConversationStore {
         decision.type,
         decision.type === "dispatch" ? decision.mode : null,
         decision.type === "need-human" ? decision.question : null,
-        decision.type === "complete" ? decision.reason : null,
+        // `complete` carries the completion reason; a `dispatch` carries the
+        // decision rationale (who/why/confidence or the fallback cause).
+        decision.type === "complete"
+          ? decision.reason
+          : decision.type === "dispatch"
+            ? (decision.reason ?? null)
+            : null,
         JSON.stringify(decision.type === "dispatch" ? decision.assignments.map((a) => a.id) : []),
         now,
       ],
@@ -3384,6 +3399,26 @@ export class SqliteConversationStore implements ConversationStore {
     if (!names.has("blocked_reason")) {
       this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN blocked_reason TEXT");
     }
+  }
+
+  /**
+   * Durable routing-decision rationale on the Run itself, so the latest
+   * dispatch reason survives reconnect/restart without replaying the audit
+   * table. Backfilled from the newest dispatch routing_decision row on
+   * upgrade (the same seam `waiting_question` uses); repeated on open so an
+   * interrupted migration cannot lose it.
+   */
+  private ensureRoutingReasonColumn(): void {
+    this.sqlite.transaction(() => {
+      const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)");
+      if (!cols.some((col) => col.name === "routing_reason")) {
+        this.sqlite.exec("ALTER TABLE runs ADD COLUMN routing_reason TEXT");
+      }
+      this.sqlite.exec(`UPDATE runs SET routing_reason = (
+        SELECT reason FROM routing_decisions WHERE run_id = runs.id AND decision_type = 'dispatch'
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+      ) WHERE mode = 'automatic' AND routing_reason IS NULL`);
+    });
   }
 
   private ensureWaitingQuestionColumn(): void {

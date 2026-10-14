@@ -238,6 +238,12 @@ export interface ConversationRunDto {
    * durable so the presentation survives reconnect/restart.
    */
   routingState?: ConversationRun["routingState"];
+  /**
+   * Human-readable rationale of the latest routing decision on an automatic
+   * Run (who the request was dispatched to and why, or the fallback cause).
+   * Absent on explicit Runs and older wire shapes.
+   */
+  routingReason?: string;
   waitingQuestion?: string;
   maxMemberTurns: number;
   consumedMemberTurns: number;
@@ -486,6 +492,11 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     // carry one, so the field stays absent rather than lying with a default.
     ...(run.mode === "automatic" && run.routingState !== undefined
       ? { routingState: run.routingState }
+      : {}),
+    // The durable routing rationale: automatic Runs project it verbatim so the
+    // UI can render who was chosen and why; explicit Runs never route.
+    ...(run.mode === "automatic" && run.routingReason !== undefined
+      ? { routingReason: run.routingReason }
       : {}),
     ...(run.mode === "automatic" && run.state === "waiting-human" && run.waitingQuestion !== undefined
       ? { waitingQuestion: run.waitingQuestion } : {}),
