@@ -200,7 +200,9 @@ async function refresh(cursor = 0): Promise<void> {
       {
         conversationId,
         topicId,
-        ...(mention.value ? { query: mention.value.query, cursor } : {}),
+        ...(menuKind.value === "mention" && mention.value
+          ? { query: mention.value.query, cursor }
+          : {}),
       },
     );
     if (ticket !== generation || key !== scope.value) return;
@@ -230,7 +232,9 @@ async function refresh(cursor = 0): Promise<void> {
             },
           }
         : result;
-    if (result.commands.status === "loading") {
+    // Only the slash menu waits on command discovery; mention results are
+    // final, and re-polling would reset pagination loaded via "more".
+    if (menuKind.value === "slash" && result.commands.status === "loading") {
       clearTimeout(retryTimer);
       retryTimer = setTimeout(() => {
         if (ticket === generation && key === scope.value) void refresh();

@@ -1372,6 +1372,10 @@ test("Direct completions share cold materialization, advertise adapter data, and
   await w.control.getConversationCompletions(scope);expect(prepares).toBe(1);
   await w.control.updateBot(a.id,{instructions:"changed"});await w.control.getConversationCompletions(scope);expect(prepares).toBe(2);
   await expect(w.control.getConversationCompletions({...scope,topicId:"foreign"})).rejects.toMatchObject({code:"topic_not_found"});
+  // Mention lookups answer from the registry without awaiting command discovery.
+  const before=prepares;await w.control.updateBot(a.id,{instructions:"changed again"});
+  const m=await w.control.getConversationCompletions({...scope,query:"same"});
+  expect(prepares).toBe(before);expect(m.mentions.status).toBe("ready");expect(m.mentions.items[0]?.displayName).toBe(b.name);
  }finally{release();await w.runtime.shutdown();}
 });
 
@@ -1412,6 +1416,20 @@ test("deleted or changed referenced targets fail closed before provider executio
  }finally{await w.runtime.shutdown();}
 });
 
+test("cold-bot mention lookup answers loading commands without discovery; a later slash request still discovers",async()=>{
+ let prepares=0;
+ const w=await wire({autoKick:false,prepareCommands:async()=>{prepares++;return [{name:"review"}];}});
+ try{
+  const a=await w.control.createBot({name:"A",agent:"codex",workspace:"backend"});
+  const b=await w.control.createBot({name:"Peer",agent:"claude",workspace:"frontend"});
+  const scope={conversationId:createDirectConversationId(a.id),topicId:createDirectTopicId(a.id)};
+  const m=await w.control.getConversationCompletions({...scope,query:""});
+  expect(m.commands.status).toBe("loading");expect(m.mentions.status).toBe("ready");expect(m.mentions.items[0]?.displayName).toBe(b.name);
+  expect(prepares).toBe(0);expect(Object.keys(w.state.sessions)).toHaveLength(0);
+  const s=await w.control.getConversationCompletions(scope);
+  expect(prepares).toBe(1);expect(s.commands.status).toBe("ready");expect(s.commands.items[0]?.name).toBe("review");
+ }finally{await w.runtime.shutdown();}
+});
 test("unsupported cold discovery is explicit and does not mint a runtime",async()=>{
  const w=await wire({autoKick:false});try{
   const a=await w.control.createBot({name:"A",agent:"codex",workspace:"backend"});

@@ -2188,6 +2188,15 @@ export class ControlService {
           ? { ...cached, items: advertisedCommandsFor(identity) }
           : cached,
       );
+    // Mention lookups (query present) are answered from the in-memory endpoint
+    // registry. Never make them wait on slash-command discovery, which may cold
+    // start the Bot agent session and take up to the session-init timeout.
+    if (input.query !== undefined)
+      return result(
+        hasAdvertisedCommands(identity)
+          ? { status: "ready", items: advertisedCommandsFor(identity) }
+          : { status: "loading", items: [] },
+      );
     let pending = this.completionPreparations.get(key);
     if (!pending) {
       pending = runtime
