@@ -16,7 +16,8 @@ export type RouterFailedCode =
   | "probe-failed"
   | "probe-timeout"
   | "malformed-capabilities"
-  | "read-failed";
+  | "read-failed"
+  | "jev-not-configured";
 
 export type RouterAvailability =
   | { status: "ready"; configPath: typeof ROUTER_CONFIG_PATH }
@@ -44,6 +45,7 @@ const FAILED: ReadonlySet<string> = new Set([
   "probe-timeout",
   "malformed-capabilities",
   "read-failed",
+  "jev-not-configured",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
