@@ -282,7 +282,7 @@ function parseReady(value: Record<string, unknown>): AgentCapabilityState {
     }
     models.push({ modelId: entry.modelId, ...(typeof entry.name === "string" ? { name: entry.name } : {}) });
   }
-    try {
+  try {
     return readyCapability(value.source, models, {
       fetchedAt: value.fetchedAt,
       suggestions: stringIds(value.suggestions, "modelId"),

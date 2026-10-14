@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
-import { AgentCapabilityService, type CapabilityAdvertisement, type CapabilityCacheStore, type CachedCapability } from "../agents/capability-discovery";
+import { AgentCapabilityService, type CapabilityAdvertisement, type CapabilityCacheStore } from "../agents/capability-discovery";
 import { advertisedCommandsFor, hasAdvertisedCommands, rememberAdvertisedCommands, markCommandRevision, markCommandAdapterRevision } from "../conversations/advertised-commands";
 import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
 import type {
@@ -100,7 +100,7 @@ import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
 import type { HumanIngressContext } from "../conversations/conversation-types";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
-import { isHiddenProductSessionOwner, type AppState } from "../state/types";
+import { isHiddenProductSessionOwner } from "../state/types";
 import {
   toBotDetail,
   toBotSummary,
