@@ -33,8 +33,8 @@ const second = handoff("handoff_second", 22, "second");
 const result: ConversationMessageDto = { ...scope, id: "reply_second", seq: 23, runId: historical.id, role: "bot", senderBotId: "tester", promptRequestId: "prompt_second", content: "SECOND ASSIGNMENT RESULT" };
 const initial: ConversationMessageDto[] = [first, second, result, ...Array.from({ length: 47 }, (_, i) => ({ ...scope, id: `tail_${i}`, seq: i + 24, role: "human" as const, content: `Ordinary message ${i}` }))];
 
-async function openGroup(page: Page, locale = "en") {
-  const history = [...initial];
+async function openGroup(page: Page, locale = "en", messages = initial) {
+  const history = [...messages];
   await page.addInitScript((value) => localStorage.setItem("relay-locale", value), locale);
   await page.route("**/api/instances/i1/rpc", async (route) => {
     const { type, payload } = route.request().postDataJSON();
@@ -157,3 +157,39 @@ test("prepend, duplicate live delivery and reconnect preserve handoff identity a
   await expect(page.locator('[data-message-id="live_handoff"]')).toHaveCount(1);
   await expect(page.getByTestId("group-run-card")).toHaveAttribute("data-run-id", current.id);
 });
+
+for (const distance of ["nearby", "distant"] as const) {
+  test(`result navigation transfers keyboard focus and Tab stays at the ${distance} reply`, async ({ page }, info) => {
+    const between: ConversationMessageDto[] = distance === "distant"
+      ? Array.from({ length: 80 }, (_, index) => ({
+        ...scope, id: `between_${index}`, seq: index + 23, role: "human",
+        content: Array.from({ length: 1 + (index % 7) * 4 }, (_, line) => `History ${index}, line ${line}`).join("\n"),
+      }))
+      : [];
+    const replySeq = between.length + 23;
+    await openGroup(page, "en", [
+      second, ...between, { ...result, seq: replySeq },
+      ...Array.from({ length: 12 }, (_, index) => ({
+        ...scope, id: `after_${index}`, seq: replySeq + index + 1, role: "human" as const,
+        content: `After the result ${index}`,
+      })),
+    ]);
+    const entry = page.locator('[data-message-id="handoff_second"]');
+    const trigger = entry.getByTestId("group-handoff-toggle");
+    await trigger.scrollIntoViewIfNeeded();
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    const jump = entry.getByTestId("group-handoff-jump");
+    await expect(jump).toBeVisible();
+    await jump.focus();
+    await page.keyboard.press("Enter");
+    const target = page.locator('[data-message-id="reply_second"]');
+    await expect(target).toBeInViewport({ ratio: 1 });
+    const focusedAfterJump = await page.evaluate(() => document.activeElement?.getAttribute("data-message-id"));
+    await page.keyboard.press("Tab");
+    await page.screenshot({ path: info.outputPath(`result-${distance}-keyboard.png`) });
+    expect(focusedAfterJump).toBe("reply_second");
+    await expect(target.getByRole("button", { name: "Copy", exact: true })).toBeFocused();
+    await expect(target).toBeInViewport({ ratio: 1 });
+  });
+}
