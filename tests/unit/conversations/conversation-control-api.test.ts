@@ -1372,6 +1372,10 @@ test("Direct completions share cold materialization, advertise adapter data, and
   await w.control.getConversationCompletions(scope);expect(prepares).toBe(1);
   await w.control.updateBot(a.id,{instructions:"changed"});await w.control.getConversationCompletions(scope);expect(prepares).toBe(2);
   await expect(w.control.getConversationCompletions({...scope,topicId:"foreign"})).rejects.toMatchObject({code:"topic_not_found"});
+  // Mention lookups answer from the registry without awaiting command discovery.
+  const before=prepares;await w.control.updateBot(a.id,{instructions:"changed again"});
+  const m=await w.control.getConversationCompletions({...scope,query:"same"});
+  expect(prepares).toBe(before);expect(m.mentions.status).toBe("ready");expect(m.mentions.items[0]?.displayName).toBe(b.name);
  }finally{release();await w.runtime.shutdown();}
 });
 
