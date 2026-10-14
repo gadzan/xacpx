@@ -3,6 +3,7 @@
     "sessions": {},
     "chat_contexts": {},
     "native_session_lists": {},
+    "capability_lists": {},
     "orchestration": {
       "tasks": {
         "task-1": {
@@ -68,10 +69,10 @@
     },
     "scheduled_tasks": {},
     "bots": {},
+    "bot_removals": {},
     "conversations": {},
     "conversation_topics": {},
-    "bot_runtime_bindings": {},
-    "bot_removals": {}
+    "bot_runtime_bindings": {}
   },
   "calls": [
     {
