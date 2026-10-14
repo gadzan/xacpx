@@ -67,6 +67,11 @@ export interface ReadyCapability extends CapabilitySelection {
   efforts: EffortView;
   fetchedAt: string;
   source: CapabilityFetchSource;
+  /**
+   * Present only when the list is a preserved cache and the live re-verification
+   * failed. The models stay usable; the reason explains why they are stale.
+   */
+  reason?: CapabilityReason;
   /** Set only when this result was read from the target's own runtime. */
   appliedModelId?: string;
 }
@@ -190,6 +195,7 @@ export interface CapabilityDraft {
   selectedEffort?: string;
   appliedModelId?: string;
   efforts?: EffortView;
+  reason?: CapabilityReason;
 }
 
 export function readyCapability(
@@ -210,6 +216,7 @@ export function readyCapability(
     efforts: draft.efforts ?? { status: "unavailable" },
     fetchedAt: draft.fetchedAt,
     source,
+    ...(draft.reason ? { reason: { code: draft.reason.code, message: draft.reason.message } } : {}),
     ...(appliedModelId ? { appliedModelId } : {}),
     ...(selectedModelId ? { selectedModelId } : {}),
     ...(normalizeOptional(draft.selectedEffort) ? { selectedEffort: draft.selectedEffort!.trim() } : {}),
@@ -283,6 +290,7 @@ function parseReady(value: Record<string, unknown>): AgentCapabilityState {
       selectedEffort: optionalString(value.selectedEffort),
       appliedModelId: value.source === "runtime" ? optionalString(value.appliedModelId) : undefined,
       efforts: parseEfforts(value.efforts),
+      reason: parseReason(value.reason),
     });
   } catch {
     return stale("ready capability could not be constructed");

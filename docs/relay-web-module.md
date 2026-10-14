@@ -180,6 +180,8 @@ Bot 的 model / effort 在保存后作用于之后接受的 Run。已有 Session
 
 effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合法 effort 列表。
 
+已验证的模型列表会持久化在 `state.json` 的 `capability_lists` 段（按键：agent + 工作区 cwd + 启动身份 + 鉴权材料），因此关闭再打开 Bot 编辑框、或重启 daemon 后仍会显示列表。点击“获取模型列表”永远重新探测，不会直接回放旧列表；刷新失败时旧列表仍然可用，但 `reason` 明确标注它不是刚验证过的结果，并提供重试入口。adapter pin、command/argv、工作目录或鉴权材料变化会换键，旧列表不会被误用。
+
 ## 会话创建对话框（`NewSessionDialog.vue`）
 
 - 点击实例树 `+ new session` 打开一个弹窗（取代原先简陋的内联三输入框）。打开时经

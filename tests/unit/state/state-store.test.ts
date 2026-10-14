@@ -47,6 +47,7 @@ test("loads native session metadata and native session list cache records", asyn
           next_cursor: null,
         },
       },
+      capability_lists: {},
       orchestration: {
         tasks: {},
         workerBindings: {},
@@ -333,6 +334,7 @@ test("defaults missing native session lists to an empty cache", async () => {
 
   await expect(store.load()).resolves.toMatchObject({
     native_session_lists: {},
+    capability_lists: {},
   });
 
   await rm(dir, { recursive: true, force: true });
@@ -359,6 +361,7 @@ test("defaults a non-object native session list field to an empty cache", async 
 
   await expect(store.load()).resolves.toMatchObject({
     native_session_lists: {},
+    capability_lists: {},
   });
 
   await rm(dir, { recursive: true, force: true });
@@ -409,6 +412,7 @@ test("returns an empty state when the file is missing", async () => {
     sessions: {},
     chat_contexts: {},
     native_session_lists: {},
+    capability_lists: {},
     scheduled_tasks: {},
     bots: {},
     bot_removals: {},
@@ -499,6 +503,7 @@ test("persists sessions and chat context", async () => {
   await expect(store.load()).resolves.toEqual({
     ...state,
     native_session_lists: {},
+    capability_lists: {},
     scheduled_tasks: {},
     bots: {},
     bot_removals: {},
@@ -660,6 +665,7 @@ test("round-trips blocker-loop state records through load", async () => {
   await expect(store.load()).resolves.toEqual({
     ...state,
     native_session_lists: {},
+    capability_lists: {},
     bots: {},
     bot_removals: {},
     conversations: {},
@@ -720,6 +726,7 @@ test("loads orchestration task records with coordinator injection metadata", asy
     sessions: {},
     chat_contexts: {},
     native_session_lists: {},
+    capability_lists: {},
     scheduled_tasks: {},
     bots: {},
     bot_removals: {},
@@ -865,6 +872,7 @@ test("loads orchestration task records with reliability metadata", async () => {
     sessions: {},
     chat_contexts: {},
     native_session_lists: {},
+    capability_lists: {},
     scheduled_tasks: {},
     bots: {},
     bot_removals: {},
@@ -920,6 +928,7 @@ test("treats an empty state file as empty state", async () => {
     sessions: {},
     chat_contexts: {},
     native_session_lists: {},
+    capability_lists: {},
     scheduled_tasks: {},
     bots: {},
     bot_removals: {},
@@ -990,6 +999,7 @@ test("loads older states without orchestration as empty orchestration state", as
     sessions: {},
     chat_contexts: {},
     native_session_lists: {},
+    capability_lists: {},
     scheduled_tasks: {},
     bots: {},
     bot_removals: {},

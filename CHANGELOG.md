@@ -12,6 +12,10 @@
 
 - The permission resolver differential oracle remains pinned to the frozen acpx 0.16.0 fixture (`tests/fixtures/acpx-0.16.0-live-checkpoint.js`); a 0.19.x re-diff is separate work.
 
+### Fixed
+
+- **Adapter model lists survive a daemon restart, and an explicit fetch always re-probes:** a verified list is persisted in the regenerable `capability_lists` section of `state.json`, keyed by agent + workspace cwd + launch identity (adapter pin / `command` / `argv`) + auth material, so reopening a Bot editor no longer shows "no saved model list for this agent, workspace, and adapter" after a restart. `probe: true` no longer short-circuits on the saved list or a sibling session — clicking "Fetch model list" runs a real adapter probe. When that refresh fails, the saved list is still returned with an optional `reason` on the ready state marking it as not freshly verified, and Relay Web shows it plus a retry instead of an empty picker. A malformed cache entry is dropped on load, never blocking startup.
+
 ## [0.24.10-beta.0] - 2026-10-13
 
 ### Added

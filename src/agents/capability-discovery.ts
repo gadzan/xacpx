@@ -53,6 +53,18 @@ export interface CachedCapability {
   fetchedAt: string;
 }
 
+/**
+ * Durable overlay for {@link CachedCapability}. Production wires a StateStore
+ * section so a daemon restart still shows the model list; tests keep the
+ * in-memory default.
+ */
+export interface CapabilityCacheStore extends CacheStore {
+  /** Read the persisted entry before the in-memory map. */
+  load?(key: string): CachedCapability | undefined;
+  /** Persist a freshly verified list; failures must not break discovery. */
+  persist?(key: string, value: CachedCapability): void;
+}
+
 export interface AgentCapabilityQuery {
   agent: string;
   workspace: string;
@@ -81,10 +93,25 @@ interface CacheStore {
  * includes a session alias or a launch command.
  */
 export class AgentCapabilityService {
-  private readonly cache: CacheStore = new Map();
+  private readonly cache: CapabilityCacheStore;
   private readonly inflight = new Map<string, Promise<AgentCapabilityProbeResult>>();
 
-  constructor(private readonly deps: AgentCapabilityDeps) {}
+  constructor(
+    private readonly deps: AgentCapabilityDeps,
+    cache?: CapabilityCacheStore,
+  ) {
+    this.cache = cache ?? new Map();
+  }
+
+  /** Read-through cache: memory first, then the durable overlay. */
+  private cached(key: string): CachedCapability | undefined {
+    const hit = this.cache.get(key);
+    if (hit) return hit;
+    const stored = this.cache.load?.(key);
+    if (!stored) return undefined;
+    this.cache.set(key, stored);
+    return stored;
+  }
 
   async get(query: AgentCapabilityQuery): Promise<AgentCapabilityState> {
     const resolved = this.deps.resolve(query.agent, query.workspace);
@@ -124,7 +151,9 @@ export class AgentCapabilityService {
       selectedEffort,
     };
 
-    if (query.botId) {
+    // An explicit fetch must re-verify, so the runtime, cache, and
+    // sibling-session shortcuts only serve passive reads.
+    if (query.botId && !query.probe) {
       const owned = await this.readOwned(query.agent, query.workspace, query.botId);
       if (owned && owned.models.length > 0) {
         const state = this.ready("runtime", owned, { ...draftBase, appliedModelId: owned.currentModelId });
@@ -133,12 +162,12 @@ export class AgentCapabilityService {
       }
     }
 
-    const cached = this.cache.get(fingerprint);
+    const cached = query.probe ? undefined : this.cached(fingerprint);
     if (cached && cached.models.length > 0) {
       return this.ready("cache", cached, draftBase, cached.fetchedAt);
     }
 
-    const sibling = await this.readOrdinary(query.agent, query.workspace, resolved.launch);
+    const sibling = query.probe ? undefined : await this.readOrdinary(query.agent, query.workspace, resolved.launch);
     if (sibling && sibling.models.length > 0) {
       const state = this.ready("session", sibling, draftBase);
       this.remember(fingerprint, sibling, state.fetchedAt);
@@ -210,6 +239,14 @@ export class AgentCapabilityService {
   ): AgentCapabilityState {
     const fetchedAt = this.deps.now();
     if (!result.ok) {
+      // A failed refresh must not wipe a previously saved list: the user keeps
+      // the models and the picker states the live verification problem. The
+      // cache is reported with its own fetchedAt, never as a fresh probe.
+      const preserved = this.cached(fingerprint);
+      if (preserved && preserved.models.length > 0) {
+        const state = this.ready("cache", preserved, draftBase, preserved.fetchedAt);
+        return this.withProbeFailure(state, result);
+      }
       if (result.failure === "unauthenticated") {
         return needsSetupCapability(
           { code: "unauthenticated", message: result.message },
@@ -242,6 +279,26 @@ export class AgentCapabilityService {
     return state;
   }
 
+  /** Attach the live failure to a still-usable cached list without hiding it. */
+  private withProbeFailure(state: AgentCapabilityState, result: AgentCapabilityProbeResult): AgentCapabilityState {
+    if (state.status !== "ready" || result.ok) return state;
+    return {
+      ...state,
+      reason: {
+        code: result.failure === "unauthenticated"
+          ? "unauthenticated"
+          : result.failure === "unsupported"
+            ? "adapter-cannot-enumerate"
+            : result.failure === "timeout"
+              ? "timeout"
+              : result.failure === "cleanup"
+                ? "cleanup"
+                : "transport",
+        message: result.message,
+      },
+    };
+  }
+
   private ready(
     source: CapabilityFetchSource,
     advertisement: CapabilityAdvertisement | CachedCapability,
@@ -264,12 +321,14 @@ export class AgentCapabilityService {
 
   private remember(key: string, advertisement: CapabilityAdvertisement, fetchedAt: string): void {
     if (advertisement.models.length === 0) return;
-    this.cache.set(key, {
+    const entry: CachedCapability = {
       models: advertisement.models.map((model) => ({ modelId: model.modelId, ...(model.name ? { name: model.name } : {}) })),
       efforts: advertisement.effortKnown ? advertisement.efforts : [],
       effortKnown: advertisement.effortKnown,
       fetchedAt,
-    });
+    };
+    this.cache.set(key, entry);
+    this.cache.persist?.(key, entry);
   }
 
   private async readOwned(agent: string, workspace: string, botId: string): Promise<CapabilityAdvertisement | undefined> {

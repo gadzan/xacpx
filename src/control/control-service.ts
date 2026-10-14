@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
-import { AgentCapabilityService, type CapabilityAdvertisement } from "../agents/capability-discovery";
+import { AgentCapabilityService, type CapabilityAdvertisement, type CapabilityCacheStore } from "../agents/capability-discovery";
 import { advertisedCommandsFor, hasAdvertisedCommands, rememberAdvertisedCommands, markCommandRevision, markCommandAdapterRevision } from "../conversations/advertised-commands";
 import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
 import type {
@@ -328,6 +328,11 @@ export interface ControlServiceDeps {
   // v0.4: forwarded to the TurnQueue — structured peer-interrupt lifecycle
   // events (spec §17). main.ts wires this to the app logger.
   onPeerInterruptEvent?: (event: PeerInterruptEvent) => void;
+  /**
+   * Durable overlay for adapter model lists, keyed by capability fingerprint.
+   * Optional: absent leaves discovery in-memory only (test embeddings).
+   */
+  capabilityCache?: CapabilityCacheStore;
   agentMessaging?: {
     deliverInbound(input: {
       sourceNodeId: string;
@@ -2052,7 +2057,7 @@ export class ControlService {
       listTargets: (agent, workspace) => this.deps.sessions.listCapabilityTargets?.(agent, workspace) ?? [],
       readAdvertisement: (session) => readCapabilityAdvertisement(this.deps.transport, session),
       ...(probe ? { probe } : {}),
-    });
+    }, this.deps.capabilityCache);
     return this.capabilityService;
   }
 

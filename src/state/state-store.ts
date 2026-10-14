@@ -855,6 +855,36 @@ function parseNativeSessionLists(raw: unknown): AppState["native_session_lists"]
   return nativeSessionLists;
 }
 
+function isCapabilityCacheRecord(value: unknown): value is AppState["capability_lists"][string] {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isString(value.fetched_at) &&
+    typeof value.effort_known === "boolean" &&
+    isStringArray(value.efforts) &&
+    Array.isArray(value.models) &&
+    value.models.every((entry): entry is AppState["capability_lists"][string]["models"][number] =>
+      isRecord(entry) && isString(entry.model_id) && isOptionalString(entry.name))
+  );
+}
+
+function parseCapabilityLists(raw: unknown): AppState["capability_lists"] {
+  // Same lenient contract as native_session_lists: a regenerable cache must
+  // never block daemon startup. A bad entry is dropped, not quarantined.
+  if (!isRecord(raw)) {
+    return {};
+  }
+
+  const capabilityLists: AppState["capability_lists"] = {};
+  for (const [fingerprint, value] of Object.entries(raw)) {
+    if (isCapabilityCacheRecord(value) && value.models.length > 0) {
+      capabilityLists[fingerprint] = value;
+    }
+  }
+  return capabilityLists;
+}
+
 function isScheduledTaskStatus(value: unknown): value is ScheduledTaskStatus {
   return (
     value === "pending" ||
@@ -1153,6 +1183,7 @@ export function parseState(
     sessions: parsedSessions,
     chat_contexts: parseChatContexts(sectionRecord(raw.chat_contexts, "chat_contexts", dropped), dropped),
     native_session_lists: parseNativeSessionLists(raw.native_session_lists),
+    capability_lists: parseCapabilityLists(raw.capability_lists),
     orchestration,
     scheduled_tasks: parseScheduledTasks(raw.scheduled_tasks, dropped),
     bots,
