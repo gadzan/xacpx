@@ -816,6 +816,40 @@ describe("Group Components", () => {
   });
 
   describe("GroupTranscript.vue", () => {
+    it("keeps Run card header and member details readable on narrow viewports", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+          assignmentId: "auto-0-bot_be706cc5-1f9e-4e77-9cb2-a842d2d9687e",
+          task: "群组里如果自动协作关了，那个下拉框里会提示 Automatic collaboration is off.",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      // Regression: on phones the header flex row squeezed the title / stop
+      // button to min-content, stacking CJK chars one per line.
+      const header = wrapper.get('[data-test="group-run-header"]').classes();
+      expect(header).toEqual(expect.arrayContaining(["min-w-0", "flex-1", "flex-wrap"]));
+      expect(wrapper.get('[data-test="group-run-title"]').classes()).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+      expect(wrapper.get('[data-test="group-running-members"]').classes()).toEqual(expect.arrayContaining(["min-w-0", "break-words"]));
+      expect(wrapper.get('[data-test="group-stop-run-button"]').classes()).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+      const details = wrapper.get('[data-test="group-member-details"]');
+      expect(details.classes()).toEqual(expect.arrayContaining(["min-w-0", "break-words"]));
+      expect(details.classes()).not.toContain("break-all");
+      expect(details.text()).toContain("auto-0-bot_be706cc5");
+    });
+
     it("renders one Run card row per member with exact statuses", async () => {
       const groups = seedGroupSelection();
       groups.activeRun = {
