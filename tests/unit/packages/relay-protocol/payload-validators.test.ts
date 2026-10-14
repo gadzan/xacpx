@@ -3,6 +3,9 @@ import { expect, test } from "bun:test";
 import {
   MSG,
   parseControlPayload,
+  parseJevSettings,
+  parseJevTestResult,
+  parseRouterAvailability,
   parseTerminalEventPayload,
   CONTROL_PAYLOAD_VALIDATORS,
 } from "../../../../packages/relay-protocol/src/index";
@@ -394,4 +397,111 @@ test("bot removal payloads keep the request id and preview revision", () => {
   expect(parseControlPayload(MSG.botsRemove, { id: "bot_a", requestId: "req-1" })).toBeNull();
   expect(parseControlPayload(MSG.lifecycleOperationsGet, { id: "bot-remove:req-1" })?.id).toBe("bot-remove:req-1");
   expect(parseControlPayload(MSG.lifecycleOperationsGet, { id: "" })).toBeNull();
+});
+
+test("the Jev get payload is an empty read", () => {
+  expect(MSG.jevGet).toBe("control.jev.get");
+  expect(parseControlPayload(MSG.jevGet, {})).toEqual({});
+  for (const bad of [{ apiKey: "sk-x" }, null, "get"]) {
+    expect(parseControlPayload(MSG.jevGet, bad)).toBeNull();
+  }
+});
+
+test("the Jev update payload is a per-key patch with null clearing the key", () => {
+  expect(MSG.jevUpdate).toBe("control.jev.update");
+  expect(parseControlPayload(MSG.jevUpdate, {})).toEqual({});
+  for (const ok of [
+    { endpoint: "https://api.typesafe.ai/v1/systemone" },
+    { endpoint: "" },
+    { proxyUrl: "http://127.0.0.1:8080" },
+    { proxyUrl: null },
+    { apiKey: "sk-1234567890abcd" },
+    { apiKey: null },
+    { endpoint: "https://x/v1", proxyUrl: null, apiKey: "sk-1" },
+  ]) {
+    expect(parseControlPayload(MSG.jevUpdate, ok)).toEqual(ok);
+  }
+  // Scheme and emptiness are the daemon's call; the wire bounds length only.
+  expect(parseControlPayload(MSG.jevUpdate, { endpoint: "   " })).not.toBeNull();
+  expect(parseControlPayload(MSG.jevUpdate, { endpoint: "x".repeat(2048) })).not.toBeNull();
+  expect(parseControlPayload(MSG.jevUpdate, { endpoint: "x".repeat(2049) })).toBeNull();
+  expect(parseControlPayload(MSG.jevUpdate, { proxyUrl: "x".repeat(2048) })).not.toBeNull();
+  expect(parseControlPayload(MSG.jevUpdate, { proxyUrl: "x".repeat(2049) })).toBeNull();
+  expect(parseControlPayload(MSG.jevUpdate, { apiKey: "k".repeat(512) })).not.toBeNull();
+  expect(parseControlPayload(MSG.jevUpdate, { apiKey: "k".repeat(513) })).toBeNull();
+  for (const bad of [
+    { endpoint: 5 },
+    { proxyUrl: 5 },
+    { apiKey: 5 },
+    { apiKey: true },
+    { enabled: true },
+    { endpoint: "https://x", extra: 1 },
+  ]) {
+    expect(parseControlPayload(MSG.jevUpdate, bad)).toBeNull();
+  }
+});
+
+test("the Jev test payload carries an optional unsaved key", () => {
+  expect(MSG.jevTest).toBe("control.jev.test");
+  expect(parseControlPayload(MSG.jevTest, {})).toEqual({});
+  expect(parseControlPayload(MSG.jevTest, { apiKey: "sk-unsaved" })).toEqual({ apiKey: "sk-unsaved" });
+  expect(parseControlPayload(MSG.jevTest, { apiKey: "k".repeat(512) })).not.toBeNull();
+  expect(parseControlPayload(MSG.jevTest, { apiKey: "k".repeat(513) })).toBeNull();
+  for (const bad of [{ apiKey: 5 }, { apiKey: null }, { endpoint: "https://x" }]) {
+    expect(parseControlPayload(MSG.jevTest, bad)).toBeNull();
+  }
+  // Every new RPC is registered: the registry is closed over ControlRpcType.
+  expect(CONTROL_PAYLOAD_VALIDATORS[MSG.jevGet]).toBeDefined();
+  expect(CONTROL_PAYLOAD_VALIDATORS[MSG.jevUpdate]).toBeDefined();
+  expect(CONTROL_PAYLOAD_VALIDATORS[MSG.jevTest]).toBeDefined();
+});
+
+test("the Jev settings and test result parsers accept only their exact shapes", () => {
+  const settings = {
+    endpoint: "https://api.typesafe.ai/v1/systemone",
+    model: "jev-1.13.0",
+    keyConfigured: false,
+    keyMasked: null,
+  };
+  expect(parseJevSettings(settings)).toEqual(settings);
+  expect(parseJevSettings({ ...settings, proxyUrl: "http://127.0.0.1:8080", keyConfigured: true, keyMasked: "sk-…abcd" }))
+    .toMatchObject({ proxyUrl: "http://127.0.0.1:8080", keyConfigured: true, keyMasked: "sk-…abcd" });
+  for (const bad of [
+    null,
+    {},
+    { ...settings, endpoint: "" },
+    { ...settings, model: 5 },
+    { ...settings, keyConfigured: "yes" },
+    { ...settings, keyMasked: 5 },
+    { ...settings, proxyUrl: 5 },
+    { ...settings, extra: 1 },
+  ]) {
+    expect(() => parseJevSettings(bad)).toThrow();
+  }
+  expect(parseJevTestResult({ ok: true, latencyMs: 812 })).toEqual({ ok: true, latencyMs: 812 });
+  for (const code of ["region-blocked", "bad-key", "network", "http-error", "malformed-response", "no-key"]) {
+    expect(parseJevTestResult({ ok: false, code, message: "blocked" })).toEqual({ ok: false, code, message: "blocked" });
+  }
+  for (const bad of [
+    null,
+    {},
+    { ok: true },
+    { ok: true, latencyMs: -1 },
+    { ok: true, latencyMs: 1, extra: 2 },
+    { ok: false, code: "mystery", message: "x" },
+    { ok: false, code: "bad-key" },
+    { ok: false, code: "bad-key", message: "  " },
+    { ok: false, code: "bad-key", message: "x".repeat(501) },
+    { ok: "yes" },
+  ]) {
+    expect(() => parseJevTestResult(bad)).toThrow();
+  }
+});
+
+test("jev-not-configured is a legal router failure code", () => {
+  expect(parseRouterAvailability({
+    status: "failed",
+    configPath: "conversations.router",
+    reason: { code: "jev-not-configured", message: "Automatic collaboration needs a Jev API key." },
+  })).toMatchObject({ status: "failed", reason: { code: "jev-not-configured" } });
 });

@@ -2259,8 +2259,10 @@ export async function buildApp(
           // A new key (or a cleared one) changes whether automatic
           // collaboration can be `ready`, so re-resolve exactly like a router
           // patch and let the web converge on the new state.
+          // Read the persisted config, not the startup snapshot: the router
+          // switch may have been flipped since boot.
           const resolution = await resolveProductionRouter({
-            config,
+            config: await configStore.load(),
             env: process.env,
             jev: await readJevHandoff(),
           });
