@@ -1,3 +1,4 @@
+import { copyBotAvatar, type BotAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 import type { BotProfile, BotProfileSnapshot } from "../bots/bot-types";
 import type {
   ConversationMessage,
@@ -19,7 +20,7 @@ export interface ConversationTurnCorrelation {
 export interface BotSummaryDto {
   id: string;
   name: string;
-  avatar?: string;
+  avatar?: BotAvatarConfig;
   role?: string;
   agent: string;
   workspace: string;
@@ -53,7 +54,7 @@ export interface BotDetailDto extends BotSummaryDto {
 
 export interface BotCreateRequestDto {
   name: string;
-  avatar?: string;
+  avatar?: BotAvatarConfig;
   role?: string;
   instructions?: string;
   agent: string;
@@ -123,7 +124,7 @@ export interface LifecycleOperationDto {
 
 export interface BotUpdateRequestDto {
   name?: string;
-  avatar?: string | null;
+  avatar?: BotAvatarConfig | null;
   role?: string | null;
   instructions?: string | null;
   agent?: string;
@@ -371,7 +372,7 @@ export function toBotSummary(bot: BotProfile, hasRuntime?: boolean): BotSummaryD
     enabled: bot.enabled,
     updatedAt: bot.updatedAt,
     profileRevision: bot.profileRevision ?? 1,
-    ...(bot.avatar ? { avatar: bot.avatar } : {}),
+    ...(bot.avatar ? { avatar: copyBotAvatar(bot.avatar) } : {}),
     ...(bot.role ? { role: bot.role } : {}),
     ...(bot.model ? { model: bot.model } : {}),
     ...(bot.effort ? { effort: bot.effort } : {}),
@@ -532,7 +533,12 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
 export function toRunDetail(run: ConversationRun, memberTurns: MemberTurnRecord[]): ConversationRunDetailDto {
   return {
     ...toConversationRun(run),
-    profileSnapshot: run.profileSnapshot,
+    profileSnapshot: {
+      ...run.profileSnapshot,
+      presentation: { ...run.profileSnapshot.presentation, avatar: copyBotAvatar(run.profileSnapshot.presentation.avatar) },
+      behavior: { ...run.profileSnapshot.behavior },
+      execution: { ...run.profileSnapshot.execution },
+    },
     memberTurns: memberTurns.map(toMemberTurnSummary),
   };
 }

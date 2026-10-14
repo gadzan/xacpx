@@ -757,6 +757,8 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 - **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots` 模式切换；切到 Bots 时展示 Bot 列表，包含名称、角色、agent、workspace 与启用状态；
 - **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。agent/workspace 复用实例已有目录与工作区配置。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
+- **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatar.vue`）**：Bot 弹层分为基本设置与头像外观；支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，切换标签页不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
+- **头像状态与资源**：侧栏只展示身份，不聚合全局忙碌。Direct 按当前 Conversation / Topic / Run，Group 按精确 MemberTurn 与交互归属展示；完成动作只由已观察到的同任务完成事件授权，恢复快照与重连不回放。历史消息、选项、成员选择器和交接双头像静态渲染；可见动态头像共用一个帧时钟，离屏、隐藏、减少动态效果与卸载释放或暂停相应资源。普通 Session 与 Agent 品牌图标仍使用 `AgentIcon`。
 - **受控移除（`BotRemovalDialog.vue`）**：侧栏、Direct 页面和 Bot 对话框都能打开。先调用 `control.bots.remove.preview`，再由用户确认 `control.bots.remove`。文案说明群组历史保留，私聊历史是单独勾选。两人组成员关系会挡住确认，不会自动删群或踢掉另一名成员。清理失败或结果不确定时用同一个 `requestId` 重试。`lifecycle.operations.get` 可在刷新后查看这次清理。已移除 Bot 在列表和群组记录里显示为 removed bot，composer 不再发送。
 
 ### 禁用 Bot 的整理与恢复
@@ -801,7 +803,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 ### Group 公开交接入口（PR #411）
 
-`GroupTranscript.vue` 在公开 `group_send` 消息的原始位置渲染 `GroupHandoffEntry.vue`。默认只显示两个重叠的 24px Agent 图标，重叠 8px，按钮触控高度 44px。不会额外显示行头像或说话人文本。Enter、Space 或点击展开详情，Escape 或收起按钮关闭并恢复焦点。名称使用当前 Bot 资料，已移除或不可用的 Bot 保留名称或 ID 回退。
+`GroupTranscript.vue` 在公开 `group_send` 消息的原始位置渲染 `GroupHandoffEntry.vue`。默认只显示两个重叠的 24px Bot 身份头像（未配置时回退 Agent 图标），重叠 8px，按钮触控高度 44px；双头像始终静态。不会额外显示行头像或说话人文本。Enter、Space 或点击展开详情，Escape 或收起按钮关闭并恢复焦点。名称与头像使用当前 Bot 资料，已移除或不可用的 Bot 保留资料或现有名称 / ID 回退。
 
 详情包含发送方、接收方、任务、可选期望输出和目标 MemberTurn 的实际状态。`indeterminate` 显示为结果未知。任务和结果预览通过 Vue 文本插值渲染。结果最多预览 240 个 UTF-16 单位，并可跳到已有的原始回复。
 

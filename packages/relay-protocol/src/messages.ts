@@ -1,3 +1,4 @@
+import type { BotAvatarConfig } from "./bot-avatar.js";
 import type {
   AgentAddressDto,
   AgentCatalogEntryDto,
@@ -521,7 +522,7 @@ export interface BotsGetResult {
 }
 export interface BotsCreatePayload {
   name: string;
-  avatar?: string;
+  avatar?: BotAvatarConfig;
   role?: string;
   instructions?: string;
   agent: string;
@@ -536,7 +537,7 @@ export interface BotsCreateResult {
 export interface BotsUpdatePayload {
   id: string;
   name?: string;
-  avatar?: string | null;
+  avatar?: BotAvatarConfig | null;
   role?: string | null;
   instructions?: string | null;
   agent?: string;

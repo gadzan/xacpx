@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle } from "lucide-vue-next";
-import type { AgentCapabilityState, BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import { copyBotAvatar, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { mergeEffortRefresh } from "../lib/capability-view";
+import type { BotAvatarState } from "../lib/bot-avatar-state";
 import ModelPicker from "./ModelPicker.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
+import BotAvatarEditor from "./BotAvatarEditor.vue";
 
 const props = defineProps<{
   instanceId: string;
@@ -53,7 +55,32 @@ const identityLocked = computed(() => {
 
 // Form fields
 const name = ref(props.bot?.name ?? "");
-const avatar = ref(props.bot?.avatar ?? "");
+const avatar = ref<BotAvatarConfig | undefined>(
+  props.bot
+    ? copyBotAvatar(props.bot.avatar)
+    : { version: 1, kind: "character", shape: "cercle", color: "bleu", expression: "neutre", motion: "auto" },
+);
+const avatarPreviewState = ref<BotAvatarState>("idle");
+const activeTab = ref<"basic" | "appearance">("basic");
+const tabs = ["basic", "appearance"] as const;
+
+function onTabKeydown(event: KeyboardEvent): void {
+  const index = tabs.indexOf(activeTab.value);
+  let next: number;
+  if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+  else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = tabs.length - 1;
+  else return;
+  event.preventDefault();
+  activeTab.value = tabs[next]!;
+  void nextTick(() => dialogEl.value?.querySelector<HTMLButtonElement>(`#bot-tab-${activeTab.value}`)?.focus());
+}
+
+function onAvatarPick(value: BotAvatarConfig | undefined): void {
+  avatar.value = copyBotAvatar(value);
+  avatarDirty.value = true;
+}
 const role = ref(props.bot?.role ?? "");
 const instructions = ref(
   props.bot && "instructions" in props.bot && typeof props.bot.instructions === "string"
@@ -141,6 +168,7 @@ const availableAgents = computed(() => {
   }
   return options;
 });
+const avatarDriver = computed(() => availableAgents.value.find((option) => option.name === agent.value)?.driver ?? agent.value);
 
 // Available workspaces from instance
 const availableWorkspaces = computed(() => inst.value?.workspaces ?? []);
@@ -172,7 +200,7 @@ function applyDetail(detail: BotDetailDto): void {
   if (filledRevision.value !== null && detail.profileRevision <= filledRevision.value) return;
   if (!instructionsDirty.value) instructions.value = detail.instructions ?? "";
   if (!nameDirty.value) name.value = detail.name;
-  if (!avatarDirty.value) avatar.value = detail.avatar ?? "";
+  if (!avatarDirty.value) avatar.value = copyBotAvatar(detail.avatar);
   if (!roleDirty.value) role.value = detail.role ?? "";
   if (!agentDirty.value) agent.value = detail.agent;
   if (!workspaceDirty.value) workspace.value = detail.workspace;
@@ -283,7 +311,7 @@ async function submit(): Promise<void> {
       // backend merges the patch and bumps the revision.
       const patch: {
         name?: string;
-        avatar?: string | null;
+        avatar?: BotAvatarConfig | null;
         role?: string | null;
         instructions?: string | null;
         agent?: string;
@@ -297,7 +325,7 @@ async function submit(): Promise<void> {
         // (rev2) would be rolled back by a stale rev1 name on save.
       } = {};
       if (nameDirty.value) patch.name = trimmedName;
-      if (avatarDirty.value) patch.avatar = avatar.value.trim() || null;
+      if (avatarDirty.value) patch.avatar = copyBotAvatar(avatar.value) ?? null;
       if (roleDirty.value) patch.role = role.value.trim() || null;
       if (instructionsDirty.value) patch.instructions = instructions.value.trim() || null;
       if (agentDirty.value) patch.agent = agent.value;
@@ -313,7 +341,7 @@ async function submit(): Promise<void> {
         name: trimmedName,
         agent: agent.value,
         workspace: workspace.value,
-        avatar: avatar.value.trim() || undefined,
+        avatar: copyBotAvatar(avatar.value),
         role: role.value.trim() || undefined,
         instructions: instructions.value.trim() || undefined,
         model: normalizedModel(model.value),
@@ -341,7 +369,8 @@ async function submit(): Promise<void> {
          aria-modal="true"
          :aria-labelledby="'bot-dialog-title'"
          tabindex="-1"
-         class="flex max-h-full min-h-0 w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-surface text-fg shadow-2xl">
+         class="flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-surface text-fg shadow-2xl"
+         :class="activeTab === 'appearance' ? 'max-w-3xl' : 'max-w-lg'">
       <!-- Header -->
       <div class="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
         <h2 id="bot-dialog-title" class="text-base font-semibold">
@@ -354,6 +383,15 @@ async function submit(): Promise<void> {
           @click="emit('close')"
         >
           <X :size="16" />
+        </button>
+      </div>
+      <div role="tablist" :aria-label="$t('bot.avatar.tabs.label')" class="flex shrink-0 gap-5 border-b border-border px-5">
+        <button v-for="tab in tabs" :id="`bot-tab-${tab}`" :key="tab" type="button" role="tab"
+                :aria-selected="activeTab === tab" :aria-controls="`bot-panel-${tab}`" :tabindex="activeTab === tab ? 0 : -1"
+                class="border-b-2 py-3 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                :class="activeTab === tab ? 'border-accent text-accent' : 'border-transparent text-fg-muted hover:text-fg'"
+                @click="activeTab = tab" @keydown="onTabKeydown">
+          {{ $t(`bot.avatar.tabs.${tab}`) }}
         </button>
       </div>
 
@@ -385,6 +423,7 @@ async function submit(): Promise<void> {
           {{ $t("bot.validation.detailLoading") }}
         </div>
 
+        <section v-show="activeTab === 'basic'" id="bot-panel-basic" role="tabpanel" aria-labelledby="bot-tab-basic" class="space-y-4">
         <!-- Name -->
         <div>
           <label for="bot-name" class="block text-xs font-medium text-fg-muted mb-1.5">
@@ -493,23 +532,7 @@ async function submit(): Promise<void> {
           @update:effort="onEffortPick"
           @fetch="loadCapabilities(true)"
         />
-        <!-- Avatar & Status -->
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 items-center">
-          <div>
-            <label for="bot-avatar" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.avatar") }}
-            </label>
-            <input
-              id="bot-avatar"
-              v-model="avatar"
-              @input="avatarDirty = true"
-              type="text"
-              :placeholder="$t('bot.fields.avatarPlaceholder')"
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
-            />
-          </div>
-
-          <div class="pt-4 sm:pt-0">
+        <div>
             <label class="flex items-center gap-2 cursor-pointer text-sm">
               <input
                 v-model="enabled"
@@ -520,7 +543,6 @@ async function submit(): Promise<void> {
               <span class="font-medium text-xs">{{ $t("bot.fields.enabled") }}</span>
             </label>
           </div>
-        </div>
         <p v-if="storedEnabled === true && !enabled"
            data-test="bot-dialog-disable-note"
            class="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
@@ -531,6 +553,10 @@ async function submit(): Promise<void> {
            class="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
           {{ $t("bot.lifecycle.reenableNote") }}
         </p>
+        </section>
+        <section v-show="activeTab === 'appearance'" id="bot-panel-appearance" role="tabpanel" aria-labelledby="bot-tab-appearance">
+          <BotAvatarEditor v-model:preview-state="avatarPreviewState" :model-value="avatar" :driver="avatarDriver" :name="name" @update:model-value="onAvatarPick" />
+        </section>
       </form>
 
       <!-- Footer -->

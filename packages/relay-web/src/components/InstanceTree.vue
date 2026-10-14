@@ -17,6 +17,7 @@ import { groupSessions, dedupedSessionName, sessionPresentationName, archivedLas
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
+import BotAvatar from "./BotAvatar.vue";
 import BotDialog from "./BotDialog.vue";
 import GroupDialog from "./GroupDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
@@ -640,7 +641,8 @@ const rowSwipes = computed(() => {
               @click="onBotTap(inst.id, b.id)"
             >
               <span class="relative shrink-0">
-                <AgentIcon :driver="driverForAgentName(inst, b.agent)" :title="b.agent" :size="14"
+                <BotAvatar :avatar="b.avatar" :driver="driverForAgentName(inst, b.agent)" :name="b.name" :size="24"
+                           :disabled="!b.enabled" :retired="b.retired" :state="inst.online ? 'idle' : 'offline'"
                            :class="!b.enabled ? 'opacity-50' : ''" />
               </span>
               <div class="flex flex-col min-w-0 flex-1">

@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { isHiddenProductSessionOwner } from "../../../src/state/types";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CharacterAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 
 import { parseState, StateStore, type StateLoadDroppedRecord } from "../../../src/state/state-store";
 import { createEmptyState } from "../../../src/state/types";
@@ -97,6 +98,97 @@ test("parseState accepts Bot, Conversation, Topic, and binding records", () => {
   expect(state.conversations.conv_a?.kind).toBe("bot");
   expect(state.conversation_topics.topic_a?.status).toBe("active");
   expect(state.bot_runtime_bindings.bind_a?.scope).toBe("bot-direct");
+});
+
+test("stored Bot and retired records normalize legacy avatars and quarantine malformed configs", () => {
+  const avatar: CharacterAvatarConfig = {
+    version: 1, kind: "character", shape: "nuage", color: "bleu", expression: "curieux", motion: "auto",
+  };
+  const legacy = "  https://example.test/avatar.svg  ";
+  for (const [stored, expected] of [
+    [legacy, { version: 1, kind: "text", value: legacy }],
+    ["🤖", { version: 1, kind: "text", value: "🤖" }],
+    ["x".repeat(513), { version: 1, kind: "text", value: "x".repeat(513) }],
+    ["", undefined], ["  ", undefined], [null, undefined], [undefined, undefined], [avatar, avatar],
+  ]) {
+    const raw = {
+      bots: {
+        bot_a: {
+          id: "bot_a", name: "Reviewer", avatar: stored, instructions: "Do not change this.",
+          agent: "codex", workspace: "backend", enabled: true, profileRevision: 7, createdAt: NOW, updatedAt: NOW,
+        },
+      },
+      bot_removals: {
+        bot_retired: {
+          botId: "bot_retired", phase: "retired", updatedAt: NOW,
+          tombstone: { id: "bot_retired", name: "Retired Reviewer", avatar: stored, agent: "codex", workspace: "backend", retiredAt: NOW },
+        },
+      },
+    };
+    const dropped: StateLoadDroppedRecord[] = [];
+    const loaded = parseState(raw, "state.json", dropped);
+    expect(dropped).toEqual([]);
+    expect(loaded.bots.bot_a?.avatar).toEqual(expected);
+    expect(loaded.bots.bot_a?.instructions).toBe("Do not change this.");
+    expect(loaded.bots.bot_a?.profileRevision).toBe(7);
+    expect(loaded.bot_removals.bot_retired?.tombstone?.avatar).toEqual(expected);
+    if (stored && typeof stored === "object") {
+      expect(loaded.bots.bot_a?.avatar).not.toBe(stored);
+      expect(loaded.bot_removals.bot_retired?.tombstone?.avatar).not.toBe(stored);
+    }
+  }
+  for (const malformed of [{ ...avatar, version: 2 }, { ...avatar, shape: "unknown" }, 12, []]) {
+    const dropped: StateLoadDroppedRecord[] = [];
+    const loaded = parseState({
+      bots: {
+        bot_a: { id: "bot_a", name: "Reviewer", avatar: malformed, agent: "codex", workspace: "backend", enabled: true, createdAt: NOW, updatedAt: NOW },
+      },
+      bot_removals: {
+        bot_retired: { botId: "bot_retired", phase: "retired", updatedAt: NOW,
+          tombstone: { id: "bot_retired", name: "Retired", avatar: malformed, agent: "codex", workspace: "backend", retiredAt: NOW } },
+      },
+    }, "state.json", dropped);
+    expect(loaded.bots).toEqual({});
+    expect(loaded.bot_removals).toEqual({});
+    expect(dropped.map((entry) => entry.section)).toEqual(["bots", "bot_removals"]);
+  }
+});
+
+test("legacy and structured avatar records survive StateStore save and process restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-avatar-state-"));
+  const path = join(dir, "state.json");
+  const legacy = `  https://example.test/${"avatar".repeat(100)}.svg  `;
+  try {
+    await writeFile(path, JSON.stringify({
+      ...createEmptyState(),
+      bots: {
+        bot_a: { id: "bot_a", name: "Reviewer", avatar: legacy, agent: "codex", workspace: "backend",
+          enabled: true, profileRevision: 3, createdAt: NOW, updatedAt: NOW },
+      },
+      bot_removals: {
+        bot_retired: { botId: "bot_retired", phase: "retired", updatedAt: NOW,
+          tombstone: { id: "bot_retired", name: "Retired", avatar: "🤖", agent: "codex", workspace: "backend", retiredAt: NOW } },
+      },
+    }));
+    const store = new StateStore(path);
+    const loaded = await store.load();
+    expect(loaded.bots.bot_a?.avatar).toEqual({ version: 1, kind: "text", value: legacy });
+    expect(store.lastLoadReport?.dropped ?? []).toEqual([]);
+    await store.save(loaded);
+    const afterMigration = await new StateStore(path).load();
+    expect(afterMigration.bots.bot_a).toEqual(loaded.bots.bot_a);
+    expect(afterMigration.bot_removals.bot_retired).toEqual(loaded.bot_removals.bot_retired);
+    afterMigration.bots.bot_a!.avatar = {
+      version: 1, kind: "character", shape: "nuage", color: "bleu", expression: "curieux", motion: "off",
+    };
+    await store.save(afterMigration);
+    const restarted = await new StateStore(path).load();
+    expect(restarted.bots.bot_a?.avatar).toEqual(afterMigration.bots.bot_a?.avatar);
+    expect(restarted.bots.bot_a?.profileRevision).toBe(3);
+    expect(restarted.bot_removals.bot_retired?.tombstone?.avatar).toEqual({ version: 1, kind: "text", value: "🤖" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("parseState drops malformed Bot and Conversation records and reports them", () => {

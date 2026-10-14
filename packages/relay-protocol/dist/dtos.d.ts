@@ -1,3 +1,4 @@
+import type { BotAvatarConfig } from "./bot-avatar.js";
 /** Wire mirror of the core control session listing. */
 export interface SessionDto {
     alias: string;
@@ -263,7 +264,7 @@ export interface ConversationTurnCorrelationDto {
 export interface BotSummaryDto {
     id: string;
     name: string;
-    avatar?: string;
+    avatar?: BotAvatarConfig;
     role?: string;
     agent: string;
     workspace: string;
@@ -499,7 +500,7 @@ export interface BotProfileSnapshotDto {
     capturedAt: string;
     presentation: {
         name: string;
-        avatar?: string;
+        avatar?: BotAvatarConfig;
         role?: string;
     };
     behavior: {

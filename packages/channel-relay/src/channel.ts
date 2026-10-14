@@ -667,6 +667,7 @@ export class RelayChannel implements MessageChannelRuntime {
       throw new RelayElicitationUnavailable("unsupported");
     }
     const correlation = this.conversationCorrelation(request);
+    if (!correlation) throw new RelayElicitationUnavailable("unsupported-route");
     const interaction: InteractionRequestDto = {
       requestId,
       kind: "elicitation",
@@ -858,11 +859,8 @@ export class RelayChannel implements MessageChannelRuntime {
    * the turn is an ordinary channel turn with no product row, and fabricating one
    * would make the browser open the form on a conversation that does not own it.
    *
-   * Only the product keys are carried. The durable row ids
-   * (`botId`/`runId`/`memberTurnId`) are left absent because the connector has no
-   * way to know them, and an empty string would compare equal to any other empty
-   * string and satisfy a join it should not. Never a hidden `brt_*` alias — that
-   * is runtime plumbing, and the wire validator rejects it.
+   * Durable task ids come only from the core-pinned turn context and must match
+   * the product route. No session-alias or latest-turn lookup invents them.
    *
    * `replyContextToken` is deliberately NOT mapped to `promptRequestId`. It is
    * the trusted INGRESS chat key (`relay:<accountId>`) that carries the human's
@@ -875,6 +873,14 @@ export class RelayChannel implements MessageChannelRuntime {
   ): ConversationTurnCorrelationDto | undefined {
     const parsed = parseDirectConversationChatKey(request.chatKey);
     if (!parsed) return undefined;
+    const task = request.conversation;
+    if (task) {
+      if (task.conversationId !== parsed.conversationId || task.topicId !== parsed.topicId) return undefined;
+      return {
+        conversationId: parsed.conversationId, topicId: parsed.topicId,
+        botId: task.botId, runId: task.runId, memberTurnId: task.memberTurnId,
+      };
+    }
     return {
       conversationId: parsed.conversationId,
       topicId: parsed.topicId,

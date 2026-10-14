@@ -48,6 +48,17 @@ describe("useDirectBotsStore", () => {
   });
 
   describe("Bot CRUD RPC", () => {
+    it("rejects incompatible avatar responses without admitting them to the render cache", async () => {
+      const store = useDirectBotsStore();
+      for (const avatar of ["🤖", { version: 2, kind: "text", value: "x" }]) {
+        mockRpc.mockResolvedValueOnce({
+          bots: [{ id: "bot_old", name: "Old", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", avatar }],
+        });
+        await expect(store.loadBots("inst_1")).rejects.toThrow("connectorOutdated");
+        expect(store.botsByInstance.inst_1).toBeUndefined();
+        expect(store.botsLoaded.inst_1).toBe(false);
+      }
+    });
     it("loads bots for an instance", async () => {
       const store = useDirectBotsStore();
       const mockBots: BotSummaryDto[] = [
@@ -5151,6 +5162,33 @@ describe("useDirectBotsStore", () => {
   });
 
   describe("Streaming and Turn Events correlation", () => {
+    it("authorizes only a live same-Run completion and clears it on recovery", () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      const run: ConversationRunDto = {
+        id: "run_1", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_1",
+        requestId: "req_1", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now",
+      };
+      store.activeRun = run;
+      mockRpc.mockResolvedValue({ error: { code: "unavailable", message: "offline" } });
+      store.applyEvent({
+        kind: "control-event", instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: { ...run, id: "old_run", state: "completed" } },
+      } as never);
+      expect(store.liveCompletedRunId).toBeNull();
+      expect(store.activeRun?.state).toBe("running");
+      store.applyEvent({
+        kind: "control-event", instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: { ...run, state: "completed" } },
+      } as never);
+      expect(store.liveCompletedRunId).toBe("run_1");
+      expect(store.activeRun?.state).toBe("completed");
+      store.applyEvent({ kind: "state-snapshot", instanceId: "inst_1", sessions: [], turns: [] } as never);
+      expect(store.liveCompletedRunId).toBeNull();
+      expect(store.activeRun?.state).toBe("completed");
+    });
     it("ignores member-turn-finished for a stale Run instead of stealing the active Run", () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

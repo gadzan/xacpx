@@ -1,6 +1,7 @@
 import {
   MSG,
   errorPayload,
+  isBotAvatarWriteConfig,
   parseControlPayload,
   type AgentMessageCompletionPayload,
   type AgentMessageDeliverPayload,
@@ -1066,11 +1067,19 @@ async function dispatchControlRequest(
       return { bot: control.getBot(input.id) };
     }
     case MSG.botsCreate: {
+      if (payload && typeof payload === "object" && "avatar" in payload
+        && payload.avatar !== undefined && !isBotAvatarWriteConfig(payload.avatar)) {
+        return errorPayload("avatar_invalid", "bot avatar must be a valid version 1 avatar configuration");
+      }
       const input = parseControlPayload(MSG.botsCreate, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.botsCreate}: malformed payload`);
       return { bot: await control.createBot(input) };
     }
     case MSG.botsUpdate: {
+      if (payload && typeof payload === "object" && "avatar" in payload
+        && payload.avatar !== undefined && payload.avatar !== null && !isBotAvatarWriteConfig(payload.avatar)) {
+        return errorPayload("avatar_invalid", "bot avatar must be a valid version 1 avatar configuration");
+      }
       const input = parseControlPayload(MSG.botsUpdate, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.botsUpdate}: malformed payload`);
       const { id, ...patch } = input;

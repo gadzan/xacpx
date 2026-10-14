@@ -244,6 +244,29 @@ test("recoverable terminal event payloads validate attachment-scoped hub stamps"
   })).not.toBeNull();
 });
 
+test("Bot avatar wire writes accept only strict versioned configs and update null clearing", () => {
+  const avatar = { version: 1, kind: "character", shape: "nuage", color: "bleu", expression: "curieux", motion: "auto" };
+  const create = { name: "Reviewer", agent: "codex", workspace: "backend" };
+  for (const valid of [avatar, { ...avatar, motion: "off" }, { version: 1, kind: "text", value: "🤖" }]) {
+    expect(parseControlPayload(MSG.botsCreate, { ...create, avatar: valid })).toEqual({ ...create, avatar: valid });
+    expect(parseControlPayload(MSG.botsUpdate, { id: "bot_1", avatar: valid })).toEqual({ id: "bot_1", avatar: valid });
+  }
+  for (const invalid of [
+    "🤖", "", {}, [], 42,
+    { ...avatar, version: 2 }, { ...avatar, kind: "default" }, { ...avatar, shape: "circle" },
+    { ...avatar, color: "red" }, { ...avatar, expression: "unknown" }, { ...avatar, motion: "loop" },
+    { ...avatar, state: "working" }, { ...avatar, activityKey: "run_1" },
+    { version: 1, kind: "text", value: " " }, { version: 1, kind: "text", value: "x".repeat(513) },
+  ]) {
+    expect(parseControlPayload(MSG.botsCreate, { ...create, avatar: invalid })).toBeNull();
+    expect(parseControlPayload(MSG.botsUpdate, { id: "bot_1", avatar: invalid })).toBeNull();
+  }
+  expect(parseControlPayload(MSG.botsCreate, { ...create, avatar: null })).toBeNull();
+  expect(parseControlPayload(MSG.botsCreate, create)).toEqual(create);
+  expect(parseControlPayload(MSG.botsUpdate, { id: "bot_1", avatar: null })).toEqual({ id: "bot_1", avatar: null });
+  expect(parseControlPayload(MSG.botsUpdate, { id: "bot_1" })).toEqual({ id: "bot_1" });
+});
+
 test("Bot and Conversation control RPCs validate product IDs, not hidden aliases", () => {
   expect(parseControlPayload(MSG.botsCreate, {
     name: "Reviewer", agent: "codex", workspace: "backend",

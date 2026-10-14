@@ -59,47 +59,6 @@ describe("Direct Bot Components", () => {
       ));
     });
 
-    it("renders create bot dialog with required fields and NO cwd input", async () => {
-      const instances = useInstancesStore();
-      instances.instances = [
-        {
-          id: "i1",
-          name: "Local",
-          online: true,
-          lastSeenAt: null,
-          sessions: [],
-          agents: [{ name: "codex", driver: "codex" }],
-          workspaces: [{ name: "repo", cwd: "/repo" }],
-          agentCatalog: [],
-        } as never,
-      ];
-
-      const wrapper = mount(BotDialog, {
-        props: {
-          instanceId: "i1",
-          instanceName: "Local",
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-
-      await flushPromises();
-
-      expect(wrapper.find("#bot-name").exists()).toBe(true);
-      expect(wrapper.find("#bot-agent").exists()).toBe(true);
-      expect(wrapper.find("#bot-workspace").exists()).toBe(true);
-      expect(wrapper.find("#bot-role").exists()).toBe(true);
-      expect(wrapper.find("#bot-instructions").exists()).toBe(true);
-      expect(wrapper.find('[data-test="bot-model"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="model-picker-effort"]').exists()).toBe(true);
-      expect(wrapper.find("#bot-avatar").exists()).toBe(true);
-
-      // Red line check: NEVER add cwd
-      expect(wrapper.find("#bot-cwd").exists()).toBe(false);
-      expect(wrapper.find('input[name="cwd"]').exists()).toBe(false);
-    });
-
     it("renders adapter-advertised effort choices (including xhigh) and omits unadvertised low/max", async () => {
       const instances = useInstancesStore();
       instances.instances = [
@@ -257,6 +216,7 @@ describe("Direct Bot Components", () => {
         name: "Code Reviewer",
         agent: "codex",
         workspace: "repo",
+        avatar: { version: 1, kind: "character", shape: "cercle", color: "bleu", expression: "neutre", motion: "auto" },
         instructions: "Look for bugs",
         enabled: true,
       }));

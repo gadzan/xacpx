@@ -1,3 +1,5 @@
+import type { ConversationTurnCorrelation } from "../control/conversation-control-dtos";
+
 /**
  * Shared exact-turn interaction registry.
  *
@@ -57,6 +59,7 @@ export interface TurnInteractionContext {
   senderName?: string;
   isOwner?: boolean;
   origin: HumanInteractionOrigin;
+  conversation?: Readonly<ConversationTurnCorrelation>;
   /**
    * Whether this turn's destination is provably 1:1.
    *

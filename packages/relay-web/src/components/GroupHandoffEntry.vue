@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Bot } from "lucide-vue-next";
 import type {
   ConversationMessageDto,
   ConversationRunDetailDto,
   MemberTurnSummaryDto,
+  BotAvatarConfig,
 } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore } from "../stores/groups";
-import AgentIcon from "./AgentIcon.vue";
+import BotAvatar from "./BotAvatar.vue";
 
 const props = defineProps<{
   message: ConversationMessageDto;
@@ -16,6 +16,8 @@ const props = defineProps<{
   toName: string;
   fromDriver?: string;
   toDriver?: string;
+  fromAvatar?: BotAvatarConfig;
+  toAvatar?: BotAvatarConfig;
 }>();
 const emit = defineEmits<{ jump: [messageId: string] }>();
 const { t } = useI18n();
@@ -142,12 +144,10 @@ watch(
       @click="toggle"
     >
       <span aria-hidden="true" data-handoff-avatar="from" class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full border border-border bg-surface">
-        <AgentIcon v-if="fromDriver" :driver="fromDriver" :size="15" fill />
-        <Bot v-else :size="15" class="text-fg-muted" />
+        <BotAvatar :avatar="fromAvatar" :driver="fromDriver" :name="fromName" :size="24" static />
       </span>
       <span aria-hidden="true" data-handoff-avatar="to" class="-ml-2 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full border border-border bg-surface">
-        <AgentIcon v-if="toDriver" :driver="toDriver" :size="15" fill />
-        <Bot v-else :size="15" class="text-fg-muted" />
+        <BotAvatar :avatar="toAvatar" :driver="toDriver" :name="toName" :size="24" static />
       </span>
     </button>
     <div

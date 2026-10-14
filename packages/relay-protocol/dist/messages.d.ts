@@ -1,3 +1,4 @@
+import type { BotAvatarConfig } from "./bot-avatar.js";
 import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
@@ -431,7 +432,7 @@ export interface BotsGetResult {
 }
 export interface BotsCreatePayload {
     name: string;
-    avatar?: string;
+    avatar?: BotAvatarConfig;
     role?: string;
     instructions?: string;
     agent: string;
@@ -446,7 +447,7 @@ export interface BotsCreateResult {
 export interface BotsUpdatePayload {
     id: string;
     name?: string;
-    avatar?: string | null;
+    avatar?: BotAvatarConfig | null;
     role?: string | null;
     instructions?: string | null;
     agent?: string;

@@ -1,3 +1,4 @@
+import { parseStoredBotAvatar } from "@ganglion/xacpx-relay-protocol";
 import { parseDirectInputMetadata } from "./direct-input-metadata";
 import { randomUUID } from "node:crypto";
 import {
@@ -444,15 +445,12 @@ function isSnapshotExecution(value: unknown): value is BotProfileSnapshot["execu
   return true;
 }
 
-function isSnapshotPresentation(value: unknown): value is BotProfileSnapshot["presentation"] {
+function isSnapshotPresentation(value: unknown): value is Omit<BotProfileSnapshot["presentation"], "avatar"> & { avatar?: unknown } {
   if (typeof value !== "object" || value === null) {
     return false;
   }
   const presentation = value as Record<string, unknown>;
   if (typeof presentation.name !== "string") {
-    return false;
-  }
-  if (presentation.avatar !== undefined && typeof presentation.avatar !== "string") {
     return false;
   }
   if (presentation.role !== undefined && typeof presentation.role !== "string") {
@@ -483,7 +481,17 @@ function decodeSnapshot(value: unknown): BotProfileSnapshot {
   if (!isSnapshotPresentation(record.presentation) || !isSnapshotBehavior(record.behavior) || !isSnapshotExecution(record.execution)) {
     throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
   }
-  return value as BotProfileSnapshot;
+  const avatar = parseStoredBotAvatar(record.presentation.avatar);
+  if (avatar === null) {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  return {
+    revision: record.revision,
+    capturedAt: record.capturedAt,
+    presentation: { ...record.presentation, avatar },
+    behavior: { ...record.behavior },
+    execution: { ...record.execution },
+  };
 }
 
 function parseSnapshot(json: string): BotProfileSnapshot {
