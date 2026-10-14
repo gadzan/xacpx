@@ -41,6 +41,22 @@ describe("parseQueueOwnerLock", () => {
     });
   });
 
+  test("keeps retirement: null distinct from an absent field", () => {
+    // Upstream reads the bare key: absent = not retiring, null = incomplete
+    // retirement (every lease refresh is refused), object = receipt.
+    expect(parseQueueOwnerLock({ pid: 42, sessionId: "rec-1", retirement: null })).toEqual({
+      pid: 42,
+      sessionId: "rec-1",
+      retirement: null,
+    });
+    expect(parseQueueOwnerLock({ pid: 42, sessionId: "rec-1", retirement: { state: "pending" } })).toEqual({
+      pid: 42,
+      sessionId: "rec-1",
+      retirement: { state: "pending" },
+    });
+    expect(Object.hasOwn(parseQueueOwnerLock({ pid: 42, sessionId: "rec-1" })!, "retirement")).toBe(false);
+  });
+
   test("rejects malformed leases", () => {
     expect(parseQueueOwnerLock(null)).toBeNull();
     expect(parseQueueOwnerLock({ pid: 0, sessionId: "rec-1" })).toBeNull();
@@ -67,6 +83,15 @@ describe("sameQueueOwnerLock", () => {
     expect(sameQueueOwnerLock(lock(), lock({ retirement: receipt }))).toBe(false);
     expect(sameQueueOwnerLock(lock({ retirement: receipt }), lock())).toBe(false);
     expect(sameQueueOwnerLock(lock({ retirement: { state: "pending" } }), lock({ retirement: { state: "draining" } }))).toBe(false);
+  });
+
+  test("absent, null, and a receipt are three different lease states", () => {
+    // acpx refuses every lease refresh for `retirement: null` (its
+    // incomplete-retirement state), so null is not "same as absent".
+    expect(sameQueueOwnerLock(lock({ retirement: null }), lock({ retirement: null }))).toBe(true);
+    expect(sameQueueOwnerLock(lock(), lock({ retirement: null }))).toBe(false);
+    expect(sameQueueOwnerLock(lock({ retirement: null }), lock())).toBe(false);
+    expect(sameQueueOwnerLock(lock({ retirement: null }), lock({ retirement: { state: "pending" } }))).toBe(false);
   });
 });
 
@@ -125,6 +150,14 @@ describe("proveQueueOwnerLock", () => {
 
   test("a retiring owner stays under acpx custody", async () => {
     expect(await proveQueueOwnerLock(lock({ retirement: { state: "pending" } }), "rec-1", {
+      runPs: psSeam("Tue Oct 13 09:15:30 2026"),
+    })).toEqual({ kind: "unverifiable", reason: "owner is retiring under acpx custody" });
+  });
+
+  test("an incomplete retirement (retirement: null) also stays under acpx custody", async () => {
+    // acpx refuses every lease refresh for a null retirement, so the owner is
+    // mid-retirement with unverifiable evidence — never ours to terminate.
+    expect(await proveQueueOwnerLock(lock({ retirement: null }), "rec-1", {
       runPs: psSeam("Tue Oct 13 09:15:30 2026"),
     })).toEqual({ kind: "unverifiable", reason: "owner is retiring under acpx custody" });
   });

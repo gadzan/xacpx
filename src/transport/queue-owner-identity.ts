@@ -103,7 +103,11 @@ export function parseQueueOwnerLock(raw: unknown): QueueOwnerLock | null {
     sessionId: record.sessionId,
     ...(record.ownerGeneration !== undefined ? { ownerGeneration: record.ownerGeneration } : {}),
     ...(processIdentity ? { processIdentity } : {}),
-    ...(record.retirement != null ? { retirement: record.retirement } : {}),
+    // acpx distinguishes three states by mere presence of the key: absent means
+    // not retiring, null means the retirement evidence is incomplete (upstream
+    // refuses every lease refresh for it), and an object is a verifiable
+    // receipt. Collapsing null into absent would make such an owner killable.
+    ...(Object.hasOwn(record, "retirement") ? { retirement: record.retirement } : {}),
   };
 }
 
@@ -122,7 +126,10 @@ export function sameQueueOwnerLock(left: QueueOwnerLock, right: QueueOwnerLock):
 }
 
 function retirementReceipt(lock: QueueOwnerLock): string {
-  return lock.retirement == null ? "" : JSON.stringify(lock.retirement);
+  // Absent, null, and a receipt are three different lease states (acpx refuses
+  // every lease refresh for `null`), so a re-read that gains any of them must
+  // not read as the state that was proven.
+  return Object.hasOwn(lock, "retirement") ? JSON.stringify(lock.retirement) : "";
 }
 
 /** Mirrors acpx `posixBirth`: parse `ps lstart` fields as UTC wall time. */
@@ -148,7 +155,11 @@ export async function proveQueueOwnerLock(
   if (lock.sessionId !== sessionId) {
     return { kind: "unverifiable", reason: "lease names a different session" };
   }
-  if (lock.retirement != null) {
+  if (Object.hasOwn(lock, "retirement")) {
+    // Both a receipt (verifiable cleanup evidence) and `retirement: null`
+    // (upstream's incomplete-retirement state, which refuses every lease
+    // refresh) mean the owner is no longer ours to terminate: acpx keeps
+    // custody of the cleanup.
     return { kind: "unverifiable", reason: "owner is retiring under acpx custody" };
   }
   const identity = lock.processIdentity;

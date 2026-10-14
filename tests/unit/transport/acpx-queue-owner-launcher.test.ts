@@ -578,6 +578,31 @@ test("POSIX termination keeps the lock when acpx publishes a retirement receipt 
   await rm(dir, { recursive: true, force: true });
 });
 
+test("POSIX termination keeps the lock when acpx publishes retirement: null mid-terminate", async () => {
+  // Upstream's incomplete-retirement state: the key exists with a null value,
+  // every lease refresh is refused for it, and the owner stays under acpx
+  // custody. pid/session/generation still match, so only the field itself can
+  // keep our unlink away from the lock.
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-owner-retire-null-"));
+  const lockPath = join(dir, "owner.lock");
+  await writeFile(lockPath, JSON.stringify(verifiedLease()));
+  const killed: number[] = [];
+
+  await terminateAcpxQueueOwnerWithDeps("rec-1", {
+    platform: "linux",
+    lockPath,
+    proveLockDeps: { runPs: psFor("Tue Oct 13 09:15:30 2026") },
+    terminate: async (pid: number) => {
+      killed.push(pid);
+      await writeFile(lockPath, JSON.stringify(verifiedLease({ retirement: null })));
+    },
+  });
+
+  expect(killed).toEqual([4242]);
+  expect(JSON.parse(await readFile(lockPath, "utf8"))).toMatchObject({ pid: 4242, retirement: null });
+  await rm(dir, { recursive: true, force: true });
+});
+
 function verifiedLease(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     pid: 4242,

@@ -579,10 +579,11 @@ export async function terminateAcpxQueueOwnerWithDeps(
 async function lockStillRecords(lockPath: string, proven: QueueOwnerLock): Promise<boolean> {
   try {
     const current = parseQueueOwnerLock(JSON.parse(await readFile(lockPath, "utf8")));
-    // A retirement receipt published while termination was in flight means the
-    // owner moved under acpx custody: its lock is upstream cleanup evidence and
-    // MUST survive our unlink, even though pid/session/generation still match.
-    if (current === null || current.retirement != null) {
+    // A retirement receipt — or `retirement: null`, acpx's incomplete-retirement
+    // state — published while termination was in flight means the owner moved
+    // under acpx custody: its lock is upstream cleanup evidence and MUST
+    // survive our unlink, even though pid/session/generation still match.
+    if (current === null || Object.hasOwn(current, "retirement")) {
       return false;
     }
     return sameQueueOwnerLock(current, proven);
