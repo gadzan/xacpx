@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 
-import { parseRouterAvailability } from "@ganglion/xacpx-relay-protocol";
+import { parseRouterAvailability, ROUTER_CONFIG_PATH, type RoutingInput } from "@ganglion/xacpx-relay-protocol";
 import type { AppConfig } from "../../../src/config/types";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
@@ -13,7 +13,8 @@ import {
   createConversationRuntime,
   createProductionOwnedSessionRelease,
 } from "../../../src/conversations/conversation-composition";
-import { classifyCapabilityReport, resolveProductionRouter } from "../../../src/conversations/production-router";
+import { classifyCapabilityReport, isBundledDefaultRouter,
+  resolveProductionRouter } from "../../../src/conversations/production-router";
 import { canMintHumanPermissionInteraction } from "../../../src/conversations/conversation-execution";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
@@ -22,6 +23,14 @@ import type { ChatRequest } from "../../../src/weixin/agent/interface";
 
 const NOW = "2026-10-09T12:00:00.000Z";
 const INGRESS = { chatKey: "relay:account", senderId: "owner", accountId: "account", isOwner: true as const };
+
+// Automatic collaboration is only `ready` with a configured Jev key, so every
+// ready-path resolution below carries a handoff. No real key exists in tests.
+const JEV_HANDOFF = {
+  endpoint: "https://api.typesafe.ai/v1/systemone",
+  apiKey: "sk-test-not-a-real-key",
+  model: "jev-1.13.0",
+};
 
 const ROUTER_SOURCE = `
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -193,6 +202,7 @@ async function wire(options: {
   const resolution = await resolveProductionRouter({
     config,
     env: options.env ?? process.env,
+    jev: JEV_HANDOFF,
     ...(options.probeTimeoutMs !== undefined ? { probeTimeoutMs: options.probeTimeoutMs } : {}),
   });
   const runtime = await createConversationRuntime({
@@ -283,6 +293,7 @@ test("missing auth does not spawn the router", async () => {
     const resolution = await resolveProductionRouter({
       config,
       env: { PATH: process.env.PATH ?? "" },
+      jev: JEV_HANDOFF,
     });
     expect(resolution.availability).toMatchObject({ status: "failed", reason: { code: "auth-missing" } });
     expect(resolution.router).toBeUndefined();
@@ -449,6 +460,7 @@ test("a probe timeout is failed and does not decide", async () => {
     const resolution = await resolveProductionRouter({
       config: createConfig(router.command),
       env: router.env,
+      jev: JEV_HANDOFF,
       probeTimeoutMs: 100,
     });
     expect(resolution.availability).toMatchObject({ status: "failed", reason: { code: "probe-timeout" } });
@@ -481,7 +493,7 @@ test("the runtime switch turns automatic collaboration on without a restart", as
     // The switch: re-resolve from the config that carries the command, then
     // apply to the live runtime.
     const router = await writeRouter(dir, "dispatch");
-    const resolution = await resolveProductionRouter({ config: createConfig(router.command), env: router.env });
+    const resolution = await resolveProductionRouter({ config: createConfig(router.command), env: router.env, jev: JEV_HANDOFF });
     expect(resolution.availability.status).toBe("ready");
     runtime.applyRouterResolution(resolution);
     expect(control.getConversationRouterAvailability()).toEqual({
@@ -555,4 +567,156 @@ test("an in-flight decision finishes on the engine it captured when the switch f
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Jev gating — automatic collaboration is only `ready` with a configured key,
+// and the decision process receives the settings through its environment.
+// ---------------------------------------------------------------------------
+
+/** A router entry that echoes its Jev environment into `log` on `--decide`. */
+const JEV_ENV_ROUTER_SOURCE = `
+import { appendFileSync } from "node:fs";
+if (process.argv.includes("--capabilities")) {
+  process.stdout.write(JSON.stringify({
+    toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true,
+    permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true,
+    structuredOutputOnly: true,
+  }));
+} else if (process.argv.includes("--decide")) {
+  appendFileSync(process.env.ROUTER_LOG, [
+    process.env.XACPX_JEV_ENDPOINT ?? "",
+    process.env.XACPX_JEV_API_KEY ?? "",
+    process.env.XACPX_JEV_PROXY ?? "",
+    process.env.XACPX_JEV_MODEL ?? "",
+  ].join("|") + "\\n");
+  let raw = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => { raw += chunk; });
+  process.stdin.on("end", () => {
+    process.stdout.write(JSON.stringify({ type: "complete", reason: "done" }));
+  });
+}
+`;
+
+function routingInputForDecide(): RoutingInput {
+  return {
+    runId: "run_1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    request: "Review the patch",
+    requestMessageId: "cmsg_1",
+    publicTranscript: [],
+    memberMetadata: [{ botId: "bot_a", name: "A", agent: "codex", workspace: "backend", enabled: true }],
+    runState: {
+      runId: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      mode: "automatic",
+      generation: 1,
+      maxMemberTurns: 24,
+      consumedMemberTurns: 0,
+      failedBotIds: [],
+    },
+    completedAssignments: [],
+    remainingBudget: 24,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+}
+
+test("a missing Jev key fails with jev-not-configured without spawning the router", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-jev-missing-"));
+  try {
+    const router = await writeRouter(dir, "dispatch");
+    const resolution = await resolveProductionRouter({
+      config: createConfig(router.command),
+      env: router.env,
+    });
+    expect(resolution.availability).toMatchObject({
+      status: "failed",
+      reason: { code: "jev-not-configured" },
+    });
+    expect(resolution.router).toBeUndefined();
+    expect(await readLog(router.log)).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the decision process receives the Jev settings through its environment", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-jev-env-"));
+  try {
+    const command = join(dir, "env-router.mjs");
+    const log = join(dir, "env.log");
+    await writeFile(command, JEV_ENV_ROUTER_SOURCE);
+    await writeFile(log, "");
+    const resolution = await resolveProductionRouter({
+      config: createConfig(command),
+      env: { PATH: process.env.PATH ?? "", ROUTER_LOG: log },
+      bundledRouterEntry: command,
+      jev: {
+        endpoint: "https://api.typesafe.ai/v1/systemone",
+        apiKey: "sk-env-test-key",
+        proxyUrl: "http://127.0.0.1:8080",
+        model: "jev-1.13.0",
+      },
+    });
+    expect(resolution.availability).toEqual({ status: "ready", configPath: ROUTER_CONFIG_PATH });
+    await resolution.router?.decide(routingInputForDecide());
+    expect((await readLog(log)).at(-1)).toBe(
+      "https://api.typesafe.ai/v1/systemone|sk-env-test-key|http://127.0.0.1:8080|jev-1.13.0",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an absent proxy override is handed over as an empty variable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-jev-noproxy-"));
+  try {
+    const command = join(dir, "env-router.mjs");
+    const log = join(dir, "env.log");
+    await writeFile(command, JEV_ENV_ROUTER_SOURCE);
+    await writeFile(log, "");
+    const resolution = await resolveProductionRouter({
+      config: createConfig(command),
+      env: { PATH: process.env.PATH ?? "", ROUTER_LOG: log },
+      bundledRouterEntry: command,
+      jev: { endpoint: "https://api.typesafe.ai/v1/systemone", apiKey: "sk-x", model: "jev-1.13.0" },
+    });
+    expect(resolution.availability.status).toBe("ready");
+    await resolution.router?.decide(routingInputForDecide());
+    // The third field is the proxy: empty when no override is configured.
+    expect((await readLog(log)).at(-1)?.split("|")[2]).toBe("");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a custom (non-bundled) router command never receives the Jev key", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-jev-custom-"));
+  try {
+    const command = join(dir, "env-router.mjs");
+    const log = join(dir, "env.log");
+    await writeFile(command, JEV_ENV_ROUTER_SOURCE);
+    await writeFile(log, "");
+    const resolution = await resolveProductionRouter({
+      config: createConfig(command),
+      env: { PATH: process.env.PATH ?? "", ROUTER_LOG: log },
+      bundledRouterEntry: join(dir, "some-other-bundled-entry.js"),
+      jev: { endpoint: "https://api.typesafe.ai/v1/systemone", apiKey: "sk-secret-key", model: "jev-1.13.0" },
+    });
+    expect(resolution.availability.status).toBe("ready");
+    await resolution.router?.decide(routingInputForDecide());
+    expect((await readLog(log)).at(-1)).toBe("|||");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("isBundledDefaultRouter matches only the bundled entry path", () => {
+  expect(isBundledDefaultRouter("/opt/x/dist/conversations/default-router-main.js", "/opt/x/dist/conversations/default-router-main.js")).toBe(true);
+  expect(isBundledDefaultRouter("/opt/x/dist/conversations/../conversations/default-router-main.js", "/opt/x/dist/conversations/default-router-main.js")).toBe(true);
+  expect(isBundledDefaultRouter("/usr/local/bin/my-router", "/opt/x/dist/conversations/default-router-main.js")).toBe(false);
+  expect(isBundledDefaultRouter("", "/opt/x/dist/conversations/default-router-main.js")).toBe(false);
 });

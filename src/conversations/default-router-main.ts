@@ -37,6 +37,7 @@ try {
     readStdin,
     writeStdout: (text) => writeStream(process.stdout, text),
     writeStderr: (text) => writeStream(process.stderr, text),
+    env: process.env,
   });
 } catch (error) {
   // A write failure must never read as a clean exit: the daemon treats a

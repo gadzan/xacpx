@@ -8,6 +8,15 @@ import {
   type RoutingDecision,
   type RoutingMember,
 } from "./conversation-router-types";
+import {
+  DEFAULT_JEV_ENDPOINT,
+  DEFAULT_JEV_MODEL,
+  JEV_ROUTER_QUESTION,
+  MAX_JEV_CHOICES,
+  askJevChoice,
+  type JevAskResult,
+  type JevChoice,
+} from "./jev-client";
 
 /**
  * The built-in default Conversation Router.
@@ -39,6 +48,19 @@ export interface DefaultRouterDecisionInput {
   members: readonly RoutingMember[];
   completedAssignmentCount: number;
   remainingBudget: number;
+  /** The Group's configured lead Bot, when one is set. */
+  leadBotId?: string;
+  /** Bounded public Topic transcript (newest-first), when the engine provided
+   *  one. Only the Jev policy reads it; the fan-out never does. */
+  publicTranscript?: readonly {
+    id: string;
+    seq: number;
+    role: "human" | "bot" | "system";
+    senderBotId?: string;
+    content: string;
+    runId?: string;
+    contextTruncated?: true;
+  }[];
 }
 
 /**
@@ -90,6 +112,186 @@ export function decideDefaultRouterAssignment(input: DefaultRouterDecisionInput)
 }
 
 /**
+ * Confidence floor for a Jev pick. Below it the model is guessing, so the
+ * policy falls back to the Group's lead instead of dispatching on a coin flip.
+ */
+export const JEV_MIN_CONFIDENCE = 0.6;
+
+/** Bound on the transcript block folded into the Jev state message. */
+const JEV_CONTEXT_CHARACTERS = 2_000;
+const JEV_CONTEXT_ROWS = 6;
+const JEV_CONTEXT_ROW_CHARACTERS = 400;
+
+/** The Jev connection settings the daemon passes to the bundled router via
+ *  environment variables (never argv: argv is visible to every local process). */
+export interface JevRouterEnv {
+  endpoint: string;
+  apiKey: string;
+  proxyUrl?: string;
+  model: string;
+}
+
+/** The decision input for the Jev policy: the same snapshot the fan-out reads,
+ *  plus the Group lead and the connection settings. */
+export interface JevRouterDecisionInput extends DefaultRouterDecisionInput {
+  jev: JevRouterEnv;
+}
+
+/** Injectable ask seam: the CLI wires the real client, tests wire a fake. */
+export type JevAskFn = (input: {
+  endpoint: string;
+  apiKey: string;
+  proxyUrl?: string;
+  model: string;
+  message: string;
+  question: string;
+  choices: readonly JevChoice[];
+}) => Promise<JevAskResult>;
+
+const realJevAsk: JevAskFn = (input) =>
+  askJevChoice({
+    endpoint: input.endpoint,
+    apiKey: input.apiKey,
+    ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
+    model: input.model,
+    message: input.message,
+    question: input.question,
+    choices: input.choices,
+  });
+
+/** Best available description for one member. RoutingMember carries no Bot
+ *  instruction text (that is execution configuration, not routing evidence);
+ *  the role is the closest thing to a profile, the name the fallback. */
+function memberDescription(member: RoutingMember): string {
+  const role = member.role?.trim();
+  if (role) return role;
+  const name = member.name.trim();
+  return name.length > 0 ? name : member.botId;
+}
+
+/** Bounded newest-first transcript block for the Jev state message. */
+function recentContext(input: DefaultRouterDecisionInput): string {
+  const rows = (input.publicTranscript ?? []).slice(0, JEV_CONTEXT_ROWS);
+  if (rows.length === 0) return "";
+  const lines: string[] = [];
+  let left = JEV_CONTEXT_CHARACTERS;
+  for (const row of rows) {
+    const content = row.content.slice(0, Math.min(JEV_CONTEXT_ROW_CHARACTERS, left));
+    left -= content.length;
+    if (content.length === 0) break;
+    const speaker = row.role === "bot" ? (row.senderBotId ?? "bot") : row.role;
+    lines.push(`${speaker}: ${content}`);
+    if (left <= 0) break;
+  }
+  return lines.join("\n");
+}
+
+/** The single-assignment dispatch for one chosen member. */
+function dispatchTo(
+  member: RoutingMember,
+  input: DefaultRouterDecisionInput,
+  reason: string,
+): RoutingDecision {
+  const qualifiedId = `jev-0-${member.botId}`;
+  return {
+    type: "dispatch",
+    mode: "single",
+    assignments: [{
+      id: qualifiedId.length <= MAX_ROUTER_ASSIGNMENT_ID_LENGTH ? qualifiedId : "jev-0",
+      botId: member.botId,
+      task: input.request.trim().slice(0, MAX_ROUTER_TASK_LENGTH),
+      triggerMessageIds: input.requestMessageId.length > 0 ? [input.requestMessageId] : [],
+    }],
+    reason,
+  };
+}
+
+/**
+ * The Jev routing policy: ask the model to pick ONE enabled member, dispatch
+ * only to it, and fall back to the Group lead (else the first enabled member)
+ * whenever the pick is untrustworthy.
+ *
+ * The guard order is the same contract as the fan-out: an empty request asks a
+ * human, nobody enabled completes, an exhausted budget completes, and a Run
+ * that already spent a round completes instead of looping.
+ *
+ * A decision always carries a human-readable `reason` — who was dispatched to,
+ * why, and the confidence (or the fallback cause) — because the UI renders it
+ * verbatim.
+ */
+export async function decideJevRouterAssignment(
+  input: JevRouterDecisionInput,
+  ask: JevAskFn = realJevAsk,
+): Promise<RoutingDecision> {
+  const request = input.request.trim();
+  if (request.length === 0) {
+    return { type: "need-human", question: "The run request is empty." };
+  }
+  const enabled = input.members.filter((member) => member.enabled);
+  if (enabled.length === 0) {
+    return { type: "complete", reason: "No enabled group members are available to assign." };
+  }
+  if (input.remainingBudget <= 0) {
+    return { type: "complete", reason: "The member turn budget is exhausted." };
+  }
+  if (input.completedAssignmentCount > 0) {
+    return { type: "complete", reason: "The router assigns one round per run." };
+  }
+  const fallback = (cause: string): RoutingDecision => {
+    const lead = input.leadBotId === undefined
+      ? undefined
+      : enabled.find((member) => member.botId === input.leadBotId);
+    const target = lead ?? enabled[0]!;
+    const why = lead
+      ? "the group lead"
+      : input.leadBotId === undefined
+        ? "the first enabled member (no group lead is configured)"
+        : "the first enabled member (the group lead is not enabled)";
+    return dispatchTo(
+      target,
+      input,
+      `Jev could not decide (${cause}); dispatched to ${why} ${target.botId}.`,
+    );
+  };
+  const choices: JevChoice[] = enabled.slice(0, MAX_JEV_CHOICES).map((member) => ({
+    key: member.botId,
+    description: memberDescription(member),
+  }));
+  const context = recentContext(input);
+  const message = context.length > 0 ? `${request}\n\nRecent context:\n${context}` : request;
+  let answer: JevAskResult;
+  try {
+    answer = await ask({
+      endpoint: input.jev.endpoint,
+      apiKey: input.jev.apiKey,
+      ...(input.jev.proxyUrl ? { proxyUrl: input.jev.proxyUrl } : {}),
+      model: input.jev.model,
+      message,
+      question: JEV_ROUTER_QUESTION,
+      choices,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return fallback(`the router call failed: ${detail}`);
+  }
+  if (!answer.ok) {
+    return fallback(`the router call failed: ${answer.code}`);
+  }
+  const picked = enabled.find((member) => member.botId === answer.choice);
+  if (!picked) {
+    return fallback(`the router named an unknown member "${answer.choice}"`);
+  }
+  if (answer.confidence < JEV_MIN_CONFIDENCE) {
+    return fallback(`low confidence ${answer.confidence.toFixed(2)}`);
+  }
+  return dispatchTo(
+    picked,
+    input,
+    `Jev dispatched to ${picked.botId} (confidence ${answer.confidence.toFixed(2)}).`,
+  );
+}
+
+/**
  * The capability report the bundled entry prints for `--capabilities`.
  *
  * A function rather than a shared constant: the report is the process's own
@@ -115,6 +317,9 @@ export interface DefaultRouterCliIo {
   readStdin(): Promise<string>;
   writeStdout(text: string): Promise<void>;
   writeStderr(text: string): Promise<void>;
+  /** Injected for tests; the real entry passes `process.env`. The daemon's
+   *  Jev settings arrive here, never on argv. */
+  env?: NodeJS.ProcessEnv;
 }
 
 const CAPABILITIES_FLAG = "--capabilities";
@@ -142,7 +347,15 @@ export async function runDefaultRouterCli(io: DefaultRouterCliIo): Promise<numbe
   }
   let decision: RoutingDecision;
   try {
-    decision = decideDefaultRouterAssignment(readDecisionInput(JSON.parse(await io.readStdin())));
+    const input = readDecisionInput(JSON.parse(await io.readStdin()));
+    // The daemon passes the instance's Jev settings through the environment
+    // (never argv). With a key present the Jev policy decides; without one the
+    // bundled fan-out keeps working, so an unconfigured instance degrades to
+    // the old behavior instead of failing the Run.
+    const jev = readJevRouterEnv(io.env ?? {});
+    decision = jev
+      ? await decideJevRouterAssignment({ ...input, jev })
+      : decideDefaultRouterAssignment(input);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await io.writeStderr(`[xacpx-default-router] ${message}\n`);
@@ -150,6 +363,19 @@ export async function runDefaultRouterCli(io: DefaultRouterCliIo): Promise<numbe
   }
   await io.writeStdout(`${JSON.stringify(decision)}\n`);
   return 0;
+}
+
+/** The Jev settings the daemon injects for `--decide`. Absent (or an empty
+ *  key) means the instance has no Jev configuration, and the fan-out runs. */
+export function readJevRouterEnv(env: NodeJS.ProcessEnv): JevRouterEnv | undefined {
+  const apiKey = env.XACPX_JEV_API_KEY;
+  if (typeof apiKey !== "string" || apiKey.trim().length === 0) return undefined;
+  return {
+    endpoint: env.XACPX_JEV_ENDPOINT?.trim() || DEFAULT_JEV_ENDPOINT,
+    apiKey,
+    ...(env.XACPX_JEV_PROXY?.trim() ? { proxyUrl: env.XACPX_JEV_PROXY.trim() } : {}),
+    model: env.XACPX_JEV_MODEL?.trim() || DEFAULT_JEV_MODEL,
+  };
 }
 
 /** stdin is untrusted bytes even when the daemon is the writer, so the shape
@@ -165,7 +391,12 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     memberMetadata,
     completedAssignments,
     remainingBudget,
-  } = value as Record<"request" | "requestMessageId" | "memberMetadata" | "completedAssignments" | "remainingBudget", unknown>;
+    leadBotId,
+    publicTranscript,
+  } = value as Record<
+    "request" | "requestMessageId" | "memberMetadata" | "completedAssignments" | "remainingBudget" | "leadBotId" | "publicTranscript",
+    unknown
+  >;
   if (typeof request !== "string") {
     throw new Error("routing input requires a string request");
   }
@@ -188,6 +419,37 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     members: members.map((entry) => readMember(entry)),
     completedAssignmentCount: completedAssignments.length,
     remainingBudget,
+    ...(typeof leadBotId === "string" && leadBotId.trim().length > 0 ? { leadBotId } : {}),
+    ...(Array.isArray(publicTranscript)
+      ? { publicTranscript: publicTranscript.map((entry) => readTranscriptRow(entry)) }
+      : {}),
+  };
+}
+
+/** The Jev policy reads role/sender/content only; a row missing any of them is
+ *  unreadable, so the CLI fails closed rather than folding half a row into the
+ *  model's context. */
+function readTranscriptRow(value: unknown): NonNullable<DefaultRouterDecisionInput["publicTranscript"]>[number] {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("routing input publicTranscript must contain objects");
+  }
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string" || typeof row.seq !== "number" || typeof row.content !== "string") {
+    throw new Error("routing input publicTranscript entry is missing id, seq, or content");
+  }
+  if (row.role !== "human" && row.role !== "bot" && row.role !== "system") {
+    throw new Error("routing input publicTranscript entry has an unknown role");
+  }
+  if (row.senderBotId !== undefined && typeof row.senderBotId !== "string") {
+    throw new Error("routing input publicTranscript entry has a malformed senderBotId");
+  }
+  return {
+    id: row.id,
+    seq: row.seq,
+    role: row.role,
+    content: row.content,
+    ...(row.senderBotId !== undefined ? { senderBotId: row.senderBotId } : {}),
+    ...(row.runId !== undefined ? { runId: String(row.runId) } : {}),
   };
 }
 

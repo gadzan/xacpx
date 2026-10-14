@@ -123,16 +123,54 @@ test("the control is a switch bound to the persisted config, with no config fiel
   expect(w.find('[data-test="router-save"]').exists()).toBe(false);
 });
 
-test("a failed probe shows no config path and no daemon reason", async () => {
+test("a failed probe keeps the status sentence and explains the code with the daemon message", async () => {
   stubRouter({ update: { availability: PROBE_FAILED, config: { enabled: true } } });
   const { w } = mountDialog();
   await flushPromises();
-  const status = w.get('[data-test="router-status"]').text();
-  expect(status).toBe(i18n.global.t("instance.autoCollabFailed"));
-  expect(status).not.toContain(PROBE_FAILED.configPath);
-  expect(status).not.toContain(PROBE_FAILED.reason.message);
+  expect(w.get('[data-test="router-status"]').text()).toBe(i18n.global.t("instance.autoCollabFailed"));
+  expect(w.get('[data-test="router-reason-explain"]').text())
+    .toBe(i18n.global.t("instance.autoCollabReason.command-missing"));
+  expect(w.get('[data-test="router-reason-detail"]').text()).toBe(PROBE_FAILED.reason.message);
   // A failed probe is not a reason to lock the feature: the switch stays usable.
   expect(w.get('[data-test="router-toggle"]').attributes("disabled")).toBeUndefined();
+});
+
+test("every unsupported/failed code has its own explanation in both locales", async () => {
+  const codes = [
+    ["unsupported", "restriction-unproven"], ["unsupported", "not-advertised"],
+    ["failed", "command-missing"], ["failed", "auth-missing"], ["failed", "probe-failed"],
+    ["failed", "probe-timeout"], ["failed", "malformed-capabilities"], ["failed", "read-failed"],
+  ] as const;
+  for (const locale of ["en", "zh-CN"] as const) {
+    i18n.global.locale.value = locale;
+    const seen = new Set<string>();
+    for (const [status, code] of codes) {
+      setActivePinia(createPinia());
+      const message = code === "auth-missing" ? "Environment variable ROUTER_TOKEN is empty." : `daemon says ${code}`;
+      stubRouter({ update: { availability: { status, configPath: "conversations.router", reason: { code, message } }, config: { enabled: true } } });
+      const { w } = mountDialog();
+      await flushPromises();
+      const key = `instance.autoCollabReason.${code}`;
+      expect(i18n.global.te(key)).toBe(true);
+      const explain = w.get('[data-test="router-reason-explain"]').text();
+      expect(explain).toBe(i18n.global.t(key));
+      seen.add(explain);
+      expect(w.get('[data-test="router-reason-detail"]').text()).toBe(message);
+      w.unmount();
+    }
+    expect(seen.size).toBe(codes.length);
+  }
+});
+
+test("ready and disabled show no reason block", async () => {
+  for (const availability of [READY, DISABLED]) {
+    setActivePinia(createPinia());
+    stubRouter({ update: { availability, config: { enabled: availability === READY } } });
+    const { w } = mountDialog();
+    await flushPromises();
+    expect(w.find('[data-test="router-reason"]').exists()).toBe(false);
+    w.unmount();
+  }
 });
 
 test("the switch writes { enabled } through the router update RPC", async () => {

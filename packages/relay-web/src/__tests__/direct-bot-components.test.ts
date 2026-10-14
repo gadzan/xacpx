@@ -1691,7 +1691,7 @@ describe("Direct Bot Components", () => {
         },
       });
 
-      const scrollerEl = wrapper.element as HTMLElement;
+      const scrollerEl = wrapper.find("[data-test=conversation-scroller]").element as HTMLElement;
       // Simulate initial scroll position before loading older:
       // e.g. scrollHeight = 500, scrollTop = 100 -> distance from bottom anchor = 400
       Object.defineProperty(scrollerEl, "scrollHeight", {
@@ -1734,7 +1734,7 @@ describe("Direct Bot Components", () => {
           plugins: [i18n],
         },
       });
-      const scrollerEl = wrapper.element as HTMLElement;
+      const scrollerEl = wrapper.find("[data-test=conversation-scroller]").element as HTMLElement;
       let scrollCalls = 0;
       const recordScroll: typeof scrollerEl.scrollTo = () => { scrollCalls += 1; };
       scrollerEl.scrollTo = recordScroll;
@@ -1772,7 +1772,7 @@ describe("Direct Bot Components", () => {
           plugins: [i18n],
         },
       });
-      const scrollerEl = wrapper.element as HTMLElement;
+      const scrollerEl = wrapper.find("[data-test=conversation-scroller]").element as HTMLElement;
       let scrollCalls = 0;
       const recordScroll: typeof scrollerEl.scrollTo = () => { scrollCalls += 1; };
       scrollerEl.scrollTo = recordScroll;

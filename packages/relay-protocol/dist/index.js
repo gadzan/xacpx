@@ -151,6 +151,9 @@ var MSG = {
   conversationRouterGet: "control.conversations.router.get",
   conversationRouterSet: "control.conversations.router.set",
   conversationRouterUpdate: "control.conversations.router.update",
+  jevGet: "control.jev.get",
+  jevUpdate: "control.jev.update",
+  jevTest: "control.jev.test",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -1098,6 +1101,88 @@ function sameBotAvatar(a, b) {
   return b.kind === "character" && a.shape === b.shape && a.color === b.color && a.expression === b.expression && a.motion === b.motion;
 }
 
+// packages/relay-protocol/src/type-guards.ts
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// packages/relay-protocol/src/jev-settings.ts
+var JEV_ENDPOINT_MAX_LENGTH = 2048;
+var JEV_PROXY_URL_MAX_LENGTH = 2048;
+var JEV_API_KEY_MAX_LENGTH = 512;
+var JEV_TEST_MESSAGE_MAX_LENGTH = 500;
+var JEV_KEY_MASK_PREFIX = 3;
+var JEV_TEST_FAILURE_CODES = {
+  "region-blocked": true,
+  "bad-key": true,
+  network: true,
+  "http-error": true,
+  "malformed-response": true,
+  "no-key": true
+};
+var JEV_SETTINGS_KEYS = {
+  endpoint: true,
+  proxyUrl: true,
+  model: true,
+  keyConfigured: true,
+  keyMasked: true
+};
+function parseJevSettings(value) {
+  if (!isRecord(value))
+    throw new Error("jev settings must be an object");
+  if (typeof value.endpoint !== "string" || !value.endpoint) {
+    throw new Error("jev settings endpoint must be a non-empty string");
+  }
+  if (typeof value.model !== "string" || !value.model) {
+    throw new Error("jev settings model must be a non-empty string");
+  }
+  if (typeof value.keyConfigured !== "boolean") {
+    throw new Error("jev settings keyConfigured must be a boolean");
+  }
+  if (value.proxyUrl !== undefined && typeof value.proxyUrl !== "string") {
+    throw new Error("jev settings proxyUrl must be a string when present");
+  }
+  if (value.keyMasked !== null && typeof value.keyMasked !== "string") {
+    throw new Error("jev settings keyMasked must be a string or null");
+  }
+  if (Object.keys(value).some((key) => !JEV_SETTINGS_KEYS[key])) {
+    throw new Error("jev settings contains an unsupported field");
+  }
+  return {
+    endpoint: value.endpoint,
+    ...value.proxyUrl !== undefined ? { proxyUrl: value.proxyUrl } : {},
+    model: value.model,
+    keyConfigured: value.keyConfigured,
+    keyMasked: value.keyMasked
+  };
+}
+function parseJevTestResult(value) {
+  if (!isRecord(value))
+    throw new Error("jev test result must be an object");
+  if (value.ok === true) {
+    if (typeof value.latencyMs !== "number" || !Number.isFinite(value.latencyMs) || value.latencyMs < 0) {
+      throw new Error("jev test result requires a non-negative latencyMs");
+    }
+    if (Object.keys(value).some((key) => key !== "ok" && key !== "latencyMs")) {
+      throw new Error("jev test result contains an unsupported field");
+    }
+    return { ok: true, latencyMs: value.latencyMs };
+  }
+  if (value.ok === false) {
+    if (typeof value.code !== "string" || !JEV_TEST_FAILURE_CODES[value.code]) {
+      throw new Error("jev test result carries an unrecognized failure code");
+    }
+    if (typeof value.message !== "string" || !value.message.trim() || value.message.length > JEV_TEST_MESSAGE_MAX_LENGTH) {
+      throw new Error("jev test result requires a bounded failure message");
+    }
+    if (Object.keys(value).some((key) => key !== "ok" && key !== "code" && key !== "message")) {
+      throw new Error("jev test result contains an unsupported field");
+    }
+    return { ok: false, code: value.code, message: value.message };
+  }
+  throw new Error("jev test result must declare ok true or false");
+}
+
 // packages/relay-protocol/src/payload-validators.ts
 var fields = (p) => isObj(p) ? p : null;
 var isArr = (v) => Array.isArray(v);
@@ -1287,6 +1372,34 @@ var validateConversationRouterUpdate = (p) => {
   if (o.enabled !== undefined && typeof o.enabled !== "boolean")
     return null;
   if (!optRouterCommand(o.command) || !optRouterAuthEnv(o.authEnv))
+    return null;
+  return o;
+};
+var validateJevGet = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0)
+    return null;
+  return {};
+};
+var JEV_UPDATE_KEYS = { endpoint: true, proxyUrl: true, apiKey: true };
+var optJevUrl = (v, max) => v === undefined || v === null || typeof v === "string" && v.length <= max;
+var validateJevUpdate = (p) => {
+  const o = fields(p);
+  if (!o || isArr(o) || !hasOnlyKeys(o, JEV_UPDATE_KEYS))
+    return null;
+  if (!optJevUrl(o.endpoint, JEV_ENDPOINT_MAX_LENGTH))
+    return null;
+  if (!optJevUrl(o.proxyUrl, JEV_PROXY_URL_MAX_LENGTH))
+    return null;
+  if (o.apiKey !== undefined && o.apiKey !== null && (typeof o.apiKey !== "string" || o.apiKey.length > JEV_API_KEY_MAX_LENGTH))
+    return null;
+  return o;
+};
+var validateJevTest = (p) => {
+  const o = fields(p);
+  if (!o || isArr(o) || !hasOnlyKeys(o, { apiKey: true }))
+    return null;
+  if (o.apiKey !== undefined && (typeof o.apiKey !== "string" || o.apiKey.length > JEV_API_KEY_MAX_LENGTH))
     return null;
   return o;
 };
@@ -1864,6 +1977,9 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.conversationRouterSet]: validateConversationRouterSet,
   [MSG.conversationRouterUpdate]: validateConversationRouterUpdate,
+  [MSG.jevGet]: validateJevGet,
+  [MSG.jevUpdate]: validateJevUpdate,
+  [MSG.jevTest]: validateJevTest,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,
@@ -2116,7 +2232,7 @@ function errorCapability(reason, recovery, draft) {
 }
 var STALE_FETCHED_AT = "1970-01-01T00:00:00.000Z";
 function parseAgentCapabilityState(value) {
-  if (!isRecord(value) || typeof value.status !== "string")
+  if (!isRecord2(value) || typeof value.status !== "string")
     return stale("capability response is missing a status");
   if (value.status === "ready")
     return parseReady(value);
@@ -2133,7 +2249,7 @@ function parseReady(value) {
     return stale("ready capability has no adapter models");
   const models = [];
   for (const entry of value.models) {
-    if (!isRecord(entry) || typeof entry.modelId !== "string" || entry.source !== "adapter") {
+    if (!isRecord2(entry) || typeof entry.modelId !== "string" || entry.source !== "adapter") {
       return stale("ready capability contains a non-adapter model");
     }
     models.push({ modelId: entry.modelId, ...typeof entry.name === "string" ? { name: entry.name } : {} });
@@ -2204,14 +2320,14 @@ function assertReason(reason) {
   }
 }
 function parseReason(value) {
-  if (!isRecord(value) || typeof value.code !== "string" || typeof value.message !== "string")
+  if (!isRecord2(value) || typeof value.code !== "string" || typeof value.message !== "string")
     return;
   if (!REASON_CODES.has(value.code) || !value.message.trim())
     return;
   return { code: value.code, message: value.message };
 }
 function parseEfforts(value) {
-  if (!isRecord(value))
+  if (!isRecord2(value))
     return { status: "unavailable" };
   if (value.status === "unavailable")
     return { status: "unavailable" };
@@ -2219,7 +2335,7 @@ function parseEfforts(value) {
     return { status: "unavailable" };
   const ids = [];
   for (const option of value.options) {
-    if (!isRecord(option) || typeof option.id !== "string" || option.source !== "adapter")
+    if (!isRecord2(option) || typeof option.id !== "string" || option.source !== "adapter")
       continue;
     ids.push(option.id);
   }
@@ -2228,7 +2344,7 @@ function parseEfforts(value) {
 function stringIds(value, key) {
   if (!Array.isArray(value))
     return [];
-  return value.flatMap((entry) => isRecord(entry) && typeof entry[key] === "string" ? [entry[key]] : []);
+  return value.flatMap((entry) => isRecord2(entry) && typeof entry[key] === "string" ? [entry[key]] : []);
 }
 function optionalString(value) {
   return typeof value === "string" ? value : undefined;
@@ -2240,7 +2356,7 @@ function normalizeOptional(value) {
 function isFetchSource(value) {
   return typeof value === "string" && FETCH_SOURCES.has(value);
 }
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 // packages/relay-protocol/src/router-availability.ts
@@ -2252,13 +2368,14 @@ var FAILED = new Set([
   "probe-failed",
   "probe-timeout",
   "malformed-capabilities",
-  "read-failed"
+  "read-failed",
+  "jev-not-configured"
 ]);
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readReason(value) {
-  if (!isRecord2(value))
+  if (!isRecord3(value))
     return;
   if (typeof value.code !== "string" || typeof value.message !== "string")
     return;
@@ -2270,7 +2387,7 @@ function readReason(value) {
   return { code: value.code, message };
 }
 function parseRouterAvailability(value) {
-  if (!isRecord2(value) || value.configPath !== ROUTER_CONFIG_PATH) {
+  if (!isRecord3(value) || value.configPath !== ROUTER_CONFIG_PATH) {
     throw new Error("router availability is missing conversations.router");
   }
   const extra = Object.keys(value).filter((key) => key !== "status" && key !== "configPath" && key !== "reason");
@@ -2304,14 +2421,14 @@ function parseRouterAvailability(value) {
   throw new Error("router availability status is not recognized");
 }
 function parseConversationRouterState(value) {
-  if (!isRecord2(value))
+  if (!isRecord3(value))
     throw new Error("router state is missing");
   const extra = Object.keys(value).filter((key) => key !== "availability" && key !== "config");
   if (extra.length > 0)
     throw new Error("router state contains an unsupported field");
   const availability = parseRouterAvailability(value.availability);
   const config = value.config;
-  if (!isRecord2(config))
+  if (!isRecord3(config))
     throw new Error("router state config is missing");
   if (typeof config.enabled !== "boolean")
     throw new Error("router state config.enabled must be a boolean");
@@ -2351,6 +2468,11 @@ export {
   DESKTOP_TICKET_TTL_MS,
   DESKTOP_WS_MAX_PAYLOAD_BYTES,
   INTERACTION_WIRE_LIMITS,
+  JEV_API_KEY_MAX_LENGTH,
+  JEV_ENDPOINT_MAX_LENGTH,
+  JEV_KEY_MASK_PREFIX,
+  JEV_PROXY_URL_MAX_LENGTH,
+  JEV_TEST_MESSAGE_MAX_LENGTH,
   MAX_AGENT_MENTIONS,
   MAX_BOT_ID_LENGTH,
   MAX_CAPABILITIES,
@@ -2414,6 +2536,7 @@ export {
   isIntInRange,
   isNonNegInt,
   isObj,
+  isRecord,
   isStr,
   knownEfforts,
   maxBase64EncodedLength,
@@ -2431,6 +2554,8 @@ export {
   parseDesktopCredential,
   parseDesktopEventPayload,
   parseDesktopPrepareResult,
+  parseJevSettings,
+  parseJevTestResult,
   parseRouterAvailability,
   parseStoredBotAvatar,
   parseTerminalEventPayload,

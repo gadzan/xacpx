@@ -66,7 +66,27 @@ describe("Group Components", () => {
     setActivePinia(createPinia());
     seedInstance();
     vi.spyOn(useInstancesStore(), "loadRouterAvailability").mockResolvedValue(undefined);
+    vi.spyOn(useInstancesStore(), "loadJevSettings").mockResolvedValue(undefined);
   });
+
+  /** Seed the Jev panel for `i1` the way the store's read lands it. */
+  function seedJev(phase: "editable" | "read-only", keyConfigured: boolean): void {
+    useInstancesStore().jevPanelById = {
+      i1: phase === "editable"
+        ? {
+            phase: "editable",
+            settings: {
+              endpoint: "https://api.typesafe.ai/v1/systemone",
+              model: "jev-1.13.0",
+              keyConfigured,
+              keyMasked: keyConfigured ? "sk-…abcd" : null,
+            },
+            save: { kind: "idle" },
+            test: { kind: "idle" },
+          }
+        : { phase: "read-only", notice: "instance.jevUpgradeNotice" },
+    };
+  }
 
   describe("GroupComposer.vue", () => {
     it("renders the @name and @everyone hints literally in both locales", async () => {
@@ -744,7 +764,7 @@ describe("Group Components", () => {
       expect((textarea.element as HTMLTextAreaElement).value).toBe("keep me");
     });
 
-    it("does not select automatic collaboration unless the instance is ready", async () => {
+    it("hides the automatic option entirely when automatic collaboration is off", async () => {
       const groups = seedGroupSelection();
       const instances = useInstancesStore();
       instances.routerAvailabilityById = {
@@ -754,24 +774,53 @@ describe("Group Components", () => {
           reason: { code: "disabled", message: "Automatic collaboration is off." },
         },
       };
+      seedJev("editable", true);
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS, instanceId: "i1" },
         global: { plugins: [i18n] },
       });
       await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      const automatic = wrapper.find('[data-test="group-target-automatic"]');
-      expect(automatic.attributes("disabled")).toBeDefined();
-      expect(wrapper.find('[data-test="group-router-note"]').text()).toContain("conversations.router");
-      expect(wrapper.find('[data-test="group-router-note"]').text()).toContain("Automatic collaboration is off.");
-      await automatic.trigger("click");
+      // No disabled item with a reason: the option is not offered at all.
+      expect(wrapper.find('[data-test="group-target-automatic"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-router-note"]').exists()).toBe(false);
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
     });
 
-    it("selects automatic collaboration when the instance router is ready", async () => {
+    it("hides the automatic option when the router is ready but no Jev key is configured", async () => {
       const groups = seedGroupSelection();
       const instances = useInstancesStore();
       instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
+      seedJev("editable", false);
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      expect(wrapper.find('[data-test="group-target-automatic"]').exists()).toBe(false);
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
+
+    it("hides the automatic option on an instance that cannot report Jev settings", async () => {
+      const groups = seedGroupSelection();
+      const instances = useInstancesStore();
+      instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
+      seedJev("read-only", true);
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      expect(wrapper.find('[data-test="group-target-automatic"]').exists()).toBe(false);
+    });
+
+    it("selects automatic collaboration when the router is ready and a Jev key is configured", async () => {
+      const groups = seedGroupSelection();
+      const instances = useInstancesStore();
+      instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
+      seedJev("editable", true);
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS, instanceId: "i1" },
@@ -781,6 +830,26 @@ describe("Group Components", () => {
       await wrapper.find('[data-test="group-target-automatic"]').trigger("click");
       expect(groups.targetSelection).toEqual({ mode: "automatic" });
       expect(wrapper.find('[data-test="group-target-button"]').text()).toContain("Automatic collaboration");
+    });
+
+    it("drops an in-progress automatic selection when the Jev key is cleared", async () => {
+      const groups = seedGroupSelection();
+      const instances = useInstancesStore();
+      instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
+      seedJev("editable", true);
+      groups.targetSelection = { mode: "automatic" };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect(groups.targetSelection).toEqual({ mode: "automatic" });
+      // Another tab clears the key: the option disappears and the draft target
+      // falls back to the Group's eligible selection instead of stranding it.
+      seedJev("editable", false);
+      await flushPromises();
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      wrapper.unmount();
     });
 
     it("shows feedback for an unresolved mention and drops the previous target", async () => {
@@ -797,6 +866,40 @@ describe("Group Components", () => {
   });
 
   describe("GroupTranscript.vue", () => {
+    it("keeps Run card header and member details readable on narrow viewports", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+          assignmentId: "auto-0-bot_be706cc5-1f9e-4e77-9cb2-a842d2d9687e",
+          task: "群组里如果自动协作关了，那个下拉框里会提示 Automatic collaboration is off.",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      // Regression: on phones the header flex row squeezed the title / stop
+      // button to min-content, stacking CJK chars one per line.
+      const header = wrapper.get('[data-test="group-run-header"]').classes();
+      expect(header).toEqual(expect.arrayContaining(["min-w-0", "flex-1", "flex-wrap"]));
+      expect(wrapper.get('[data-test="group-run-title"]').classes()).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+      expect(wrapper.get('[data-test="group-running-members"]').classes()).toEqual(expect.arrayContaining(["min-w-0", "break-words"]));
+      expect(wrapper.get('[data-test="group-stop-run-button"]').classes()).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+      const details = wrapper.get('[data-test="group-member-details"]');
+      expect(details.classes()).toEqual(expect.arrayContaining(["min-w-0", "break-words"]));
+      expect(details.classes()).not.toContain("break-all");
+      expect(details.text()).toContain("auto-0-bot_be706cc5");
+    });
+
     it("renders one Run card row per member with exact statuses", async () => {
       const groups = seedGroupSelection();
       groups.activeRun = {
@@ -855,6 +958,35 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-member-activity"]').exists()).toBe(false);
       await wrapper.find('[data-test="group-member-toggle"]').trigger("click");
       expect(wrapper.find('[data-test="group-member-activity"]').exists()).toBe(true);
+    });
+
+    it("names the Jev pick and its reason on an automatic run card", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_jev", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+        routingState: "done", routingReason: "Jev picked Reviewer for this message (confidence 0.82).",
+        maxMemberTurns: 24, consumedMemberTurns: 1, profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_jev", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "router",
+          state: "running", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-run-dispatched"]').text()).toContain("Reviewer");
+      expect(wrapper.find('[data-test="group-run-routing-reason"]').text()).toBe(
+        "Jev picked Reviewer for this message (confidence 0.82).",
+      );
+      // One pick, one row: no queued siblings from the old fan-out rendering.
+      expect(wrapper.findAll('[data-test="group-member-row"]')).toHaveLength(1);
+      wrapper.unmount();
     });
 
     it("shows a waiting run without turning it into running", async () => {

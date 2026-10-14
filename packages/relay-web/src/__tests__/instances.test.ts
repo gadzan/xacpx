@@ -610,3 +610,88 @@ test("InstanceTree renders an online dot per instance", () => {
   expect(dots[0]!.classes()).toContain("bg-run");
   expect(dots[1]!.classes()).toContain("bg-fg-muted");
 });
+
+// ---------------------------------------------------------------------------
+// Jev settings panel — one per instance, masked key, unknown-type degradation
+// ---------------------------------------------------------------------------
+
+const JEV_VIEW = {
+  endpoint: "https://api.typesafe.ai/v1/systemone",
+  model: "jev-1.13.0",
+  keyConfigured: true,
+  keyMasked: "sk-…abcd",
+};
+
+test("loadJevSettings stores the masked settings as an editable panel", async () => {
+  vi.spyOn(api, "rpc").mockResolvedValue(JEV_VIEW as never);
+  const store = useInstancesStore();
+  await store.loadJevSettings("i1");
+  expect(store.jevPanelFor("i1")).toEqual({
+    phase: "editable",
+    settings: JEV_VIEW,
+    save: { kind: "idle" },
+    test: { kind: "idle" },
+  });
+});
+
+test("loadJevSettings never receives the key in plaintext", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue(JEV_VIEW as never);
+  const store = useInstancesStore();
+  await store.loadJevSettings("i1");
+  expect(JSON.stringify(store.jevPanelFor("i1"))).not.toContain("sk-1234567890abcd");
+  expect(rpc).toHaveBeenCalledWith("i1", "control.jev.get", {});
+});
+
+test("loadJevSettings degrades to read-only with the upgrade notice on an older daemon", async () => {
+  vi.spyOn(api, "rpc").mockRejectedValue(
+    new Error("This feature needs a newer connector — rebuild and reconnect the relay channel on that instance."),
+  );
+  const store = useInstancesStore();
+  await store.loadJevSettings("i1");
+  expect(store.jevPanelFor("i1")).toEqual({
+    phase: "read-only",
+    notice: "instance.jevUpgradeNotice",
+  });
+});
+
+test("loadJevSettings degrades to read-only on any other failure", async () => {
+  vi.spyOn(api, "rpc").mockRejectedValue(new Error("boom"));
+  const store = useInstancesStore();
+  await store.loadJevSettings("i1");
+  expect(store.jevPanelFor("i1")).toEqual({ phase: "read-only", notice: "" });
+});
+
+test("saveJevSettings writes the patch and stores the answered view", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ ...JEV_VIEW, keyMasked: "sk-…1234" } as never);
+  const store = useInstancesStore();
+  const settings = await store.saveJevSettings("i1", { apiKey: "sk-12345678901234" });
+  expect(rpc).toHaveBeenCalledWith("i1", "control.jev.update", { apiKey: "sk-12345678901234" });
+  expect(settings.keyMasked).toBe("sk-…1234");
+  expect(store.jevPanelFor("i1")).toMatchObject({ phase: "editable" });
+});
+
+test("testJevConnection maps the classified answer onto the panel's test state", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue(JEV_VIEW as never);
+  const store = useInstancesStore();
+  await store.loadJevSettings("i1");
+  rpc.mockResolvedValue({ ok: true, latencyMs: 812 } as never);
+  const result = await store.testJevConnection("i1");
+  expect(result).toEqual({ ok: true, latencyMs: 812 });
+  expect(rpc).toHaveBeenLastCalledWith("i1", "control.jev.test", {});
+  expect(store.jevPanelFor("i1")).toMatchObject({ test: { kind: "ok", latencyMs: 812 } });
+});
+
+test("testJevConnection records the failure code and keeps the draft testable", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue(JEV_VIEW as never);
+  const store = useInstancesStore();
+  await store.loadJevSettings("i1");
+  rpc.mockResolvedValue({
+    ok: false,
+    code: "region-blocked",
+    message: "TypeSafe is not available in this region. Configure an HTTP proxy for Jev.",
+  } as never);
+  await store.testJevConnection("i1", "sk-unsaved");
+  expect(store.jevPanelFor("i1")).toMatchObject({
+    test: { kind: "failed", code: "region-blocked" },
+  });
+});

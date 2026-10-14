@@ -5,6 +5,7 @@ import {
   isRouterCapabilityRestricted,
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_ASSIGNMENT_ID_LENGTH,
+  MAX_ROUTER_REASON_LENGTH,
   MAX_ROUTER_TASK_LENGTH,
   parseRoutingDecision,
   type RoutingDecision,
@@ -13,6 +14,8 @@ import {
 } from "../../../src/conversations/conversation-router-types";
 import {
   decideDefaultRouterAssignment,
+  decideJevRouterAssignment,
+  readJevRouterEnv,
   resolveDefaultRouterEntry,
   runDefaultRouterCli,
   type DefaultRouterCliIo,
@@ -315,3 +318,266 @@ function routingInput(): RoutingInput {
     executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
   };
 }
+
+// ---------------------------------------------------------------------------
+// decideJevRouterAssignment — the Jev policy: one pick, bounded fallbacks
+// ---------------------------------------------------------------------------
+
+const JEV_ENV = {
+  endpoint: "https://api.typesafe.ai/v1/systemone",
+  apiKey: "sk-test-not-a-real-key",
+  model: "jev-1.13.0",
+};
+
+interface AskCall {
+  message: string;
+  question: string;
+  choices: Array<{ key: string; description: string }>;
+  endpoint: string;
+  apiKey: string;
+  proxyUrl?: string;
+  model: string;
+}
+
+/** A fake ask seam that records the call and answers with `answer`. */
+function fakeAsk(answer: { ok: true; choice: string; confidence: number } | { ok: false; code: string }): {
+  ask: Parameters<typeof decideJevRouterAssignment>[1];
+  calls: AskCall[];
+} {
+  const calls: AskCall[] = [];
+  const ask = (async (input: AskCall) => {
+    calls.push(input);
+    return answer.ok
+      ? { ok: true, choice: answer.choice, confidence: answer.confidence, latencyMs: 5 }
+      : { ok: false, code: answer.code, message: `failed: ${answer.code}` };
+  }) as unknown as Parameters<typeof decideJevRouterAssignment>[1];
+  return { ask, calls };
+}
+
+function jevInput(overrides: Partial<DefaultRouterDecisionInput> = {}): Parameters<typeof decideJevRouterAssignment>[0] {
+  return { ...decisionInput(overrides), jev: JEV_ENV };
+}
+
+test("a confident pick dispatches to that member only, with the reason", async () => {
+  const { ask, calls } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.82 });
+  const decision = await decideJevRouterAssignment(jevInput(), ask);
+  const dispatch = expectDispatch(decision);
+  expect(dispatch.mode).toBe("single");
+  expect(dispatch.assignments).toHaveLength(1);
+  expect(dispatch.assignments[0]?.botId).toBe("bot_reviewer");
+  expect(dispatch.assignments[0]?.task).toBe("review the patch");
+  expect(dispatch.assignments[0]?.triggerMessageIds).toEqual(["cmsg_1"]);
+  expect(dispatch.reason).toContain("bot_reviewer");
+  expect(dispatch.reason).toContain("0.82");
+  // Disabled members are never offered as choices.
+  expect(calls[0]?.choices.map((c) => c.key)).toEqual(["bot_reviewer"]);
+  expect(calls[0]?.choices[0]?.description).toBe("bot_reviewer");
+  expect(calls[0]?.question).toBe("Which bot should handle this message?");
+  expect(calls[0]?.apiKey).toBe(JEV_ENV.apiKey);
+});
+
+test("the member's role is the criteria description when it has one", async () => {
+  const { ask, calls } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.9 });
+  await decideJevRouterAssignment(jevInput({
+    members: [
+      { botId: "bot_reviewer", name: "Reviewer", role: "reviews PRs", agent: "codex", workspace: "backend", enabled: true },
+    ],
+  }), ask);
+  expect(calls[0]?.choices[0]?.description).toBe("reviews PRs");
+});
+
+test("a bounded transcript block is folded into the state message", async () => {
+  const { ask, calls } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.9 });
+  await decideJevRouterAssignment(jevInput({
+    publicTranscript: [
+      { id: "m1", seq: 9, role: "bot", senderBotId: "bot_reviewer", content: "earlier finding", runId: "run_1" },
+      { id: "m0", seq: 1, role: "human", content: "first question" },
+    ],
+  }), ask);
+  expect(calls[0]?.message).toContain("review the patch");
+  expect(calls[0]?.message).toContain("Recent context:");
+  expect(calls[0]?.message).toContain("bot_reviewer: earlier finding");
+});
+
+test("confidence below the floor falls back to the group lead", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.31 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("low confidence");
+  expect(decision.reason).toContain("group lead");
+});
+
+test("an unknown pick falls back to the group lead", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_ghost", confidence: 0.99 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("bot_ghost");
+});
+
+test("a Jev failure falls back to the group lead and names the cause", async () => {
+  const { ask } = fakeAsk({ ok: false, code: "region-blocked" });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("region-blocked");
+});
+
+test("a throwing ask falls back instead of failing the run", async () => {
+  const ask = (async () => {
+    throw new Error("socket hang up");
+  }) as unknown as Parameters<typeof decideJevRouterAssignment>[1];
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("socket hang up");
+});
+
+test("with no lead configured the first enabled member is the fallback", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_ghost", confidence: 0.99 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_first"), member("bot_second")],
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_first");
+  expect(decision.reason).toContain("no group lead");
+});
+
+test("a lead that is not an enabled member is never the fallback", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_ghost", confidence: 0.99 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_first"), member("bot_disabled_lead", false)],
+    leadBotId: "bot_disabled_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_first");
+});
+
+test("the Jev policy keeps the fan-out's guard order", async () => {
+  const { ask, calls } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.9 });
+  expect(await decideJevRouterAssignment(jevInput({ request: "   " }), ask)).toMatchObject({
+    type: "need-human",
+  });
+  expect(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer", false)],
+  }), ask)).toMatchObject({ type: "complete" });
+  expect(await decideJevRouterAssignment(jevInput({ remainingBudget: 0 }), ask)).toMatchObject({
+    type: "complete",
+  });
+  expect(await decideJevRouterAssignment(jevInput({ completedAssignmentCount: 1 }), ask)).toMatchObject({
+    type: "complete",
+  });
+  // No guard reached the model.
+  expect(calls).toHaveLength(0);
+});
+
+test("the decision reason is bounded and parses through the router gate", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.9 });
+  const decision = await decideJevRouterAssignment(jevInput(), ask);
+  const dispatch = expectDispatch(decision);
+  expect((dispatch.reason ?? "").length).toBeLessThanOrEqual(MAX_ROUTER_REASON_LENGTH);
+  // The gate accepts the reason field: strict parsing rejects unknown fields.
+  expect(() => parseRoutingDecision(dispatch)).not.toThrow();
+});
+
+test("a Jev decision survives the engine's domain gate", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.9 });
+  const decision = await decideJevRouterAssignment(jevInput(), ask);
+  const gate = gateRoutingDecision(decision, routingInput());
+  expect(gate.kind).toBe("decision");
+});
+
+test("readJevRouterEnv reads the daemon's environment and defaults the endpoint", () => {
+  expect(readJevRouterEnv({
+    XACPX_JEV_API_KEY: "sk-live",
+    XACPX_JEV_PROXY: "http://127.0.0.1:8080",
+  })).toEqual({
+    endpoint: "https://api.typesafe.ai/v1/systemone",
+    apiKey: "sk-live",
+    proxyUrl: "http://127.0.0.1:8080",
+    model: "jev-1.13.0",
+  });
+  expect(readJevRouterEnv({})).toBeUndefined();
+  expect(readJevRouterEnv({ XACPX_JEV_API_KEY: "  " })).toBeUndefined();
+});
+
+test("--decide runs the Jev policy when the env carries a key", async () => {
+  const { ask, calls } = fakeAsk({ ok: true, choice: "bot_builder", confidence: 0.77 });
+  // The CLI uses the real ask seam; drive it through the environment by pointing
+  // the endpoint at a loopback server instead.
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => new Response(JSON.stringify({
+      answers: { bot: { type: "choice", choice: "bot_builder", confidence: 0.77 } },
+    }), { headers: { "content-type": "application/json" } }),
+  });
+  try {
+    const capture = cliIo(["--decide"], JSON.stringify(routingInput()));
+    capture.io.env = {
+      XACPX_JEV_API_KEY: "sk-loopback",
+      XACPX_JEV_ENDPOINT: `http://127.0.0.1:${server.port}/v1/systemone`,
+      XACPX_JEV_MODEL: "jev-1.13.0",
+    };
+    const code = await runDefaultRouterCli(capture.io);
+    expect(code).toBe(0);
+    const decision = JSON.parse(capture.stdout.join("")) as RoutingDecision;
+    expect(decision).toMatchObject({
+      type: "dispatch",
+      mode: "single",
+      reason: expect.stringContaining("bot_builder"),
+    });
+    expect(ask).toBeDefined();
+    expect(calls).toHaveLength(0);
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("confidence exactly at the 0.6 floor dispatches to the pick", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.6 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_reviewer");
+  expect(decision.reason).toContain("0.60");
+});
+
+test("confidence 0.59 (just under the floor) falls back to the lead", async () => {
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0.59 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("low confidence 0.59");
+});
+
+test("a pick with no confidence in the answer falls back to the lead", async () => {
+  // askJevChoice maps a missing confidence to 0 (see jev-client tests).
+  const { ask } = fakeAsk({ ok: true, choice: "bot_reviewer", confidence: 0 });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_reviewer"), member("bot_lead")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("low confidence");
+});
+
+test("a disabled group lead falls back to the first enabled member with an accurate reason", async () => {
+  const { ask } = fakeAsk({ ok: false, code: "network" });
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput({
+    members: [member("bot_lead", false), member("bot_first"), member("bot_second")],
+    leadBotId: "bot_lead",
+  }), ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_first");
+  expect(decision.reason).toContain("the group lead is not enabled");
+  expect(decision.reason).not.toContain("no group lead is configured");
+});

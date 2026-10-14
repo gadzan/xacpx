@@ -112,6 +112,64 @@ describe("Direct completion", () => {
     expect(w.find('[role="listbox"]').exists()).toBe(true);
     expect(t.attributes("aria-expanded")).toBe("true");
   });
+  it("slash mode sends no mention query even when the token also looks like a mention", async () => {
+    const w = input(),
+      t = w.get("textarea");
+    await t.setValue("/(@x");
+    await flushPromises();
+    for (const call of vi.mocked(api.rpc).mock.calls)
+      expect(call[2]).not.toHaveProperty("query");
+    expect(api.rpc).toHaveBeenCalledWith("i1", "control.conversation.completions.get", { conversationId: "c1", topicId: "t1" });
+  });
+  it("cold-bot mention mode does not re-poll and keeps pages loaded via more", async () => {
+    vi.useFakeTimers();
+    try {
+      const many = (from: number, n: number) =>
+        Array.from({ length: n }, (_, i) => ({ handle: "agent:n:m" + (from + i), displayName: "M" + (from + i), agent: "codex", workspace: "backend" }));
+      vi.mocked(api.rpc).mockImplementation(async (_i, _t, payload) => {
+        const cursor = (payload as { cursor?: number }).cursor ?? 0;
+        return {
+          ...ready(),
+          commands: { status: "loading", items: [] },
+          mentions: { status: "ready", items: many(cursor, 8), ...(cursor === 0 ? { nextCursor: 8 } : {}) },
+        };
+      });
+      const w = input(),
+        t = w.get("textarea");
+      await t.setValue("@");
+      await flushPromises();
+      expect(w.text()).toContain("M0");
+      const more = w.findAll("button").find((b) => b.text() === i18n.global.t("bot.prompt.moreCompletions"));
+      expect(more).toBeDefined();
+      await more!.trigger("click");
+      await flushPromises();
+      expect(w.text()).toContain("M8");
+      const calls = vi.mocked(api.rpc).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5000);
+      await flushPromises();
+      expect(vi.mocked(api.rpc).mock.calls.length).toBe(calls);
+      expect(w.text()).toContain("M8");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("slash mode still re-polls while commands are loading", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.rpc).mockResolvedValue({ ...ready(), commands: { status: "loading", items: [] } });
+      const w = input(),
+        t = w.get("textarea");
+      await t.setValue("@a /");
+      await t.setValue("/");
+      await flushPromises();
+      const calls = vi.mocked(api.rpc).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1600);
+      await flushPromises();
+      expect(vi.mocked(api.rpc).mock.calls.length).toBeGreaterThan(calls);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("chooses duplicate names by handle with mouse/touch click and edit removes identity", async () => {
     const deliver = vi.fn().mockResolvedValue("uncertain");
     const w = input({ deliver }),

@@ -423,8 +423,8 @@ Group 同一 Bot 可以有多个 MemberTurn 记录。实时任务行按各自 Me
 
 ### 实施验证记录
 
-- `bun run build:packages` 完成；随后对精确交互归属补丁重建 CLI、plugin API 与 relay connector。根类型检查使用实际项目编译器 `bun run tsc --noEmit`；本机 `npx tsc` 未解析到 TypeScript 编译器，不能把该输出当作通过。
-- 最终协调构建后，后端头像与交互回归合计 15 个文件、429 项通过（头像 167、交互内核 242、Relay 交互 20）；完整 Web 166 个文件、2,227 项通过。最终桌面 / 手机弹层 Playwright 8 项通过。
+- 合并最新 `main`（`99c160d9`）后，`bun run build:packages` 与实际项目编译器 `bun run tsc --noEmit` 均完成；协议产物从同时包含头像与 Jev 的源入口重新生成。本机 `npx tsc` 未解析到 TypeScript 编译器，不能把该输出当作通过。
+- 合并前头像与交互回归 15 个文件、429 项通过；合并后同组用例连同上游 Jev 回归共 18 个文件、500 项通过，唯一失败是上游 `jev-settings.test.ts:43` 在 Windows 将文件模式报告为 `666` 而非 POSIX `600`。完整 Web 合并后 168 个文件、2,261 项通过；桌面 / 手机弹层 Playwright 8 项通过。
 - 隔离真实 daemon + Hub + dashboard，使用真实 ACP 进程协议 fixture（不是外部模型服务）：验证创建、保存、取消、清除默认图标、刷新与 daemon 重启；当前资料改为红色 / 关闭运动后，已接受任务仍保留紫色 / 自动运动的 revision-1 快照。
 - 实际 Run 记录 queued → working → streaming → completed 始终使用同一 SVG clip；完成时眼睛短暂闭合再恢复。真实 q2 交互具有与当前任务完全一致的 Bot / Run / MemberTurn ID，头像显示 waiting，回答后显示 completed；结构化 ACP 错误显示 failed，实际流式 Stop 显示 cancelled，未知结果不伪装成完成。
 - Group 实际成员任务保持各自终态；真实 `group_send` MCP 调用产生公开交接，两个 24px 静态头像保留不同外观，详情与接收方实际回复可展开。禁用运行中的 Bot 仍显示 working 并持续更新；未运行的禁用终态静止。
@@ -434,6 +434,7 @@ Group 同一 Bot 可以有多个 MemberTurn 记录。实时任务行按各自 Me
 - 实际 Group 状态记录中，发送方 completed 后接收方才进入 working / streaming；发送方始终保持自己的 completed，不随接收方一起忙碌。切到新 Topic 后旧成员任务头像不残留。
 - 全量 `npm test` 在未修改的 Windows Hermes URL fixture 处失败；此前宽范围单元运行有环境依赖与超时，未宣称全量通过。未运行需要真实微信与模型服务的 `tests/smoke`。
 - `node scripts/verify-stack.mjs down` 与 `doctor` 完成：无残留进程、端口、状态目录或 scheduled task，operator home 未改动；临时 ACP / MCP verifier 与浏览器诊断已删除。
+- 合并后再次启动隔离真实 stack，验证紫色云朵 / 好奇 / 自动运动保存落盘、取消红色草稿与刷新保持原配置；Working 编辑预览连续 20 次采样得到 20 个不同画面，保存后的真实空闲头像仍为 Idle。创建两个不同头像的 Bot、Group 与 Topic，实际成员选择器显示静态身份头像；未配置 Jev key 时自动协作选项仍隐藏。第二次 `down` / `doctor` 同样干净。
 
 ## 11. 授权与发布
 

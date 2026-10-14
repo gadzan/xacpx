@@ -489,6 +489,13 @@ export interface ConversationRunDto {
      * (explicit Runs never route); absent on older wire shapes.
      */
     routingState?: "queued" | "routing" | "dispatching" | "done";
+    /**
+     * Human-readable reason of the latest routing decision on an automatic Run
+     * (who the request was dispatched to and why, or the fallback cause).
+     * Durable across reconnect/restart; absent on explicit Runs and older
+     * wire shapes.
+     */
+    routingReason?: string;
     /** Durable Router question while an automatic Run waits for human input. */
     waitingQuestion?: string;
     createdAt: string;

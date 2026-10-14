@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X } from "lucide-vue-next";
-import type { ConversationRouterUpdatePayload } from "@ganglion/xacpx-relay-protocol";
+import type { ConversationRouterUpdatePayload, JevUpdatePayload } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import WorkspacesManager from "./WorkspacesManager.vue";
@@ -11,7 +11,7 @@ import AgentsManager from "./AgentsManager.vue";
 const props = defineProps<{ instanceId: string; instanceName: string }>();
 const emit = defineEmits<{ close: [] }>();
 const store = useInstancesStore();
-const { t } = useI18n();
+const { t, te } = useI18n();
 
 const coreVersion = computed(() => store.byId(props.instanceId)?.coreVersion ?? null);
 
@@ -94,6 +94,18 @@ const routerStatus = computed(() => {
   return t("instance.autoCollabFailed");
 });
 
+/** For `unsupported`/`failed`, a localized per-code explanation with an actionable
+ *  hint, plus the daemon's raw message as secondary detail. */
+const routerReason = computed<{ explain: string; detail: string } | null>(() => {
+  const state = panel.value;
+  if (state.phase === "loading") return null;
+  const availability = state.availability;
+  if (availability.status !== "unsupported" && availability.status !== "failed") return null;
+  const { code, message } = availability.reason;
+  const key = `instance.autoCollabReason.${code}`;
+  return { explain: te(key) ? t(key) : t("instance.autoCollabReason.unknown"), detail: message };
+});
+
 const routerHint = computed(() => {
   const state = panel.value;
   return state.phase === "read-only" && state.notice ? t(state.notice) : t("instance.autoCollabBody");
@@ -119,9 +131,119 @@ async function toggleRouter(): Promise<void> {
   await writeRouter({ enabled: !config.enabled });
 }
 
+// Jev routing settings. The API key never reaches the dashboard: the panel's
+// `keyMasked` is the only preview, and the key input is a write-only draft —
+// typing replaces, the clear button removes, saving with an empty draft keeps.
+const jevPanel = computed(() => store.jevPanelFor(props.instanceId));
+const jevSettings = computed(() => (jevPanel.value.phase === "editable" ? jevPanel.value.settings : null));
+const jevEditable = computed(() => jevPanel.value.phase === "editable");
+const jevUpgradeNotice = computed(() =>
+  jevPanel.value.phase === "read-only" && jevPanel.value.notice ? jevPanel.value.notice : "");
+const jevSaving = computed(() =>
+  jevPanel.value.phase === "editable" && jevPanel.value.save.kind === "saving");
+const jevErrorText = computed(() => {
+  const state = jevPanel.value;
+  return state.phase === "editable" && state.save.kind === "failed" ? state.save.message : "";
+});
+const jevTestView = computed(() => {
+  const state = jevPanel.value;
+  if (state.phase !== "editable") return null;
+  if (state.test.kind === "testing") return { kind: "testing" as const };
+  if (state.test.kind === "ok") {
+    return { kind: "ok" as const, text: t("instance.jevTest.ok", { ms: state.test.latencyMs }) };
+  }
+  if (state.test.kind === "failed") {
+    const key = `instance.jevTest.${state.test.code}`;
+    return {
+      kind: "failed" as const,
+      ok: false,
+      text: te(key) ? t(key) : t("instance.jevTest.unknown"),
+      detail: state.test.message,
+    };
+  }
+  return null;
+});
+
+const jevEndpoint = ref("");
+const jevProxy = ref("");
+const jevSeededEndpoint = ref("");
+const jevSeededProxy = ref("");
+const jevKeyDraft = ref("");
+const jevKeyCleared = ref(false);
+let jevSeeded = false;
+
+// Seed the drafts once per panel arrival. A re-read (e.g. the
+// conversation-router-changed event a Jev save itself emits) must not clobber
+// what the user is typing, so only the first editable landing seeds. The
+// seeded values double as the dirty baseline: Save patches only what changed.
+watch(jevSettings, (settings) => {
+  if (!settings) {
+    jevSeeded = false;
+    return;
+  }
+  if (jevSeeded) return;
+  jevSeeded = true;
+  jevSeededEndpoint.value = settings.endpoint;
+  jevSeededProxy.value = settings.proxyUrl ?? "";
+  jevEndpoint.value = settings.endpoint;
+  jevProxy.value = settings.proxyUrl ?? "";
+  jevKeyDraft.value = "";
+  jevKeyCleared.value = false;
+});
+
+function clearJevKey(): void {
+  jevKeyDraft.value = "";
+  jevKeyCleared.value = true;
+}
+
+/** Build the patch from the drafts against the seeded baseline: an untouched
+ *  field is omitted (kept), an edited field is sent, and an emptied proxy
+ *  clears the override so Jev falls back to the daemon process env. */
+function jevPatch(): JevUpdatePayload {
+  const endpoint = jevEndpoint.value.trim();
+  const proxy = jevProxy.value.trim();
+  return {
+    ...(endpoint !== jevSeededEndpoint.value && endpoint.length > 0 ? { endpoint } : {}),
+    ...(proxy !== jevSeededProxy.value ? { proxyUrl: proxy.length > 0 ? proxy : null } : {}),
+    ...(jevKeyDraft.value.trim().length > 0
+      ? { apiKey: jevKeyDraft.value.trim() }
+      : jevKeyCleared.value
+        ? { apiKey: null }
+        : {}),
+  };
+}
+
+async function saveJev(): Promise<void> {
+  if (jevSaving.value) return;
+  store.setJevSaveState(props.instanceId, { kind: "saving" });
+  try {
+    await store.saveJevSettings(props.instanceId, jevPatch());
+    jevKeyDraft.value = "";
+    jevKeyCleared.value = false;
+    // Back to idle so a second save (key now, proxy later) stays possible.
+    store.setJevSaveState(props.instanceId, { kind: "idle" });
+  } catch (error) {
+    store.setJevSaveState(props.instanceId, {
+      kind: "failed",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function testJev(): Promise<void> {
+  const draft = jevKeyDraft.value.trim();
+  try {
+    // A draft key is tested unsaved; an empty draft tests whatever is stored.
+    await store.testJevConnection(props.instanceId, draft.length > 0 ? draft : undefined);
+  } catch {
+    // The store already recorded the failure state for the banner.
+  }
+}
+
 onMounted(async () => {
   // The router panel carries its own loading phase, so it must not gate the tab body.
   void store.loadRouterPanel(props.instanceId);
+  void store.loadJevSettings(props.instanceId);
   try {
     await store.loadFormOptions(props.instanceId);
   } catch {
@@ -197,9 +319,71 @@ onMounted(async () => {
                 </button>
                 <p data-test="router-status" class="text-sm text-fg-muted">{{ routerStatus }}</p>
               </div>
+              <div v-if="routerReason" data-test="router-reason" class="space-y-1 rounded bg-fg/5 px-3 py-2">
+                <p data-test="router-reason-explain" class="text-xs text-fg">{{ routerReason.explain }}</p>
+                <p v-if="routerReason.detail" data-test="router-reason-detail" class="break-words font-mono text-xs text-fg-muted">{{ routerReason.detail }}</p>
+              </div>
               <p data-test="router-hint" class="text-xs text-fg-muted">{{ routerHint }}</p>
               <p v-if="routerErrorText" data-test="router-error" class="text-xs text-error">{{ routerErrorText }}</p>
             </section>
+            <!-- Jev routing settings: the brain behind automatic collaboration.
+                 Instance-scoped, stored daemon-side, key never displayed. -->
+            <section v-if="jevEditable" data-test="jev-settings" class="space-y-2">
+              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.jevTitle") }}</h3>
+              <p class="text-xs text-fg-muted">{{ $t("instance.jevBody") }}</p>
+              <div class="space-y-1">
+                <label class="block text-xs font-medium text-fg-muted" for="jev-endpoint">{{ $t("instance.jevEndpoint") }}</label>
+                <input id="jev-endpoint" v-model="jevEndpoint" data-test="jev-endpoint" type="url" inputmode="url"
+                       placeholder="https://api.typesafe.ai/v1/systemone"
+                       class="w-full rounded border border-border bg-bg px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+              </div>
+              <div class="space-y-1">
+                <label class="block text-xs font-medium text-fg-muted" for="jev-key">{{ $t("instance.jevApiKey") }}</label>
+                <div class="flex gap-2">
+                  <input id="jev-key" v-model="jevKeyDraft" data-test="jev-api-key" type="password" autocomplete="new-password"
+                         :placeholder="jevSettings?.keyMasked ?? $t('instance.jevApiKeyEmpty')"
+                         class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                  <button v-if="jevSettings?.keyConfigured" data-test="jev-api-key-clear" type="button"
+                          class="shrink-0 rounded border border-border px-2 py-1 text-xs text-fg-muted hover:bg-fg/5 hover:text-fg"
+                          @click="clearJevKey">{{ $t("instance.jevApiKeyClear") }}</button>
+                </div>
+                <p v-if="jevSettings?.keyConfigured && !jevKeyCleared" data-test="jev-api-key-masked" class="text-xs text-fg-muted">
+                  {{ $t("instance.jevApiKeyMasked", { masked: jevSettings.keyMasked ?? "" }) }}
+                </p>
+                <p v-else-if="jevKeyCleared" data-test="jev-api-key-cleared" class="text-xs text-fg-muted">
+                  {{ $t("instance.jevApiKeyWillClear") }}
+                </p>
+              </div>
+              <div class="space-y-1">
+                <label class="block text-xs font-medium text-fg-muted" for="jev-proxy">{{ $t("instance.jevProxy") }}</label>
+                <input id="jev-proxy" v-model="jevProxy" data-test="jev-proxy" type="url" inputmode="url"
+                       placeholder="http://127.0.0.1:8080"
+                       class="w-full rounded border border-border bg-bg px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                <p class="text-xs text-fg-muted">{{ $t("instance.jevProxyHint") }}</p>
+              </div>
+              <div class="space-y-1">
+                <span class="block text-xs font-medium text-fg-muted">{{ $t("instance.jevModel") }}</span>
+                <p data-test="jev-model" class="font-mono text-xs text-fg">{{ jevSettings?.model }}</p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button data-test="jev-save" type="button"
+                        class="rounded bg-accent px-3 py-1.5 text-xs text-white hover:bg-accent-hover disabled:opacity-50"
+                        :disabled="jevSaving || !instanceOnline" @click="saveJev">
+                  {{ jevSaving ? $t("instance.jevSaving") : $t("instance.jevSave") }}
+                </button>
+                <button data-test="jev-test" type="button"
+                        class="rounded border border-border px-3 py-1.5 text-xs text-fg hover:bg-fg/5 disabled:opacity-50"
+                        :disabled="jevPanel.phase !== 'editable' || jevPanel.test.kind === 'testing' || !instanceOnline"
+                        @click="testJev">{{ $t("instance.jevTestButton") }}</button>
+                <span v-if="jevTestView" data-test="jev-test-result" class="text-xs"
+                      :class="jevTestView.kind === 'ok' ? 'text-success' : jevTestView.kind === 'failed' ? 'text-error' : 'text-fg-muted'">
+                  {{ jevTestView.kind === 'testing' ? $t("instance.jevTesting") : jevTestView.text }}
+                </span>
+              </div>
+              <p v-if="jevTestView?.kind === 'failed' && jevTestView.detail" data-test="jev-test-detail" class="break-words font-mono text-xs text-fg-muted">{{ jevTestView.detail }}</p>
+              <p v-if="jevErrorText" data-test="jev-error" class="text-xs text-error">{{ jevErrorText }}</p>
+            </section>
+            <p v-else-if="jevUpgradeNotice" data-test="jev-upgrade-notice" class="text-xs text-fg-muted">{{ $t(jevUpgradeNotice) }}</p>
             <section class="space-y-1">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.versionLabel") }}</h3>
               <p class="text-sm text-fg-muted" data-test="instance-version">

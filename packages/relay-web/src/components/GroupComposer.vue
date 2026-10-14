@@ -65,12 +65,16 @@ const availability = computed(() => {
   return instancesStore.routerAvailabilityFor(id);
 });
 const automaticReady = computed(() => availability.value.status === "ready");
-const automaticNote = computed(() => {
-  const state = availability.value;
-  if (state.status === "loading") return t("group.router.checking");
-  if (state.status === "ready") return "";
-  return t("group.router.unavailable", { reason: state.reason.message, path: state.configPath });
+/** The Jev panel state for the same instance. The automatic option is only
+ *  offered when the daemon both reports the router ready AND has a Jev key
+ *  configured; an older daemon (read-only panel) hides it entirely. */
+const jevPanel = computed(() => {
+  const id = props.instanceId ?? groupsStore.instanceId;
+  return id ? instancesStore.jevPanelFor(id) : { phase: "read-only" as const, notice: "" };
 });
+const jevConfigured = computed(() =>
+  jevPanel.value.phase === "editable" && jevPanel.value.settings.keyConfigured);
+const automaticVisible = computed(() => automaticReady.value && jevConfigured.value);
 const selectedIds = computed<string[]>(() =>
   selection.value?.mode === "members" ? selection.value.botIds : [],
 );
@@ -126,14 +130,17 @@ function pickEveryone(): void {
 }
 
 function pickAutomatic(): void {
-  if (!automaticReady.value) return;
+  if (!automaticVisible.value) return;
   mentionOwned.value = false;
   groupsStore.setTarget({ mode: "automatic" });
   closeMenu();
 }
 
 watch(() => props.instanceId ?? groupsStore.instanceId, (id) => {
-  if (id) void instancesStore.loadRouterAvailability(id);
+  if (id) {
+    void instancesStore.loadRouterAvailability(id);
+    void instancesStore.loadJevSettings(id);
+  }
 }, { immediate: true });
 
 watch(availability, (state) => {
@@ -141,6 +148,15 @@ watch(availability, (state) => {
   const group = groupsStore.currentGroup;
   groupsStore.setTarget(group ? groupsStore.eligibleTargetFor(group, props.bots) : { mode: "members", botIds: [] });
 }, { immediate: true });
+
+// Losing the Jev key (cleared in another tab, or an instance that stopped
+// reporting it) drops an in-progress automatic selection exactly like losing
+// router readiness does.
+watch(automaticVisible, (visible) => {
+  if (visible || groupsStore.targetSelection?.mode !== "automatic") return;
+  const group = groupsStore.currentGroup;
+  groupsStore.setTarget(group ? groupsStore.eligibleTargetFor(group, props.bots) : { mode: "members", botIds: [] });
+});
 
 /** The Lead shortcut and the Group-open default share one resolver so a
  *  "Lead" pick can never re-select a Bot the member list itself disables. */
@@ -489,16 +505,15 @@ function handleRetry(): void {
               <span class="flex-1 truncate font-medium">{{ $t("group.target.lead") }}</span>
             </button>
             <button
+              v-if="automaticVisible"
               type="button"
               data-test="group-target-automatic"
-              class="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-raised disabled:cursor-not-allowed disabled:opacity-60"
-              :disabled="!automaticReady"
+              class="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-raised"
               @click="pickAutomatic"
             >
               <Bot :size="13" class="mt-0.5 shrink-0 text-fg-muted" />
               <span class="min-w-0 flex-1">
                 <span class="block truncate font-medium">{{ $t("group.target.automatic") }}</span>
-                <span v-if="automaticNote" data-test="group-router-note" class="mt-0.5 block text-[10.5px] leading-snug text-fg-muted">{{ automaticNote }}</span>
               </span>
               <Check v-if="isAutomatic" :size="13" class="mt-0.5 shrink-0 text-accent" />
             </button>

@@ -74,6 +74,9 @@ import {
   type ConversationRouterGetPayload,
   type ConversationRouterSetPayload,
   type ConversationRouterUpdatePayload,
+  type JevGetPayload,
+  type JevTestPayload,
+  type JevUpdatePayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
   type SessionEffortGetPayload,
@@ -131,6 +134,11 @@ import {
   ROUTER_COMMAND_MAX_LENGTH,
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
+import {
+  JEV_API_KEY_MAX_LENGTH,
+  JEV_ENDPOINT_MAX_LENGTH,
+  JEV_PROXY_URL_MAX_LENGTH,
+} from "./jev-settings.js";
 import {
   hasOnlyKeys,
   isBoundedStr,
@@ -379,6 +387,33 @@ const validateConversationRouterUpdate: Validator<ConversationRouterUpdatePayloa
   if (o.enabled !== undefined && typeof o.enabled !== "boolean") return null;
   if (!optRouterCommand(o.command) || !optRouterAuthEnv(o.authEnv)) return null;
   return o as unknown as ConversationRouterUpdatePayload;
+};
+// --- jev routing settings ---
+const validateJevGet: Validator<JevGetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0) return null;
+  return {};
+};
+const JEV_UPDATE_KEYS = { endpoint: true, proxyUrl: true, apiKey: true } satisfies Record<keyof JevUpdatePayload, true>;
+/** Optional URL: absent, `null` (removes the override), or a string within the cap.
+ *  A blank string passes the wire on purpose — an emptied field must reach the
+ *  daemon, which rejects it with the better message. */
+const optJevUrl = (v: unknown, max: number): boolean =>
+  v === undefined || v === null || (typeof v === "string" && v.length <= max);
+const validateJevUpdate: Validator<JevUpdatePayload> = (p) => {
+  const o = fields(p);
+  if (!o || isArr(o) || !hasOnlyKeys(o, JEV_UPDATE_KEYS)) return null;
+  if (!optJevUrl(o.endpoint, JEV_ENDPOINT_MAX_LENGTH)) return null;
+  if (!optJevUrl(o.proxyUrl, JEV_PROXY_URL_MAX_LENGTH)) return null;
+  if (o.apiKey !== undefined && o.apiKey !== null
+    && (typeof o.apiKey !== "string" || o.apiKey.length > JEV_API_KEY_MAX_LENGTH)) return null;
+  return o as unknown as JevUpdatePayload;
+};
+const validateJevTest: Validator<JevTestPayload> = (p) => {
+  const o = fields(p);
+  if (!o || isArr(o) || !hasOnlyKeys(o, { apiKey: true })) return null;
+  if (o.apiKey !== undefined && (typeof o.apiKey !== "string" || o.apiKey.length > JEV_API_KEY_MAX_LENGTH)) return null;
+  return o as unknown as JevTestPayload;
 };
 const validateAgentsCapabilitiesGet: Validator<AgentsCapabilitiesGetPayload> = (p) => {
   const o = fields(p);
@@ -1055,6 +1090,9 @@ export type ControlRpcType =
   | typeof MSG.conversationRouterGet
   | typeof MSG.conversationRouterSet
   | typeof MSG.conversationRouterUpdate
+  | typeof MSG.jevGet
+  | typeof MSG.jevUpdate
+  | typeof MSG.jevTest
   | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
   | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage
   | typeof MSG.gitUntrack | typeof MSG.gitDiscard | typeof MSG.gitCommit
@@ -1133,6 +1171,9 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.conversationRouterSet]: validateConversationRouterSet,
   [MSG.conversationRouterUpdate]: validateConversationRouterUpdate,
+  [MSG.jevGet]: validateJevGet,
+  [MSG.jevUpdate]: validateJevUpdate,
+  [MSG.jevTest]: validateJevTest,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,

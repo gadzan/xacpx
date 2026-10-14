@@ -325,6 +325,8 @@ export interface ApplyRoutingDecisionInput {
         type: "dispatch";
         mode: "single" | "parallel" | "sequential";
         assignments: RoutingAssignmentInput[];
+        /** Human-readable decision rationale, persisted verbatim for the UI. */
+        reason?: string;
       }
     | { type: "need-human"; question: string }
     | { type: "complete"; reason: string; synthesisBotId?: string };

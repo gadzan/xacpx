@@ -44,7 +44,7 @@ const plugin: XacpxPlugin = {
   // runtime check cannot guard it. The only protection is refusing to load on
   // an older core, which is what this floor and `peerDependencies.xacpx`
   // express together.
-  minXacpxVersion: "0.24.10-beta.0",
+  minXacpxVersion: "0.24.10-beta.1",
   channels: [
     {
       type: "relay",

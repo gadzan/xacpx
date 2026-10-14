@@ -191,7 +191,8 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
 </script>
 
 <template>
-  <div ref="scroller" class="thin-scroll relative flex-1 overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
+  <div class="relative flex min-h-0 flex-1 flex-col">
+  <div ref="scroller" data-test="conversation-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <!-- Load Older Button -->
     <div v-if="hasMoreOlder" class="mb-4 flex justify-center">
       <button
@@ -369,6 +370,8 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       </div>
     </div>
 
-    <TranscriptJumpLatest :visible="!atBottom" @jump="scrollToBottom()" />
   </div>
+
+    <TranscriptJumpLatest :visible="!atBottom" @jump="scrollToBottom()" />
+</div>
 </template>
