@@ -1178,7 +1178,7 @@ it("virtualizes message rows and sticks the assistant agent-icon", () => {
     props: { messages: [msg({ direction: "in", text: "a" }), msg({ direction: "out", text: "b" })], liveTurn: null },
   });
   // User row virtualizes at the row (.cv-row); the assistant virtualizes at the bubble
-  // (.cv-bubble) so its sticky avatar + working chip can escape the row box.
+  // (.cv-bubble) so its sticky avatar + riding working bubble can escape the row box.
   expect(wrapper.findAll(".cv-row").length).toBe(1); // the user row
   expect(wrapper.find('[data-test="msg-out"]').classes()).toContain("cv-bubble");
   // The assistant avatar is the sticky element that hangs at the top of the scroller.
@@ -1447,61 +1447,132 @@ describe("entrance choreography", () => {
   });
 });
 
-// Working-chip geometry (review #353 Medium): the chip anchors ONLY to an avatar that
-// actually intersects the scroller viewport — one still below the bottom edge would
-// leave a floating chip over unseen body text.
-describe("working chip geometry", () => {
-  let rafQueue: FrameRequestCallback[];
+// The working bubble renders INSIDE the live row's sticky avatar, so it rides the
+// layout natively during scroll (no JS positioning, no lag). It anchors to the live
+// turn only — never to an earlier finished assistant row — and mounts exactly once.
+describe("working quip bubble", () => {
+  it("rides the live row's avatar, not an earlier agent row", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [msg({ direction: "out", text: "earlier reply" })],
+        liveTurn: { parts: [{ type: "text", text: "working" }], status: "streaming", startedAt: 0, slotAfterIndex: 0 },
+      },
+    });
+    const avatars = wrapper.findAll(".agent-avatar");
+    expect(avatars).toHaveLength(2); // the finished turn, then the live turn
+    expect(avatars[1]!.attributes("data-avatar-key")).toBe("live");
+    expect(avatars[0]!.find('[data-test="hud-quip"]').exists()).toBe(false);
+    expect(avatars[1]!.find('[data-test="hud-quip"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="hud-quip"]')).toHaveLength(1);
+  });
 
-  beforeEach(() => {
-    rafQueue = [];
+  it("is absent when no turn is live", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "out", text: "done" })], liveTurn: null },
+    });
+    expect(wrapper.find('[data-avatar-key="live"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="hud-quip"]').exists()).toBe(false);
+  });
+
+  it("flips the bubble beside the icon when the sentinel reports no room above", async () => {
+    const observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void> = [];
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(cb: (entries: Array<{ isIntersecting: boolean }>) => void) { observers.push(cb); }
+      observe(): void {}
+      disconnect(): void {}
+    });
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: live([]) } });
+    const liveAvatar = wrapper.find('[data-avatar-key="live"]');
+    expect(observers).toHaveLength(1);
+    observers[0]!([{ isIntersecting: false }]); // sentinel clipped: icon pinned at the top
+    await wrapper.vm.$nextTick();
+    expect(liveAvatar.classes()).toContain("quip-beside");
+    expect(liveAvatar.find('[data-test="hud-quip"]').exists()).toBe(true);
+    observers[0]!([{ isIntersecting: true }]); // room above the head again
+    await wrapper.vm.$nextTick();
+    expect(liveAvatar.classes()).not.toContain("quip-beside");
+    wrapper.unmount();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps exactly one bubble while older rows are still revealing", async () => {
+    const rafQueue: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
       rafQueue.push(cb);
       return rafQueue.length;
     });
     vi.stubGlobal("cancelAnimationFrame", () => {});
-  });
-  afterEach(() => vi.unstubAllGlobals());
-
-  async function flushFrames(wrapper: ReturnType<typeof mount>): Promise<void> {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: { parts: [], status: "working", startedAt: 0, slotAfterIndex: 0 } },
+    });
+    await wrapper.setProps({
+      messages: Array.from({ length: 40 }, (_, i) => msg({ direction: "in", text: `m${i}`, id: i + 1 })),
+    });
+    await wrapper.vm.$nextTick();
+    // Live slot above the visible window: the bubble rides the live row at the top of
+    // the window, not the one after its anchor row.
+    expect(wrapper.findAll('[data-test="hud-quip"]')).toHaveLength(1);
+    expect(wrapper.find('[data-avatar-key="live"] [data-test="hud-quip"]').exists()).toBe(true);
+    // Drain the reveal: the live row moves after its anchor row — still one bubble.
     while (rafQueue.length) {
       for (const cb of rafQueue.splice(0)) cb(0);
       await wrapper.vm.$nextTick();
     }
-  }
-
-  function setRect(el: Element, r: Partial<DOMRect>): void {
-    el.getBoundingClientRect = () =>
-      ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}), ...r }) as DOMRect;
-  }
-
-  // Empty transcript + live turn renders exactly one [data-avatar-key] ("live").
-  function setup() {
-    const wrapper = mount(MessageList, {
-      props: { messages: [], liveTurn: live([{ type: "text", text: "working" }]) },
+    expect(wrapper.findAll('[data-test="hud-quip"]')).toHaveLength(1);
+    expect(wrapper.find('[data-avatar-key="live"] [data-test="hud-quip"]').exists()).toBe(true);
+    wrapper.unmount();
+    vi.unstubAllGlobals();
+  });
+  it("disconnects its IntersectionObserver on unmount", () => {
+    const disconnect = vi.fn();
+    vi.stubGlobal("IntersectionObserver", class {
+      observe(): void {}
+      disconnect = disconnect;
     });
-    const sc = wrapper.find('[data-test="msg-scroller"]').element;
-    setRect(sc, { top: 100, bottom: 500 });
-    setRect(sc.parentElement as HTMLElement, { top: 100, left: 0 });
-    return { wrapper, avatar: sc.querySelector("[data-avatar-key]") as HTMLElement };
-  }
-
-  it("anchors the chip above an avatar that is inside the viewport", async () => {
-    const { wrapper, avatar } = setup();
-    setRect(avatar, { top: 200, bottom: 224, left: 16, right: 40 });
-    await wrapper.vm.$nextTick();
-    await flushFrames(wrapper);
-    const style = wrapper.find(".working-chip").attributes("style") ?? "";
-    expect(style).toContain("opacity: 1");
-    expect(style).toContain("top: 74px"); // 200 − 100 − 22 (fallback chip height) − 4
-    expect(style).toContain("left: 16px");
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: live([]) } });
+    expect(disconnect).not.toHaveBeenCalled();
+    wrapper.unmount();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
   });
 
-  it("hides the chip when the only avatar is still below the viewport bottom", async () => {
-    const { wrapper, avatar } = setup();
-    setRect(avatar, { top: 560, bottom: 584, left: 16, right: 40 });
-    await wrapper.vm.$nextTick();
-    await flushFrames(wrapper);
-    expect(wrapper.find(".working-chip").attributes("style")).toContain("opacity: 0");
+  it("removes the bubble and disconnects when the live turn ends", async () => {
+    const disconnect = vi.fn();
+    vi.stubGlobal("IntersectionObserver", class {
+      observe(): void {}
+      disconnect = disconnect;
+    });
+    const wrapper = mount(MessageList, { props: { messages: [msg({ direction: "in", text: "go" })], liveTurn: live([]) } });
+    expect(wrapper.find('[data-test="hud-quip"]').exists()).toBe(true);
+    await wrapper.setProps({ liveTurn: null, messages: [msg({ direction: "in", text: "go" }), msg({ direction: "out", text: "done" })] });
+    expect(wrapper.find('[data-test="hud-quip"]').exists()).toBe(false);
+    expect(wrapper.find('[data-avatar-key="live"]').exists()).toBe(false);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+    vi.unstubAllGlobals();
+  });
+
+  it("moves to the new live row when a later turn starts", async () => {
+    const first = [msg({ direction: "in", text: "p1" })];
+    const wrapper = mount(MessageList, { props: { messages: first, liveTurn: { ...live([]), startedAt: 1, slotAfterIndex: 0 } } });
+    const next = [...first, msg({ direction: "out", text: "r1" }), msg({ direction: "in", text: "p2" })];
+    await wrapper.setProps({ messages: next, liveTurn: { ...live([]), startedAt: 2, slotAfterIndex: 2 } });
+    const avatars = wrapper.findAll(".agent-avatar");
+    expect(avatars).toHaveLength(2);
+    expect(avatars[0]!.find('[data-test="hud-quip"]').exists()).toBe(false);
+    expect(avatars[1]!.attributes("data-avatar-key")).toBe("live");
+    expect(avatars[1]!.find('[data-test="hud-quip"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="hud-quip"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("renders the bubble in its default above-head position without IntersectionObserver", () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: live([]) } });
+    const liveAvatar = wrapper.find('[data-avatar-key="live"]');
+    expect(liveAvatar.find('[data-test="hud-quip"]').exists()).toBe(true);
+    expect(liveAvatar.classes()).not.toContain("quip-beside");
+    expect(() => wrapper.unmount()).not.toThrow();
+    vi.unstubAllGlobals();
   });
 });
