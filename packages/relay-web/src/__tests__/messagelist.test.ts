@@ -1178,7 +1178,7 @@ it("virtualizes message rows and sticks the assistant agent-icon", () => {
     props: { messages: [msg({ direction: "in", text: "a" }), msg({ direction: "out", text: "b" })], liveTurn: null },
   });
   // User row virtualizes at the row (.cv-row); the assistant virtualizes at the bubble
-  // (.cv-bubble) so its sticky avatar + working chip can escape the row box.
+  // (.cv-bubble) so its sticky avatar + riding working bubble can escape the row box.
   expect(wrapper.findAll(".cv-row").length).toBe(1); // the user row
   expect(wrapper.find('[data-test="msg-out"]').classes()).toContain("cv-bubble");
   // The assistant avatar is the sticky element that hangs at the top of the scroller.
@@ -1447,61 +1447,30 @@ describe("entrance choreography", () => {
   });
 });
 
-// Working-chip geometry (review #353 Medium): the chip anchors ONLY to an avatar that
-// actually intersects the scroller viewport — one still below the bottom edge would
-// leave a floating chip over unseen body text.
-describe("working chip geometry", () => {
-  let rafQueue: FrameRequestCallback[];
-
-  beforeEach(() => {
-    rafQueue = [];
-    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
-      rafQueue.push(cb);
-      return rafQueue.length;
-    });
-    vi.stubGlobal("cancelAnimationFrame", () => {});
-  });
-  afterEach(() => vi.unstubAllGlobals());
-
-  async function flushFrames(wrapper: ReturnType<typeof mount>): Promise<void> {
-    while (rafQueue.length) {
-      for (const cb of rafQueue.splice(0)) cb(0);
-      await wrapper.vm.$nextTick();
-    }
-  }
-
-  function setRect(el: Element, r: Partial<DOMRect>): void {
-    el.getBoundingClientRect = () =>
-      ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}), ...r }) as DOMRect;
-  }
-
-  // Empty transcript + live turn renders exactly one [data-avatar-key] ("live").
-  function setup() {
+// The working bubble renders INSIDE the live row's sticky avatar, so it rides the
+// layout natively during scroll (no JS positioning, no lag). It anchors to the live
+// turn only — never to an earlier finished assistant row — and mounts exactly once.
+describe("working quip bubble", () => {
+  it("rides the live row's avatar, not an earlier agent row", () => {
     const wrapper = mount(MessageList, {
-      props: { messages: [], liveTurn: live([{ type: "text", text: "working" }]) },
+      props: {
+        messages: [msg({ direction: "out", text: "earlier reply" })],
+        liveTurn: { parts: [{ type: "text", text: "working" }], status: "streaming", startedAt: 0, slotAfterIndex: 0 },
+      },
     });
-    const sc = wrapper.find('[data-test="msg-scroller"]').element;
-    setRect(sc, { top: 100, bottom: 500 });
-    setRect(sc.parentElement as HTMLElement, { top: 100, left: 0 });
-    return { wrapper, avatar: sc.querySelector("[data-avatar-key]") as HTMLElement };
-  }
-
-  it("anchors the chip above an avatar that is inside the viewport", async () => {
-    const { wrapper, avatar } = setup();
-    setRect(avatar, { top: 200, bottom: 224, left: 16, right: 40 });
-    await wrapper.vm.$nextTick();
-    await flushFrames(wrapper);
-    const style = wrapper.find(".working-chip").attributes("style") ?? "";
-    expect(style).toContain("opacity: 1");
-    expect(style).toContain("top: 74px"); // 200 − 100 − 22 (fallback chip height) − 4
-    expect(style).toContain("left: 16px");
+    const avatars = wrapper.findAll(".agent-avatar");
+    expect(avatars).toHaveLength(2); // the finished turn, then the live turn
+    expect(avatars[1]!.attributes("data-avatar-key")).toBe("live");
+    expect(avatars[0]!.find('[data-test="hud-quip"]').exists()).toBe(false);
+    expect(avatars[1]!.find('[data-test="hud-quip"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="hud-quip"]')).toHaveLength(1);
   });
 
-  it("hides the chip when the only avatar is still below the viewport bottom", async () => {
-    const { wrapper, avatar } = setup();
-    setRect(avatar, { top: 560, bottom: 584, left: 16, right: 40 });
-    await wrapper.vm.$nextTick();
-    await flushFrames(wrapper);
-    expect(wrapper.find(".working-chip").attributes("style")).toContain("opacity: 0");
+  it("is absent when no turn is live", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg({ direction: "out", text: "done" })], liveTurn: null },
+    });
+    expect(wrapper.find('[data-avatar-key="live"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="hud-quip"]').exists()).toBe(false);
   });
 });
