@@ -151,7 +151,9 @@ export class AgentCapabilityService {
       selectedEffort,
     };
 
-    if (query.botId) {
+    // An explicit fetch must re-verify, so the runtime, cache, and
+    // sibling-session shortcuts only serve passive reads.
+    if (query.botId && !query.probe) {
       const owned = await this.readOwned(query.agent, query.workspace, query.botId);
       if (owned && owned.models.length > 0) {
         const state = this.ready("runtime", owned, { ...draftBase, appliedModelId: owned.currentModelId });
@@ -160,8 +162,6 @@ export class AgentCapabilityService {
       }
     }
 
-    // An explicit fetch must re-verify, not replay a saved list: the cache and
-    // sibling-session shortcuts only serve passive reads.
     const cached = query.probe ? undefined : this.cached(fingerprint);
     if (cached && cached.models.length > 0) {
       return this.ready("cache", cached, draftBase, cached.fetchedAt);

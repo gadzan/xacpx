@@ -202,6 +202,54 @@ test("concurrent probes for one adapter share a single transport call", async ()
   expect(right.status).toBe("ready");
 });
 
+test("an explicit probe re-verifies even when the bot's own runtime advertises models", async () => {
+  let probes = 0;
+  const service = new AgentCapabilityService(deps({
+    listTargets: () => [{
+      productOwned: true,
+      botId: "bot-1",
+      scope: "bot-direct",
+      resolved: session("brt_hidden", { agentCommand: "npx codex@1" }),
+    }],
+    getBot: () => ({ agent: "codex", workspace: "backend", model: "gpt-stale" }),
+    readAdvertisement: async () => advertisement(["gpt-stale"]),
+    probe: async () => {
+      probes += 1;
+      return { ok: true, models: [{ modelId: "gpt-fresh", name: "GPT Fresh" }], efforts: [] };
+    },
+  }));
+  const state = await service.get({ agent: "codex", workspace: "backend", botId: "bot-1", probe: true });
+  expect(probes).toBe(1);
+  expect(state.status).toBe("ready");
+  if (state.status !== "ready") return;
+  expect(state.source).toBe("probe");
+  expect(state.models.map((model) => model.modelId)).toEqual(["gpt-fresh"]);
+});
+
+test("a passive read still prefers the bot's own runtime without probing", async () => {
+  let probes = 0;
+  const service = new AgentCapabilityService(deps({
+    listTargets: () => [{
+      productOwned: true,
+      botId: "bot-1",
+      scope: "bot-direct",
+      resolved: session("brt_hidden", { agentCommand: "npx codex@1" }),
+    }],
+    getBot: () => ({ agent: "codex", workspace: "backend", model: "gpt-live" }),
+    readAdvertisement: async () => advertisement(["gpt-live"], { currentModelId: "gpt-live" }),
+    probe: async () => {
+      probes += 1;
+      return { ok: true, models: [{ modelId: "gpt-fresh" }], efforts: [] };
+    },
+  }));
+  const state = await service.get({ agent: "codex", workspace: "backend", botId: "bot-1" });
+  expect(probes).toBe(0);
+  expect(state.status).toBe("ready");
+  if (state.status !== "ready") return;
+  expect(state.source).toBe("runtime");
+  expect(state.effect).toEqual({ kind: "in-effect", modelId: "gpt-live" });
+});
+
 test("an explicit model the runtime did not keep is reported as a fallback", async () => {
   const service = new AgentCapabilityService(deps({
     listTargets: () => [{
