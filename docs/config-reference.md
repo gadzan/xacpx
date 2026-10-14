@@ -849,6 +849,13 @@ A prompt that tells a model not to use tools is not this proof. The startup stat
 
 ### The bundled default router
 
+With a Jev key configured (see below) the bundled router uses the Jev policy: one choice question to TypeSafe Jev, dispatch to exactly one enabled member, fallback to the Group lead (else the first enabled member) when confidence is below 0.6, the pick is unknown, or the call fails. Without a key, automatic collaboration resolves to `failed` / `jev-not-configured` and the composer hides it. The daemon passes Jev settings to `--decide` only through the environment (`XACPX_JEV_ENDPOINT`, `XACPX_JEV_API_KEY`, `XACPX_JEV_PROXY`, `XACPX_JEV_MODEL`), never argv. The fan-out described below is kept only as the no-key code path.
+
+### Jev settings (`~/.xacpx/jev.json`)
+
+Not part of config.json. Written atomically at mode 0600 next to the config and edited through `control.jev.update` (Relay Web instance dialog). Keys: `endpoint` (default `https://api.typesafe.ai/v1/systemone`), `apiKey` (reported only as `keyMasked`), `proxyUrl` (optional; empty uses the daemon's `HTTPS_PROXY`/`https_proxy`), `model` (pinned `jev-1.13.0`). `control.jev.test` makes a live call and maps 451 to `region-blocked` and 401/403 to `bad-key`.
+
+
 Turning the switch on with no `command` configured writes this repository's own router, `dist/conversations/default-router-main.js`, and probes it. It is a real decision process held to the same contract as any operator's: it reports all seven restrictions above, and `production-router.ts` installs the engine only after that report is proven, so the default earns `ready` through the identical proof rather than a special case.
 
 Its decisions are deterministic, because it has no model, filesystem, or tools to reason with: it fans the Run's request out to every enabled member once, in parallel, then completes. It never synthesizes. An operator who wants model-driven routing configures their own `command`; a configured command always wins, and the daemon only writes the default when none is present.

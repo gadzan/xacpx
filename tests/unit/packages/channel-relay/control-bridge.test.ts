@@ -2126,3 +2126,86 @@ test("private peer correlated streams never reach Relay reconnect mirrors",()=>{
   emit(event);expect(forwarded).toHaveLength(0);
   emit({...event,conversation:{...event.conversation,topicId:"human"}});expect(forwarded).toHaveLength(1);
 });
+
+test("jev get forwards an empty read and returns the masked settings", async () => {
+  const seen: unknown[] = [];
+  const settings = {
+    endpoint: "https://api.typesafe.ai/v1/systemone",
+    model: "jev-1.13.0",
+    keyConfigured: true,
+    keyMasked: "sk-…abcd",
+  };
+  const { control } = makeFakeControl({
+    getJevSettings: async () => {
+      seen.push("get");
+      return settings;
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.jevGet, {}))).toEqual(settings);
+  // A non-empty payload is refused; an absent payload reads as the empty read
+  // (the same shape `control.conversations.router.get` accepts).
+  expect(await dispatch(bridge, req(MSG.jevGet, { apiKey: "sk-x" }))).toMatchObject({
+    error: { code: "invalid-payload" },
+  });
+  expect(seen).toEqual(["get"]);
+});
+
+test("jev update forwards the parsed patch and returns the new settings", async () => {
+  const seen: unknown[] = [];
+  const settings = {
+    endpoint: "https://api.typesafe.ai/v1/systemone",
+    model: "jev-1.13.0",
+    keyConfigured: true,
+    keyMasked: "sk-…1234",
+  };
+  const { control } = makeFakeControl({
+    updateJevSettings: async (patch: unknown) => {
+      seen.push(patch);
+      return settings;
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  for (const payload of [{}, { endpoint: "https://x/v1" }, { apiKey: null }, { proxyUrl: null }, { apiKey: "sk-new" }]) {
+    expect(await dispatch(bridge, req(MSG.jevUpdate, payload))).toEqual(settings);
+  }
+  expect(seen).toEqual([{}, { endpoint: "https://x/v1" }, { apiKey: null }, { proxyUrl: null }, { apiKey: "sk-new" }]);
+  for (const bad of [null, [], { endpoint: 5 }, { apiKey: 5 }, { enabled: true }]) {
+    expect(await dispatch(bridge, req(MSG.jevUpdate, bad))).toMatchObject({
+      error: { code: "invalid-payload" },
+    });
+  }
+  expect(seen).toHaveLength(5);
+});
+
+test("jev test forwards the optional unsaved key and returns the classified result", async () => {
+  const seen: unknown[] = [];
+  const { control } = makeFakeControl({
+    testJevConnection: async (payload: unknown) => {
+      seen.push(payload);
+      return { ok: false, code: "region-blocked", message: "blocked" };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.jevTest, {}))).toEqual({ ok: false, code: "region-blocked", message: "blocked" });
+  expect(await dispatch(bridge, req(MSG.jevTest, { apiKey: "sk-unsaved" }))).toEqual({ ok: false, code: "region-blocked", message: "blocked" });
+  expect(seen).toEqual([{}, { apiKey: "sk-unsaved" }]);
+  for (const bad of [{ apiKey: 5 }, { endpoint: "https://x" }]) {
+    expect(await dispatch(bridge, req(MSG.jevTest, bad))).toMatchObject({
+      error: { code: "invalid-payload" },
+    });
+  }
+});
+
+test("a connector without the Jev RPCs answers unsupported instead of a blank form", async () => {
+  const { control } = makeFakeControl({});
+  delete (control as Record<string, unknown>).getJevSettings;
+  delete (control as Record<string, unknown>).updateJevSettings;
+  delete (control as Record<string, unknown>).testJevConnection;
+  const bridge = createControlBridge(control as never);
+  for (const [type, payload] of [[MSG.jevGet, {}], [MSG.jevUpdate, { endpoint: "https://x" }], [MSG.jevTest, {}]] as const) {
+    expect(await dispatch(bridge, req(type, payload))).toMatchObject({
+      error: { code: "unsupported" },
+    });
+  }
+});

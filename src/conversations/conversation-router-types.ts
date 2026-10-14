@@ -159,6 +159,11 @@ export interface RoutingInput {
   /** Large Groups expose a deterministic candidate subset, never a hidden admission cap. */
   omittedMemberCount?: number;
   requestMessageId: string;
+  /** The Group's configured lead Bot, when one is set. The default 负责人
+   *  mode dispatches here, so a policy that cannot decide on its own falls
+   *  back to this id rather than to an arbitrary member. Absent when the
+   *  Group has no lead. */
+  leadBotId?: string;
   /** Bounded public Topic transcript (newest-first, public rows only). */
   publicTranscript: Array<{
     id: string;
@@ -195,6 +200,10 @@ export type RoutingDecision =
         dependsOn?: string[];
         triggerMessageIds: string[];
       }>;
+      /** Human-readable decision rationale (who/why/confidence or the fallback
+       *  cause). Optional and bounded: the UI renders it verbatim, so it is
+       *  presentation evidence, never routing input. */
+      reason?: string;
     }
   | { type: "need-human"; question: string }
   | { type: "complete"; reason: string; synthesisBotId?: string };
@@ -275,7 +284,7 @@ export function parseRoutingDecision(value: unknown): RoutingDecision {
 }
 
 function parseDispatch(value: Record<string, unknown>): Extract<RoutingDecision, { type: "dispatch" }> {
-  assertFields(value, ["type", "mode", "assignments"]);
+  assertFields(value, ["type", "mode", "assignments", "reason"]);
   if (value.mode !== "single" && value.mode !== "parallel" && value.mode !== "sequential") {
     fail("router_decision_malformed", "Router dispatch mode must be single | parallel | sequential", {
       mode: value.mode,
@@ -291,7 +300,23 @@ function parseDispatch(value: Record<string, unknown>): Extract<RoutingDecision,
     );
   }
   const assignments = value.assignments.map((entry) => parseAssignment(entry));
-  return { type: "dispatch", mode: value.mode, assignments };
+  if (value.reason !== undefined) {
+    if (!isNonEmptyString(value.reason)) {
+      fail("router_decision_malformed", "Router dispatch reason must be a non-empty string");
+    }
+    if (value.reason.length > MAX_ROUTER_REASON_LENGTH) {
+      fail(
+        "router_decision_malformed",
+        `Router dispatch reason exceeds ${MAX_ROUTER_REASON_LENGTH} characters`,
+      );
+    }
+  }
+  return {
+    type: "dispatch",
+    mode: value.mode,
+    assignments,
+    ...(value.reason !== undefined ? { reason: value.reason } : {}),
+  };
 }
 
 function parseAssignment(value: unknown): Extract<RoutingDecision, { type: "dispatch" }>["assignments"][number] {

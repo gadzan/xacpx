@@ -7,7 +7,7 @@
  */
 export declare const ROUTER_CONFIG_PATH = "conversations.router";
 export type RouterUnavailableCode = "restriction-unproven" | "not-advertised";
-export type RouterFailedCode = "command-missing" | "auth-missing" | "probe-failed" | "probe-timeout" | "malformed-capabilities" | "read-failed";
+export type RouterFailedCode = "command-missing" | "auth-missing" | "probe-failed" | "probe-timeout" | "malformed-capabilities" | "read-failed" | "jev-not-configured";
 export type RouterAvailability = {
     status: "ready";
     configPath: typeof ROUTER_CONFIG_PATH;

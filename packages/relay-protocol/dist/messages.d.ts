@@ -1,4 +1,5 @@
 import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
+import type { JevSettingsDto, JevTestResult } from "./jev-settings.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -64,6 +65,9 @@ export declare const MSG: {
     readonly conversationRouterGet: "control.conversations.router.get";
     readonly conversationRouterSet: "control.conversations.router.set";
     readonly conversationRouterUpdate: "control.conversations.router.update";
+    readonly jevGet: "control.jev.get";
+    readonly jevUpdate: "control.jev.update";
+    readonly jevTest: "control.jev.test";
     readonly sessionModelSet: "control.session.model.set";
     readonly sessionEffortGet: "control.session.effort.get";
     readonly sessionEffortSet: "control.session.effort.set";
@@ -1076,6 +1080,34 @@ export interface ConversationRouterUpdatePayload {
     /** Environment variable that must be non-empty before the probe. `null` removes the key. */
     authEnv?: string | null;
 }
+/** Empty read. The instance returns its Jev settings with the key masked. */
+export interface JevGetPayload {
+    readonly __empty?: never;
+}
+/**
+ * Patch the instance's Jev settings. An empty payload is a pure read. Omitted
+ * keys keep their stored value; `apiKey: null` clears the key; `proxyUrl: null`
+ * clears the proxy override (falling back to the daemon process env).
+ *
+ * URL scheme (http/https) and emptiness stay daemon-side semantic checks; the
+ * wire bounds length only.
+ */
+export interface JevUpdatePayload {
+    endpoint?: string;
+    proxyUrl?: string | null;
+    apiKey?: string | null;
+}
+/**
+ * Live connection test. `apiKey` tests a key the caller just typed but has not
+ * saved yet; omitted uses the stored key.
+ */
+export interface JevTestPayload {
+    apiKey?: string;
+}
+/** The `control.jev.get` / `control.jev.update` answer. */
+export type JevSettingsResult = JevSettingsDto;
+/** The `control.jev.test` answer. */
+export type JevTestAnswer = JevTestResult;
 export interface SessionModelSetPayload {
     chatKey: string;
     sessionAlias: string;

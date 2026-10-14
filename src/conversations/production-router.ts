@@ -10,6 +10,8 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import type { AppConfig, ConversationRouterConfig } from "../config/types";
 import { resolveSpawnCommand } from "../process/spawn-command";
+import { resolve as resolvePath } from "node:path";
+import { resolveDefaultRouterEntry } from "./default-router";
 import { ConversationError } from "./conversation-error";
 import {
   isRouterCapabilityRestricted,
@@ -38,9 +40,25 @@ export interface ProductionRouterResolution {
   router?: ConversationRouter;
 }
 
+/** The instance's Jev connection settings, passed to the bundled router's
+ *  `--decide` process through the environment. Absent when the instance has
+ *  no Jev configuration. */
+export interface JevRouterHandoff {
+  endpoint: string;
+  apiKey: string;
+  proxyUrl?: string;
+  model: string;
+}
+
 export interface ResolveProductionRouterInput {
   config: Pick<AppConfig, "conversations">;
   env: NodeJS.ProcessEnv;
+  /** Per-instance Jev settings. Automatic collaboration is only `ready` with a
+   *  configured key; otherwise it resolves to `failed` / `jev-not-configured`. */
+  jev?: JevRouterHandoff;
+  /** Path of the bundled default-router entry: the only command that receives
+   *  the Jev key. Defaults to resolveDefaultRouterEntry(); tests override it. */
+  bundledRouterEntry?: string;
   probeTimeoutMs?: number;
 }
 
@@ -65,6 +83,13 @@ export function unprovenRouterAvailability(): RouterAvailability {
 
 function failedAvailability(code: RouterFailedCode, message: string): RouterAvailability {
   return { status: "failed", configPath: ROUTER_CONFIG_PATH, reason: { code, message } };
+}
+
+function jevNotConfiguredAvailability(): RouterAvailability {
+  return failedAvailability(
+    "jev-not-configured",
+    "Automatic collaboration needs a Jev API key. Configure it in the instance's automatic collaboration settings.",
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -204,14 +229,39 @@ function runCommand(input: {
   });
 }
 
-function routerFor(command: string, env: NodeJS.ProcessEnv, restriction: RouterCapabilityRestriction): ConversationRouter {
+/** True when `command` is the bundled default-router entry (the one the
+ *  daemon writes itself), the only process trusted with the Jev key. */
+export function isBundledDefaultRouter(command: string, entry: string = resolveDefaultRouterEntry()): boolean {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return false;
+  return resolvePath(trimmed) === resolvePath(entry);
+}
+
+function routerFor(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  restriction: RouterCapabilityRestriction,
+  jev: JevRouterHandoff,
+  bundledRouterEntry: string,
+): ConversationRouter {
+  // The Jev settings reach the decision process through the environment, never
+  // argv: argv is world-readable through the process table on this machine.
+  // Only the bundled default router receives the key; an operator-supplied
+  // custom command never sees the instance's Jev credentials.
+  const jevEnv: NodeJS.ProcessEnv = !isBundledDefaultRouter(command, bundledRouterEntry) ? { ...env } : {
+    ...env,
+    XACPX_JEV_ENDPOINT: jev.endpoint,
+    XACPX_JEV_API_KEY: jev.apiKey,
+    XACPX_JEV_PROXY: jev.proxyUrl ?? "",
+    XACPX_JEV_MODEL: jev.model,
+  };
   return {
     capabilityRestriction: restriction,
     async decide(input: RoutingInput, options?: { signal: AbortSignal }) {
       const result = await runCommand({
         command,
         args: ["--decide"],
-        env,
+        env: jevEnv,
         stdin: JSON.stringify(input),
         signal: options?.signal,
         maxStdout: DECIDE_STDOUT_LIMIT,
@@ -234,12 +284,21 @@ async function resolveEnabled(
   router: ConversationRouterConfig,
   env: NodeJS.ProcessEnv,
   probeTimeoutMs: number,
+  jev: JevRouterHandoff | undefined,
+  bundledRouterEntry: string,
 ): Promise<ProductionRouterResolution> {
+  // A missing or uninstalled command is reported first (it is the more
+  // fundamental misconfiguration). Then the Jev key, the routing brain of the
+  // bundled router: without one the switch cannot reach `ready`. Both are
+  // checked before the probe so no process is spawned.
   if (!router.command) {
     return { availability: failedAvailability("command-missing", "conversations.router.command is missing.") };
   }
   if (!(await commandInstalled(router.command, env))) {
     return { availability: failedAvailability("command-missing", "conversations.router.command is not installed.") };
+  }
+  if (!jev || typeof jev.apiKey !== "string" || jev.apiKey.trim().length === 0) {
+    return { availability: jevNotConfiguredAvailability() };
   }
   if (router.authEnv) {
     const secret = env[router.authEnv];
@@ -280,7 +339,7 @@ async function resolveEnabled(
   if (report.kind === "unproven") return { availability: unprovenRouterAvailability() };
   return {
     availability: { status: "ready", configPath: ROUTER_CONFIG_PATH },
-    router: routerFor(router.command, env, report.restriction),
+    router: routerFor(router.command, env, report.restriction, jev, bundledRouterEntry),
   };
 }
 
@@ -291,7 +350,8 @@ export async function resolveProductionRouter(input: ResolveProductionRouterInpu
     return { availability: disabledRouterAvailability() };
   }
   try {
-    return await resolveEnabled(router, input.env, input.probeTimeoutMs ?? PROBE_TIMEOUT_MS);
+    return await resolveEnabled(router, input.env, input.probeTimeoutMs ?? PROBE_TIMEOUT_MS, input.jev,
+      input.bundledRouterEntry ?? resolveDefaultRouterEntry());
   } catch {
     return { availability: failedAvailability("probe-failed", "The router check failed before initialization.") };
   }

@@ -9,6 +9,10 @@ import type {
   ConversationRouterConfigState,
   ConversationRouterState,
   ConversationRouterUpdatePayload,
+  JevSettingsDto,
+  JevTestPayload,
+  JevTestResult,
+  JevUpdatePayload,
   RouterAvailability,
 } from "@ganglion/xacpx-relay-protocol";
 import type {
@@ -300,6 +304,16 @@ export interface ControlServiceDeps {
     readConfig(): ConversationRouterConfigState;
     update(patch: ConversationRouterUpdatePayload): Promise<RouterAvailability>;
     setEnabled(enabled: boolean): Promise<RouterAvailability>;
+  };
+  // Per-instance Jev routing settings. The API key lives in a daemon-side
+  // secrets file, so `get` masks it and `test` performs the live call here
+  // rather than anywhere the key would have to travel. Wired in main.ts where
+  // the store, the live config, and the router re-resolution are in scope.
+  // Optional: embeddings that never configure Jev leave it unset.
+  jev?: {
+    get(): Promise<JevSettingsDto>;
+    update(patch: JevUpdatePayload): Promise<JevSettingsDto>;
+    test(payload: JevTestPayload): Promise<JevTestResult>;
   };
   uploadStore: UploadStore;
   // Interactive terminal PTY manager (web terminal). Optional gate read from live config.
@@ -2357,6 +2371,49 @@ export class ControlService {
       availability: await this.deps.conversationRouter.update(patch),
       config: this.deps.conversationRouter.readConfig(),
     };
+  }
+
+  /**
+   * The instance's Jev settings with the API key masked. An empty read: the key
+   * never leaves the daemon in plaintext.
+   */
+  async getJevSettings(): Promise<JevSettingsDto> {
+    if (!this.deps.jev) {
+      throw new ConversationError(
+        "jev_control_unavailable",
+        "the Jev routing settings are not available in this embedding",
+      );
+    }
+    return await this.deps.jev.get();
+  }
+
+  /**
+   * Patch the instance's Jev settings. An empty patch is a pure read (the same
+   * convention as `updateConversationRouter`); a non-empty patch persists and
+   * re-resolves the router availability through the wired dep.
+   */
+  async updateJevSettings(patch: JevUpdatePayload): Promise<JevSettingsDto> {
+    if (!this.deps.jev) {
+      throw new ConversationError(
+        "jev_control_unavailable",
+        "the Jev routing settings are not available in this embedding",
+      );
+    }
+    return await this.deps.jev.update(patch);
+  }
+
+  /**
+   * Live connection test against Jev. `apiKey` tests a key the caller just
+   * typed but has not saved yet; omitted uses the stored key.
+   */
+  async testJevConnection(payload: JevTestPayload): Promise<JevTestResult> {
+    if (!this.deps.jev) {
+      throw new ConversationError(
+        "jev_control_unavailable",
+        "the Jev routing settings are not available in this embedding",
+      );
+    }
+    return await this.deps.jev.test(payload);
   }
 
   /** Adapter model and effort advertisement for a configured agent and workspace. */

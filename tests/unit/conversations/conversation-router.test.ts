@@ -2732,3 +2732,64 @@ for (const [code, reason] of [["bot_not_found", "router_unknown_member"], ["bot_
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Routing reason — a dispatch decision's rationale is durable on the Run and
+// projected through the wire DTO, so the dashboard can render it verbatim.
+// ---------------------------------------------------------------------------
+
+test("a dispatch decision's reason is durable on the run and projected to the DTO", async () => {
+  const router = new RecordingRouter([{
+    type: "dispatch",
+    mode: "single",
+    assignments: [{
+      id: "jev-0-bot_reviewer",
+      botId: BOT_ID,
+      task: "Review the patch",
+      triggerMessageIds: [],
+    }],
+    reason: "Jev dispatched to bot_reviewer (confidence 0.82).",
+  }]);
+  const harness = await createHarness({ router, autoKick: false });
+  try {
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, "reason-run");
+    await harness.dispatcher.kick();
+    await harness.service.awaitRouting();
+    // The member turn settles through the fake runner; the reason outlives it.
+    const run = harness.store.getRun(accepted.run.id);
+    expect(["running", "completed"]).toContain(run?.state);
+    expect(run?.routingReason).toBe("Jev dispatched to bot_reviewer (confidence 0.82).");
+    // The durable value survives a reopen of the same database file, and the
+    // wire DTO projects it for the dashboard to render.
+    harness.store.close();
+    const reopened = await SqliteConversationStore.open(harness.path);
+    try {
+      const durable = reopened.getRun(accepted.run.id);
+      expect(durable?.routingReason).toBe("Jev dispatched to bot_reviewer (confidence 0.82).");
+      expect(toConversationRun(durable!).routingReason).toBe(
+        "Jev dispatched to bot_reviewer (confidence 0.82).",
+      );
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    harness.store.close();
+  }
+});
+
+test("the group lead reaches the router input and a decision without a reason stays absent", async () => {
+  const router = new RecordingRouter([{ type: "complete", reason: "done" }]);
+  const harness = await createHarness({ router, autoKick: false });
+  try {
+    const { group, topic } = await createGroup(harness);
+    await harness.bots.updateGroup(group.id, { leadBotId: BOT_ID });
+    await acceptAutomatic(harness, group.id, topic.id, "lead-run");
+    await harness.dispatcher.kick();
+    await harness.service.awaitRouting();
+    expect(router.inputs[0]?.leadBotId).toBe(BOT_ID);
+    expect(harness.store.getRun(router.inputs[0]!.runId)?.routingReason).toBeUndefined();
+  } finally {
+    harness.store.close();
+  }
+});

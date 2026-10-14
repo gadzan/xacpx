@@ -70,6 +70,14 @@ function senderName(botId: string | undefined): string {
 
 const runningNames = computed(() => turns.value.map((turn) => senderName(turn.botId)).join(", "));
 
+/** For automatic Runs, who the Router dispatched to (the first member of the
+ *  current batch) so the card can name the choice before listing its work. */
+const dispatchedName = computed(() => {
+  if (run.value?.mode !== "automatic") return "";
+  const first = turns.value[0];
+  return first ? senderName(first.botId) : "";
+});
+
 function turnStateLabel(state: MemberTurnSummaryDto["state"]): string {
   switch (state) {
     case "queued":
@@ -404,6 +412,22 @@ async function handleLoadOlder(): Promise<void> {
         >
           {{ $t("group.run.budget", { consumed: run.consumedMemberTurns ?? 0, max: run.maxMemberTurns }) }}
         </p>
+        <template v-if="run.mode === 'automatic'">
+          <p
+            v-if="dispatchedName"
+            data-test="group-run-dispatched"
+            class="mt-2 text-[11px] font-medium text-fg"
+          >
+            {{ $t("group.run.dispatchedTo", { name: dispatchedName }) }}
+          </p>
+          <p
+            v-if="run.routingReason"
+            data-test="group-run-routing-reason"
+            class="text-[11px] leading-relaxed text-fg-muted"
+          >
+            {{ run.routingReason }}
+          </p>
+        </template>
         <div
           v-if="run.state === 'waiting-human'"
           data-test="group-waiting-human"

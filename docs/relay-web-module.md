@@ -345,9 +345,9 @@ Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）
 Run 卡片列出实际执行的成员。`shared-single-writer` 的 Topic 注明写入任务会排队。
 确定性拒绝保留草稿。不确定结果仍复用冻结的 `requestId` 和 target。
 
-Group 作曲器里的“自动协作”来自 `control.conversations.router.get`。只有 `ready` 可以选择。`disabled-by-config`、`unsupported` 和 `failed` 显示原因和配置路径 `conversations.router`，按钮不可选。读取尚未返回时也不可选。Run 卡片显示预算、指派、依赖、`waitingQuestion` 和 `blockedReason`。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
+Group 作曲器里的“自动协作”只在两者同时成立时出现：`control.conversations.router.get` 为 `ready`，且 `control.jev.get` 报告 `keyConfigured: true`。否则（包括读取未返回、旧 daemon 不支持 Jev RPC）该选项完全隐藏，不显示禁用项或原因；默认的负责人模式不变。自动 Run 的卡片显示“已分派给 <成员>”和 Router 给出的 `routingReason`（置信度或回退原因）。Run 卡片显示预算、指派、依赖、`waitingQuestion` 和 `blockedReason`。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
 
-实例管理弹层（会话 tab 的齿轮）General 分区是“群组自动协作”的唯一控制面。分区显示 daemon 解析出的状态和一个开关，没有 Router 命令或鉴权环境变量输入，也不出现任何配置路径。开关绑定持久化的 `config.enabled`，不来自可用性状态：探测失败的实例照样显示开关是开的，并给出能修好它的说明。打开弹层走 `control.conversations.router.update` 的空补丁（纯读，不写盘不探测），切换走同一个 RPC 的非空补丁。开启时若实例没有配置 `conversations.router.command`，daemon 自己把仓库自带的默认 Router 写进去并真跑探测，所以首次安装不需要运维提供任何命令。探测没到 `ready` 时状态只给一句“该实例无法启动自动协作”，不带 reason 文案也不带配置路径。旧 daemon 对 `update` 答 `unknown-type`，store 回落到 `control.conversations.router.get`，面板渲染只读状态加升级提示（指向宿主 config.json），不留空白表单。`conversation-router-changed` 事件触发重读，因此弹层与作曲器始终收敛。设置页不再有自动协作分区。
+实例管理弹层（会话 tab 的齿轮）General 分区是“群组自动协作”的唯一控制面。分区显示 daemon 解析出的状态和一个开关，没有 Router 命令或鉴权环境变量输入，也不出现任何配置路径。开关绑定持久化的 `config.enabled`，不来自可用性状态：探测失败的实例照样显示开关是开的，并给出能修好它的说明。打开弹层走 `control.conversations.router.update` 的空补丁（纯读，不写盘不探测），切换走同一个 RPC 的非空补丁。开启时若实例没有配置 `conversations.router.command`，daemon 自己把仓库自带的默认 Router 写进去并真跑探测，所以首次安装不需要运维提供任何命令。探测没到 `ready` 时状态只给一句“该实例无法启动自动协作”，不带 reason 文案也不带配置路径。旧 daemon 对 `update` 答 `unknown-type`，store 回落到 `control.conversations.router.get`，面板渲染只读状态加升级提示（指向宿主 config.json），不留空白表单。`conversation-router-changed` 事件触发重读，因此弹层与作曲器始终收敛。设置页不再有自动协作分区。同一分区下有 Jev 设置：endpoint、API key（只显示掩码，输入即替换，可清除）、可选代理（留空回落到实例的 `HTTPS_PROXY`/`https_proxy`）、只读模型 `jev-1.13.0`、保存，以及“测试连接”（451 → 地区不可用需配置代理；401/403 → key 无效；另有 network/http-error/malformed-response/no-key）。
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 
