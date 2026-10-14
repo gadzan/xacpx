@@ -1,9 +1,10 @@
 # Changelog
-## [Unreleased]
+## [0.24.10-beta.1] - 2026-10-14
 
 ### Added
 
 - **Configless automatic collaboration switch in the instance dialog (PR #402 follow-up):** the per-instance control on the session tab is now the only control surface for group automatic collaboration, and it needs no operator-supplied router. Turning the switch on with no `command` configured writes this repository's own bundled router (`dist/conversations/default-router-main.js`) and probes it, so a fresh install enables the feature on its own — the same `--capabilities` proof and the same `production-router.ts` bounds as any operator-supplied router, never a second routing path. The bundled router is deterministic: it fans the Run's request out to every enabled member once, in parallel, then completes, and never synthesizes. The dialog drops the command and auth-environment fields entirely and never shows a config path: a status short of `ready` reads as one fixed sentence. `.get` and `.set` keep their exact wire shapes, so released dashboards and the Group composer are unaffected; an older daemon answers `unknown-type` and the dialog falls back to `.get` with a read-only panel and an upgrade notice.
+
 ### Changed
 
 - `acpx` pinned exactly `0.16.0 -> 0.19.5` (no caret); `package-lock.json` regenerated so `npm ci` stays in sync. CLI and Bridge lanes absorb the 0.19.x queue-owner shutdown race: owner-IPC control commands (`cancel`, `sessions close`, `set-mode`, `set`) retry only a failed attempt whose output matches the retryable `QUEUE_OWNER_CLOSED` window, on a bounded 250 ms..4 s backoff, and still surface a failure that outlives it. Session history and the session agent command are now discovered by canonical record scan (acpx 0.19 ignores the legacy `sessions/index.json`), with shape, filename-identity, and I/O bounds plus diagnostics. Queue-owner termination now requires birth-identity proof of the lease (posix-lstart or linux-proc) before any kill or lock unlink; unprovable leases (0.16-era, retiring, or a reused pid) are left to their idle TTL instead of being killed on a bare pid, and Windows stays fail-closed. Enforced read-only is re-attested to the 0.19.5 executor by the vendored native-SDK compat run (real pinned Claude SDK through the production guard, rejecting Write/Bash/MCP); other or unknown executor versions still fail closed. A persistent session reused after a failed turn now requires `session/resume` support from the agent: acpx 0.16 silently re-created it, 0.19 fails closed with `SESSION_RESUME_REQUIRED` instead of replaying the turn.
@@ -15,6 +16,38 @@
 ### Fixed
 
 - **Adapter model lists survive a daemon restart, and an explicit fetch always re-probes:** a verified list is persisted in the regenerable `capability_lists` section of `state.json`, keyed by agent + workspace cwd + launch identity (adapter pin / `command` / `argv`) + auth material, so reopening a Bot editor no longer shows "no saved model list for this agent, workspace, and adapter" after a restart. `probe: true` no longer short-circuits on the saved list or a sibling session — clicking "Fetch model list" runs a real adapter probe. When that refresh fails, the saved list is still returned with an optional `reason` on the ready state marking it as not freshly verified, and Relay Web shows it plus a retry instead of an empty picker. A malformed cache entry is dropped on load, never blocking startup.
+
+## [relay-protocol 0.6.4-beta.1] - 2026-10-14
+
+### Added
+
+- Ready capability state carries an optional `reason` (code + message) when the model list is a preserved cache whose live re-verification failed, and `CapabilityDraft` accepts it; the parser reads it back so a stale-but-usable list is distinguishable from a fresh one.
+
+## [relay 0.14.12-beta.1] - 2026-10-14
+
+### Added
+
+- Relay Web: the three conversation panes (Direct Bot, Group, Topic) share one row and composer implementation (`ConversationMessageList` / `ConversationComposer`), so tool cards, reasoning rows, transcript scrolling, and the send/cancel control behave identically everywhere; the composer migration keeps the keystroke-reset behaviour.
+- Relay Web: group agent-to-agent communication is readable and navigable in the transcript — a dedicated handoff entry with its own history view, jump-to-result that transfers keyboard focus instead of losing it, and per-instance toggle plumbing for the configless automatic-collaboration switch.
+- Relay Web: the automatic-collaboration switch moved into the instance dialog and no longer needs an operator-supplied router command; a status short of `ready` reads as one fixed sentence instead of a config path.
+
+## [channel-relay 0.7.8-beta.1] - 2026-10-14
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.1` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [channel-feishu 0.8.7-beta.1] - 2026-10-14
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.1` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [channel-discord 0.8.7-beta.1] - 2026-10-14
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.1` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
 
 ## [0.24.10-beta.0] - 2026-10-13
 
