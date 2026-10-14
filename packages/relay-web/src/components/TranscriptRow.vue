@@ -15,6 +15,7 @@ const props = defineProps<{
   /** Role / description shown after the name. */
   speakerRole?: string;
   own?: boolean;
+  hideLeadingAvatar?: boolean;
   /** Stable id for the prepend scroll anchor. */
   rowId?: string;
   /** Enter choreography from the pane's own scroll logic. */
@@ -30,7 +31,7 @@ const props = defineProps<{
     :style="enterStyle"
     :data-row-id="rowId"
   >
-    <div v-if="!own" class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" data-avatar-key="row">
+    <div v-if="!own && !hideLeadingAvatar" class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" data-avatar-key="row">
       <span class="grid h-6 w-6 place-items-center overflow-hidden rounded-full border border-border bg-surface">
         <AgentIcon v-if="driver" :driver="driver" :size="15" fill />
         <Bot v-else :size="15" class="text-fg-muted" />
