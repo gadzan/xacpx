@@ -1523,4 +1523,56 @@ describe("working quip bubble", () => {
     wrapper.unmount();
     vi.unstubAllGlobals();
   });
+  it("disconnects its IntersectionObserver on unmount", () => {
+    const disconnect = vi.fn();
+    vi.stubGlobal("IntersectionObserver", class {
+      observe(): void {}
+      disconnect = disconnect;
+    });
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: live([]) } });
+    expect(disconnect).not.toHaveBeenCalled();
+    wrapper.unmount();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("removes the bubble and disconnects when the live turn ends", async () => {
+    const disconnect = vi.fn();
+    vi.stubGlobal("IntersectionObserver", class {
+      observe(): void {}
+      disconnect = disconnect;
+    });
+    const wrapper = mount(MessageList, { props: { messages: [msg({ direction: "in", text: "go" })], liveTurn: live([]) } });
+    expect(wrapper.find('[data-test="hud-quip"]').exists()).toBe(true);
+    await wrapper.setProps({ liveTurn: null, messages: [msg({ direction: "in", text: "go" }), msg({ direction: "out", text: "done" })] });
+    expect(wrapper.find('[data-test="hud-quip"]').exists()).toBe(false);
+    expect(wrapper.find('[data-avatar-key="live"]').exists()).toBe(false);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+    vi.unstubAllGlobals();
+  });
+
+  it("moves to the new live row when a later turn starts", async () => {
+    const first = [msg({ direction: "in", text: "p1" })];
+    const wrapper = mount(MessageList, { props: { messages: first, liveTurn: { ...live([]), startedAt: 1, slotAfterIndex: 0 } } });
+    const next = [...first, msg({ direction: "out", text: "r1" }), msg({ direction: "in", text: "p2" })];
+    await wrapper.setProps({ messages: next, liveTurn: { ...live([]), startedAt: 2, slotAfterIndex: 2 } });
+    const avatars = wrapper.findAll(".agent-avatar");
+    expect(avatars).toHaveLength(2);
+    expect(avatars[0]!.find('[data-test="hud-quip"]').exists()).toBe(false);
+    expect(avatars[1]!.attributes("data-avatar-key")).toBe("live");
+    expect(avatars[1]!.find('[data-test="hud-quip"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="hud-quip"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("renders the bubble in its default above-head position without IntersectionObserver", () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const wrapper = mount(MessageList, { props: { messages: [], liveTurn: live([]) } });
+    const liveAvatar = wrapper.find('[data-avatar-key="live"]');
+    expect(liveAvatar.find('[data-test="hud-quip"]').exists()).toBe(true);
+    expect(liveAvatar.classes()).not.toContain("quip-beside");
+    expect(() => wrapper.unmount()).not.toThrow();
+    vi.unstubAllGlobals();
+  });
 });

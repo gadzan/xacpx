@@ -608,13 +608,12 @@ export interface LiveTurn {
 - `text` — `whitespace-pre-wrap` 纯文本。
 - `fields` — `<dl>` 键值表格 + 可选输出块（用于 other/think 类型）。
 
-**`ChatPane` 状态 HUD**（`packages/relay-web/src/components/ChatPane.vue`）
+**工作气泡 `WorkingQuip`**（`packages/relay-web/src/components/LiveTurnAvatar.vue` / `WorkingQuip.vue`）
 
-`chat.busy` 时在输入框上方显示一行 HUD（`data-test="turn-hud"`）：
-- 脉冲点 `●`（`animate-pulse`）+ 俏皮状态行 `data-test="hud-quip"`（`chat.workingQuips` 池随机抽、每 20s 轮换不连重；池为空回退 `chat.mentionActivity.working`）+ `M:SS`（每秒刷新的 elapsed 计时，由 `setInterval(1000)` + `liveTurn.startedAt` 驱动）。
-- 若有 running 状态的步骤：`· 🔧 N`（N 为 running tool 数量）。
-- 右侧 `Cancel` 按钮 → `chat.cancel()`（调 `control.prompt.cancel` RPC）。
-- 输入框 busy 时 placeholder 保持静态 `chat.working`，不再轮换俏皮语。
+回合进行中，俏皮状态行 `data-test="hud-quip"`（`chat.workingQuips` 池随机抽、每 20s 轮换不连重；池为空回退 `chat.mentionActivity.working`）+ `M:SS` elapsed 计时（`useWorkingQuip`，由 `liveTurn.startedAt` 驱动）以对话气泡形式挂在**实时回合**行的 sticky 头像上（`[data-avatar-key="live"]`，即最新一条 agent 回合），而不是视口内最靠上的头像。
+- 气泡是 `LiveTurnAvatar` 内的子元素，相对 sticky 头像绝对定位于图标头顶（`bottom: calc(100% + 4px)`），随布局原生移动：无滚动监听、无 `getBoundingClientRect`、无跟随延迟。
+- 头像被钉在滚动容器顶部、头顶无空间时，`IntersectionObserver` 观察头顶的哨兵条并切换 `quip-beside` 类，把气泡移到图标右侧；不支持 `IntersectionObserver` 的环境保持默认头顶位置。
+- 全局同一时刻只有一个气泡；无实时回合时不渲染。输入框 busy 时 placeholder 保持静态 `chat.working`。
 
 **`PromptInput` busy-guard**（`packages/relay-web/src/components/PromptInput.vue`）
 

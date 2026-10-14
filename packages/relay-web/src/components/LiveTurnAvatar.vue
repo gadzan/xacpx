@@ -18,12 +18,13 @@ defineProps<{
 const avatarEl = ref<HTMLElement | null>(null);
 const besideIcon = ref(false);
 const BUBBLE_SPACE_PX = 26; // bubble height (~22px) plus the 4px gap above the head
+let io: IntersectionObserver | null = null;
 
 onMounted(() => {
   const sentinel = avatarEl.value?.querySelector(".quip-sentinel");
   const scroller = avatarEl.value?.closest('[data-test="msg-scroller"]');
   if (!sentinel || !scroller || typeof IntersectionObserver === "undefined") return;
-  const io = new IntersectionObserver(
+  io = new IntersectionObserver(
     (entries) => { besideIcon.value = entries[0]?.isIntersecting !== true; },
     {
       root: scroller,
@@ -36,7 +37,10 @@ onMounted(() => {
     },
   );
   io.observe(sentinel);
-  onBeforeUnmount(() => io.disconnect());
+});
+onBeforeUnmount(() => {
+  io?.disconnect();
+  io = null;
 });
 </script>
 
