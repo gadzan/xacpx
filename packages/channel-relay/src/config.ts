@@ -22,6 +22,8 @@ export interface RelayDesktopConfig {
   port: number;
   connectTimeoutMs: number;
   maxStreams: number;
+  /** Opt-in per-tunnel forwarding stats (numbers only). Default false: no extra log line. */
+  diagnostics: boolean;
 }
 
 export interface RelayChannelConfig {
@@ -52,6 +54,7 @@ const DESKTOP_DEFAULTS: RelayDesktopConfig = {
   port: 5900,
   connectTimeoutMs: 1500,
   maxStreams: 1,
+  diagnostics: false,
 };
 
 /**
@@ -250,9 +253,16 @@ export function parseRelayDesktopConfig(raw: unknown): RelayDesktopConfig {
   // and the defaults would silently apply, so `upgradeTimeoutMs` (or a typo)
   // reads as "configured" while nothing honours it. Reject instead — this
   // object gates a live graphical-desktop exposure.
-  const known = new Set(["enabled", "backend", "port", "connectTimeoutMs", "maxStreams"]);
+  const known: Record<string, true> = {
+    enabled: true,
+    backend: true,
+    port: true,
+    connectTimeoutMs: true,
+    maxStreams: true,
+    diagnostics: true,
+  };
   for (const key of Object.keys(o)) {
-    if (!known.has(key)) {
+    if (known[key] !== true) {
       throw new Error(`relay channel options.desktop.${key} is not a supported option`);
     }
   }
@@ -282,12 +292,18 @@ export function parseRelayDesktopConfig(raw: unknown): RelayDesktopConfig {
     throw new Error("relay channel options.desktop.maxStreams must be 1 (v1 single-viewer)");
   }
 
+  const diagnostics = o.diagnostics === undefined ? DESKTOP_DEFAULTS.diagnostics : o.diagnostics;
+  if (typeof diagnostics !== "boolean") {
+    throw new Error("relay channel options.desktop.diagnostics must be a boolean");
+  }
+
   return Object.freeze({
     enabled,
     backend: "rfb",
     port,
     connectTimeoutMs,
     maxStreams,
+    diagnostics,
   });
 }
 

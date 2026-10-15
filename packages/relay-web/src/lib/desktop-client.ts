@@ -2,8 +2,48 @@
 // against an already-open binary WebSocket. noVNC is lazy-loaded so the main
 // bundle never pays for VNC until the user opens a Desktop tab.
 import { DESKTOP_INNER_RFB_SCHEME, type DesktopSecurityKind } from "@ganglion/xacpx-relay-protocol";
+import {
+  DesktopEncodingProbe,
+  desktopDiagnosticsEnabled,
+} from "./desktop-encoding-diagnostics";
 
 export type DesktopSecurity = DesktopSecurityKind;
+
+/**
+ * Smooth-first encoding preferences. noVNC's own defaults are quality 6 and
+ * compression 2; smooth-first asks for lower quality / higher compression via
+ * the public properties (they re-send SetEncodings while connected).
+ *
+ * These are REQUESTS only: whether the RFB server honours the pseudo-encodings
+ * is untested (未实测). macOS in particular is not known to negotiate
+ * Tight/JPEG. See docs/desktop-rfb-setup.md for how to observe what the server
+ * actually used.
+ */
+const SMOOTH_QUALITY_LEVEL = 3;
+const SMOOTH_COMPRESSION_LEVEL = 7;
+/** noVNC 1.7.0 defaults, restored when smooth-first is switched OFF. */
+const DEFAULT_QUALITY_LEVEL = 6;
+const DEFAULT_COMPRESSION_LEVEL = 2;
+
+/**
+ * Console report for the opt-in encoding probe: which encodings the server
+ * actually used, plus the requested smooth-first state. Counts only — no pixel
+ * bytes, no credentials, no URL/ticket.
+ */
+function reportEncodingSummary(probe: DesktopEncodingProbe, smoothFirst: boolean): void {
+  const summary = probe.summary(smoothFirst);
+  if (!summary.available) {
+    console.info("xacpx desktop encoding diagnostics unavailable:", summary.unavailableReason);
+    return;
+  }
+  console.info("xacpx desktop encoding diagnostics", {
+    smoothFirstRequested: summary.smoothFirst,
+    qualityLevel: summary.qualityLevel,
+    compressionLevel: summary.compressionLevel,
+    rects: summary.rects,
+    encodings: summary.encodings,
+  });
+}
 
 export interface DesktopSecurityFailure {
   /** noVNC's SecurityResult status, when it supplied one. */
@@ -29,6 +69,13 @@ export interface DesktopRfbHooks {
 export interface DesktopRfbConnection {
   sendCredentials(password: string): void;
   setScaleViewport(fit: boolean): void;
+  /**
+   * Request smooth-first encoding preferences. ON writes the public
+   * `qualityLevel` / `compressionLevel` properties (which re-sends SetEncodings
+   * while connected); OFF restores noVNC's own defaults. Both are REQUESTS:
+   * whether the RFB server honours them is untested (未实测).
+   */
+  setSmoothFirst(smooth: boolean): void;
   dispose(): void;
 }
 
@@ -52,6 +99,11 @@ export interface NoVncRfb {
   disconnect(): void;
   /** Writable post-construction property (noVNC defaults it to `false`). */
   scaleViewport: boolean;
+  /** Writable post-construction properties (noVNC defaults: 6 and 2). Assigning
+   *  re-sends SetEncodings while connected, which is how smooth-first is
+   *  applied to a live session. */
+  qualityLevel: number;
+  compressionLevel: number;
 }
 
 export type NoVncModule = {
@@ -64,6 +116,8 @@ export interface DesktopRfbConnectInput {
   target?: HTMLElement | null;
   /** Apply `scaleViewport = true` once the RFB object exists (default: false). */
   fit?: boolean;
+  /** Request smooth-first encoding preferences (default: false = noVNC defaults). */
+  smooth?: boolean;
   hooks?: DesktopRfbHooks;
   loadNoVnc?: () => Promise<NoVncModule>;
 }
@@ -82,6 +136,14 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
   // resolves so a click that lands during the import is not overwritten by the
   // stale construction-time snapshot.
   let desiredFit = input.fit ?? false;
+  // Desired smooth-first state, seeded exactly like `desiredFit` so a toggle
+  // that lands during the module import is not overwritten by the
+  // construction-time snapshot.
+  let desiredSmooth = input.smooth ?? false;
+  // Opt-in encoding diagnostic. Installed only when the localStorage flag is
+  // set, and only after the internals check passes — never on the connection
+  // path, never able to break the session.
+  let probe: DesktopEncodingProbe | null = null;
 
   const target = input.target ?? document.createElement("div");
   if (!input.target) {
@@ -129,6 +191,22 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
     // CURRENT desired value only: `input.fit` is the construction-time snapshot
     // and must not override a toggle that landed while we were importing.
     try { rfbInstance.scaleViewport = desiredFit; } catch { /* older build: leave as-is */ }
+    // Smooth-first is requested through the public properties only when it is
+    // ON. OFF writes nothing at all, so the noVNC defaults stay untouched.
+    if (desiredSmooth) {
+      try { rfbInstance.qualityLevel = SMOOTH_QUALITY_LEVEL; } catch { /* older build: leave as-is */ }
+      try { rfbInstance.compressionLevel = SMOOTH_COMPRESSION_LEVEL; } catch { /* older build: leave as-is */ }
+    }
+    if (desktopDiagnosticsEnabled()) {
+      // Opt-in encoding probe. Feature-detected inside: a drift in noVNC's
+      // internals leaves the connection untouched and the summary says
+      // "unavailable".
+      probe = new DesktopEncodingProbe(rfbInstance);
+      if (typeof window !== "undefined") {
+        const active = probe;
+        window.__xacpxDesktopDiag = () => active.summary(desiredSmooth);
+      }
+    }
     const narrow = rfbInstance as unknown as {
       _isSupportedSecurityType?: (type: number) => boolean;
       _negotiateAuthentication?: () => boolean;
@@ -170,6 +248,9 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
       const reason = typeof (event as { detail?: unknown }).detail === "string"
         ? String((event as { detail?: unknown }).detail)
         : "disconnected";
+      // Opt-in only: the encoding probe is installed solely when the
+      // diagnostics flag is set, so a default session logs nothing here.
+      if (probe) reportEncodingSummary(probe, desiredSmooth);
       hooks.onDisconnect?.({ clean, reason });
     });
     on("credentialsrequired", () => {
@@ -206,6 +287,15 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
         try { rfb.scaleViewport = fit; } catch { /* gone */ }
       }
     },
+    setSmoothFirst(smooth: boolean): void {
+      desiredSmooth = smooth;
+      if (!rfb) return;
+      // Public writable properties: noVNC re-sends SetEncodings while connected.
+      // OFF restores noVNC's own defaults so the toggle is reversible; the
+      // setter is a no-op when the value already matches.
+      try { rfb.qualityLevel = smooth ? SMOOTH_QUALITY_LEVEL : DEFAULT_QUALITY_LEVEL; } catch { /* gone */ }
+      try { rfb.compressionLevel = smooth ? SMOOTH_COMPRESSION_LEVEL : DEFAULT_COMPRESSION_LEVEL; } catch { /* gone */ }
+    },
     dispose(): void {
       disposed = true;
       for (const [type, listener] of listeners) {
@@ -214,6 +304,12 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
       listeners.length = 0;
       try { rfb?.disconnect(); } catch { /* gone */ }
       rfb = null;
+      // Drop the on-demand hook with the connection that installed it, so a
+      // later session's probe is never shadowed by a dead one.
+      probe = null;
+      if (typeof window !== "undefined" && window.__xacpxDesktopDiag) {
+        delete window.__xacpxDesktopDiag;
+      }
     },
   };
 }

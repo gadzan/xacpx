@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Expand, Maximize, Minimize, Monitor, Shrink, X } from "lucide-vue-next";
+import { Expand, Gauge, Maximize, Minimize, Monitor, Shrink, X } from "lucide-vue-next";
 import { parseDesktopCredential } from "@ganglion/xacpx-relay-protocol";
 import { useDesktopStore } from "../stores/desktop";
 import { desktopErrorKey } from "../lib/desktop-error-i18n";
@@ -98,6 +98,15 @@ function toggleFit(): void {
   desktops.setFit(props.instanceId, !session.value.fit);
 }
 
+/**
+ * 流畅优先 / smooth-first. Requests lower image quality and higher compression
+ * from the RFB server; the server may ignore the request (未实测). Persisted in
+ * localStorage, so it survives reloads and applies to the next desktop open.
+ */
+function toggleSmooth(): void {
+  desktops.setSmooth(props.instanceId, !session.value.smooth);
+}
+
 /** Fullscreen over the whole viewport (design §14 v1 UI). */
 async function toggleFullscreen(): Promise<void> {
   const el = host.value?.closest("[data-test='desktop-center']") as HTMLElement | null;
@@ -156,6 +165,15 @@ onBeforeUnmount(() => {
                 @click="toggleFit">
           <Minimize v-if="session.fit" :size="15" />
           <Maximize v-else :size="15" />
+        </button>
+        <button data-test="desktop-smooth-toggle"
+                type="button"
+                :aria-label="$t(session.smooth ? 'desktop.smoothOn' : 'desktop.smoothOff')"
+                :title="$t('desktop.smoothHint')"
+                class="grid h-7 w-7 place-items-center rounded transition-colors"
+                :class="session.smooth ? 'bg-accent/10 text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+                @click="toggleSmooth">
+          <Gauge :size="15" />
         </button>
         <button data-test="desktop-fullscreen-toggle"
                 type="button"

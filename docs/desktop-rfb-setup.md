@@ -229,6 +229,37 @@ Open 失败时错误码与含义：
 - **relay-web 面板**：错误横幅展示 code + 详情；VNC 密码输错会在密码框提示
   认证失败，而不是笼统超时。
 
+### 性能诊断（默认关闭）
+
+三处都是**显式开启**，默认不产生任何额外输出；输出只有数字与 streamId，不含
+framebuffer 字节、ticket 或凭据。
+
+- **connector**：`options.desktop.diagnostics: true`。tunnel 关闭时打一行
+  `relay.desktop.tunnel_stats`：`bytesToHub` / `bytesFromHub`、`peakWsBufferedBytes`、
+  `tcpPauses` / `tcpPausedMs`（loopback TCP 因 Hub ws 积压被暂停的次数与累计时长）、
+  `wsPauses` / `wsPausedMs`（反方向）、`durationMs`。
+- **Hub**：环境变量 `XACPX_RELAY_DESKTOP_DIAGNOSTICS=1`。stream 关闭时打一行
+  `relay.desktop.stream_stats`：`bytesToBrowser` / `bytesToConnector`、两侧
+  `bufferedAmount` 峰值、`sourcePauses` / `sourcePausedMs`（Hub 因目标侧积压而暂停
+  来源 socket 的次数与累计时长）。
+- **浏览器**：在 relay-web 的开发者控制台执行
+  `localStorage.setItem("xacpx.desktop.diagnostics", "1")` 后重新打开 Desktop。
+  断开时 `console.info` 输出服务端**实际**在 FramebufferUpdate 里使用的编码计数
+  （Raw / CopyRect / Hextile / ZRLE / Tight …），也可随时调用
+  `window.__xacpxDesktopDiag()` 查看。只统计 rect 头部里的编码号，不读像素。
+
+### 「流畅优先」到底做了什么
+
+Desktop 工具栏的「流畅优先」（默认关）只会让 noVNC 在 SetEncodings 里**请求**更低的
+JPEG 质量（qualityLevel）与更高的压缩级别（compressionLevel）。这只是请求：
+是否生效取决于服务端实际协商的编码——Raw / CopyRect / Hextile / ZRLE 没有质量参数，
+只有 Tight / JPEG 一类编码才可能使用它，服务端也可以完全忽略。
+
+**macOS 屏幕共享是否接受这些参数：未实测。** 验证方法：在 Mac 上按上面的方法打开
+浏览器诊断，分别在「流畅优先」开/关下操作一段时间后断开，对比控制台里的编码计数
+（以及 Hub / connector 的字节数统计）。如果编码里没有 Tight（7）或 JPEG（21），
+这两个参数对该服务端没有作用。
+
 connector 侧没有独立 desktop doctor 命令。Phase A 的选择是：把 open 错误做到
 可诊断（上述文案 + connector 侧日志）而不是新建一个大 doctor 框架。
 

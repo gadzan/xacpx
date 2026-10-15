@@ -21,6 +21,7 @@ const DEFAULT_DESKTOP = {
   port: 5900,
   connectTimeoutMs: 1500,
   maxStreams: 1,
+  diagnostics: false,
 };
 
 // ── normalizeRelayUrl ──────────────────────────────────────────────────────────

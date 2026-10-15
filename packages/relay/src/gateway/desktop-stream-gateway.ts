@@ -6,6 +6,7 @@
 
 import {
   DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
+  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
   DESKTOP_WS_MAX_PAYLOAD_BYTES,
   type DesktopSecurityKind,
 } from "@ganglion/xacpx-relay-protocol";
@@ -16,9 +17,13 @@ import { DesktopTicketStore, type DesktopTicket } from "./desktop-ticket-store.j
 import { DesktopStreamRegistry, type DesktopStreamRecord } from "./desktop-stream-registry.js";
 
 export interface DesktopBinarySocket {
-  send(data: Uint8Array): void;
+  /** `callback` mirrors ws: it fires once the bytes are written to the socket. */
+  send(data: Uint8Array, callback?: (err?: Error) => void): void;
   close(code?: number, reason?: string): void;
   readonly bufferedAmount: number;
+  /** Real ws sockets have these; a double that cannot flow-control just omits them. */
+  pause?(): void;
+  resume?(): void;
   on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown;
   on(event: "close", listener: () => void): unknown;
 }
@@ -54,6 +59,38 @@ interface PairedSockets {
   security?: DesktopSecurityKind;
 }
 
+/**
+ * Per-stream forwarding bookkeeping: byte counters for the opt-in stats line
+ * (numbers only) plus the single armed soft-backpressure cycle.
+ *
+ * Soft backpressure exists so a slow browser does NOT evict the stream: when
+ * the destination peer sits above the soft watermark the SOURCE socket is
+ * paused, which propagates the pressure upstream (hub → connector → loopback
+ * TCP) instead of buffering without bound in the hub. The hard cap still
+ * evicts with 1013 exactly as before.
+ */
+interface StreamFlowState {
+  /** Bytes forwarded to the browser / connector since pairing. */
+  toBrowser: number;
+  toConnector: number;
+  /** Highest `bufferedAmount` observed on each peer. */
+  peakBrowserBuffered: number;
+  peakConnectorBuffered: number;
+  /** The source socket paused because the destination is above the watermark. */
+  source?: DesktopBinarySocket;
+  /** The destination that is above the watermark (watched for the drain). */
+  peer?: DesktopBinarySocket;
+  sourcePaused: boolean;
+  sourcePausedAt: number | null;
+  sourcePauses: number;
+  sourcePausedMs: number;
+  /** The ONE armed fallback resume check (never a pile-up). */
+  resumeTimer: NodeJS.Timeout | null;
+}
+
+/** Fallback resume check interval for the hub's soft-pause state. */
+const DESKTOP_RESUME_POLL_MS = 50;
+
 /** Pre-consumed connector ticket: identity already validated at upgrade time. */
 export interface DesktopTicketClaim {
   streamId: string;
@@ -66,6 +103,8 @@ export interface DesktopStreamGatewayOptions {
   logger?: RelayLogger;
   maxPayloadBytes?: number;
   hardCloseBufferedBytes?: number;
+  /** Opt-in per-stream forwarding stats (numbers only). Default false: no extra log line. */
+  diagnostics?: boolean;
   onStreamClosed?: (streamId: string) => void;
 }
 
@@ -89,7 +128,14 @@ export class DesktopStreamGateway {
   private readonly logger: RelayLogger;
   private readonly maxPayloadBytes: number;
   private readonly hardCloseBufferedBytes: number;
+  private readonly diagnostics: boolean;
   private readonly onStreamClosed?: (streamId: string) => void;
+  /**
+   * Live per-stream flow bookkeeping (counters + soft-backpressure cycle).
+   * Entries are created lazily on the first forwarded frame and deleted in
+   * closeStream, so a closed stream keeps neither a timer nor a socket ref.
+   */
+  private readonly flow = new Map<string, StreamFlowState>();
 
   constructor(options: DesktopStreamGatewayOptions = {}) {
     this.tickets = options.tickets ?? new DesktopTicketStore();
@@ -97,6 +143,7 @@ export class DesktopStreamGateway {
     this.logger = options.logger ?? createNoopRelayLogger();
     this.maxPayloadBytes = options.maxPayloadBytes ?? DESKTOP_WS_MAX_PAYLOAD_BYTES;
     this.hardCloseBufferedBytes = options.hardCloseBufferedBytes ?? DESKTOP_BUFFERED_HARD_CLOSE_BYTES;
+    this.diagnostics = options.diagnostics === true;
     this.onStreamClosed = options.onStreamClosed;
   }
 
@@ -241,6 +288,13 @@ export class DesktopStreamGateway {
     const known = pair !== undefined || (record !== undefined && record.state !== "closed");
     this.paired.delete(streamId);
     this.preAttach.delete(streamId);
+    const flow = this.flow.get(streamId);
+    if (flow) {
+      // No leak: a pending fallback resume timer and the paused-source refs die
+      // with the stream, so a closed stream cannot resume anything later.
+      if (flow.resumeTimer !== null) clearTimeout(flow.resumeTimer);
+      this.flow.delete(streamId);
+    }
     this.streams.close(streamId);
     this.tickets.revokeForStream(streamId);
     if (!known) return;
@@ -251,6 +305,18 @@ export class DesktopStreamGateway {
     // from a connector-supplied ErrorPayload code, so its length is not ours
     // to trust — the full value goes to the log, a bounded token to the wire.
     this.logger.info("relay.desktop.stream_closed", "desktop stream closed", { streamId, reason });
+    if (this.diagnostics && flow) {
+      // Numbers + streamId only: no payload bytes, no ticket, no credentials.
+      this.logger.info("relay.desktop.stream_stats", "desktop stream forwarding stats", {
+        streamId,
+        bytesToBrowser: flow.toBrowser,
+        bytesToConnector: flow.toConnector,
+        peakBrowserBufferedBytes: flow.peakBrowserBuffered,
+        peakConnectorBufferedBytes: flow.peakConnectorBuffered,
+        sourcePauses: flow.sourcePauses,
+        sourcePausedMs: flow.sourcePausedMs,
+      });
+    }
     const wireReason = wireCloseReason(reason);
     const wireCode = wireCloseCode(reason);
     try { pair?.browser?.close(wireCode, wireReason); } catch { /* already gone */ }
@@ -331,11 +397,114 @@ export class DesktopStreamGateway {
       this.closeStream(streamId, "backpressure");
       return;
     }
+    const flow = this.flowState(streamId);
+    if (from === "browser") {
+      flow.toConnector += data.byteLength;
+      if (peer.bufferedAmount > flow.peakConnectorBuffered) flow.peakConnectorBuffered = peer.bufferedAmount;
+    } else {
+      flow.toBrowser += data.byteLength;
+      if (peer.bufferedAmount > flow.peakBrowserBuffered) flow.peakBrowserBuffered = peer.bufferedAmount;
+    }
+    const soft = peer.bufferedAmount > DESKTOP_BUFFERED_SOFT_PAUSE_BYTES;
     try {
-      peer.send(data);
+      // While the destination is above the watermark the frame carries the
+      // drain probe (ws fires it once the bytes are on the wire, which is the
+      // moment `bufferedAmount` can have fallen back). No callback otherwise,
+      // so a healthy stream pays nothing.
+      if (soft || flow.sourcePaused) {
+        peer.send(data, () => this.onPeerDrained(streamId));
+      } else {
+        peer.send(data);
+      }
     } catch {
       this.closeStream(streamId, "send-failed");
+      return;
     }
+    if (soft) this.pauseSource(streamId, socket, peer);
+  }
+
+  /** Lazily create the per-stream flow bookkeeping; deleted by closeStream. */
+  private flowState(streamId: string): StreamFlowState {
+    const existing = this.flow.get(streamId);
+    if (existing) return existing;
+    const created: StreamFlowState = {
+      toBrowser: 0,
+      toConnector: 0,
+      peakBrowserBuffered: 0,
+      peakConnectorBuffered: 0,
+      sourcePaused: false,
+      sourcePausedAt: null,
+      sourcePauses: 0,
+      sourcePausedMs: 0,
+      resumeTimer: null,
+    };
+    this.flow.set(streamId, created);
+    return created;
+  }
+
+  /**
+   * Pause the SOURCE socket because the destination peer is above the soft
+   * watermark. A socket that cannot flow-control (a double without pause) is
+   * simply not paused: the hard cap still protects the hub, and the stream
+   * keeps working.
+   */
+  private pauseSource(streamId: string, source: DesktopBinarySocket, peer: DesktopBinarySocket): void {
+    const flow = this.flowState(streamId);
+    if (flow.sourcePaused) return;
+    if (typeof source.pause !== "function") return;
+    flow.source = source;
+    flow.peer = peer;
+    flow.sourcePaused = true;
+    flow.sourcePausedAt = Date.now();
+    flow.sourcePauses += 1;
+    source.pause();
+    this.armResumeCheck(streamId);
+  }
+
+  /** ws `send` callback: the frame that crossed the watermark is on the wire. */
+  private onPeerDrained(streamId: string): void {
+    const flow = this.flow.get(streamId);
+    if (!flow || !flow.sourcePaused || !flow.peer) return;
+    if (flow.peer.bufferedAmount <= DESKTOP_BUFFERED_SOFT_PAUSE_BYTES) {
+      this.resumeSource(streamId);
+    } else {
+      this.armResumeCheck(streamId);
+    }
+  }
+
+  /** One armed fallback resume check per stream (never a pile-up). */
+  private armResumeCheck(streamId: string): void {
+    const flow = this.flow.get(streamId);
+    if (!flow || flow.resumeTimer !== null || !flow.sourcePaused) return;
+    flow.resumeTimer = setTimeout(() => {
+      const current = this.flow.get(streamId);
+      if (!current) return;
+      current.resumeTimer = null;
+      if (!current.sourcePaused || !current.peer) return;
+      if (current.peer.bufferedAmount <= DESKTOP_BUFFERED_SOFT_PAUSE_BYTES) {
+        this.resumeSource(streamId);
+      } else {
+        this.armResumeCheck(streamId);
+      }
+    }, DESKTOP_RESUME_POLL_MS);
+    flow.resumeTimer.unref?.();
+  }
+
+  private resumeSource(streamId: string): void {
+    const flow = this.flow.get(streamId);
+    if (!flow || !flow.sourcePaused || !flow.source) return;
+    flow.sourcePaused = false;
+    if (flow.resumeTimer !== null) {
+      clearTimeout(flow.resumeTimer);
+      flow.resumeTimer = null;
+    }
+    if (flow.sourcePausedAt !== null) {
+      flow.sourcePausedMs += Date.now() - flow.sourcePausedAt;
+      flow.sourcePausedAt = null;
+    }
+    try { flow.source.resume?.(); } catch { /* gone */ }
+    flow.source = undefined;
+    flow.peer = undefined;
   }
 
   private reject(socket: DesktopBinarySocket, reason: string): { ok: false; reason: string } {

@@ -13,6 +13,7 @@ test("desktop defaults: disabled rfb on 5900", () => {
     port: 5900,
     connectTimeoutMs: 1500,
     maxStreams: 1,
+    diagnostics: false,
   });
   expect(Object.isFrozen(config.desktop)).toBe(true);
   expect(Object.isFrozen(config)).toBe(true);
@@ -28,6 +29,19 @@ test("desktop accepts explicit port/timeout", () => {
   expect(config.desktop.port).toBe(5901);
   expect(config.desktop.connectTimeoutMs).toBe(3000);
   expect(config.desktop.maxStreams).toBe(1);
+  expect(config.desktop.diagnostics).toBe(false);
+});
+
+test("desktop diagnostics is an opt-in boolean", () => {
+  // Default off: no extra stats line, no counter output.
+  expect(parseRelayDesktopConfig({ enabled: true }).diagnostics).toBe(false);
+  expect(parseRelayDesktopConfig({ diagnostics: true }).diagnostics).toBe(true);
+  expect(parseRelayDesktopConfig({ diagnostics: false }).diagnostics).toBe(false);
+  // A non-boolean is a configuration lie: it would silently read as "off".
+  expect(() => parseRelayDesktopConfig({ diagnostics: "1" })).toThrow(/diagnostics must be a boolean/);
+  expect(() => parseRelayDesktopConfig({ diagnostics: 1 })).toThrow(/diagnostics must be a boolean/);
+  expect(() => parseRelayChannelConfig({ url: "wss://h", desktop: { diagnostics: null } }))
+    .toThrow(/diagnostics must be a boolean/);
 });
 
 test("desktop rejects non-object, bad backend, and out-of-range values", () => {
