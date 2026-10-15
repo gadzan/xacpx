@@ -3,6 +3,8 @@ import { ref } from "vue";
 
 export type ThemeMode = "dark" | "light";
 const KEY = "relay-theme";
+/** Browser-chrome colour per theme; mirrors --c-bg and the theme-color metas in index.html. */
+export const THEME_COLOR: Record<ThemeMode, string> = { light: "#FFFFFF", dark: "#10151C" };
 
 function initialMode(): ThemeMode {
   const saved = localStorage.getItem(KEY);
@@ -15,6 +17,9 @@ export const useThemeStore = defineStore("theme", () => {
   function apply() {
     document.documentElement.classList.toggle("dark", mode.value === "dark");
     document.documentElement.style.colorScheme = mode.value;
+    // index.html ships one theme-color per prefers-color-scheme; an explicit choice
+    // must win over the OS, so point every tag at the resolved theme.
+    document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute("content", THEME_COLOR[mode.value]));
   }
   function set(next: ThemeMode) {
     mode.value = next;

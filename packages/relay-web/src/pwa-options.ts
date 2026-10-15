@@ -18,8 +18,8 @@ export const pwaOptions: Partial<VitePWAOptions> = {
     description:
       "Self-hosted relay dashboard for xacpx — remote-control acpx sessions.",
     lang: "en",
-    theme_color: "#0E1116",
-    background_color: "#0E1116",
+    theme_color: "#10151C",
+    background_color: "#10151C",
     display: "standalone",
     orientation: "any",
     start_url: "/",

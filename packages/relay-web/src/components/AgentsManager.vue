@@ -58,7 +58,7 @@ function hint(installed: string): string {
 
 <template>
   <section class="space-y-3">
-    <p v-if="error" data-test="am-error" class="rounded bg-danger/10 px-3 py-2 text-sm text-danger">{{ error }}</p>
+    <p v-if="error" data-test="am-error" class="rounded bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ error }}</p>
     <input v-if="showFilter" v-model="filter" data-test="am-filter" :placeholder="$t('common.filter')"
            class="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
     <p v-if="!all.length" data-test="am-empty" class="text-sm text-fg-muted">{{ $t("agents.empty") }}</p>
@@ -89,7 +89,7 @@ function hint(installed: string): string {
         <input v-model="customName" data-test="am-name" :placeholder="$t('agents.namePlaceholder')" class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
       </div>
       <div class="flex gap-2">
-        <button data-test="am-add" class="rounded bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
+        <button data-test="am-add" class="rounded bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
                 :disabled="busy || !driver" @click="add">{{ $t("common.add") }}</button>
         <button type="button" data-test="am-add-cancel" class="rounded px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5 hover:text-fg" @click="formOpen = false">{{ $t("common.cancel") }}</button>
       </div>

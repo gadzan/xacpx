@@ -580,7 +580,7 @@ async function submit(): Promise<void> {
         <button
           type="button"
           :disabled="submitting || !name.trim() || (isEditing && !!props.bot && !detailHydrated)"
-          class="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          class="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
           @click="submit"
         >
           <Loader2 v-if="submitting" :size="13" class="animate-spin" />

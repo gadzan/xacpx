@@ -932,7 +932,7 @@ const rowSwipes = computed(() => {
                         class="flex w-14 shrink-0 items-center justify-center bg-warn text-white transition-colors hover:bg-warn/90"
                         @click.stop="onArchive(inst.id, s.alias)"><Moon :size="16" /></button>
                 <button data-test="swipe-delete" :aria-label="$t('common.delete')" :title="$t('common.delete')"
-                        class="flex w-14 shrink-0 items-center justify-center bg-danger text-white transition-colors hover:bg-danger/90"
+                        class="flex w-14 shrink-0 items-center justify-center bg-danger text-on-danger transition-colors hover:bg-danger/90"
                         @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="16" /></button>
               </template>
             </div>

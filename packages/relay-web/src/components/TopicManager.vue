@@ -188,7 +188,7 @@ async function submitConfirm(): Promise<void> {
           </div>
           <form v-if="editingId === topic.id" class="mt-1 flex gap-1" @submit.prevent="saveRename(topic)">
             <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded border border-border bg-bg px-1 py-0.5" />
-            <button type="submit" data-test="topic-rename-save" class="rounded bg-accent px-2 py-0.5 text-white">{{ $t("bot.topic.save") }}</button>
+            <button type="submit" data-test="topic-rename-save" class="rounded bg-accent px-2 py-0.5 text-on-accent">{{ $t("bot.topic.save") }}</button>
           </form>
           <div v-else class="mt-1 flex flex-wrap gap-1">
             <button v-if="topic.status !== 'deleting'" type="button" data-test="topic-rename" class="rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="startRename(topic)">{{ $t("bot.topic.rename") }}</button>
@@ -217,7 +217,7 @@ async function submitConfirm(): Promise<void> {
           <button
             type="button"
             data-test="topic-confirm-submit"
-            class="rounded-lg bg-danger px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+            class="rounded-lg bg-danger px-3 py-1.5 text-xs font-medium text-on-danger disabled:opacity-50"
             :disabled="confirmBlocked"
             @click="submitConfirm"
           >

@@ -282,12 +282,12 @@ onMounted(async () => {
           <div v-if="tab === 'general'" id="tabpanel-general" role="tabpanel" aria-labelledby="tab-general" class="space-y-6">
             <section class="space-y-3">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.nameLabel") }}</h3>
-              <p v-if="renameError" data-test="rename-error" class="rounded bg-danger/10 px-3 py-2 text-sm text-danger">{{ renameError }}</p>
+              <p v-if="renameError" data-test="rename-error" class="rounded bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ renameError }}</p>
               <div class="flex gap-2">
                 <input v-model="name" data-test="rename-name" :placeholder="$t('instance.renamePlaceholder')"
                        class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                        @keyup.enter="saveName" />
-                <button data-test="rename-save" class="shrink-0 rounded bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
+                <button data-test="rename-save" class="shrink-0 rounded bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
                         :disabled="renaming || !name.trim()" @click="saveName">{{ renaming ? $t("instance.renameSaving") : $t("instance.renameSave") }}</button>
               </div>
             </section>
@@ -297,7 +297,7 @@ onMounted(async () => {
                 <button v-for="m in GROUP_MODES" :key="m" type="button" role="radio"
                         :aria-checked="groupMode === m" :data-test="`group-mode-${m}`"
                         class="flex-1 rounded px-2 py-1.5 text-xs"
-                        :class="groupMode === m ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
+                        :class="groupMode === m ? 'bg-accent text-on-accent' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
                         @click="pickGroupMode(m)">
                   {{ m === 'instance' ? $t('instance.groupModeInstance') : m === 'workspace' ? $t('instance.groupModeWorkspace') : $t('instance.groupModeAgent') }}
                 </button>
@@ -367,7 +367,7 @@ onMounted(async () => {
               </div>
               <div class="flex flex-wrap items-center gap-2">
                 <button data-test="jev-save" type="button"
-                        class="rounded bg-accent px-3 py-1.5 text-xs text-white hover:bg-accent-hover disabled:opacity-50"
+                        class="rounded bg-accent px-3 py-1.5 text-xs text-on-accent hover:bg-accent-hover disabled:opacity-50"
                         :disabled="jevSaving || !instanceOnline" @click="saveJev">
                   {{ jevSaving ? $t("instance.jevSaving") : $t("instance.jevSave") }}
                 </button>

@@ -323,11 +323,11 @@ async function submit(): Promise<void> {
             <div class="flex gap-1">
               <button type="button" data-test="ns-source-new"
                       class="flex-1 rounded px-2 py-1 text-xs"
-                      :class="sessionSource === 'new' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
+                      :class="sessionSource === 'new' ? 'bg-accent text-on-accent' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
                       @click="sessionSource = 'new'">{{ $t("session.newSession") }}</button>
               <button type="button" data-test="ns-source-native"
                       class="flex-1 rounded px-2 py-1 text-xs"
-                      :class="sessionSource === 'native' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
+                      :class="sessionSource === 'native' ? 'bg-accent text-on-accent' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
                       @click="sessionSource = 'native'">{{ $t("session.nativeSession") }}</button>
             </div>
           </div>
@@ -350,11 +350,11 @@ async function submit(): Promise<void> {
               <div v-if="sessionSource === 'new'" class="flex gap-1">
                 <button type="button" data-test="ns-ws-mode-existing"
                         class="rounded px-2 py-0.5 text-xs"
-                        :class="wsMode === 'existing' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
+                        :class="wsMode === 'existing' ? 'bg-accent text-on-accent' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
                         @click="wsMode = 'existing'">{{ $t("session.existing") }}</button>
                 <button type="button" data-test="ns-ws-mode-path"
                         class="rounded px-2 py-0.5 text-xs"
-                        :class="wsMode === 'path' ? 'bg-accent text-white' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
+                        :class="wsMode === 'path' ? 'bg-accent text-on-accent' : 'bg-bg border border-border text-fg-muted hover:bg-fg/5'"
                         @click="wsMode = 'path'">{{ $t("session.newPath") }}</button>
               </div>
             </div>
@@ -398,12 +398,12 @@ async function submit(): Promise<void> {
             <SelectMenu v-else-if="nativeSessions.length" v-model="nativeSel" :groups="nativeGroups"
                         data-test="ns-native" :aria-label='$t("session.nativeSession")' :placeholder='$t("session.selectNative")' />
             <!-- Error: distinct danger block with a friendly hint (e.g. agent not authenticated). -->
-            <div v-else-if="nativeError" data-test="ns-native-error" class="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">
+            <div v-else-if="nativeError" data-test="ns-native-error" class="rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger">
               <div class="flex items-start gap-1.5">
                 <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
                 <div class="min-w-0">
                   <p class="break-words font-medium">{{ nativeError }}</p>
-                  <p v-if="nativeErrorHint" class="mt-1 text-danger/80">{{ nativeErrorHint }}</p>
+                  <p v-if="nativeErrorHint" class="mt-1 text-danger">{{ nativeErrorHint }}</p>
                 </div>
               </div>
             </div>
@@ -412,14 +412,14 @@ async function submit(): Promise<void> {
             </p>
           </div>
 
-          <p v-if="error" data-test="ns-error" class="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ error }}</p>
+          <p v-if="error" data-test="ns-error" class="rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger">{{ error }}</p>
         </template>
       </div>
 
       <footer class="flex justify-end gap-2 border-t border-border px-5 py-3">
         <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
         <button data-test="ns-create" :disabled="!canSubmit"
-                class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white enabled:hover:bg-accent-hover disabled:opacity-40"
+                class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
                 @click="submit">{{ submitting ? $t("session.creatingButton") : $t("session.create") }}</button>
       </footer>
     </div>

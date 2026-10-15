@@ -173,7 +173,7 @@ void onMounted(() => { void probeNotifications(); });
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.addInstance") }}</h2>
       <div class="flex gap-2">
         <input v-model="pairingName" :placeholder='$t("settings.instanceNamePlaceholder")' class="flex-1 rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
-        <button data-test="gen-pairing" class="rounded bg-accent px-3 py-1 text-sm text-white hover:bg-accent-hover" @click="genPairing">{{ $t("settings.generateToken") }}</button>
+        <button data-test="gen-pairing" class="rounded bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover" @click="genPairing">{{ $t("settings.generateToken") }}</button>
       </div>
       <div v-if="pairing" class="mt-2 rounded bg-bg border border-border p-2 text-xs text-fg">
         <div>{{ $t("settings.runOnHost") }}</div>
@@ -206,7 +206,7 @@ void onMounted(() => { void probeNotifications(); });
           v-if="notifState === 'subscribed' || notifState === 'idle' || notifState === 'server-disabled'"
           data-test="notif-toggle"
           :disabled="notifBusy"
-          class="rounded bg-accent px-3 py-1 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
+          class="rounded bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
           @click="toggleNotifications"
         >{{ notifState === "subscribed" ? $t("settings.notifDisable") : $t("settings.notifEnable") }}</button>
       </div>

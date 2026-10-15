@@ -17,6 +17,10 @@
   --c-warn: 147 87 0;           /* #935700 — AA */
   --c-danger: 184 53 53;        /* #B83535 — AA */
   --c-info: 39 102 194;         /* #2766C2 (= accent) */
+  --c-surface-2: 235 239 245;   /* #EBEFF5 — hover / selected / chips; 1.08:1 vs surface */
+  --c-accent-soft: 234 242 254; /* #EAF2FE — selected-row tint; fg 14.1:1, accent 4.95:1 */
+  --c-on-accent: 255 255 255;   /* #FFFFFF — text on filled accent; 5.58:1 (hover 6.79:1) */
+  --c-on-danger: 255 255 255;   /* #FFFFFF — text on filled danger; 5.84:1 */
   /* Syntax highlighting tokens (CodeMirror githubHighlight, lib/cm-theme.ts) */
   --c-syn-keyword: #cf222e;
   --c-syn-string: #0a3069;
@@ -53,6 +57,10 @@
   --c-warn: 227 166 59;         /* #E3A63B */
   --c-danger: 239 111 108;      /* #EF6F6C */
   --c-info: 94 163 247;         /* #5EA3F7 (= accent) */
+  --c-surface-2: 31 39 49;      /* #1F2731 — hover / selected / chips; 1.14:1 vs surface */
+  --c-accent-soft: 24 42 64;    /* #182A40 — selected-row tint; fg 12.2:1, accent 5.6:1 */
+  --c-on-accent: 11 20 34;      /* #0B1422 — dark text on filled accent; 7.08:1, hover 8.65:1 (white was 2.61) */
+  --c-on-danger: 11 20 34;      /* #0B1422 — dark text on filled danger; 6.30:1 (white was 2.93) */
   /* Syntax highlighting tokens (CodeMirror githubHighlight, lib/cm-theme.ts) */
   --c-syn-keyword: #ff7b72;
   --c-syn-string: #a5d6ff;
