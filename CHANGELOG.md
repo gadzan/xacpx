@@ -4,6 +4,7 @@
 ### Fixed
 
 - **Jev proxy hardening (follow-up to #416):** `NO_PROXY`/`no_proxy` now uses standard semantics — exact host or dot-suffix match on label boundaries (leading `.`/`*.` allowed, never a raw string suffix), `*` alone, optional `:port` against the effective port, IPv4/IPv6 literals (bracketed or bare, with ports) matched exactly, and IP CIDRs — and it is honored for an explicit Jev proxy too, not just the `HTTPS_PROXY` fallback. Proxy `user:pass@` credentials and the API key are redacted to `***` in every Jev failure message (network errors, proxy CONNECT refusals, `http-error` excerpts, `control.jev.test` results, router fallback reasons and stderr). Saving the masked `keyMasked` preview back no longer overwrites the stored Jev key; any other masked-looking key is rejected.
+- **Jev credential redaction (follow-up to #421):** a proxy password containing an unencoded `@` (`http://user:p@ss@proxy`) is now redacted whole instead of leaking the part after the first `@`, without merging separate URLs in one message; the `Basic` proxy credential base64(user:pass) (raw and percent-decoded, for the explicit proxy and the `HTTPS_PROXY`/`https_proxy` fallback) and any `Authorization`/`Proxy-Authorization` header value (`Basic`/`Bearer`/`Token`/`Negotiate`/`NTLM`) echoed in a Jev failure are redacted to `***`.
 
 ### Changed
 
