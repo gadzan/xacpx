@@ -484,7 +484,7 @@ onBeforeUnmount(() => {
             class="shrink-0 text-[11px] text-fg-muted">{{ $t("terminal.viewers", { count: otherViewerCount }) }}</span>
       <button v-if="canTakeControl" data-test="terminal-take-control"
               type="button"
-              class="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
+              class="shrink-0 rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-40"
               :disabled="takingControl"
               @click="void takeControl()">{{ $t("terminal.takeControl") }}</button>
       <div class="ml-auto flex shrink-0 items-center gap-1">
@@ -511,7 +511,7 @@ onBeforeUnmount(() => {
            class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-bg/75 px-4 text-center text-sm text-fg">
         <p>{{ $t("terminal.spectatorHint") }}</p>
         <button type="button"
-                class="rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-white hover:bg-accent-hover disabled:opacity-40"
+                class="rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-on-accent hover:bg-accent-hover disabled:opacity-40"
                 :disabled="takingControl"
                 @click="void takeControl()">{{ $t("terminal.takeControl") }}</button>
       </div>

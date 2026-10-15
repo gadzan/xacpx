@@ -614,7 +614,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
         <button
           type="button"
           data-test="interaction-submit"
-          class="flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-opacity disabled:opacity-50"
+          class="flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition-opacity disabled:opacity-50"
           :disabled="submitting || requiredMissing.length > 0 || !canSubmit"
           @click="emit('submit')"
         >

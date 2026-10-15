@@ -64,7 +64,7 @@ async function handleCreateTopic(): Promise<void> {
           <button
             type="submit"
             :disabled="creatingTopic || !newTopicTitle.trim()"
-            class="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+            class="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:opacity-90 disabled:opacity-50"
           >
             {{ $t("common.create") }}
           </button>

@@ -456,7 +456,7 @@ async function confirmDelete(): Promise<void> {
                 <span class="flex-1 leading-relaxed">{{ $t("group.manage.needBots", { count: bots.length }) }}</span>
                 <button type="button"
                         data-test="group-dialog-create-bot"
-                        class="flex shrink-0 items-center gap-1 rounded bg-accent px-2 py-1 font-medium text-white hover:opacity-90"
+                        class="flex shrink-0 items-center gap-1 rounded bg-accent px-2 py-1 font-medium text-on-accent hover:opacity-90"
                         @click="emit('createBot')">
                   <Plus :size="12" />
                   <span>{{ $t("bot.actions.newBot") }}</span>
@@ -542,7 +542,7 @@ async function confirmDelete(): Promise<void> {
             <button type="button"
                     data-test="group-dialog-delete-confirm-button"
                     :disabled="deletingNow"
-                    class="flex items-center gap-1 rounded-lg bg-danger px-3 py-1 font-medium text-white hover:opacity-90 disabled:opacity-50"
+                    class="flex items-center gap-1 rounded-lg bg-danger px-3 py-1 font-medium text-on-danger hover:opacity-90 disabled:opacity-50"
                     @click="confirmDelete">
               <Loader2 v-if="deletingNow" :size="12" class="animate-spin" />
               <span>{{ $t("group.manage.delete") }}</span>
@@ -574,7 +574,7 @@ async function confirmDelete(): Promise<void> {
             type="button"
             data-test="group-dialog-save"
             :disabled="!canSave"
-            class="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            class="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
             @click="submit"
           >
             <Loader2 v-if="submitting" :size="13" class="animate-spin" />

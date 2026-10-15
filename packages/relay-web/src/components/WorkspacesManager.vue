@@ -62,7 +62,7 @@ async function remove(wsName: string): Promise<void> {
 
 <template>
   <section class="space-y-3">
-    <p v-if="error" data-test="wm-error" class="rounded bg-danger/10 px-3 py-2 text-sm text-danger">{{ error }}</p>
+    <p v-if="error" data-test="wm-error" class="rounded bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ error }}</p>
     <input v-if="showFilter" v-model="filter" data-test="wm-filter" :placeholder="$t('common.filter')"
            class="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
     <p v-if="!all.length" data-test="wm-empty" class="text-sm text-fg-muted">{{ $t("workspaces.empty") }}</p>
@@ -95,7 +95,7 @@ async function remove(wsName: string): Promise<void> {
                 @click="browsing = true"><FolderOpen :size="14" /></button>
       </div>
       <div class="flex gap-2">
-        <button data-test="wm-create" class="rounded bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
+        <button data-test="wm-create" class="rounded bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
                 :disabled="busy || !name.trim() || !path.trim()" @click="create">{{ $t("common.add") }}</button>
         <button type="button" data-test="wm-add-cancel" class="rounded px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5 hover:text-fg" @click="formOpen = false">{{ $t("common.cancel") }}</button>
       </div>

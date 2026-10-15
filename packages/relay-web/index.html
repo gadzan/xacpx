@@ -7,11 +7,14 @@
          dashboard's inputs are intentionally compact). Trade-off: also disables pinch-zoom. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>XACPX HUB</title>
-    <meta name="theme-color" content="#0E1116" />
+    <!-- Browser chrome colour = page --c-bg. stores/theme.ts rewrites both tags to the
+         resolved theme when the user picks one explicitly (relay-theme). -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FFFFFF" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10151C" />
     <meta name="description" content="Self-hosted relay dashboard for xacpx — remote-control acpx sessions." />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" href="/icon.svg" sizes="any" type="image/svg+xml" />
-    <link rel="mask-icon" href="/mask-icon.svg" color="#0E1116" />
+    <link rel="mask-icon" href="/mask-icon.svg" color="#10151C" />
     <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -26,6 +29,8 @@
           }
           document.documentElement.classList.toggle('dark', m === 'dark');
           document.documentElement.style.colorScheme = m;
+          var tc = m === 'dark' ? '#10151C' : '#FFFFFF';
+          document.querySelectorAll('meta[name="theme-color"]').forEach(function (el) { el.setAttribute('content', tc); });
         } catch (e) {
           document.documentElement.classList.add('dark');
           document.documentElement.style.colorScheme = 'dark';

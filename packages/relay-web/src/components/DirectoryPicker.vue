@@ -174,12 +174,12 @@ function onListKeydown(e: KeyboardEvent): void {
           <input v-model="showHidden" data-test="dp-show-hidden" type="checkbox" class="accent-accent" />
           {{ $t("dirPicker.showHidden") }}
         </label>
-        <p v-if="error" data-test="dp-error" class="mx-5 mt-2 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ error }}</p>
+        <p v-if="error" data-test="dp-error" class="mx-5 mt-2 rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger">{{ error }}</p>
 
         <footer class="flex justify-end gap-2 border-t border-border px-5 py-3">
           <button type="button" class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
           <button type="button" data-test="dp-confirm" :disabled="!result || loading"
-                  class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white enabled:hover:bg-accent-hover disabled:opacity-40"
+                  class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
                   @click="choose">{{ $t("dirPicker.chooseCurrent") }}</button>
         </footer>
       </div>

@@ -69,7 +69,7 @@ async function create() {
       </label>
       <div class="flex items-center gap-1.5 pt-0.5">
         <button type="submit" :disabled="!executeAt || !message"
-                class="flex-1 rounded-md bg-accent px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">{{ $t("tasks.schedule") }}</button>
+                class="flex-1 rounded-md bg-accent px-2 py-1 text-xs font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">{{ $t("tasks.schedule") }}</button>
         <button type="button" class="rounded-md border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="composerOpen = false">{{ $t("common.cancel") }}</button>
       </div>
     </form>

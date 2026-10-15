@@ -392,7 +392,7 @@ watch(
                 <input v-model="branchStart" :placeholder="$t('files.git.startPoint')"
                        class="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-[11px] text-fg" />
                 <button data-test="git-create-branch" :disabled="gitBusy || !branchName.trim()"
-                        class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-white disabled:opacity-50" @click="createBranch">{{ $t("files.git.create") }}</button>
+                        class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-on-accent disabled:opacity-50" @click="createBranch">{{ $t("files.git.create") }}</button>
               </div>
             </div>
             <div class="flex items-center gap-1 px-2.5 pb-1 text-[10.5px]">
@@ -417,7 +417,7 @@ watch(
                 <input v-model="worktreeWorkspace" data-test="git-worktree-workspace" :placeholder="$t('files.git.workspaceName')" class="w-full rounded border border-border bg-surface px-2 py-1 text-fg" />
                 <input v-if="worktreeCreateBranch" v-model="worktreeStart" :placeholder="$t('files.git.startPoint')" class="w-full rounded border border-border bg-surface px-2 py-1 text-fg" />
                 <button data-test="git-create-worktree" :disabled="gitBusy || !worktreeBranch.trim() || !worktreeWorkspace.trim() || !activeSession?.agent"
-                        class="rounded bg-accent px-2 py-1 font-medium text-white disabled:opacity-50" @click="createWorktree">{{ $t("files.git.createAndOpen") }}</button>
+                        class="rounded bg-accent px-2 py-1 font-medium text-on-accent disabled:opacity-50" @click="createWorktree">{{ $t("files.git.createAndOpen") }}</button>
               </div>
             </div>
             <div v-if="gitCtx?.worktree" data-test="worktree-path" class="flex items-center gap-1.5 px-2.5 pb-2 text-[10px] text-fg-muted" :title="`${$t('files.worktree')}: ${gitCtx.worktree.root}`">
@@ -479,7 +479,7 @@ watch(
               <button v-if="stageablePaths.length" data-test="git-stage-all" :disabled="gitBusy"
                       class="rounded px-2 py-1 text-[10.5px] text-accent hover:bg-accent/10 disabled:opacity-50" @click="stage(stageablePaths)">{{ $t("files.git.stageAll") }}</button>
               <button data-test="git-commit" :disabled="gitBusy || !commitMessage.trim() || !stagedPaths.length"
-                      class="rounded bg-accent px-2.5 py-1 text-[10.5px] font-semibold text-white disabled:opacity-40" @click="commitStaged">{{ $t("files.git.commit") }}</button>
+                      class="rounded bg-accent px-2.5 py-1 text-[10.5px] font-semibold text-on-accent disabled:opacity-40" @click="commitStaged">{{ $t("files.git.commit") }}</button>
             </div>
           </div>
         </template>

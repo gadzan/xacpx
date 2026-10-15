@@ -203,7 +203,7 @@ const worktreeRunId = computed(() => {
       <button
         type="button"
         data-test="group-first-topic-button"
-        class="mt-1 flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+        class="mt-1 flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:opacity-90"
         @click="newTopicDialogOpen = true"
       >
         <Plus :size="13" />
