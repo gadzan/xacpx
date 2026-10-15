@@ -303,12 +303,6 @@ it("unarchiveSession: a connector ErrorPayload rejects without a follow-up reloa
   rpc.mockRestore();
 });
 
-it("localizes the empty-state prompt when locale is zh-CN", () => {
-  i18n.global.locale.value = "zh-CN";
-  const w = mount(ChatPane); // no session selected → empty state
-  expect(w.text()).toContain("选择一个会话");
-});
-
 it("hides the working quip when no turn is active", () => {
   const chat = useChatStore();
   chat.select("i1", "backend");

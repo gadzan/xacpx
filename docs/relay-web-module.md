@@ -231,7 +231,10 @@ effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合�
   queue-owner lock pid，温度翻转时推 `sessions-changed`，见 [docs/control-module.md](control-module.md)）。
   仅「醒着且 `warm === false`」的会话行显示 `Unplug` 小图标（`data-test="cold-indicator"`，
   title = `instance.sessionColdTitle`：进程已退出，下条消息将冷启动）；`warm` 缺失（老实例）或已睡眠
-  的行不显示。Hub 对 RPC 响应透传，老实例无需升级即可兼容。
+  的行不显示。Hub 对 RPC 响应透传，老实例无需升级即可兼容。冷会话行为**两行结构**：主行会话名
+  （`text-sm`，不再是 `text-ui`），副行 `Unplug` + 可见副标题（`data-test="session-cold-subtitle"`，
+  `instance.sessionColdSubtitle`：未运行 · 下条消息将冷启动，`text-xs text-fg-muted`，`truncate` 截断）；
+  `SessionDto` 没有活动时间戳，其他状态不编造副行。
 - **打开终端指示器**：会话行不另占标题空间。`center-tabs` 里该会话仍挂着 Terminal tab 时，在
   左侧 Agent 图标右下角叠一个极小的 `SquareTerminal` 角标（`data-test="terminal-open-marker"`，
   title = `instance.sessionTerminalOpenTitle`）。切到其他会话时角标留在原行；关掉该 tab、睡眠或
@@ -378,7 +381,8 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 
 ## 响应式 / 移动端布局
 
-- `DashboardView.vue` 桌面（`lg:` ≥1024px）保持三栏静态布局，行为与改版前完全一致；窄屏（`<lg`）按选择状态分两种形态：
+- `DashboardView.vue` 桌面（`lg:` ≥1024px）保持三栏静态布局；未选中任何会话 / Bot / 群组 / 实例桌面时
+  中栏渲染空状态、右栏整体隐藏（见下文「桌面空状态与右栏折叠」）。窄屏（`<lg`）按选择状态分两种形态：
   - **选中会话 / Direct Bot**：全局顶栏（品牌、连接徽标、搜索、终端/桌面/主题/设置）在 `<lg` 隐藏
     （`:class="mobileSingleBar ? 'hidden lg:flex' : 'flex'"`，纯 CSS，桌面不受影响），改为**一条 52px 顶栏**
     （`h-[calc(3.25rem+env(safe-area-inset-top))]`）：左按钮 `←` 44px（返回首页列表，`data-test="mobile-back"`）、
@@ -433,6 +437,25 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   `selectionStart` / `selectionEnd`，改听 `caret` 事件。该事件在 input、keyup、click、select 以及
   外部值变更（发送清空、历史召回填充）时都会发出，所以面板不会读到过期 caret。`onInput` 在 jsdom 下
   （`setValue` 不移动选区）按值长度推导 caret。
+
+### 桌面空状态与右栏折叠
+
+- **未选中会话 / Bot / 群组 / 实例桌面时**（`nothingSelected`）：桌面中栏渲染
+  `components/EmptySessionState.vue`（`absolute inset-0`，与 `DirectBotPane` / `GroupPane` 同一条
+  v-if 链）：标题 `chat.emptyStateTitle`（zh-CN「继续上次的工作」）、最近会话列表（最多 5 条，跨在线实例）、
+  「新建会话」主按钮（复用 `instance.newSession`）。`<lg` 时中栏 `max-lg:hidden`，空状态不出现
+  （首页仍是实例树 + FAB）。
+- **最近会话排序**：`SessionDto` 没有活动时间戳，不虚构相对时间。顺序 = store 列表顺序，持久化的
+  上次打开会话（`loadPersistedSelection()`）置顶；离线实例的会话不进列表。
+- **点最近会话行**走与实例树相同的 `onSelect` 路径。「新建会话」复用 `InstanceTree` 暴露的
+  `openNewSession`：唯一在线实例直接开 `NewSessionDialog`，多个在线实例弹按钮上方的内联实例选择器
+  （顺序同 `fabInstances`，上次使用排前）；无在线实例时按钮禁用。
+- **右栏折叠**：桌面新增 `localStorage["xacpx.rightCollapsed"]`（镜像 `leftCollapsed`）。未选中会话时
+  右栏不渲染（`showRightColumn`）；选中会话后恢复该开关的状态。右栏头部关闭按钮桌面也可见
+  （`nav.hidePanel`：桌面写 `rightCollapsed`，移动端仍关 `rightOpen` 抽屉），折叠后中栏右缘出现
+  `expand-right` 细手柄（`nav.showPanel`）恢复。移动端屏外抽屉行为不变。
+- `ChatPane.vue` 不再自带「选择一个会话」占位：空状态归 `DashboardView` 所有，
+  `chat.selectSession` i18n 键随之删除。
 
 ## 文件地图
 
