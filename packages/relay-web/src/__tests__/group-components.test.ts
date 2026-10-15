@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
@@ -67,6 +67,9 @@ describe("Group Components", () => {
     seedInstance();
     vi.spyOn(useInstancesStore(), "loadRouterAvailability").mockResolvedValue(undefined);
     vi.spyOn(useInstancesStore(), "loadJevSettings").mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    window.innerWidth = 1024;
   });
 
   /** Seed the Jev panel for `i1` the way the store's read lands it. */
@@ -1332,7 +1335,7 @@ describe("Group Components", () => {
       } } });
       await flushPromises(); expect(wrapper.find('[data-test="restored-worktree"]').text()).toBe("settled-run"); wrapper.unmount();
     });
-    it("binds transcript, composer, and topic strip without touching Direct state", async () => {
+    it("binds transcript, composer, and topic switcher without touching Direct state", async () => {
       seedGroupSelection();
       const direct = useDirectBotsStore();
       const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
@@ -1354,6 +1357,83 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-topic-pill"]').attributes("data-topic-status")).toBe("archived");
       expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("disabled")).toBeDefined();
       expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(true);
+    });
+
+    it("mobile bar switches topics from the bottom sheet", async () => {
+      const groups = seedGroupSelection();
+      groups.topicsByConversation["i1:conversation_g"]!.push({ id: "topic_2", conversationId: "conversation_g", title: "Release", status: "active", createdAt: "now", updatedAt: "now" });
+      const switchTopic = vi.spyOn(groups, "switchTopic").mockResolvedValue();
+      window.innerWidth = 500;
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="group-topic-pill"]').trigger("click");
+      const sheet = wrapper.find('[data-test="group-topic-sheet"]');
+      expect(sheet.exists()).toBe(true);
+      expect(sheet.findAll('[data-test="topic-row"]')).toHaveLength(2);
+      expect(sheet.find('[data-test="group-new-topic-button"]').exists()).toBe(true);
+      await sheet.findAll('[data-test="topic-row"]')[1]!.find("button").trigger("click");
+      expect(switchTopic).toHaveBeenCalledWith("topic_2");
+      expect(wrapper.find('[data-test="group-topic-sheet"]').exists()).toBe(false);
+    });
+
+    it("desktop popover switches topics and keeps new-topic inside the panel", async () => {
+      const groups = seedGroupSelection();
+      groups.topicsByConversation["i1:conversation_g"]!.push({ id: "topic_2", conversationId: "conversation_g", title: "Release", status: "active", createdAt: "now", updatedAt: "now" });
+      const switchTopic = vi.spyOn(groups, "switchTopic").mockResolvedValue();
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      // Index 0 is the mobile bar's pill (hidden below lg), index 1 the desktop header's.
+      await wrapper.findAll('[data-test="group-topic-pill"]')[1]!.trigger("click");
+      const panel = wrapper.find('[data-test="topic-panel"]');
+      expect(panel.exists()).toBe(true);
+      expect(panel.find('[data-test="group-new-topic-button"]').exists()).toBe(true);
+      await panel.findAll('[data-test="topic-row"]')[1]!.find("button").trigger("click");
+      expect(switchTopic).toHaveBeenCalledWith("topic_2");
+      expect(wrapper.find('[data-test="topic-panel"]').exists()).toBe(false);
+    });
+
+    it("row menu carries rename / archive / delete behind the trailing ⋯", async () => {
+      const groups = seedGroupSelection();
+      groups.topicsByConversation["i1:conversation_g"]!.push({ id: "topic_2", conversationId: "conversation_g", title: "Release", status: "active", createdAt: "now", updatedAt: "now" });
+      const archiveTopic = vi.spyOn(groups, "archiveTopic").mockResolvedValue({} as never);
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.findAll('[data-test="group-topic-pill"]')[1]!.trigger("click");
+      const panel = wrapper.find('[data-test="topic-panel"]');
+      await panel.findAll('[data-test="topic-row-more"]')[1]!.trigger("click");
+      const menu = wrapper.find('[data-test="context-menu"]');
+      expect(menu.find('[data-test="menu-rename"]').exists()).toBe(true);
+      expect(menu.find('[data-test="menu-archive"]').exists()).toBe(true);
+      expect(menu.find('[data-test="menu-delete"]').exists()).toBe(true);
+      await menu.find('[data-test="menu-archive"]').trigger("click");
+      expect(archiveTopic).toHaveBeenCalledWith("i1", "conversation_g", "topic_2");
+    });
+
+    it("surfaces a failed row-menu action inside the panel", async () => {
+      const groups = seedGroupSelection();
+      groups.topicsByConversation["i1:conversation_g"]!.push({ id: "topic_2", conversationId: "conversation_g", title: "Release", status: "active", createdAt: "now", updatedAt: "now" });
+      vi.spyOn(groups, "archiveTopic").mockRejectedValue(new Error("archive blew up"));
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.findAll('[data-test="group-topic-pill"]')[1]!.trigger("click");
+      await wrapper.find('[data-test="topic-panel"]').findAll('[data-test="topic-row-more"]')[1]!.trigger("click");
+      await wrapper.find('[data-test="menu-archive"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="topic-action-error"]').text()).toBe("archive blew up");
+    });
+
+    it("mobile ⋯ sheet opens the group editor and ← emits back", async () => {
+      seedGroupSelection();
+      window.innerWidth = 500;
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n], stubs: { teleport: true } } });
+      await flushPromises();
+      await wrapper.find('[data-test="mobile-group-more"]').trigger("click");
+      const sheet = wrapper.find('[data-test="group-more-sheet"]');
+      expect(sheet.exists()).toBe(true);
+      await sheet.find('[data-test="sheet-group-edit"]').trigger("click");
+      expect(wrapper.find('[data-test="group-dialog-title"]').exists()).toBe(true);
+      await wrapper.find('[data-test="mobile-back"]').trigger("click");
+      expect(wrapper.emitted("back")).toHaveLength(1);
     });
   });
 

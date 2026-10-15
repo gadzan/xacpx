@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useI18n } from "vue-i18n";
 import { Archive, ChevronDown, Plus, RotateCcw } from "lucide-vue-next";
 import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import { useTopicActions } from "../lib/use-topic-actions";
 
 const props = defineProps<{
   variant: "direct" | "group";
@@ -21,26 +21,14 @@ const emit = defineEmits<{
   create: [];
 }>();
 
-const { t } = useI18n();
 const open = ref(false);
 const query = ref("");
-const editingId = ref<string | null>(null);
-const draftTitle = ref("");
-const pendingId = ref<string | null>(null);
-const actionError = ref<string | null>(null);
-const confirmKind = ref<"delete" | "clear" | null>(null);
-const confirmTopicId = ref<string | null>(null);
-const confirmRequestId = ref("");
-const confirmImpact = ref<TopicImpactDto | null>(null);
-const releaseBindings = ref(false);
-const confirming = ref(false);
+
+const { editingId, draftTitle, pendingId, actionError, confirmKind, confirmImpact, releaseBindings, confirming,
+  confirmBlocked, statusLabel, startRename, saveRename, archive, restore, openConfirm, closeConfirm, submitConfirm } =
+  useTopicActions(props);
 
 const active = computed(() => props.topics.find((topic) => topic.id === props.activeTopicId) ?? null);
-const confirmBlocked = computed(() => {
-  const bindings = confirmImpact.value?.bindings.length ?? 0;
-  const worktrees = confirmImpact.value?.worktreeRunIds.length ?? 0;
-  return confirming.value || (bindings > 0 && !releaseBindings.value) || worktrees > 0;
-});
 const visible = computed(() => {
   const needle = query.value.trim().toLowerCase();
   return props.topics.filter((topic) => {
@@ -49,84 +37,11 @@ const visible = computed(() => {
   });
 });
 
-function statusLabel(topic: TopicSummaryDto): string {
-  if (topic.status === "archived") return t("bot.topic.archived");
-  if (topic.status === "deleting") return t("bot.topic.deleting");
-  return "";
-}
-
-async function run(topicId: string, action: () => Promise<void>): Promise<void> {
-  pendingId.value = topicId;
-  actionError.value = null;
-  try {
-    await action();
-  } catch (error: unknown) {
-    actionError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    pendingId.value = null;
-  }
-}
-
-function startRename(topic: TopicSummaryDto): void {
-  editingId.value = topic.id;
-  draftTitle.value = topic.title;
-}
-
-async function saveRename(topic: TopicSummaryDto): Promise<void> {
-  const title = draftTitle.value.trim();
-  if (!title || title === topic.title) {
-    editingId.value = null;
-    return;
-  }
-  await run(topic.id, async () => {
-    await props.renameTopic(topic.id, title);
-    editingId.value = null;
-  });
-}
-
-async function openConfirm(kind: "delete" | "clear", topic: TopicSummaryDto): Promise<void> {
-  confirmKind.value = kind;
-  confirmTopicId.value = topic.id;
-  confirmRequestId.value = crypto.randomUUID();
-  releaseBindings.value = false;
-  confirmImpact.value = null;
-  actionError.value = null;
-  try {
-    confirmImpact.value = await props.previewTopic(topic.id);
-  } catch (error: unknown) {
-    actionError.value = error instanceof Error ? error.message : String(error);
-  }
-}
-
-function closeConfirm(): void {
-  if (confirming.value) return;
-  confirmKind.value = null;
-  confirmTopicId.value = null;
-  confirmImpact.value = null;
-}
-
-async function submitConfirm(): Promise<void> {
-  const topicId = confirmTopicId.value;
-  const kind = confirmKind.value;
-  if (!topicId || !kind) return;
-  const bindings = confirmImpact.value?.bindings.length ?? 0;
-  if (bindings > 0 && !releaseBindings.value) return;
-  if ((confirmImpact.value?.worktreeRunIds.length ?? 0) > 0) return;
-  confirming.value = true;
-  actionError.value = null;
-  try {
-    if (kind === "delete") {
-      await props.teardownTopic(topicId, confirmRequestId.value, releaseBindings.value);
-    } else {
-      await props.clearTopic(topicId, confirmRequestId.value, releaseBindings.value);
-    }
-    closeConfirm();
-    open.value = false;
-  } catch (error: unknown) {
-    actionError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    confirming.value = false;
-  }
+// A finished delete/clear dismisses the panel; a failed one keeps the confirm dialog open
+// with its error, and cancelling leaves the panel where the user left it.
+async function submitConfirmAndClose(): Promise<void> {
+  await submitConfirm();
+  if (!confirmKind.value) open.value = false;
 }
 </script>
 
@@ -192,8 +107,8 @@ async function submitConfirm(): Promise<void> {
           </form>
           <div v-else class="mt-1 flex flex-wrap gap-1">
             <button v-if="topic.status !== 'deleting'" type="button" data-test="topic-rename" class="rounded-sm px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="startRename(topic)">{{ $t("bot.topic.rename") }}</button>
-            <button v-if="topic.status === 'active'" type="button" data-test="topic-archive" class="rounded-sm px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="run(topic.id, () => archiveTopic(topic.id))">{{ $t("bot.topic.archive") }}</button>
-            <button v-if="topic.status === 'archived'" type="button" data-test="topic-restore" class="rounded-sm px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="run(topic.id, () => restoreTopic(topic.id))">{{ $t("bot.topic.restore") }}</button>
+            <button v-if="topic.status === 'active'" type="button" data-test="topic-archive" class="rounded-sm px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="archive(topic)">{{ $t("bot.topic.archive") }}</button>
+            <button v-if="topic.status === 'archived'" type="button" data-test="topic-restore" class="rounded-sm px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="restore(topic)">{{ $t("bot.topic.restore") }}</button>
             <button v-if="topic.defaultDirect === true && topic.status !== 'deleting'" type="button" data-test="topic-clear" class="rounded-sm px-1.5 py-0.5 text-danger hover:bg-danger/10" :disabled="pendingId === topic.id" @click="openConfirm('clear', topic)">{{ $t("bot.topic.clear") }}</button>
             <button v-if="topic.defaultDirect !== true && topic.status !== 'deleting'" type="button" data-test="topic-delete" class="rounded-sm px-1.5 py-0.5 text-danger hover:bg-danger/10" :disabled="pendingId === topic.id" @click="openConfirm('delete', topic)">{{ $t("bot.topic.delete") }}</button>
           </div>
@@ -219,7 +134,7 @@ async function submitConfirm(): Promise<void> {
             data-test="topic-confirm-submit"
             class="rounded-lg bg-danger px-3 py-1.5 text-xs font-medium text-on-danger disabled:opacity-50"
             :disabled="confirmBlocked"
-            @click="submitConfirm"
+            @click="submitConfirmAndClose"
           >
             {{ confirmKind === "clear" ? $t("bot.topic.clear") : $t("bot.topic.delete") }}
           </button>

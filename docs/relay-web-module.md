@@ -390,8 +390,9 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     `实例 · agent · 分支`，缺项跳过，不会出现前导或连续 `·`）、右侧 `⋯` 40px 打开底部弹出菜单
     （`components/MobileSheet.vue`：`bg-raised rounded-t-2xl shadow-float`，backdrop / Esc 关闭，
     `useModalA11y` 负责焦点进入与归还，条目 ≥48px）。会话栏由 `DashboardView` 渲染；Bot 栏由
-    `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet。
-    Group 选择仍显示旧移动条（本次不改 `GroupPane`），只把左按钮换成同样的 `←`。
+    `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；
+    Group 栏由 `GroupPane` 渲染（副标题同样是当前话题，`⋯` 只带编辑群组条目），`DashboardView` 不再渲染
+    群组静态标题条，`mobileSingleBar` 也因此把群组选择算进去（全局顶栏在 `<lg` 让位）。
   - **`←` 返回**（会话 / Bot / 群组页通用，`DashboardView.goHome`）：关闭 sheet、右抽屉与桌面标签，再对 chat、
     Direct Bot、群组三个 store 都调用 `clearSelection()`（各自顺带清掉持久化的选择，所以刷新后停在首页）；
     `localStorage["xacpx.lastInstance"]` 保留，FAB 的「最近使用排前」依赖它。左边缘右滑手势已移除；
@@ -839,6 +840,13 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   - 客户端生成稳定的 `requestId`，发送失败或超时重试时复用原 `requestId` 保持幂等；
   - active Run 运行时提供 Stop 按钮，调用 `control.runs.cancel({ runId })` 精确取消当前 Run。
 
+### Group 话题切换（`TopicSwitcher.vue`）
+
+- `GroupPane` 只有一条顶栏：群组名下方是可点的当前话题副标题（纯文字 + `ChevronDown`，无 pill 底色，hover/press `bg-surface-2`），原第二行 `TopicManager` 与 meta 行里重复的话题名都已删除。桌面顶栏因此改为不透明 `bg-surface`：`backdrop-filter` 祖先会成为 `fixed`/`absolute` 后代的包含块，会把切换器 popover、确认框和行菜单一起困在几十 px 高的顶栏里。
+- 点副标题：`<lg` 打开 `MobileSheet`「切换话题」（`mobileBar.switchTopic`），≥lg 打开锚在触发器下方的 popover（`shadow-float rounded-lg bg-surface`）。两者内容一致：搜索框、话题列表、底部「+ 新建话题」（`bot.topic.new`）。行点选即切换并关闭；当前行 `bg-accent/10`；已收起 / 删除中的话题保留弱化图标。
+- 行内操作收在每行尾部 `⋯`（`ContextMenu`）：重命名（行内表单）、收起 / 恢复、删除 / 清空（默认话题只给清空）。删除与清空先 `topics.preview` 预览外部绑定与 worktree：有绑定未确认、或有未结束 worktree 时禁止提交；确认框沿用居中 / 底部 sheet 既有样式。打开按钮必须带 `@click.stop`：打开瞬间的那次点击会在监听器挂上后继续冒泡到 document，把自己关掉（`FilesPanel` 的根菜单同理）。
+- 动作状态机抽到 `lib/use-topic-actions.ts`，`TopicManager`（Bot 桌面第二行）与 `TopicSwitcher` 共用；`handlers` 在调用时读取，prop 更新能被拿到。Bot 桌面仍保留 `TopicManager` 第二行，Bot 移动端话题 sheet 仍在 `DirectBotPane` 内，本轮未改。
+
 ### 断线与重连恢复
 
 - WebSocket 重连后自动调用 `reconcileOnReconnect()`，重新拉取实例 Bots、Topics、当前话题历史与在途 Run 的最新状态；
@@ -847,7 +855,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 ### Group 创建、编辑与删除（`GroupDialog.vue`）
 
-- **入口**：实例侧栏 Groups 模式底部常驻「新建群组」（空列表、加载失败时同样可见）；群组行悬停出现编辑按钮；`GroupPane` 顶栏的编辑按钮是移动端入口。新建成功后自动选中该群组，没有话题时 `GroupPane` 以「创建第一个话题」引导打开 `GroupTopicDialog`。该对话框打开时自行拉取实例工作区（`loadWorkspaces`），不依赖之前是否打开过 Bot 或会话表单；拉取失败时显示重试。
+- **入口**：实例侧栏 Groups 模式底部常驻「新建群组」（空列表、加载失败时同样可见）；群组行悬停出现编辑按钮；桌面端 `GroupPane` 顶栏右侧的编辑按钮与 `<lg` 顶栏 `⋯` sheet 的「编辑群组」条目都打开 `GroupDialog`。新建成功后自动选中该群组，没有话题时 `GroupPane` 以「创建第一个话题」引导打开 `GroupTopicDialog`。该对话框打开时自行拉取实例工作区（`loadWorkspaces`），不依赖之前是否打开过 Bot 或会话表单；拉取失败时显示重试。
 - **表单**：名称（≤80）、说明、至少两个不同成员、可选 Lead。成员行展示角色、Agent 与启用状态，同名 Bot 附带稳定 ID。新建时 Lead 默认取第一个已启用成员，直到用户手动选择；移除当前 Lead 时改选下一个已启用成员（没有则清空）并提示。实例不足两个 Bot 时给出「新建 Bot」引导，Bot 表单关闭后回到群组表单。
 - **编辑**：只发送与打开时快照不同的字段，避免回滚其他客户端的并发修改；`groups.update` 成功后才合并列表，并从当前发送目标中剔除已移除成员。
 - **成员仍有任务**：`group_member_has_work` 时，按话题调用 `runs.list`（`limit: 200`，并合并 `activeRun`）和 `runs.get`，列出持有被移除成员 `queued` / `dispatched` / `running` MemberTurn 的 Run（含 `indeterminate` Run），提供逐个 Stop（`runs.cancel`）后重新查询。

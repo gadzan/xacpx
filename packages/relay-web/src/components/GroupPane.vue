@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { MessageSquare, Pencil, Plus, Users, X } from "lucide-vue-next";
+import { ArrowLeft, MessageSquare, MoreHorizontal, Pencil, Plus, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
@@ -11,7 +11,14 @@ import GroupComposer from "./GroupComposer.vue";
 import GroupTopicDialog from "./GroupTopicDialog.vue";
 import GroupDialog from "./GroupDialog.vue";
 import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
-import TopicManager from "./TopicManager.vue";
+import TopicSwitcher from "./TopicSwitcher.vue";
+import MobileConnStrip from "./MobileConnStrip.vue";
+import MobileSheet from "./MobileSheet.vue";
+
+const emit = defineEmits<{
+  /** Mobile top bar's ←: back to the home list (DashboardView clears the selection). */
+  back: [];
+}>();
 
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
@@ -20,6 +27,8 @@ const { t, locale } = useI18n();
 
 const newTopicDialogOpen = ref(false);
 const groupDialogOpen = ref(false);
+const activeSheet = ref<"more" | null>(null);
+function closeSheet(): void { activeSheet.value = null; }
 const needsFirstTopic = computed(() =>
   !!groupsStore.activeConversationId
   && groupsStore.topicReady
@@ -131,15 +140,61 @@ const worktreeRunId = computed(() => {
 
 <template>
   <div class="flex h-full flex-col bg-bg text-fg">
-    <header class="flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+    <!-- Mobile single top bar (<lg): group tile + title, the topic as a tappable subtitle
+         (opens the topic sheet), and ⋯ for the desktop header's edit entry. The topic
+         popover / confirm dialog live in TopicSwitcher, which stays clear of any
+         backdrop-filtered ancestor (see the desktop header below). -->
+    <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
+      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")'
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="emit('back')"><ArrowLeft :size="20" /></button>
+      <div class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
+        <Users :size="16" />
+      </div>
+      <div class="flex min-w-0 flex-1 flex-col">
+        <span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span>
+        <TopicSwitcher
+          :topics="groupsStore.currentTopics"
+          :active-topic-id="groupsStore.activeTopicId"
+          :preview-topic="previewTopic"
+          :rename-topic="renameTopic"
+          :archive-topic="archiveTopic"
+          :restore-topic="restoreTopic"
+          :teardown-topic="teardownTopic"
+          :clear-topic="clearTopic"
+          @select="groupsStore.switchTopic"
+          @create="newTopicDialogOpen = true"
+        />
+      </div>
+      <button type="button" data-test="mobile-group-more" :aria-label='$t("common.more")'
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="activeSheet = 'more'"><MoreHorizontal :size="20" /></button>
+    </div>
+    <MobileConnStrip />
+
+    <!-- Opaque on purpose: a backdrop-filtered ancestor becomes the containing block for
+         fixed/absolute descendants, which would trap TopicSwitcher's popover, confirm
+         dialog and row menu inside this 44px header. -->
+    <header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
       <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
         <Users :size="15" />
       </div>
       <div class="flex min-w-0 flex-col">
         <h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
+        <TopicSwitcher
+          :topics="groupsStore.currentTopics"
+          :active-topic-id="groupsStore.activeTopicId"
+          :preview-topic="previewTopic"
+          :rename-topic="renameTopic"
+          :archive-topic="archiveTopic"
+          :restore-topic="restoreTopic"
+          :teardown-topic="teardownTopic"
+          :clear-topic="clearTopic"
+          @select="groupsStore.switchTopic"
+          @create="newTopicDialogOpen = true"
+        />
         <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
           <span>{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
-          <span v-if="groupsStore.currentTopic">· {{ groupsStore.currentTopic.title }}</span>
           <span v-if="group?.lifecycle === 'deleting'"
                 data-test="group-pane-deleting-badge"
                 class="rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
@@ -159,22 +214,6 @@ const worktreeRunId = computed(() => {
         <Pencil :size="14" />
       </button>
     </header>
-
-    <div class="flex shrink-0 items-center bg-surface/60 px-3 lg:px-5 py-1 text-xs backdrop-blur-md">
-      <TopicManager
-        variant="group"
-        :topics="groupsStore.currentTopics"
-        :active-topic-id="groupsStore.activeTopicId"
-        :preview-topic="previewTopic"
-        :rename-topic="renameTopic"
-        :archive-topic="archiveTopic"
-        :restore-topic="restoreTopic"
-        :teardown-topic="teardownTopic"
-        :clear-topic="clearTopic"
-        @select="groupsStore.switchTopic"
-        @create="newTopicDialogOpen = true"
-      />
-    </div>
 
     <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>
@@ -242,5 +281,15 @@ const worktreeRunId = computed(() => {
       :group="group"
       @close="groupDialogOpen = false"
     />
+
+    <!-- Group ⋯ sheet (<lg): the desktop header's edit entry. -->
+    <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="group-more-sheet" @close="closeSheet">
+      <button type="button" data-test="sheet-group-edit"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="groupDialogOpen = true; closeSheet()">
+        <Pencil :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("group.manage.editTitle") }}</span>
+      </button>
+    </MobileSheet>
   </div>
 </template>
