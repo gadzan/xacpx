@@ -2,7 +2,7 @@
 // only, no Python, no macOS `sips`). Run by scripts/generate-pwa-icons.mjs after
 // the rasterizer; safe to re-run (flatten is idempotent on opaque icons).
 //
-//   1. flatten pwa-64/192/512 onto the brand dark (#0E1116). @vite-pwa's
+//   1. flatten pwa-64/192/512 onto the brand dark (#10151C). @vite-pwa's
 //      "transparent" icons carry a thin transparent edge margin; iOS composites
 //      that onto white, leaving a white border on the Home Screen icon.
 //      Compositing onto the opaque brand color makes a true full-bleed tile.
@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync, deflateSync } from "node:zlib";
 
-const BG = [14, 17, 22]; // #0E1116
+const BG = [16, 21, 28]; // #10151C
 const dir = process.argv[2] ?? "public";
 
 const CRC = (() => {

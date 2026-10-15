@@ -46,7 +46,7 @@ function tokenHex(varName: string, fallback: string): string {
   return "#" + parts.map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, "0")).join("");
 }
 function currentTheme(): TerminalTheme {
-  return { background: tokenHex("--c-bg", "#0e1116"), foreground: tokenHex("--c-fg", "#e8ecf1") };
+  return { background: tokenHex("--c-bg", "#10151C"), foreground: tokenHex("--c-fg", "#e8ecf1") };
 }
 
 function isDesktop(): boolean {

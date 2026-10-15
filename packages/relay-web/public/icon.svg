@@ -1,7 +1,7 @@
 <svg width="32" height="32" viewBox="0 0 140 140" xmlns="http://www.w3.org/2000/svg">
   <!-- SVG favicon: dark rounded tile + the xacpx X mark (green ∨ over two blue legs).
        Kept in sync with assets/pwa-source.svg / src/components/BrandLogo.vue. -->
-  <rect width="140" height="140" rx="30" fill="#0E1116" />
+  <rect width="140" height="140" rx="30" fill="#10151C" />
   <g transform="translate(70 70) scale(0.82) translate(-70 -50.5)"
      stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none">
     <path d="M40 20 L54.5 34.5 A22 22 0 0 0 85.5 34.5 L100 20" stroke="#69D689" />
