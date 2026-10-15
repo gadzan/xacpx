@@ -262,7 +262,7 @@ onBeforeUnmount(() => {
   color: rgb(var(--c-accent));
   text-decoration: underline;
 }
-/* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono text-[12.5px] (mockup line 298) */
+/* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono 12.5px (mockup line 298) */
 .stream-md code {
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
@@ -272,7 +272,7 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
 }
 /* Code block: cool snippet panel (mockup lines 331–346) — bg-bg/raised, border-border,
-   rounded-lg, font-mono text-[13px], overflow-x with thin scrollbar. */
+   rounded-lg (10px), font-mono 13px, overflow-x with thin scrollbar. */
 .stream-md pre {
   background: rgb(var(--c-bg));
   color: rgb(var(--c-fg));

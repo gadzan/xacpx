@@ -1,5 +1,7 @@
 export default {
-  content: ["./index.html", "./src/**/*.{vue,ts}"],
+  // The codemod fixtures intentionally keep pre-migration tokens as literals;
+  // scanning them would emit dead CSS for rounded-md, text-[10px], and friends.
+  content: ["./index.html", "./src/**/*.{vue,ts}", "!./src/__tests__/codemod-radius.test.ts", "!./src/__tests__/codemod-type.test.ts"],
   darkMode: "class",
   theme: {
     extend: {
