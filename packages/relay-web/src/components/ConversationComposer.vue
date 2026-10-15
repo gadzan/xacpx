@@ -156,7 +156,7 @@ function onInput(event: Event): void {
             :aria-label="$t('common.cancel')"
             :title="$t('common.cancel')"
             :disabled="cancelling"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-danger text-white shadow-e1 transition-all hover:opacity-90 hover:shadow-e2 disabled:opacity-50"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-danger text-on-danger shadow-e1 transition-all hover:opacity-90 hover:shadow-e2 disabled:opacity-50"
             @click="emit('cancel')"
           >
             <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
@@ -169,7 +169,7 @@ function onInput(event: Event): void {
             :disabled="disabled || sending || sendDisabled || !hasSendable"
             :aria-label="$t('chat.send')"
             :title="$t('chat.send')"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent text-white shadow-e1 transition-all hover:bg-accent-hover hover:shadow-e2 disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent text-on-accent shadow-e1 transition-all hover:bg-accent-hover hover:shadow-e2 disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none"
             @click="emit('send')"
           >
             <Loader2 v-if="sending" :size="12" class="animate-spin" />

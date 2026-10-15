@@ -233,7 +233,7 @@ onBeforeUnmount(() => {
         <button data-test="desktop-macos-submit"
                 type="submit"
                 :disabled="!accountReady"
-                class="rounded-md bg-accent px-3 py-1 text-[12px] font-medium text-white disabled:opacity-40">
+                class="rounded-md bg-accent px-3 py-1 text-[12px] font-medium text-on-accent disabled:opacity-40">
           {{ $t("desktop.connect") }}
         </button>
       </div>
@@ -252,7 +252,7 @@ onBeforeUnmount(() => {
       <button data-test="desktop-password-submit"
               type="button"
               :disabled="!password"
-              class="shrink-0 rounded-md bg-accent px-3 py-1 text-[12px] font-medium text-white disabled:opacity-40"
+              class="shrink-0 rounded-md bg-accent px-3 py-1 text-[12px] font-medium text-on-accent disabled:opacity-40"
               @click="submitPassword">{{ $t("desktop.connect") }}</button>
     </div>
   </div>

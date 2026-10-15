@@ -38,8 +38,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
                   class="rounded-lg px-3 py-1.5 text-[13px] font-medium text-fg-muted transition-colors hover:bg-fg/5"
                   @click="settleConfirm(false)">{{ pending.cancelLabel ?? $t("common.cancel") }}</button>
           <button data-test="confirm-ok" type="button"
-                  class="rounded-lg px-3 py-1.5 text-[13px] font-semibold text-white transition-opacity hover:opacity-90"
-                  :class="pending.tone === 'default' ? 'bg-accent' : 'bg-danger'"
+                  class="rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-opacity hover:opacity-90"
+                  :class="pending.tone === 'default' ? 'bg-accent text-on-accent' : 'bg-danger text-on-danger'"
                   @click="settleConfirm(true)">{{ pending.confirmLabel ?? $t("common.confirm") }}</button>
         </div>
       </div>
