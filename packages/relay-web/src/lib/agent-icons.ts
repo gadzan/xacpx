@@ -22,6 +22,20 @@ import trae from "@lobehub/icons-static-svg/icons/trae-color.svg?raw";
 // omp (Oh My Pi) has no @lobehub glyph — its gradient "pi mark" ships as a local asset.
 import omp from "../../assets/omp-mark.svg?raw";
 
+// Optical centering, in viewBox units. A few marks sit visibly off the centre of their
+// own 24-unit box, which shows in the round avatar frames. The whole mark is translated
+// (these marks have no background tile, so nothing else moves). Only applied where the
+// glyph's bounding box is off by more than 0.5px at 32px AND its ink centroid leans the
+// same way, so it is a real offset, not the mark's intended asymmetry; see PR #423.
+const GLYPH_OFFSET: Readonly<Record<string, readonly [number, number]>> = {
+  kimi: [0, 2], // the mark spans y 0–20 of 24 (centre 10): move it down 2
+  openclaw: [0, -0.675], // the mark spans y 1.68–23.67 of 24 (centre 12.675): move it up 0.675
+};
+function offsetGlyph(svg: string, [dx, dy]: readonly [number, number]): string {
+  const open = svg.indexOf(">", svg.indexOf("<svg")) + 1, close = svg.lastIndexOf("</svg>");
+  return `${svg.slice(0, open)}<g transform="translate(${dx} ${dy})">${svg.slice(open, close)}</g>${svg.slice(close)}`;
+}
+
 // Keyed by acpx driver (src/config/agent-templates.ts). A custom agent ("my-codex")
 // resolves to driver "codex" upstream, so keying on driver — not the agent name — keeps
 // the mapping small and stable.
@@ -42,6 +56,7 @@ const ICONS: Record<string, string> = {
   trae,
   omp,
 };
+for (const [driver, offset] of Object.entries(GLYPH_OFFSET)) ICONS[driver] = offsetGlyph(ICONS[driver]!, offset);
 
 /** Raw brand SVG for an agent driver, or null when the library ships none (the caller
  *  then renders a generic fallback). Tolerant of casing/whitespace drift in the driver. */

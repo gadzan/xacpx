@@ -12,6 +12,23 @@ describe("agentIconSvg", () => {
     }
   });
 
+  it("optically centres only the off-centre marks by translating the whole glyph", () => {
+    const parse = (driver: string) => new DOMParser().parseFromString(agentIconSvg(driver)!, "image/svg+xml").documentElement;
+    for (const [driver, transform] of [["kimi", "translate(0 2)"], ["openclaw", "translate(0 -0.675)"]] as const) {
+      const svg = parse(driver);
+      const wrappers = [...svg.children].filter((el) => el.tagName === "g");
+      expect(wrappers, driver).toHaveLength(1);
+      expect(wrappers[0]!.getAttribute("transform")).toBe(transform);
+      // Every drawn shape (and its gradients) moves with the wrapper; the viewBox is untouched.
+      expect([...svg.children].filter((el) => el.tagName !== "g"), driver).toHaveLength(0);
+      expect(wrappers[0]!.querySelectorAll("path").length).toBeGreaterThan(0);
+      expect(svg.getAttribute("viewBox")).toBe("0 0 24 24");
+    }
+    for (const driver of ["codex", "claude", "gemini", "copilot", "cursor", "hermes", "qwen", "opencode", "kilocode", "kiro", "qoder", "trae", "omp"]) {
+      expect(agentIconSvg(driver), driver).not.toContain("<g transform=\"translate(");
+    }
+  });
+
   it("is tolerant of casing and surrounding whitespace", () => {
     expect(agentIconSvg("  CODEX ")).toBe(agentIconSvg("codex"));
   });
