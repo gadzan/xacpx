@@ -14,6 +14,7 @@ import {
   JEV_ROUTER_QUESTION,
   MAX_JEV_CHOICES,
   askJevChoice,
+  redactJevSecrets,
   type JevAskResult,
   type JevChoice,
 } from "./jev-client";
@@ -271,7 +272,12 @@ export async function decideJevRouterAssignment(
       choices,
     });
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    // The reason is user-visible (Run card) and durable: never let a proxy
+    // credential or the key ride along in a thrown transport message.
+    const detail = redactJevSecrets(error instanceof Error ? error.message : String(error), {
+      proxyUrls: [input.jev.proxyUrl, process.env.HTTPS_PROXY, process.env.https_proxy],
+      apiKey: input.jev.apiKey,
+    });
     return fallback(`the router call failed: ${detail}`);
   }
   if (!answer.ok) {
@@ -357,7 +363,11 @@ export async function runDefaultRouterCli(io: DefaultRouterCliIo): Promise<numbe
       ? await decideJevRouterAssignment({ ...input, jev })
       : decideDefaultRouterAssignment(input);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const env = io.env ?? {};
+    const message = redactJevSecrets(error instanceof Error ? error.message : String(error), {
+      proxyUrls: [env.XACPX_JEV_PROXY, env.HTTPS_PROXY, env.https_proxy],
+      apiKey: env.XACPX_JEV_API_KEY,
+    });
     await io.writeStderr(`[xacpx-default-router] ${message}\n`);
     return 1;
   }

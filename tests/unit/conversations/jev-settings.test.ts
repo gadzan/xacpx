@@ -136,3 +136,51 @@ test("a hand-written file keeps its stored values on the next patch", async () =
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("echoing the masked key back on update keeps the stored key", async () => {
+  const { dir, store: settings } = store();
+  try {
+    const first = await settings.update({ apiKey: "sk-1234567890abcd" });
+    expect(first.keyMasked).toBe("sk-…abcd");
+    // A client round-trips the whole view (endpoint + masked key) on save.
+    const echoed = await settings.update({ endpoint: first.endpoint, apiKey: first.keyMasked! });
+    expect(echoed).toMatchObject({ keyConfigured: true, keyMasked: "sk-…abcd" });
+    expect((await settings.read()).apiKey).toBe("sk-1234567890abcd");
+    // Surrounding whitespace on the echo is still the echo.
+    await settings.update({ apiKey: `  ${first.keyMasked!}  ` });
+    expect((await settings.read()).apiKey).toBe("sk-1234567890abcd");
+    // A real new key still replaces it.
+    await settings.update({ apiKey: "sk-new-key-99998888" });
+    expect((await settings.read()).apiKey).toBe("sk-new-key-99998888");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a masked-looking key that is not the current preview is refused, not stored", async () => {
+  const { dir, store: settings } = store();
+  try {
+    // No key yet: a pasted preview must not become the stored secret.
+    await expect(settings.update({ apiKey: "sk-…abcd" })).rejects.toMatchObject({ code: "jev_settings_invalid" });
+    expect(await settings.read()).toEqual({});
+    await settings.update({ apiKey: "sk-1234567890abcd" });
+    // A stale preview of some other key is refused and the stored key survives.
+    await expect(settings.update({ apiKey: "sk-…zzzz" })).rejects.toMatchObject({ code: "jev_settings_invalid" });
+    expect((await settings.read()).apiKey).toBe("sk-1234567890abcd");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("echoing the masked proxy URL back keeps the stored credentials", async () => {
+  const { dir, store: settings } = store();
+  try {
+    const first = await settings.update({ proxyUrl: "http://user:s3cretpass@proxy.local:7890" });
+    expect(first.proxyUrl).toBe("http://***@proxy.local:7890");
+    expect(JSON.stringify(first)).not.toContain("s3cretpass");
+    await settings.update({ proxyUrl: first.proxyUrl! });
+    expect((await settings.read()).proxyUrl).toBe("http://user:s3cretpass@proxy.local:7890");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

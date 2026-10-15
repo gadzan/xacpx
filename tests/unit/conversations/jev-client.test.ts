@@ -2,7 +2,15 @@ import { expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { connect as netConnect } from "node:net";
 
-import { askJevChoice, maskJevKey, maskProxyUrl, noProxyMatches, resolveJevProxyUrl, type JevAskInput } from "../../../src/conversations/jev-client";
+import {
+  askJevChoice,
+  maskJevKey,
+  maskProxyUrl,
+  noProxyMatches,
+  redactJevSecrets,
+  resolveJevProxyUrl,
+  type JevAskInput,
+} from "../../../src/conversations/jev-client";
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 
@@ -186,6 +194,9 @@ test("a proxied call routes through the configured HTTP proxy (loopback CONNECT 
     const result = await askJevChoice(input({
       endpoint: `http://127.0.0.1:${originPort}/v1/systemone`,
       proxyUrl: `http://127.0.0.1:${proxyPort}`,
+      // Isolate from an ambient NO_PROXY (often lists 127.0.0.1), which an
+      // explicit proxy now honors too.
+      env: {},
     }));
     expect(result).toMatchObject({ ok: true, choice: "coder", confidence: 0.9 });
     expect(connectTargets).toEqual([`127.0.0.1:${originPort}`]);
@@ -209,6 +220,7 @@ test("a proxy that refuses CONNECT maps to a network failure", async () => {
       endpoint: "http://127.0.0.1:9/v1/systemone",
       proxyUrl: `http://127.0.0.1:${proxyPort}`,
       timeoutMs: 5_000,
+      env: {},
     }));
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -265,14 +277,17 @@ test("maskProxyUrl hides proxy credentials and leaves plain URLs alone", () => {
   expect(maskProxyUrl("")).toBeUndefined();
 });
 
-test("NO_PROXY skips the env proxy for matching hosts, never an explicit proxy", () => {
+test("NO_PROXY skips both the env proxy and an explicit proxy for matching hosts", () => {
   const url = "https://api.typesafe.ai/v1/systemone";
   const env = { HTTPS_PROXY: "http://env:2", NO_PROXY: "localhost,.typesafe.ai" };
   expect(resolveJevProxyUrl(undefined, env, url)).toBeUndefined();
   expect(resolveJevProxyUrl(undefined, { ...env, NO_PROXY: undefined, no_proxy: "typesafe.ai" }, url)).toBeUndefined();
   expect(resolveJevProxyUrl(undefined, { ...env, NO_PROXY: "*" }, url)).toBeUndefined();
   expect(resolveJevProxyUrl(undefined, { ...env, NO_PROXY: "example.com" }, url)).toBe("http://env:2");
-  expect(resolveJevProxyUrl("http://explicit:1", env, url)).toBe("http://explicit:1");
+  // An explicit Jev proxy honors NO_PROXY for the target host as well.
+  expect(resolveJevProxyUrl("http://explicit:1", env, url)).toBeUndefined();
+  expect(resolveJevProxyUrl("http://explicit:1", { ...env, NO_PROXY: "example.com" }, url)).toBe("http://explicit:1");
+  expect(resolveJevProxyUrl("http://explicit:1", {}, url)).toBe("http://explicit:1");
   expect(noProxyMatches(url, "api.typesafe.ai:443")).toBe(true);
   expect(noProxyMatches(url, "api.typesafe.ai:8443")).toBe(false);
   expect(noProxyMatches(url, "notypesafe.ai")).toBe(false);
@@ -290,4 +305,184 @@ test("an https:// proxy URL is rejected clearly instead of spoken to in plaintex
   });
   expect(result).toMatchObject({ ok: false, code: "network" });
   expect(result.ok ? "" : result.message).toContain("https:// proxy URLs are not supported");
+});
+
+test("NO_PROXY host names match exactly or on a dot-suffix label boundary", () => {
+  const url = "https://api.example.com/v1";
+  expect(noProxyMatches(url, "api.example.com")).toBe(true);
+  expect(noProxyMatches(url, "example.com")).toBe(true);
+  expect(noProxyMatches(url, ".example.com")).toBe(true);
+  expect(noProxyMatches(url, "*.example.com")).toBe(true);
+  expect(noProxyMatches("https://example.com/", ".example.com")).toBe(true);
+  // Never a raw string suffix.
+  expect(noProxyMatches("https://badexample.com/", "example.com")).toBe(false);
+  expect(noProxyMatches("https://badexample.com/", ".example.com")).toBe(false);
+  expect(noProxyMatches(url, "other.example.com")).toBe(false);
+  expect(noProxyMatches(url, "API.Example.COM")).toBe(true);
+  expect(noProxyMatches(url, "example.com.")).toBe(true);
+  // `*` only counts as a whole entry; an inner wildcard is ignored, not widened.
+  expect(noProxyMatches(url, "*")).toBe(true);
+  expect(noProxyMatches(url, " foo.test , * ")).toBe(true);
+  expect(noProxyMatches(url, "a*.example.com")).toBe(false);
+  expect(noProxyMatches(url, "")).toBe(false);
+  expect(noProxyMatches(url, ",, ,")).toBe(false);
+  // Comma and whitespace separators.
+  expect(noProxyMatches(url, "foo.test example.com")).toBe(true);
+});
+
+test("NO_PROXY port restrictions use the target's effective port", () => {
+  expect(noProxyMatches("https://api.example.com/", "example.com:443")).toBe(true);
+  expect(noProxyMatches("https://api.example.com/", "example.com:80")).toBe(false);
+  expect(noProxyMatches("http://api.example.com/", "example.com:80")).toBe(true);
+  expect(noProxyMatches("https://api.example.com:8443/", "example.com:8443")).toBe(true);
+  expect(noProxyMatches("https://api.example.com:8443/", "example.com")).toBe(true);
+  expect(noProxyMatches("https://api.example.com:8443/", "example.com:443")).toBe(false);
+  expect(noProxyMatches("https://api.example.com/", "example.com:notaport")).toBe(false);
+});
+
+test("NO_PROXY IP literals match the address only, never as a suffix", () => {
+  expect(noProxyMatches("http://10.0.0.1/", "10.0.0.1")).toBe(true);
+  expect(noProxyMatches("http://10.0.0.1/", "0.0.1")).toBe(false);
+  expect(noProxyMatches("http://110.0.0.1/", "10.0.0.1")).toBe(false);
+  expect(noProxyMatches("http://10.0.0.1:8080/", "10.0.0.1:8080")).toBe(true);
+  expect(noProxyMatches("http://10.0.0.1:8080/", "10.0.0.1:9090")).toBe(false);
+  // A host name never matches an IP entry and vice versa.
+  expect(noProxyMatches("http://10.0.0.1/", "localhost")).toBe(false);
+  expect(noProxyMatches("http://localhost/", "127.0.0.1")).toBe(false);
+});
+
+test("NO_PROXY IPv6 literals parse with and without brackets and ports", () => {
+  expect(noProxyMatches("http://[::1]/", "::1")).toBe(true);
+  expect(noProxyMatches("http://[::1]/", "[::1]")).toBe(true);
+  expect(noProxyMatches("http://[::1]:8080/", "[::1]:8080")).toBe(true);
+  expect(noProxyMatches("http://[::1]:8080/", "[::1]:9090")).toBe(false);
+  expect(noProxyMatches("http://[::1]:8080/", "[::1]")).toBe(true);
+  // Equivalent spellings of one address match.
+  expect(noProxyMatches("http://[0:0:0:0:0:0:0:1]/", "::1")).toBe(true);
+  expect(noProxyMatches("http://[2001:db8::1]/", "2001:DB8:0::1")).toBe(true);
+  // `::1` used to parse as host ":" port "1"; it must not match anything else.
+  expect(noProxyMatches("http://[::2]/", "::1")).toBe(false);
+  expect(noProxyMatches("http://[::1]/", "[::1")).toBe(false);
+  expect(noProxyMatches("http://127.0.0.1/", "::1")).toBe(false);
+});
+
+test("NO_PROXY CIDR ranges match IP literals inside them", () => {
+  expect(noProxyMatches("http://10.1.2.3/", "10.0.0.0/8")).toBe(true);
+  expect(noProxyMatches("http://11.1.2.3/", "10.0.0.0/8")).toBe(false);
+  expect(noProxyMatches("http://192.168.1.77/", "192.168.1.0/24")).toBe(true);
+  expect(noProxyMatches("http://192.168.2.77/", "192.168.1.0/24")).toBe(false);
+  expect(noProxyMatches("http://1.2.3.4/", "0.0.0.0/0")).toBe(true);
+  expect(noProxyMatches("http://[fd00::abcd]/", "fd00::/8")).toBe(true);
+  expect(noProxyMatches("http://[fe80::1]/", "fd00::/8")).toBe(false);
+  // A CIDR never matches a host name; an out-of-range prefix is ignored.
+  expect(noProxyMatches("https://api.example.com/", "10.0.0.0/8")).toBe(false);
+  expect(noProxyMatches("http://10.1.2.3/", "10.0.0.0/33")).toBe(false);
+});
+
+const PROXY_SECRET = "s3cretpass";
+const PROXY_WITH_CREDS = `http://proxyuser:${PROXY_SECRET}@127.0.0.1:7890`;
+
+function expectNoSecret(text: string): void {
+  expect(text).not.toContain(PROXY_SECRET);
+  expect(text).not.toContain("proxyuser");
+  expect(text).not.toContain("sk-test-key");
+}
+
+test("redactJevSecrets scrubs URL userinfo, the proxy credentials, and the key", () => {
+  const out = redactJevSecrets(
+    `connect to ${PROXY_WITH_CREDS} failed; user proxyuser pass ${PROXY_SECRET}; Bearer sk-test-key; other https://a:b@x.test/p`,
+    { proxyUrls: [PROXY_WITH_CREDS], apiKey: "sk-test-key" },
+  );
+  expectNoSecret(out);
+  expect(out).toContain("http://***@127.0.0.1:7890");
+  expect(out).toContain("https://***@x.test/p");
+  // Percent-encoded credentials are scrubbed in both forms.
+  const encoded = redactJevSecrets("auth p@ss:word and p%40ss%3Aword", {
+    proxyUrls: ["http://bob:p%40ss%3Aword@proxy.test:1"],
+  });
+  expect(encoded).not.toContain("p@ss:word");
+  expect(encoded).not.toContain("p%40ss%3Aword");
+  // Plain text without secrets is unchanged.
+  expect(redactJevSecrets("Jev answered HTTP 500.", { proxyUrls: ["http://127.0.0.1:1"] })).toBe("Jev answered HTTP 500.");
+});
+
+test("an http-error body that echoes the proxy URL or key is redacted", async () => {
+  const { fetchImpl } = recordingFetch(() => new Response(
+    `bad gateway via ${PROXY_WITH_CREDS} (proxyuser/${PROXY_SECRET}) auth=Bearer sk-test-key`,
+    { status: 502 },
+  ));
+  const result = await askJevChoice(input({ fetchImpl, proxyUrl: PROXY_WITH_CREDS }));
+  expect(result).toMatchObject({ ok: false, code: "http-error" });
+  if (result.ok) return;
+  expectNoSecret(result.message);
+  expect(result.message).toContain("***");
+});
+
+test("a secret straddling the http-error excerpt bound is not left half-visible", async () => {
+  const { fetchImpl } = recordingFetch(() => new Response(`${"x".repeat(195)}${PROXY_SECRET} tail`, { status: 500 }));
+  const result = await askJevChoice(input({ fetchImpl, proxyUrl: PROXY_WITH_CREDS }));
+  expect(result).toMatchObject({ ok: false, code: "http-error" });
+  if (result.ok) return;
+  expect(result.message).not.toContain(PROXY_SECRET.slice(0, 5));
+});
+
+test("a network error that names the proxy URL is redacted", async () => {
+  const fetchImpl = (async () => {
+    throw new Error(`connect ECONNREFUSED via ${PROXY_WITH_CREDS}`);
+  }) as unknown as typeof fetch;
+  const result = await askJevChoice(input({ fetchImpl, proxyUrl: PROXY_WITH_CREDS }));
+  expect(result).toMatchObject({ ok: false, code: "network" });
+  if (result.ok) return;
+  expectNoSecret(result.message);
+  expect(result.message).toContain("http://***@127.0.0.1:7890");
+});
+
+test("credentials from an HTTPS_PROXY fallback are redacted too", async () => {
+  const fetchImpl = (async () => {
+    throw new Error(`proxy ${PROXY_WITH_CREDS} refused`);
+  }) as unknown as typeof fetch;
+  const result = await askJevChoice(input({ fetchImpl, env: { HTTPS_PROXY: PROXY_WITH_CREDS } }));
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expectNoSecret(result.message);
+});
+
+test("an unparseable proxy URL with credentials is never echoed", async () => {
+  const result = await askJevChoice(input({
+    endpoint: "http://127.0.0.1:9/v1/systemone",
+    proxyUrl: `http://proxyuser:${PROXY_SECRET}@[not-a-host`,
+    env: {},
+    timeoutMs: 2_000,
+  }));
+  expect(result).toMatchObject({ ok: false, code: "network" });
+  if (result.ok) return;
+  expectNoSecret(result.message);
+  expect(result.message).toContain("not a valid URL");
+});
+
+test("a proxy that echoes its credentials in the CONNECT refusal is redacted", async () => {
+  const proxy = createServer();
+  proxy.on("connect", (req, socket) => {
+    // A hostile/buggy proxy reflecting the Proxy-Authorization it received.
+    const auth = String(req.headers["proxy-authorization"] ?? "");
+    const decoded = Buffer.from(auth.replace(/^Basic /, ""), "base64").toString("utf8");
+    socket.write(`HTTP/1.1 407 denied ${decoded}\r\n\r\n`);
+    socket.end();
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const proxyPort = (proxy.address() as { port: number }).port;
+  try {
+    const result = await askJevChoice(input({
+      endpoint: "http://127.0.0.1:9/v1/systemone",
+      proxyUrl: `http://proxyuser:${PROXY_SECRET}@127.0.0.1:${proxyPort}`,
+      env: {},
+      timeoutMs: 5_000,
+    }));
+    expect(result).toMatchObject({ ok: false, code: "network" });
+    if (result.ok) return;
+    expect(result.message).toContain("407");
+    expectNoSecret(result.message);
+  } finally {
+    proxy.close();
+  }
 });
