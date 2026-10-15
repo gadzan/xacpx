@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Changed
+
+- Managed adapter pins refreshed (ACP initialize probe passes on both, still ACP protocol v1): Codex `2.1.1` → `2.2.2`, Claude `0.86.0` → `0.90.0`. Codex picks up `@openai/codex` 0.160.1, pre-session hook trust, the AIR `sessionIndex` extension, live `/mcp` status, and resuming an empty session after an app-server restart. Claude picks up `@agentclientprotocol/sdk` 1.8.0 and an updated Claude SDK, the AIR `sessionIndex` extension, subagents-RFD session reporting, and cancel/fork fixes (cancelled turns close their open tool calls and drop abandoned streamed output; forked sessions are promptable at once). No upstream breaking changes in either range. Recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities. The derived Codex acpxAgent alias hash moves `af1d3f1b4eee` → `3cf7475b4e53`.
+
 ## [0.24.10-beta.2] - 2026-10-15
 
 ### Added

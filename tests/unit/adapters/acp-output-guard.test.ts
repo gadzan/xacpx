@@ -276,7 +276,7 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
   });
 
   const npxLauncher = buildAcpAgentSpawnSpec(
-    ["npx", "-y", "@agentclientprotocol/codex-acp@2.1.1"],
+    ["npx", "-y", "@agentclientprotocol/codex-acp@2.2.2"],
     "win32",
     "C:\\Windows\\System32\\cmd.exe",
     { PATH: "C:\\Node", PATHEXT: ".EXE;.CMD;.BAT;.COM" },
@@ -284,7 +284,7 @@ test("Windows resolves bare PATH commands through PATHEXT before choosing the la
   );
   expect(npxLauncher).toEqual({
     command: "C:\\Windows\\System32\\cmd.exe",
-    args: ["/d", "/v:off", "/s", "/c", '"C:\\Node\\npx.CMD ^"-y^" ^"@agentclientprotocol/codex-acp@2.1.1^""'],
+    args: ["/d", "/v:off", "/s", "/c", '"C:\\Node\\npx.CMD ^"-y^" ^"@agentclientprotocol/codex-acp@2.2.2^""'],
     shell: false,
     windowsVerbatimArguments: true,
   });

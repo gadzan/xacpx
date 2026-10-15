@@ -12,12 +12,12 @@ export const MANAGED_ADAPTERS = {
   codex: {
     packageName: "@agentclientprotocol/codex-acp",
     binName: "codex-acp",
-    defaultVersion: "2.1.1",
+    defaultVersion: "2.2.2",
   },
   claude: {
     packageName: "@agentclientprotocol/claude-agent-acp",
     binName: "claude-agent-acp",
-    defaultVersion: "0.86.0",
+    defaultVersion: "0.90.0",
   },
 } as const;
 
