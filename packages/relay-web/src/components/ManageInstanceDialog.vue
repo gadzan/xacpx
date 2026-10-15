@@ -260,10 +260,10 @@ onMounted(async () => {
   <Teleport to="body">
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
     <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="manage-instance-title"
-         class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-xl bg-raised shadow-float focus:outline-none" data-test="manage-instance-dialog">
+         class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl bg-raised shadow-float focus:outline-none" data-test="manage-instance-dialog">
       <header class="flex shrink-0 items-center justify-between px-5 py-3">
         <h2 id="manage-instance-title" class="truncate text-sm font-semibold text-fg">{{ $t("instance.manageTitle", { name }) }}</h2>
-        <button class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label="$t('instance.close')" @click="emit('close')"><X :size="16" /></button>
+        <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label="$t('instance.close')" @click="emit('close')"><X :size="16" /></button>
       </header>
       <div v-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("instance.dialogLoading") }}</div>
       <template v-else>
@@ -272,7 +272,7 @@ onMounted(async () => {
           <button v-for="tb in (['general','workspaces','agents'] as const)" :key="tb"
                   :id="`tab-${tb}`" :data-test="`tab-${tb}`" role="tab" :aria-selected="tab === tb"
                   :aria-controls="`tabpanel-${tb}`" :tabindex="tab === tb ? 0 : -1"
-                  class="rounded-t px-3 py-1.5 text-sm font-medium transition-colors"
+                  class="rounded-t-sm px-3 py-1.5 text-sm font-medium transition-colors"
                   :class="tab === tb ? 'border-b-2 border-accent text-fg' : 'text-fg-muted hover:text-fg'"
                   @click="tab = tb">
             {{ tb === 'general' ? $t('instance.tabGeneral') : tb === 'workspaces' ? $t('workspaces.title') : $t('agents.title') }}
@@ -282,12 +282,12 @@ onMounted(async () => {
           <div v-if="tab === 'general'" id="tabpanel-general" role="tabpanel" aria-labelledby="tab-general" class="space-y-6">
             <section class="space-y-3">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.nameLabel") }}</h3>
-              <p v-if="renameError" data-test="rename-error" class="rounded bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ renameError }}</p>
+              <p v-if="renameError" data-test="rename-error" class="rounded-sm bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ renameError }}</p>
               <div class="flex gap-2">
                 <input v-model="name" data-test="rename-name" :placeholder="$t('instance.renamePlaceholder')"
-                       class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                       class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                        @keyup.enter="saveName" />
-                <button data-test="rename-save" class="shrink-0 rounded bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
+                <button data-test="rename-save" class="shrink-0 rounded-sm bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
                         :disabled="renaming || !name.trim()" @click="saveName">{{ renaming ? $t("instance.renameSaving") : $t("instance.renameSave") }}</button>
               </div>
             </section>
@@ -296,7 +296,7 @@ onMounted(async () => {
               <div class="flex gap-1" role="radiogroup" :aria-label="$t('instance.groupModeLabel')">
                 <button v-for="m in GROUP_MODES" :key="m" type="button" role="radio"
                         :aria-checked="groupMode === m" :data-test="`group-mode-${m}`"
-                        class="flex-1 rounded px-2 py-1.5 text-xs"
+                        class="flex-1 rounded-sm px-2 py-1.5 text-xs"
                         :class="groupMode === m ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
                         @click="pickGroupMode(m)">
                   {{ m === 'instance' ? $t('instance.groupModeInstance') : m === 'workspace' ? $t('instance.groupModeWorkspace') : $t('instance.groupModeAgent') }}
@@ -319,7 +319,7 @@ onMounted(async () => {
                 </button>
                 <p data-test="router-status" class="text-sm text-fg-muted">{{ routerStatus }}</p>
               </div>
-              <div v-if="routerReason" data-test="router-reason" class="space-y-1 rounded bg-fg/5 px-3 py-2">
+              <div v-if="routerReason" data-test="router-reason" class="space-y-1 rounded-sm bg-fg/5 px-3 py-2">
                 <p data-test="router-reason-explain" class="text-xs text-fg">{{ routerReason.explain }}</p>
                 <p v-if="routerReason.detail" data-test="router-reason-detail" class="break-words font-mono text-xs text-fg-muted">{{ routerReason.detail }}</p>
               </div>
@@ -335,16 +335,16 @@ onMounted(async () => {
                 <label class="block text-xs font-medium text-fg-muted" for="jev-endpoint">{{ $t("instance.jevEndpoint") }}</label>
                 <input id="jev-endpoint" v-model="jevEndpoint" data-test="jev-endpoint" type="url" inputmode="url"
                        placeholder="https://api.typesafe.ai/v1/systemone"
-                       class="w-full rounded bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                       class="w-full rounded-sm bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
               </div>
               <div class="space-y-1">
                 <label class="block text-xs font-medium text-fg-muted" for="jev-key">{{ $t("instance.jevApiKey") }}</label>
                 <div class="flex gap-2">
                   <input id="jev-key" v-model="jevKeyDraft" data-test="jev-api-key" type="password" autocomplete="new-password"
                          :placeholder="jevSettings?.keyMasked ?? $t('instance.jevApiKeyEmpty')"
-                         class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                         class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
                   <button v-if="jevSettings?.keyConfigured" data-test="jev-api-key-clear" type="button"
-                          class="shrink-0 rounded px-2 py-1 text-xs text-fg-muted hover:bg-fg/5 hover:text-fg"
+                          class="shrink-0 rounded-sm px-2 py-1 text-xs text-fg-muted hover:bg-fg/5 hover:text-fg"
                           @click="clearJevKey">{{ $t("instance.jevApiKeyClear") }}</button>
                 </div>
                 <p v-if="jevSettings?.keyConfigured && !jevKeyCleared" data-test="jev-api-key-masked" class="text-xs text-fg-muted">
@@ -358,7 +358,7 @@ onMounted(async () => {
                 <label class="block text-xs font-medium text-fg-muted" for="jev-proxy">{{ $t("instance.jevProxy") }}</label>
                 <input id="jev-proxy" v-model="jevProxy" data-test="jev-proxy" type="url" inputmode="url"
                        placeholder="http://127.0.0.1:8080"
-                       class="w-full rounded bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                       class="w-full rounded-sm bg-surface-2 px-2 py-1 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
                 <p class="text-xs text-fg-muted">{{ $t("instance.jevProxyHint") }}</p>
               </div>
               <div class="space-y-1">
@@ -367,12 +367,12 @@ onMounted(async () => {
               </div>
               <div class="flex flex-wrap items-center gap-2">
                 <button data-test="jev-save" type="button"
-                        class="rounded bg-accent px-3 py-1.5 text-xs text-on-accent hover:bg-accent-hover disabled:opacity-50"
+                        class="rounded-sm bg-accent px-3 py-1.5 text-xs text-on-accent hover:bg-accent-hover disabled:opacity-50"
                         :disabled="jevSaving || !instanceOnline" @click="saveJev">
                   {{ jevSaving ? $t("instance.jevSaving") : $t("instance.jevSave") }}
                 </button>
                 <button data-test="jev-test" type="button"
-                        class="rounded px-3 py-1.5 text-xs text-fg hover:bg-fg/5 disabled:opacity-50"
+                        class="rounded-sm px-3 py-1.5 text-xs text-fg hover:bg-fg/5 disabled:opacity-50"
                         :disabled="jevPanel.phase !== 'editable' || jevPanel.test.kind === 'testing' || !instanceOnline"
                         @click="testJev">{{ $t("instance.jevTestButton") }}</button>
                 <span v-if="jevTestView" data-test="jev-test-result" class="text-xs"

@@ -36,7 +36,7 @@ async function copy(): Promise<void> {
     type="button"
     :aria-label='$t("copy.copy")'
     :title='copied ? $t("copy.copied") : $t("copy.copy")'
-    class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5 hover:text-fg"
+    class="rounded-sm p-1 leading-none text-fg-muted hover:bg-fg/5 hover:text-fg"
     @click.stop="copy"
   >
     <Check v-if="copied" :size="14" class="text-run" />

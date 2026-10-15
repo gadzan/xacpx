@@ -313,7 +313,7 @@ async function confirmDelete(): Promise<void> {
          aria-labelledby="group-dialog-title"
          tabindex="-1"
          data-test="group-dialog"
-         class="flex max-h-full min-h-0 w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-xl bg-surface text-fg shadow-float">
+         class="flex max-h-full min-h-0 w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-2xl bg-surface text-fg shadow-float">
       <div class="flex shrink-0 items-center justify-between px-5 py-3.5">
         <h2 id="group-dialog-title" class="text-base font-semibold">
           {{ isEditing ? $t("group.manage.editTitle") : $t("group.manage.createTitle") }}
@@ -336,7 +336,7 @@ async function confirmDelete(): Promise<void> {
           <button type="button"
                   data-test="group-dialog-retry-delete"
                   :disabled="deletingNow"
-                  class="flex shrink-0 items-center gap-1 rounded bg-warn/20 px-2 py-0.5 font-medium transition-colors hover:bg-warn/30 disabled:opacity-50"
+                  class="flex shrink-0 items-center gap-1 rounded-sm bg-warn/20 px-2 py-0.5 font-medium transition-colors hover:bg-warn/30 disabled:opacity-50"
                   @click="confirmDelete">
             <Loader2 v-if="deletingNow" :size="12" class="animate-spin" />
             <span>{{ $t("group.manage.retryDelete") }}</span>
@@ -376,7 +376,7 @@ async function confirmDelete(): Promise<void> {
               <button type="button"
                       :data-test="`group-dialog-stop-run-${work.run.id}`"
                       :disabled="stoppingRunIds.includes(work.run.id)"
-                      class="flex shrink-0 items-center gap-1 rounded bg-danger/15 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger/25 disabled:opacity-50"
+                      class="flex shrink-0 items-center gap-1 rounded-sm bg-danger/15 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger/25 disabled:opacity-50"
                       @click="stopRun(work.run.id)">
                 <Loader2 v-if="stoppingRunIds.includes(work.run.id)" :size="12" class="animate-spin" />
                 <span>{{ $t("bot.prompt.stopRun") }}</span>
@@ -456,7 +456,7 @@ async function confirmDelete(): Promise<void> {
                 <span class="flex-1 leading-relaxed">{{ $t("group.manage.needBots", { count: bots.length }) }}</span>
                 <button type="button"
                         data-test="group-dialog-create-bot"
-                        class="flex shrink-0 items-center gap-1 rounded bg-accent px-2 py-1 font-medium text-on-accent hover:opacity-90"
+                        class="flex shrink-0 items-center gap-1 rounded-sm bg-accent px-2 py-1 font-medium text-on-accent hover:opacity-90"
                         @click="emit('createBot')">
                   <Plus :size="12" />
                   <span>{{ $t("bot.actions.newBot") }}</span>
@@ -466,10 +466,10 @@ async function confirmDelete(): Promise<void> {
                 <label v-for="bot in bots"
                        :key="bot.id"
                        :data-test="`group-dialog-member-${bot.id}`"
-                       class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-raised">
+                       class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-raised">
                   <input type="checkbox"
                          :checked="memberIds.includes(bot.id)"
-                         class="rounded border-border text-accent focus:ring-accent"
+                         class="rounded-sm border-border text-accent focus:ring-accent"
                          @change="toggleMember(bot.id)" />
                   <span class="flex min-w-0 flex-1 flex-col">
                     <span class="truncate text-sm" :class="bot.enabled ? 'text-fg' : 'text-fg-muted'">
@@ -486,8 +486,8 @@ async function confirmDelete(): Promise<void> {
                 <label v-for="id in unknownMemberIds"
                        :key="id"
                        :data-test="`group-dialog-member-${id}`"
-                       class="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-raised">
-                  <input type="checkbox" checked class="rounded border-border" @change="toggleMember(id)" />
+                       class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-raised">
+                  <input type="checkbox" checked class="rounded-sm border-border" @change="toggleMember(id)" />
                   <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">{{ id }}</span>
                 </label>
               </div>

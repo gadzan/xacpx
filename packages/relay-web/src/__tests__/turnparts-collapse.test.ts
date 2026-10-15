@@ -743,7 +743,7 @@ describe("TurnParts collapsed-header failure count", () => {
       props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:radius-1" },
     });
     const header = w.find('[data-test="trace-toggle"]');
-    expect(header.classes()).toContain("rounded-md");
+    expect(header.classes()).toContain("rounded-sm");
     expect(header.classes()).not.toContain("-mx-1.5");
     expect(header.classes()).not.toContain("focus-visible:ring-1");
   });

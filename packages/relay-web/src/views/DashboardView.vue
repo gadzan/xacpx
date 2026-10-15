@@ -652,7 +652,7 @@ onUnmounted(() => {
         >
           <Search :size="14" class="text-fg-muted" />
           <span class="hidden flex-1 text-[12.5px] text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
-          <kbd class="hidden rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
+          <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <button
           data-test="toggle-terminal"
@@ -725,7 +725,7 @@ onUnmounted(() => {
     <!-- Groups keep the old mobile bar: GroupPane is NOT redesigned in this PR. -->
     <div v-else-if="isGroupSelected" class="flex items-center gap-2 bg-surface px-2 py-1.5 lg:hidden">
       <button data-test="open-instances" :aria-label='$t("nav.openInstances")'
-              class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
+              class="rounded-sm p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
       <span class="min-w-0 flex-1 truncate text-center text-sm font-medium">
         {{ groupsStore.currentGroup?.title ?? "Group" }}
         <span v-if="groupsStore.currentTopic" class="text-xs text-fg-muted font-normal"> · {{ groupsStore.currentTopic.title }}</span>
@@ -753,7 +753,7 @@ onUnmounted(() => {
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
           <div class="flex items-center gap-2">
             <button data-test="toggle-left" :aria-label='$t("nav.hideSidebar")' :title='$t("nav.hideSidebar")'
-                    class="hidden h-6 w-6 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
+                    class="hidden h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
                     @click="leftCollapsed = true"><PanelLeftClose :size="15" /></button>
             <!-- Nothing to close when the tree IS the main content (mobile home). -->
             <button v-if="!mobileHome" data-test="close-instances" :aria-label='$t("nav.closeInstances")'
@@ -847,13 +847,13 @@ onUnmounted(() => {
              @pointerdown.prevent="rightResize.onPointerDown" />
         <div class="flex h-9 shrink-0 items-center gap-1 px-2.5">
           <button data-test="right-tab-files"
-                  class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="rightTab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'files'">
             <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
-                  class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}

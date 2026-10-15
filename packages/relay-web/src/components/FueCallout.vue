@@ -59,7 +59,7 @@ onBeforeUnmount(() => {
         <button
           data-test="fue-dismiss"
           type="button"
-          class="rounded bg-accent px-2 py-1 text-xs font-medium text-on-accent hover:bg-accent-hover"
+          class="rounded-sm bg-accent px-2 py-1 text-xs font-medium text-on-accent hover:bg-accent-hover"
           @click="emit('dismiss')"
         >
           {{ $t("fue.gotIt") }}

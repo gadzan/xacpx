@@ -135,7 +135,7 @@ function onStageClick(e: MouseEvent): void {
   justify-content: center;
   width: 2rem;
   height: 2rem;
-  border-radius: 8px;
+  border-radius: 10px;
   border: none;
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));

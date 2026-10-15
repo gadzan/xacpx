@@ -160,7 +160,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="$t(session.fit ? 'desktop.fit' : 'desktop.actual')"
                 :title="$t(session.fit ? 'desktop.fit' : 'desktop.actual')"
-                class="grid h-7 w-7 place-items-center rounded transition-colors"
+                class="grid h-7 w-7 place-items-center rounded-sm transition-colors"
                 :class="session.fit ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
                 @click="toggleFit">
           <Minimize v-if="session.fit" :size="15" />
@@ -170,7 +170,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="$t(session.smooth ? 'desktop.smoothOn' : 'desktop.smoothOff')"
                 :title="$t('desktop.smoothHint')"
-                class="grid h-7 w-7 place-items-center rounded transition-colors"
+                class="grid h-7 w-7 place-items-center rounded-sm transition-colors"
                 :class="session.smooth ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
                 @click="toggleSmooth">
           <Gauge :size="15" />
@@ -179,7 +179,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="$t(fullscreen ? 'desktop.exitFullscreen' : 'desktop.fullscreen')"
                 :title="$t(fullscreen ? 'desktop.exitFullscreen' : 'desktop.fullscreen')"
-                class="grid h-7 w-7 place-items-center rounded transition-colors"
+                class="grid h-7 w-7 place-items-center rounded-sm transition-colors"
                 :class="fullscreen ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
                 @click="toggleFullscreen">
           <Shrink v-if="fullscreen" :size="15" />
@@ -189,7 +189,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :aria-label="$t('desktop.disconnect')"
                 :title="$t('desktop.disconnect')"
-                class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                class="grid h-7 w-7 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                 @click="$emit('close')">
           <X :size="15" />
         </button>
@@ -220,20 +220,20 @@ onBeforeUnmount(() => {
                autocapitalize="off"
                spellcheck="false"
                :placeholder="$t('desktop.macosAccountName')"
-               class="w-full rounded bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none" />
+               class="w-full rounded-sm bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none" />
         <input v-model="password"
                data-test="desktop-macos-password"
                type="password"
                autocomplete="off"
                :placeholder="$t('desktop.macosPassword')"
-               class="w-full rounded bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none" />
+               class="w-full rounded-sm bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none" />
         <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-[11.5px] text-danger">
           {{ $t("desktop.macosRejected") }}
         </p>
         <button data-test="desktop-macos-submit"
                 type="submit"
                 :disabled="!accountReady"
-                class="rounded-md bg-accent px-3 py-1 text-[12px] font-medium text-on-accent disabled:opacity-40">
+                class="rounded-sm bg-accent px-3 py-1 text-[12px] font-medium text-on-accent disabled:opacity-40">
           {{ $t("desktop.connect") }}
         </button>
       </div>
@@ -247,12 +247,12 @@ onBeforeUnmount(() => {
              type="password"
              autocomplete="off"
              :placeholder="$t('desktop.passwordPlaceholder')"
-             class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none"
+             class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none"
              @keydown.enter.prevent="submitPassword" />
       <button data-test="desktop-password-submit"
               type="button"
               :disabled="!password"
-              class="shrink-0 rounded-md bg-accent px-3 py-1 text-[12px] font-medium text-on-accent disabled:opacity-40"
+              class="shrink-0 rounded-sm bg-accent px-3 py-1 text-[12px] font-medium text-on-accent disabled:opacity-40"
               @click="submitPassword">{{ $t("desktop.connect") }}</button>
     </div>
   </div>

@@ -427,7 +427,7 @@ function onInput(): void {
       </div>
       <button
         type="button"
-        class="flex items-center gap-1 rounded bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"
+        class="flex items-center gap-1 rounded-sm bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"
         @click="handleRetry"
       >
         <RotateCcw :size="12" />
@@ -466,7 +466,7 @@ function onInput(): void {
           role="listbox"
           :aria-label="$t('bot.prompt.completions')"
           data-test="direct-cmd-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-full overflow-y-auto rounded-xl bg-raised py-1 shadow-float"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-full overflow-y-auto rounded-2xl bg-raised py-1 shadow-float"
         >
           <button
             v-for="(row, index) in rows"

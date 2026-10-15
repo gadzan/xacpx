@@ -142,7 +142,7 @@ const worktreeRunId = computed(() => {
           <span v-if="groupsStore.currentTopic">· {{ groupsStore.currentTopic.title }}</span>
           <span v-if="group?.lifecycle === 'deleting'"
                 data-test="group-pane-deleting-badge"
-                class="rounded bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
+                class="rounded-sm bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
             {{ $t("group.list.deleting") }}
           </span>
         </div>
@@ -153,7 +153,7 @@ const worktreeRunId = computed(() => {
         data-test="group-edit-button"
         :title="$t('group.manage.editTitle')"
         :aria-label="$t('group.manage.editTitle')"
-        class="ml-auto grid h-10 w-10 lg:h-7 lg:w-7 shrink-0 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+        class="ml-auto grid h-10 w-10 lg:h-7 lg:w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
         @click="groupDialogOpen = true"
       >
         <Pencil :size="14" />
@@ -226,7 +226,7 @@ const worktreeRunId = computed(() => {
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.historyErrorDetail ?? groupsStore.historyError }}</span>
       <button type="button"
-              class="rounded bg-danger/20 px-2 py-0.5 font-medium transition-colors hover:bg-danger/30"
+              class="rounded-sm bg-danger/20 px-2 py-0.5 font-medium transition-colors hover:bg-danger/30"
               @click="groupsStore.instanceId && groupsStore.activeConversationId && groupsStore.loadHistory(groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId)">
         {{ $t("bot.prompt.retry") }}
       </button>

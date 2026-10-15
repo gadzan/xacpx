@@ -67,7 +67,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
         <Sparkles :size="14" /> {{ t('bot.avatar.preview.title') }}
       </div>
       <div class="flex flex-col items-center gap-3 py-5">
-        <div class="grid h-36 w-36 place-items-center rounded-3xl bg-surface">
+        <div class="grid h-36 w-36 place-items-center rounded-2xl bg-surface">
           <BotAvatar :avatar="modelValue" :driver="driver" :name="name" :size="120" :state="previewState"
                      :activity-key="`avatar-editor-preview:${previewRevision}`" follow preview />
         </div>
@@ -78,7 +78,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
       </div>
       <div class="flex flex-wrap justify-center gap-1.5" role="group" :aria-label="t('bot.avatar.preview.states')">
         <button v-for="state in previewStates" :key="state" type="button" :data-test="`avatar-preview-${state}`"
-                :aria-pressed="previewState === state" class="rounded-md px-2 py-1 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-accent"
+                :aria-pressed="previewState === state" class="rounded-sm px-2 py-1 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-accent"
                 :class="choiceClass(previewState === state)" @click="preview(state)">
           {{ t(`bot.avatar.states.${state}`) }}
         </button>
@@ -96,20 +96,20 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
     </section>
 
     <div class="min-w-0 space-y-5">
-      <section v-if="modelValue?.kind === 'text'" class="rounded-xl bg-raised p-3" :aria-label="t('bot.avatar.text.title')">
+      <section v-if="modelValue?.kind === 'text'" class="rounded-2xl bg-raised p-3" :aria-label="t('bot.avatar.text.title')">
         <h3 class="text-xs font-semibold">{{ t('bot.avatar.text.title') }}</h3>
         <p class="mt-1 text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.text.notice') }}</p>
         <p data-test="avatar-retained-text" class="mt-3 whitespace-pre-wrap break-all rounded-lg bg-bg p-2 text-xs text-fg">{{ modelValue.value }}</p>
         <button type="button" data-test="avatar-replace-text" class="mt-3 rounded-lg px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent-soft"
                 @click="emit('update:modelValue', character())">{{ t('bot.avatar.text.replace') }}</button>
       </section>
-      <p v-else-if="!modelValue" class="rounded-xl bg-raised p-3 text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.defaultNotice') }}</p>
+      <p v-else-if="!modelValue" class="rounded-2xl bg-raised p-3 text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.defaultNotice') }}</p>
 
       <section :aria-label="t('bot.avatar.presets.title')">
         <h3 class="mb-2 text-xs font-semibold">{{ t('bot.avatar.presets.title') }}</h3>
         <div class="grid grid-cols-3 gap-2">
           <button v-for="preset in presets" :key="preset.id" type="button" :data-test="`avatar-preset-${preset.id}`"
-                  :aria-pressed="sameBotAvatar(modelValue, preset.avatar)" class="flex min-w-0 flex-col items-center gap-1.5 rounded-xl p-2 transition-colors focus-visible:outline-2 focus-visible:outline-accent"
+                  :aria-pressed="sameBotAvatar(modelValue, preset.avatar)" class="flex min-w-0 flex-col items-center gap-1.5 rounded-2xl p-2 transition-colors focus-visible:outline-2 focus-visible:outline-accent"
                   :class="choiceClass(sameBotAvatar(modelValue, preset.avatar))" @click="emit('update:modelValue', { ...preset.avatar })">
             <BotAvatar :avatar="preset.avatar" :size="36" static />
             <span class="w-full break-words text-center text-[11px]">{{ t(`bot.avatar.presets.${preset.id}`) }}</span>
@@ -165,10 +165,10 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
         </p>
       </section>
 
-      <div class="rounded-xl p-3">
+      <div class="rounded-2xl p-3">
         <label class="flex cursor-pointer items-center gap-2 text-xs font-medium">
           <input type="checkbox" data-test="avatar-motion" :checked="hasCharacter && selectedCharacter.motion === 'auto'"
-                 class="rounded border-border text-accent focus:ring-accent" @change="updateCharacter({ motion: ($event.target as HTMLInputElement).checked ? 'auto' : 'off' })" />
+                 class="rounded-sm border-border text-accent focus:ring-accent" @change="updateCharacter({ motion: ($event.target as HTMLInputElement).checked ? 'auto' : 'off' })" />
           {{ t('bot.avatar.motion.title') }}
         </label>
         <p class="mt-1.5 text-[11px] leading-relaxed text-fg-muted">{{ t('bot.avatar.motion.hint') }}</p>

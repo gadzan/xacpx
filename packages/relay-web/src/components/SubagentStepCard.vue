@@ -121,7 +121,7 @@ onBeforeUnmount(() => {
   <article data-test="subagent-card" class="text-xs"
            @mouseenter="paused = true" @mouseleave="paused = false" @focusin="paused = true" @focusout="paused = false">
     <button type="button" data-test="subagent-header"
-            class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
+            class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-sm text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
             :aria-expanded="open" @click="onHeaderClick">
       <Bot :size="13" class="shrink-0 text-accent" />
       <span class="shrink-0 font-medium text-[11.5px] text-accent">{{ $t("tools.subagent") }}</span>
@@ -194,7 +194,7 @@ onBeforeUnmount(() => {
         </p>
       </template>
       <button type="button" data-test="subagent-open-trace"
-              class="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[10.5px] font-medium text-accent transition-colors hover:bg-fg/5"
+              class="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-[10.5px] font-medium text-accent transition-colors hover:bg-fg/5"
               @click="onOpenTrace">
         <ExternalLink :size="12" /> {{ $t("tools.viewFullTrace") }}
       </button>

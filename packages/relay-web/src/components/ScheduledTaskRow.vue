@@ -53,7 +53,7 @@ async function cancel(id: string) {
 </script>
 
 <template>
-  <li data-test="scheduled-item" class="rounded-md bg-bg text-sm">
+  <li data-test="scheduled-item" class="rounded-sm bg-bg text-sm">
     <!-- compact header (click to expand) + actions -->
     <div class="flex items-center gap-1 px-2 py-1.5">
       <button type="button" :data-test="`scheduled-toggle-${task.id}`" class="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer" @click="open = !open">
@@ -66,10 +66,10 @@ async function cancel(id: string) {
       </button>
       <span class="flex shrink-0 items-center gap-0.5">
         <button v-if="task.status === 'executed'" data-test="view-scheduled" :title="$t('tasks.viewRunTitle')" :aria-label="$t('tasks.viewRun')"
-                class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-accent/15 hover:text-accent"
+                class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-accent/15 hover:text-accent"
                 @click="view"><Eye :size="13" /></button>
         <button v-if="task.status === 'pending'" data-test="cancel-scheduled" :title="$t('tasks.cancelScheduled')" :aria-label="$t('tasks.cancelScheduled')"
-                class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger"
+                class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger"
                 @click="cancel(task.id)"><Trash2 :size="13" /></button>
       </span>
     </div>
@@ -77,7 +77,7 @@ async function cancel(id: string) {
     <div v-if="open" :data-test="`scheduled-detail-${task.id}`" class="space-y-1 px-2 py-1.5">
       <p class="whitespace-pre-wrap break-words text-[12.5px] text-fg">{{ task.message }}</p>
       <p class="font-mono text-[10.5px] tabular-nums text-fg-muted">{{ fmtDateTime(task.executeAt) }}</p>
-      <p v-if="task.status === 'failed' && task.lastError" :data-test="`scheduled-error-${task.id}`" class="rounded bg-danger/10 px-2 py-1 text-[11px] text-danger">{{ task.lastError }}</p>
+      <p v-if="task.status === 'failed' && task.lastError" :data-test="`scheduled-error-${task.id}`" class="rounded-sm bg-danger/10 px-2 py-1 text-[11px] text-danger">{{ task.lastError }}</p>
     </div>
   </li>
 </template>

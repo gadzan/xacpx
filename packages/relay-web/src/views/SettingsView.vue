@@ -142,13 +142,13 @@ void onMounted(() => { void probeNotifications(); });
         <div class="inline-flex gap-1 rounded-lg bg-bg p-1">
           <button
             data-test="theme-dark"
-            class="rounded-md px-3 py-1 text-sm"
+            class="rounded-sm px-3 py-1 text-sm"
             :class="theme.mode === 'dark' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
             @click="theme.set('dark')"
           >{{ $t("settings.dark") }}</button>
           <button
             data-test="theme-light"
-            class="rounded-md px-3 py-1 text-sm"
+            class="rounded-sm px-3 py-1 text-sm"
             :class="theme.mode === 'light' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
             @click="theme.set('light')"
           >{{ $t("settings.light") }}</button>
@@ -160,7 +160,7 @@ void onMounted(() => { void probeNotifications(); });
               v-for="loc in SUPPORTED_LOCALES"
               :key="loc"
               :data-test="`lang-${loc}`"
-              class="rounded-md px-3 py-1 text-sm"
+              class="rounded-sm px-3 py-1 text-sm"
               :class="locale.locale === loc ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
               @click="locale.set(loc)"
             >{{ localeLabels[loc] }}</button>
@@ -172,10 +172,10 @@ void onMounted(() => { void probeNotifications(); });
     <section class="mb-8">
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.addInstance") }}</h2>
       <div class="flex gap-2">
-        <input v-model="pairingName" :placeholder='$t("settings.instanceNamePlaceholder")' class="flex-1 rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
-        <button data-test="gen-pairing" class="rounded bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover" @click="genPairing">{{ $t("settings.generateToken") }}</button>
+        <input v-model="pairingName" :placeholder='$t("settings.instanceNamePlaceholder")' class="flex-1 rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+        <button data-test="gen-pairing" class="rounded-sm bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover" @click="genPairing">{{ $t("settings.generateToken") }}</button>
       </div>
-      <div v-if="pairing" class="mt-2 rounded bg-bg p-2 text-xs text-fg">
+      <div v-if="pairing" class="mt-2 rounded-sm bg-bg p-2 text-xs text-fg">
         <div>{{ $t("settings.runOnHost") }}</div>
         <code class="block break-all">xacpx channel add relay --url &lt;this-relay-ws-url&gt; --token {{ pairing }}</code>
       </div>
@@ -206,7 +206,7 @@ void onMounted(() => { void probeNotifications(); });
           v-if="notifState === 'subscribed' || notifState === 'idle' || notifState === 'server-disabled'"
           data-test="notif-toggle"
           :disabled="notifBusy"
-          class="rounded bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
+          class="rounded-sm bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
           @click="toggleNotifications"
         >{{ notifState === "subscribed" ? $t("settings.notifDisable") : $t("settings.notifEnable") }}</button>
       </div>

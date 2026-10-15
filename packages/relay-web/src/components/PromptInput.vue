@@ -774,12 +774,12 @@ function onKeydown(e: KeyboardEvent) {
           <div
             v-for="p in composer.pending"
             :key="p.id"
-            class="flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 text-[12px]"
+            class="flex items-center gap-1.5 rounded-sm bg-surface-2 px-2 py-1 text-[12px]"
           >
             <img
               v-if="p.previewUrl"
               :src="p.previewUrl"
-              class="h-6 w-6 rounded object-cover"
+              class="h-6 w-6 rounded-sm object-cover"
               :alt="p.filename"
             />
             <span class="max-w-[120px] truncate text-fg">{{ p.filename }}</span>
@@ -816,7 +816,7 @@ function onKeydown(e: KeyboardEvent) {
           v-if="cmdMenuOpen && cmdMatches.length"
           data-test="cmd-menu"
           role="listbox"
-          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md bg-raised py-1 shadow-float"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-sm bg-raised py-1 shadow-float"
         >
           <li
             v-for="(c, i) in cmdMatches"
@@ -840,7 +840,7 @@ function onKeydown(e: KeyboardEvent) {
           v-if="mentionMenuOpen && mentionMatches.length"
           data-test="mention-menu"
           role="listbox"
-          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md bg-raised py-1 shadow-float"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-sm bg-raised py-1 shadow-float"
         >
           <li
             v-for="(agentItem, i) in mentionMatches"
@@ -891,7 +891,7 @@ function onKeydown(e: KeyboardEvent) {
           <button
             type="button"
             data-test="model-chip"
-            class="flex min-w-0 items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors disabled:opacity-60"
+            class="flex min-w-0 items-center gap-1.5 px-1.5 py-1 rounded-sm text-fg-muted hover:bg-raised transition-colors disabled:opacity-60"
             :disabled="!controls.modelAvailable.length"
             @click="toggleModelMenu"
           >
@@ -940,7 +940,7 @@ function onKeydown(e: KeyboardEvent) {
             <button
               type="button"
               data-test="effort-chip"
-              class="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-fg-muted transition-colors hover:bg-raised"
+              class="flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-fg-muted transition-colors hover:bg-raised"
               :title="$t('chat.effort')"
               @click="toggleEffortMenu"
             >
@@ -982,7 +982,7 @@ function onKeydown(e: KeyboardEvent) {
             v-if="context"
             type="button"
             data-test="context-meter"
-            class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded pl-0.5 hover:opacity-80"
+            class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm pl-0.5 hover:opacity-80"
             :title="
               $t('chat.contextUsage', {
                 used: context.used.toLocaleString(),
@@ -1042,7 +1042,7 @@ function onKeydown(e: KeyboardEvent) {
           type="button"
           data-test="attach-btn"
           :title="$t('chat.attach.add')"
-          class="flex items-center gap-1.5 px-1.5 py-1 rounded-md text-fg-muted hover:bg-raised transition-colors"
+          class="flex items-center gap-1.5 px-1.5 py-1 rounded-sm text-fg-muted hover:bg-raised transition-colors"
           @click="openPicker"
         >
           <Paperclip :size="15" />

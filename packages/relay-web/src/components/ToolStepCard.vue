@@ -115,7 +115,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
     <component :is="hasDetail ? 'button' : 'div'"
                :type="hasDetail ? 'button' : undefined"
                data-test="tool-step-header"
-               class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-fg-muted"
+               class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-sm text-left text-fg-muted"
                :class="hasDetail ? 'hover:text-fg hover:bg-fg/5 transition-colors cursor-pointer' : 'cursor-default select-text'"
                :aria-expanded="hasDetail ? open : undefined"
                @click="hasDetail ? onHeaderClick() : undefined">
@@ -123,7 +123,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
                  :class="step.status === 'error' ? 'text-danger' : step.status === 'running' ? 'text-accent' : hasDetail ? 'text-fg-muted/80 group-hover:text-fg' : 'text-fg-muted/80'" />
       <span class="shrink-0 font-medium text-[11.5px] text-fg-muted transition-colors"
             :class="hasDetail ? 'group-hover:text-fg' : ''">{{ kindLabel }}</span>
-      <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded bg-accent-soft px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
+      <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded-sm bg-accent-soft px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
       <span class="min-w-0 font-mono text-[11.5px] text-fg-muted/90 break-all"
             :class="[(hasDetail ? 'group-hover:text-fg' : ''), hasDetail ? 'truncate' : '']" :title="step.title" :dir="hasDetail && pathTitle ? 'rtl' : undefined">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
@@ -148,7 +148,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
       </div>
       <template v-else>
         <div v-if="showErrorBanner" data-test="tool-step-error"
-             class="mb-1.5 flex items-start gap-1.5 rounded bg-danger/10 px-2 py-1.5 text-danger font-mono text-[11px]">
+             class="mb-1.5 flex items-start gap-1.5 rounded-sm bg-danger/10 px-2 py-1.5 text-danger font-mono text-[11px]">
           <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
           <span class="whitespace-pre-wrap break-words leading-relaxed">{{ step.error }}</span>
         </div>

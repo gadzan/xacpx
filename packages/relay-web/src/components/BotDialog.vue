@@ -369,7 +369,7 @@ async function submit(): Promise<void> {
          aria-modal="true"
          :aria-labelledby="'bot-dialog-title'"
          tabindex="-1"
-         class="flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-xl bg-surface text-fg shadow-float"
+         class="flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-surface text-fg shadow-float"
          :class="activeTab === 'appearance' ? 'max-w-3xl' : 'max-w-lg'">
       <!-- Header -->
       <div class="flex shrink-0 items-center justify-between px-5 py-3.5">
@@ -412,7 +412,7 @@ async function submit(): Promise<void> {
           <button type="button"
                   data-test="bot-detail-retry-button"
                   :disabled="detailLoading"
-                  class="flex items-center gap-1 rounded bg-warning/20 px-2 py-0.5 font-medium hover:bg-warning/30 transition-colors disabled:opacity-50"
+                  class="flex items-center gap-1 rounded-sm bg-warning/20 px-2 py-0.5 font-medium hover:bg-warning/30 transition-colors disabled:opacity-50"
                   @click="retryHydrate">
             <Loader2 v-if="detailLoading" :size="12" class="animate-spin" />
             <span>{{ $t("bot.prompt.retry") }}</span>
@@ -538,7 +538,7 @@ async function submit(): Promise<void> {
                 v-model="enabled"
                 @change="enabledDirty = true"
                 type="checkbox"
-                class="rounded border-border text-accent focus:ring-accent"
+                class="rounded-sm border-border text-accent focus:ring-accent"
               />
               <span class="font-medium text-xs">{{ $t("bot.fields.enabled") }}</span>
             </label>

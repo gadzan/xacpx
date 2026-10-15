@@ -16,7 +16,7 @@ const open = computed(() => localOpen.value);
 <template>
   <div class="text-xs">
     <button type="button"
-            class="group flex items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
+            class="group flex items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-sm text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
             @click="localOpen = !localOpen">
       <Brain :size="13" class="shrink-0 transition-colors"
              :class="streaming ? 'text-accent' : 'text-fg-muted/80 group-hover:text-fg'" />
