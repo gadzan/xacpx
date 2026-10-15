@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, provide, readonly, ref, watch, type Component } from "vue";
 import { useI18n } from "vue-i18n";
 import { connectEvents, sendSubscribe, TerminalRequestError, isRetryableTerminalError } from "../api/events";
 import { useInstancesStore, supportsRmuxTerminal, supportsDesktop } from "../stores/instances";
@@ -12,10 +12,15 @@ import { useConnectionStore } from "../stores/connection";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
 import { useDesktopStore } from "../stores/desktop";
+import { useFilesStore } from "../stores/files";
+import { iconForFile } from "../lib/file-icons";
 import { detachSessionTerminal } from "../lib/session-terminal";
 import { pushToast } from "../lib/use-toasts";
 import { migrateAwayFromLegacyTerminalIds } from "../lib/terminal-sessions";
 import InstanceTree from "../components/InstanceTree.vue";
+import AgentIcon from "../components/AgentIcon.vue";
+import MobileSheet from "../components/MobileSheet.vue";
+import MobileConnStrip, { CONN_EVER_OPENED } from "../components/MobileConnStrip.vue";
 import ChatPane from "../components/ChatPane.vue";
 import DirectBotPane from "../components/DirectBotPane.vue";
 import GroupPane from "../components/GroupPane.vue";
@@ -35,7 +40,7 @@ import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
 import { setNotificationClickHandler, initTabFocusTracker } from "../lib/local-notification";
-import { Search, Moon, Sun, Settings, X, Menu, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, SquareTerminal } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, Menu, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList, Folder } from "lucide-vue-next";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
@@ -45,6 +50,7 @@ const directBotsStore = useDirectBotsStore();
 const groupsStore = useGroupsStore();
 const terminals = useTerminalStore();
 const desktops = useDesktopStore();
+const files = useFilesStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
 const centerTabs = useCenterTabsStore();
@@ -83,7 +89,8 @@ const swipe = createEdgeSwipe({
   isEnabled: () => typeof window !== "undefined" && window.innerWidth < 1024,
   isLeftOpen: () => leftOpen.value,
   isRightOpen: () => rightOpen.value,
-  openLeft: () => { leftOpen.value = true; },
+  // Mobile home: the tree already IS the main content, so there is no drawer to open.
+  openLeft: () => { if (!mobileHome.value) leftOpen.value = true; },
   openRight: () => { rightOpen.value = true; }, // keeps the last-used right tab
   closeLeft: () => { leftOpen.value = false; },
   closeRight: () => { rightOpen.value = false; },
@@ -310,6 +317,127 @@ function closeDesktop(): void {
   desktopTabOpen.value = false;
 }
 
+// ── Mobile (<lg) chrome ───────────────────────────────────────────────────────────
+// Below lg the old three-layer stack (global header + second bar + ChatPane chip row)
+// collapses into ONE 52px bar: [≡] [avatar] [title + subtitle] [⋯]. Desktop keeps the
+// global header and the chip row exactly as before, so everything below is only ever
+// reachable from the mobile markup.
+const moreSheetOpen = ref(false);
+const tabsSheetOpen = ref(false);
+const fabInstanceSheetOpen = ref(false);
+/** The single InstanceTree instance: the drawer's tree on desktop (and with a selection),
+ *  the main-area list on the mobile home. The FAB drives its create-session dialog
+ *  through the exposed `openNewSession`. */
+const instanceTree = ref<InstanceType<typeof InstanceTree> | null>(null);
+
+const isBotSelected = computed(() => directBotsStore.isBotSelected);
+const isGroupSelected = computed(() => groupsStore.isGroupSelected);
+/** Nothing selected: on <lg the instance tree becomes the main content (with the FAB). */
+const mobileHome = computed(() => !currentKey.value && !isBotSelected.value && !isGroupSelected.value);
+/** Session view on <lg: the single session bar (+ connection strip). Bot / group views
+ *  render their own chrome, so the bar steps aside even if a stale session key lingers. */
+const mobileSessionBar = computed(() => !!currentKey.value && !isBotSelected.value && !isGroupSelected.value);
+/** Session or bot view: the global header steps aside for the single mobile bar. */
+const mobileSingleBar = computed(() => !!currentKey.value || isBotSelected.value);
+
+const sessionRow = computed(() =>
+  chat.instanceId && chat.sessionAlias ? instances.findSessionRow(chat.instanceId, chat.sessionAlias) : undefined,
+);
+// The session's acpx driver for the bar's agent glyph — same resolution as ChatPane's
+// header (row-carried driver first, agents map as the fallback for older instances).
+const sessionDriver = computed(() =>
+  sessionRow.value?.driver
+  ?? (chat.instanceId ? instances.byId(chat.instanceId)?.agents.find((a) => a.name === sessionRow.value?.agent)?.driver : undefined),
+);
+/** "instance · agent · branch". Missing parts are skipped, so the separator never leads
+ *  and never doubles; branch comes from the session's git summary once it has loaded. */
+const sessionSubtitle = computed(() => {
+  const parts: string[] = [];
+  const inst = chat.instanceId ? instances.byId(chat.instanceId) : undefined;
+  if (inst?.name) parts.push(inst.name);
+  if (sessionRow.value?.agent) parts.push(sessionRow.value.agent);
+  if (files.gitSummary?.branch) parts.push(files.gitSummary.branch);
+  return parts.join(" · ");
+});
+
+/** Non-chat center tabs of the current session — the count the ⋯ sheet leads with. */
+const openTabCount = computed(() => (currentKey.value ? centerTabs.tabsFor(currentKey.value).length : 0));
+function tabBasename(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? path : path.slice(idx + 1);
+}
+/** Chat + every open tab of the current session, in strip order, for the open-tabs sheet. */
+const tabSheetItems = computed(() => {
+  const key = currentKey.value;
+  if (!key) return [];
+  const active = centerTabs.activeFor(key);
+  const items: { id: string; label: string; icon: Component; active: boolean }[] = [
+    { id: "chat", label: t("center.chat"), icon: MessageSquare, active: active === "chat" },
+  ];
+  for (const tab of centerTabs.tabsFor(key)) {
+    items.push({
+      id: tab.id,
+      label: tab.kind === "terminal" ? t("center.terminal") : tabBasename(tab.path),
+      icon: tab.kind === "terminal" ? SquareTerminal : iconForFile(tab.path),
+      active: active === tab.id,
+    });
+  }
+  return items;
+});
+function switchTabFromSheet(id: string): void {
+  if (currentKey.value) centerTabs.setActive(currentKey.value, id);
+  tabsSheetOpen.value = false;
+}
+function closeTabFromSheet(id: string): void {
+  if (currentKey.value) requestCloseTab(currentKey.value, id);
+}
+
+function openSheetRight(tab: "tasks" | "files"): void {
+  openRight(tab);
+  moreSheetOpen.value = false;
+}
+function openSheetTerminal(): void {
+  if (currentKey.value && terminalCapable.value) centerTabs.openTerminal(currentKey.value);
+  moreSheetOpen.value = false;
+}
+function openSheetDesktop(): void {
+  if (desktopTabOpen.value) closeDesktop();
+  else openDesktop();
+  moreSheetOpen.value = false;
+}
+/** "工作区": the files panel's tree, full-screen in the mobile right drawer. */
+function openSheetWorkspace(): void {
+  files.tab = "files";
+  openRight("files");
+  moreSheetOpen.value = false;
+}
+
+// FAB (mobile home): a single online instance creates straight away; several open a
+// picker with the last-used instance first (last used = the persisted chat selection).
+const onlineInstances = computed(() => instances.instances.filter((i) => i.online));
+// The persisted chat selection is cleared on deselect (that is how the home is reached),
+// so the last-used instance is remembered under its own key whenever a session opens.
+const LAST_INSTANCE_KEY = "xacpx.lastInstance";
+function loadLastInstance(): string | null {
+  try { return localStorage.getItem(LAST_INSTANCE_KEY) ?? loadPersistedSelection()?.instanceId ?? null; } catch { return null; }
+}
+watch(() => chat.instanceId, (id) => {
+  if (id) try { localStorage.setItem(LAST_INSTANCE_KEY, id); } catch { /* storage may be blocked */ }
+}, { immediate: true });
+const fabInstances = computed(() => {
+  const lastUsed = loadLastInstance();
+  return [...onlineInstances.value].sort((a, b) => Number(b.id === lastUsed) - Number(a.id === lastUsed));
+});
+function onFabClick(): void {
+  const online = onlineInstances.value;
+  if (online.length === 1) instanceTree.value?.openNewSession(online[0].id);
+  else if (online.length > 1) fabInstanceSheetOpen.value = true;
+}
+function onFabInstancePick(instanceId: string): void {
+  fabInstanceSheetOpen.value = false;
+  instanceTree.value?.openNewSession(instanceId);
+}
+
 // A file/diff/terminal tab opened for the current session takes over the center column.
 // On mobile, opening one also closes the right drawer so the pane is actually visible.
 watch(
@@ -365,6 +493,10 @@ function onSelectGroup(instanceId: string, groupId: string) {
 }
 
 let everOnline = false;
+/** Reactive twin of `everOnline` for the mobile connection strip (PR4: warn only after the
+ *  connection has been open once). The connection store's neutral state is PR5 work. */
+const connEverOpened = ref(false);
+provide(CONN_EVER_OPENED, readonly(connEverOpened));
 const subscribedInstanceIds = (): string[] => instances.instances.map((instance) => instance.id);
 async function reloadSnapshot() {
   await instances.loadInstances().catch(() => {});
@@ -394,6 +526,7 @@ function onStatus(online: boolean) {
       void groupsStore.reconcileOnReconnect();
     }
     everOnline = true;
+    connEverOpened.value = true;
   }
 }
 
@@ -500,7 +633,8 @@ onUnmounted(() => {
          the content runs under the notch / status bar; extend the bar's surface up
          so its controls sit below the inset instead of behind the notch. env() is 0
          on desktop, so this is a no-op there. -->
-    <header class="sticky top-0 z-30 flex h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
+    <header class="sticky top-0 z-30 h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl"
+            :class="mobileSingleBar ? 'hidden lg:flex' : 'flex'">
       <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. The
            sidebar collapse control lives in the sidebar's own header (and a slim edge
            handle below), not up here. -->
@@ -513,7 +647,7 @@ onUnmounted(() => {
         <button
           data-test="global-search"
           :aria-label='$t("nav.search")'
-          class="group flex h-7 items-center gap-2 rounded-lg bg-bg px-2.5 text-left transition-colors hover: focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
+          class="group flex h-10 lg:h-7 items-center gap-2 rounded-lg bg-bg px-2.5 text-left transition-colors hover: focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
@@ -525,7 +659,7 @@ onUnmounted(() => {
           :aria-label='$t("terminal.title")'
           :title='terminalCapable ? $t("terminal.title") : $t("terminal.unavailable")'
           :disabled="!chat.sessionAlias || !terminalCapable"
-          class="grid h-7 w-7 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+          class="grid h-10 w-10 lg:h-7 lg:w-7 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
           :class="currentKey && centerTabs.activeFor(currentKey) === 'terminal' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised'"
           @click="currentKey && terminalCapable && centerTabs.openTerminal(currentKey)"
         >
@@ -537,7 +671,7 @@ onUnmounted(() => {
           :aria-label='$t("desktop.title")'
           :title='$t("desktop.title")'
           :disabled="!desktopToolbarTarget"
-          class="grid h-7 w-7 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+          class="grid h-10 w-10 lg:h-7 lg:w-7 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
           :class="desktopTabOpen ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised'"
           @click="desktopTabOpen ? closeDesktop() : openDesktop()"
         >
@@ -546,7 +680,7 @@ onUnmounted(() => {
         <button
           data-test="theme-toggle"
           :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
-          class="grid h-7 w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-10 w-10 lg:h-7 lg:w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           @click="theme.toggle()"
         >
           <Moon v-if="theme.mode === 'dark'" :size="15" />
@@ -556,40 +690,46 @@ onUnmounted(() => {
           to="/settings"
           data-test="settings-link"
           :aria-label='$t("nav.settings")'
-          class="grid h-7 w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-10 w-10 lg:h-7 lg:w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           <Settings :size="15" />
         </router-link>
       </div>
     </header>
 
-    <!-- Mobile top bar: hamburger opens the instance tree, Tasks opens the task panel.
-         When a session is open the center tab strip lives HERE (bare, so it borrows this
-         bar's border/background) in place of the session-name text — folding tabs into the
-         one bar mobile already spends, instead of a second full-width row. The standalone
-         strip below is desktop-only. Falls back to the app title when no session is open. -->
-    <div class="flex items-center gap-2 bg-surface px-2 py-1.5 lg:hidden">
+    <!-- Mobile single top bar (session view, <lg). ONE 52px row replaces the old global
+         header + second bar + ChatPane chip stack: the left button opens the instances
+         drawer (the affordance the old hamburger had), the right button opens the ⋯
+         sheet that now carries files / tasks / terminal / desktop / workspace / the open
+         center tabs. Desktop keeps the global header and the chip row untouched. -->
+    <div v-if="mobileSessionBar" data-test="mobile-session-bar"
+         class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
+      <button type="button" data-test="open-instances" :aria-label='$t("nav.openInstances")'
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="leftOpen = true"><Menu :size="20" /></button>
+      <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-2">
+        <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
+      </span>
+      <div class="flex min-w-0 flex-1 flex-col">
+        <span class="truncate text-base font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
+        <span data-test="mobile-session-subtitle" class="truncate text-xs text-fg-muted">{{ sessionSubtitle }}</span>
+      </div>
+      <button type="button" data-test="mobile-more" :aria-label='$t("common.more")'
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="moreSheetOpen = true"><MoreHorizontal :size="20" /></button>
+    </div>
+    <!-- Connection strip sits directly under the mobile bar (only after the connection
+         has been open at least once — see MobileConnStrip). -->
+    <MobileConnStrip v-if="mobileSessionBar" />
+
+    <!-- Groups keep the old mobile bar: GroupPane is NOT redesigned in this PR. -->
+    <div v-else-if="isGroupSelected" class="flex items-center gap-2 bg-surface px-2 py-1.5 lg:hidden">
       <button data-test="open-instances" :aria-label='$t("nav.openInstances")'
               class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
-      <CenterTabStrip v-if="currentKey" bare :session-key="currentKey" class="min-w-0 flex-1"
-                      @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
-      <span v-else-if="directBotsStore.isBotSelected" class="min-w-0 flex-1 truncate text-center text-sm font-medium">
-        {{ directBotsStore.currentBot?.name ?? "Bot" }}
-        <span v-if="directBotsStore.currentTopic" class="text-xs text-fg-muted font-normal"> · {{ directBotsStore.currentTopic.title }}</span>
-      </span>
-      <span v-else-if="groupsStore.isGroupSelected" class="min-w-0 flex-1 truncate text-center text-sm font-medium">
+      <span class="min-w-0 flex-1 truncate text-center text-sm font-medium">
         {{ groupsStore.currentGroup?.title ?? "Group" }}
         <span v-if="groupsStore.currentTopic" class="text-xs text-fg-muted font-normal"> · {{ groupsStore.currentTopic.title }}</span>
       </span>
-      <span v-else class="min-w-0 flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
-      <div v-if="!directBotsStore.isBotSelected && !groupsStore.isGroupSelected" class="flex shrink-0 items-center gap-0.5">
-        <button data-test="open-files" :aria-label='$t("nav.openFiles")' :title='$t("nav.files")'
-                class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
-                @click="openRight('files')"><FileText :size="18" /></button>
-        <button data-test="open-tasks" :aria-label='$t("nav.openTasks")' :title='$t("nav.tasks")'
-                class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
-                @click="openRight('tasks')"><List :size="18" /></button>
-      </div>
     </div>
 
     <div class="flex flex-1 overflow-hidden">
@@ -597,21 +737,30 @@ onUnmounted(() => {
       <div v-if="leftOpen || rightOpen" data-test="drawer-backdrop"
            class="fixed inset-0 z-30 bg-black/30 lg:hidden" @click="closeDrawers" />
 
-      <!-- Left: instances. Off-canvas drawer < lg, static column ≥ lg. -->
+      <!-- Left: instances. Off-canvas drawer < lg, static column ≥ lg. On the mobile
+           HOME (nothing selected) the very same tree becomes the main content instead of
+           the "select a session" placeholder — one InstanceTree instance, no second copy
+           with diverging local state. `max-lg:` only re-flows it below lg; ≥ lg the
+           classes below are exactly what they were. -->
       <div data-test="column" data-drawer="left"
            class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col bg-surface shadow-float transition-[transform,width] pt-[env(safe-area-inset-top)] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
-           :class="[leftOpen ? 'translate-x-0' : '-translate-x-full', leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[248px]']">
+           :class="[
+             leftOpen ? 'translate-x-0' : '-translate-x-full',
+             leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[248px]',
+             mobileHome ? 'max-lg:relative max-lg:inset-auto max-lg:z-auto max-lg:w-full max-lg:max-w-none max-lg:translate-x-0 max-lg:transform-none max-lg:shadow-none max-lg:pt-0' : '',
+           ]">
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
           <div class="flex items-center gap-2">
             <button data-test="toggle-left" :aria-label='$t("nav.hideSidebar")' :title='$t("nav.hideSidebar")'
                     class="hidden h-6 w-6 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
                     @click="leftCollapsed = true"><PanelLeftClose :size="15" /></button>
-            <button data-test="close-instances" :aria-label='$t("nav.closeInstances")'
-                    class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
+            <!-- Nothing to close when the tree IS the main content (mobile home). -->
+            <button v-if="!mobileHome" data-test="close-instances" :aria-label='$t("nav.closeInstances")'
+                    class="grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>
         </div>
-        <InstanceTree @select="onSelect" @select-bot="onSelectBot" @select-group="onSelectGroup" @open-desktop="openDesktop" />
+        <InstanceTree ref="instanceTree" @select="onSelect" @select-bot="onSelectBot" @select-group="onSelectGroup" @open-desktop="openDesktop" />
       </div>
 
       <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
@@ -634,8 +783,8 @@ onUnmounted(() => {
            scroll stay warm); `v-show` reveals only the current session's active tab. A
            pane only ever unmounts when its tab is closed (closeTab) or its session is
            cleared (clearSession). -->
-      <div data-test="column" class="relative flex min-w-0 flex-1 flex-col">
-        <!-- Desktop-only standalone strip (mobile renders it in the top bar above). The
+      <div data-test="column" class="relative flex min-w-0 flex-1 flex-col" :class="mobileHome ? 'max-lg:hidden' : ''">
+        <!-- Desktop-only standalone strip (the open tabs live in the mobile ⋯ sheet). The
              wrapper — not a class on the strip — owns the responsive show/hide so the
              strip's own `display:flex` never fights a `hidden`/`lg:flex` on the same node. -->
         <div v-if="currentKey" class="hidden shrink-0 lg:block">
@@ -647,6 +796,7 @@ onUnmounted(() => {
             class="absolute inset-0 z-10"
             @navigate-bot="onSelectBot"
             @navigate-group="onSelectGroup"
+            @open-instances="leftOpen = true"
           />
           <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" />
           <ChatPane class="absolute inset-0"
@@ -709,7 +859,7 @@ onUnmounted(() => {
             <List :size="13" />{{ $t("nav.tasks") }}
           </button>
           <button data-test="close-tasks" :aria-label='$t("nav.closeTasks")'
-                  class="ml-auto text-fg-muted hover:text-fg lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
+                  class="ml-auto grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
         </div>
         <div class="min-h-0 flex-1 overflow-hidden">
           <TaskPanel v-if="rightTab === 'tasks'" />
@@ -717,6 +867,90 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- Mobile home (<lg, nothing selected): the FAB creates a session. One online
+         instance creates straight away; several open the instance picker below (last
+         used first). Disabled with no online instance. -->
+    <button v-if="mobileHome" type="button" data-test="fab-new-session"
+            class="fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 z-30 flex h-12 items-center gap-2 rounded-full bg-accent px-4 text-on-accent shadow-float transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 lg:hidden"
+            :disabled="onlineInstances.length === 0"
+            :aria-label='$t("instance.newSession")'
+            @click="onFabClick">
+      <Plus :size="20" class="shrink-0" />
+      <span class="text-sm font-semibold">{{ $t("instance.newSession") }}</span>
+    </button>
+
+    <!-- Session ⋯ sheet: everything the mobile bar cannot show. No model entry — the
+         model stays on the composer chip. -->
+    <MobileSheet v-if="moreSheetOpen" :title='$t("common.more")' test-id="mobile-more-sheet" @close="moreSheetOpen = false">
+      <button type="button" data-test="sheet-open-tabs"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="tabsSheetOpen = true">
+        <LayoutList :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("mobileBar.openTabs", { n: openTabCount }) }}</span>
+      </button>
+      <button type="button" data-test="sheet-files"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="openSheetRight('files')">
+        <FileText :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("nav.files") }}</span>
+      </button>
+      <button type="button" data-test="sheet-tasks"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="openSheetRight('tasks')">
+        <List :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("nav.tasks") }}</span>
+      </button>
+      <button type="button" data-test="sheet-terminal"
+              :disabled="!terminalCapable"
+              :title="terminalCapable ? $t('terminal.title') : $t('terminal.unavailable')"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+              @click="openSheetTerminal">
+        <SquareTerminal :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("terminal.title") }}</span>
+      </button>
+      <button v-if="desktopCapableForSelection" type="button" data-test="sheet-desktop"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="openSheetDesktop">
+        <Monitor :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("desktop.title") }}</span>
+      </button>
+      <button type="button" data-test="sheet-workspace"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="openSheetWorkspace">
+        <Folder :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("mobileBar.workspace") }}</span>
+      </button>
+    </MobileSheet>
+
+    <!-- Open center tabs (the mobile replacement for the desktop tab strip): switch with
+         a tap, close with the same guarded path the strip's X uses. -->
+    <MobileSheet v-if="tabsSheetOpen" :title='$t("mobileBar.openTabs", { n: openTabCount })' test-id="open-tabs-sheet" @close="tabsSheetOpen = false">
+      <div v-for="item in tabSheetItems" :key="item.id" data-test="open-tab-row" :data-tab-id="item.id"
+           class="flex min-h-12 items-center rounded-lg pr-1"
+           :class="item.active ? 'bg-accent-soft text-accent' : 'text-fg'">
+        <button type="button" class="flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-lg px-3 text-left text-sm"
+                @click="switchTabFromSheet(item.id)">
+          <component :is="item.icon" :size="18" class="shrink-0" />
+          <span class="truncate">{{ item.label }}</span>
+        </button>
+        <button v-if="item.id !== 'chat'" type="button" data-test="open-tab-close"
+                :aria-label='$t("center.closeTab")'
+                class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2"
+                @click.stop="closeTabFromSheet(item.id)"><X :size="16" /></button>
+      </div>
+    </MobileSheet>
+
+    <!-- FAB instance picker (multiple online instances). -->
+    <MobileSheet v-if="fabInstanceSheetOpen" :title='$t("mobileBar.selectInstance")' test-id="fab-instance-sheet" @close="fabInstanceSheetOpen = false">
+      <button v-for="inst in fabInstances" :key="inst.id" type="button" data-test="fab-instance-option"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="onFabInstancePick(inst.id)">
+        <span class="h-2 w-2 shrink-0 rounded-full bg-run" aria-hidden="true" />
+        <span class="truncate">{{ inst.name }}</span>
+      </button>
+    </MobileSheet>
+
     <NoticeToast />
     <ActionToast />
     <ToastHost />

@@ -119,8 +119,9 @@ onUnmounted(() => clearInterval(timer));
       {{ $t("chat.selectSession") }}
     </div>
     <template v-else>
-      <!-- header -->
-      <div class="shrink-0 flex min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+      <!-- header (desktop only: <lg the single mobile top bar in DashboardView /
+           DirectBotPane carries the title + subtitle instead of this chip row) -->
+      <div class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
         <h1 class="hidden lg:block text-[14px] font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
         <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
              stay fully readable instead of truncating — title tooltips don't work on touch.

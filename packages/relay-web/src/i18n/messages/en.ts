@@ -46,6 +46,12 @@ export default {
     bots: "Bots",
     groups: "Groups",
   },
+  mobileBar: {
+    openTabs: "Open tabs ({n})",
+    workspace: "Workspace",
+    switchTopic: "Switch topic",
+    selectInstance: "Pick an instance",
+  },
   settings: {
     title: "Settings",
     appearance: "Appearance",

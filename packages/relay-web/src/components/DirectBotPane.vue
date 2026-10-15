@@ -3,7 +3,11 @@ import { computed, ref } from "vue";
 import {
   ChevronDown,
   Folder,
+  Menu,
+  MessagesSquare,
+  MoreHorizontal,
   Pencil,
+  Plus,
   Trash2,
   X,
 } from "lucide-vue-next";
@@ -12,6 +16,8 @@ import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
 import BotAvatar from "./BotAvatar.vue";
+import MobileSheet from "./MobileSheet.vue";
+import MobileConnStrip from "./MobileConnStrip.vue";
 import { avatarHasOpenInteraction, botAvatarState } from "../lib/bot-avatar-state";
 import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
@@ -23,6 +29,8 @@ import TopicManager from "./TopicManager.vue";
 const emit = defineEmits<{
   navigateBot: [instanceId: string, botId: string];
   navigateGroup: [instanceId: string, groupId: string];
+  /** Mobile top bar's left button: open the instances drawer (owned by DashboardView). */
+  openInstances: [];
 }>();
 
 const directBotsStore = useDirectBotsStore();
@@ -61,6 +69,15 @@ const observedCompletion = computed(() => !!directBotsStore.activeRun
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
+// Mobile (<lg) chrome: one 52px bar (avatar + name + tappable topic subtitle + ⋯) plus
+// the sheets its entries open. Desktop keeps the header/topic bar below untouched.
+const moreSheetOpen = ref(false);
+const navSheetOpen = ref(false);
+const topicSheetOpen = ref(false);
+
+/** Bar subtitle: the active topic, falling back to the bot's role, then its agent. */
+const botSubtitle = computed(() =>
+  directBotsStore.currentTopic?.title || bot.value?.role || bot.value?.agent || "");
 
 function requireTopicContext(): { instanceId: string; conversationId: string } | null {
   const instanceId = directBotsStore.instanceId;
@@ -143,8 +160,33 @@ function openRemoval(): void {
 
 <template>
   <div class="flex h-full flex-col bg-bg text-fg">
-    <!-- Top Header: Bot metadata & Actions -->
-    <header class="flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+    <!-- Mobile single top bar (<lg): avatar + name, topic title as a tappable subtitle
+         (opens the topic sheet), and ⋯ for the entries the desktop header carries.
+         Desktop keeps the header below. -->
+    <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
+      <button type="button" data-test="open-instances" :aria-label='$t("nav.openInstances")'
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="emit('openInstances')"><Menu :size="20" /></button>
+      <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
+                 :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
+                 :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
+      <div class="flex min-w-0 flex-1 flex-col">
+        <span class="truncate text-base font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
+        <button type="button" data-test="mobile-topic-switch"
+                class="flex min-w-0 items-center gap-1 text-left"
+                @click="topicSheetOpen = true">
+          <span class="truncate text-xs text-fg-muted">{{ botSubtitle }}</span>
+          <ChevronDown :size="12" class="shrink-0 text-fg-muted" />
+        </button>
+      </div>
+      <button type="button" data-test="mobile-bot-more" :aria-label='$t("common.more")'
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="moreSheetOpen = true"><MoreHorizontal :size="20" /></button>
+    </div>
+    <MobileConnStrip />
+
+    <!-- Top Header: Bot metadata & Actions (desktop only). -->
+    <header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
       <div class="flex items-center gap-3 min-w-0">
         <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
                    :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
@@ -248,7 +290,7 @@ function openRemoval(): void {
       {{ $t("bot.removal.removedBanner") }}
     </div>
 
-    <div class="flex shrink-0 items-center bg-surface/60 px-3 lg:px-5 py-1 text-xs backdrop-blur-md">
+    <div class="hidden lg:flex shrink-0 items-center bg-surface/60 px-3 lg:px-5 py-1 text-xs backdrop-blur-md">
       <TopicManager
         variant="direct"
         :topics="directBotsStore.currentTopics"
@@ -340,5 +382,65 @@ function openRemoval(): void {
       v-if="newTopicDialogOpen"
       @close="newTopicDialogOpen = false"
     />
+
+    <!-- Bot ⋯ sheet (<lg): the desktop header's nav / edit / delete entries. -->
+    <MobileSheet v-if="moreSheetOpen" :title='$t("common.more")' test-id="mobile-bot-more-sheet" @close="moreSheetOpen = false">
+      <button type="button" data-test="sheet-bot-nav"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="navSheetOpen = true">
+        <MessagesSquare :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("bot.nav.talkWith") }}</span>
+      </button>
+      <button type="button" data-test="sheet-bot-edit"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="editDialogOpen = true; moreSheetOpen = false">
+        <Pencil :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("bot.actions.edit") }}</span>
+      </button>
+      <button type="button" data-test="sheet-bot-delete"
+              :disabled="bot?.retired === true"
+              :title="bot?.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-danger transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
+              @click="openRemoval(); moreSheetOpen = false">
+        <Trash2 :size="18" class="shrink-0" />
+        <span>{{ $t("bot.removal.action") }}</span>
+      </button>
+    </MobileSheet>
+
+    <!-- "Talk with" sheet: the same other-bots + groups lists as the desktop nav menu. -->
+    <MobileSheet v-if="navSheetOpen" :title='$t("bot.nav.talkWith")' test-id="bot-nav-sheet" @close="navSheetOpen = false">
+      <p class="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</p>
+      <button v-for="other in otherBots" :key="other.id" type="button" data-test="sheet-bot-option"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="openOtherBot(other.id)">
+        <span class="truncate">{{ other.name }}</span>
+      </button>
+      <p v-if="otherBots.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noOtherBot") }}</p>
+      <p class="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.collaborate") }}</p>
+      <button v-for="group in memberGroups" :key="group.id" type="button" data-test="sheet-group-option"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="openGroup(group.id)">
+        <span class="truncate">{{ group.title }}</span>
+      </button>
+      <p v-if="memberGroups.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noGroup") }}</p>
+    </MobileSheet>
+
+    <!-- Topic sheet (<lg): switch topic from the bar subtitle; full management stays on
+         desktop in TopicManager. -->
+    <MobileSheet v-if="topicSheetOpen" :title='$t("mobileBar.switchTopic")' test-id="bot-topic-sheet" @close="topicSheetOpen = false">
+      <button v-for="topic in directBotsStore.currentTopics" :key="topic.id" type="button" data-test="sheet-topic-option"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm transition-colors"
+              :class="topic.id === directBotsStore.activeTopicId ? 'bg-accent-soft text-accent' : 'text-fg hover:bg-surface-2'"
+              @click="directBotsStore.switchTopic(topic.id); topicSheetOpen = false">
+        <MessagesSquare :size="18" class="shrink-0" />
+        <span class="truncate">{{ topic.title }}</span>
+      </button>
+      <button type="button" data-test="sheet-new-topic"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-accent transition-colors hover:bg-surface-2"
+              @click="newTopicDialogOpen = true; topicSheetOpen = false">
+        <Plus :size="18" class="shrink-0" />
+        <span>{{ $t("bot.topic.new") }}</span>
+      </button>
+    </MobileSheet>
   </div>
 </template>

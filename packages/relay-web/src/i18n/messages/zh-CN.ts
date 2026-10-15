@@ -44,6 +44,12 @@ export default {
     bots: "Bots",
     groups: "群组",
   },
+  mobileBar: {
+    openTabs: "已打开标签（{n}）",
+    workspace: "工作区",
+    switchTopic: "切换话题",
+    selectInstance: "选择实例",
+  },
   settings: {
     title: "设置",
     appearance: "外观",
