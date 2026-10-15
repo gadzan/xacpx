@@ -176,7 +176,7 @@ function openRemoval(): void {
                  :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
                  :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
       <div class="flex min-w-0 flex-1 flex-col">
-        <span class="truncate text-base font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
+        <span class="truncate text-sm font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
         <button type="button" data-test="mobile-topic-switch"
                 class="flex min-w-0 items-center gap-1 text-left"
                 @click="openSheet('topic')">
