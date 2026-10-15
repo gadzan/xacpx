@@ -199,9 +199,10 @@ onBeforeUnmount(() => { mounted = false; releaseResources(); });
 .bot-avatar-text { width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: center; font-size: 0.8em; line-height: 1; color: rgb(var(--c-fg)); }
 .bot-avatar-indicator { position: absolute; right: -2px; bottom: -2px; display: grid; place-items: center; min-width: 0.8em; height: 0.8em; padding: 1px; border-radius: 50%; box-shadow: 0 0 0 2px rgb(var(--c-bg)); background: rgb(var(--c-surface)); color: rgb(var(--c-fg)); font-size: 11px; font-weight: 800; line-height: 1; }
 /* Low-contrast exceptions (creme ≈1.15:1 on the light bg, encre ≈1.08:1 on the dark bg):
-   the only bodies that keep a faint hairline, so they do not disappear. */
-:global(html:not(.dark) .bot-avatar-body[data-hairline="creme"]) { stroke: rgb(var(--c-fg)); stroke-opacity: 0.12; stroke-width: 1.5; }
-:global(html.dark .bot-avatar-body[data-hairline="encre"]) { stroke: #FFFFFF; stroke-opacity: 0.12; stroke-width: 1.5; }
+   the only bodies that keep a faint hairline, so they do not disappear. Non-scaling, so
+   it is 1 CSS px at every avatar size instead of shrinking with the 100-unit viewBox. */
+:global(html:not(.dark) .bot-avatar-body[data-hairline="creme"]) { stroke: rgb(var(--c-fg)); stroke-opacity: 0.16; stroke-width: 1; vector-effect: non-scaling-stroke; }
+:global(html.dark .bot-avatar-body[data-hairline="encre"]) { stroke: #FFFFFF; stroke-opacity: 0.16; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .bot-avatar[data-state="waiting"] .bot-avatar-indicator { color: rgb(var(--c-warn)); }
 .bot-avatar[data-state="failed"] .bot-avatar-indicator { color: rgb(var(--c-danger)); }
 </style>

@@ -32,7 +32,10 @@ const props = defineProps<{
     :data-row-id="rowId"
   >
     <div v-if="!own && !hideLeadingAvatar" class="agent-avatar mt-0.5 h-8 w-8 shrink-0 self-start" data-avatar-key="row">
-      <span class="grid h-8 w-8 place-items-center overflow-hidden rounded-full bg-surface">
+      <!-- A slotted BotAvatar draws its own silhouette: no round backing (it reads as a
+           halo in the dark theme) and no clipping, so its status badge stays whole. The
+           driver-icon fallback keeps the round surface backing. -->
+      <span class="grid h-8 w-8 place-items-center" :class="$slots.avatar ? '' : 'overflow-hidden rounded-full bg-surface'">
         <slot name="avatar">
           <AgentIcon v-if="driver" :driver="driver" :size="20" fill />
           <Bot v-else :size="20" class="text-fg-muted" />
