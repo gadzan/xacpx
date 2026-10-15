@@ -1908,11 +1908,15 @@ describe("Direct Bot Components", () => {
       expect(del.classes()).toContain("hover:bg-danger/10");
 
       // "Talk with" opens the same other-bots + groups lists as the desktop nav menu.
+      // It replaces the ⋯ sheet rather than stacking on it: one sheet dialog at a time.
       await sheet.find('[data-test="sheet-bot-nav"]').trigger("click");
       const nav = wrapper.find('[data-test="bot-nav-sheet"]');
       expect(nav.exists()).toBe(true);
+      expect(wrapper.find('[data-test="mobile-bot-more-sheet"]').exists()).toBe(false);
+      expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1);
       await nav.find('[data-test="sheet-bot-option"]').trigger("click");
       expect(wrapper.emitted("navigateBot")?.[0]).toEqual(["i1", "b2"]);
+      expect(wrapper.find('[data-test="bot-nav-sheet"]').exists()).toBe(false);
       await wrapper.find('[data-test="mobile-bot-more"]').trigger("click");
       await wrapper.find('[data-test="sheet-bot-nav"]').trigger("click");
       await wrapper.find('[data-test="sheet-group-option"]').trigger("click");

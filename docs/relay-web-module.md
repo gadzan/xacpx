@@ -395,8 +395,9 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     `openNewSession`），多个在线实例先弹实例选择 sheet，**上次使用的实例排最前**（来源 = `localStorage["xacpx.lastInstance"]`，每次打开会话时
     由 `DashboardView` 记录；取消选择会清掉持久化的聊天选择，所以不能直接用它）。
   - `⋯` 菜单项顺序：已打开标签（n）→ 文件 → 任务 → 终端（无能力时禁用并给出原因）→ 桌面（仅
-    `desktopCapableForSelection`）→ 工作区（文件树，右抽屉移动端全屏）。**没有模型项**——模型只留在
-    composer 的 chip 上。「已打开标签」展开二级 sheet：Chat + 每个打开的文件/diff/终端标签，点击切换、
+    `desktopCapableForSelection`）。没有单独的「工作区」项，「文件」就是右抽屉里的文件面板（移动端全屏）。**没有模型项**——模型只留在
+    composer 的 chip 上。底部 sheet 互斥，同一时间只开一个（`DashboardView` / `DirectBotPane` 各用一个 `activeSheet`）。「已打开标签」
+    会替换掉 `⋯` sheet（不叠加），关闭后直接回到页面、不回 `⋯`：Chat + 每个打开的文件/diff/终端标签，点击切换、
     关闭走与桌面标签条同一 `requestCloseTab` 守卫路径（脏文件先确认、终端先 terminate）。
   - `ChatPane.vue` 的头部 chip 行在 `<lg` 隐藏（`hidden lg:flex`），桌面不变。
   - 左栏（实例树）与右栏（任务面板）仍是**屏外抽屉**（`fixed inset-y-0` + `transform translate-x`），`lg:` 类把它们覆盖回静态列，

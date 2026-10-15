@@ -46,7 +46,6 @@ export default {
   },
   mobileBar: {
     openTabs: "已打开标签（{n}）",
-    workspace: "工作区",
     switchTopic: "切换话题",
     selectInstance: "选择实例",
   },

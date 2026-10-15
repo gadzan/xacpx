@@ -77,9 +77,11 @@ test("renders the single mobile top bar with its more-sheet entries", async () =
   await flushPromises();
   const sheet = wrapper.find('[data-test="mobile-more-sheet"]');
   expect(sheet.exists()).toBe(true);
-  for (const id of ["sheet-open-tabs", "sheet-files", "sheet-tasks", "sheet-terminal", "sheet-workspace"]) {
+  for (const id of ["sheet-open-tabs", "sheet-files", "sheet-tasks", "sheet-terminal"]) {
     expect(sheet.find(`[data-test="${id}"]`).exists()).toBe(true);
   }
+  // No separate 「工作区」 entry: 「文件」 already opens the files panel.
+  expect(sheet.find('[data-test="sheet-workspace"]').exists()).toBe(false);
   // The model stays on the composer chip — never a sheet entry.
   expect(sheet.text()).not.toContain("model");
   expect(sheet.find('[data-test="sheet-model"]').exists()).toBe(false);
@@ -466,6 +468,9 @@ test("open-tabs sheet switches tabs and closes them through the guarded path", a
 
   const sheet = wrapper.find('[data-test="open-tabs-sheet"]');
   expect(sheet.exists()).toBe(true);
+  // Sheets are mutually exclusive: the tabs sheet replaces ⋯ instead of stacking on it.
+  expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
+  expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1);
   const rows = sheet.findAll('[data-test="open-tab-row"]');
   expect(rows).toHaveLength(2); // pinned Chat + the open file
   expect(rows[0].attributes("data-tab-id")).toBe("chat");
@@ -479,10 +484,14 @@ test("open-tabs sheet switches tabs and closes them through the guarded path", a
   await flushPromises();
   expect(centerTabs.activeFor(key)).toBe("chat");
   expect(wrapper.find('[data-test="open-tabs-sheet"]').exists()).toBe(false);
+  // ...and does not fall back to the ⋯ sheet.
+  expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
 
   // Closing runs the same guarded path as the strip's X: a dirty file asks first.
   centerTabs.openFile(key, "src/a.ts");
   centerTabs.setDirty(key, "file:src/a.ts", true);
+  await flushPromises();
+  await wrapper.find('[data-test="mobile-more"]').trigger("click");
   await flushPromises();
   await wrapper.find('[data-test="sheet-open-tabs"]').trigger("click");
   await flushPromises();

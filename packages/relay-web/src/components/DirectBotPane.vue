@@ -71,9 +71,12 @@ const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
 // Mobile (<lg) chrome: one 52px bar (avatar + name + tappable topic subtitle + ⋯) plus
 // the sheets its entries open. Desktop keeps the header/topic bar below untouched.
-const moreSheetOpen = ref(false);
-const navSheetOpen = ref(false);
-const topicSheetOpen = ref(false);
+// One bottom sheet at a time (same rule as DashboardView): opening "Talk with" from ⋯
+// replaces the ⋯ sheet instead of stacking on it.
+type BotSheetId = "more" | "nav" | "topic";
+const activeSheet = ref<BotSheetId | null>(null);
+function openSheet(id: BotSheetId): void { activeSheet.value = id; }
+function closeSheet(): void { activeSheet.value = null; }
 
 /** Bar subtitle: the active topic, falling back to the bot's role, then its agent. */
 const botSubtitle = computed(() =>
@@ -110,6 +113,7 @@ function openOtherBot(botId: string): void {
   const instanceId = directBotsStore.instanceId;
   if (!instanceId) return;
   navOpen.value = false;
+  closeSheet();
   emit("navigateBot", instanceId, botId);
 }
 
@@ -117,6 +121,7 @@ function openGroup(groupId: string): void {
   const instanceId = directBotsStore.instanceId;
   if (!instanceId) return;
   navOpen.value = false;
+  closeSheet();
   emit("navigateGroup", instanceId, groupId);
 }
 
@@ -174,14 +179,14 @@ function openRemoval(): void {
         <span class="truncate text-base font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
         <button type="button" data-test="mobile-topic-switch"
                 class="flex min-w-0 items-center gap-1 text-left"
-                @click="topicSheetOpen = true">
+                @click="openSheet('topic')">
           <span class="truncate text-xs text-fg-muted">{{ botSubtitle }}</span>
           <ChevronDown :size="12" class="shrink-0 text-fg-muted" />
         </button>
       </div>
       <button type="button" data-test="mobile-bot-more" :aria-label='$t("common.more")'
               class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              @click="moreSheetOpen = true"><MoreHorizontal :size="20" /></button>
+              @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
     </div>
     <MobileConnStrip />
 
@@ -384,16 +389,16 @@ function openRemoval(): void {
     />
 
     <!-- Bot ⋯ sheet (<lg): the desktop header's nav / edit / delete entries. -->
-    <MobileSheet v-if="moreSheetOpen" :title='$t("common.more")' test-id="mobile-bot-more-sheet" @close="moreSheetOpen = false">
+    <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="mobile-bot-more-sheet" @close="closeSheet">
       <button type="button" data-test="sheet-bot-nav"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
-              @click="navSheetOpen = true">
+              @click="openSheet('nav')">
         <MessagesSquare :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("bot.nav.talkWith") }}</span>
       </button>
       <button type="button" data-test="sheet-bot-edit"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
-              @click="editDialogOpen = true; moreSheetOpen = false">
+              @click="editDialogOpen = true; closeSheet()">
         <Pencil :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("bot.actions.edit") }}</span>
       </button>
@@ -401,14 +406,14 @@ function openRemoval(): void {
               :disabled="bot?.retired === true"
               :title="bot?.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-danger transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
-              @click="openRemoval(); moreSheetOpen = false">
+              @click="openRemoval(); closeSheet()">
         <Trash2 :size="18" class="shrink-0" />
         <span>{{ $t("bot.removal.action") }}</span>
       </button>
     </MobileSheet>
 
     <!-- "Talk with" sheet: the same other-bots + groups lists as the desktop nav menu. -->
-    <MobileSheet v-if="navSheetOpen" :title='$t("bot.nav.talkWith")' test-id="bot-nav-sheet" @close="navSheetOpen = false">
+    <MobileSheet v-if="activeSheet === 'nav'" :title='$t("bot.nav.talkWith")' test-id="bot-nav-sheet" @close="closeSheet">
       <p class="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</p>
       <button v-for="other in otherBots" :key="other.id" type="button" data-test="sheet-bot-option"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
@@ -427,17 +432,17 @@ function openRemoval(): void {
 
     <!-- Topic sheet (<lg): switch topic from the bar subtitle; full management stays on
          desktop in TopicManager. -->
-    <MobileSheet v-if="topicSheetOpen" :title='$t("mobileBar.switchTopic")' test-id="bot-topic-sheet" @close="topicSheetOpen = false">
+    <MobileSheet v-if="activeSheet === 'topic'" :title='$t("mobileBar.switchTopic")' test-id="bot-topic-sheet" @close="closeSheet">
       <button v-for="topic in directBotsStore.currentTopics" :key="topic.id" type="button" data-test="sheet-topic-option"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm transition-colors"
               :class="topic.id === directBotsStore.activeTopicId ? 'bg-accent-soft text-accent' : 'text-fg hover:bg-surface-2'"
-              @click="directBotsStore.switchTopic(topic.id); topicSheetOpen = false">
+              @click="directBotsStore.switchTopic(topic.id); closeSheet()">
         <MessagesSquare :size="18" class="shrink-0" />
         <span class="truncate">{{ topic.title }}</span>
       </button>
       <button type="button" data-test="sheet-new-topic"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-accent transition-colors hover:bg-surface-2"
-              @click="newTopicDialogOpen = true; topicSheetOpen = false">
+              @click="newTopicDialogOpen = true; closeSheet()">
         <Plus :size="18" class="shrink-0" />
         <span>{{ $t("bot.topic.new") }}</span>
       </button>

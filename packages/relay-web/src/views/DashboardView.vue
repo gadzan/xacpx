@@ -40,7 +40,7 @@ import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
 import { setNotificationClickHandler, initTabFocusTracker } from "../lib/local-notification";
-import { Search, Moon, Sun, Settings, X, Menu, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList, Folder } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, Menu, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList } from "lucide-vue-next";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
@@ -322,9 +322,12 @@ function closeDesktop(): void {
 // collapses into ONE 52px bar: [≡] [avatar] [title + subtitle] [⋯]. Desktop keeps the
 // global header and the chip row exactly as before, so everything below is only ever
 // reachable from the mobile markup.
-const moreSheetOpen = ref(false);
-const tabsSheetOpen = ref(false);
-const fabInstanceSheetOpen = ref(false);
+// One bottom sheet at a time: opening any sheet replaces the current one (the open-tabs
+// sheet does not stack on the ⋯ sheet, and closing it does not return there).
+type MobileSheetId = "more" | "tabs" | "fabInstance";
+const activeSheet = ref<MobileSheetId | null>(null);
+function openSheet(id: MobileSheetId): void { activeSheet.value = id; }
+function closeSheet(): void { activeSheet.value = null; }
 /** The single InstanceTree instance: the drawer's tree on desktop (and with a selection),
  *  the main-area list on the mobile home. The FAB drives its create-session dialog
  *  through the exposed `openNewSession`. */
@@ -386,7 +389,7 @@ const tabSheetItems = computed(() => {
 });
 function switchTabFromSheet(id: string): void {
   if (currentKey.value) centerTabs.setActive(currentKey.value, id);
-  tabsSheetOpen.value = false;
+  closeSheet();
 }
 function closeTabFromSheet(id: string): void {
   if (currentKey.value) requestCloseTab(currentKey.value, id);
@@ -394,22 +397,16 @@ function closeTabFromSheet(id: string): void {
 
 function openSheetRight(tab: "tasks" | "files"): void {
   openRight(tab);
-  moreSheetOpen.value = false;
+  closeSheet();
 }
 function openSheetTerminal(): void {
   if (currentKey.value && terminalCapable.value) centerTabs.openTerminal(currentKey.value);
-  moreSheetOpen.value = false;
+  closeSheet();
 }
 function openSheetDesktop(): void {
   if (desktopTabOpen.value) closeDesktop();
   else openDesktop();
-  moreSheetOpen.value = false;
-}
-/** "工作区": the files panel's tree, full-screen in the mobile right drawer. */
-function openSheetWorkspace(): void {
-  files.tab = "files";
-  openRight("files");
-  moreSheetOpen.value = false;
+  closeSheet();
 }
 
 // FAB (mobile home): a single online instance creates straight away; several open a
@@ -431,10 +428,10 @@ const fabInstances = computed(() => {
 function onFabClick(): void {
   const online = onlineInstances.value;
   if (online.length === 1) instanceTree.value?.openNewSession(online[0].id);
-  else if (online.length > 1) fabInstanceSheetOpen.value = true;
+  else if (online.length > 1) openSheet("fabInstance");
 }
 function onFabInstancePick(instanceId: string): void {
-  fabInstanceSheetOpen.value = false;
+  closeSheet();
   instanceTree.value?.openNewSession(instanceId);
 }
 
@@ -647,7 +644,7 @@ onUnmounted(() => {
         <button
           data-test="global-search"
           :aria-label='$t("nav.search")'
-          class="group flex h-10 lg:h-7 items-center gap-2 rounded-lg bg-bg px-2.5 text-left transition-colors hover: focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
+          class="group flex h-10 lg:h-7 items-center gap-2 rounded-lg bg-bg max-sm:bg-transparent max-sm:hover:bg-raised px-2.5 text-left transition-colors hover: focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
@@ -700,7 +697,7 @@ onUnmounted(() => {
     <!-- Mobile single top bar (session view, <lg). ONE 52px row replaces the old global
          header + second bar + ChatPane chip stack: the left button opens the instances
          drawer (the affordance the old hamburger had), the right button opens the ⋯
-         sheet that now carries files / tasks / terminal / desktop / workspace / the open
+         sheet that now carries files / tasks / terminal / desktop / the open
          center tabs. Desktop keeps the global header and the chip row untouched. -->
     <div v-if="mobileSessionBar" data-test="mobile-session-bar"
          class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
@@ -716,7 +713,7 @@ onUnmounted(() => {
       </div>
       <button type="button" data-test="mobile-more" :aria-label='$t("common.more")'
               class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              @click="moreSheetOpen = true"><MoreHorizontal :size="20" /></button>
+              @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
     </div>
     <!-- Connection strip sits directly under the mobile bar (only after the connection
          has been open at least once — see MobileConnStrip). -->
@@ -882,10 +879,10 @@ onUnmounted(() => {
 
     <!-- Session ⋯ sheet: everything the mobile bar cannot show. No model entry — the
          model stays on the composer chip. -->
-    <MobileSheet v-if="moreSheetOpen" :title='$t("common.more")' test-id="mobile-more-sheet" @close="moreSheetOpen = false">
+    <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="mobile-more-sheet" @close="closeSheet">
       <button type="button" data-test="sheet-open-tabs"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
-              @click="tabsSheetOpen = true">
+              @click="openSheet('tabs')">
         <LayoutList :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("mobileBar.openTabs", { n: openTabCount }) }}</span>
       </button>
@@ -915,17 +912,11 @@ onUnmounted(() => {
         <Monitor :size="18" class="shrink-0 text-fg-muted" />
         <span>{{ $t("desktop.title") }}</span>
       </button>
-      <button type="button" data-test="sheet-workspace"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
-              @click="openSheetWorkspace">
-        <Folder :size="18" class="shrink-0 text-fg-muted" />
-        <span>{{ $t("mobileBar.workspace") }}</span>
-      </button>
     </MobileSheet>
 
     <!-- Open center tabs (the mobile replacement for the desktop tab strip): switch with
          a tap, close with the same guarded path the strip's X uses. -->
-    <MobileSheet v-if="tabsSheetOpen" :title='$t("mobileBar.openTabs", { n: openTabCount })' test-id="open-tabs-sheet" @close="tabsSheetOpen = false">
+    <MobileSheet v-if="activeSheet === 'tabs'" :title='$t("mobileBar.openTabs", { n: openTabCount })' test-id="open-tabs-sheet" @close="closeSheet">
       <div v-for="item in tabSheetItems" :key="item.id" data-test="open-tab-row" :data-tab-id="item.id"
            class="flex min-h-12 items-center rounded-lg pr-1"
            :class="item.active ? 'bg-accent-soft text-accent' : 'text-fg'">
@@ -942,7 +933,7 @@ onUnmounted(() => {
     </MobileSheet>
 
     <!-- FAB instance picker (multiple online instances). -->
-    <MobileSheet v-if="fabInstanceSheetOpen" :title='$t("mobileBar.selectInstance")' test-id="fab-instance-sheet" @close="fabInstanceSheetOpen = false">
+    <MobileSheet v-if="activeSheet === 'fabInstance'" :title='$t("mobileBar.selectInstance")' test-id="fab-instance-sheet" @close="closeSheet">
       <button v-for="inst in fabInstances" :key="inst.id" type="button" data-test="fab-instance-option"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
               @click="onFabInstancePick(inst.id)">

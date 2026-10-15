@@ -48,7 +48,6 @@ export default {
   },
   mobileBar: {
     openTabs: "Open tabs ({n})",
-    workspace: "Workspace",
     switchTopic: "Switch topic",
     selectInstance: "Pick an instance",
   },

@@ -62,23 +62,34 @@ test.describe("mobile layout", () => {
     expect(send!.height).toBeGreaterThanOrEqual(44);
   });
 
-  test("more sheet opens files and the workspace panel full-screen on mobile", async ({ page }, testInfo) => {
+  test("more sheet opens files full-screen, and sheets never stack", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
     await loginAndShowInstances(page);
     await page.getByTestId("session-row").first().getByTestId("session-name").click();
     await expect(page.getByTestId("mobile-session-bar")).toBeVisible();
 
+    // 已打开标签 replaces the ⋯ sheet: exactly one sheet dialog is ever on screen, and
+    // dismissing the tabs sheet does not fall back to ⋯.
     await page.getByTestId("mobile-more").click();
-    await page.getByTestId("sheet-workspace").click();
-    // The right drawer is full-width on mobile, so the workspace panel covers the pane...
+    await expect(page.getByTestId("mobile-more-sheet")).toBeVisible();
+    await expect(page.getByTestId("sheet-workspace")).toHaveCount(0);
+    await page.getByTestId("sheet-open-tabs").click();
+    await expect(page.getByTestId("open-tabs-sheet")).toBeVisible();
+    await expect(page.getByTestId("mobile-more-sheet")).toHaveCount(0);
+    await expect(page.locator('[role="dialog"]:visible')).toHaveCount(1);
+    await page.getByTestId("sheet-close").click();
+    await expect(page.getByTestId("open-tabs-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("mobile-more-sheet")).toHaveCount(0);
+
+    // 文件 opens the files panel in the right drawer, full-width on mobile.
+    await page.getByTestId("mobile-more").click();
+    await page.getByTestId("sheet-files").click();
     const drawer = page.locator('[data-drawer="right"]');
     await expect(drawer).toBeVisible();
     const viewport = page.viewportSize()!;
     const box = await drawer.boundingBox();
     expect(box!.width).toBeGreaterThanOrEqual(viewport.width - 1);
-    // ...and it lands on the files (tree) tab, not the changes diff.
-    await expect(page.getByTestId("tab-files")).toBeVisible();
-    await expect(page.getByTestId("tab-files")).toHaveClass(/text-accent/);
+    await expect(page.getByTestId("mobile-more-sheet")).toHaveCount(0);
   });
 
   test("home FAB with one online instance opens the create dialog directly", async ({ page }, testInfo) => {
