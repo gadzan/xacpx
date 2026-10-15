@@ -51,7 +51,7 @@ async function handleCreateTopic(): Promise<void> {
           required
           maxlength="60"
           :placeholder="$t('bot.topic.titlePlaceholder')"
-          class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none mb-4"
+          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none mb-4"
         />
         <div class="flex items-center justify-end gap-2">
           <button

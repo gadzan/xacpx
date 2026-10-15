@@ -220,13 +220,13 @@ onBeforeUnmount(() => {
                autocapitalize="off"
                spellcheck="false"
                :placeholder="$t('desktop.macosAccountName')"
-               class="w-full rounded bg-bg px-2 py-1 text-[13px] text-fg outline-none" />
+               class="w-full rounded bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none" />
         <input v-model="password"
                data-test="desktop-macos-password"
                type="password"
                autocomplete="off"
                :placeholder="$t('desktop.macosPassword')"
-               class="w-full rounded bg-bg px-2 py-1 text-[13px] text-fg outline-none" />
+               class="w-full rounded bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none" />
         <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-[11.5px] text-danger">
           {{ $t("desktop.macosRejected") }}
         </p>
@@ -247,7 +247,7 @@ onBeforeUnmount(() => {
              type="password"
              autocomplete="off"
              :placeholder="$t('desktop.passwordPlaceholder')"
-             class="min-w-0 flex-1 rounded bg-bg px-2 py-1 text-[13px] text-fg outline-none"
+             class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none"
              @keydown.enter.prevent="submitPassword" />
       <button data-test="desktop-password-submit"
               type="button"

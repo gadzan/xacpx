@@ -337,7 +337,7 @@ watch(
         <!-- root-level new file/folder: dropped by the workspace-header ⋯ menu (openRootMenu). -->
         <input v-if="rootInline" v-focus data-test="root-inline-name" v-model="rootName"
                @keyup.enter="submitRoot" @keyup.esc="rootInline = null" @blur="rootInline = null"
-               class="mb-1 w-full rounded bg-raised px-1 text-[12px]" />
+               class="mb-1 w-full rounded bg-surface-2 px-1 text-[12px]" />
 
         <!-- directory tree: recursive rows (chevron + folder/file icon), lazy-expanded -->
         <div class="min-h-0 flex-1 overflow-y-auto thin-scroll py-1 font-mono transition-opacity" :class="files.loadingDirs.has('') && rootChildren.length ? 'opacity-50' : ''" :aria-busy="files.loadingDirs.has('')">
@@ -362,7 +362,7 @@ watch(
             <div data-test="changes-summary" class="flex items-center gap-1.5 px-2.5 pt-2 pb-1">
               <GitBranch :size="12" class="shrink-0 text-accent" />
               <select v-if="git.status?.branch" data-test="git-branch-select" :value="git.status.branch" :disabled="gitBusy"
-                      class="min-w-0 max-w-[45%] truncate rounded bg-bg px-1.5 py-0.5 font-mono text-[11px] font-medium text-fg disabled:opacity-50"
+                      class="min-w-0 max-w-[45%] truncate rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] font-medium text-fg disabled:opacity-50"
                       @change="switchBranch">
                 <option v-for="branch in git.status.branches" :key="branch.name" :value="branch.name"
                         :disabled="!!branch.worktreePath && !branch.current">{{ branch.name }}{{ branch.worktreePath && !branch.current ? ` · ${$t('files.git.inWorktree')}` : '' }}</option>
@@ -387,10 +387,10 @@ watch(
             </div>
             <div v-if="showBranchCreate" data-test="git-branch-create" class="mx-2.5 mb-1.5 space-y-1 rounded bg-bg p-1.5">
               <input v-model="branchName" data-test="git-new-branch-name" :placeholder="$t('files.git.branchName')"
-                     class="w-full rounded bg-surface px-2 py-1 text-[11px] text-fg" />
+                     class="w-full rounded bg-surface-2 px-2 py-1 text-[11px] text-fg" />
               <div class="flex gap-1">
                 <input v-model="branchStart" :placeholder="$t('files.git.startPoint')"
-                       class="min-w-0 flex-1 rounded bg-surface px-2 py-1 text-[11px] text-fg" />
+                       class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-[11px] text-fg" />
                 <button data-test="git-create-branch" :disabled="gitBusy || !branchName.trim()"
                         class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-on-accent disabled:opacity-50" @click="createBranch">{{ $t("files.git.create") }}</button>
               </div>
@@ -413,9 +413,9 @@ watch(
               <button data-test="git-new-worktree" class="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-1 text-accent hover:bg-accent-soft" @click="beginWorktreeCreate"><Plus :size="10" />{{ $t("files.git.newWorktree") }}</button>
               <div v-if="showWorktreeCreate" data-test="git-worktree-create" class="mt-1 space-y-1 rounded bg-bg p-1.5">
                 <label class="flex items-center gap-1"><input v-model="worktreeCreateBranch" type="checkbox" class="accent-accent" />{{ $t("files.git.createBranch") }}</label>
-                <input v-model="worktreeBranch" data-test="git-worktree-branch" :placeholder="$t('files.git.branchName')" class="w-full rounded bg-surface px-2 py-1 text-fg" />
-                <input v-model="worktreeWorkspace" data-test="git-worktree-workspace" :placeholder="$t('files.git.workspaceName')" class="w-full rounded bg-surface px-2 py-1 text-fg" />
-                <input v-if="worktreeCreateBranch" v-model="worktreeStart" :placeholder="$t('files.git.startPoint')" class="w-full rounded bg-surface px-2 py-1 text-fg" />
+                <input v-model="worktreeBranch" data-test="git-worktree-branch" :placeholder="$t('files.git.branchName')" class="w-full rounded bg-surface-2 px-2 py-1 text-fg" />
+                <input v-model="worktreeWorkspace" data-test="git-worktree-workspace" :placeholder="$t('files.git.workspaceName')" class="w-full rounded bg-surface-2 px-2 py-1 text-fg" />
+                <input v-if="worktreeCreateBranch" v-model="worktreeStart" :placeholder="$t('files.git.startPoint')" class="w-full rounded bg-surface-2 px-2 py-1 text-fg" />
                 <button data-test="git-create-worktree" :disabled="gitBusy || !worktreeBranch.trim() || !worktreeWorkspace.trim() || !activeSession?.agent"
                         class="rounded bg-accent px-2 py-1 font-medium text-on-accent disabled:opacity-50" @click="createWorktree">{{ $t("files.git.createAndOpen") }}</button>
               </div>

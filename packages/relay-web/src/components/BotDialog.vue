@@ -437,7 +437,7 @@ async function submit(): Promise<void> {
             required
             maxlength="60"
             :placeholder="$t('bot.fields.namePlaceholder')"
-            class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+            class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
           />
         </div>
 
@@ -453,7 +453,7 @@ async function submit(): Promise<void> {
             type="text"
             maxlength="100"
             :placeholder="$t('bot.fields.rolePlaceholder')"
-            class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+            class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
           />
         </div>
 
@@ -473,7 +473,7 @@ async function submit(): Promise<void> {
               required
               @change="agentDirty = true"
               :disabled="identityLocked"
-              class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option v-for="a in availableAgents" :key="a.name" :value="a.name">
                 {{ a.name }} {{ a.driver ? `(${a.driver})` : '' }}
@@ -492,7 +492,7 @@ async function submit(): Promise<void> {
               required
               :disabled="identityLocked"
               @change="workspaceDirty = true"
-              class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option v-for="w in availableWorkspaces" :key="w.name" :value="w.name">
                 {{ w.name }}
@@ -512,7 +512,7 @@ async function submit(): Promise<void> {
             rows="4"
             :disabled="!detailHydrated"
             :placeholder="detailHydrated ? $t('bot.fields.instructionsPlaceholder') : $t('bot.fields.instructionsLoading')"
-            class="w-full rounded-lg bg-bg px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
+            class="w-full rounded-lg bg-surface-2 px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
             @input="instructionsDirty = true"
           />
           <p class="mt-1 text-[11px] text-fg-muted">

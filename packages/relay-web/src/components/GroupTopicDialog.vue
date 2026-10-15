@@ -75,14 +75,14 @@ async function handleCreate(): Promise<void> {
           required
           maxlength="60"
           :placeholder="$t('bot.topic.titlePlaceholder')"
-          class="mb-3 w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none"
+          class="mb-3 w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none"
         />
         <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("bot.fields.workspace") }}</label>
         <select
           v-model="workspace"
           data-test="group-topic-workspace"
           required
-          class="mb-3 w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none"
+          class="mb-3 w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none"
         >
           <option value="" disabled>
             {{ workspacesLoad === "loading" && !workspaces.length ? $t("common.loading") : $t("group.topic.workspacePlaceholder") }}
@@ -98,7 +98,7 @@ async function handleCreate(): Promise<void> {
         <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("group.topic.isolationLabel") }}</label>
         <select
           v-model="isolation"
-          class="mb-4 w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none"
+          class="mb-4 w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none"
         >
           <option value="shared-single-writer">{{ $t("group.topic.isolationSingleWriter") }}</option>
           <option value="shared">{{ $t("group.topic.isolationShared") }}</option>

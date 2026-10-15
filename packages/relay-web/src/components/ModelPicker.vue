@@ -132,7 +132,7 @@ function onKeydown(event: KeyboardEvent): void {
           :value="model"
           autocomplete="off"
           :placeholder="t('capability.defaultModel')"
-          class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
           @focus="open = true"
           @input="onCustom"
           @keydown="onKeydown"
@@ -172,7 +172,7 @@ function onKeydown(event: KeyboardEvent): void {
           id="model-picker-effort"
           data-test="model-picker-effort"
           :value="effort"
-          class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
           @change="onEffort"
         >
           <option value="">{{ t("capability.effortDefault") }}</option>
@@ -183,7 +183,7 @@ function onKeydown(event: KeyboardEvent): void {
           id="model-picker-effort"
           data-test="model-picker-effort"
           :value="effort"
-          class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
           :placeholder="t('capability.effortDefault')"
           @input="onEffort"
         />

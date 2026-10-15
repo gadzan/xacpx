@@ -165,7 +165,7 @@ async function submitConfirm(): Promise<void> {
           type="search"
           data-test="topic-search"
           :placeholder="$t('bot.topic.search')"
-          class="w-full rounded-md bg-bg px-2 py-1 text-xs outline-none"
+          class="w-full rounded-md bg-surface-2 px-2 py-1 text-xs outline-none"
         />
       </div>
       <ul class="min-h-0 flex-1 overflow-y-auto p-1">

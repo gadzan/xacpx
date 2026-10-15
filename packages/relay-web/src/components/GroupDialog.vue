@@ -407,7 +407,7 @@ async function confirmDelete(): Promise<void> {
               required
               :maxlength="TITLE_MAX"
               :placeholder="$t('group.manage.namePlaceholder')"
-              class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
             />
           </div>
 
@@ -422,7 +422,7 @@ async function confirmDelete(): Promise<void> {
               rows="2"
               :maxlength="DESCRIPTION_MAX"
               :placeholder="$t('group.manage.descriptionPlaceholder')"
-              class="w-full resize-y rounded-lg bg-bg px-3 py-2 text-sm outline-none transition-colors"
+              class="w-full resize-y rounded-lg bg-surface-2 px-3 py-2 text-sm outline-none transition-colors"
             />
           </div>
 
@@ -502,7 +502,7 @@ async function confirmDelete(): Promise<void> {
               id="group-lead"
               v-model="leadBotId"
               data-test="group-dialog-lead"
-              class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
               @change="onLeadChange"
             >
               <option value="">{{ $t("group.manage.noLead") }}</option>
