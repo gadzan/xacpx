@@ -30,8 +30,7 @@ export default {
     searchPlaceholder: "搜索…",
     settings: "设置",
     instances: "实例",
-    openInstances: "打开实例",
-    closeInstances: "关闭实例",
+    back: "返回",
     openFiles: "打开文件",
     openTasks: "打开任务",
     files: "文件",
@@ -43,6 +42,11 @@ export default {
     sessions: "会话",
     bots: "Bots",
     groups: "群组",
+  },
+  mobileBar: {
+    openTabs: "已打开标签（{n}）",
+    switchTopic: "切换话题",
+    selectInstance: "选择实例",
   },
   settings: {
     title: "设置",

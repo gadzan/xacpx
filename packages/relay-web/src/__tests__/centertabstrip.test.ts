@@ -122,7 +122,7 @@ describe("CenterTabStrip", () => {
     expect(w.element.className).toContain("no-scrollbar");
   });
 
-  it("renders its own border/background chrome when standalone (default)", () => {
+  it("renders its own border/background chrome (desktop standalone row)", () => {
     const store = useCenterTabsStore();
     const K = sessionKey("i1", "s1");
     store.openFile(K, "src/a.ts");
@@ -131,20 +131,6 @@ describe("CenterTabStrip", () => {
     const cls = w.element.className;
     expect(cls).not.toContain("border-b"); // redesign PR2: no chrome border
     expect(cls).toContain("bg-surface");
-  });
-
-  it("drops its own border/background chrome when bare, so it slots into a host row", () => {
-    const store = useCenterTabsStore();
-    const K = sessionKey("i1", "s1");
-    store.openFile(K, "src/a.ts");
-
-    const w = mount(CenterTabStrip, { props: { sessionKey: K, bare: true }, ...g });
-    const cls = w.element.className;
-    expect(cls).not.toContain("border-b");
-    expect(cls).not.toContain("bg-surface");
-    // Still a working strip: chat + the open file tab both render.
-    expect(w.find('[data-test="tab-chat"]').exists()).toBe(true);
-    expect(w.findAll('[data-test="tab"]')).toHaveLength(1);
   });
 
   it("lifts the dragged tab (scale/opacity) once a pointer drag crosses the threshold", async () => {

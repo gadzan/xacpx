@@ -43,6 +43,10 @@ export interface MockHub {
   sendRebase(cols: number, rows: number, keyframe?: string, epoch?: number): void;
   sendBytes(data: string | Buffer): void;
   closeSockets(): void;
+  /** Refuse further /ws upgrades so a reconnect fails fast and an offline state (e.g. the
+   *  mobile connection strip) stays observable instead of flapping back online. */
+  stopAccepting(): void;
+  startAccepting(): void;
   setRole(role: "controller" | "spectator"): void;
   setDesktopMode(mode: "succeed" | "fail"): void;
   lastDesktopOpen: { requestId: string; instanceId: string } | null;
@@ -91,6 +95,7 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
   let sequence = 0;
   let browserTicketSeq = 0;
   let desktopMode: "succeed" | "fail" = "succeed";
+  let accepting = true;
   const desktopStreamIds: string[] = [];
   const desktopCloseRequests: string[] = [];
   let lastDesktopOpen: { requestId: string; instanceId: string } | null = null;
@@ -184,6 +189,10 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
       return;
     }
     if (path !== "/ws") {
+      socket.destroy();
+      return;
+    }
+    if (!accepting) {
       socket.destroy();
       return;
     }
@@ -395,6 +404,8 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
     closeSockets() {
       for (const ws of [...sockets]) ws.close();
     },
+    stopAccepting() { accepting = false; },
+    startAccepting() { accepting = true; },
     setRole(next) { role = next; },
     setDesktopMode(next) { desktopMode = next; },
     get lastDesktopOpen() { return lastDesktopOpen; },

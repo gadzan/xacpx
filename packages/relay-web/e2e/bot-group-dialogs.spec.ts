@@ -36,9 +36,6 @@ test.beforeEach(async ({ page }) => {
 async function openDialog(page: Page, kind: "bot" | "group"): Promise<Locator> {
   await loginAndShowInstances(page);
   const mode = page.getByTestId(`instance-nav-${kind === "bot" ? "bots" : "groups"}`);
-  // isVisible() includes off-canvas drawer content; wait for a real on-screen target.
-  const box = await mode.boundingBox();
-  if (box && box.x < 0) await page.getByTestId("open-instances").click();
   await expect(mode).toBeInViewport();
   await mode.click();
   await page.getByTestId(`new-${kind}-button`).click();

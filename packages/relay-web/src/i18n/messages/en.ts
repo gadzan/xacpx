@@ -32,8 +32,7 @@ export default {
     searchPlaceholder: "Search…",
     settings: "Settings",
     instances: "Instances",
-    openInstances: "Open instances",
-    closeInstances: "Close instances",
+    back: "Back",
     openFiles: "Open files",
     openTasks: "Open tasks",
     files: "Files",
@@ -45,6 +44,11 @@ export default {
     sessions: "Sessions",
     bots: "Bots",
     groups: "Groups",
+  },
+  mobileBar: {
+    openTabs: "Open tabs ({n})",
+    switchTopic: "Switch topic",
+    selectInstance: "Pick an instance",
   },
   settings: {
     title: "Settings",

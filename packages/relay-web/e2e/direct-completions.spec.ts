@@ -103,8 +103,6 @@ test("Direct cold slash and selected mention work by keyboard and touch without 
   });
   await loginAndShowInstances(page);
   const nav = page.getByTestId("instance-nav-bots");
-  const box = await nav.boundingBox();
-  if (box && box.x < 0) await page.getByTestId("open-instances").click();
   await nav.click();
   await page.getByTestId("bot-row").first().getByRole("button").first().click();
   const input = page.locator('textarea[role="combobox"]');

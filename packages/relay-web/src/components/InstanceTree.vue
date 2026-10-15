@@ -490,6 +490,16 @@ function onSessionCreated(alias: string) {
   if (id) emit("select", id, alias);
 }
 
+/** Open the create-session dialog for a specific instance. Exposed so the mobile home's
+ *  FAB (DashboardView) can reuse this component's single dialog + created-handler instead
+ *  of lifting dialog state up or mounting a second copy of the tree. */
+function openNewSession(instanceId: string): void {
+  const inst = store.byId(instanceId);
+  if (!inst) return;
+  dialogFor.value = { id: inst.id, name: inst.name };
+}
+defineExpose({ openNewSession });
+
 // Touch second path: swipe a row right→left to REVEAL its archive/delete blocks (tap a
 // block to execute); swipe left→right to close. This replaces the old swipe-to-execute
 // (which deleted on a single right-swipe — too easy to mis-trigger). Handlers are built
@@ -524,7 +534,7 @@ const rowSwipes = computed(() => {
 </script>
 
 <template>
-  <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5">
+  <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5 max-lg:pb-24">
     <!-- One instance card: header row + session area (flat or grouped) + footer.
          The card background is the level-1 zone of the tinted-zone hierarchy; group
          zones inside are one step lighter (visually isomorphic across all modes). -->
@@ -561,7 +571,7 @@ const rowSwipes = computed(() => {
                 data-test="instance-desktop"
                 :title="$t('desktop.title')"
                 :aria-label="$t('desktop.title')"
-                class="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-accent"
+                class="grid h-10 w-10 lg:h-6 lg:w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-accent"
                 @click="emit('openDesktop', inst.id)">
           <Monitor :size="13" />
         </button>
@@ -673,7 +683,7 @@ const rowSwipes = computed(() => {
                 data-test="edit-bot-tree-button"
                 :title="$t('bot.actions.edit')"
                 :aria-label="$t('bot.actions.edit')"
-                class="grid h-5 w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg"
+                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg"
                 @click.stop="botDialogFor = { instanceId: inst.id, instanceName: inst.name, bot: b }"
               >
                 <Pencil :size="11" />
@@ -684,7 +694,7 @@ const rowSwipes = computed(() => {
                 :title="b.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
                 :aria-label="$t('bot.removal.action')"
                 :disabled="b.retired === true"
-                class="grid h-5 w-5 place-items-center rounded-sm text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                 @click.stop="openBotRemoval(inst.id, b)"
               >
                 <Trash2 :size="11" />
@@ -719,7 +729,7 @@ const rowSwipes = computed(() => {
               data-test="manage-instance-from-bots"
               :title="$t('instance.manage')"
               :aria-label="$t('instance.manage')"
-              class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
               @click="manageFor = { id: inst.id, name: inst.name }"
             >
               <Settings2 :size="13" />
@@ -782,7 +792,7 @@ const rowSwipes = computed(() => {
                 data-test="edit-group-tree-button"
                 :title="$t('group.manage.editTitle')"
                 :aria-label="$t('group.manage.editTitle')"
-                class="grid h-5 w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg"
+                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg"
                 @click.stop="groupDialogFor = { instanceId: inst.id, instanceName: inst.name, group: g }"
               >
                 <Pencil :size="11" />
@@ -828,7 +838,7 @@ const rowSwipes = computed(() => {
               <span data-test="group-count" class="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">{{ grp.sessions.length }}</span>
             </button>
             <button data-test="group-new-session" :title="$t('instance.groupNewSession', { name: grp.key })" :aria-label="$t('instance.groupNewSession', { name: grp.key })"
-                    class="grid h-5 w-5 shrink-0 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
+                    class="grid h-10 w-10 lg:h-5 lg:w-5 shrink-0 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
                     @click.stop="openGroupDialog(inst, grp.key)"><Plus :size="12" /></button>
           </div>
           <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : ''">
@@ -857,7 +867,7 @@ const rowSwipes = computed(() => {
                 <!-- Selected row: left accent bar. -->
                 <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
                 <button
-                  class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
+                  class="relative flex min-h-[52px] lg:min-h-0 min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
                   @click="onRowTap(inst.id, s.alias)"
                 >
                   <Loader2 v-if="s.creating" data-test="session-creating" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
@@ -898,7 +908,7 @@ const rowSwipes = computed(() => {
                          @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
                          @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
                          v-focus />
-                  <span v-else data-test="session-name" class="min-w-0 truncate text-[12.5px] font-medium"
+                  <span v-else data-test="session-name" class="min-w-0 truncate max-lg:text-base text-[12.5px] font-medium"
                         :title="s.displayName || s.alias"
                         :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
                   <!-- Archived state is shown visually by the dimmed name (no text badge), but that
@@ -921,7 +931,7 @@ const rowSwipes = computed(() => {
                 <!-- Row actions: desktop overflow (⋯) menu → archive / delete. Hidden when the instance is offline. -->
                 <div v-if="inst.online" data-test="session-actions" class="relative mr-1 shrink-0">
                   <button data-test="session-menu" :aria-label="$t('common.more')"
-                          class="grid h-5 w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+                          class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
                           @click.stop="openSwipeFor = null; openMenuFor = openMenuFor === `${inst.id}:${s.alias}` ? null : `${inst.id}:${s.alias}`"><MoreHorizontal :size="13" /></button>
                 </div>
               </div>
@@ -1001,13 +1011,13 @@ const rowSwipes = computed(() => {
           <button v-if="inst.online && inst.sessionsLoaded && groupModeOf(inst) === 'instance'" data-test="toggle-archived-sessions"
                   :title="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
                   :aria-label="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
-                  class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="void toggleArchived(inst.id)"><ArchiveRestore :size="13" /></button>
           <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
-                  class="grid h-6 w-6 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft"
+                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft"
                   @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>
           <button data-test="manage-instance" :title="$t('instance.manage')" :aria-label="$t('instance.manage')"
-                  class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="13" /></button>
         </div>
         </template>

@@ -9,10 +9,6 @@ async function loginAndOpenSession(page: import("@playwright/test").Page): Promi
     await page.getByTestId("signin").click();
   }
   const sessionRow = page.getByTestId("session-row").first();
-  if (!(await sessionRow.isVisible().catch(() => false))) {
-    const open = page.getByTestId("open-instances");
-    if (await open.isVisible().catch(() => false)) await open.click();
-  }
   await expect(sessionRow).toBeVisible({ timeout: 20_000 });
   await sessionRow.getByTestId("session-name").evaluate((el) => (el as HTMLElement).click());
 }

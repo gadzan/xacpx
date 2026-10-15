@@ -116,10 +116,16 @@ test("selecting a session routes it into the chat store", async () => {
 test("nav aria-labels localize to the active locale", async () => {
   i18n.global.locale.value = "zh-CN";
   try {
+    const chat = useChatStore();
     const wrapper = mount(DashboardView, { global: { stubs: { ChatPane: true, InstanceTree: true, "router-link": true } } });
     await flushPromises();
     expect(wrapper.get('[data-test="global-search"]').attributes("aria-label")).toBe("搜索");
-    expect(wrapper.get('[data-test="open-instances"]').attributes("aria-label")).toBe("打开实例");
+    // The mobile top bar's left button is ← back to the home list.
+    chat.instanceId = "i1";
+    chat.sessionAlias = "backend";
+    await flushPromises();
+    expect(wrapper.get('[data-test="mobile-back"]').attributes("aria-label")).toBe("返回");
+    expect(wrapper.get('[data-test="mobile-more"]').attributes("aria-label")).toBe("更多");
   } finally {
     i18n.global.locale.value = "en";
   }

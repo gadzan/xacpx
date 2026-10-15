@@ -7,17 +7,16 @@ import { useTabDrag } from "../lib/use-tab-drag";
 import { iconForFile } from "../lib/file-icons";
 
 // The center tab strip: pinned Chat button + closable, drag-reorderable file/diff/
-// terminal tabs, horizontally scrollable when they overflow. Rendered in two places:
-// a standalone row above the content on desktop, and (with `bare`) inside the mobile
-// top bar where it replaces the session-name text. `bare` drops the strip's own chrome
-// (border/background/shrink-0) so it slots into a host row that already owns those.
+// terminal tabs, horizontally scrollable when they overflow. Rendered as a standalone row
+// above the center content on desktop; on mobile the open tabs live in the ⋯ sheet's
+// "open tabs" list instead (DashboardView), so this strip is desktop-only.
 //
 // `select-none` + `[-webkit-touch-callout:none]` on the root stop a touch press-hold
 // (the natural start of a drag) from highlighting a tab's label or popping the iOS
 // callout menu. Keep the root <div> the FIRST node in <template>: a leading sibling
 // comment would make the component a fragment root, so tests' `w.element` would resolve
 // to the comment instead of the div.
-const props = defineProps<{ sessionKey: string; bare?: boolean }>();
+const props = defineProps<{ sessionKey: string }>();
 const emit = defineEmits<{ close: [id: string] }>();
 const store = useCenterTabsStore();
 const { t } = useI18n();
@@ -98,8 +97,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
   <div
     ref="scroller"
     :style="maskStyle"
-    class="no-scrollbar flex select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none]"
-    :class="props.bare ? '' : 'shrink-0 bg-surface'"
+    class="no-scrollbar flex select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none] shrink-0 bg-surface"
   >
     <!-- Pinned chat tab: never closable, never draggable, always first. -->
     <button

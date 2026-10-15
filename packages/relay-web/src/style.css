@@ -180,3 +180,7 @@ select:not([data-ring="container"]):focus-visible {
     min-width: 0;
   }
 }
+
+/* Redesign PR4 §5.4: pinch-zoom is allowed again; keep iOS from auto-zooming a
+   focused field (it does so for font-size < 16px) on touch devices. */
+@media (pointer: coarse) { input, textarea, select { font-size: 16px !important; } }

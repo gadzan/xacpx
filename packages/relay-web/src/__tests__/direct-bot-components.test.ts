@@ -1833,6 +1833,122 @@ describe("Direct Bot Components", () => {
       expect(switchTopicSpy).toHaveBeenCalledWith("t2");
     });
 
+    function seedBot(overrides: Partial<BotSummaryDto> = {}): void {
+      useInstancesStore().instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      directBots.activeConversationId = "c1";
+      directBots.activeTopicId = "t1";
+      directBots.botsByInstance["i1"] = [
+        { id: "b1", name: "ReviewerBot", agent: "codex", workspace: "repo", role: "Code QA", enabled: true, updatedAt: "now", ...overrides },
+        { id: "b2", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      directBots.topicsByConversation["i1:c1"] = [
+        { id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" },
+        { id: "t2", conversationId: "c1", title: "PR Review", status: "active", createdAt: "now", updatedAt: "now" },
+      ];
+    }
+
+    it("mobile bar shows the topic as a tappable subtitle and switches from its sheet", async () => {
+      seedBot();
+      const directBots = useDirectBotsStore();
+      const switchTopicSpy = vi.spyOn(directBots, "switchTopic").mockResolvedValue();
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+
+      // Subtitle is the active topic; no leading "·" and no wrapped meta lines.
+      expect(wrapper.find('[data-test="mobile-topic-switch"]').text()).toBe("Default");
+
+      await wrapper.find('[data-test="mobile-topic-switch"]').trigger("click");
+      const sheet = wrapper.find('[data-test="bot-topic-sheet"]');
+      expect(sheet.exists()).toBe(true);
+      expect(sheet.findAll('[data-test="sheet-topic-option"]')).toHaveLength(2);
+      expect(sheet.find('[data-test="sheet-new-topic"]').exists()).toBe(true);
+      // Active topic is the highlighted row.
+      expect(sheet.findAll('[data-test="sheet-topic-option"]')[0].classes()).toContain("bg-accent-soft");
+
+      await sheet.findAll('[data-test="sheet-topic-option"]')[1].trigger("click");
+      expect(switchTopicSpy).toHaveBeenCalledWith("t2");
+      expect(wrapper.find('[data-test="bot-topic-sheet"]').exists()).toBe(false);
+    });
+
+    it("mobile bar subtitle falls back to the bot role when no topic is active", async () => {
+      seedBot();
+      useDirectBotsStore().activeTopicId = null;
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      expect(wrapper.find('[data-test="mobile-topic-switch"]').text()).toBe("Code QA");
+    });
+
+    it("mobile more sheet carries nav / edit / delete, and delete is disabled for a retired bot", async () => {
+      seedBot({ retired: true });
+      useGroupsStore().groupsByInstance["i1"] = [
+        { id: "g1", kind: "group", title: "Release", botIds: ["b1", "b2"], createdAt: "now", updatedAt: "now" },
+      ];
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+
+      await wrapper.find('[data-test="mobile-bot-more"]').trigger("click");
+      const sheet = wrapper.find('[data-test="mobile-bot-more-sheet"]');
+      expect(sheet.exists()).toBe(true);
+      expect(sheet.find('[data-test="sheet-bot-nav"]').exists()).toBe(true);
+      expect(sheet.find('[data-test="sheet-bot-edit"]').exists()).toBe(true);
+      const del = sheet.find('[data-test="sheet-bot-delete"]');
+      expect(del.attributes("disabled")).toBeDefined();
+      // Danger styling stays on the delete item.
+      expect(del.classes()).toContain("text-danger");
+      expect(del.classes()).toContain("hover:bg-danger/10");
+
+      // "Talk with" opens the same other-bots + groups lists as the desktop nav menu.
+      // It replaces the ⋯ sheet rather than stacking on it: one sheet dialog at a time.
+      await sheet.find('[data-test="sheet-bot-nav"]').trigger("click");
+      const nav = wrapper.find('[data-test="bot-nav-sheet"]');
+      expect(nav.exists()).toBe(true);
+      expect(wrapper.find('[data-test="mobile-bot-more-sheet"]').exists()).toBe(false);
+      expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1);
+      await nav.find('[data-test="sheet-bot-option"]').trigger("click");
+      expect(wrapper.emitted("navigateBot")?.[0]).toEqual(["i1", "b2"]);
+      expect(wrapper.find('[data-test="bot-nav-sheet"]').exists()).toBe(false);
+      await wrapper.find('[data-test="mobile-bot-more"]').trigger("click");
+      await wrapper.find('[data-test="sheet-bot-nav"]').trigger("click");
+      await wrapper.find('[data-test="sheet-group-option"]').trigger("click");
+      expect(wrapper.emitted("navigateGroup")?.[0]).toEqual(["i1", "g1"]);
+    });
+
+    it("mobile bar's ← emits back (DashboardView returns to the home list)", async () => {
+      seedBot();
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      const back = wrapper.find('[data-test="mobile-back"]');
+      expect(back.exists()).toBe(true);
+      expect(back.attributes("aria-label")).toBe("Back");
+      await back.trigger("click");
+      expect(wrapper.emitted("back")).toHaveLength(1);
+      expect(wrapper.find('[data-test="open-instances"]').exists()).toBe(false);
+    });
+
+    it("mobile more sheet's edit entry opens the bot dialog", async () => {
+      seedBot();
+      vi.spyOn(useInstancesStore(), "getAgentCapabilities").mockResolvedValue(needsSetupCapability(
+        { code: "discovery-available", message: "no saved model list" },
+        "Fetch the model list.",
+        { fetchedAt: "2026-10-09T00:00:00.000Z" },
+      ));
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await wrapper.find('[data-test="mobile-bot-more"]').trigger("click");
+      await wrapper.find('[data-test="sheet-bot-edit"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="mobile-bot-more-sheet"]').exists()).toBe(false);
+      expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+    });
+
     it("navigates to another Bot or a Group without treating @ as a handoff", async () => {
       const directBots = useDirectBotsStore();
       const groups = useGroupsStore();

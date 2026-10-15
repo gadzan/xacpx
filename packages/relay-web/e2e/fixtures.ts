@@ -73,11 +73,8 @@ export async function loginAndShowInstances(page: Page): Promise<void> {
     await token.fill("e2e-token");
     await page.getByTestId("signin").click();
   }
+  // Desktop: the sidebar column; mobile: the home list (nothing selected yet).
   const sessionRow = page.getByTestId("session-row").first();
-  if (!(await sessionRow.isVisible().catch(() => false))) {
-    const open = page.getByTestId("open-instances");
-    if (await open.isVisible().catch(() => false)) await open.click();
-  }
   await expect(sessionRow).toBeVisible({ timeout: 30_000 });
 }
 
@@ -92,16 +89,8 @@ export async function loginAndOpenTerminal(page: Page): Promise<void> {
   const termBtn = page.getByTestId("toggle-terminal");
   await expect(termBtn).toBeVisible({ timeout: 30_000 });
   const sessionRow = page.getByTestId("session-row").first();
-  if (!(await sessionRow.isVisible().catch(() => false))) {
-    const open = page.getByTestId("open-instances");
-    if (await open.isVisible().catch(() => false)) await open.click();
-  }
   await expect(sessionRow).toBeVisible({ timeout: 20_000 });
   await sessionRow.getByTestId("session-name").evaluate((el) => (el as HTMLElement).click());
-  const closeInstances = page.getByTestId("close-instances");
-  if (await closeInstances.isVisible().catch(() => false)) {
-    await closeInstances.evaluate((el) => (el as HTMLElement).click());
-  }
   await expect(termBtn).toBeEnabled({ timeout: 10_000 });
   await termBtn.evaluate((el) => (el as HTMLElement).click());
   await expect(page.getByTestId("terminal-host")).toBeVisible();
