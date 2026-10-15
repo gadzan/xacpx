@@ -862,7 +862,7 @@ export default {
       completionerror: "Could not load suggestions",
       completionready: "No matching suggestions",
       moreCompletions: "More suggestions",
-      placeholder: "Type a message... (Enter to send, Shift+Enter for newline)",
+      placeholder: "Message…",
       send: "Send",
       stop: "Stop",
       stopRun: "Stop Run",

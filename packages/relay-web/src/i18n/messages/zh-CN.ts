@@ -859,7 +859,7 @@ export default {
       completionerror: "无法加载建议",
       completionready: "没有匹配的建议",
       moreCompletions: "更多建议",
-      placeholder: "输入消息...（Enter 发送，Shift+Enter 换行）",
+      placeholder: "输入消息…",
       send: "发送",
       stop: "停止",
       stopRun: "停止运行",
