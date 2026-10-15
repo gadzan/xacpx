@@ -277,7 +277,7 @@ onBeforeUnmount(() => {
   background: rgb(var(--c-bg));
   color: rgb(var(--c-fg));
   border: 1px solid rgb(var(--c-border));
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0.65em 0.85em;
   overflow-x: auto;
   margin: 0.6em 0;
@@ -375,7 +375,7 @@ onBeforeUnmount(() => {
   max-height: 560px;
   overflow: hidden;
   border: 1px solid rgb(var(--c-border));
-  border-radius: 8px;
+  border-radius: 10px;
   background: rgb(var(--c-bg));
   box-shadow: none;
   touch-action: pan-y; /* one finger scrolls the page; the enhancer handles pinch + mouse drag */
@@ -398,7 +398,7 @@ onBeforeUnmount(() => {
   background: rgb(var(--c-bg));
   color: rgb(var(--c-fg));
   border: 1px solid rgb(var(--c-border));
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0.65em 0.85em;
   margin: 0;
   max-height: 560px;
