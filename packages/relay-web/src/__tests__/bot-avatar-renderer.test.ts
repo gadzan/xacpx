@@ -167,6 +167,10 @@ describe("BotAvatar resources and safe rendering", () => {
     expect(frames.size).toBe(0);
     expect(observers).toHaveLength(0);
   });
+  it("keeps ZWJ emoji and skin tone modifiers whole at the two-grapheme limit", () => {
+    const wrapper = avatar({ avatar: { version: 1, kind: "text", value: "👩‍💻👍🏽X" } });
+    expect(wrapper.find(".bot-avatar-text").text()).toBe("👩‍💻👍🏽");
+  });
   it("uses distinct deterministic instance clips without per-frame live announcements", () => {
     const parent = mount({
       components: { BotAvatar },
