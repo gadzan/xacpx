@@ -153,7 +153,7 @@ const worktreeRunId = computed(() => {
         data-test="group-edit-button"
         :title="$t('group.manage.editTitle')"
         :aria-label="$t('group.manage.editTitle')"
-        class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+        class="ml-auto grid h-10 w-10 lg:h-7 lg:w-7 shrink-0 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg"
         @click="groupDialogOpen = true"
       >
         <Pencil :size="14" />
