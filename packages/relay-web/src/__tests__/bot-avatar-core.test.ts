@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { BOT_AVATAR_EXPRESSIONS, BOT_AVATAR_SHAPES, type CharacterAvatarConfig } from "@ganglion/xacpx-relay-protocol";
+import { BOT_AVATAR_COLORS, BOT_AVATAR_EXPRESSIONS, BOT_AVATAR_SHAPES, type CharacterAvatarConfig } from "@ganglion/xacpx-relay-protocol";
+import { AVATAR_EXPRESSIONS, EYE_CENTER_PULL, EYE_SCALE_H, EYE_SCALE_W, EYE_SPREAD } from "../lib/bot-avatar/catalog";
 import { avatarTransition, sampleAvatar, sampleTransition, shouldCelebrate } from "../lib/bot-avatar/core";
-import { radiusAtAngle } from "../lib/bot-avatar/geometry";
+import { eyePoses, radiusAtAngle } from "../lib/bot-avatar/geometry";
 import type { BotAvatarState } from "../lib/bot-avatar-state";
 
 const config: CharacterAvatarConfig = { version: 1, kind: "character", shape: "nuage", color: "violet", expression: "curieux", motion: "auto" };
@@ -16,6 +17,46 @@ describe("avatar geometry and deterministic sampling", () => {
         expect(Math.hypot(px, py)).toBeLessThan(radiusAtAngle(pose.radii, Math.atan2(py, px)) * 34);
       }
     }
+  });
+  it("keeps every fitted eye corner inside the 0.83 safety radius for all colours, shapes and expressions", () => {
+    expect([BOT_AVATAR_COLORS.length, BOT_AVATAR_SHAPES.length, BOT_AVATAR_EXPRESSIONS.length]).toEqual([12, 8, 16]);
+    let checked = 0;
+    for (const color of BOT_AVATAR_COLORS) for (const shape of BOT_AVATAR_SHAPES) for (const expression of BOT_AVATAR_EXPRESSIONS) {
+      const pose = sampleAvatar({ config: { ...config, color, shape, expression }, state: "idle", motion: false }, 0);
+      for (const eye of pose.eyes) for (const x of [-eye.w / 2, eye.w / 2]) for (const y of [-eye.h / 2, eye.h / 2]) {
+        const px = eye.x + eye.a * x + eye.c * y, py = eye.y + eye.b * x + eye.d * y;
+        expect(Math.hypot(px, py)).toBeLessThanOrEqual(radiusAtAngle(pose.radii, Math.atan2(py, px)) * 34 * 0.83 + 1e-9);
+        checked++;
+      }
+    }
+    expect(checked).toBe(12 * 8 * 16 * 2 * 4);
+  });
+  it("keeps drifting, working and streaming eyes inside the silhouette so the clip never cuts them", () => {
+    for (const shape of BOT_AVATAR_SHAPES) for (const expression of BOT_AVATAR_EXPRESSIONS) for (const state of ["idle", "working", "streaming"] as const) {
+      for (let t = 0; t < 12; t += 0.37) {
+        const pose = sampleAvatar({ config: { ...config, shape, expression }, state, motion: true }, t, { x: Math.sin(t), y: Math.cos(t) });
+        for (const eye of pose.eyes) for (const x of [-eye.w / 2, eye.w / 2]) for (const y of [-eye.h / 2, eye.h / 2]) {
+          const px = eye.x + eye.a * x + eye.c * y, py = eye.y + eye.b * x + eye.d * y;
+          expect(Math.hypot(px, py)).toBeLessThan(radiusAtAngle(pose.radii, Math.atan2(py, px)) * 34 * Math.min(pose.sx, pose.sy));
+        }
+      }
+    }
+  });
+  it("draws bigger eyes pulled toward the centre with the shared scale and placement constants", () => {
+    const expression = AVATAR_EXPRESSIONS.neutre;
+    const pose = sampleAvatar({ config: { ...config, shape: "cercle", expression: "neutre" }, state: "idle", motion: false }, 0);
+    const raw = eyePoses(expression.gaze, expression.split);
+    const fit = pose.eyes[0].w / (expression.eyes[0].w * 34 * EYE_SCALE_W);
+    expect(fit).toBeGreaterThan(0);
+    expect(fit).toBeLessThanOrEqual(1);
+    expect(pose.eyes[0].h).toBeCloseTo(expression.eyes[0].h * 34 * fit * EYE_SCALE_H, 9);
+    const mx = (raw[0].x + raw[1].x) / 2 * 34 * fit, my = (raw[0].y + raw[1].y) / 2 * 34 * fit;
+    for (const i of [0, 1] as const) {
+      expect(pose.eyes[i].x).toBeCloseTo(mx * EYE_CENTER_PULL + (raw[i].x * 34 * fit - mx) * EYE_SPREAD, 9);
+      expect(pose.eyes[i].y).toBeCloseTo(my * EYE_CENTER_PULL + (raw[i].y * 34 * fit - my) * EYE_SPREAD, 9);
+    }
+    const mid = Math.hypot((pose.eyes[0].x + pose.eyes[1].x) / 2, (pose.eyes[0].y + pose.eyes[1].y) / 2);
+    expect(mid).toBeCloseTo(Math.hypot(mx, my) * EYE_CENTER_PULL, 9);
   });
   it("freezes preview samples and static states independent of time and pointer", () => {
     for (const state of states) {

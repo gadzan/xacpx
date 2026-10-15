@@ -158,6 +158,32 @@ describe("BotAvatar resources and safe rendering", () => {
     tick(90000); await nextTick();
     expect(eyes(wrapper)).toEqual(before);
   });
+  it("draws a flat body and white, unstroked eyes; creme gets ink eyes", () => {
+    for (const color of ["violet", "gris", "encre", "bleu"] as const) {
+      const wrapper = avatar({ avatar: { ...config, color }, static: true });
+      const body = wrapper.find(".bot-avatar-body");
+      for (const attr of ["stroke", "stroke-opacity", "stroke-width"]) expect(body.attributes(attr)).toBeUndefined();
+      for (const eye of wrapper.findAll("rect")) {
+        expect(eye.attributes("fill")).toBe("#FFFFFF");
+        expect(eye.attributes("stroke")).toBeUndefined();
+        expect(eye.attributes("stroke-width")).toBeUndefined();
+      }
+    }
+    const creme = avatar({ avatar: { ...config, color: "creme" }, static: true });
+    expect(creme.findAll("rect").map((eye) => eye.attributes("fill"))).toEqual(["#0A0A0C", "#0A0A0C"]);
+  });
+  it("marks only creme and encre bodies for the theme-specific low-contrast hairline", () => {
+    expect(avatar({ avatar: { ...config, color: "creme" }, static: true }).find(".bot-avatar-body").attributes("data-hairline")).toBe("creme");
+    expect(avatar({ avatar: { ...config, color: "encre" }, static: true }).find(".bot-avatar-body").attributes("data-hairline")).toBe("encre");
+    for (const color of ["violet", "gris", "bleu", "ambre"] as const) {
+      expect(avatar({ avatar: { ...config, color }, static: true }).find(".bot-avatar-body").attributes("data-hairline")).toBeUndefined();
+    }
+  });
+  it("keeps the queued status ring", () => {
+    const wrapper = avatar({ state: "queued", static: true });
+    expect(wrapper.find("circle").exists()).toBe(true);
+    expect(wrapper.find("circle").attributes("stroke")).toBe("rgb(var(--c-accent))");
+  });
   it("renders legacy text as text, never as markup or a network image", () => {
     const text = "<img src=https://example.invalid/avatar onerror=alert(1)>";
     const wrapper = avatar({ avatar: { version: 1, kind: "text", value: text } });

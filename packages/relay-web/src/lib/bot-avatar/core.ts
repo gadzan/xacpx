@@ -1,6 +1,6 @@
 import type { CharacterAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 import type { BotAvatarState } from "../bot-avatar-state";
-import { AVATAR_EXPRESSIONS, AVATAR_EYE_FIT, AVATAR_PROFILES, AVATAR_RGB } from "./catalog";
+import { AVATAR_EXPRESSIONS, AVATAR_EYE_FIT, AVATAR_PROFILES, AVATAR_RGB, EYE_SCALE_H, EYE_SCALE_W, placeEye } from "./catalog";
 import { clamp, eyePoses, lerp, loopNoise } from "./geometry";
 
 export interface AvatarEye { x: number; y: number; a: number; b: number; c: number; d: number; w: number; h: number }
@@ -63,15 +63,18 @@ export function sampleAvatar(target: AvatarTarget, t: number, pointer?: AvatarPo
   const lid = animated ? blink(time) : 1;
   const wink = animated && state === "completed" && target.celebrate && time < 0.8
     ? Math.sin(clamp((time - 0.15) / 0.4) * Math.PI) : 0;
+  // Gaze drift, pointer follow and blink all act on the raw projection; the shared
+  // PULL / SPREAD placement is applied afterwards so it never changes their motion.
+  const mx = (projections[0].x + projections[1].x) / 2 * 34 * fit, my = (projections[0].y + projections[1].y) / 2 * 34 * fit;
   const eyes = projections.map((pose, i): AvatarEye => {
     const cfg = expression.eyes[i]!;
     const tilt = cfg.tilt * Math.PI / 180, c = Math.cos(tilt), s = Math.sin(tilt);
     const open = 0.06 + 0.94 * cfg.open * lid * (i === 1 ? 1 - wink : 1);
     return {
-      x: pose.x * 34 * fit, y: pose.y * 34 * fit,
+      x: placeEye(pose.x * 34 * fit, mx), y: placeEye(pose.y * 34 * fit, my),
       a: pose.a * c + pose.c * s, b: (pose.b * c + pose.d * s) * open,
       c: pose.c * c - pose.a * s, d: (pose.d * c - pose.b * s) * open,
-      w: cfg.w * 34 * fit * (1 + (streaming ? pulse * 0.07 : 0)), h: cfg.h * 34 * fit,
+      w: cfg.w * 34 * fit * EYE_SCALE_W * (1 + (streaming ? pulse * 0.07 : 0)), h: cfg.h * 34 * fit * EYE_SCALE_H,
     };
   }) as [AvatarEye, AvatarEye];
   return {
