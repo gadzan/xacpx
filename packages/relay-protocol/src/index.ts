@@ -9,5 +9,6 @@ export * from "./payload-validators.js";
 export * from "./desktop-credential.js";
 export * from "./agent-capability.js";
 export * from "./router-availability.js";
+export * from "./bot-avatar.js";
 export * from "./jev-settings.js";
 export * from "./type-guards.js";

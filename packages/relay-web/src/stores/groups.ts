@@ -539,6 +539,7 @@ export const useGroupsStore = defineStore("groups", () => {
   const topicReady = ref<boolean>(true);
 
   const activeRun = ref<ConversationRunDto | null>(null);
+  const liveCompletedMemberTurns = ref<{ runId: string; ids: Record<string, true> } | null>(null);
   const memberTurnsById = ref<Record<string, MemberTurnSummaryDto>>({});
   const liveTurnsByMember = ref<Record<string, GroupLiveTurn>>({});
   const planByRunId = ref<Record<string, PlanEntryDto[]>>({});
@@ -1813,6 +1814,7 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   async function selectGroup(targetInstanceId: string, groupId: string): Promise<void> {
+    liveCompletedMemberTurns.value = null;
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -1906,6 +1908,7 @@ export const useGroupsStore = defineStore("groups", () => {
     // Topic. The old draft must be discarded here — the composer owns prose, the
     // store owns ownership, and the draft has no Topic identity.
     const generation = ++currentSelectionGeneration;
+    liveCompletedMemberTurns.value = null;
     historyRequestSequence += 1;
     discoverySequence += 1;
     retireOlderRequest();
@@ -1941,6 +1944,7 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   function clearSelection(): void {
+    liveCompletedMemberTurns.value = null;
     currentSelectionGeneration++;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -2574,6 +2578,7 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   async function reconcileOnReconnect(): Promise<void> {
+    liveCompletedMemberTurns.value = null;
     clearHandoffRunDetails();
     const barrierIds: Record<string, true> = {};
     for (const id of Object.keys(groupsLoaded.value)) barrierIds[id] = true;
@@ -2691,6 +2696,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (event.kind === "state-snapshot") {
       if (event.instanceId !== instanceId.value) return;
+      liveCompletedMemberTurns.value = null;
       clearHandoffRunDetails();
       if (activeConversationId.value && activeTopicId.value) {
         const matchingTurns = event.turns.filter(
@@ -3033,6 +3039,11 @@ export const useGroupsStore = defineStore("groups", () => {
           return;
         }
         const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
+        if (memberTurn.state === "completed" && priorMember
+          && (priorMember.state === "queued" || priorMember.state === "dispatched" || priorMember.state === "running")) {
+          if (liveCompletedMemberTurns.value?.runId !== run.id) liveCompletedMemberTurns.value = { runId: run.id, ids: {} };
+          liveCompletedMemberTurns.value.ids[memberTurn.id] = true;
+        }
         activeRun.value = mergeRun(activeRun.value, run);
                 resolveUncertainPromptAgainstRun(run);
         applyMemberTurns([memberTurn]);
@@ -3169,6 +3180,7 @@ export const useGroupsStore = defineStore("groups", () => {
     historyErrorDetail,
     topicReady,
     activeRun,
+    liveCompletedMemberTurns,
     memberTurns,
     memberTurnsById,
     liveTurns,

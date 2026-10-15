@@ -7,6 +7,7 @@
 // The registry keys are the control-RPC MessageTypes; `satisfies Record<ControlRpcType, …>`
 // makes tsc fail if a control RPC is added to the union without a validator (or vice versa),
 // and `parseControlPayload` forces every connector dispatch arm to register its message type.
+import { isBotAvatarWriteConfig } from "./bot-avatar.js";
 import { validAgentMentions } from "./agent-mentions.js";
 import {
   MSG,
@@ -535,14 +536,14 @@ const validateBotsGet: Validator<BotsGetPayload> = (p) => {
 const validateBotsCreate: Validator<BotsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.name) && isStr(o.agent) && isStr(o.workspace)
-    && optStr(o.avatar) && optStr(o.role) && optStr(o.instructions)
+    && (o.avatar === undefined || isBotAvatarWriteConfig(o.avatar)) && optStr(o.role) && optStr(o.instructions)
     && optStr(o.model) && optStr(o.effort) && optBool(o.enabled)
     ? (o as unknown as BotsCreatePayload) : null;
 };
 const validateBotsUpdate: Validator<BotsUpdatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.id)
-    && optStr(o.name) && optStrOrNull(o.avatar) && optStrOrNull(o.role)
+    && optStr(o.name) && (o.avatar === undefined || o.avatar === null || isBotAvatarWriteConfig(o.avatar)) && optStrOrNull(o.role)
     && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace)
     && optStrOrNull(o.model) && optStrOrNull(o.effort) && optBoolOrNull(o.enabled)
     ? (o as unknown as BotsUpdatePayload) : null;

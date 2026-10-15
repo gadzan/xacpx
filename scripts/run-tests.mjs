@@ -16,14 +16,11 @@ const STEP_TIMEOUT_MS = Number(
   process.env.RUN_TESTS_STEP_TIMEOUT_MS ?? (root === "tests/compat" ? 600_000 : 180_000),
 );
 
-// Channel-package tests import `packages/*/src`, which value-import the bare
-// specifier "weacpx/plugin-api". That resolves via the workspace-root exports
-// map to `dist/plugin-api.js`, so the bundle MUST exist before any test runs —
-// otherwise the import fails with "Cannot find module 'weacpx/plugin-api'".
-// (`build:plugin-api` is emitDeclarationOnly and only produces the .d.ts; the
-// runnable .js comes from this bun build.) Build it once up front so every test
-// entry point — npm test, test:unit, test:smoke, CI publish gates — is
-// self-sufficient and order-independent.
+const protocolBuildCode = await runOne("bun", ["run", "build:relay-protocol"]);
+if (protocolBuildCode !== 0) {
+  process.exit(protocolBuildCode ?? 1);
+}
+
 const buildCode = await runOne("bun", [
   "build",
   "./src/plugin-api.ts",
@@ -59,17 +56,6 @@ if (runtimeWorkerBuildCode !== 0) {
   process.exit(runtimeWorkerBuildCode ?? 1);
 }
 
-// relay/channel-relay tests import "@ganglion/xacpx-relay-protocol", which the
-// workspace link resolves to packages/relay-protocol/dist — build it up front
-// for the same order-independence reason as plugin-api above. Use the full
-// build:relay-protocol script (NOT a bare `bun build`): bun build emits only
-// index.js, so type-only exports (interfaces like PromptAttachmentRef vanish in
-// JS) are invisible to tsc and the typecheck step fails with "no exported
-// member". The script's `tsc -p` emits the .d.ts the typecheck needs.
-const protocolBuildCode = await runOne("bun", ["run", "build:relay-protocol"]);
-if (protocolBuildCode !== 0) {
-  process.exit(protocolBuildCode ?? 1);
-}
 
 const plan = buildTestPlan(root);
 

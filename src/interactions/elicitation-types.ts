@@ -1,3 +1,5 @@
+import type { ConversationTurnCorrelation } from "../control/conversation-control-dtos";
+
 /**
  * Plugin-facing Elicitation contract (M1, channel-neutral).
  *
@@ -118,6 +120,7 @@ export interface ChannelElicitationRequest {
   readonly chatKey: string;
   readonly accountId?: string;
   readonly replyContextToken?: string;
+  readonly conversation?: Readonly<ConversationTurnCorrelation>;
   /**
    * Whether this turn's destination is provably 1:1, as reported by the channel's
    * own ingress metadata.

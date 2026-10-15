@@ -3,7 +3,12 @@
 
 ### Added
 
+- **Custom animated Bot avatars:** appearance tab with presets, shape/color/expression choices, live previews and motion control; shared SVG rendering across sidebar, Direct, Group, member selection and handoffs. Animation follows scoped live tasks, respects reduced motion/visibility, and never replays restored completion. Structured avatar contracts preserve legacy text and accepted snapshots; exact kernel-attested elicitation IDs enable truthful waiting states. Includes bloub MIT attribution. Upgrade the Relay stack together.
 - **Jev-backed automatic collaboration:** the bundled router now asks TypeSafe Jev (`jev-1.13.0`, `POST https://api.typesafe.ai/v1/systemone`) one choice question (state = the request plus bounded recent context, criteria = each enabled member's role/name) and dispatches to exactly ONE member. Confidence below `JEV_MIN_CONFIDENCE` (0.6), an unknown pick, or any Jev error falls back to the Group lead (else the first enabled member). The decision carries a `routingReason` that the Run card renders ("已分派给 X" plus reason/confidence). Jev settings (endpoint, API key, optional proxy; an empty proxy falls back to the daemon's `HTTPS_PROXY`/`https_proxy`) live per instance in `~/.xacpx/jev.json` (mode 0600, never in config.json, never logged) behind new instance-scoped RPCs `control.jev.get|update|test`; the key is only ever returned masked. The instance dialog gains the settings and a connection test (HTTP 451 -> region blocked, configure a proxy; 401/403 -> bad key). Automatic collaboration is `ready` only with a Jev key (new availability code `jev-not-configured`), and the Group composer hides 自动协作 entirely unless the router is ready AND a key is configured. The lead mode stays the default. The deterministic fan-out stays in code but is no longer reachable from the UI.
+
+### Fixed
+
+- **Legacy Bot emoji avatars stay intact:** text avatars display up to two complete Unicode grapheme clusters, preserving joined emoji and skin-tone modifiers without changing stored values.
 
 ## [0.24.10-beta.1] - 2026-10-14
 

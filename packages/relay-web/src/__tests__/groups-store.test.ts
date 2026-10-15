@@ -54,6 +54,32 @@ function historyWith(messages: ConversationHistoryResponseDto["messages"]): Conv
 }
 
 describe("useGroupsStore", () => {
+  it("authorizes only a live member completion and clears it on recovery", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const run: ConversationRunDto = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1", requestMessageId: "msg_1",
+      requestId: "req_1", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now",
+    };
+    const member: MemberTurnSummaryDto = {
+      id: "turn_a", runId: run.id, conversationId: run.conversationId, topicId: run.topicId,
+      botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "running", createdAt: "now",
+    };
+    store.activeRun = run;
+    store.memberTurnsById = { turn_a: member, turn_b: { ...member, id: "turn_b", botId: "bot_b", state: "queued" } };
+    store.applyEvent({
+      kind: "control-event", instanceId: "inst_1",
+      event: { type: "member-turn-finished", run, memberTurn: { ...member, state: "completed" } },
+    } as never);
+    expect(store.liveCompletedMemberTurns).toEqual({ runId: run.id, ids: { turn_a: true } });
+    expect(store.memberTurnsById.turn_b?.state).toBe("queued");
+    mockRpc.mockResolvedValue({ error: { code: "unavailable", message: "offline" } });
+    store.applyEvent({ kind: "state-snapshot", instanceId: "inst_1", sessions: [], turns: [] } as never);
+    expect(store.liveCompletedMemberTurns).toBeNull();
+    expect(store.memberTurnsById.turn_a?.state).toBe("completed");
+  });
   beforeEach(() => {
     setActivePinia(createPinia());
     mockRpc.mockReset();

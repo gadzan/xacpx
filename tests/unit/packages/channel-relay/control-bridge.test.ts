@@ -231,6 +231,40 @@ async function dispatch(
   return await new Promise((resolve) => bridge(envelope, resolve));
 }
 
+test("Bot avatar configs traverse connector writes and reads with field-specific rejection", async () => {
+  const avatar = { version: 1, kind: "character", shape: "nuage", color: "bleu", expression: "curieux", motion: "auto" };
+  const profile = { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "backend", avatar };
+  const creates: unknown[] = [];
+  const patches: unknown[] = [];
+  const { control } = makeFakeControl({
+    createBot: async (input: unknown) => { creates.push(input); return profile; },
+    updateBot: async (id: string, patch: unknown) => { patches.push({ id, patch }); return profile; },
+    getBot: () => profile,
+    listBots: () => [profile],
+  });
+  const bridge = createControlBridge(control as never);
+  const create = { name: "Reviewer", agent: "codex", workspace: "backend", avatar };
+  expect(await dispatch(bridge, req(MSG.botsCreate, create))).toEqual({ bot: profile });
+  expect(creates).toEqual([create]);
+  expect(await dispatch(bridge, req(MSG.botsUpdate, { id: "bot_1", avatar }))).toEqual({ bot: profile });
+  expect(await dispatch(bridge, req(MSG.botsUpdate, { id: "bot_1", avatar: null }))).toEqual({ bot: profile });
+  expect(await dispatch(bridge, req(MSG.botsUpdate, { id: "bot_1", name: "Renamed" }))).toEqual({ bot: profile });
+  expect(patches).toEqual([
+    { id: "bot_1", patch: { avatar } }, { id: "bot_1", patch: { avatar: null } },
+    { id: "bot_1", patch: { name: "Renamed" } },
+  ]);
+  expect(await dispatch(bridge, req(MSG.botsGet, { id: "bot_1" }))).toEqual({ bot: profile });
+  expect(await dispatch(bridge, req(MSG.botsList, {}))).toEqual({ bots: [profile] });
+  for (const invalid of ["🤖", { ...avatar, version: 2 }, { ...avatar, shape: "unknown" }]) {
+    expect(await dispatch(bridge, req(MSG.botsCreate, { ...create, avatar: invalid })))
+      .toMatchObject({ error: { code: "avatar_invalid" } });
+    expect(await dispatch(bridge, req(MSG.botsUpdate, { id: "bot_1", avatar: invalid })))
+      .toMatchObject({ error: { code: "avatar_invalid" } });
+  }
+  expect(creates).toHaveLength(1);
+  expect(patches).toHaveLength(3);
+});
+
 test("conversation router get returns the availability and rejects extra fields", async () => {
   const availability = {
     status: "disabled-by-config",

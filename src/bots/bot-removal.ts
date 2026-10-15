@@ -1,3 +1,4 @@
+import { copyBotAvatar, parseStoredBotAvatar, type BotAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 import { createHash } from "node:crypto";
 
 import { BotError } from "./bot-error";
@@ -16,7 +17,7 @@ export type BotRemovalBarrierPhase = Exclude<BotRemovalPhase, "previewed">;
 export interface BotTombstone {
   id: string;
   name: string;
-  avatar?: string;
+  avatar?: BotAvatarConfig;
   role?: string;
   agent: string;
   workspace: string;
@@ -154,7 +155,7 @@ export function tombstoneFromProfile(bot: BotProfile, retiredAt: string): BotTom
   return {
     id: bot.id,
     name: bot.name,
-    ...(bot.avatar ? { avatar: bot.avatar } : {}),
+    ...(bot.avatar ? { avatar: copyBotAvatar(bot.avatar) } : {}),
     ...(bot.role ? { role: bot.role } : {}),
     agent: bot.agent,
     workspace: bot.workspace,
@@ -286,7 +287,7 @@ function parseTombstone(value: unknown, botId: string): BotTombstone | undefined
   if (typeof record.agent !== "string" || typeof record.workspace !== "string" || typeof record.retiredAt !== "string") {
     return undefined;
   }
-  const avatar = optionalText(record.avatar);
+  const avatar = parseStoredBotAvatar(record.avatar);
   const role = optionalText(record.role);
   if (avatar === null || role === null) {
     return undefined;

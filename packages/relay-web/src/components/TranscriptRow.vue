@@ -33,8 +33,10 @@ const props = defineProps<{
   >
     <div v-if="!own && !hideLeadingAvatar" class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" data-avatar-key="row">
       <span class="grid h-6 w-6 place-items-center overflow-hidden rounded-full border border-border bg-surface">
-        <AgentIcon v-if="driver" :driver="driver" :size="15" fill />
-        <Bot v-else :size="15" class="text-fg-muted" />
+        <slot name="avatar">
+          <AgentIcon v-if="driver" :driver="driver" :size="15" fill />
+          <Bot v-else :size="15" class="text-fg-muted" />
+        </slot>
       </span>
     </div>
 

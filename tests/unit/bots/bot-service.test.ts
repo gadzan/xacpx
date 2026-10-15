@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
+import type { CharacterAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 
 import { BotError } from "../../../src/bots/bot-error";
 import { BotService } from "../../../src/bots/bot-service";
+import { snapshotBotProfile, snapshotGroupMemberProfile } from "../../../src/bots/bot-types";
+import { tombstoneFromProfile } from "../../../src/bots/bot-removal";
+import { toBotDetail } from "../../../src/control/conversation-control-dtos";
 import type { AppConfig } from "../../../src/config/types";
 import { createDirectBindingId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
@@ -49,6 +53,107 @@ test("createBot persists a profile with a stable id independent from its name", 
   expect(service.getBot("bot_fixed").id).toBe("bot_fixed");
   expect(service.getBot("bot_fixed").name).toBe("Senior Reviewer");
   expect(service.getBot("bot_fixed").profileRevision).toBe(2);
+});
+
+test("avatar writes own their values and omitted updates preserve them while null clears", async () => {
+  const { service, state, store } = createService();
+  const avatar: CharacterAvatarConfig = {
+    version: 1, kind: "character", shape: "nuage", color: "bleu", expression: "curieux", motion: "auto",
+  };
+  const original = { ...avatar };
+  const created = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", avatar });
+  avatar.color = "rouge";
+  if (created.avatar?.kind !== "character") throw new Error("missing character avatar");
+  created.avatar.shape = "cercle";
+  const detail = service.getBot(created.id);
+  const listed = service.listBots()[0]!;
+  if (detail.avatar?.kind !== "character" || listed.avatar?.kind !== "character") throw new Error("missing character avatar");
+  detail.avatar.motion = "off";
+  listed.avatar.expression = "triste";
+  expect(state.bots[created.id]?.avatar).toEqual(original);
+  expect(store.saved[0]?.bots[created.id]?.avatar).toEqual(original);
+  expect((await service.updateBot(created.id, { role: "review" })).avatar).toEqual(original);
+  expect((await service.updateBot(created.id, { avatar: undefined })).avatar).toEqual(original);
+  const replacement: CharacterAvatarConfig = { ...original, color: "vert" };
+  const updated = await service.updateBot(created.id, { avatar: replacement });
+  replacement.color = "rose";
+  if (updated.avatar?.kind !== "character") throw new Error("missing character avatar");
+  updated.avatar.color = "encre";
+  expect(service.getBot(created.id).avatar).toEqual({ ...original, color: "vert" });
+  expect((await service.updateBot(created.id, { avatar: null })).avatar).toBeUndefined();
+  expect(state.bots[created.id]?.avatar).toBeUndefined();
+});
+
+test("create and update reject malformed avatars with a field error without changing state", async () => {
+  const avatar: CharacterAvatarConfig = {
+    version: 1, kind: "character", shape: "nuage", color: "bleu", expression: "curieux", motion: "auto",
+  };
+  for (const invalid of [
+    "🤖", {}, { ...avatar, version: 2 }, { ...avatar, kind: "default" },
+    { ...avatar, shape: "circle" }, { ...avatar, color: "red" }, { ...avatar, expression: "unknown" },
+    { ...avatar, motion: "always" }, { ...avatar, runId: "run_1" },
+    { version: 1, kind: "text", value: "" }, { version: 1, kind: "text", value: "x".repeat(513) },
+  ]) {
+    const { service, state } = createService();
+    await expect(service.createBot({
+      name: "Reviewer", agent: "codex", workspace: "backend", avatar: invalid as never,
+    })).rejects.toMatchObject({ code: "avatar_invalid", details: { field: "avatar" } });
+    expect(state.bots).toEqual({});
+    const created = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", avatar });
+    await expect(service.updateBot(created.id, { avatar: invalid as never }))
+      .rejects.toMatchObject({ code: "avatar_invalid", details: { field: "avatar" } });
+    expect(service.getBot(created.id).avatar).toEqual(avatar);
+    expect(service.getBot(created.id).profileRevision).toBe(1);
+  }
+  const { service } = createService();
+  await expect(service.createBot({
+    name: "Reviewer", agent: "codex", workspace: "backend", avatar: null as never,
+  })).rejects.toMatchObject({ code: "avatar_invalid" });
+});
+
+test("accepted Direct and Group snapshots and tombstones never share profile avatar objects", async () => {
+  const { service } = createService();
+  const bot = await service.createBot({
+    name: "Reviewer", agent: "codex", workspace: "backend",
+    avatar: { version: 1, kind: "text", value: "  https://example.test/avatar.svg  " },
+  });
+  const direct = snapshotBotProfile(bot, NOW);
+  const group = snapshotGroupMemberProfile(bot, { workspace: "frontend" }, NOW);
+  const tomb = tombstoneFromProfile(bot, NOW);
+  if (bot.avatar?.kind !== "text") throw new Error("missing text avatar");
+  bot.avatar.value = "changed";
+  expect(direct.presentation.avatar).toEqual({ version: 1, kind: "text", value: "  https://example.test/avatar.svg  " });
+  expect(group.presentation.avatar).toEqual(direct.presentation.avatar);
+  expect(tomb.avatar).toEqual(direct.presentation.avatar);
+  expect(group.execution.workspace).toBe("frontend");
+  if (direct.presentation.avatar?.kind !== "text") throw new Error("missing snapshot avatar");
+  direct.presentation.avatar.value = "mutated snapshot";
+  expect(group.presentation.avatar).toEqual(tomb.avatar);
+  expect(service.getBot(bot.id).avatar).toEqual(tomb.avatar);
+});
+
+test("Bot DTO and retired service reads own independent avatar values", async () => {
+  const { service, state } = createService();
+  const avatar = { version: 1 as const, kind: "text" as const, value: "🤖" };
+  const bot = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", avatar });
+  const dto = toBotDetail(bot);
+  if (dto.avatar?.kind !== "text") throw new Error("missing DTO avatar");
+  dto.avatar.value = "changed DTO";
+  expect(bot.avatar).toEqual(avatar);
+  const record = {
+    botId: bot.id, phase: "retired" as const, tombstone: tombstoneFromProfile(bot, NOW), updatedAt: NOW,
+  };
+  await service.writeRemoval(record, true);
+  if (record.tombstone.avatar?.kind !== "text") throw new Error("missing retained avatar");
+  record.tombstone.avatar.value = "changed writer";
+  const removal = service.removal(bot.id)!;
+  const tombstone = service.listTombstones()[0]!;
+  if (removal.tombstone?.avatar?.kind !== "text" || tombstone.avatar?.kind !== "text") throw new Error("missing retired avatar");
+  removal.tombstone.avatar.value = "changed removal read";
+  tombstone.avatar.value = "changed tombstone read";
+  expect(state.bot_removals[bot.id]?.tombstone?.avatar).toEqual(avatar);
+  expect(service.listTombstones()[0]?.avatar).toEqual(avatar);
+  expect(state.bots[bot.id]).toBeUndefined();
 });
 
 test("createBot rejects an empty name and unknown agent or workspace", async () => {

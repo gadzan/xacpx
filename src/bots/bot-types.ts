@@ -1,8 +1,10 @@
+import { copyBotAvatar, type BotAvatarConfig } from "@ganglion/xacpx-relay-protocol";
+
 export type BotRuntimeScope = "bot-direct" | "group-member" | "group-controller";
 
 export interface BotProfilePresentation {
   name: string;
-  avatar?: string;
+  avatar?: BotAvatarConfig;
   role?: string;
 }
 
@@ -29,7 +31,7 @@ export interface BotProfileSnapshot {
 export interface BotProfile {
   id: string;
   name: string;
-  avatar?: string;
+  avatar?: BotAvatarConfig;
   role?: string;
   instructions?: string;
   agent: string;
@@ -60,7 +62,7 @@ export function snapshotBotProfile(bot: BotProfile, capturedAt: string): BotProf
     capturedAt,
     presentation: {
       name: bot.name,
-      ...(bot.avatar ? { avatar: bot.avatar } : {}),
+      ...(bot.avatar ? { avatar: copyBotAvatar(bot.avatar) } : {}),
       ...(bot.role ? { role: bot.role } : {}),
     },
     behavior: {

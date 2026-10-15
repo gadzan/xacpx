@@ -1,3 +1,4 @@
+import { copyBotAvatar, isBotAvatarWriteConfig, type BotAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 import type { AppConfig } from "../config/types";
 import {
   createBotId,
@@ -24,7 +25,7 @@ const TEXT_MAX = 16_384;
 
 export interface CreateBotInput {
   name: string;
-  avatar?: string;
+  avatar?: BotAvatarConfig;
   role?: string;
   instructions?: string;
   agent: string;
@@ -36,7 +37,7 @@ export interface CreateBotInput {
 
 export interface UpdateBotInput {
   name?: string;
-  avatar?: string | null;
+  avatar?: BotAvatarConfig | null;
   role?: string | null;
   instructions?: string | null;
   agent?: string;
@@ -353,7 +354,9 @@ export class BotService {
   }
 
   listBots(): BotProfile[] {
-    return Object.values(this.state.bots).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return Object.values(this.state.bots)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((bot) => ({ ...bot, avatar: copyBotAvatar(bot.avatar) }));
   }
 
   getBot(id: string): BotProfile {
@@ -361,18 +364,19 @@ export class BotService {
     if (!bot) {
       throw new BotError("bot_not_found", `bot "${id}" does not exist`);
     }
-    return bot;
+    return { ...bot, avatar: copyBotAvatar(bot.avatar) };
   }
 
   removal(id: string): BotRemovalRecord | undefined {
-    return this.state.bot_removals?.[id];
+    const record = this.state.bot_removals?.[id];
+    return record ? structuredClone(record) : undefined;
   }
 
   listTombstones(): BotTombstone[] {
     const tombs: BotTombstone[] = [];
     for (const record of Object.values(this.state.bot_removals ?? {})) {
       if (record.phase === "retired" && record.tombstone) {
-        tombs.push(record.tombstone);
+        tombs.push({ ...record.tombstone, avatar: copyBotAvatar(record.tombstone.avatar) });
       }
     }
     return tombs.sort((left, right) => left.retiredAt.localeCompare(right.retiredAt) || left.id.localeCompare(right.id));
@@ -394,7 +398,7 @@ export class BotService {
     await this.mutate(async () => {
       const next = structuredClone(this.state);
       next.bot_removals ??= {};
-      next.bot_removals[record.botId] = record;
+      next.bot_removals[record.botId] = structuredClone(record);
       if (dropProfile) {
         delete next.bots[record.botId];
       }
@@ -432,7 +436,7 @@ export class BotService {
       const next = structuredClone(this.state);
       next.bots[id] = bot;
       await this.persist(next);
-      return bot;
+      return { ...bot, avatar: copyBotAvatar(bot.avatar) };
     });
   }
 
@@ -474,7 +478,7 @@ export class BotService {
         if (!existing.enabled && next.enabled) {
           this._onBotReenabled?.(id);
         }
-        return next;
+        return { ...next, avatar: copyBotAvatar(next.avatar) };
       });
     });
   }
@@ -902,7 +906,7 @@ export class BotService {
 
   private optionalFields(input: CreateBotInput): Partial<Pick<BotProfile, "avatar" | "role" | "instructions" | "model" | "effort">> {
     return {
-      ...(this.optionalString(input.avatar, "avatar", 512) ? { avatar: this.optionalString(input.avatar, "avatar", 512) } : {}),
+      ...(input.avatar !== undefined ? { avatar: this.validatedAvatar(input.avatar) } : {}),
       ...(this.optionalString(input.role, "role", 256) ? { role: this.optionalString(input.role, "role", 256) } : {}),
       ...(this.optionalString(input.instructions, "instructions") ? { instructions: this.optionalString(input.instructions, "instructions") } : {}),
       ...(this.optionalString(input.model, "model", 256) ? { model: this.optionalString(input.model, "model", 256) } : {}),
@@ -912,7 +916,7 @@ export class BotService {
 
   private patchOptional(existing: BotProfile, patch: UpdateBotInput): Partial<BotProfile> {
     const next: Partial<BotProfile> = {};
-    const apply = (field: "avatar" | "role" | "instructions" | "model" | "effort", max?: number) => {
+    const apply = (field: "role" | "instructions" | "model" | "effort", max?: number) => {
       if (!(field in patch)) {
         return;
       }
@@ -923,18 +927,25 @@ export class BotService {
       }
       next[field] = this.optionalString(value, field, max);
     };
-    apply("avatar", 512);
     apply("role", 256);
     apply("instructions");
     apply("model", 256);
     apply("effort", 64);
     return {
-      avatar: "avatar" in next ? next.avatar : existing.avatar,
+      avatar: patch.avatar === undefined ? copyBotAvatar(existing.avatar)
+        : patch.avatar === null ? undefined : this.validatedAvatar(patch.avatar),
       role: "role" in next ? next.role : existing.role,
       instructions: "instructions" in next ? next.instructions : existing.instructions,
       model: "model" in next ? next.model : existing.model,
       effort: "effort" in next ? next.effort : existing.effort,
     };
+  }
+
+  private validatedAvatar(value: unknown): BotAvatarConfig {
+    if (!isBotAvatarWriteConfig(value)) {
+      throw new BotError("avatar_invalid", "bot avatar must be a valid version 1 avatar configuration", { field: "avatar" });
+    }
+    return copyBotAvatar(value)!;
   }
 
   private optionalString(value: string | undefined, field: string, max = TEXT_MAX): string | undefined {

@@ -15,7 +15,7 @@ import {
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
-import AgentIcon from "./AgentIcon.vue";
+import BotAvatar from "./BotAvatar.vue";
 import ConversationComposer from "./ConversationComposer.vue";
 const props = defineProps<{
   bots: BotSummaryDto[];
@@ -539,8 +539,8 @@ function handleRetry(): void {
               class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-raised disabled:opacity-50"
               @click="toggleMember(b.id)"
             >
-              <AgentIcon v-if="driverFor(b)" :driver="driverFor(b)!" :title="b.agent" :size="14" :class="!b.enabled ? 'opacity-50' : ''" />
-              <Bot v-else :size="14" :class="!b.enabled ? 'opacity-50' : ''" />
+              <BotAvatar :avatar="b.avatar" :driver="driverFor(b)" :name="b.name" :size="24" static
+                         :disabled="!b.enabled" :retired="b.retired" :class="!b.enabled ? 'opacity-50' : ''" />
               <span class="min-w-0 flex-1 truncate" :class="!b.enabled ? 'text-fg-muted' : 'text-fg'">{{ b.name }}</span>
               <span v-if="!b.enabled" class="shrink-0 text-[10px] text-fg-muted">{{ $t("bot.status.disabled") }}</span>
               <Check v-else-if="selectedIds.includes(b.id)" :size="13" class="shrink-0 text-accent" />

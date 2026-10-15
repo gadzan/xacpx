@@ -1,8 +1,9 @@
 import { defineStore } from "pinia";
-import { computed, markRaw, ref } from "vue";
+import { computed, ref } from "vue";
 import {
   MSG,
   isErrorPayload,
+  isBotAvatarConfig,
   type AgentMention,
   type ConversationCompletions,
   type BotDetailDto,
@@ -29,6 +30,8 @@ import {
   type TopicSummaryDto,
   type TurnPartDto,
   type WebServerEvent,
+  type BotAvatarConfig,
+  sameBotAvatar,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { useConversationCommandsStore } from "./conversation-commands";
@@ -180,6 +183,12 @@ function unwrapRpc<T>(result: T | { error: { code: string; message: string } }):
     throw new DirectBotRpcError(result.error.code, result.error.message || result.error.code);
   }
   return result;
+}
+
+function requireSupportedAvatar(bot: BotSummaryDto): void {
+  if (bot.avatar !== undefined && !isBotAvatarConfig(bot.avatar)) {
+    throw new DirectBotRpcError("avatar_version_unsupported", "connectorOutdated");
+  }
 }
 
 function appendText(parts: TurnPartDto[], chunk: string): void {
@@ -462,6 +471,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const topicReady = ref<boolean>(true);
   // Active Run / Live Turn state
   const activeRun = ref<ConversationRunDto | null>(null);
+  const liveCompletedRunId = ref<string | null>(null);
   const activeMemberTurn = ref<MemberTurnSummaryDto | null>(null);
   const liveTurn = ref<DirectBotLiveTurn | null>(null);
   const planByRunId = ref<Record<string, PlanEntryDto[]>>({});
@@ -569,6 +579,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const terminal = [...terminalInteractions.value.values()].filter(inScope);
     return terminal.length > 0 ? terminal[terminal.length - 1]! : null;
   });
+
+  function interactionForMember(targetInstanceId: string | null, member: MemberTurnSummaryDto): PendingInteractionState | null {
+    for (const interaction of pendingInteractions.value.values()) {
+      const correlation = interaction.request.conversation;
+      if (interaction.instanceId === targetInstanceId && correlation?.botId === member.botId
+        && correlation.conversationId === member.conversationId && correlation.topicId === member.topicId
+        && correlation.runId === member.runId && correlation.memberTurnId === member.id) return interaction;
+    }
+    return null;
+  }
 
   // Accumulated trace parts retained per runId so completed assistant messages keep their rich cards
   const runParts = ref<Record<string, TurnPartDto[]>>({});
@@ -717,6 +737,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       const res = unwrapRpc(
         await api.rpc<{ bots: BotSummaryDto[] }>(targetInstanceId, MSG.botsList, {}),
       );
+      for (const bot of res.bots) requireSupportedAvatar(bot);
       // A stale (superseded) list response must not clobber the newer cache,
       // nor may it pose as an authoritative answer for side effects (e.g. the
       // bots-changed ghost-selection check): return the current cache so a
@@ -792,7 +813,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             || (cached.model ?? undefined) !== (b.model ?? undefined)
             || (cached.effort ?? undefined) !== (b.effort ?? undefined)
             || cached.enabled !== b.enabled
-            || (cached.avatar ?? undefined) !== (b.avatar ?? undefined)
+            || !sameBotAvatar(cached.avatar, b.avatar)
             || (cached.role ?? undefined) !== (b.role ?? undefined);
           if (revisionStale || fieldsDiffer) {
             delete nextDetails[detailKey];
@@ -906,6 +927,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (current) return current;
       return await loadBotDetail(targetInstanceId, botId);
     }
+    requireSupportedAvatar(res.bot);
     const prevDetail = botDetails.value[detailKey];
     botDetails.value = {
       ...botDetails.value,
@@ -954,7 +976,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       name: string;
       agent: string;
       workspace: string;
-      avatar?: string;
+      avatar?: BotAvatarConfig;
       role?: string;
       instructions?: string;
       model?: string;
@@ -965,6 +987,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const res = unwrapRpc(
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsCreate, payload),
     );
+    requireSupportedAvatar(res.bot);
     const detailKey = `${targetInstanceId}:${res.bot.id}`;
     // Monotonic detail write: a late create response (older revision, or a
     // tombstoned id) must not roll back newer converged state.
@@ -998,7 +1021,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     botId: string,
     patch: {
       name?: string;
-      avatar?: string | null;
+      avatar?: BotAvatarConfig | null;
       role?: string | null;
       instructions?: string | null;
       agent?: string;
@@ -1011,6 +1034,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const res = unwrapRpc(
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsUpdate, { id: botId, ...patch }),
     );
+    requireSupportedAvatar(res.bot);
     const detailKey = `${targetInstanceId}:${botId}`;
     // Same monotonic rule as create: a stale update response never rolls
     // back newer converged state or resurrects a deleted Bot.
@@ -2050,6 +2074,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   // Selection & Navigation
   async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
+    liveCompletedRunId.value = null;
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -2125,6 +2150,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   async function switchTopic(topicId: string): Promise<void> {
     if (activeTopicId.value === topicId) return;
+    liveCompletedRunId.value = null;
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -2162,6 +2188,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   }
 
   function clearSelection(): void {
+    liveCompletedRunId.value = null;
     currentSelectionGeneration++;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -3001,6 +3028,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // Reconcile on reconnect
 
   async function reconcileOnReconnect(): Promise<void> {
+    liveCompletedRunId.value = null;
     // WS events are lost while disconnected: every previously loaded Bot
     // catalog may be stale (create/update/delete, hasRuntime). Mark all
     // known instances dirty AND invalidate their list generations so a
@@ -3182,6 +3210,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     if (event.kind === "state-snapshot") {
       if (event.instanceId !== instanceId.value) return;
+      liveCompletedRunId.value = null;
       // Recover active turn from snapshot if correlated to current conversation & topic
       if (activeConversationId.value && activeTopicId.value) {
         const matchingTurn = event.turns.find(
@@ -3574,6 +3603,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           // Run (e.g. discovery echoing the owner back) must not churn the
           // gate or spawn redundant re-discovery.
           const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
+          if (retiringActiveRun && run.state === "completed") liveCompletedRunId.value = run.id;
           activeRun.value = mergeRun(activeRun.value, run);
           // Only an execution-started row proves the hidden direct runtime
           // materialized: the dispatcher emits running/waiting-human after
@@ -3733,6 +3763,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         // Same retirement rule as run-changed: only a locally-tracked
         // nonterminal Run retiring on this event hands off.
         const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
+        if (retiringActiveRun && run.state === "completed") liveCompletedRunId.value = run.id;
         activeRun.value = mergeRun(activeRun.value, run);
         activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
         if (isTerminalRunState(activeRun.value.state)) {
@@ -3839,6 +3870,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     historyErrorDetail,
     topicReady,
     activeRun,
+    liveCompletedRunId,
     activeMemberTurn,
     liveTurn,
     planEntries,
@@ -3857,6 +3889,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // bound observable rather than an internal implementation detail.
     terminalInteractionCount,
     requestStillHeld,
+    interactionForMember,
     terminalInteractionOutcome,
     setInteractionAnswer,
     submitInteraction,

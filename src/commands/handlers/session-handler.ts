@@ -1020,6 +1020,7 @@ async function promptWithSession(
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+  trustedConversationExecution?: ConversationTurnCorrelation,
 ): Promise<RouterResponse> {
   // Restore-on-message: a real prompt to an archived session un-archives it (mirrors
   // useSession on the web path, which the chat prompt path bypasses). The guard avoids
@@ -1244,6 +1245,15 @@ async function promptWithSession(
               ...shared,
               chatKey: elicitationRoute.chatKey,
               ...chatType,
+              ...(trustedConversationExecution ? {
+                conversation: Object.freeze({
+                  conversationId: trustedConversationExecution.conversationId,
+                  topicId: trustedConversationExecution.topicId,
+                  botId: trustedConversationExecution.botId,
+                  runId: trustedConversationExecution.runId,
+                  memberTurnId: trustedConversationExecution.memberTurnId,
+                }),
+              } : {}),
             };
       let disposePermission: (() => void) | undefined;
       let disposeElicitation: (() => void) | undefined;
@@ -1358,7 +1368,7 @@ export async function handlePromptWithSession(
     }
   }
   try {
-    return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
+    return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands, trustedConversationExecution);
   } catch (error) {
     if ((metadata?.groupExecutionToken && matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias)))
       || (metadata?.directExecutionToken && matchesDirectExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias)))) {
@@ -1396,7 +1406,7 @@ export async function handlePromptWithSession(
     }
     const recovered = await context.recovery.tryRecoverMissingSession(session, error);
     if (recovered) {
-      return await promptWithSession(context, recovered, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
+      return await promptWithSession(context, recovered, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands, trustedConversationExecution);
     }
     return context.recovery.renderTransportError(session, error);
   }
