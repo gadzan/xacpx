@@ -12,20 +12,32 @@ describe("agentIconSvg", () => {
     }
   });
 
-  it("optically centres only the off-centre marks by translating the whole glyph", () => {
+  it("strips full-bleed solid background tiles (Codex white, Kiro purple)", () => {
+    const codex = agentIconSvg("codex")!;
+    expect(codex).not.toMatch(/fill="#fff"/i);
+    expect(codex).not.toMatch(/fill="#ffffff"/i);
+    expect((codex.match(/<path/g) || []).length).toBe(1);
+    expect(agentIconSvg("kiro")!).not.toContain("#9046FF");
+    // Single-path framed marks must not be stripped.
+    expect(agentIconSvg("kilocode")!).toContain("M0 0v24h24V0H0");
+  });
+
+  it("fits oversized / off-centre marks with scale-about-centroid (Claude left alone)", () => {
     const parse = (driver: string) => new DOMParser().parseFromString(agentIconSvg(driver)!, "image/svg+xml").documentElement;
-    for (const [driver, transform] of [["kimi", "translate(0 2)"], ["openclaw", "translate(0 -0.675)"]] as const) {
+    // Codex: white tile gone, then scale 0.8 about its ink centroid.
+    const codex = parse("codex");
+    const codexG = [...codex.children].filter((el) => el.tagName === "g");
+    expect(codexG).toHaveLength(1);
+    expect(codexG[0]!.getAttribute("transform")).toMatch(/^translate\(12 12\) scale\(0\.8\) translate\(/);
+    expect(codex.getAttribute("viewBox")).toBe("0 0 24 24");
+    // Claude already passes size (short side 62.5%) and centroid — no wrapper.
+    expect(agentIconSvg("claude")!).not.toContain("<g transform=");
+    // Kimi / hermes / omp get a fit wrapper (centroid was outside 0.5px before fit).
+    for (const driver of ["kimi", "hermes", "omp", "cursor", "trae"] as const) {
       const svg = parse(driver);
       const wrappers = [...svg.children].filter((el) => el.tagName === "g");
       expect(wrappers, driver).toHaveLength(1);
-      expect(wrappers[0]!.getAttribute("transform")).toBe(transform);
-      // Every drawn shape (and its gradients) moves with the wrapper; the viewBox is untouched.
-      expect([...svg.children].filter((el) => el.tagName !== "g"), driver).toHaveLength(0);
-      expect(wrappers[0]!.querySelectorAll("path").length).toBeGreaterThan(0);
-      expect(svg.getAttribute("viewBox")).toBe("0 0 24 24");
-    }
-    for (const driver of ["codex", "claude", "gemini", "copilot", "cursor", "hermes", "qwen", "opencode", "kilocode", "kiro", "qoder", "trae", "omp"]) {
-      expect(agentIconSvg(driver), driver).not.toContain("<g transform=\"translate(");
+      expect(wrappers[0]!.getAttribute("transform"), driver).toMatch(/translate\(.+\) scale\(/);
     }
   });
 
