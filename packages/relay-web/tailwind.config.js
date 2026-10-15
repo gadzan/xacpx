@@ -23,8 +23,20 @@ export default {
         "on-warn": "rgb(var(--c-on-warn) / <alpha-value>)",
         info: "rgb(var(--c-info) / <alpha-value>)",
       },
+      borderRadius: {
+        sm: "6px",
+        lg: "10px",
+        "2xl": "16px",
+      },
+      fontSize: {
+        xs: ["12px", "18px"],
+        ui: ["13px", "20px"],
+        sm: ["14px", "22px"],
+        base: ["16px", "24px"],
+        xl: ["20px", "28px"],
+      },
       fontFamily: {
-        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans: ['Inter', '"PingFang SC"', '"Noto Sans SC"', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       boxShadow: {

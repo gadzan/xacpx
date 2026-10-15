@@ -65,7 +65,7 @@ async function handleCreate(): Promise<void> {
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
        @click.self="emit('close')">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="group-topic-title" tabindex="-1" class="w-full max-w-sm rounded-xl bg-surface p-4 shadow-float">
+    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="group-topic-title" tabindex="-1" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
       <h3 id="group-topic-title" class="mb-2 text-sm font-semibold">{{ $t("group.topic.createTitle") }}</h3>
       <p class="mb-3 text-xs text-fg-muted">{{ $t("group.topic.createHint") }}</p>
       <form @submit.prevent="handleCreate">

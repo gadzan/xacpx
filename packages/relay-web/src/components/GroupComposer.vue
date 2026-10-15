@@ -469,7 +469,7 @@ function handleRetry(): void {
         v-if="groupsStore.uncertainPromptText"
         type="button"
         data-test="group-retry-prompt-button"
-        class="rounded bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30"
+        class="rounded-sm bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30"
         @click="handleRetry"
       >
         {{ $t("bot.prompt.retry") }}
@@ -492,7 +492,7 @@ function handleRetry(): void {
         <div
           v-if="menuOpen"
           data-test="group-target-menu"
-          class="absolute bottom-full left-0 z-20 mb-1.5 w-64 overflow-hidden rounded-xl bg-raised shadow-float"
+          class="absolute bottom-full left-0 z-20 mb-1.5 w-64 overflow-hidden rounded-2xl bg-raised shadow-float"
         >
           <div class="max-h-64 overflow-y-auto p-1.5">
             <button
@@ -578,14 +578,14 @@ function handleRetry(): void {
         <div
           v-if="slashHint"
           data-test="group-slash-hint"
-          class="absolute bottom-full left-0 z-20 mb-2 w-full rounded-xl bg-raised px-3 py-2 text-xs text-fg-muted shadow-float"
+          class="absolute bottom-full left-0 z-20 mb-2 w-full rounded-2xl bg-raised px-3 py-2 text-xs text-fg-muted shadow-float"
         >
           {{ $t("bot.errors.slashSelectMember") }}
         </div>
         <div
           v-else-if="slashMatches.length > 0"
           data-test="group-cmd-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-xl bg-raised py-1 shadow-float"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-2xl bg-raised py-1 shadow-float"
         >
           <button
             v-for="(command, index) in slashMatches"
@@ -603,7 +603,7 @@ function handleRetry(): void {
         <div
           v-if="mentionMatches.length > 0"
           data-test="group-mention-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-xl bg-raised py-1 shadow-float"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-2xl bg-raised py-1 shadow-float"
         >
           <button
             v-for="(member, index) in mentionMatches"

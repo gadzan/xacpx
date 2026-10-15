@@ -52,7 +52,7 @@ const outputMeta = computed(() => {
         :title="detail.instruction"
       >{{ detail.instruction }}</p>
       <ExpandableBlock v-if="parsedDiff && parsedDiff.rows.length">
-        <div class="overflow-x-auto rounded bg-bg font-mono leading-relaxed">
+        <div class="overflow-x-auto rounded-sm bg-bg font-mono leading-relaxed">
           <div
             v-for="(r, i) in parsedDiff.rows"
             :key="i"
@@ -72,7 +72,7 @@ const outputMeta = computed(() => {
     <template v-else-if="detail.type === 'command'">
       <div v-if="detail.output" class="flex items-start gap-2">
         <ExpandableBlock class="min-w-0 flex-1">
-          <pre data-test="cmd-output" class="overflow-x-auto rounded bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
+          <pre data-test="cmd-output" class="overflow-x-auto rounded-sm bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
         </ExpandableBlock>
         <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-[10px] text-fg-muted">{{ outputMeta }}</span>
       </div>
@@ -82,7 +82,7 @@ const outputMeta = computed(() => {
     <template v-else-if="detail.type === 'read'">
       <div v-if="detail.lines" data-test="read-lines" class="font-mono text-[11px] text-fg-muted">{{ detail.lines }}</div>
       <ExpandableBlock v-if="detail.preview">
-        <pre data-test="read-preview" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.preview }}</pre>
+        <pre data-test="read-preview" class="overflow-x-auto rounded-sm bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.preview }}</pre>
       </ExpandableBlock>
     </template>
 
@@ -90,7 +90,7 @@ const outputMeta = computed(() => {
       <div v-if="effectiveCount !== undefined" data-test="search-count" class="font-mono text-[11px] text-fg-muted">{{ effectiveCount }} lines</div>
       <div v-if="detail.output" class="flex items-start gap-2">
         <ExpandableBlock class="min-w-0 flex-1">
-          <pre data-test="search-output" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
+          <pre data-test="search-output" class="overflow-x-auto rounded-sm bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
         </ExpandableBlock>
         <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-[10px] text-fg-muted">{{ outputMeta }}</span>
       </div>
@@ -104,7 +104,7 @@ const outputMeta = computed(() => {
         </template>
       </dl>
       <ExpandableBlock v-if="detail.output">
-        <pre class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
+        <pre class="overflow-x-auto rounded-sm bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
       </ExpandableBlock>
     </template>
 

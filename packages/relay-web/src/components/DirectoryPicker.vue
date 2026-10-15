@@ -123,11 +123,11 @@ function onListKeydown(e: KeyboardEvent): void {
   <Teleport to="body">
     <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
       <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="dp-title"
-           class="flex max-h-[85vh] w-full max-w-md flex-col rounded-xl bg-raised shadow-float focus:outline-none"
+           class="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl bg-raised shadow-float focus:outline-none"
            data-test="dp-dialog">
         <header class="flex items-center justify-between px-5 py-3">
           <h2 id="dp-title" class="text-sm font-semibold text-fg">{{ $t("dirPicker.title") }}</h2>
-          <button type="button" class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")'
+          <button type="button" class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")'
                   @click="emit('close')"><X :size="16" /></button>
         </header>
 
@@ -146,7 +146,7 @@ function onListKeydown(e: KeyboardEvent): void {
 
         <nav v-if="crumbs.length" class="flex flex-wrap gap-0.5 px-5 pt-2 text-xs text-fg-muted" aria-label="breadcrumb">
           <button v-for="c in crumbs" :key="c.path" type="button"
-                  class="rounded px-1 hover:bg-fg/5 hover:text-fg" @click="navigate(c.path)">{{ c.label }}</button>
+                  class="rounded-sm px-1 hover:bg-fg/5 hover:text-fg" @click="navigate(c.path)">{{ c.label }}</button>
         </nav>
 
         <div class="mt-2 min-h-[12rem] flex-1 overflow-y-auto px-2 py-1"
@@ -157,7 +157,7 @@ function onListKeydown(e: KeyboardEvent): void {
           <template v-else>
             <button v-for="(d, i) in visibleDirs" :key="d.path" type="button" role="option"
                     :data-test="`dp-dir-${d.name}`" :aria-selected="i === highlight"
-                    class="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-sm"
+                    class="flex w-full items-center gap-2 rounded-sm px-3 py-1.5 text-left text-sm"
                     :class="i === highlight ? 'bg-accent/15 text-fg' : 'text-fg hover:bg-fg/5'"
                     @click="navigate(d.path)" @mousemove="highlight = i">
               <Folder :size="14" class="shrink-0 text-fg-muted" />

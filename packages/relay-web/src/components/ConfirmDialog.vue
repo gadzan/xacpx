@@ -22,7 +22,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="settleConfirm(false)" />
       <div role="alertdialog" aria-modal="true" data-test="confirm-dialog"
            :aria-label="pending.title"
-           class="relative w-full max-w-sm rounded-xl bg-surface p-5 shadow-float">
+           class="relative w-full max-w-sm rounded-2xl bg-surface p-5 shadow-float">
         <div class="flex items-start gap-3">
           <div class="grid h-9 w-9 shrink-0 place-items-center rounded-lg"
                :class="pending.tone === 'default' ? 'bg-accent-soft text-accent' : 'bg-danger/10 text-danger'">

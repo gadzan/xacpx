@@ -41,7 +41,7 @@ async function handleCreateTopic(): Promise<void> {
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
        @click.self="emit('close')">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-full max-w-sm rounded-xl bg-surface p-4 shadow-float">
+    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
       <h3 id="new-topic-title" class="text-sm font-semibold mb-2">{{ $t("bot.topic.createTitle") }}</h3>
       <p class="text-xs text-fg-muted mb-3">{{ $t("bot.topic.createHint") }}</p>
       <form @submit.prevent="handleCreateTopic">

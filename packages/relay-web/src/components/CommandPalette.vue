@@ -66,7 +66,7 @@ onMounted(() => void nextTick(() => input.value?.focus()));
 
 <template>
   <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-24" data-test="command-palette" @click.self="emit('close')">
-    <div class="w-full max-w-lg overflow-hidden rounded-xl bg-raised shadow-float">
+    <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-raised shadow-float">
       <div class="flex items-center gap-2 px-4 py-3">
         <Search :size="16" class="shrink-0 text-fg-muted" />
         <input ref="input" v-model="query" data-test="palette-input" data-ring="container"

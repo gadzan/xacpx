@@ -536,9 +536,9 @@ const rowSwipes = computed(() => {
            toggle and the sibling Desktop entry stay independent interactive
            controls — a nested <button> is invalid HTML and breaks keyboard
            semantics. -->
-      <div class="group flex h-7 items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-raised">
+      <div class="group flex h-7 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-raised">
         <button type="button"
-                class="flex min-w-0 flex-1 items-center gap-1.5 rounded-md text-left transition-colors"
+                class="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left transition-colors"
                 :aria-expanded="isExpanded(inst.id)"
                 data-test="instance-header-toggle"
                 @click="toggle(inst.id)">
@@ -561,7 +561,7 @@ const rowSwipes = computed(() => {
                 data-test="instance-desktop"
                 :title="$t('desktop.title')"
                 :aria-label="$t('desktop.title')"
-                class="grid h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-accent"
+                class="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-accent"
                 @click="emit('openDesktop', inst.id)">
           <Monitor :size="13" />
         </button>
@@ -576,7 +576,7 @@ const rowSwipes = computed(() => {
           <button
             type="button"
             data-test="instance-nav-sessions"
-            class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors"
+            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors"
             :class="modeFor(inst.id) === 'sessions' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
             @click="setMode(inst.id, 'sessions')"
           >
@@ -586,7 +586,7 @@ const rowSwipes = computed(() => {
           <button
             type="button"
             data-test="instance-nav-bots"
-            class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors"
+            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors"
             :class="modeFor(inst.id) === 'bots' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
             @click="setMode(inst.id, 'bots')"
           >
@@ -599,7 +599,7 @@ const rowSwipes = computed(() => {
           <button
             type="button"
             data-test="instance-nav-groups"
-            class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors"
+            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors"
             :class="modeFor(inst.id) === 'groups' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
             @click="setMode(inst.id, 'groups')"
           >
@@ -631,7 +631,7 @@ const rowSwipes = computed(() => {
           <div v-for="b in visibleBots(inst.id)"
                :key="b.id"
                data-test="bot-row"
-               class="group relative flex items-center rounded-md transition-colors"
+               class="group relative flex items-center rounded-sm transition-colors"
                :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-raised'">
             <!-- Selected accent bar -->
             <span v-if="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id"
@@ -662,7 +662,7 @@ const rowSwipes = computed(() => {
               type="button"
               data-test="enable-bot-tree-button"
               :disabled="enablingBots.has(`${inst.id}:${b.id}`)"
-              class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
+              class="shrink-0 rounded-sm px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
               @click.stop="void enableBot(inst.id, b)"
             >
               {{ $t("bot.actions.enable") }}
@@ -673,7 +673,7 @@ const rowSwipes = computed(() => {
                 data-test="edit-bot-tree-button"
                 :title="$t('bot.actions.edit')"
                 :aria-label="$t('bot.actions.edit')"
-                class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg"
+                class="grid h-5 w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg"
                 @click.stop="botDialogFor = { instanceId: inst.id, instanceName: inst.name, bot: b }"
               >
                 <Pencil :size="11" />
@@ -684,7 +684,7 @@ const rowSwipes = computed(() => {
                 :title="b.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
                 :aria-label="$t('bot.removal.action')"
                 :disabled="b.retired === true"
-                class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+                class="grid h-5 w-5 place-items-center rounded-sm text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                 @click.stop="openBotRemoval(inst.id, b)"
               >
                 <Trash2 :size="11" />
@@ -697,7 +697,7 @@ const rowSwipes = computed(() => {
             <button
               type="button"
               data-test="new-bot-button"
-              class="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft transition-colors"
+              class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft transition-colors"
               @click="botDialogFor = { instanceId: inst.id, instanceName: inst.name }"
             >
               <Plus :size="12" />
@@ -708,7 +708,7 @@ const rowSwipes = computed(() => {
               type="button"
               data-test="bots-disabled-toggle"
               :aria-expanded="disabledBotsOpen.has(inst.id)"
-              class="ml-auto mr-1 flex items-center gap-0.5 rounded px-1.5 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              class="ml-auto mr-1 flex items-center gap-0.5 rounded-sm px-1.5 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
               @click="toggleDisabledBots(inst.id)"
             >
               <ChevronDown v-if="disabledBotsOpen.has(inst.id)" :size="11" />
@@ -719,7 +719,7 @@ const rowSwipes = computed(() => {
               data-test="manage-instance-from-bots"
               :title="$t('instance.manage')"
               :aria-label="$t('instance.manage')"
-              class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
               @click="manageFor = { id: inst.id, name: inst.name }"
             >
               <Settings2 :size="13" />
@@ -752,7 +752,7 @@ const rowSwipes = computed(() => {
           <div v-for="g in (groupsStore.groupsByInstance[inst.id] ?? [])"
                :key="g.id"
                data-test="group-row"
-               class="group relative flex items-center rounded-md transition-colors"
+               class="group relative flex items-center rounded-sm transition-colors"
                :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-raised'">
             <span v-if="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id"
                   class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
@@ -772,7 +772,7 @@ const rowSwipes = computed(() => {
               </div>
               <span v-if="g.lifecycle === 'deleting'"
                     data-test="group-deleting-badge"
-                    class="shrink-0 rounded bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
+                    class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
                 {{ $t("group.list.deleting") }}
               </span>
             </button>
@@ -782,7 +782,7 @@ const rowSwipes = computed(() => {
                 data-test="edit-group-tree-button"
                 :title="$t('group.manage.editTitle')"
                 :aria-label="$t('group.manage.editTitle')"
-                class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg"
+                class="grid h-5 w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg"
                 @click.stop="groupDialogFor = { instanceId: inst.id, instanceName: inst.name, group: g }"
               >
                 <Pencil :size="11" />
@@ -794,7 +794,7 @@ const rowSwipes = computed(() => {
             <button
               type="button"
               data-test="new-group-button"
-              class="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent-soft"
+              class="flex items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent-soft"
               @click="groupDialogFor = { instanceId: inst.id, instanceName: inst.name }"
             >
               <Plus :size="12" />
@@ -806,19 +806,19 @@ const rowSwipes = computed(() => {
         <!-- SESSIONS MODE -->
         <template v-else-if="modeFor(inst.id) === 'sessions'">
         <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
-                class="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] font-medium text-accent hover:bg-accent-soft"
+                class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-[11px] font-medium text-accent hover:bg-accent-soft"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
           <ChevronDown :size="11" class="rotate-[-90deg]" />{{ $t("instance.loadSessions") }}
         </button>
         <div v-if="inst.online && inst.sessionsLoading" data-test="sessions-loading"
              class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>
         <div v-for="grp in sectionsFor(inst)" :key="grp.key ?? '~flat'"
-             :class="grp.key !== null ? 'rounded-md bg-fg/[0.035] p-0.5' : 'space-y-px'"
+             :class="grp.key !== null ? 'rounded-sm bg-fg/[0.035] p-0.5' : 'space-y-px'"
              :data-test="grp.key !== null ? 'session-group' : undefined">
           <!-- Group header: chevron + kind icon + name + count; hover ＋ creates in-group. -->
           <div v-if="grp.key !== null" class="group/hdr flex items-center gap-0.5">
             <button data-test="group-header" :aria-expanded="!isGroupCollapsed(inst, grp.key)"
-                    class="flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 text-left transition-colors hover:bg-fg/5"
+                    class="flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 text-left transition-colors hover:bg-fg/5"
                     @click="toggleGroup(inst, grp.key)">
               <ChevronDown v-if="!isGroupCollapsed(inst, grp.key)" :size="11" class="shrink-0 text-fg-muted" />
               <ChevronRight v-else :size="11" class="shrink-0 text-fg-muted" />
@@ -828,7 +828,7 @@ const rowSwipes = computed(() => {
               <span data-test="group-count" class="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">{{ grp.sessions.length }}</span>
             </button>
             <button data-test="group-new-session" :title="$t('instance.groupNewSession', { name: grp.key })" :aria-label="$t('instance.groupNewSession', { name: grp.key })"
-                    class="grid h-5 w-5 shrink-0 place-items-center rounded text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
+                    class="grid h-5 w-5 shrink-0 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
                     @click.stop="openGroupDialog(inst, grp.key)"><Plus :size="12" /></button>
           </div>
           <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : ''">
@@ -836,12 +836,12 @@ const rowSwipes = computed(() => {
               v-for="s in sectionRows(grp)"
               :key="s.alias"
               data-test="session-row"
-              class="group relative rounded-md"
+              class="group relative rounded-sm"
             >
             <!-- Clip layer: bounds ONLY the swipe track so the off-screen action blocks
                  stay hidden until revealed. The row itself is NOT clipped, so the ⋯
                  dropdown (rendered below as a row child) can overflow past the row. -->
-            <div class="overflow-hidden rounded-md">
+            <div class="overflow-hidden rounded-sm">
             <!-- Swipe track: full-width row content followed by the off-screen action
                  blocks. Swiping right→left translates the track left to reveal them. -->
             <div
@@ -852,7 +852,7 @@ const rowSwipes = computed(() => {
               v-on="inst.online ? rowSwipes[`${inst.id}:${s.alias}`] ?? {} : {}"
             >
               <!-- Foreground row content (spans the full row width). -->
-              <div class="relative flex w-full shrink-0 items-center rounded-md transition-colors"
+              <div class="relative flex w-full shrink-0 items-center rounded-sm transition-colors"
                    :class="isSelected(inst.id, s.alias) ? 'bg-accent-soft' : 'hover:bg-raised'">
                 <!-- Selected row: left accent bar. -->
                 <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
@@ -877,7 +877,7 @@ const rowSwipes = computed(() => {
                     <span
                       v-if="hasOpenTerminal(inst.id, s.alias)"
                       data-test="terminal-open-marker"
-                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent"
+                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-[2px] bg-surface text-accent ring-1 ring-accent"
                       :title="$t('instance.sessionTerminalOpenTitle')"
                       :aria-label="$t('instance.sessionTerminalOpenTitle')"
                     ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
@@ -888,13 +888,13 @@ const rowSwipes = computed(() => {
                   <span
                     v-else-if="hasOpenTerminal(inst.id, s.alias)"
                     data-test="terminal-open-marker"
-                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent"
+                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-[2px] bg-surface text-accent ring-1 ring-accent"
                     :title="$t('instance.sessionTerminalOpenTitle')"
                     :aria-label="$t('instance.sessionTerminalOpenTitle')"
                   ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
                   <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
                          v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
-                         class="min-w-0 flex-1 rounded border border-accent bg-surface-2 px-1 py-px text-[13px] text-fg outline-none"
+                         class="min-w-0 flex-1 rounded-sm border border-accent bg-surface-2 px-1 py-px text-[13px] text-fg outline-none"
                          @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
                          @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
                          v-focus />
@@ -921,7 +921,7 @@ const rowSwipes = computed(() => {
                 <!-- Row actions: desktop overflow (⋯) menu → archive / delete. Hidden when the instance is offline. -->
                 <div v-if="inst.online" data-test="session-actions" class="relative mr-1 shrink-0">
                   <button data-test="session-menu" :aria-label="$t('common.more')"
-                          class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+                          class="grid h-5 w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
                           @click.stop="openSwipeFor = null; openMenuFor = openMenuFor === `${inst.id}:${s.alias}` ? null : `${inst.id}:${s.alias}`"><MoreHorizontal :size="13" /></button>
                 </div>
               </div>
@@ -944,7 +944,7 @@ const rowSwipes = computed(() => {
                  fires (mousedown → Vue flush → mouseup → click on a detached node), so
                  archive/delete silently no-op. Stopping mousedown keeps the menu mounted. -->
             <div v-if="inst.online && openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop
-                 class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-md bg-raised py-1 shadow-float">
+                 class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-sm bg-raised py-1 shadow-float">
               <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
               <button v-if="!s.archived" data-test="action-archive" :title="$t('instance.sleepTooltip')" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="onArchive(inst.id, s.alias)"><Moon :size="12" />{{ $t("instance.archiveSession") }}</button>
               <button v-else data-test="action-unarchive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="onUnarchive(inst.id, s.alias)"><ArchiveRestore :size="12" />{{ $t("instance.unarchiveSession") }}</button>
@@ -955,7 +955,7 @@ const rowSwipes = computed(() => {
                  from the server 5 at a time instead of flat mode's one-shot snapshot. -->
             <template v-if="grp.key !== null && inst.online">
               <button data-test="group-toggle-archived"
-                      class="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] font-medium text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
+                      class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-[11px] font-medium text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
                       @click.stop="void toggleGroupArchived(inst, grp.key)">
                 <ArchiveRestore :size="11" class="shrink-0" />
                 {{ $t(groupArchivedIsExpanded(inst, grp.key) ? "instance.hideArchivedSessions" : "instance.showArchivedSessions") }}
@@ -1001,13 +1001,13 @@ const rowSwipes = computed(() => {
           <button v-if="inst.online && inst.sessionsLoaded && groupModeOf(inst) === 'instance'" data-test="toggle-archived-sessions"
                   :title="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
                   :aria-label="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
-                  class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="void toggleArchived(inst.id)"><ArchiveRestore :size="13" /></button>
           <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
-                  class="grid h-6 w-6 place-items-center rounded text-accent transition-colors hover:bg-accent-soft"
+                  class="grid h-6 w-6 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft"
                   @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>
           <button data-test="manage-instance" :title="$t('instance.manage')" :aria-label="$t('instance.manage')"
-                  class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="13" /></button>
         </div>
         </template>

@@ -16,7 +16,7 @@ const emit = defineEmits<{ jump: [] }>();
     type="button"
     :aria-label="$t('chat.jumpLatest')"
     :title="$t('chat.jumpLatest')"
-    class="absolute bottom-3 left-1/2 z-10 grid h-7 w-7 -translate-x-1/2 place-items-center rounded-md bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-colors hover:bg-surface"
+    class="absolute bottom-3 left-1/2 z-10 grid h-7 w-7 -translate-x-1/2 place-items-center rounded-sm bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-colors hover:bg-surface"
     @click="emit('jump')"
   >
     <ArrowDown :size="13" :stroke-width="2.5" />

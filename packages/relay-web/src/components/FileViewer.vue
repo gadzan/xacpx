@@ -238,8 +238,8 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         <FileText :size="14" class="shrink-0 text-accent" />
         <span class="truncate font-mono text-[12.5px] text-fg">{{ file.path }}</span>
         <span class="shrink-0 text-[11px] text-fg-muted">{{ fmtSize(file.size) }}</span>
-        <span v-if="file.truncated" class="shrink-0 rounded bg-warn/10 px-1 text-[10.5px] text-warn">{{ $t("files.truncated") }}</span>
-        <span v-if="file.binary" class="shrink-0 rounded bg-fg/5 px-1 text-[10.5px] text-fg-muted">{{ $t("files.binary") }}</span>
+        <span v-if="file.truncated" class="shrink-0 rounded-sm bg-warn/10 px-1 text-[10.5px] text-warn">{{ $t("files.truncated") }}</span>
+        <span v-if="file.binary" class="shrink-0 rounded-sm bg-fg/5 px-1 text-[10.5px] text-fg-muted">{{ $t("files.binary") }}</span>
       </template>
       <template v-else-if="props.diffPath">
         <FileDiff :size="14" class="shrink-0 text-accent" />
@@ -247,23 +247,23 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       </template>
       <div class="ml-auto flex shrink-0 items-center gap-1">
         <button v-if="showEditor" data-test="fv-find-toggle" :aria-label="$t('files.find')" :title="$t('files.find')"
-                class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                class="grid h-7 w-7 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                 @click="openSearch()"><Search :size="15" /></button>
         <button v-if="canEdit && !editing" data-test="fv-edit" :aria-label="$t('files.editFile')" :title="$t('files.editFile')"
-                class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                class="grid h-7 w-7 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                 @click="startEdit()"><Pencil :size="15" /></button>
         <template v-if="editing">
           <span v-if="editDirty" data-test="fv-dirty-dot" class="mr-0.5 h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
           <button data-test="fv-save" :disabled="saving || !editDirty" :aria-label="$t('files.save')"
-                  class="flex h-7 items-center gap-1 rounded px-2 text-[12px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-40"
+                  class="flex h-7 items-center gap-1 rounded-sm px-2 text-[12px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-40"
                   @click="save()"><SaveIcon :size="14" />{{ saving ? $t("files.saving") : $t("files.save") }}</button>
           <button data-test="fv-cancel" :aria-label="$t('files.cancel')"
-                  class="h-7 rounded px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  class="h-7 rounded-sm px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="cancelEdit()">{{ $t("files.cancel") }}</button>
         </template>
         <CopyButton v-if="file && !file.binary && !editing" :text="file.content" />
         <button data-test="fv-close" :aria-label="$t('files.closeFile')"
-                class="grid h-7 w-7 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:hidden"
+                class="grid h-7 w-7 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:hidden"
                 @click="emit('close')"><X :size="16" /></button>
       </div>
     </div>
@@ -275,7 +275,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <!-- save error / stale-conflict banner -->
       <div v-if="saveError" data-test="fv-save-error" class="m-3 flex items-center gap-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
         <span class="min-w-0 flex-1">{{ saveErrorLabel }}</span>
-        <button v-if="isStale" data-test="fv-reload" class="shrink-0 rounded bg-danger/15 px-2 py-0.5 text-[12px] font-medium hover:bg-danger/25" @click="reloadFromDisk()">{{ $t("files.reload") }}</button>
+        <button v-if="isStale" data-test="fv-reload" class="shrink-0 rounded-sm bg-danger/15 px-2 py-0.5 text-[12px] font-medium hover:bg-danger/25" @click="reloadFromDisk()">{{ $t("files.reload") }}</button>
       </div>
       <!-- file content: one CodeMirror instance for read (editable:false) + edit (editable:true) -->
       <CodeEditor v-if="showEditor" ref="codeEditor" v-model="content" :filename="file!.path"

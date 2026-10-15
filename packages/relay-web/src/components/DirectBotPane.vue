@@ -192,7 +192,7 @@ function openRemoval(): void {
           <div
             v-if="navOpen"
             data-test="direct-nav-menu"
-            class="absolute right-0 z-20 mt-1 w-64 overflow-hidden rounded-xl bg-raised shadow-float"
+            class="absolute right-0 z-20 mt-1 w-64 overflow-hidden rounded-2xl bg-raised shadow-float"
           >
             <div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</div>
             <button
@@ -312,7 +312,7 @@ function openRemoval(): void {
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ $t(`bot.errors.${directBotsStore.historyError}`) }}</span>
       <button type="button"
-              class="rounded bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"
+              class="rounded-sm bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"
               @click="directBotsStore.instanceId && directBotsStore.activeConversationId && directBotsStore.loadHistory(directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId)">
         {{ $t("bot.prompt.retry") }}
       </button>
