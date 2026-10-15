@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
-import { nextTick } from "vue";
+import { h, nextTick } from "vue";
 import type { CharacterAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import BotAvatar from "../components/BotAvatar.vue";
+import TranscriptRow from "../components/TranscriptRow.vue";
+import botAvatarSource from "../components/BotAvatar.vue?raw";
 
 const config: CharacterAvatarConfig = { version: 1, kind: "character", shape: "nuage", color: "violet", expression: "curieux", motion: "auto" };
 let wrappers: VueWrapper[];
@@ -157,6 +159,65 @@ describe("BotAvatar resources and safe rendering", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     tick(90000); await nextTick();
     expect(eyes(wrapper)).toEqual(before);
+  });
+  it("draws a flat body and white, unstroked eyes; creme gets ink eyes", () => {
+    for (const color of ["violet", "gris", "encre", "bleu"] as const) {
+      const wrapper = avatar({ avatar: { ...config, color }, static: true });
+      const body = wrapper.find(".bot-avatar-body");
+      for (const attr of ["stroke", "stroke-opacity", "stroke-width"]) expect(body.attributes(attr)).toBeUndefined();
+      for (const eye of wrapper.findAll("rect")) {
+        expect(eye.attributes("fill")).toBe("#FFFFFF");
+        expect(eye.attributes("stroke")).toBeUndefined();
+        expect(eye.attributes("stroke-width")).toBeUndefined();
+      }
+    }
+    const creme = avatar({ avatar: { ...config, color: "creme" }, static: true });
+    expect(creme.findAll("rect").map((eye) => eye.attributes("fill"))).toEqual(["#0A0A0C", "#0A0A0C"]);
+  });
+  it("marks only creme and encre bodies for the theme-specific low-contrast hairline", () => {
+    expect(avatar({ avatar: { ...config, color: "creme" }, static: true }).find(".bot-avatar-body").attributes("data-hairline")).toBe("creme");
+    expect(avatar({ avatar: { ...config, color: "encre" }, static: true }).find(".bot-avatar-body").attributes("data-hairline")).toBe("encre");
+    for (const color of ["violet", "gris", "bleu", "ambre"] as const) {
+      expect(avatar({ avatar: { ...config, color }, static: true }).find(".bot-avatar-body").attributes("data-hairline")).toBeUndefined();
+    }
+  });
+  it("keeps the low-contrast hairline 1 CSS px at every size: non-scaling, width 1, opacity 0.16", () => {
+    const rules = [...botAvatarSource.matchAll(/:global\((.*?\[data-hairline="(creme|encre)"\])\)\s*\{([^}]*)\}/g)];
+    expect(rules.map((rule) => rule[2])).toEqual(["creme", "encre"]);
+    const [creme, encre] = rules;
+    expect(creme![1]).toMatch(/^html:not\(\.dark\) /);
+    expect(encre![1]).toMatch(/^html\.dark /);
+    expect(creme![3]).toContain("stroke: rgb(var(--c-fg));");
+    expect(encre![3]).toContain("stroke: #FFFFFF;");
+    for (const rule of rules) {
+      expect(rule[3]).toContain("vector-effect: non-scaling-stroke;");
+      expect(rule[3]).toContain("stroke-width: 1;");
+      expect(rule[3]).toContain("stroke-opacity: 0.16;");
+    }
+  });
+  it("drops the round surface backing behind a slotted BotAvatar but keeps it for the driver-icon fallback", () => {
+    const frame = (wrapper: VueWrapper) => wrapper.find('[data-avatar-key="row"] > span');
+    const slotted = mount(TranscriptRow, {
+      props: { driver: "codex", speaker: "Bot" },
+      slots: { avatar: () => h(BotAvatar, { avatar: { ...config, color: "encre" }, size: 32, static: true }) },
+      global: { plugins: [i18n] },
+    });
+    wrappers.push(slotted);
+    expect(frame(slotted).find('[data-test="bot-avatar"]').exists()).toBe(true);
+    for (const cls of ["bg-surface", "rounded-full", "overflow-hidden"]) expect(frame(slotted).classes()).not.toContain(cls);
+    expect(frame(slotted).classes()).toEqual(expect.arrayContaining(["h-8", "w-8"]));
+    for (const driver of ["codex", undefined]) {
+      const fallback = mount(TranscriptRow, { props: { driver, speaker: "Agent" }, global: { plugins: [i18n] } });
+      wrappers.push(fallback);
+      expect(frame(fallback).find('[data-test="bot-avatar"]').exists()).toBe(false);
+      expect(frame(fallback).classes()).toEqual(expect.arrayContaining(["h-8", "w-8", "rounded-full", "bg-surface", "overflow-hidden"]));
+      expect(frame(fallback).classes()).not.toContain("border");
+    }
+  });
+  it("keeps the queued status ring", () => {
+    const wrapper = avatar({ state: "queued", static: true });
+    expect(wrapper.find("circle").exists()).toBe(true);
+    expect(wrapper.find("circle").attributes("stroke")).toBe("rgb(var(--c-accent))");
   });
   it("renders legacy text as text, never as markup or a network image", () => {
     const text = "<img src=https://example.invalid/avatar onerror=alert(1)>";

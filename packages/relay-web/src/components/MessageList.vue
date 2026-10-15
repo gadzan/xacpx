@@ -557,8 +557,8 @@ watch(
             </div>
           </div>
           <!-- agent response -->
-          <div v-else class="flex gap-2.5" :style="{ '--sk-delay': `${i * 160}ms` }">
-            <div class="sk-bar mt-0.5 h-6 w-6 shrink-0 rounded-full bg-fg/10" />
+          <div v-else class="flex gap-3" :style="{ '--sk-delay': `${i * 160}ms` }">
+            <div class="sk-bar mt-0.5 h-8 w-8 shrink-0 rounded-full bg-fg/10" />
             <div class="min-w-0 flex-1 space-y-2 py-1">
               <div v-for="n in row.lines" :key="n" class="sk-bar h-3 rounded bg-fg/10"
                    :style="{ width: n === row.lines ? row.w : '100%' }" />
@@ -582,7 +582,7 @@ watch(
                or the anchor is still in unrevealed older rows). -->
           <div
             v-if="i === 0 && liveAtStartOfVisible && liveTurn"
-            class="flex gap-2.5"
+            class="flex gap-3"
             :class="enterRowClass"
             :style="enterStyle(0)"
           >
@@ -638,9 +638,9 @@ watch(
             </div>
           </div>
           <!-- ASSISTANT row -->
-          <div v-else-if="!m.structured?.agentMessage" class="group flex gap-2.5" :class="enterRowClass" :style="enterStyle(i)">
-            <div class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" :data-avatar-key="`h:${messageKey(m, hiddenCount + i)}`">
-              <span class="grid h-6 w-6 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="15" fill /></span>
+          <div v-else-if="!m.structured?.agentMessage" class="group flex gap-3" :class="enterRowClass" :style="enterStyle(i)">
+            <div class="agent-avatar mt-0.5 h-8 w-8 shrink-0 self-start" :data-avatar-key="`h:${messageKey(m, hiddenCount + i)}`">
+              <span class="grid h-8 w-8 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="20" fill /></span>
             </div>
             <div data-test="msg-out" class="cv-bubble min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
@@ -672,7 +672,7 @@ watch(
                received cards in the list therefore render below the still-running turn. -->
           <div
             v-if="liveTurn && liveAfterVisibleIndex === i"
-            class="flex gap-2.5"
+            class="flex gap-3"
             :class="enterRowClass"
             :style="enterStyle(i + 1)"
           >
@@ -687,7 +687,7 @@ watch(
         </template>
 
         <!-- live streaming assistant row when the transcript is empty (working spinner occupies the slot even with no parts yet) -->
-        <div v-if="liveTurn && visibleMessages.length === 0" class="flex gap-2.5" :class="enterRowClass"
+        <div v-if="liveTurn && visibleMessages.length === 0" class="flex gap-3" :class="enterRowClass"
              :style="enterStyle(0)">
           <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
           <div data-test="msg-streaming" class="min-w-0 flex-1">

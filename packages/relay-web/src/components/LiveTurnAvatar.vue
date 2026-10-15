@@ -45,9 +45,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="avatarEl" class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" data-avatar-key="live"
+  <div ref="avatarEl" class="agent-avatar mt-0.5 h-8 w-8 shrink-0 self-start" data-avatar-key="live"
        :class="{ 'quip-beside': besideIcon }">
-    <span class="grid h-6 w-6 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="15" fill /></span>
+    <span class="grid h-8 w-8 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="20" fill /></span>
     <WorkingQuip class="working-quip" :status="status" :elapsed="elapsed" />
     <span class="quip-sentinel" aria-hidden="true" :style="{ height: `${BUBBLE_SPACE_PX}px` }" />
   </div>

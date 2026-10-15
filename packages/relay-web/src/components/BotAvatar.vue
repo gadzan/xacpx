@@ -38,6 +38,13 @@ const stretchX = computed(() => pose.value?.sx ?? 1), stretchY = computed(() => 
 const channels = computed(() => pose.value?.color);
 const path = computed(() => radii.value ? bodyPath(radii.value, stretchX.value, stretchY.value) : "");
 const color = computed(() => channels.value ? `rgb(${channels.value.map(Math.round).join(" ")})` : "");
+// White eyes on every body except creme, whose near-white body needs ink eyes. Fixed
+// colours, independent of the theme: the avatar is the one coloured graphic in the UI.
+const eyeFill = computed(() => character.value?.color === "creme" ? "#0A0A0C" : "#FFFFFF");
+// The body has no outline, except a faint hairline for the two bodies that would vanish
+// into the page: creme on the light theme, encre on the dark one (theme comes from the
+// root `.dark` class, see the style block).
+const hairline = computed(() => character.value?.color === "creme" || character.value?.color === "encre" ? character.value.color : undefined);
 const indicator = computed(() => ({ waiting: "!", failed: "!", indeterminate: "?", offline: "−", retired: "×", cancelled: "−" } as Partial<Record<BotAvatarState, string>>)[state.value]);
 let mounted = false, active = true, time = 0;
 let initialPreviewCompletion = props.preview && state.value === "completed";
@@ -175,11 +182,11 @@ onBeforeUnmount(() => { mounted = false; releaseResources(); });
     <svg v-else-if="pose" viewBox="-50 -50 100 100" aria-hidden="true" focusable="false">
       <defs><clipPath :id="maskId"><path :d="path" /></clipPath></defs>
       <circle v-if="pose.ring" r="44" fill="none" stroke="rgb(var(--c-accent))" stroke-width="3" :opacity="pose.ring" />
-      <path :d="path" :fill="color" stroke="rgb(var(--c-fg))" stroke-opacity="0.5" stroke-width="2" />
+      <path class="bot-avatar-body" :d="path" :fill="color" :data-hairline="hairline" />
       <g :clip-path="`url(#${maskId})`">
         <rect v-for="(eye, index) in pose.eyes" :key="index" :x="-eye.w / 2" :y="-eye.h / 2" :width="eye.w" :height="eye.h" :rx="Math.min(eye.w, eye.h) / 2"
           :transform="`matrix(${eye.a} ${eye.b} ${eye.c} ${eye.d} ${eye.x} ${eye.y})`"
-          fill="rgb(var(--c-fg))" stroke="rgb(var(--c-bg))" stroke-width="1.8" />
+          :fill="eyeFill" />
       </g>
     </svg>
     <span v-if="indicator" class="bot-avatar-indicator" aria-hidden="true">{{ indicator }}</span>
@@ -190,7 +197,12 @@ onBeforeUnmount(() => { mounted = false; releaseResources(); });
 .bot-avatar { display: inline-grid; position: relative; place-items: center; flex-shrink: 0; vertical-align: middle; isolation: isolate; }
 .bot-avatar > svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .bot-avatar-text { width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: center; font-size: 0.8em; line-height: 1; color: rgb(var(--c-fg)); }
-.bot-avatar-indicator { position: absolute; right: -2px; bottom: -2px; display: grid; place-items: center; min-width: 0.8em; height: 0.8em; padding: 1px; border: 1px solid rgb(var(--c-border)); border-radius: 50%; background: rgb(var(--c-surface)); color: rgb(var(--c-fg)); font-size: 10px; font-weight: 800; line-height: 1; }
+.bot-avatar-indicator { position: absolute; right: -2px; bottom: -2px; display: grid; place-items: center; min-width: 0.8em; height: 0.8em; padding: 1px; border-radius: 50%; box-shadow: 0 0 0 2px rgb(var(--c-bg)); background: rgb(var(--c-surface)); color: rgb(var(--c-fg)); font-size: 11px; font-weight: 800; line-height: 1; }
+/* Low-contrast exceptions (creme ≈1.15:1 on the light bg, encre ≈1.08:1 on the dark bg):
+   the only bodies that keep a faint hairline, so they do not disappear. Non-scaling, so
+   it is 1 CSS px at every avatar size instead of shrinking with the 100-unit viewBox. */
+:global(html:not(.dark) .bot-avatar-body[data-hairline="creme"]) { stroke: rgb(var(--c-fg)); stroke-opacity: 0.16; stroke-width: 1; vector-effect: non-scaling-stroke; }
+:global(html.dark .bot-avatar-body[data-hairline="encre"]) { stroke: #FFFFFF; stroke-opacity: 0.16; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .bot-avatar[data-state="waiting"] .bot-avatar-indicator { color: rgb(var(--c-warn)); }
 .bot-avatar[data-state="failed"] .bot-avatar-indicator { color: rgb(var(--c-danger)); }
 </style>

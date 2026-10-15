@@ -54,21 +54,37 @@ for (const expression of Object.values(AVATAR_EXPRESSIONS)) {
 }
 Object.freeze(AVATAR_EXPRESSIONS);
 
+/** Eye width multiplier applied on top of each expression's base eye size. */
+export const EYE_SCALE_W = 1.75;
+/** Eye height multiplier applied on top of each expression's base eye size. */
+export const EYE_SCALE_H = 1.45;
+/** Pulls the midpoint of the two eyes toward the body centre (1 = unchanged). */
+export const EYE_CENTER_PULL = 0.6;
+/** Widens the distance of each eye from that midpoint (1 = unchanged). */
+export const EYE_SPREAD = 1.3;
+/** Applies the shared PULL / SPREAD placement to one eye coordinate, given the pair's midpoint. */
+export function placeEye(value: number, mid: number): number {
+  return mid * EYE_CENTER_PULL + (value - mid) * EYE_SPREAD;
+}
+
 export const AVATAR_EYE_FIT: Readonly<Record<ShapeId, number>> = Object.freeze(Object.fromEntries(BOT_AVATAR_SHAPES.map((shape) => {
   const radii = AVATAR_PROFILES[shape];
   let fit = 1;
   for (const expression of Object.values(AVATAR_EXPRESSIONS)) {
     for (const yaw of [-8, 0, 8]) for (const pitch of [-6, 0, 6]) {
       const poses = eyePoses({ ...expression.gaze, yaw: expression.gaze.yaw + yaw, pitch: expression.gaze.pitch + pitch }, expression.split);
+      const mx = (poses[0].x + poses[1].x) / 2, my = (poses[0].y + poses[1].y) / 2;
       for (let i = 0; i < 2; i++) {
         const pose = poses[i]!, eye = expression.eyes[i]!;
+        const ex = placeEye(pose.x, mx), ey = placeEye(pose.y, my);
         const tilt = eye.tilt * Math.PI / 180;
         const a = pose.a * Math.cos(tilt) + pose.c * Math.sin(tilt);
         const b = pose.b * Math.cos(tilt) + pose.d * Math.sin(tilt);
         const c = pose.c * Math.cos(tilt) - pose.a * Math.sin(tilt);
         const d = pose.d * Math.cos(tilt) - pose.b * Math.sin(tilt);
-        for (const x of [-eye.w / 2, eye.w / 2]) for (const y of [-eye.h / 2, eye.h / 2]) {
-          const px = pose.x + a * x + c * y, py = pose.y + b * x + d * y;
+        const w = eye.w * EYE_SCALE_W, h = eye.h * EYE_SCALE_H;
+        for (const x of [-w / 2, w / 2]) for (const y of [-h / 2, h / 2]) {
+          const px = ex + a * x + c * y, py = ey + b * x + d * y;
           fit = Math.min(fit, radiusAtAngle(radii, Math.atan2(py, px)) * 0.83 / (Math.hypot(px, py) || 1));
         }
       }
