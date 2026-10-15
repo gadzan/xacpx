@@ -49,7 +49,14 @@ test.describe("sidebar terminal-open marker", () => {
 
     await demo.getByTestId("session-name").evaluate((el) => (el as HTMLElement).click());
     page.once("dialog", (dialog) => dialog.accept());
-    await page.getByTestId("tab-close").locator("visible=true").click();
+    if (test.info().project.name === "chromium-mobile") {
+      // Mobile has no tab strip: open tabs are closed from the ⋯ sheet's open-tabs list.
+      await page.getByTestId("mobile-more").click();
+      await page.getByTestId("sheet-open-tabs").click();
+      await page.getByTestId("open-tab-close").first().click();
+    } else {
+      await page.getByTestId("tab-close").locator("visible=true").click();
+    }
     await expect(page.getByTestId("terminal-host")).toHaveCount(0);
 
     await showSidebar(page);

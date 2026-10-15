@@ -26,6 +26,9 @@ import DashboardView from "../views/DashboardView.vue";
 import ChatPane from "../components/ChatPane.vue";
 import FileViewer from "../components/FileViewer.vue";
 import { useChatStore } from "../stores/chat";
+import { useConnectionStore } from "../stores/connection";
+import { useFilesStore } from "../stores/files";
+import { useInstancesStore } from "../stores/instances";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 
 const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: true, "router-link": true };
@@ -51,11 +54,35 @@ function mountDash() {
   return mount(DashboardView, { global: { stubs } });
 }
 
-test("renders mobile drawer controls", async () => {
+/** Select a session so the single mobile top bar (and its ⋯ sheet) is the active chrome. */
+async function selectSession(alias = "demo") {
+  const chat = useChatStore();
+  chat.instanceId = "i1";
+  chat.sessionAlias = alias;
+  await flushPromises();
+}
+
+test("renders the single mobile top bar with its more-sheet entries", async () => {
   const wrapper = mountDash();
   await flushPromises();
+  await selectSession();
+  // One bar: instances drawer, title/subtitle, ⋯ trigger. The old second bar's
+  // files/tasks buttons are gone — they live in the sheet now.
+  expect(wrapper.find('[data-test="mobile-session-bar"]').exists()).toBe(true);
   expect(wrapper.find('[data-test="open-instances"]').exists()).toBe(true);
-  expect(wrapper.find('[data-test="open-tasks"]').exists()).toBe(true);
+  expect(wrapper.find('[data-test="open-files"]').exists()).toBe(false);
+  expect(wrapper.find('[data-test="open-tasks"]').exists()).toBe(false);
+
+  await wrapper.find('[data-test="mobile-more"]').trigger("click");
+  await flushPromises();
+  const sheet = wrapper.find('[data-test="mobile-more-sheet"]');
+  expect(sheet.exists()).toBe(true);
+  for (const id of ["sheet-open-tabs", "sheet-files", "sheet-tasks", "sheet-terminal", "sheet-workspace"]) {
+    expect(sheet.find(`[data-test="${id}"]`).exists()).toBe(true);
+  }
+  // The model stays on the composer chip — never a sheet entry.
+  expect(sheet.text()).not.toContain("model");
+  expect(sheet.find('[data-test="sheet-model"]').exists()).toBe(false);
 });
 
 test("chat column is shrinkable (min-w-0) so wide tool content can't push the right panel off-screen", async () => {
@@ -69,9 +96,10 @@ test("chat column is shrinkable (min-w-0) so wide tool content can't push the ri
   expect(center.classes()).toContain("min-w-0");
 });
 
-test("instance drawer starts off-canvas and opens via the hamburger", async () => {
+test("instance drawer starts off-canvas and opens via the mobile bar's left button", async () => {
   const wrapper = mountDash();
   await flushPromises();
+  await selectSession();
   const left = wrapper.find('[data-drawer="left"]');
   expect(left.classes()).toContain("-translate-x-full");
   expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(false);
@@ -82,15 +110,17 @@ test("instance drawer starts off-canvas and opens via the hamburger", async () =
   expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(true);
 });
 
-test("the mobile bar exposes a discoverable Files button that opens the Files drawer on the files tab", async () => {
+test("the more sheet's Files entry opens the Files drawer on the files tab", async () => {
   const wrapper = mountDash();
   await flushPromises();
-  const filesBtn = wrapper.find('[data-test="open-files"]');
-  expect(filesBtn.exists()).toBe(true);
+  await selectSession();
+  await wrapper.find('[data-test="mobile-more"]').trigger("click");
+  await flushPromises();
   const right = wrapper.find('[data-drawer="right"]');
   expect(right.classes()).toContain("translate-x-full");
 
-  await filesBtn.trigger("click");
+  await wrapper.find('[data-test="sheet-files"]').trigger("click");
+  await flushPromises();
   // Drawer is open...
   expect(right.classes()).toContain("translate-x-0");
   expect(right.classes()).not.toContain("translate-x-full");
@@ -98,6 +128,8 @@ test("the mobile bar exposes a discoverable Files button that opens the Files dr
   const filesTab = wrapper.find('[data-test="right-tab-files"]');
   expect(filesTab.classes()).toContain("text-accent");
   expect(filesTab.classes()).toContain("font-semibold");
+  // The sheet that launched it is gone.
+  expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
 });
 
 test("file viewer Close removes the tab and returns to chat", async () => {
@@ -127,20 +159,26 @@ test("file viewer Close removes the tab and returns to chat", async () => {
   expect(centerTabs.activeFor(key)).toBe("chat");
 });
 
-test("tasks drawer opens via the Tasks button", async () => {
+test("tasks drawer opens via the more sheet's Tasks entry", async () => {
   const wrapper = mountDash();
   await flushPromises();
+  await selectSession();
   const right = wrapper.find('[data-drawer="right"]');
   expect(right.classes()).toContain("translate-x-full");
 
-  await wrapper.find('[data-test="open-tasks"]').trigger("click");
+  await wrapper.find('[data-test="mobile-more"]').trigger("click");
+  await flushPromises();
+  await wrapper.find('[data-test="sheet-tasks"]').trigger("click");
+  await flushPromises();
   expect(right.classes()).toContain("translate-x-0");
   expect(right.classes()).not.toContain("translate-x-full");
+  expect(wrapper.find('[data-test="right-tab-tasks"]').classes()).toContain("text-accent");
 });
 
 test("backdrop click closes an open drawer", async () => {
   const wrapper = mountDash();
   await flushPromises();
+  await selectSession();
   await wrapper.find('[data-test="open-instances"]').trigger("click");
   expect(wrapper.find('[data-drawer="left"]').classes()).toContain("translate-x-0");
 
@@ -153,12 +191,14 @@ test("selecting a session closes the instance drawer and routes to chat", async 
   const chat = useChatStore();
   const wrapper = mount(DashboardView, { global: { stubs: { ChatPane: true, TaskPanel: true, "router-link": true } } });
   await flushPromises();
+  await selectSession();
   await wrapper.find('[data-test="open-instances"]').trigger("click");
   expect(wrapper.find('[data-drawer="left"]').classes()).toContain("translate-x-0");
 
   wrapper.findComponent({ name: "InstanceTree" }).vm.$emit("select", "i1", "backend");
   await flushPromises();
   expect(chat.instanceId).toBe("i1");
+  expect(chat.sessionAlias).toBe("backend");
   expect(wrapper.find('[data-drawer="left"]').classes()).toContain("-translate-x-full");
 });
 
@@ -218,6 +258,7 @@ test("edge-swipe right from the left edge opens the instances drawer (mobile)", 
   try {
     const wrapper = mountDash();
     await flushPromises();
+    await selectSession();
     const left = wrapper.find('[data-drawer="left"]');
     expect(left.classes()).toContain("-translate-x-full");
 
@@ -226,6 +267,20 @@ test("edge-swipe right from the left edge opens the instances drawer (mobile)", 
 
     expect(left.classes()).toContain("translate-x-0");
     expect(left.classes()).not.toContain("-translate-x-full");
+  } finally {
+    Object.defineProperty(window, "innerWidth", { value: realWidth, configurable: true });
+  }
+});
+
+test("edge-swipe right does nothing on the mobile home, where the tree is already the main content", async () => {
+  const realWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 500, configurable: true });
+  try {
+    const wrapper = mountDash();
+    await flushPromises();
+    await wrapper.trigger("touchstart", { touches: [{ clientX: 6, clientY: 200 }] });
+    await wrapper.trigger("touchend", { changedTouches: [{ clientX: 110, clientY: 208 }] });
+    expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(false);
   } finally {
     Object.defineProperty(window, "innerWidth", { value: realWidth, configurable: true });
   }
@@ -325,11 +380,11 @@ test("deselecting the session hides (but keeps mounted) its terminal — it stay
 test("opening the terminal closes an already-open right drawer (rightOpen mutual exclusion)", async () => {
   const wrapper = mountDash();
   await flushPromises();
-  const chat = useChatStore();
-  chat.instanceId = "i1";
-  chat.sessionAlias = "demo";
+  await selectSession();
+  await wrapper.find('[data-test="mobile-more"]').trigger("click");
   await flushPromises();
-  await wrapper.find('[data-test="open-files"]').trigger("click");
+  await wrapper.find('[data-test="sheet-files"]').trigger("click");
+  await flushPromises();
   const right = wrapper.find('[data-drawer="right"]');
   expect(right.classes()).toContain("translate-x-0");
   await wrapper.find('[data-test="toggle-terminal"]').trigger("click");
@@ -343,4 +398,177 @@ test("right drawer is full-width on mobile (no 85% cap)", async () => {
   const right = wrapper.find('[data-drawer="right"]');
   expect(right.classes()).toContain("w-full");
   expect(right.classes()).not.toContain("max-w-[85%]");
+});
+
+// ── Mobile layout (redesign PR4) ────────────────────────────────────────────────
+
+function seedInstance(id: string, name: string, alias: string) {
+  const instances = useInstancesStore();
+  instances.instances = [{
+    id, name, online: true, lastSeenAt: null,
+    sessions: [{ alias, agent: "codex", driver: "codex", workspace: "/w", transportSession: "t", running: false, archived: false }],
+    sessionsLoaded: true,
+    agents: [{ name: "codex", driver: "codex" }],
+    workspaces: [], agentCatalog: [],
+  }];
+}
+
+test("mobile bar subtitle joins instance · agent · branch and never leads with a separator", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  seedInstance("i1", "pc", "demo");
+  const files = useFilesStore();
+  files.gitSummary = { workspace: "/w", changedCount: 0, branch: "feat/mobile" };
+  await selectSession();
+
+  const subtitle = wrapper.find('[data-test="mobile-session-subtitle"]');
+  expect(subtitle.text()).toBe("pc · codex · feat/mobile");
+  // The session's own name is the title; the subtitle carries the context only.
+  expect(wrapper.find('[data-test="mobile-session-bar"]').text()).toContain("demo");
+
+  // No branch loaded: the remaining parts still join without a leading/doubled "·".
+  files.gitSummary = null;
+  await flushPromises();
+  expect(wrapper.find('[data-test="mobile-session-subtitle"]').text()).toBe("pc · codex");
+});
+
+test("connection strip shows only after the connection has been open once", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  await selectSession();
+  // Cold start that never connected: no strip.
+  expect(wrapper.find('[data-test="conn-strip"]').exists()).toBe(false);
+
+  const conn = useConnectionStore();
+  conn.setOnline(true);
+  await flushPromises();
+  expect(wrapper.find('[data-test="conn-strip"]').exists()).toBe(false);
+
+  conn.setOnline(false);
+  await flushPromises();
+  expect(wrapper.find('[data-test="conn-strip"]').exists()).toBe(true);
+  expect(wrapper.find('[data-test="conn-strip"]').attributes("role")).toBe("status");
+});
+
+test("open-tabs sheet switches tabs and closes them through the guarded path", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  await selectSession();
+  const centerTabs = useCenterTabsStore();
+  const key = sessionKey("i1", "demo");
+  centerTabs.openFile(key, "src/a.ts");
+  await flushPromises();
+
+  await wrapper.find('[data-test="mobile-more"]').trigger("click");
+  await flushPromises();
+  await wrapper.find('[data-test="sheet-open-tabs"]').trigger("click");
+  await flushPromises();
+
+  const sheet = wrapper.find('[data-test="open-tabs-sheet"]');
+  expect(sheet.exists()).toBe(true);
+  const rows = sheet.findAll('[data-test="open-tab-row"]');
+  expect(rows).toHaveLength(2); // pinned Chat + the open file
+  expect(rows[0].attributes("data-tab-id")).toBe("chat");
+  expect(rows[1].attributes("data-tab-id")).toBe("file:src/a.ts");
+  // The active tab is the highlighted one.
+  expect(rows[1].classes()).toContain("bg-accent-soft");
+  expect(rows[1].classes()).toContain("text-accent");
+
+  // Tapping Chat switches back and dismisses the sheet.
+  await rows[0].find("button").trigger("click");
+  await flushPromises();
+  expect(centerTabs.activeFor(key)).toBe("chat");
+  expect(wrapper.find('[data-test="open-tabs-sheet"]').exists()).toBe(false);
+
+  // Closing runs the same guarded path as the strip's X: a dirty file asks first.
+  centerTabs.openFile(key, "src/a.ts");
+  centerTabs.setDirty(key, "file:src/a.ts", true);
+  await flushPromises();
+  await wrapper.find('[data-test="sheet-open-tabs"]').trigger("click");
+  await flushPromises();
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+  await wrapper.find('[data-test="open-tab-close"]').trigger("click");
+  await flushPromises();
+  expect(confirmSpy).toHaveBeenCalled();
+  expect(centerTabs.tabsFor(key)).toHaveLength(1); // declined → kept open
+
+  confirmSpy.mockReturnValue(true);
+  await wrapper.find('[data-test="open-tab-close"]').trigger("click");
+  await flushPromises();
+  expect(centerTabs.tabsFor(key)).toHaveLength(0);
+  confirmSpy.mockRestore();
+});
+
+test("mobile home renders the tree as the main content plus the new-session FAB", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  expect(wrapper.find('[data-test="fab-new-session"]').exists()).toBe(true);
+  // Same single tree instance, re-flowed into the main area below lg; the placeholder
+  // column steps aside.
+  const left = wrapper.find('[data-drawer="left"]');
+  expect(left.classes()).toContain("max-lg:relative");
+  expect(left.classes()).toContain("max-lg:w-full");
+  expect(wrapper.find('[data-test="column"]:not([data-drawer])').classes()).toContain("max-lg:hidden");
+  // The instance tree is rendered exactly once (drawer and main area share it).
+  expect(wrapper.findAllComponents({ name: "InstanceTree" })).toHaveLength(1);
+});
+
+test("FAB with one online instance opens the create dialog for it directly", async () => {
+  const nsStub = { name: "NewSessionDialog", props: ["instanceId"], template: '<div data-test="ns-stub">{{ instanceId }}</div>' };
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, NewSessionDialog: nsStub } } });
+  await flushPromises();
+  // The fixture's single instance is online.
+  await wrapper.find('[data-test="fab-new-session"]').trigger("click");
+  await flushPromises();
+  expect(wrapper.find('[data-test="fab-instance-sheet"]').exists()).toBe(false);
+  const dialog = wrapper.find('[data-test="ns-stub"]');
+  expect(dialog.exists()).toBe(true);
+  expect(dialog.text()).toBe("i1");
+});
+
+test("FAB with several online instances opens a picker with the last-used instance first", async () => {
+  // Last used = the instance of the most recently opened session (DashboardView keeps it
+  // under its own key because deselecting clears the persisted chat selection).
+  localStorage.setItem("xacpx.lastInstance", "i2");
+  const nsStub = { name: "NewSessionDialog", props: ["instanceId"], template: '<div data-test="ns-stub">{{ instanceId }}</div>' };
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, NewSessionDialog: nsStub } } });
+  await flushPromises();
+  const instances = useInstancesStore();
+  instances.instances = [
+    { id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
+    { id: "i2", name: "second", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
+    { id: "i3", name: "asleep", online: false, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
+  ];
+  await flushPromises();
+
+  await wrapper.find('[data-test="fab-new-session"]').trigger("click");
+  await flushPromises();
+  const sheet = wrapper.find('[data-test="fab-instance-sheet"]');
+  expect(sheet.exists()).toBe(true);
+  // Only online instances, last-used (i2) first.
+  expect(sheet.findAll('[data-test="fab-instance-option"]').map((o) => o.text())).toEqual(["second", "pc"]);
+
+  await sheet.findAll('[data-test="fab-instance-option"]')[0].trigger("click");
+  await flushPromises();
+  expect(wrapper.find('[data-test="fab-instance-sheet"]').exists()).toBe(false);
+  expect(wrapper.find('[data-test="ns-stub"]').text()).toBe("i2");
+});
+
+test("opening a session records its instance as the FAB's last used", async () => {
+  localStorage.removeItem("xacpx.lastInstance");
+  mountDash();
+  await flushPromises();
+  await selectSession();
+  expect(localStorage.getItem("xacpx.lastInstance")).toBe("i1");
+});
+
+test("FAB is disabled when no instance is online", async () => {
+  const wrapper = mountDash();
+  await flushPromises();
+  const instances = useInstancesStore();
+  instances.instances = [
+    { id: "i1", name: "pc", online: false, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
+  ];
+  await flushPromises();
+  expect(wrapper.find('[data-test="fab-new-session"]').attributes("disabled")).toBeDefined();
 });
