@@ -114,8 +114,8 @@ async function confirmRemove(): Promise<void> {
 
 <template>
   <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
- <div role="dialog" aria-modal="true" class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl bg-surface text-fg shadow-float">
- <header class="px-5 py-3.5">
+    <div role="dialog" aria-modal="true" class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl bg-surface text-fg shadow-float">
+      <header class="px-5 py-3.5">
         <h2 class="text-base font-semibold">{{ t("bot.removal.title", { name: botName }) }}</h2>
       </header>
       <div class="flex-1 space-y-3 overflow-y-auto px-5 py-4 text-sm">
@@ -150,7 +150,7 @@ async function confirmRemove(): Promise<void> {
           <span>{{ t("bot.removal.bindings") }}</span>
         </label>
       </div>
- <footer class="flex justify-end gap-2 px-5 py-3">
+      <footer class="flex justify-end gap-2 px-5 py-3">
         <button type="button" class="rounded-lg px-3 py-1.5 text-sm" @click="emit('close')">{{ t("bot.removal.close") }}</button>
         <button
           v-if="!finished"

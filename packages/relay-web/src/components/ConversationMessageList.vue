@@ -199,7 +199,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         type="button"
         data-test="load-older-button"
         :disabled="loadingOlder"
- class="flex items-center gap-1.5 rounded-full bg-surface px-3 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
+        class="flex items-center gap-1.5 rounded-full bg-surface px-3 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
         @click="handleLoadOlder"
       >
         <Loader2 v-if="loadingOlder" :size="12" class="animate-spin" />
@@ -217,7 +217,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
                  :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
       <h3 class="text-base font-semibold text-fg">{{ bot?.name ?? "Direct Bot" }}</h3>
       <p v-if="bot?.role" class="mt-0.5 text-xs text-fg-muted">{{ bot.role }}</p>
- <div v-if="bot && 'instructions' in bot && bot.instructions" class="mt-3 max-w-md rounded-xl bg-surface/60 p-3 text-left text-xs text-fg-muted leading-relaxed">
+      <div v-if="bot && 'instructions' in bot && bot.instructions" class="mt-3 max-w-md rounded-xl bg-surface/60 p-3 text-left text-xs text-fg-muted leading-relaxed">
         {{ bot.instructions }}
       </div>
       <p class="mt-4 text-xs text-fg-muted">{{ $t("bot.chat.emptyHint") }}</p>
@@ -232,7 +232,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       >
         <!-- Human Message -->
         <TranscriptRow v-if="m.role === 'human'" own :row-id="m.id">
- <div class="min-w-0 max-w-full rounded-2xl rounded-tr-md bg-accent-soft px-3.5 py-2 text-[14px] leading-relaxed text-fg">
+          <div class="min-w-0 max-w-full rounded-2xl rounded-tr-md bg-accent-soft px-3.5 py-2 text-[14px] leading-relaxed text-fg">
             <StreamMarkdown :text="m.content" />
           </div>
           <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
@@ -306,9 +306,9 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             <span class="text-xs font-semibold text-fg">{{ bot?.name ?? "Bot" }}</span>
             <div class="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium"
                  :class="{
- 'bg-run/15 text-run': activeRun?.state === 'running',
- 'bg-warning/15 text-warning': activeRun?.state === 'queued' || activeRun?.state === 'waiting-human',
- }">
+                   'bg-run/15 text-run': activeRun?.state === 'running',
+                   'bg-warning/15 text-warning': activeRun?.state === 'queued' || activeRun?.state === 'waiting-human',
+                 }">
               <Loader2 v-if="activeRun?.state === 'running'" :size="11" class="animate-spin" />
               <Clock v-else-if="activeRun?.state === 'queued'" :size="11" />
               <AlertCircle v-else-if="activeRun?.state === 'waiting-human'" :size="11" />
@@ -322,7 +322,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
               v-if="activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human')"
               type="button"
               data-test="stop-turn-hud-button"
- class="flex items-center gap-1 rounded bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger hover:bg-danger/20 transition-colors"
+              class="flex items-center gap-1 rounded bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger hover:bg-danger/20 transition-colors"
               @click="emit('cancelRun')"
             >
               <CircleStop :size="11" />
@@ -334,7 +334,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <PlanPanel v-if="planEntries && planEntries.length > 0" :entries="planEntries" class="w-full" />
 
           <!-- Live Turn Content -->
- <div v-if="liveTurn && liveTurn.parts.length > 0" class="w-full rounded-xl bg-surface/50 p-3">
+          <div v-if="liveTurn && liveTurn.parts.length > 0" class="w-full rounded-xl bg-surface/50 p-3">
             <TurnParts
               :parts="liveTurn.parts"
               :streaming="liveTurn.status === 'streaming'"
@@ -348,7 +348,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       </TranscriptRow>
 
       <!-- Run Terminated State Banners (when not completed normally) -->
- <div v-if="activeRun?.state === 'failed'" class="flex items-center gap-2 rounded-xl bg-danger/10 p-3 text-xs text-danger">
+      <div v-if="activeRun?.state === 'failed'" class="flex items-center gap-2 rounded-xl bg-danger/10 p-3 text-xs text-danger">
         <AlertCircle :size="16" class="shrink-0" />
         <div class="flex-1">
           <span class="font-semibold">{{ $t("bot.run.failed") }}: </span>
@@ -356,12 +356,12 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         </div>
       </div>
 
- <div v-else-if="activeRun?.state === 'cancelled'" class="flex items-center gap-2 rounded-xl bg-surface p-3 text-xs text-fg-muted">
+      <div v-else-if="activeRun?.state === 'cancelled'" class="flex items-center gap-2 rounded-xl bg-surface p-3 text-xs text-fg-muted">
         <CircleStop :size="15" class="shrink-0 text-danger" />
         <span>{{ $t("bot.run.cancelled") }}</span>
       </div>
 
- <div v-else-if="activeRun?.state === 'indeterminate'" class="flex items-center gap-2 rounded-xl bg-warning/10 p-3 text-xs text-warning">
+      <div v-else-if="activeRun?.state === 'indeterminate'" class="flex items-center gap-2 rounded-xl bg-warning/10 p-3 text-xs text-warning">
         <HelpCircle :size="16" class="shrink-0" />
         <div class="flex-1">
           <span class="font-semibold">{{ $t("bot.run.indeterminate") }}: </span>

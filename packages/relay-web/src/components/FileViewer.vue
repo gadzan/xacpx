@@ -233,7 +233,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
 <template>
   <div ref="rootEl" class="flex h-full flex-1 flex-col bg-bg" data-test="file-viewer-center">
     <!-- header: path + meta -->
- <div class="flex h-11 shrink-0 items-center gap-2 bg-surface/60 px-3 backdrop-blur-md">
+    <div class="flex h-11 shrink-0 items-center gap-2 bg-surface/60 px-3 backdrop-blur-md">
       <template v-if="file">
         <FileText :size="14" class="shrink-0 text-accent" />
         <span class="truncate font-mono text-[12.5px] text-fg">{{ file.path }}</span>
@@ -255,7 +255,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         <template v-if="editing">
           <span v-if="editDirty" data-test="fv-dirty-dot" class="mr-0.5 h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
           <button data-test="fv-save" :disabled="saving || !editDirty" :aria-label="$t('files.save')"
- class="flex h-7 items-center gap-1 rounded px-2 text-[12px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-40"
+                  class="flex h-7 items-center gap-1 rounded px-2 text-[12px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-40"
                   @click="save()"><SaveIcon :size="14" />{{ saving ? $t("files.saving") : $t("files.save") }}</button>
           <button data-test="fv-cancel" :aria-label="$t('files.cancel')"
                   class="h-7 rounded px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
@@ -270,10 +270,10 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
 
     <!-- body -->
     <div class="min-h-0 flex-1 overflow-hidden">
- <div v-if="error" data-test="fv-error" class="m-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{{ error }}</div>
+      <div v-if="error" data-test="fv-error" class="m-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{{ error }}</div>
       <div v-else-if="loading && !file && !diff" data-test="fv-loading" class="p-6 text-sm text-fg-muted">{{ $t("files.loading") }}</div>
       <!-- save error / stale-conflict banner -->
- <div v-if="saveError" data-test="fv-save-error" class="m-3 flex items-center gap-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
+      <div v-if="saveError" data-test="fv-save-error" class="m-3 flex items-center gap-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
         <span class="min-w-0 flex-1">{{ saveErrorLabel }}</span>
         <button v-if="isStale" data-test="fv-reload" class="shrink-0 rounded bg-danger/15 px-2 py-0.5 text-[12px] font-medium hover:bg-danger/25" @click="reloadFromDisk()">{{ $t("files.reload") }}</button>
       </div>
@@ -286,8 +286,8 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         <div v-if="parsedDiff && parsedDiff.rows.length" data-test="fv-diff-body" class="font-mono text-[12.5px] leading-relaxed">
           <div v-for="(r, i) in parsedDiff.rows" :key="i" data-test="fv-diff-row" class="flex"
                :class="r.type === 'add' ? 'bg-run/10' : r.type === 'del' ? 'bg-danger/10' : r.type === 'hunk' ? 'bg-info/5' : ''">
- <span class="sticky left-0 w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.oldNo ??"" }}</span>
- <span class="w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.newNo ??"" }}</span>
+            <span class="sticky left-0 w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.oldNo ?? "" }}</span>
+            <span class="w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.newNo ?? "" }}</span>
             <span class="w-4 shrink-0 select-none text-center" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger' : 'text-fg-muted/40'">{{ r.type === 'add' ? '+' : r.type === 'del' ? '-' : '' }}</span>
             <span class="whitespace-pre px-2" :class="r.type === 'hunk' ? 'text-info' : 'text-fg'">{{ r.text }}</span>
           </div>

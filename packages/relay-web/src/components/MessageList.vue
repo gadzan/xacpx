@@ -551,7 +551,7 @@ watch(
         <template v-for="(row, i) in SKELETON_ROWS" :key="i">
           <!-- user bubble -->
           <div v-if="row.kind === 'user'" class="flex justify-end" :style="{ '--sk-delay': `${i * 160}ms` }">
- <div class="space-y-1.5 rounded-2xl rounded-tr-md bg-accent-soft px-3.5 py-2.5" :style="{ width: row.w }">
+            <div class="space-y-1.5 rounded-2xl rounded-tr-md bg-accent-soft px-3.5 py-2.5" :style="{ width: row.w }">
               <div v-for="n in row.lines" :key="n" class="sk-bar h-3 rounded bg-accent/15"
                    :style="{ width: n === row.lines ? '58%' : '100%' }" />
             </div>
@@ -612,13 +612,13 @@ watch(
             <div class="flex min-w-0 max-w-[80%] flex-col items-end">
               <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
               <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
- class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[10.5px] font-medium text-accent"
+                    class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[10.5px] font-medium text-accent"
                     :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
                 <Clock :size="11" />{{ $t("chat.scheduled") }}
               </span>
               <div data-test="msg-in"
                    class="min-w-0 max-w-full rounded-2xl rounded-tr-md px-3.5 py-2"
- :class="m.failed ? 'bg-danger/5' : 'bg-accent-soft'">
+                   :class="m.failed ? 'bg-danger/5' : 'bg-accent-soft'">
                 <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
                 <MessageAttachments v-if="m.attachments?.length" :attachments="m.attachments" />
               </div>
@@ -632,7 +632,7 @@ watch(
                 <span data-test="msg-failed" class="inline-flex items-center gap-1 text-[11px] font-medium text-danger">
                   <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
                 <button type="button" data-test="msg-resend"
- class="inline-flex items-center gap-1 rounded-md bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20"
+                        class="inline-flex items-center gap-1 rounded-md bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20"
                         :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
               </div>
             </div>
@@ -709,7 +709,7 @@ watch(
       type="button"
       :aria-label="$t('chat.jumpLatest')"
       :title="$t('chat.jumpLatest')"
- class="absolute bottom-3 left-1/2 z-10 grid h-7 w-7 -translate-x-1/2 place-items-center rounded-md bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-colors hover:bg-surface"
+      class="absolute bottom-3 left-1/2 z-10 grid h-7 w-7 -translate-x-1/2 place-items-center rounded-md bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-colors hover:bg-surface"
       @click="scrollToBottom(true)"
     >
       <ArrowDown :size="13" :stroke-width="2.5" />

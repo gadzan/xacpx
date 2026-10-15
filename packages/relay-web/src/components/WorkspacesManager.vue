@@ -64,9 +64,9 @@ async function remove(wsName: string): Promise<void> {
   <section class="space-y-3">
     <p v-if="error" data-test="wm-error" class="rounded bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ error }}</p>
     <input v-if="showFilter" v-model="filter" data-test="wm-filter" :placeholder="$t('common.filter')"
- class="w-full rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+           class="w-full rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
     <p v-if="!all.length" data-test="wm-empty" class="text-sm text-fg-muted">{{ $t("workspaces.empty") }}</p>
- <ul v-else class="max-h-64 overflow-y-auto rounded">
+    <ul v-else class="max-h-64 overflow-y-auto rounded">
       <li v-for="w in list" :key="w.name" class="flex items-center justify-between gap-2 px-3 py-2 text-sm">
         <span class="min-w-0 truncate" :title="`${w.name} — ${w.cwd}`">
           <span class="font-medium text-fg">{{ w.name }}</span><span class="text-fg-muted"> — {{ w.cwd }}</span>
@@ -79,19 +79,19 @@ async function remove(wsName: string): Promise<void> {
     </ul>
 
     <button v-if="!formOpen" type="button" data-test="wm-add-toggle" @click="formOpen = true"
- class="flex items-center gap-1.5 rounded bg-surface-2 px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-accent-soft hover:text-fg">
+            class="flex items-center gap-1.5 rounded bg-surface-2 px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-accent-soft hover:text-fg">
       <Plus :size="14" /> {{ $t("workspaces.add") }}
     </button>
- <div v-else class="space-y-2 rounded p-3">
+    <div v-else class="space-y-2 rounded p-3">
       <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
- <input v-model="name" data-test="wm-name" :placeholder="$t('workspaces.namePlaceholder')" class="rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
- <input v-model="description" data-test="wm-desc" :placeholder="$t('workspaces.descPlaceholder')" class="rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+        <input v-model="name" data-test="wm-name" :placeholder="$t('workspaces.namePlaceholder')" class="rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+        <input v-model="description" data-test="wm-desc" :placeholder="$t('workspaces.descPlaceholder')" class="rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
       </div>
       <div class="flex gap-2">
         <input v-model="path" data-test="wm-path" :placeholder="$t('workspaces.pathPlaceholder')"
- class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+               class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
         <button type="button" data-test="wm-browse" :title="$t('workspaces.browsePath')" :aria-label="$t('workspaces.browsePath')"
- class="grid h-8 w-8 shrink-0 place-items-center rounded text-fg-muted hover:bg-fg/5 hover:text-fg"
+                class="grid h-8 w-8 shrink-0 place-items-center rounded text-fg-muted hover:bg-fg/5 hover:text-fg"
                 @click="browsing = true"><FolderOpen :size="14" /></button>
       </div>
       <div class="flex gap-2">

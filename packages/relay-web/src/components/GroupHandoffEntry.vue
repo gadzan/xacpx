@@ -143,10 +143,10 @@ watch(
       class="flex min-h-11 min-w-11 items-center rounded-lg px-1 text-accent transition-colors hover:bg-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       @click="toggle"
     >
- <span aria-hidden="true" data-handoff-avatar="from" class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface">
+      <span aria-hidden="true" data-handoff-avatar="from" class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface">
         <BotAvatar :avatar="fromAvatar" :driver="fromDriver" :name="fromName" :size="24" static />
       </span>
- <span aria-hidden="true" data-handoff-avatar="to" class="-ml-2 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface">
+      <span aria-hidden="true" data-handoff-avatar="to" class="-ml-2 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface">
         <BotAvatar :avatar="toAvatar" :driver="toDriver" :name="toName" :size="24" static />
       </span>
     </button>
@@ -154,7 +154,7 @@ watch(
       v-if="expanded && message.handoff"
       :id="panelId"
       data-test="group-handoff-details"
- class="mt-1 space-y-2 rounded-xl bg-surface/70 p-3 text-xs text-fg [overflow-wrap:anywhere]"
+      class="mt-1 space-y-2 rounded-xl bg-surface/70 p-3 text-xs text-fg [overflow-wrap:anywhere]"
     >
       <dl class="space-y-2">
         <div><dt class="text-fg-muted">{{ t('group.handoff.from') }}</dt><dd>{{ fromName }}</dd></div>

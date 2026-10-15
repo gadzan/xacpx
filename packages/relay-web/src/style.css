@@ -53,7 +53,7 @@
   --c-warn: 227 166 59;         /* #E3A63B */
   --c-danger: 239 111 108;      /* #EF6F6C */
   --c-info: 94 163 247;         /* #5EA3F7 (= accent) */
-  --c-surface-2: 31 39 49;      /* #1F2731 — hover / selected / chips; 1.14:1 vs surface */
+  --c-surface-2: 42 52 65;      /* #2A3441 — hover / selected / chips / inputs; distinct from raised #1F2731 */
   --c-accent-soft: 24 42 64;    /* #182A40 — selected-row tint; fg 12.2:1, accent 5.6:1 */
   --c-on-accent: 11 20 34;      /* #0B1422 — dark text on filled accent; 7.08:1, hover 8.65:1 (white was 2.61) */
   --c-on-danger: 11 20 34;      /* #0B1422 — dark text on filled danger; 6.30:1 (white was 2.93) */
@@ -94,15 +94,17 @@ a:focus-visible, button:focus-visible,
   border-radius: 6px;
 }
 
-/* Form-field focus: soft accent ring (redesign PR2 — inputs no longer carry a
-   static border, so border-color alone would be invisible). Matches composer
-   focus-within:ring-2 ring-accent/40. Buttons/links still use the branded
-   double-ring rule above. */
+/* Form-field focus: 2px solid accent ring (redesign PR2 §3.3 — inputs no longer
+   carry a static border, so border-color alone would be invisible). Authoritative
+   override so per-component `focus-visible:ring-*` utilities can't thin or tint it.
+   Solid accent keeps the indicator ≥3:1 against bg/raised (WCAG 1.4.11 / 2.4.7).
+   Matches the composer's focus-within:ring-2 ring-accent. Buttons/links still use
+   the branded double-ring rule above. */
 input:focus, input:focus-visible,
 textarea:focus, textarea:focus-visible,
 select:focus, select:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px rgb(var(--c-accent) / 0.4);
+  box-shadow: 0 0 0 2px rgb(var(--c-accent)) !important;
 }
 
 /* Live run-dot: expanding bright-green ring (matches mockup softpulse). */

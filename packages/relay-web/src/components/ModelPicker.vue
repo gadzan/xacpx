@@ -114,10 +114,10 @@ function onKeydown(event: KeyboardEvent): void {
     <p v-else-if="reason" data-test="model-picker-reason" class="text-xs text-fg-muted">{{ reason }}</p>
     <p v-if="recovery" data-test="model-picker-recovery" class="text-xs text-fg-muted">{{ recovery }}</p>
     <div class="flex gap-2">
- <button v-if="canFetch" type="button" data-test="model-picker-fetch" class="rounded-lg px-2 py-1 text-xs text-fg hover:bg-fg/5" @click="emit('fetch')">
+      <button v-if="canFetch" type="button" data-test="model-picker-fetch" class="rounded-lg px-2 py-1 text-xs text-fg hover:bg-fg/5" @click="emit('fetch')">
         {{ t("capability.fetch") }}
       </button>
- <button v-if="state.status === 'error'" type="button" data-test="model-picker-retry" class="rounded-lg px-2 py-1 text-xs text-fg hover:bg-fg/5" @click="emit('fetch')">
+      <button v-if="state.status === 'error'" type="button" data-test="model-picker-retry" class="rounded-lg px-2 py-1 text-xs text-fg hover:bg-fg/5" @click="emit('fetch')">
         {{ t("capability.retry") }}
       </button>
     </div>
@@ -132,12 +132,12 @@ function onKeydown(event: KeyboardEvent): void {
           :value="model"
           autocomplete="off"
           :placeholder="t('capability.defaultModel')"
- class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+          class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
           @focus="open = true"
           @input="onCustom"
           @keydown="onKeydown"
         />
- <ul v-if="open" :data-test="listTestId" class="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-lg bg-raised py-1 shadow-float">
+        <ul v-if="open" :data-test="listTestId" class="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-lg bg-raised py-1 shadow-float">
           <li data-test="model-picker-default" class="cursor-pointer px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @mousedown.prevent="pickModel('')">
             {{ t("capability.defaultModel") }}
           </li>
@@ -172,7 +172,7 @@ function onKeydown(event: KeyboardEvent): void {
           id="model-picker-effort"
           data-test="model-picker-effort"
           :value="effort"
- class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+          class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
           @change="onEffort"
         >
           <option value="">{{ t("capability.effortDefault") }}</option>
@@ -183,7 +183,7 @@ function onKeydown(event: KeyboardEvent): void {
           id="model-picker-effort"
           data-test="model-picker-effort"
           :value="effort"
- class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
+          class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
           :placeholder="t('capability.effortDefault')"
           @input="onEffort"
         />

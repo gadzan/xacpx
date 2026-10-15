@@ -22,7 +22,7 @@ function toneClass(tone: string): string {
         v-for="t in toasts"
         :key="t.id"
         data-test="toast"
- class="pointer-events-auto flex items-start justify-between gap-2 rounded-lg bg-surface px-3 py-2 text-sm shadow-float"
+        class="pointer-events-auto flex items-start justify-between gap-2 rounded-lg bg-surface px-3 py-2 text-sm shadow-float"
       >
         <span :class="toneClass(t.tone)">{{ $t(t.key, t.params ?? {}) }}</span>
         <button data-test="toast-dismiss" class="shrink-0 text-fg-muted hover:text-fg" :aria-label="$t('common.dismiss')" @click="dismissToast(t.id)">×</button>

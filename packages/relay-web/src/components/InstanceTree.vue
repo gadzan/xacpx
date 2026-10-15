@@ -531,7 +531,7 @@ const rowSwipes = computed(() => {
     <!-- No whole-card opacity: offline text fell below AA (muted name 3.21 dark / 2.52 light);
          the dimmed state reads from the muted name/label/dot, which pass AA at full opacity. -->
     <div v-for="inst in store.instances" :key="inst.id" data-test="instance-card"
- class="rounded-lg bg-surface/60 p-[3px]">
+         class="rounded-lg bg-surface/60 p-[3px]">
       <!-- Instance header: a flex CONTAINER (not one <button>) so the expand
            toggle and the sibling Desktop entry stay independent interactive
            controls — a nested <button> is invalid HTML and breaks keyboard
@@ -572,7 +572,7 @@ const rowSwipes = computed(() => {
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
         <!-- Mode switcher: Sessions | Bots -->
- <div v-if="inst.online" class="flex items-center gap-1 pb-1 mb-1 px-1">
+        <div v-if="inst.online" class="flex items-center gap-1 pb-1 mb-1 px-1">
           <button
             type="button"
             data-test="instance-nav-sessions"
@@ -632,7 +632,7 @@ const rowSwipes = computed(() => {
                :key="b.id"
                data-test="bot-row"
                class="group relative flex items-center rounded-md transition-colors"
- :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-raised'">
+               :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-raised'">
             <!-- Selected accent bar -->
             <span v-if="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id"
                   class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
@@ -662,7 +662,7 @@ const rowSwipes = computed(() => {
               type="button"
               data-test="enable-bot-tree-button"
               :disabled="enablingBots.has(`${inst.id}:${b.id}`)"
- class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
+              class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
               @click.stop="void enableBot(inst.id, b)"
             >
               {{ $t("bot.actions.enable") }}
@@ -697,7 +697,7 @@ const rowSwipes = computed(() => {
             <button
               type="button"
               data-test="new-bot-button"
- class="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft transition-colors"
+              class="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft transition-colors"
               @click="botDialogFor = { instanceId: inst.id, instanceName: inst.name }"
             >
               <Plus :size="12" />
@@ -753,7 +753,7 @@ const rowSwipes = computed(() => {
                :key="g.id"
                data-test="group-row"
                class="group relative flex items-center rounded-md transition-colors"
- :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-raised'">
+               :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-raised'">
             <span v-if="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id"
                   class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
             <button
@@ -794,7 +794,7 @@ const rowSwipes = computed(() => {
             <button
               type="button"
               data-test="new-group-button"
- class="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent-soft"
+              class="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent-soft"
               @click="groupDialogFor = { instanceId: inst.id, instanceName: inst.name }"
             >
               <Plus :size="12" />
@@ -806,7 +806,7 @@ const rowSwipes = computed(() => {
         <!-- SESSIONS MODE -->
         <template v-else-if="modeFor(inst.id) === 'sessions'">
         <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
- class="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] font-medium text-accent hover:bg-accent-soft"
+                class="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] font-medium text-accent hover:bg-accent-soft"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
           <ChevronDown :size="11" class="rotate-[-90deg]" />{{ $t("instance.loadSessions") }}
         </button>
@@ -828,7 +828,7 @@ const rowSwipes = computed(() => {
               <span data-test="group-count" class="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">{{ grp.sessions.length }}</span>
             </button>
             <button data-test="group-new-session" :title="$t('instance.groupNewSession', { name: grp.key })" :aria-label="$t('instance.groupNewSession', { name: grp.key })"
- class="grid h-5 w-5 shrink-0 place-items-center rounded text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
+                    class="grid h-5 w-5 shrink-0 place-items-center rounded text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
                     @click.stop="openGroupDialog(inst, grp.key)"><Plus :size="12" /></button>
           </div>
           <div v-show="grp.key === null || !isGroupCollapsed(inst, grp.key)" class="space-y-px" :class="grp.key !== null ? 'pl-2' : ''">
@@ -853,7 +853,7 @@ const rowSwipes = computed(() => {
             >
               <!-- Foreground row content (spans the full row width). -->
               <div class="relative flex w-full shrink-0 items-center rounded-md transition-colors"
- :class="isSelected(inst.id, s.alias) ? 'bg-accent-soft' : 'hover:bg-raised'">
+                   :class="isSelected(inst.id, s.alias) ? 'bg-accent-soft' : 'hover:bg-raised'">
                 <!-- Selected row: left accent bar. -->
                 <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
                 <button
@@ -877,7 +877,7 @@ const rowSwipes = computed(() => {
                     <span
                       v-if="hasOpenTerminal(inst.id, s.alias)"
                       data-test="terminal-open-marker"
-                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent/50"
+                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent"
                       :title="$t('instance.sessionTerminalOpenTitle')"
                       :aria-label="$t('instance.sessionTerminalOpenTitle')"
                     ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
@@ -888,7 +888,7 @@ const rowSwipes = computed(() => {
                   <span
                     v-else-if="hasOpenTerminal(inst.id, s.alias)"
                     data-test="terminal-open-marker"
-                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent/50"
+                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent"
                     :title="$t('instance.sessionTerminalOpenTitle')"
                     :aria-label="$t('instance.sessionTerminalOpenTitle')"
                   ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
@@ -944,10 +944,10 @@ const rowSwipes = computed(() => {
                  fires (mousedown → Vue flush → mouseup → click on a detached node), so
                  archive/delete silently no-op. Stopping mousedown keeps the menu mounted. -->
             <div v-if="inst.online && openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop
- class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-md bg-surface py-1 shadow-float">
-              <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
-              <button v-if="!s.archived" data-test="action-archive" :title="$t('instance.sleepTooltip')" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onArchive(inst.id, s.alias)"><Moon :size="12" />{{ $t("instance.archiveSession") }}</button>
-              <button v-else data-test="action-unarchive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-raised" @click.stop="onUnarchive(inst.id, s.alias)"><ArchiveRestore :size="12" />{{ $t("instance.unarchiveSession") }}</button>
+                 class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-md bg-raised py-1 shadow-float">
+              <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
+              <button v-if="!s.archived" data-test="action-archive" :title="$t('instance.sleepTooltip')" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="onArchive(inst.id, s.alias)"><Moon :size="12" />{{ $t("instance.archiveSession") }}</button>
+              <button v-else data-test="action-unarchive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="onUnarchive(inst.id, s.alias)"><ArchiveRestore :size="12" />{{ $t("instance.unarchiveSession") }}</button>
               <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
             </div>
             </div>
@@ -1004,7 +1004,7 @@ const rowSwipes = computed(() => {
                   class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="void toggleArchived(inst.id)"><ArchiveRestore :size="13" /></button>
           <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
- class="grid h-6 w-6 place-items-center rounded text-accent transition-colors hover:bg-accent-soft"
+                  class="grid h-6 w-6 place-items-center rounded text-accent transition-colors hover:bg-accent-soft"
                   @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>
           <button data-test="manage-instance" :title="$t('instance.manage')" :aria-label="$t('instance.manage')"
                   class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"

@@ -6,7 +6,7 @@ const conn = useConnectionStore();
 <template>
   <div
     data-test="conn-badge"
- class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs"
+    class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs"
     :class="conn.online ? 'text-run' : 'text-danger'"
     :title="conn.online ? $t('connection.online') : $t('connection.reconnecting')"
   >

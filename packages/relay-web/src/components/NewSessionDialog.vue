@@ -309,8 +309,8 @@ async function submit(): Promise<void> {
   <Teleport to="body">
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
     <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="new-session-title"
- class="w-full max-w-md rounded-xl bg-raised shadow-float focus:outline-none" data-test="new-session-dialog">
- <header class="flex items-center justify-between px-5 py-3">
+         class="w-full max-w-md rounded-xl bg-raised shadow-float focus:outline-none" data-test="new-session-dialog">
+      <header class="flex items-center justify-between px-5 py-3">
         <h2 id="new-session-title" class="text-sm font-semibold text-fg">{{ $t("session.newSession") }} <span class="font-normal text-fg-muted">· {{ instanceName }}</span></h2>
         <button class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")' @click="emit('close')"><X :size="16" /></button>
       </header>
@@ -323,11 +323,11 @@ async function submit(): Promise<void> {
             <div class="flex gap-1">
               <button type="button" data-test="ns-source-new"
                       class="flex-1 rounded px-2 py-1 text-xs"
- :class="sessionSource === 'new' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                      :class="sessionSource === 'new' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
                       @click="sessionSource = 'new'">{{ $t("session.newSession") }}</button>
               <button type="button" data-test="ns-source-native"
                       class="flex-1 rounded px-2 py-1 text-xs"
- :class="sessionSource === 'native' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                      :class="sessionSource === 'native' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
                       @click="sessionSource = 'native'">{{ $t("session.nativeSession") }}</button>
             </div>
           </div>
@@ -335,7 +335,7 @@ async function submit(): Promise<void> {
           <label class="block">
             <span class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("session.sessionAlias") }} <span class="font-normal text-fg-muted">{{ $t("session.optional") }}</span></span>
             <input v-model="alias" data-test="ns-alias" :placeholder="aliasPlaceholder"
- class="w-full rounded-lg bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                   class="w-full rounded-lg bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                    @keydown.enter="submit" />
           </label>
 
@@ -350,20 +350,20 @@ async function submit(): Promise<void> {
               <div v-if="sessionSource === 'new'" class="flex gap-1">
                 <button type="button" data-test="ns-ws-mode-existing"
                         class="rounded px-2 py-0.5 text-xs"
- :class="wsMode === 'existing' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                        :class="wsMode === 'existing' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
                         @click="wsMode = 'existing'">{{ $t("session.existing") }}</button>
                 <button type="button" data-test="ns-ws-mode-path"
                         class="rounded px-2 py-0.5 text-xs"
- :class="wsMode === 'path' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                        :class="wsMode === 'path' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
                         @click="wsMode = 'path'">{{ $t("session.newPath") }}</button>
               </div>
             </div>
             <SelectMenu v-if="wsMode === 'existing'" v-model="workspaceSel" :groups="workspaceGroups" data-test="ns-workspace" :aria-label='$t("session.workspace")' :placeholder='$t("session.selectWorkspace")' />
             <div v-else class="flex gap-2">
               <input v-model="workspacePath" data-test="ns-ws-path" :placeholder='$t("session.pathPlaceholder")'
- class="min-w-0 flex-1 rounded-lg bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+                     class="min-w-0 flex-1 rounded-lg bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
               <button type="button" data-test="ns-ws-browse" :title='$t("session.browsePath")' :aria-label='$t("session.browsePath")'
- class="grid h-[38px] w-[38px] shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-fg/5 hover:text-fg"
+                      class="grid h-[38px] w-[38px] shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-fg/5 hover:text-fg"
                       @click="browsing = true"><FolderOpen :size="16" /></button>
             </div>
           </div>
@@ -416,7 +416,7 @@ async function submit(): Promise<void> {
         </template>
       </div>
 
- <footer class="flex justify-end gap-2 px-5 py-3">
+      <footer class="flex justify-end gap-2 px-5 py-3">
         <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
         <button data-test="ns-create" :disabled="!canSubmit"
                 class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"

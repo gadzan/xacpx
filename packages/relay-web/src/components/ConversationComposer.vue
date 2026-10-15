@@ -114,7 +114,7 @@ function onInput(event: Event): void {
        and stack layers above this card baseline to its top border. -->
   <form class="relative px-0" @submit.prevent="emit('send')">
     <div
-      class="relative rounded-2xl bg-surface transition-colors focus-within:ring-2 focus-within:ring-accent/40"
+      class="relative rounded-2xl bg-surface transition-colors focus-within:ring-2 focus-within:ring-accent"
     >
       <slot name="menus" />
 

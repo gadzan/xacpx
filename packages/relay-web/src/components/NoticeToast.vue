@@ -24,7 +24,7 @@ function toneClass(kind: string): string {
       v-for="n in notices.items.slice(0, 4)"
       :key="n.id"
       :data-test="n.kind === 'queue-overflow' ? 'queue-overflow-toast' : 'notice'"
- class="pointer-events-auto rounded bg-raised px-3 py-2 text-sm text-fg shadow-float"
+      class="pointer-events-auto rounded bg-raised px-3 py-2 text-sm text-fg shadow-float"
     >
       <div class="flex items-start justify-between gap-2">
         <span v-if="n.kind === 'queue-overflow'" class="text-fg-muted">{{ n.text }}</span>
