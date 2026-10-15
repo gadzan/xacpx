@@ -33,8 +33,8 @@ describe("PromptInput composer", () => {
   it("uses a 16px textarea on mobile (iOS auto-zoom guard) and 14px on desktop", () => {
     const w = mount(PromptInput);
     const cls = w.find("textarea").classes();
-    expect(cls).toContain("text-[16px]");
-    expect(cls).toContain("lg:text-[14px]");
+    expect(cls).toContain("text-base");
+    expect(cls).toContain("lg:text-sm");
   });
 
   it("Enter submits a `/`-prefixed message verbatim (no autocomplete interception)", async () => {

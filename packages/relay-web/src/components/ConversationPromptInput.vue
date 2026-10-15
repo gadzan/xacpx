@@ -476,7 +476,7 @@ function onInput(): void {
             role="option"
             :aria-selected="index === cmdActiveIdx"
             data-test="direct-cmd-item"
-            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
+            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-ui hover:bg-raised"
             :class="index === cmdActiveIdx ? 'bg-accent-soft' : ''"
             @pointerdown.prevent
             @click="pickRow(index)"

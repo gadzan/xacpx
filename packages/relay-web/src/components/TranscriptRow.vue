@@ -49,7 +49,7 @@ const props = defineProps<{
     >
       <div v-if="!own && speaker" class="flex items-center gap-2">
         <span class="text-xs font-semibold text-fg">{{ speaker }}</span>
-        <span v-if="speakerRole" class="text-[10px] font-normal text-fg-muted">{{ speakerRole }}</span>
+        <span v-if="speakerRole" class="text-xs font-normal text-fg-muted">{{ speakerRole }}</span>
       </div>
 
       <slot />

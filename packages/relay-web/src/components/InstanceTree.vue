@@ -555,10 +555,10 @@ const rowSwipes = computed(() => {
           <ChevronDown v-if="isExpanded(inst.id)" :size="12" class="shrink-0 text-fg-muted" />
           <ChevronRight v-else :size="12" class="shrink-0 text-fg-muted" />
           <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
-          <span class="truncate text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
+          <span class="truncate text-ui font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
                 :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
-          <span v-if="inst.online" class="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">{{ activeSessions(inst).length }}</span>
-          <span v-else-if="!inst.online" class="shrink-0 text-[10px] font-medium text-fg-muted">{{ $t("instance.offline") }}</span>
+          <span v-if="inst.online" class="shrink-0 font-mono text-xs tabular-nums text-fg-muted">{{ activeSessions(inst).length }}</span>
+          <span v-else-if="!inst.online" class="shrink-0 text-xs font-medium text-fg-muted">{{ $t("instance.offline") }}</span>
         </button>
         <!-- Instance-level Desktop entry. Deliberately NOT session-scoped: the
              design makes Desktop an instance resource, so an online desktop-capable
@@ -586,7 +586,7 @@ const rowSwipes = computed(() => {
           <button
             type="button"
             data-test="instance-nav-sessions"
-            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors"
+            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
             :class="modeFor(inst.id) === 'sessions' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
             @click="setMode(inst.id, 'sessions')"
           >
@@ -596,26 +596,26 @@ const rowSwipes = computed(() => {
           <button
             type="button"
             data-test="instance-nav-bots"
-            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors"
+            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
             :class="modeFor(inst.id) === 'bots' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
             @click="setMode(inst.id, 'bots')"
           >
             <Bot :size="11" />
             <span>{{ $t("nav.bots") }}</span>
-            <span v-if="directBotsStore.botsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-[9.5px] tabular-nums opacity-80">
+            <span v-if="directBotsStore.botsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-xs tabular-nums opacity-80">
               {{ directBotsStore.botsByInstance[inst.id].length }}
             </span>
           </button>
           <button
             type="button"
             data-test="instance-nav-groups"
-            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors"
+            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
             :class="modeFor(inst.id) === 'groups' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
             @click="setMode(inst.id, 'groups')"
           >
             <Users :size="11" />
             <span>{{ $t("nav.groups") }}</span>
-            <span v-if="groupsStore.groupsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-[9.5px] tabular-nums opacity-80">
+            <span v-if="groupsStore.groupsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-xs tabular-nums opacity-80">
               {{ groupsStore.groupsByInstance[inst.id].length }}
             </span>
           </button>
@@ -625,17 +625,17 @@ const rowSwipes = computed(() => {
         <div v-if="inst.online && modeFor(inst.id) === 'bots'" class="space-y-px">
           <div v-if="(directBotsStore.loadingBotsByInstance[inst.id] ?? 0) > 0 && !directBotsStore.botsLoaded[inst.id]"
                data-test="bots-loading"
-               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+               class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("instance.loading") }}
           </div>
           <div v-else-if="!(directBotsStore.botsByInstance[inst.id] ?? []).length"
                data-test="no-bots"
-               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+               class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("bot.list.empty") }}
           </div>
           <div v-else-if="!botsWithEnabled(inst.id, true).length && !disabledBotsOpen.has(inst.id)"
                data-test="no-enabled-bots"
-               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+               class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("bot.list.allDisabled") }}
           </div>
           <div v-for="b in visibleBots(inst.id)"
@@ -656,12 +656,12 @@ const rowSwipes = computed(() => {
                            :class="!b.enabled ? 'opacity-50' : ''" />
               </span>
               <div class="flex flex-col min-w-0 flex-1">
-                <span v-if="b.retired" data-test="bot-removed" class="truncate text-[10px] text-fg-muted">{{ $t("bot.removal.removed") }}</span>
-                <span data-test="bot-name" class="min-w-0 truncate text-[12.5px] font-medium"
+                <span v-if="b.retired" data-test="bot-removed" class="truncate text-xs text-fg-muted">{{ $t("bot.removal.removed") }}</span>
+                <span data-test="bot-name" class="min-w-0 truncate text-ui font-medium"
                       :class="!b.enabled ? 'text-fg-muted' : (directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg')">
                   {{ b.name }}
                 </span>
-                <span v-if="b.role" class="truncate text-[10.5px] text-fg-muted">{{ b.role }}</span>
+                <span v-if="b.role" class="truncate text-xs text-fg-muted">{{ b.role }}</span>
               </div>
               <span class="h-1.5 w-1.5 rounded-full shrink-0"
                     :class="b.enabled ? 'bg-run' : 'bg-fg-muted'"
@@ -672,7 +672,7 @@ const rowSwipes = computed(() => {
               type="button"
               data-test="enable-bot-tree-button"
               :disabled="enablingBots.has(`${inst.id}:${b.id}`)"
-              class="shrink-0 rounded-sm px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
+              class="shrink-0 rounded-sm px-1.5 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
               @click.stop="void enableBot(inst.id, b)"
             >
               {{ $t("bot.actions.enable") }}
@@ -718,7 +718,7 @@ const rowSwipes = computed(() => {
               type="button"
               data-test="bots-disabled-toggle"
               :aria-expanded="disabledBotsOpen.has(inst.id)"
-              class="ml-auto mr-1 flex items-center gap-0.5 rounded-sm px-1.5 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              class="ml-auto mr-1 flex items-center gap-0.5 rounded-sm px-1.5 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
               @click="toggleDisabledBots(inst.id)"
             >
               <ChevronDown v-if="disabledBotsOpen.has(inst.id)" :size="11" />
@@ -740,12 +740,12 @@ const rowSwipes = computed(() => {
         <div v-if="inst.online && modeFor(inst.id) === 'groups'" class="space-y-px">
           <div v-if="(groupsStore.loadingGroupsByInstance[inst.id] ?? 0) > 0 && !groupsStore.groupsLoaded[inst.id]"
                data-test="groups-loading"
-               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+               class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("instance.loading") }}
           </div>
           <div v-else-if="groupsStore.groupsListErrorByInstance[inst.id] !== undefined && !groupsStore.groupsLoaded[inst.id]"
                data-test="groups-load-error"
-               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+               class="py-1 pl-2.5 text-xs text-fg-muted">
             <span>{{ $t("group.list.loadFailed") }}</span>
             <button type="button"
                     data-test="groups-retry"
@@ -756,7 +756,7 @@ const rowSwipes = computed(() => {
           </div>
           <div v-else-if="groupsStore.groupsLoaded[inst.id] && !(groupsStore.groupsByInstance[inst.id] ?? []).length"
                data-test="no-groups"
-               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+               class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("group.list.empty") }}
           </div>
           <div v-for="g in (groupsStore.groupsByInstance[inst.id] ?? [])"
@@ -774,15 +774,15 @@ const rowSwipes = computed(() => {
                 <Users :size="14" class="text-accent" />
               </span>
               <div class="flex min-w-0 flex-1 flex-col">
-                <span data-test="group-name" class="min-w-0 truncate text-[12.5px] font-medium"
+                <span data-test="group-name" class="min-w-0 truncate text-ui font-medium"
                       :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg'">
                   {{ g.title }}
                 </span>
-                <span class="truncate text-[10.5px] text-fg-muted">{{ $t("group.header.members", { count: g.botIds.length }) }}</span>
+                <span class="truncate text-xs text-fg-muted">{{ $t("group.header.members", { count: g.botIds.length }) }}</span>
               </div>
               <span v-if="g.lifecycle === 'deleting'"
                     data-test="group-deleting-badge"
-                    class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
+                    class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
                 {{ $t("group.list.deleting") }}
               </span>
             </button>
@@ -816,12 +816,12 @@ const rowSwipes = computed(() => {
         <!-- SESSIONS MODE -->
         <template v-else-if="modeFor(inst.id) === 'sessions'">
         <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
-                class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-[11px] font-medium text-accent hover:bg-accent-soft"
+                class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs font-medium text-accent hover:bg-accent-soft"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
           <ChevronDown :size="11" class="rotate-[-90deg]" />{{ $t("instance.loadSessions") }}
         </button>
         <div v-if="inst.online && inst.sessionsLoading" data-test="sessions-loading"
-             class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>
+             class="py-1 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
         <div v-for="grp in sectionsFor(inst)" :key="grp.key ?? '~flat'"
              :class="grp.key !== null ? 'rounded-sm bg-fg/[0.035] p-0.5' : 'space-y-px'"
              :data-test="grp.key !== null ? 'session-group' : undefined">
@@ -834,8 +834,8 @@ const rowSwipes = computed(() => {
               <ChevronRight v-else :size="11" class="shrink-0 text-fg-muted" />
               <Folder v-if="groupModeOf(inst) === 'workspace'" :size="12" class="shrink-0 text-fg-muted" />
               <AgentIcon v-else :driver="driverForAgentName(inst, grp.key)" :title="grp.key" :size="13" />
-              <span data-test="group-name" class="min-w-0 truncate text-[11.5px] font-semibold text-fg-muted">{{ grp.key }}</span>
-              <span data-test="group-count" class="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">{{ grp.sessions.length }}</span>
+              <span data-test="group-name" class="min-w-0 truncate text-xs font-semibold text-fg-muted">{{ grp.key }}</span>
+              <span data-test="group-count" class="shrink-0 font-mono text-xs tabular-nums text-fg-muted">{{ grp.sessions.length }}</span>
             </button>
             <button data-test="group-new-session" :title="$t('instance.groupNewSession', { name: grp.key })" :aria-label="$t('instance.groupNewSession', { name: grp.key })"
                     class="grid h-10 w-10 lg:h-5 lg:w-5 shrink-0 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/hdr:opacity-100"
@@ -904,11 +904,11 @@ const rowSwipes = computed(() => {
                   ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
                   <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
                          v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
-                         class="min-w-0 flex-1 rounded-sm border border-accent bg-surface-2 px-1 py-px text-[13px] text-fg outline-none"
+                         class="min-w-0 flex-1 rounded-sm border border-accent bg-surface-2 px-1 py-px text-ui text-fg outline-none"
                          @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
                          @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
                          v-focus />
-                  <span v-else data-test="session-name" class="min-w-0 truncate max-lg:text-base text-[12.5px] font-medium"
+                  <span v-else data-test="session-name" class="min-w-0 truncate max-lg:text-base text-ui font-medium"
                         :title="s.displayName || s.alias"
                         :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
                   <!-- Archived state is shown visually by the dimmed name (no text badge), but that
@@ -926,7 +926,7 @@ const rowSwipes = computed(() => {
                           :aria-label="$t('instance.sessionColdTitle')" :title="$t('instance.sessionColdTitle')"
                           class="shrink-0 text-fg-muted" />
                   <span v-if="!s.archived && elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
-                        class="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
+                        class="ml-auto shrink-0 font-mono text-xs tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
                 </button>
                 <!-- Row actions: desktop overflow (⋯) menu → archive / delete. Hidden when the instance is offline. -->
                 <div v-if="inst.online" data-test="session-actions" class="relative mr-1 shrink-0">
@@ -955,25 +955,25 @@ const rowSwipes = computed(() => {
                  archive/delete silently no-op. Stopping mousedown keeps the menu mounted. -->
             <div v-if="inst.online && openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop
                  class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-sm bg-raised py-1 shadow-float">
-              <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
-              <button v-if="!s.archived" data-test="action-archive" :title="$t('instance.sleepTooltip')" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="onArchive(inst.id, s.alias)"><Moon :size="12" />{{ $t("instance.archiveSession") }}</button>
-              <button v-else data-test="action-unarchive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-fg hover:bg-surface-2" @click.stop="onUnarchive(inst.id, s.alias)"><ArchiveRestore :size="12" />{{ $t("instance.unarchiveSession") }}</button>
-              <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
+              <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui text-fg hover:bg-surface-2" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
+              <button v-if="!s.archived" data-test="action-archive" :title="$t('instance.sleepTooltip')" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui text-fg hover:bg-surface-2" @click.stop="onArchive(inst.id, s.alias)"><Moon :size="12" />{{ $t("instance.archiveSession") }}</button>
+              <button v-else data-test="action-unarchive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui text-fg hover:bg-surface-2" @click.stop="onUnarchive(inst.id, s.alias)"><ArchiveRestore :size="12" />{{ $t("instance.unarchiveSession") }}</button>
+              <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
             </div>
             </div>
             <!-- Per-group sleeping-session controls (grouped modes): page sleeping rows
                  from the server 5 at a time instead of flat mode's one-shot snapshot. -->
             <template v-if="grp.key !== null && inst.online">
               <button data-test="group-toggle-archived"
-                      class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-[11px] font-medium text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
+                      class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs font-medium text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
                       @click.stop="void toggleGroupArchived(inst, grp.key)">
                 <ArchiveRestore :size="11" class="shrink-0" />
                 {{ $t(groupArchivedIsExpanded(inst, grp.key) ? "instance.hideArchivedSessions" : "instance.showArchivedSessions") }}
               </button>
               <div v-if="grp.archivedState?.loading" data-test="group-archived-loading"
-                   class="py-0.5 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.loading") }}</div>
+                   class="py-0.5 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
               <button v-else-if="groupArchivedIsExpanded(inst, grp.key) && grp.archivedState?.hasMore" data-test="group-load-more"
-                      class="w-full py-0.5 pl-2.5 text-left text-[11px] font-medium text-accent hover:text-fg"
+                      class="w-full py-0.5 pl-2.5 text-left text-xs font-medium text-accent hover:text-fg"
                       @click.stop="loadMoreGroupArchived(inst, grp.key)">
                 {{ $t("instance.loadMoreSessions") }}
               </button>
@@ -985,13 +985,13 @@ const rowSwipes = computed(() => {
              and rely on per-group collapse to keep the list short. -->
         <button v-if="groupModeOf(inst) === 'instance' && activeSessions(inst).length > SESSION_CAP && !sessionsExpanded.has(inst.id)"
                 data-test="sessions-show-more"
-                class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
+                class="w-full py-1 pl-2.5 text-left text-xs font-medium text-fg-muted hover:text-fg"
                 @click.stop="toggleSessions(inst.id)">
           {{ $t("instance.showMoreSessions", { n: activeSessions(inst).length - SESSION_CAP }) }}
         </button>
         <button v-else-if="groupModeOf(inst) === 'instance' && activeSessions(inst).length > SESSION_CAP"
                 data-test="sessions-collapse"
-                class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-fg-muted hover:text-fg"
+                class="w-full py-1 pl-2.5 text-left text-xs font-medium text-fg-muted hover:text-fg"
                 @click.stop="toggleSessions(inst.id)">
           {{ $t("instance.collapseSessions") }}
         </button>
@@ -999,12 +999,12 @@ const rowSwipes = computed(() => {
               <!-- Instance-level ACTIVE-list load-more, deliberately NOT mode-gated: grouped modes
                    still page active sessions 20 at a time, and this is their only "next page" entry. -->
               <button v-if="inst.sessionsHasMore && !inst.sessionsLoading" data-test="sessions-load-more"
-                class="w-full py-1 pl-2.5 text-left text-[11px] font-medium text-accent hover:text-fg"
+                class="w-full py-1 pl-2.5 text-left text-xs font-medium text-accent hover:text-fg"
                 @click.stop="store.loadMoreSessions(inst.id).catch(() => {})">
           {{ $t("instance.loadMoreSessions") }}
         </button>
         <div v-if="inst.sessionsLoaded && !activeSessions(inst).length && !archivedIsExpanded(inst.id)" data-test="no-sessions"
-             class="py-1 pl-2.5 text-[11px] text-fg-muted">{{ $t("instance.noSessions") }}</div>
+             class="py-1 pl-2.5 text-xs text-fg-muted">{{ $t("instance.noSessions") }}</div>
 
         <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria. -->
         <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">

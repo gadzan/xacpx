@@ -129,7 +129,7 @@ function onInput(event: Event): void {
         :aria-controls="combobox ? comboboxListId : undefined"
         :aria-expanded="combobox ? comboboxExpanded : undefined"
         :aria-activedescendant="combobox ? comboboxActiveId : undefined"
-        class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-[14px] lg:placeholder:text-[12.5px] placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         :disabled="disabled"
         :style="height !== undefined ? { height: height + 'px' } : undefined"
         :placeholder="placeholder || $t('chat.message')"

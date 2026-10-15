@@ -74,25 +74,25 @@ const outputMeta = computed(() => {
         <ExpandableBlock class="min-w-0 flex-1">
           <pre data-test="cmd-output" class="overflow-x-auto rounded-sm bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
         </ExpandableBlock>
-        <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-[10px] text-fg-muted">{{ outputMeta }}</span>
+        <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-xs text-fg-muted">{{ outputMeta }}</span>
       </div>
       <div v-if="detail.exitCode !== undefined" :class="detail.exitCode !== 0 ? 'text-danger' : 'text-fg-muted'">exit {{ detail.exitCode }}</div>
     </template>
 
     <template v-else-if="detail.type === 'read'">
-      <div v-if="detail.lines" data-test="read-lines" class="font-mono text-[11px] text-fg-muted">{{ detail.lines }}</div>
+      <div v-if="detail.lines" data-test="read-lines" class="font-mono text-xs text-fg-muted">{{ detail.lines }}</div>
       <ExpandableBlock v-if="detail.preview">
         <pre data-test="read-preview" class="overflow-x-auto rounded-sm bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.preview }}</pre>
       </ExpandableBlock>
     </template>
 
     <template v-else-if="detail.type === 'search'">
-      <div v-if="effectiveCount !== undefined" data-test="search-count" class="font-mono text-[11px] text-fg-muted">{{ effectiveCount }} lines</div>
+      <div v-if="effectiveCount !== undefined" data-test="search-count" class="font-mono text-xs text-fg-muted">{{ effectiveCount }} lines</div>
       <div v-if="detail.output" class="flex items-start gap-2">
         <ExpandableBlock class="min-w-0 flex-1">
           <pre data-test="search-output" class="overflow-x-auto rounded-sm bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
         </ExpandableBlock>
-        <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-[10px] text-fg-muted">{{ outputMeta }}</span>
+        <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-xs text-fg-muted">{{ outputMeta }}</span>
       </div>
     </template>
 

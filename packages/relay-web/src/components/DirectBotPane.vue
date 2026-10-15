@@ -200,18 +200,18 @@ function openRemoval(): void {
         <!-- Name, Role & Chips -->
         <div class="flex min-w-0 flex-col">
           <div class="flex items-center gap-2">
-            <h2 class="truncate text-[14px] font-semibold tracking-tight text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</h2>
+            <h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</h2>
             <span
               class="h-2 w-2 rounded-full shrink-0"
               :class="bot?.enabled ? 'bg-run' : 'bg-fg-muted'"
               :title="bot?.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')"
             />
-            <span v-if="bot && !bot.enabled" class="text-[10.5px] text-fg-muted font-medium">
+            <span v-if="bot && !bot.enabled" class="text-xs text-fg-muted font-medium">
               ({{ $t("bot.status.disabled") }})
             </span>
           </div>
 
-          <div class="flex items-center gap-2 text-[10.5px] text-fg-muted flex-wrap">
+          <div class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
             <span v-if="bot?.role" class="truncate font-medium text-fg/80">{{ bot.role }}</span>
             <span v-if="bot?.role">·</span>
             <span class="flex items-center gap-1">
@@ -241,7 +241,7 @@ function openRemoval(): void {
             data-test="direct-nav-menu"
             class="absolute right-0 z-20 mt-1 w-64 overflow-hidden rounded-2xl bg-raised shadow-float"
           >
-            <div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</div>
+            <div class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</div>
             <button
               v-for="other in otherBots"
               :key="other.id"
@@ -253,7 +253,7 @@ function openRemoval(): void {
               {{ other.name }}
             </button>
             <p v-if="otherBots.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noOtherBot") }}</p>
-            <div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.collaborate") }}</div>
+            <div class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.collaborate") }}</div>
             <button
               v-for="group in memberGroups"
               :key="group.id"

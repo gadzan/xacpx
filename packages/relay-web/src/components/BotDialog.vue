@@ -464,7 +464,7 @@ async function submit(): Promise<void> {
             <label for="bot-agent" class="block text-xs font-medium text-fg-muted mb-1.5">
               {{ $t("bot.fields.agent") }} <span class="text-danger">*</span>
             </label>
-            <p v-if="identityLocked" class="mb-1.5 text-[11px] text-fg-muted">
+            <p v-if="identityLocked" class="mb-1.5 text-xs text-fg-muted">
               {{ $t("bot.lifecycle.identityLocked") }}
             </p>
             <select
@@ -515,7 +515,7 @@ async function submit(): Promise<void> {
             class="w-full rounded-lg bg-surface-2 px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
             @input="instructionsDirty = true"
           />
-          <p class="mt-1 text-[11px] text-fg-muted">
+          <p class="mt-1 text-xs text-fg-muted">
             {{ $t("bot.fields.instructionsHint") }}
           </p>
         </div>

@@ -102,7 +102,7 @@ async function signIn() {
           <div class="flex items-center gap-2">
             <code
               data-test="invite-token"
-              class="min-w-0 flex-1 select-all break-all rounded-lg bg-bg px-3 py-2.5 text-[12.5px] tracking-[0.03em] text-fg"
+              class="min-w-0 flex-1 select-all break-all rounded-lg bg-bg px-3 py-2.5 text-ui tracking-[0.03em] text-fg"
             >{{ token }}</code>
             <button
               type="button"
@@ -125,7 +125,7 @@ async function signIn() {
           <p data-test="not-shown-again" class="mt-3 flex items-start gap-1.5 text-xs font-semibold text-warn">
             <span aria-hidden="true">⚠</span><span>{{ $t("invite.notShownAgain") }}</span>
           </p>
-          <p class="mt-2 text-[11.5px] leading-relaxed text-fg-muted">{{ $t("invite.connectorHint") }}</p>
+          <p class="mt-2 text-xs leading-relaxed text-fg-muted">{{ $t("invite.connectorHint") }}</p>
 
           <p v-if="auth.error" data-test="signin-error" role="alert" class="mt-3 flex items-start gap-1.5 text-xs text-danger">
             <span class="font-bold">!</span><span>{{ auth.error }}</span>
@@ -135,7 +135,7 @@ async function signIn() {
             type="button"
             data-test="signin"
             :disabled="signingIn"
-            class="invite-btn group mt-5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13.5px] font-semibold text-fg transition-colors hover:bg-run/10 hover:text-run disabled:cursor-default disabled:text-fg-muted disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+            class="invite-btn group mt-5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-semibold text-fg transition-colors hover:bg-run/10 hover:text-run disabled:cursor-default disabled:text-fg-muted disabled:hover:bg-transparent disabled:hover:text-fg-muted"
             @click="signIn"
           >
             <span class="group-hover:translate-x-0.5" :class="signingIn ? 'text-fg-muted' : 'text-run'">▸</span>
@@ -146,12 +146,12 @@ async function signIn() {
         <!-- idle / pending state -->
         <template v-else>
           <p class="text-sm font-semibold text-fg">{{ $t("invite.heading") }}</p>
-          <p class="mt-2 text-[11.5px] leading-relaxed text-fg-muted">{{ $t("invite.explainer") }}</p>
+          <p class="mt-2 text-xs leading-relaxed text-fg-muted">{{ $t("invite.explainer") }}</p>
           <button
             type="button"
             data-test="redeem"
             :disabled="state === 'pending'"
-            class="invite-btn group mt-5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13.5px] font-semibold text-fg transition-colors hover:bg-run/10 hover:text-run disabled:cursor-default disabled:text-fg-muted disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+            class="invite-btn group mt-5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-semibold text-fg transition-colors hover:bg-run/10 hover:text-run disabled:cursor-default disabled:text-fg-muted disabled:hover:bg-transparent disabled:hover:text-fg-muted"
             @click="redeem"
           >
             <span class="group-hover:translate-x-0.5" :class="state === 'pending' ? 'text-fg-muted' : 'text-run'">▸</span>

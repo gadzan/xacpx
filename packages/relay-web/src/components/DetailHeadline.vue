@@ -10,7 +10,7 @@ defineProps<{ text: string }>();
 
 <template>
   <div class="flex min-w-0 items-start gap-2" data-test="detail-headline">
-    <p class="min-w-0 flex-1 font-mono text-[11px] text-fg break-all whitespace-pre-wrap select-text">{{ text }}</p>
+    <p class="min-w-0 flex-1 font-mono text-xs text-fg break-all whitespace-pre-wrap select-text">{{ text }}</p>
     <CopyButton :text="text" />
   </div>
 </template>

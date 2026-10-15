@@ -71,7 +71,7 @@ async function copyCommand() {
       <div class="px-4 pb-5 pt-4">
         <!-- command hint + copy -->
         <div class="flex items-center gap-2">
-          <p class="flex-1 text-[12.5px] text-fg"><span class="select-none text-run">$</span> {{ ADD_TOKEN_CMD }}</p>
+          <p class="flex-1 text-ui text-fg"><span class="select-none text-run">$</span> {{ ADD_TOKEN_CMD }}</p>
           <button
             type="button"
             data-test="copy-command"
@@ -90,7 +90,7 @@ async function copyCommand() {
             </svg>
           </button>
         </div>
-        <p id="login-hint" class="mb-5 mt-1 text-[11.5px] leading-relaxed text-fg-muted">{{ $t("login.runHint") }}</p>
+        <p id="login-hint" class="mb-5 mt-1 text-xs leading-relaxed text-fg-muted">{{ $t("login.runHint") }}</p>
 
         <!-- prompt label -->
         <div aria-hidden="true" class="mb-2 flex items-center gap-1.5 text-xs text-fg-muted">
@@ -140,11 +140,11 @@ async function copyCommand() {
           type="submit"
           data-test="signin"
           :disabled="pending"
-          class="login-btn group mt-5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13.5px] font-semibold text-fg transition-colors hover:bg-run/10 hover:text-run disabled:cursor-default disabled:text-fg-muted disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+          class="login-btn group mt-5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-semibold text-fg transition-colors hover:bg-run/10 hover:text-run disabled:cursor-default disabled:text-fg-muted disabled:hover:bg-transparent disabled:hover:text-fg-muted"
         >
           <span class="login-arrow group-hover:translate-x-0.5" :class="pending ? 'text-fg-muted' : 'text-run'">▸</span>
           <span>{{ pending ? $t("login.signingIn") : $t("login.signIn") }}</span>
-          <span v-if="!pending" class="ml-auto text-[11px] text-fg-muted">⏎ enter</span>
+          <span v-if="!pending" class="ml-auto text-xs text-fg-muted">⏎ enter</span>
         </button>
       </div>
     </form>

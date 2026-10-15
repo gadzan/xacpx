@@ -36,7 +36,7 @@ async function create() {
     <div class="mb-2 flex items-center gap-1.5">
       <CalendarClock :size="13" class="shrink-0 text-fg-muted" />
       <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.scheduled") }}</h3>
-      <span v-if="tasks.scheduled.length" class="rounded-full bg-bg px-1.5 font-mono text-[10px] tabular-nums text-fg-muted">{{ tasks.scheduled.length }}</span>
+      <span v-if="tasks.scheduled.length" class="rounded-full bg-bg px-1.5 font-mono text-xs tabular-nums text-fg-muted">{{ tasks.scheduled.length }}</span>
       <button type="button" data-test="scheduled-compose-toggle" :title="$t('tasks.newScheduled')" :aria-label="$t('tasks.newScheduled')"
               class="ml-auto grid h-6 w-6 place-items-center rounded-sm transition-colors hover:bg-raised hover:text-fg"
               :class="composerOpen ? 'bg-raised text-fg' : 'text-fg-muted'"
@@ -47,11 +47,11 @@ async function create() {
 
     <ul class="space-y-1">
       <ScheduledTaskRow v-for="t in visible" :key="t.id" :task="t" />
-      <li v-if="tasks.scheduled.length === 0" class="rounded-sm bg-surface-2 px-2 py-2 text-center text-[11px] text-fg-muted">{{ $t("tasks.noScheduled") }}</li>
+      <li v-if="tasks.scheduled.length === 0" class="rounded-sm bg-surface-2 px-2 py-2 text-center text-xs text-fg-muted">{{ $t("tasks.noScheduled") }}</li>
     </ul>
 
     <button v-if="overflow > 0" type="button" data-test="scheduled-view-all"
-            class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-sm bg-bg px-2 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-accent-soft hover:text-accent"
+            class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-sm bg-bg px-2 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-accent-soft hover:text-accent"
             @click="drawerOpen = true">
       {{ $t("tasks.viewAll", { count: tasks.scheduled.length }) }}
       <ChevronDown :size="12" />
@@ -60,11 +60,11 @@ async function create() {
     <!-- create form: tucked behind the "+" toggle so the panel stays compact by default -->
     <form v-if="composerOpen" data-test="scheduled-composer" class="mt-2 space-y-2 rounded-lg bg-bg p-2.5" @submit.prevent="create">
       <label class="flex flex-col gap-1">
-        <span class="text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.whenLabel") }}</span>
+        <span class="text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.whenLabel") }}</span>
         <input v-model="executeAt" type="datetime-local" class="w-full min-w-0 rounded-sm bg-surface-2 px-2 py-1 text-xs text-fg focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent" />
       </label>
       <label class="flex flex-col gap-1">
-        <span class="text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.messageLabel") }}</span>
+        <span class="text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("tasks.messageLabel") }}</span>
         <input v-model="message" :placeholder="$t('tasks.messagePlaceholder')" class="w-full rounded-sm bg-surface-2 px-2 py-1 text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent" />
       </label>
       <div class="flex items-center gap-1.5 pt-0.5">

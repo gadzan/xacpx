@@ -153,8 +153,8 @@ onBeforeUnmount(() => {
   <div class="flex h-full flex-col bg-bg" data-test="desktop-center">
     <div class="flex h-11 shrink-0 items-center gap-2 bg-surface/60 px-3 backdrop-blur-md">
       <Monitor :size="15" class="shrink-0 text-fg-muted" />
-      <span class="min-w-0 truncate text-[12.5px] text-fg">{{ props.instanceName || props.instanceId }}</span>
-      <span data-test="desktop-status" class="shrink-0 text-[11px] text-fg-muted">{{ $t(statusLabel) }}</span>
+      <span class="min-w-0 truncate text-ui text-fg">{{ props.instanceName || props.instanceId }}</span>
+      <span data-test="desktop-status" class="shrink-0 text-xs text-fg-muted">{{ $t(statusLabel) }}</span>
       <div class="ml-auto flex shrink-0 items-center gap-1">
         <button data-test="desktop-fit-toggle"
                 type="button"
@@ -196,11 +196,11 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="session.status === 'error'" class="shrink-0 bg-surface px-3 py-2 text-[12px] text-fg-muted" data-test="desktop-error">
+    <div v-if="session.status === 'error'" class="shrink-0 bg-surface px-3 py-2 text-ui text-fg-muted" data-test="desktop-error">
       <span data-test="desktop-error-code" class="shrink-0">{{ errorDetail }}</span><span v-if="session.lastErrorMessage"> — {{ session.lastErrorMessage }}</span>
       <button type="button" class="ml-2 underline" @click="reconnect">{{ $t("desktop.reconnect") }}</button>
     </div>
-    <div v-else-if="session.status === 'closed'" class="shrink-0 bg-surface px-3 py-2 text-[12px] text-fg-muted" data-test="desktop-closed">
+    <div v-else-if="session.status === 'closed'" class="shrink-0 bg-surface px-3 py-2 text-ui text-fg-muted" data-test="desktop-closed">
       {{ closedDetail || $t("desktop.statusClosed") }}
       <button type="button" class="ml-2 underline" @click="reconnect">{{ $t("desktop.reconnect") }}</button>
     </div>
@@ -212,28 +212,28 @@ onBeforeUnmount(() => {
           class="absolute inset-0 z-20 grid place-items-center bg-bg/80"
           @submit.prevent="submitAccount">
       <div class="w-72 space-y-2 rounded-lg bg-surface p-4">
-        <p class="text-[13px] text-fg">{{ $t("desktop.macosSignInTitle", { name: props.instanceName || props.instanceId }) }}</p>
-        <p class="text-[11.5px] text-fg-muted">{{ $t("desktop.macosSignInHint") }}</p>
+        <p class="text-ui text-fg">{{ $t("desktop.macosSignInTitle", { name: props.instanceName || props.instanceId }) }}</p>
+        <p class="text-xs text-fg-muted">{{ $t("desktop.macosSignInHint") }}</p>
         <input v-model="username"
                data-test="desktop-macos-account"
                autocomplete="off"
                autocapitalize="off"
                spellcheck="false"
                :placeholder="$t('desktop.macosAccountName')"
-               class="w-full rounded-sm bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none" />
+               class="w-full rounded-sm bg-surface-2 px-2 py-1 text-ui text-fg outline-none" />
         <input v-model="password"
                data-test="desktop-macos-password"
                type="password"
                autocomplete="off"
                :placeholder="$t('desktop.macosPassword')"
-               class="w-full rounded-sm bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none" />
-        <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-[11.5px] text-danger">
+               class="w-full rounded-sm bg-surface-2 px-2 py-1 text-ui text-fg outline-none" />
+        <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-xs text-danger">
           {{ $t("desktop.macosRejected") }}
         </p>
         <button data-test="desktop-macos-submit"
                 type="submit"
                 :disabled="!accountReady"
-                class="rounded-sm bg-accent px-3 py-1 text-[12px] font-medium text-on-accent disabled:opacity-40">
+                class="rounded-sm bg-accent px-3 py-1 text-ui font-medium text-on-accent disabled:opacity-40">
           {{ $t("desktop.connect") }}
         </button>
       </div>
@@ -247,12 +247,12 @@ onBeforeUnmount(() => {
              type="password"
              autocomplete="off"
              :placeholder="$t('desktop.passwordPlaceholder')"
-             class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-[13px] text-fg outline-none"
+             class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-ui text-fg outline-none"
              @keydown.enter.prevent="submitPassword" />
       <button data-test="desktop-password-submit"
               type="button"
               :disabled="!password"
-              class="shrink-0 rounded-sm bg-accent px-3 py-1 text-[12px] font-medium text-on-accent disabled:opacity-40"
+              class="shrink-0 rounded-sm bg-accent px-3 py-1 text-ui font-medium text-on-accent disabled:opacity-40"
               @click="submitPassword">{{ $t("desktop.connect") }}</button>
     </div>
   </div>

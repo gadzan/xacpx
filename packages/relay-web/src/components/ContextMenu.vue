@@ -27,7 +27,7 @@ onMounted(() => { clamp(); document.addEventListener("click", onDocClick); docum
 onBeforeUnmount(() => { document.removeEventListener("click", onDocClick); document.removeEventListener("keydown", onKey); });
 </script>
 <template>
-  <div ref="el" data-test="context-menu" class="fixed z-50 min-w-40 rounded-sm bg-raised py-1 text-[12.5px] shadow-float"
+  <div ref="el" data-test="context-menu" class="fixed z-50 min-w-40 rounded-sm bg-raised py-1 text-ui shadow-float"
        :style="{ left: pos.x + 'px', top: pos.y + 'px' }" @click.stop>
     <button v-for="it in items" :key="it.key" :data-test="`menu-${it.key}`"
             class="block w-full px-3 py-1.5 text-left text-fg hover:bg-surface-2"

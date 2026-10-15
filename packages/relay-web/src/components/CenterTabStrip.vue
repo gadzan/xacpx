@@ -103,7 +103,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
     <button
       type="button"
       data-test="tab-chat"
-      class="flex shrink-0 items-center gap-1.5 rounded-sm px-2.5 py-1.5 text-[11.5px] transition-colors cursor-pointer"
+      class="flex shrink-0 items-center gap-1.5 rounded-sm px-2.5 py-1.5 text-xs transition-colors cursor-pointer"
       :class="store.activeFor(props.sessionKey) === 'chat' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
       @click="store.setActive(props.sessionKey, 'chat')"
     >
@@ -122,7 +122,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
       data-test="tab"
       :data-tab-id="tab.id"
       style="touch-action: pan-x"
-      class="flex shrink-0 items-center gap-1 rounded-sm px-2.5 py-1.5 text-[11.5px] transition cursor-pointer"
+      class="flex shrink-0 items-center gap-1 rounded-sm px-2.5 py-1.5 text-xs transition cursor-pointer"
       :class="[
         tab.id === store.activeFor(props.sessionKey) ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
         overId === tab.id ? 'ring-1 ring-inset ring-accent' : '',
@@ -132,7 +132,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
       @pointerdown="start($event, tab.id)"
     >
       <component :is="iconFor(tab)" :size="13" class="shrink-0" />
-      <span v-if="tab.kind === 'diff'" class="shrink-0 text-[10px] font-semibold opacity-80">Δ</span>
+      <span v-if="tab.kind === 'diff'" class="shrink-0 text-xs font-semibold opacity-80">Δ</span>
       <span class="max-w-[10rem] truncate">{{ labelFor(tab) }}</span>
       <span v-if="tab.kind === 'file' && tab.dirty" class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
       <button

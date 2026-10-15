@@ -44,19 +44,19 @@ useModalA11y(dialog, () => emit("close"));
             </div>
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-2">
-                <span class="rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-accent">
+                <span class="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.14em] text-accent">
                   {{ $t("tools.subagent") }}
                 </span>
-                <span class="inline-flex items-center gap-1 text-[11px] text-fg-muted">
+                <span class="inline-flex items-center gap-1 text-xs text-fg-muted">
                   <Loader2 v-if="status === 'running'" :size="12" class="animate-spin motion-reduce:animate-none text-accent" />
                   <AlertTriangle v-else-if="status === 'error'" :size="12" class="text-danger" />
                   <Check v-else :size="12" class="text-run" />
                   {{ status === "running" ? $t("tools.running") : status === "error" ? $t("tools.failed") : $t("tools.finished") }}
                 </span>
               </div>
-              <h2 id="subagent-trace-title" class="mt-1.5 truncate text-[16px] font-semibold text-fg">{{ step.title }}</h2>
+              <h2 id="subagent-trace-title" class="mt-1.5 truncate text-base font-semibold text-fg">{{ step.title }}</h2>
               <!-- Traceless delegations have no child steps; "0 activity steps" would read as broken. -->
-              <p v-if="children.length" class="mt-0.5 text-[11px] text-fg-muted">{{ $t("tools.traceCount", { count: children.length }) }}</p>
+              <p v-if="children.length" class="mt-0.5 text-xs text-fg-muted">{{ $t("tools.traceCount", { count: children.length }) }}</p>
             </div>
             <button type="button" data-test="subagent-dialog-close" :aria-label="$t('common.dismiss')"
                     class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
@@ -68,14 +68,14 @@ useModalA11y(dialog, () => emit("close"));
 
         <div class="thin-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           <section v-if="step.detail" class="mb-5 rounded-2xl bg-bg/60 p-3">
-            <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
+            <p class="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
             <DetailHeadline :text="step.title" />
             <ToolDetail :detail="step.detail" />
           </section>
           <section v-if="outputText" data-test="subagent-dialog-report" class="mb-5 rounded-2xl bg-bg/60 p-3">
-            <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.report") }}</p>
+            <p class="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.report") }}</p>
             <StreamMarkdown v-if="status !== 'running'" :text="outputText" />
-            <pre v-else class="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-bg/60 p-2 font-mono text-[11px] leading-relaxed text-fg-muted">{{ outputText }}</pre>
+            <pre v-else class="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-bg/60 p-2 font-mono text-xs leading-relaxed text-fg-muted">{{ outputText }}</pre>
           </section>
           <div v-if="traceRows.length" class="space-y-2.5">
             <div v-for="row in traceRows" :key="row.step.toolCallId"
@@ -88,7 +88,7 @@ useModalA11y(dialog, () => emit("close"));
             <div>
               <Loader2 v-if="status === 'running'" :size="18" class="mx-auto animate-spin motion-reduce:animate-none text-accent" />
               <Check v-else :size="18" class="mx-auto text-run" />
-              <p class="mt-2 text-[12px] text-fg-muted">{{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}</p>
+              <p class="mt-2 text-ui text-fg-muted">{{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}</p>
             </div>
           </div>
         </div>

@@ -29,16 +29,16 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             <AlertTriangle :size="18" />
           </div>
           <div class="min-w-0 flex-1 pt-0.5">
-            <h2 class="text-[15px] font-semibold text-fg">{{ pending.title }}</h2>
-            <p v-if="pending.message" class="mt-1 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-fg-muted">{{ pending.message }}</p>
+            <h2 class="text-base font-semibold text-fg">{{ pending.title }}</h2>
+            <p v-if="pending.message" class="mt-1 whitespace-pre-wrap break-words text-ui leading-relaxed text-fg-muted">{{ pending.message }}</p>
           </div>
         </div>
         <div class="mt-5 flex justify-end gap-2">
           <button data-test="confirm-cancel" type="button"
-                  class="rounded-lg px-3 py-1.5 text-[13px] font-medium text-fg-muted transition-colors hover:bg-fg/5"
+                  class="rounded-lg px-3 py-1.5 text-ui font-medium text-fg-muted transition-colors hover:bg-fg/5"
                   @click="settleConfirm(false)">{{ pending.cancelLabel ?? $t("common.cancel") }}</button>
           <button data-test="confirm-ok" type="button"
-                  class="rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-opacity hover:opacity-90"
+                  class="rounded-lg px-3 py-1.5 text-ui font-semibold transition-opacity hover:opacity-90"
                   :class="pending.tone === 'default' ? 'bg-accent text-on-accent' : 'bg-danger text-on-danger'"
                   @click="settleConfirm(true)">{{ pending.confirmLabel ?? $t("common.confirm") }}</button>
         </div>

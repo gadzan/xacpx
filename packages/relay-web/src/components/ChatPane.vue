@@ -122,7 +122,7 @@ onUnmounted(() => clearInterval(timer));
       <!-- header (desktop only: <lg the single mobile top bar in DashboardView /
            DirectBotPane carries the title + subtitle instead of this chip row) -->
       <div class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
-        <h1 class="hidden lg:block text-[14px] font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
+        <h1 class="hidden lg:block text-sm font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
         <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
              stay fully readable instead of truncating — title tooltips don't work on touch.
              Each chip is shrink-0 (natural width); the strip overflows and scrolls. -->
@@ -130,17 +130,17 @@ onUnmounted(() => clearInterval(timer));
           <!-- Session name as the leading chip. Mobile only: on lg+ the <h1> above already
                shows it at the front of this row, so showing it here too would duplicate. -->
           <span data-test="ctx-chip-session"
-                class="flex shrink-0 items-center whitespace-nowrap rounded-sm bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold text-fg lg:hidden">{{ currentSession?.displayName || chat.sessionAlias }}</span>
+                class="flex shrink-0 items-center whitespace-nowrap rounded-sm bg-surface-2 px-2 py-0.5 text-xs font-semibold text-fg lg:hidden">{{ currentSession?.displayName || chat.sessionAlias }}</span>
           <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
-                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
+                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted hover:bg-fg/5"
                   :title='$t("chat.browseFiles")'
                   @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-warn" /><span>{{ currentSession.workspace }}</span></button>
           <span v-if="instance?.name" data-test="ctx-chip-instance"
-                class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="font-mono text-accent">@</span><span>{{ instance.name }}</span></span>
+                class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><span class="font-mono text-accent">@</span><span>{{ instance.name }}</span></span>
           <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
-                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
+                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
           <button v-if="files.gitSummary" data-test="git-summary"
-                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
+                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted hover:bg-fg/5"
                   :title="files.gitSummary.branch || $t('chat.viewChanges')"
                   @click="files.tab = 'changes'; emit('show-files')">
             <GitBranch :size="11" class="shrink-0" :class="files.gitSummary.changedCount > 0 ? 'text-warn' : 'text-fg-muted'" />
@@ -154,7 +154,7 @@ onUnmounted(() => clearInterval(timer));
       <div v-if="chat.error" data-test="chat-error"
            class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger">
         <AlertTriangle :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
-        <p class="min-w-0 flex-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed">{{ chat.error }}</p>
+        <p class="min-w-0 flex-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-ui leading-relaxed">{{ chat.error }}</p>
         <button type="button" class="-mr-0.5 -mt-0.5 shrink-0 rounded-sm p-1 text-danger/70 transition-colors hover:bg-danger/15 hover:text-danger"
                 :title="$t('common.dismissNotice')" @click="chat.error = ''"><X :size="14" /></button>
       </div>

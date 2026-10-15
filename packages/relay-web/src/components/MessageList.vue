@@ -569,7 +569,7 @@ watch(
       <div v-else class="mx-auto max-w-3xl space-y-5" :class="{ 'enter-hold': enterPhase === 'hold' }">
         <!-- Older-history affordance: a spinner while a page loads, else a hint that more
              exists. Prepending older rows keeps the scroll position pinned (see watcher). -->
-        <div v-if="loadingOlder" data-test="loading-older" class="flex justify-center py-1 text-[11px] text-fg-muted">
+        <div v-if="loadingOlder" data-test="loading-older" class="flex justify-center py-1 text-xs text-fg-muted">
           <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />
         </div>
         <!-- Stable keys (persisted id, else an optimistic-row key) so a prepend doesn't
@@ -612,14 +612,14 @@ watch(
             <div class="flex min-w-0 max-w-[80%] flex-col items-end">
               <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
               <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
-                    class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[10.5px] font-medium text-accent"
+                    class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent"
                     :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
                 <Clock :size="11" />{{ $t("chat.scheduled") }}
               </span>
               <div data-test="msg-in"
                    class="min-w-0 max-w-full rounded-2xl rounded-tr-sm px-3.5 py-2"
                    :class="m.failed ? 'bg-danger/5' : 'bg-accent-soft'">
-                <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
+                <StreamMarkdown v-if="m.text" :text="m.text" class="text-sm leading-relaxed text-fg" />
                 <MessageAttachments v-if="m.attachments?.length" :attachments="m.attachments" />
               </div>
               <!-- Markdown rendering is lossy (headers, lists, fences reshape the text);
@@ -629,10 +629,10 @@ watch(
               </div>
               <!-- Failed sends get a compact retry affordance on their own line below. -->
               <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
-                <span data-test="msg-failed" class="inline-flex items-center gap-1 text-[11px] font-medium text-danger">
+                <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
                   <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
                 <button type="button" data-test="msg-resend"
-                        class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20"
+                        class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
                         :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
               </div>
             </div>
@@ -654,17 +654,17 @@ watch(
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />
-                  <StreamMarkdown v-if="m.text" :text="m.text" class="text-[14px] leading-relaxed text-fg" />
+                  <StreamMarkdown v-if="m.text" :text="m.text" class="text-sm leading-relaxed text-fg" />
                 </template>
               </div>
               <div data-test="msg-actions" class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
                 <template v-for="copyText in [copyTextOf(m)]" :key="0">
                   <CopyButton v-if="copyText" :text="copyText" />
                 </template>
-                <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
-                <span v-if="m.structured?.truncated" data-test="msg-truncated" class="inline-flex items-center gap-1 text-[11px] text-warn"><TriangleAlert :size="12" /> {{ $t("chat.truncated") }}</span>
-                <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
-                <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-[11px] text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
+                <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+                <span v-if="m.structured?.truncated" data-test="msg-truncated" class="inline-flex items-center gap-1 text-xs text-warn"><TriangleAlert :size="12" /> {{ $t("chat.truncated") }}</span>
+                <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
+                <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-xs text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
               </div>
             </div>
           </div>

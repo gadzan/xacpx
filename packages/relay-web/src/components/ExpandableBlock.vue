@@ -38,7 +38,7 @@ watch(expanded, () => { if (!expanded.value) void nextTick(measure); });
       <slot />
     </div>
     <button v-if="overflows" type="button" data-test="expand-toggle"
-            class="mt-1 inline-flex items-center gap-1 text-[10.5px] font-medium text-accent hover:underline"
+            class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
             @click="expanded = !expanded">
       <component :is="expanded ? ChevronUp : ChevronDown" :size="12" />
       {{ expanded ? "Show less" : "Show more" }}

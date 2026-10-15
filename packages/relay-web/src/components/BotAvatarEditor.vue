@@ -78,18 +78,18 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
       </div>
       <div class="flex flex-wrap justify-center gap-1.5" role="group" :aria-label="t('bot.avatar.preview.states')">
         <button v-for="state in previewStates" :key="state" type="button" :data-test="`avatar-preview-${state}`"
-                :aria-pressed="previewState === state" class="rounded-sm px-2 py-1 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-accent"
+                :aria-pressed="previewState === state" class="rounded-sm px-2 py-1 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-accent"
                 :class="choiceClass(previewState === state)" @click="preview(state)">
           {{ t(`bot.avatar.states.${state}`) }}
         </button>
       </div>
-      <p class="mt-2 text-center text-[11px] leading-relaxed text-fg-muted">{{ t('bot.avatar.preview.hint') }}</p>
+      <p class="mt-2 text-center text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.preview.hint') }}</p>
       <div class="mt-4 pt-3">
         <p class="text-xs font-medium text-fg-muted">{{ t('bot.avatar.preview.sizes') }}</p>
         <div class="mt-3 flex items-end justify-center gap-5">
           <div v-for="size in [20, 28, 36]" :key="size" class="flex flex-col items-center gap-2">
             <BotAvatar :avatar="modelValue" :driver="driver" :name="name" :size="size" static />
-            <span class="text-[10px] tabular-nums text-fg-muted">{{ size }} px</span>
+            <span class="text-xs tabular-nums text-fg-muted">{{ size }} px</span>
           </div>
         </div>
       </div>
@@ -112,7 +112,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
                   :aria-pressed="sameBotAvatar(modelValue, preset.avatar)" class="flex min-w-0 flex-col items-center gap-1.5 rounded-2xl p-2 transition-colors focus-visible:outline-2 focus-visible:outline-accent"
                   :class="choiceClass(sameBotAvatar(modelValue, preset.avatar))" @click="emit('update:modelValue', { ...preset.avatar })">
             <BotAvatar :avatar="preset.avatar" :size="36" static />
-            <span class="w-full break-words text-center text-[11px]">{{ t(`bot.avatar.presets.${preset.id}`) }}</span>
+            <span class="w-full break-words text-center text-xs">{{ t(`bot.avatar.presets.${preset.id}`) }}</span>
           </button>
         </div>
       </section>
@@ -124,7 +124,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
                   :aria-pressed="hasCharacter && selectedCharacter.shape === shape" class="flex min-w-0 flex-col items-center gap-1.5 rounded-lg p-2 transition-colors focus-visible:outline-2 focus-visible:outline-accent"
                   :class="choiceClass(hasCharacter && selectedCharacter.shape === shape)" @click="updateCharacter({ shape })">
             <BotAvatar :avatar="{ ...selectedCharacter, shape }" :size="30" static />
-            <span class="w-full break-words text-center text-[10px]">{{ t(`bot.avatar.shapes.${shape}`) }}</span>
+            <span class="w-full break-words text-center text-xs">{{ t(`bot.avatar.shapes.${shape}`) }}</span>
           </button>
         </div>
       </section>
@@ -138,7 +138,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
             <span class="grid h-6 w-6 place-items-center rounded-full ring-1 ring-black/20" :style="{ backgroundColor: AVATAR_PALETTE[color] }">
               <Check v-if="hasCharacter && selectedCharacter.color === color" :size="14" class="rounded-full bg-surface text-fg" aria-hidden="true" />
             </span>
-            <span class="w-full break-words text-center text-[10px]">{{ t(`bot.avatar.colors.${color}`) }}</span>
+            <span class="w-full break-words text-center text-xs">{{ t(`bot.avatar.colors.${color}`) }}</span>
           </button>
         </div>
       </section>
@@ -147,7 +147,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h3 class="text-xs font-semibold">{{ t('bot.avatar.expression') }}</h3>
           <button type="button" data-test="avatar-expressions-toggle" :aria-expanded="expandedExpressions" aria-controls="avatar-expression-options"
-                  class="flex items-center gap-1 text-[11px] text-accent hover:underline focus-visible:outline-2 focus-visible:outline-accent" @click="expandedExpressions = !expandedExpressions">
+                  class="flex items-center gap-1 text-xs text-accent hover:underline focus-visible:outline-2 focus-visible:outline-accent" @click="expandedExpressions = !expandedExpressions">
             {{ t(expandedExpressions ? 'bot.avatar.commonExpressions' : 'bot.avatar.allExpressions') }}
             <ChevronDown :size="12" :class="{ 'rotate-180': expandedExpressions }" />
           </button>
@@ -157,10 +157,10 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
                   :aria-pressed="hasCharacter && selectedCharacter.expression === expression" class="flex min-w-0 flex-col items-center gap-1 rounded-lg p-2 transition-colors focus-visible:outline-2 focus-visible:outline-accent"
                   :class="choiceClass(hasCharacter && selectedCharacter.expression === expression)" @click="updateCharacter({ expression })">
             <BotAvatar :avatar="{ ...selectedCharacter, expression }" :size="28" static />
-            <span class="w-full break-words text-center text-[10px]">{{ t(`bot.avatar.expressions.${expression}`) }}</span>
+            <span class="w-full break-words text-center text-xs">{{ t(`bot.avatar.expressions.${expression}`) }}</span>
           </button>
         </div>
-        <p v-if="hasCharacter && !expressions.includes(selectedCharacter.expression)" class="mt-2 text-[11px] text-fg-muted">
+        <p v-if="hasCharacter && !expressions.includes(selectedCharacter.expression)" class="mt-2 text-xs text-fg-muted">
           {{ t('bot.avatar.selectedExpression', { expression: t(`bot.avatar.expressions.${selectedCharacter.expression}`) }) }}
         </p>
       </section>
@@ -171,7 +171,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
                  class="rounded-sm border-border text-accent focus:ring-accent" @change="updateCharacter({ motion: ($event.target as HTMLInputElement).checked ? 'auto' : 'off' })" />
           {{ t('bot.avatar.motion.title') }}
         </label>
-        <p class="mt-1.5 text-[11px] leading-relaxed text-fg-muted">{{ t('bot.avatar.motion.hint') }}</p>
+        <p class="mt-1.5 text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.motion.hint') }}</p>
       </div>
       <button type="button" data-test="avatar-reset" :disabled="!modelValue"
               class="flex items-center gap-1.5 rounded-lg px-1 py-1 text-xs text-fg-muted transition-colors hover:text-fg disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-accent"

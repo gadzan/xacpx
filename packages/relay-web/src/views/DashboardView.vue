@@ -655,8 +655,8 @@ onUnmounted(() => {
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
-          <span class="hidden flex-1 text-[12.5px] text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
-          <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
+          <span class="hidden flex-1 text-ui text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
+          <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-xs text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <button
           data-test="toggle-terminal"
@@ -847,13 +847,13 @@ onUnmounted(() => {
              @pointerdown.prevent="rightResize.onPointerDown" />
         <div class="flex h-9 shrink-0 items-center gap-1 px-2.5">
           <button data-test="right-tab-files"
-                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
                   :class="rightTab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'files'">
             <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
-                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
                   :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}

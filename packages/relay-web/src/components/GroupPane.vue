@@ -136,13 +136,13 @@ const worktreeRunId = computed(() => {
         <Users :size="15" />
       </div>
       <div class="flex min-w-0 flex-col">
-        <h2 class="truncate text-[14px] font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
-        <div class="flex flex-wrap items-center gap-2 text-[10.5px] text-fg-muted">
+        <h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
+        <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
           <span>{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
           <span v-if="groupsStore.currentTopic">· {{ groupsStore.currentTopic.title }}</span>
           <span v-if="group?.lifecycle === 'deleting'"
                 data-test="group-pane-deleting-badge"
-                class="rounded-sm bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
+                class="rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
             {{ $t("group.list.deleting") }}
           </span>
         </div>

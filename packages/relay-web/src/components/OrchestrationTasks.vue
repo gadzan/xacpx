@@ -50,7 +50,7 @@ function statusClass(status: string): string {
                 @click="cancel(t.taskId)"><Ban :size="13" /></button>
       </li>
       <li v-if="tasks.orchestration.length === 0" class="text-xs text-fg-muted">{{ $t("tasks.noOrchestration") }}</li>
-      <li v-if="tasks.orchestration.length > ORCH_LIMIT" class="pt-0.5 text-center text-[10.5px] text-fg-muted">
+      <li v-if="tasks.orchestration.length > ORCH_LIMIT" class="pt-0.5 text-center text-xs text-fg-muted">
         {{ $t("tasks.moreOrchestration", { count: tasks.orchestration.length - ORCH_LIMIT }) }}
       </li>
     </ul>

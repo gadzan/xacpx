@@ -236,14 +236,14 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
     <div class="flex h-11 shrink-0 items-center gap-2 bg-surface/60 px-3 backdrop-blur-md">
       <template v-if="file">
         <FileText :size="14" class="shrink-0 text-accent" />
-        <span class="truncate font-mono text-[12.5px] text-fg">{{ file.path }}</span>
-        <span class="shrink-0 text-[11px] text-fg-muted">{{ fmtSize(file.size) }}</span>
-        <span v-if="file.truncated" class="shrink-0 rounded-sm bg-warn/10 px-1 text-[10.5px] text-warn">{{ $t("files.truncated") }}</span>
-        <span v-if="file.binary" class="shrink-0 rounded-sm bg-fg/5 px-1 text-[10.5px] text-fg-muted">{{ $t("files.binary") }}</span>
+        <span class="truncate font-mono text-ui text-fg">{{ file.path }}</span>
+        <span class="shrink-0 text-xs text-fg-muted">{{ fmtSize(file.size) }}</span>
+        <span v-if="file.truncated" class="shrink-0 rounded-sm bg-warn/10 px-1 text-xs text-warn">{{ $t("files.truncated") }}</span>
+        <span v-if="file.binary" class="shrink-0 rounded-sm bg-fg/5 px-1 text-xs text-fg-muted">{{ $t("files.binary") }}</span>
       </template>
       <template v-else-if="props.diffPath">
         <FileDiff :size="14" class="shrink-0 text-accent" />
-        <span class="truncate font-mono text-[12.5px] text-fg">{{ props.diffPath }}</span>
+        <span class="truncate font-mono text-ui text-fg">{{ props.diffPath }}</span>
       </template>
       <div class="ml-auto flex shrink-0 items-center gap-1">
         <button v-if="showEditor" data-test="fv-find-toggle" :aria-label="$t('files.find')" :title="$t('files.find')"
@@ -255,10 +255,10 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         <template v-if="editing">
           <span v-if="editDirty" data-test="fv-dirty-dot" class="mr-0.5 h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
           <button data-test="fv-save" :disabled="saving || !editDirty" :aria-label="$t('files.save')"
-                  class="flex h-7 items-center gap-1 rounded-sm px-2 text-[12px] font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-40"
+                  class="flex h-7 items-center gap-1 rounded-sm px-2 text-ui font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-40"
                   @click="save()"><SaveIcon :size="14" />{{ saving ? $t("files.saving") : $t("files.save") }}</button>
           <button data-test="fv-cancel" :aria-label="$t('files.cancel')"
-                  class="h-7 rounded-sm px-2 text-[12px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  class="h-7 rounded-sm px-2 text-ui font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="cancelEdit()">{{ $t("files.cancel") }}</button>
         </template>
         <CopyButton v-if="file && !file.binary && !editing" :text="file.content" />
@@ -275,7 +275,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <!-- save error / stale-conflict banner -->
       <div v-if="saveError" data-test="fv-save-error" class="m-3 flex items-center gap-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
         <span class="min-w-0 flex-1">{{ saveErrorLabel }}</span>
-        <button v-if="isStale" data-test="fv-reload" class="shrink-0 rounded-sm bg-danger/15 px-2 py-0.5 text-[12px] font-medium hover:bg-danger/25" @click="reloadFromDisk()">{{ $t("files.reload") }}</button>
+        <button v-if="isStale" data-test="fv-reload" class="shrink-0 rounded-sm bg-danger/15 px-2 py-0.5 text-ui font-medium hover:bg-danger/25" @click="reloadFromDisk()">{{ $t("files.reload") }}</button>
       </div>
       <!-- file content: one CodeMirror instance for read (editable:false) + edit (editable:true) -->
       <CodeEditor v-if="showEditor" ref="codeEditor" v-model="content" :filename="file!.path"
@@ -283,7 +283,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <div v-else-if="file && file.binary" class="p-6 text-sm text-fg-muted">{{ $t("files.binaryNotShown") }}</div>
       <!-- single-file diff: structured tinted rows -->
       <div v-else-if="props.diffPath && diff" class="h-full overflow-auto thin-scroll">
-        <div v-if="parsedDiff && parsedDiff.rows.length" data-test="fv-diff-body" class="font-mono text-[12.5px] leading-relaxed">
+        <div v-if="parsedDiff && parsedDiff.rows.length" data-test="fv-diff-body" class="font-mono text-ui leading-relaxed">
           <div v-for="(r, i) in parsedDiff.rows" :key="i" data-test="fv-diff-row" class="flex"
                :class="r.type === 'add' ? 'bg-run/10' : r.type === 'del' ? 'bg-danger/10' : r.type === 'hunk' ? 'bg-info/5' : ''">
             <span class="sticky left-0 w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.oldNo ?? "" }}</span>

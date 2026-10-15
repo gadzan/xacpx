@@ -122,7 +122,7 @@ function onKeydown(event: KeyboardEvent): void {
       </button>
     </div>
     <p data-test="model-picker-effect" class="text-xs text-fg-muted">{{ effectText }}</p>
-    <p v-if="audience === 'bot'" class="text-[11px] text-fg-muted">{{ t("capability.appliesLater") }}</p>
+    <p v-if="audience === 'bot'" class="text-xs text-fg-muted">{{ t("capability.appliesLater") }}</p>
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <div class="relative">
         <label class="mb-1.5 block text-xs font-medium text-fg-muted" :for="modelTestId">{{ t("capability.model") }}</label>
@@ -150,7 +150,7 @@ function onKeydown(event: KeyboardEvent): void {
             @mousedown.prevent="pickModel(entry.modelId)"
           >
             <span class="block truncate">{{ entry.name }}</span>
-            <span v-if="entry.name !== entry.modelId" class="block truncate text-[11px] text-fg-muted">{{ entry.modelId }}</span>
+            <span v-if="entry.name !== entry.modelId" class="block truncate text-xs text-fg-muted">{{ entry.modelId }}</span>
           </li>
           <li
             v-for="entry in suggestions"
@@ -161,7 +161,7 @@ function onKeydown(event: KeyboardEvent): void {
             @mousedown.prevent="pickModel(entry.modelId)"
           >
             {{ entry.modelId }}
-            <span class="ml-2 text-[11px]">{{ t("capability.suggestion") }}</span>
+            <span class="ml-2 text-xs">{{ t("capability.suggestion") }}</span>
           </li>
         </ul>
       </div>

@@ -167,7 +167,7 @@ function toggleTrace(): void {
     <!-- Collapsed-trace header (finished turns): one muted row summarizing the hidden
          activity; expanding re-renders the trace items inline below it. -->
     <button v-if="collapsible" type="button" data-test="trace-toggle"
-            class="group flex w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 py-1 px-1.5 rounded-sm text-left text-[11.5px] text-fg-muted transition-colors hover:text-fg hover:bg-fg/5"
+            class="group flex w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 py-1 px-1.5 rounded-sm text-left text-xs text-fg-muted transition-colors hover:text-fg hover:bg-fg/5"
             :aria-expanded="expanded" :aria-label="$t('turnTrace.toggleTrace')"
             :title="$t('turnTrace.toggleTrace')"
             :data-trace-key="traceKey ?? ''" @click="toggleTrace">
@@ -175,14 +175,14 @@ function toggleTrace(): void {
       <ChevronRight v-else :size="12" class="shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" />
       <span data-test="trace-label">{{ headerLabel }}</span>
       <span v-if="failedLabel" data-test="trace-failed"
-            class="inline-flex items-center shrink-0 rounded-full bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-danger">
+            class="inline-flex items-center shrink-0 rounded-full bg-danger/10 px-1.5 py-0.5 text-xs font-medium leading-none text-danger">
         {{ failedLabel }}
       </span>
     </button>
     <template v-for="item in visibleItems" :key="item.key">
       <StreamMarkdown v-if="item.type === 'markdown'" data-test="turn-narrative"
                       :rendered-html="item.html" :streaming="streaming === true && item.isLatest"
-                      class="text-[14px] leading-relaxed text-fg"
+                      class="text-sm leading-relaxed text-fg"
                       :class="streaming === true && item.isLatest ? 'caret' : ''" />
       <ReasoningPanel v-else-if="item.type === 'reasoning'"
                       :reasoning="item.text"

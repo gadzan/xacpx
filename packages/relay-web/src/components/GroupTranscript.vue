@@ -366,12 +366,12 @@ async function handleLoadOlder(): Promise<void> {
           @jump="jumpToMessage"
         />
         <template v-else-if="m.role === 'human'">
-          <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-[14px] leading-relaxed text-fg">
+          <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-sm leading-relaxed text-fg">
             {{ m.content }}
           </div>
           <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
             <CopyButton :text="m.content" />
-            <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+            <span class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
           </div>
         </template>
 
@@ -383,12 +383,12 @@ async function handleLoadOlder(): Promise<void> {
               :trace-key="traceKeyForMessage(m)"
             />
           </div>
-          <div v-else class="w-full text-[14px] leading-relaxed text-fg">
+          <div v-else class="w-full text-sm leading-relaxed text-fg">
             <StreamMarkdown :text="m.content" />
           </div>
           <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
             <CopyButton :text="m.content" />
-            <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+            <span class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
           </div>
         </template>
 
@@ -410,7 +410,7 @@ async function handleLoadOlder(): Promise<void> {
             <span data-test="group-run-title" class="shrink-0 whitespace-nowrap">{{ $t("group.run.title") }}</span>
             <span v-if="runningNames" data-test="group-running-members" class="min-w-0 break-words font-normal text-fg-muted">{{ $t("group.run.runningMembers", { names: runningNames }) }}</span>
             <span
-              class="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-medium"
+              class="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium"
               :class="{
                 'bg-run/15 text-run': run.state === 'running',
                 'bg-warning/15 text-warning': run.state === 'queued' || run.state === 'waiting-human',
@@ -425,7 +425,7 @@ async function handleLoadOlder(): Promise<void> {
             v-if="run.state === 'queued' || run.state === 'running' || run.state === 'waiting-human'"
             type="button"
             data-test="group-stop-run-button"
-            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger transition-colors hover:bg-danger/20"
+            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger/20"
             @click="handleCancel"
           >
             <CircleStop :size="11" />
@@ -436,7 +436,7 @@ async function handleLoadOlder(): Promise<void> {
         <p
           v-if="run.maxMemberTurns !== undefined"
           data-test="group-run-budget"
-          class="mt-2 text-[11px] text-fg-muted"
+          class="mt-2 text-xs text-fg-muted"
         >
           {{ $t("group.run.budget", { consumed: run.consumedMemberTurns ?? 0, max: run.maxMemberTurns }) }}
         </p>
@@ -444,14 +444,14 @@ async function handleLoadOlder(): Promise<void> {
           <p
             v-if="dispatchedName"
             data-test="group-run-dispatched"
-            class="mt-2 text-[11px] font-medium text-fg"
+            class="mt-2 text-xs font-medium text-fg"
           >
             {{ $t("group.run.dispatchedTo", { name: dispatchedName }) }}
           </p>
           <p
             v-if="run.routingReason"
             data-test="group-run-routing-reason"
-            class="text-[11px] leading-relaxed text-fg-muted"
+            class="text-xs leading-relaxed text-fg-muted"
           >
             {{ run.routingReason }}
           </p>
@@ -459,7 +459,7 @@ async function handleLoadOlder(): Promise<void> {
         <div
           v-if="run.state === 'waiting-human'"
           data-test="group-waiting-human"
-          class="mt-2 rounded-lg bg-warning/10 px-2.5 py-2 text-[11px] leading-relaxed text-fg"
+          class="mt-2 rounded-lg bg-warning/10 px-2.5 py-2 text-xs leading-relaxed text-fg"
         >
           <p v-if="run.waitingQuestion" data-test="group-waiting-question">{{ run.waitingQuestion }}</p>
           <p class="mt-1 text-fg-muted">{{ $t("group.run.waitingManual") }}</p>
@@ -467,7 +467,7 @@ async function handleLoadOlder(): Promise<void> {
         <p
           v-if="topic?.executionTarget?.isolation === 'shared-single-writer'"
           data-test="group-write-queue"
-          class="mt-2 text-[11px] text-fg-muted"
+          class="mt-2 text-xs text-fg-muted"
         >
           {{ $t("group.run.writeQueue") }}
         </p>
@@ -493,7 +493,7 @@ async function handleLoadOlder(): Promise<void> {
                          :disabled="botById[turn.botId] ? !botById[turn.botId]!.enabled : false" :retired="botById[turn.botId]?.retired" />
               <span class="min-w-0 flex-1 truncate text-xs font-medium text-fg">{{ senderName(turn.botId) }}</span>
               <span
-                class="flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium"
+                class="flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
                 :class="{
                   'bg-run/15 text-run': turn.state === 'running',
                   'bg-warning/15 text-warning': turn.state === 'queued' || turn.state === 'dispatched',
@@ -510,7 +510,7 @@ async function handleLoadOlder(): Promise<void> {
               </span>
               <ChevronDown :size="12" class="shrink-0 text-fg-muted transition-transform" :class="isExpanded(turn.id) ? 'rotate-180' : ''" />
             </button>
-            <div v-if="turn.assignmentId || turn.task || turn.dependsOn?.length || turn.blockedReason" data-test="group-member-details" class="mt-1 min-w-0 space-y-0.5 break-words pl-10 text-[11px] text-fg-muted [overflow-wrap:anywhere]">
+            <div v-if="turn.assignmentId || turn.task || turn.dependsOn?.length || turn.blockedReason" data-test="group-member-details" class="mt-1 min-w-0 space-y-0.5 break-words pl-10 text-xs text-fg-muted [overflow-wrap:anywhere]">
               <p v-if="turn.assignmentId" data-test="group-member-assignment">{{ $t("group.run.assignment") }} {{ turn.assignmentId }}</p>
               <p v-if="turn.task" data-test="group-member-task">{{ turn.task }}</p>
               <p v-if="turn.dependsOn?.length" data-test="group-member-depends">{{ $t("group.run.dependsOn") }} {{ turn.dependsOn.join(", ") }}</p>
@@ -537,7 +537,7 @@ async function handleLoadOlder(): Promise<void> {
                 <Loader2 v-if="turn.state === 'running' || turn.state === 'queued' || turn.state === 'dispatched'" :size="12" class="animate-spin text-accent" />
                 <span>{{ turn.task ?? $t("group.run.memberWaiting") }}</span>
               </div>
-              <div v-if="turn.failureReason" class="mt-1.5 text-[11px] text-danger">{{ turn.failureReason }}</div>
+              <div v-if="turn.failureReason" class="mt-1.5 text-xs text-danger">{{ turn.failureReason }}</div>
             </div>
           </div>
         </div>
