@@ -64,12 +64,45 @@ export interface WebSocketConnectOptions {
   maxPayload: number;
 }
 
+/**
+ * Per-tunnel forwarding counters. Numbers only — never payload bytes, never
+ * ticket/credential material — so the opt-in stats line is safe to log.
+ */
+interface TunnelStats {
+  startedAt: number;
+  /** Loopback RFB → hub ws bytes. */
+  bytesToHub: number;
+  /** Hub ws → loopback RFB bytes. */
+  bytesFromHub: number;
+  /** Highest hub-ws `bufferedAmount` observed. */
+  peakWsBuffered: number;
+  /** Times the loopback socket was paused because the hub ws was saturated. */
+  tcpPauses: number;
+  tcpPausedMs: number;
+  tcpPausedAt: number | null;
+  /** Times the hub ws was paused because `tcp.write()` reported backpressure. */
+  wsPauses: number;
+  wsPausedMs: number;
+  wsPausedAt: number | null;
+}
+
 interface ActiveTunnel {
   streamId: string;
   ticket: string;
   socket: WebSocket;
   tcp: net.Socket;
   closed: boolean;
+  /** True while `tcp` is paused because the hub ws sits above SOFT_PAUSE. */
+  tcpPausedForWs: boolean;
+  /** True while the hub ws is paused because `tcp.write()` returned false. */
+  wsPausedForTcp: boolean;
+  /** The ONE armed fallback resume check for `tcpPausedForWs` (never a pile-up). */
+  tcpResumeTimer: NodeJS.Timeout | null;
+  /** The ONE armed `drain` listener for `wsPausedForTcp`; detached on close. */
+  tcpDrain: (() => void) | null;
+  /** Bound once per tunnel so the per-chunk ws send callback allocates nothing. */
+  onHubSocketWritten: () => void;
+  stats: TunnelStats;
 }
 
 /**
@@ -377,7 +410,7 @@ export class DesktopTunnelRuntime {
     tcp.on("data", (chunk: Buffer) => {
       earlyChunks.push(chunk);
     });
-    const { socket, tunnel } = await this.openHubPlane(streamId, ticket, generation, pending, sockets, tcp);
+    const { tunnel } = await this.openHubPlane(streamId, ticket, generation, pending, sockets, tcp);
     tcp.removeAllListeners("data");
     tcp.resume();
     // Replay what the banner preflight consumed, IN ORDER, before live
@@ -385,7 +418,7 @@ export class DesktopTunnelRuntime {
     // delivers. Without this noVNC never sees "RFB 003.xxx" and both sides
     // deadlock (server waits for the client version, noVNC waits for banner).
     for (const replay of earlyChunks) {
-      forwardToWs(socket, tcp, replay);
+      forwardToWs(tunnel, replay);
     }
     this.spliceRaw(tunnel, (chunk) => chunk);
   }
@@ -485,7 +518,36 @@ export class DesktopTunnelRuntime {
       try { tcp.destroy(); } catch { /* gone */ }
       throw new Error(`desktop tunnel retired before open (${streamId})`);
     }
-    const tunnel: ActiveTunnel = { streamId, ticket, socket, tcp, closed: false };
+    const tunnel: ActiveTunnel = {
+      streamId,
+      ticket,
+      socket,
+      tcp,
+      closed: false,
+      tcpPausedForWs: false,
+      wsPausedForTcp: false,
+      tcpResumeTimer: null,
+      tcpDrain: null,
+      onHubSocketWritten: () => onHubSocketWritten(tunnel),
+      stats: {
+        startedAt: Date.now(),
+        bytesToHub: 0,
+        bytesFromHub: 0,
+        peakWsBuffered: 0,
+        tcpPauses: 0,
+        tcpPausedMs: 0,
+        tcpPausedAt: null,
+        wsPauses: 0,
+        wsPausedMs: 0,
+        wsPausedAt: null,
+      },
+    };
+    // Node's `net` default is Nagle ON: a small key/pointer event waits in the
+    // kernel for an ACK of the previous segment, which is exactly the input lag
+    // a remote desktop feels. The hub ws already calls setNoDelay() on its own
+    // socket (ws 8 does it in setSocket), so this is the loopback side only and
+    // is deliberately NOT repeated on the ws.
+    if (typeof tcp.setNoDelay === "function") tcp.setNoDelay(true);
     this.active = tunnel;
     pending.tunnel = tunnel;
     return { socket, tunnel };
@@ -512,12 +574,28 @@ export class DesktopTunnelRuntime {
         return;
       }
       if (bytes.byteLength === 0) return;
+      tunnel.stats.bytesFromHub += bytes.byteLength;
       const ok = tcp.write(bytes);
-      if (!ok) {
+      // One armed drain listener per episode, not per frame: a second
+      // backpressured write while the ws is already paused must not stack
+      // another `once("drain")` (the ws is paused, so in production no further
+      // frame arrives, but the flag makes that independent of the peer).
+      if (!ok && !tunnel.wsPausedForTcp) {
+        tunnel.wsPausedForTcp = true;
+        tunnel.stats.wsPauses += 1;
+        tunnel.stats.wsPausedAt = Date.now();
         socket.pause?.();
-        tcp.once("drain", () => {
-          try { (socket as { resume?: () => void }).resume?.(); } catch { /* gone */ }
-        });
+        const onDrain = () => {
+          tunnel.tcpDrain = null;
+          tunnel.wsPausedForTcp = false;
+          if (tunnel.stats.wsPausedAt !== null) {
+            tunnel.stats.wsPausedMs += Date.now() - tunnel.stats.wsPausedAt;
+            tunnel.stats.wsPausedAt = null;
+          }
+          try { socket.resume?.(); } catch { /* gone */ }
+        };
+        tunnel.tcpDrain = onDrain;
+        tcp.once("drain", onDrain);
       }
     });
     socket.on("error", () => {});
@@ -525,7 +603,7 @@ export class DesktopTunnelRuntime {
     socket.on("error", () => this.closeTunnel(tunnel, "hub-error"));
     tcp.on("data", (chunk: Buffer) => {
       if (tunnel.closed) return;
-      forwardToWs(socket, tcp, chunk);
+      forwardToWs(tunnel, chunk);
     });
     tcp.on("error", () => this.closeTunnel(tunnel, "rfb-error"));
     tcp.on("close", () => this.closeTunnel(tunnel, "rfb-close"));
@@ -548,37 +626,147 @@ export class DesktopTunnelRuntime {
     tunnel.closed = true;
     this.active = null;
     void reason;
+    // Backpressure bookkeeping must not outlive the tunnel: a pending fallback
+    // timer would keep the event loop referenced and an armed `drain` listener
+    // would stay pinned to a socket nobody reads again.
+    if (tunnel.tcpResumeTimer !== null) {
+      clearTimeout(tunnel.tcpResumeTimer);
+      tunnel.tcpResumeTimer = null;
+    }
+    if (tunnel.tcpDrain !== null) {
+      tunnel.tcp.removeListener("drain", tunnel.tcpDrain);
+      tunnel.tcpDrain = null;
+    }
+    tunnel.tcpPausedForWs = false;
+    tunnel.wsPausedForTcp = false;
+    // The forwarding handlers are dead weight once the tunnel is closed: drop
+    // them so neither socket keeps a closure alive after teardown.
+    tunnel.tcp.removeAllListeners("data");
+    tunnel.socket.removeAllListeners("message");
+    if (this.deps.config.diagnostics) {
+      const stats = tunnel.stats;
+      if (stats.tcpPausedAt !== null) {
+        stats.tcpPausedMs += Date.now() - stats.tcpPausedAt;
+        stats.tcpPausedAt = null;
+      }
+      if (stats.wsPausedAt !== null) {
+        stats.wsPausedMs += Date.now() - stats.wsPausedAt;
+        stats.wsPausedAt = null;
+      }
+      // Numbers + streamId only: no payload bytes, no ticket, no credentials.
+      this.deps.logger?.info?.("relay.desktop.tunnel_stats", "desktop tunnel forwarding stats", {
+        streamId: tunnel.streamId,
+        durationMs: Date.now() - stats.startedAt,
+        bytesToHub: stats.bytesToHub,
+        bytesFromHub: stats.bytesFromHub,
+        peakWsBufferedBytes: stats.peakWsBuffered,
+        tcpPauses: stats.tcpPauses,
+        tcpPausedMs: stats.tcpPausedMs,
+        wsPauses: stats.wsPauses,
+        wsPausedMs: stats.wsPausedMs,
+      });
+    }
     try { tunnel.tcp.destroy(); } catch { /* gone */ }
     try { tunnel.socket.close(); } catch { /* gone */ }
   }
 }
 
-function forwardToWs(socket: WebSocket, tcp: net.Socket, chunk: Buffer): void {
-  if (socket.readyState !== WebSocket.OPEN) return;
+/** Fallback resume check interval for the TCP→WS paused state. */
+const WS_RESUME_POLL_MS = 50;
+
+/**
+ * TCP → WS forwarding with ONE armed backpressure cycle.
+ *
+ * The hub ws's `bufferedAmount` is the only queue in this direction, so the
+ * soft-pause watermark is applied to the loopback socket: once the ws sits
+ * above DESKTOP_BUFFERED_SOFT_PAUSE_BYTES the RFB socket stops feeding it.
+ * Exactly one resume path is armed at a time — the ws `send` callback of the
+ * chunk that crossed the watermark (ws fires it once those bytes are on the
+ * wire, which is the moment `bufferedAmount` can have fallen back) plus ONE
+ * fallback timer for a socket that drains without another send completing.
+ * Nothing re-arms or resumes once the tunnel is closed.
+ */
+function forwardToWs(tunnel: ActiveTunnel, chunk: Buffer): void {
+  const { socket, tcp } = tunnel;
+  if (tunnel.closed || socket.readyState !== WebSocket.OPEN) return;
   if (socket.bufferedAmount > DESKTOP_BUFFERED_HARD_CLOSE_BYTES) {
     tcp.destroy();
     try { socket.close(); } catch { /* gone */ }
     return;
   }
+  const stats = tunnel.stats;
+  if (socket.bufferedAmount > stats.peakWsBuffered) stats.peakWsBuffered = socket.bufferedAmount;
   // Slice into protocol chunks so one TCP burst cannot exceed the frame gate.
+  // The last piece of every chunk carries the bound resume probe (allocated
+  // once per tunnel, never per chunk): ws invokes it after the bytes are
+  // written, which is the earliest correct moment to re-check the watermark.
+  const lastOffset = Math.max(0, chunk.byteLength - DESKTOP_TCP_CHUNK_BYTES);
   for (let offset = 0; offset < chunk.byteLength; offset += DESKTOP_TCP_CHUNK_BYTES) {
     const piece = chunk.subarray(offset, Math.min(offset + DESKTOP_TCP_CHUNK_BYTES, chunk.byteLength));
+    stats.bytesToHub += piece.byteLength;
     try {
-      socket.send(piece, { binary: true });
+      if (offset === lastOffset) {
+        socket.send(piece, { binary: true }, tunnel.onHubSocketWritten);
+      } else {
+        socket.send(piece, { binary: true });
+      }
     } catch {
       tcp.destroy();
       return;
     }
   }
-  if (socket.bufferedAmount > DESKTOP_BUFFERED_SOFT_PAUSE_BYTES) {
-    tcp.pause();
-    const resume = () => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      if (socket.bufferedAmount <= DESKTOP_BUFFERED_SOFT_PAUSE_BYTES) tcp.resume();
-      else setTimeout(resume, 50).unref?.();
-    };
-    setTimeout(resume, 50).unref?.();
+  if (socket.bufferedAmount > DESKTOP_BUFFERED_SOFT_PAUSE_BYTES) pauseTcpForWs(tunnel);
+}
+
+/** ws `send` callback: the chunk that crossed the watermark is on the wire. */
+function onHubSocketWritten(tunnel: ActiveTunnel): void {
+  if (tunnel.closed || !tunnel.tcpPausedForWs) return;
+  if (tunnel.socket.readyState !== WebSocket.OPEN) return;
+  if (tunnel.socket.bufferedAmount <= DESKTOP_BUFFERED_SOFT_PAUSE_BYTES) {
+    resumeTcpForWs(tunnel);
+  } else {
+    armTcpResumeCheck(tunnel);
   }
+}
+
+function pauseTcpForWs(tunnel: ActiveTunnel): void {
+  if (tunnel.closed || tunnel.tcpPausedForWs) return;
+  tunnel.tcpPausedForWs = true;
+  tunnel.stats.tcpPauses += 1;
+  tunnel.stats.tcpPausedAt = Date.now();
+  tunnel.tcp.pause();
+  armTcpResumeCheck(tunnel);
+}
+
+function armTcpResumeCheck(tunnel: ActiveTunnel): void {
+  // One timer at a time: a second call while one is armed is a no-op, so a
+  // congested socket cannot stack resume checks.
+  if (tunnel.closed || tunnel.tcpResumeTimer !== null) return;
+  tunnel.tcpResumeTimer = setTimeout(() => {
+    tunnel.tcpResumeTimer = null;
+    if (tunnel.closed || !tunnel.tcpPausedForWs) return;
+    if (tunnel.socket.readyState !== WebSocket.OPEN) return;
+    if (tunnel.socket.bufferedAmount <= DESKTOP_BUFFERED_SOFT_PAUSE_BYTES) {
+      resumeTcpForWs(tunnel);
+    } else {
+      armTcpResumeCheck(tunnel);
+    }
+  }, WS_RESUME_POLL_MS);
+  tunnel.tcpResumeTimer.unref?.();
+}
+
+function resumeTcpForWs(tunnel: ActiveTunnel): void {
+  if (!tunnel.tcpPausedForWs) return;
+  tunnel.tcpPausedForWs = false;
+  if (tunnel.tcpResumeTimer !== null) {
+    clearTimeout(tunnel.tcpResumeTimer);
+    tunnel.tcpResumeTimer = null;
+  }
+  if (tunnel.stats.tcpPausedAt !== null) {
+    tunnel.stats.tcpPausedMs += Date.now() - tunnel.stats.tcpPausedAt;
+    tunnel.stats.tcpPausedAt = null;
+  }
+  try { tunnel.tcp.resume(); } catch { /* gone */ }
 }
 
 /**

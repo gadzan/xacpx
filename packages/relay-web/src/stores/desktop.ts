@@ -43,6 +43,8 @@ type DesktopSessionBase = {
   lastErrorCode?: string;
   lastErrorMessage?: string;
   fit: boolean;
+  /** Smooth-first encoding preference (browser-local, persisted). */
+  smooth: boolean;
 };
 
 export type DesktopSessionView =
@@ -108,6 +110,23 @@ function errorMessageFor(code: string, fallback: string): string {
   return fallback || code;
 }
 
+/** Smooth-first preference key. Presentation-only; never session or ticket state. */
+const SMOOTH_STORAGE_KEY = "xacpx.desktop.smooth";
+
+function loadSmoothPreference(): boolean {
+  try {
+    return localStorage.getItem(SMOOTH_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveSmoothPreference(smooth: boolean): void {
+  try {
+    localStorage.setItem(SMOOTH_STORAGE_KEY, smooth ? "1" : "0");
+  } catch { /* storage may be blocked */ }
+}
+
 export const useDesktopStore = defineStore("desktop", () => {
   const sessions = ref(new Map<string, DesktopSessionView>());
   const connections = new Map<string, DesktopRfbConnection>();
@@ -140,7 +159,7 @@ export const useDesktopStore = defineStore("desktop", () => {
   function viewFor(instanceId: string): DesktopSessionView {
     let view = sessions.value.get(instanceId);
     if (!view) {
-      view = { instanceId, status: "idle", fit: true };
+      view = { instanceId, status: "idle", fit: true, smooth: loadSmoothPreference() };
       sessions.value.set(instanceId, view);
     }
     return view;
@@ -149,7 +168,7 @@ export const useDesktopStore = defineStore("desktop", () => {
   function patch(instanceId: string, next: DesktopSessionPatch): DesktopSessionView {
     const prev = viewFor(instanceId);
     const status = next.status ?? prev.status;
-    const merged: DesktopSessionBase = { instanceId, fit: next.fit ?? prev.fit };
+    const merged: DesktopSessionBase = { instanceId, fit: next.fit ?? prev.fit, smooth: next.smooth ?? prev.smooth };
     const streamId = "streamId" in next ? next.streamId : prev.streamId;
     if (streamId !== undefined) merged.streamId = streamId;
     const security = "security" in next ? next.security : prev.security;
@@ -356,6 +375,7 @@ export const useDesktopStore = defineStore("desktop", () => {
       url,
       security: opened.security,
       fit: viewFor(instanceId).fit,
+      smooth: viewFor(instanceId).smooth,
       ...(opts.target ? { target: opts.target } : {}),
       hooks: {
         onConnect: () => {
@@ -415,6 +435,10 @@ export const useDesktopStore = defineStore("desktop", () => {
     connections.set(instanceId, connection);
     // The desired fit may have been toggled while noVNC was still loading.
     connection.setScaleViewport(viewFor(instanceId).fit);
+    // Same race for smooth-first — but only pushed when ON: the client writes
+    // the quality/compression properties only for an enabled mode, so on a
+    // fresh connection there is nothing to undo when the preference is off.
+    if (viewFor(instanceId).smooth) connection.setSmoothFirst(true);
   }
 
   function sendCredentials(instanceId: string, password: string): void {
@@ -427,6 +451,18 @@ export const useDesktopStore = defineStore("desktop", () => {
   function setFit(instanceId: string, fit: boolean): void {
     patch(instanceId, { fit });
     connections.get(instanceId)?.setScaleViewport(fit);
+  }
+
+  /**
+   * Smooth-first encoding preference. Persisted (presentation-only) and applied
+   * to the live connection when there is one. The client only REQUESTS lower
+   * quality / higher compression: whether the RFB server honours it is
+   * untested (未实测).
+   */
+  function setSmooth(instanceId: string, smooth: boolean): void {
+    saveSmoothPreference(smooth);
+    patch(instanceId, { smooth });
+    connections.get(instanceId)?.setSmoothFirst(smooth);
   }
 
   function close(instanceId: string): void {
@@ -528,7 +564,7 @@ export const useDesktopStore = defineStore("desktop", () => {
     for (const [instanceId] of live) reconnect(instanceId);
   }
 
-  return { sessions, viewFor, canOpen, open, signIn, reconnect, sendCredentials, setFit, close, applyEvent, reopenAfterWsReconnect, ensureReconnectHook };
+  return { sessions, viewFor, canOpen, open, signIn, reconnect, sendCredentials, setFit, setSmooth, close, applyEvent, reopenAfterWsReconnect, ensureReconnectHook };
 });
 
 export function desktopBinaryUrl(wsPath: string): string {

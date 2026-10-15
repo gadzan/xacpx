@@ -177,6 +177,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const desktopStreamOwners = new Map<string, DesktopStreamOwner>();
   const desktop = new DesktopStreamGateway({
     logger,
+    // Opt-in per-stream forwarding stats (XACPX_RELAY_DESKTOP_DIAGNOSTICS=1).
+    // Default off: no extra log line, no behavioural change.
+    diagnostics: desktopDiagnosticsFromEnv(process.env),
     onStreamClosed: (streamId) => {
       desktopStreamOwners.delete(streamId);
     },
@@ -1549,6 +1552,19 @@ function adaptDesktopSocket(ws: {
   // close path is fully handled.
   ws.on("error", () => {});
   return ws;
+}
+
+/**
+ * Opt-in desktop forwarding stats. Off unless the operator asks for it: the
+ * line is numbers-only (bytes each way, peak bufferedAmount, source pause
+ * count/ms) and exists to diagnose a laggy remote desktop, not to be on by
+ * default.
+ */
+export function desktopDiagnosticsFromEnv(env: Record<string, string | undefined>): boolean {
+  const raw = env.XACPX_RELAY_DESKTOP_DIAGNOSTICS;
+  if (raw === undefined) return false;
+  const value = raw.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 function parseCookie(header: string): Record<string, string> {

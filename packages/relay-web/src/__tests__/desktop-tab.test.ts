@@ -440,6 +440,7 @@ describe("DesktopTab error i18n", () => {
         instanceId: "i1",
         status: "error",
         fit: true,
+        smooth: false,
         lastErrorCode: code,
         lastErrorMessage: "hub detail",
       });
