@@ -616,7 +616,7 @@ export default {
     actual: "实际尺寸",
     smoothOn: "流畅优先：开",
     smoothOff: "流畅优先：关",
-    smoothHint: "请求更低画质与更高压缩。VNC 服务端可能忽略该请求（未实测）。",
+    smoothHint: "仅请求更低画质与更高压缩，服务端可自行忽略。macOS 屏幕共享实测只选 ZRLE，未观测到效果；可能对支持 Tight 的 Linux/Windows VNC 服务端有用。",
     fullscreen: "全屏",
     exitFullscreen: "退出全屏",
   },

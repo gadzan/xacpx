@@ -14,10 +14,11 @@ export type DesktopSecurity = DesktopSecurityKind;
  * compression 2; smooth-first asks for lower quality / higher compression via
  * the public properties (they re-send SetEncodings while connected).
  *
- * These are REQUESTS only: whether the RFB server honours the pseudo-encodings
- * is untested (未实测). macOS in particular is not known to negotiate
- * Tight/JPEG. See docs/desktop-rfb-setup.md for how to observe what the server
- * actually used.
+ * These are REQUESTS only: the RFB server decides whether to honour the
+ * pseudo-encodings. An approximate probe against macOS 13 Screen Sharing saw it
+ * pick ZRLE (16) only, with no observed quality/compression effect; the mode may
+ * help Tight-capable Linux/Windows servers. See docs/desktop-rfb-setup.md for
+ * how to observe what the server actually used.
  */
 const SMOOTH_QUALITY_LEVEL = 3;
 const SMOOTH_COMPRESSION_LEVEL = 7;

@@ -619,7 +619,7 @@ export default {
     actual: "Actual size",
     smoothOn: "Smooth-first on",
     smoothOff: "Smooth-first off",
-    smoothHint: "Requests lower image quality and higher compression. The VNC server may ignore the request.",
+    smoothHint: "Only requests lower image quality and higher compression; the server may ignore it. macOS Screen Sharing was observed to pick ZRLE only, with no observed effect. May help Tight-capable Linux/Windows VNC servers.",
     fullscreen: "Fullscreen",
     exitFullscreen: "Exit fullscreen",
   },
