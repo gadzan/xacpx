@@ -146,7 +146,7 @@ async function submitConfirm(): Promise<void> {
     </button>
     <button
       type="button"
-      class="ml-auto flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10"
+      class="ml-auto flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft"
       :data-test="variant === 'group' ? 'group-new-topic-button' : 'new-topic-button'"
       @click="emit('create')"
     >
@@ -157,15 +157,15 @@ async function submitConfirm(): Promise<void> {
     <div
       v-if="open"
       data-test="topic-panel"
-      class="z-30 flex flex-col border border-border bg-surface shadow-lg max-md:fixed max-md:inset-x-0 max-md:bottom-0 max-md:max-h-[70vh] max-md:rounded-t-xl md:absolute md:right-0 md:top-full md:mt-1 md:max-h-96 md:w-80 md:rounded-lg"
+      class="z-30 flex flex-col bg-surface shadow-float max-md:fixed max-md:inset-x-0 max-md:bottom-0 max-md:max-h-[70vh] max-md:rounded-t-xl md:absolute md:right-0 md:top-full md:mt-1 md:max-h-96 md:w-80 md:rounded-lg"
     >
-      <div class="border-b border-border p-2">
+      <div class="p-2">
         <input
           v-model="query"
           type="search"
           data-test="topic-search"
           :placeholder="$t('bot.topic.search')"
-          class="w-full rounded-md border border-border bg-bg px-2 py-1 text-xs outline-none focus:border-accent"
+          class="w-full rounded-md bg-surface-2 px-2 py-1 text-xs outline-none"
         />
       </div>
       <ul class="min-h-0 flex-1 overflow-y-auto p-1">
@@ -177,7 +177,7 @@ async function submitConfirm(): Promise<void> {
           :data-topic-id="topic.id"
           :data-topic-status="topic.status"
           class="rounded-md px-2 py-1.5 text-xs"
-          :class="topic.id === activeTopicId ? 'bg-accent/10' : ''"
+          :class="topic.id === activeTopicId ? 'bg-accent-soft' : ''"
         >
           <div class="flex items-center gap-1">
             <button type="button" class="min-w-0 flex-1 truncate text-left" @click="emit('select', topic.id); open = false">
@@ -187,7 +187,7 @@ async function submitConfirm(): Promise<void> {
             <RotateCcw v-if="topic.status === 'deleting'" :size="12" class="shrink-0 text-fg-muted" />
           </div>
           <form v-if="editingId === topic.id" class="mt-1 flex gap-1" @submit.prevent="saveRename(topic)">
-            <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded border border-border bg-bg px-1 py-0.5" />
+            <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded bg-surface-2 px-1 py-0.5" />
             <button type="submit" data-test="topic-rename-save" class="rounded bg-accent px-2 py-0.5 text-on-accent">{{ $t("bot.topic.save") }}</button>
           </form>
           <div v-else class="mt-1 flex flex-wrap gap-1">
@@ -199,11 +199,11 @@ async function submitConfirm(): Promise<void> {
           </div>
         </li>
       </ul>
-      <p v-if="actionError" data-test="topic-action-error" class="border-t border-danger/20 px-2 py-1 text-xs text-danger">{{ actionError }}</p>
+      <p v-if="actionError" data-test="topic-action-error" class="px-2 py-1 text-xs text-danger">{{ actionError }}</p>
     </div>
 
     <div v-if="confirmKind" class="fixed inset-0 z-40 flex items-end justify-center bg-black/50 p-4 md:items-center" @click.self="closeConfirm">
-      <div role="dialog" aria-modal="true" data-test="topic-confirm" class="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-xl">
+      <div role="dialog" aria-modal="true" data-test="topic-confirm" class="w-full max-w-sm rounded-xl bg-surface p-4 shadow-float">
         <h3 class="text-sm font-semibold">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearTitle") : $t("bot.topic.confirmDeleteTitle") }}</h3>
         <p class="mt-2 text-xs text-fg-muted">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearBody") : $t("bot.topic.confirmDeleteBody") }}</p>
         <p v-if="(confirmImpact?.worktreeRunIds.length ?? 0) > 0" data-test="topic-worktree-warning" class="mt-2 text-xs text-danger">{{ $t("bot.topic.worktreeWarning") }}</p>
@@ -213,7 +213,7 @@ async function submitConfirm(): Promise<void> {
         </label>
         <p v-if="actionError" class="mt-2 text-xs text-danger">{{ actionError }}</p>
         <div class="mt-4 flex justify-end gap-2">
-          <button type="button" class="rounded-lg border border-border px-3 py-1.5 text-xs" @click="closeConfirm">{{ $t("common.cancel") }}</button>
+          <button type="button" class="rounded-lg px-3 py-1.5 text-xs" @click="closeConfirm">{{ $t("common.cancel") }}</button>
           <button
             type="button"
             data-test="topic-confirm-submit"

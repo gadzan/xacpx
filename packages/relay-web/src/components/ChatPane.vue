@@ -120,7 +120,7 @@ onUnmounted(() => clearInterval(timer));
     </div>
     <template v-else>
       <!-- header -->
-      <div class="shrink-0 flex min-h-11 lg:h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+      <div class="shrink-0 flex min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
         <h1 class="hidden lg:block text-[14px] font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
         <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
              stay fully readable instead of truncating — title tooltips don't work on touch.
@@ -129,17 +129,17 @@ onUnmounted(() => clearInterval(timer));
           <!-- Session name as the leading chip. Mobile only: on lg+ the <h1> above already
                shows it at the front of this row, so showing it here too would duplicate. -->
           <span data-test="ctx-chip-session"
-                class="flex shrink-0 items-center whitespace-nowrap rounded-md border border-border bg-surface px-2 py-0.5 text-[10.5px] font-semibold text-fg lg:hidden">{{ currentSession?.displayName || chat.sessionAlias }}</span>
+                class="flex shrink-0 items-center whitespace-nowrap rounded-md bg-surface-2 px-2 py-0.5 text-[10.5px] font-semibold text-fg lg:hidden">{{ currentSession?.displayName || chat.sessionAlias }}</span>
           <button v-if="currentSession?.workspace" data-test="ctx-chip-workspace"
-                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
+                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-surface-2 py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   :title='$t("chat.browseFiles")'
                   @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-warn" /><span>{{ currentSession.workspace }}</span></button>
           <span v-if="instance?.name" data-test="ctx-chip-instance"
-                class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="font-mono text-accent">@</span><span>{{ instance.name }}</span></span>
+                class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-surface-2 py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><span class="font-mono text-accent">@</span><span>{{ instance.name }}</span></span>
           <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
-                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
+                class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-surface-2 py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
           <button v-if="files.gitSummary" data-test="git-summary"
-                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
+                  class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-surface-2 py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   :title="files.gitSummary.branch || $t('chat.viewChanges')"
                   @click="files.tab = 'changes'; emit('show-files')">
             <GitBranch :size="11" class="shrink-0" :class="files.gitSummary.changedCount > 0 ? 'text-warn' : 'text-fg-muted'" />
@@ -151,7 +151,7 @@ onUnmounted(() => clearInterval(timer));
         </div>
       </div>
       <div v-if="chat.error" data-test="chat-error"
-           class="mx-3 mt-2 flex items-start gap-2 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-danger">
+           class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger">
         <AlertTriangle :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
         <p class="min-w-0 flex-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-relaxed">{{ chat.error }}</p>
         <button type="button" class="-mr-0.5 -mt-0.5 shrink-0 rounded-md p-1 text-danger/70 transition-colors hover:bg-danger/15 hover:text-danger"
@@ -165,7 +165,7 @@ onUnmounted(() => clearInterval(timer));
           <AlertTriangle :size="22" class="text-danger" aria-hidden="true" />
           <p class="text-sm font-medium text-danger">{{ $t("session.startFailed") }}</p>
           <p class="max-w-sm break-words text-xs text-fg-muted">{{ currentSession.createError }}</p>
-          <button data-test="booting-dismiss" class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg hover:bg-fg/5"
+          <button data-test="booting-dismiss" class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg hover:bg-fg/5"
                   @click="dismissBooting">{{ $t("common.dismiss") }}</button>
         </template>
         <template v-else>
@@ -173,7 +173,7 @@ onUnmounted(() => clearInterval(timer));
           <p class="text-sm font-medium text-fg">{{ $t("session.starting", { agent: currentSession?.agent }) }}
             <span class="ml-1 font-mono tabular-nums text-fg-muted">{{ bootElapsed }}s</span></p>
           <p class="max-w-sm text-xs text-fg-muted">{{ $t("session.startingHint") }}</p>
-          <button data-test="booting-cancel" class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-fg/5"
+          <button data-test="booting-cancel" class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-fg/5"
                   @click="dismissBooting">{{ $t("common.cancel") }}</button>
         </template>
       </div>
@@ -202,11 +202,8 @@ onUnmounted(() => clearInterval(timer));
         <!-- Document-flow stack: status (bottom) → plan (middle) → input (top).
              Overlap is visual only — lower layers reserve padding-bottom equal to the
              pull-up so content stays fully visible.
-             Elevation rule: the stack reads as ONE lifted card, so only the composer
-             carries a real shadow (`shadow-dock`, see PromptInput). These overlapping
-             strips keep shadow-e1 — each pulled-up layer's shadow otherwise lands on
-             the strip below it and bands visibly in the light theme (plan used to sit
-             on the dialog-grade shadow-e3, which is far too heavy for a docked panel). -->
+             Redesign PR2: no elevation on plan/queue strips; composer uses bg-surface
+             without shadow (float shadow is reserved for overlays). -->
         <TransitionGroup
           tag="div"
           name="composer-layer"
@@ -214,9 +211,9 @@ onUnmounted(() => clearInterval(timer));
           data-test="composer-stack"
         >
           <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan!" :active="chat.busy" variant="stack"
-                     class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e1 sm:mx-3" />
+                     class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] sm:mx-3" />
           <QueueStrip v-if="showQueue" key="queue-layer"
-                      class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] shadow-e1 sm:mx-3"
+                      class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] sm:mx-3"
                       :class="{ 'stack-layer--pull': showPlan }" />
           <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
                :class="{ 'stack-layer--pull': showPlan || showQueue }">

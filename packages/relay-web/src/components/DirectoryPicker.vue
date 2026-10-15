@@ -123,9 +123,9 @@ function onListKeydown(e: KeyboardEvent): void {
   <Teleport to="body">
     <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
       <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="dp-title"
-           class="flex max-h-[85vh] w-full max-w-md flex-col rounded-xl border border-border bg-raised shadow-xl focus:outline-none"
+           class="flex max-h-[85vh] w-full max-w-md flex-col rounded-xl bg-raised shadow-float focus:outline-none"
            data-test="dp-dialog">
-        <header class="flex items-center justify-between border-b border-border px-5 py-3">
+        <header class="flex items-center justify-between px-5 py-3">
           <h2 id="dp-title" class="text-sm font-semibold text-fg">{{ $t("dirPicker.title") }}</h2>
           <button type="button" class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")'
                   @click="emit('close')"><X :size="16" /></button>
@@ -133,14 +133,14 @@ function onListKeydown(e: KeyboardEvent): void {
 
         <div class="flex items-center gap-1.5 px-5 pt-3">
           <input v-model="pathInput" data-test="dp-path" :placeholder='$t("dirPicker.pathPlaceholder")'
-                 class="min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-1.5 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                 class="min-w-0 flex-1 rounded-lg bg-surface-2 px-3 py-1.5 font-mono text-xs text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                  @keydown.enter.prevent="submitPath" />
           <button type="button" data-test="dp-home" :title='$t("dirPicker.home")' :aria-label='$t("dirPicker.home")'
-                  class="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border text-fg-muted hover:bg-fg/5 hover:text-fg"
+                  class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-fg/5 hover:text-fg"
                   @click="home"><Home :size="14" /></button>
           <button type="button" data-test="dp-up" :title='$t("dirPicker.up")' :aria-label='$t("dirPicker.up")'
                   :disabled="!result?.parent"
-                  class="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border text-fg-muted hover:bg-fg/5 hover:text-fg disabled:opacity-40"
+                  class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-fg/5 hover:text-fg disabled:opacity-40"
                   @click="up"><ArrowUp :size="14" /></button>
         </div>
 
@@ -149,7 +149,7 @@ function onListKeydown(e: KeyboardEvent): void {
                   class="rounded px-1 hover:bg-fg/5 hover:text-fg" @click="navigate(c.path)">{{ c.label }}</button>
         </nav>
 
-        <div class="mt-2 min-h-[12rem] flex-1 overflow-y-auto border-y border-border px-2 py-1"
+        <div class="mt-2 min-h-[12rem] flex-1 overflow-y-auto px-2 py-1"
              role="listbox" :aria-label='$t("dirPicker.title")' tabindex="0" @keydown="onListKeydown">
           <div v-if="loading" class="flex items-center justify-center gap-2 py-8 text-sm text-fg-muted">
             <Loader2 :size="16" class="animate-spin" /> {{ $t("session.loadingOptions") }}
@@ -176,7 +176,7 @@ function onListKeydown(e: KeyboardEvent): void {
         </label>
         <p v-if="error" data-test="dp-error" class="mx-5 mt-2 rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger">{{ error }}</p>
 
-        <footer class="flex justify-end gap-2 border-t border-border px-5 py-3">
+        <footer class="flex justify-end gap-2 px-5 py-3">
           <button type="button" class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
           <button type="button" data-test="dp-confirm" :disabled="!result || loading"
                   class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"

@@ -54,19 +54,19 @@ const completionChip = computed<CompletionChip | null>(() => {
 <template>
   <div
     data-test="agent-message-card"
-    class="cv-row my-2 w-full max-w-2xl rounded-xl border transition-all"
+    class="cv-row my-2 w-full max-w-2xl rounded-2xl transition-all"
     :class="[
       isSent
-        ? 'border-accent/25 bg-accent/5'
-        : 'border-border bg-surface shadow-sm',
+        ? 'bg-accent-soft'
+        : 'bg-surface',
       anchored ? 'mr-auto' : 'mx-auto',
     ]"
     :data-direction="message.direction"
   >
     <!-- Header -->
     <div
-      class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b px-3.5 py-2 text-[12px]"
-      :class="isSent ? 'border-accent/15 text-accent' : 'border-border text-fg-muted'"
+      class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3.5 py-2 text-[12px]"
+      :class="isSent ? 'text-accent' : 'text-fg-muted'"
     >
       <div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 font-medium">
         <span v-if="isSent" data-test="direction-sent" class="inline-flex items-center gap-1 font-semibold text-accent">
@@ -89,7 +89,7 @@ const completionChip = computed<CompletionChip | null>(() => {
           <span
             v-if="message.peer.agent"
             data-test="peer-agent"
-            class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-fg-muted"
+            class="inline-flex shrink-0 items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-muted"
           >
             <AgentIcon :driver="message.peer.agent" :size="11" />
             <span>{{ message.peer.agent }}</span>
@@ -98,7 +98,7 @@ const completionChip = computed<CompletionChip | null>(() => {
           <span
             v-if="message.peer.workspace"
             data-test="peer-workspace"
-            class="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] text-fg-muted"
+            class="inline-flex shrink-0 items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-muted"
           >
             <Folder :size="10" class="text-warn" />
             <span>{{ message.peer.workspace }}</span>

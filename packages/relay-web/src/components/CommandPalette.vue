@@ -66,10 +66,10 @@ onMounted(() => void nextTick(() => input.value?.focus()));
 
 <template>
   <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-24" data-test="command-palette" @click.self="emit('close')">
-    <div class="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-xl">
-      <div class="flex items-center gap-2 border-b border-border px-4 py-3">
+    <div class="w-full max-w-lg overflow-hidden rounded-xl bg-raised shadow-float">
+      <div class="flex items-center gap-2 px-4 py-3">
         <Search :size="16" class="shrink-0 text-fg-muted" />
-        <input ref="input" v-model="query" data-test="palette-input"
+        <input ref="input" v-model="query" data-test="palette-input" data-ring="container"
                :placeholder='$t("palette.placeholder")'
                class="w-full bg-transparent text-sm text-fg placeholder:text-fg-muted outline-none"
                @input="active = 0; clampActive()" @keydown="onKeydown" />
@@ -77,7 +77,7 @@ onMounted(() => void nextTick(() => input.value?.focus()));
       <ul class="max-h-80 overflow-y-auto py-1 text-sm">
         <li v-for="(r, i) in rows" :key="`${r.instanceId}:${r.alias}:${i}`">
           <button data-test="palette-row" class="flex w-full items-center gap-2 px-4 py-1.5 text-left"
-                  :class="i === active ? 'bg-accent/10 text-accent' : 'text-fg hover:bg-fg/5'"
+                  :class="i === active ? 'bg-accent-soft text-accent' : 'text-fg hover:bg-fg/5'"
                   @mouseenter="active = i" @click="choose(r)">
             <MessageSquare :size="14" class="shrink-0" />
             <span class="font-medium">{{ r.label }}</span>

@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
     <div v-else data-test="subagent-timeline" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-2">
       <ol v-if="hasTrace" class="relative ml-1 space-y-1.5 before:absolute before:bottom-2 before:left-[7px] before:top-2 before:w-px before:bg-border">
         <li v-for="child in children" :key="child.toolCallId" class="relative flex min-w-0 items-center gap-2 pl-5">
-          <span class="absolute left-0 grid h-3.5 w-3.5 place-items-center rounded-full border border-border bg-surface">
+          <span class="absolute left-0 grid h-3.5 w-3.5 place-items-center rounded-full bg-surface">
             <span class="h-1.5 w-1.5 rounded-full" :class="child.status === 'running' ? 'bg-accent' : child.status === 'error' ? 'bg-danger' : 'bg-run'" />
           </span>
           <component :is="KIND_ICON[child.kind]" :size="12" class="shrink-0 text-fg-muted" />
@@ -187,7 +187,7 @@ onBeforeUnmount(() => {
           <p class="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.report") }}</p>
           <StreamMarkdown v-if="status !== 'running'" :text="outputText" />
           <pre v-else ref="streamEl" data-test="subagent-stream"
-               class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-bg/60 p-2 font-mono text-[10.5px] leading-relaxed text-fg-muted">{{ outputText }}</pre>
+               class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-bg/60 p-2 font-mono text-[10.5px] leading-relaxed text-fg-muted">{{ outputText }}</pre>
         </div>
         <p v-else class="py-1 text-[10.5px] text-fg-muted">
           {{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}

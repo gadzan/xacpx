@@ -722,7 +722,7 @@ function onKeydown(e: KeyboardEvent) {
        iOS home indicator (like native input bars) instead of leaving an extra gap below it. -->
   <!-- No form-level border-t / top padding: ChatPane stacks status/plan against this
        form's top edge, which must be the message card's top border — not a resize-handle
-       gutter above it. Separation comes from the card border + ChatPane stack shadows. -->
+       gutter above it. Separation comes from bg distinction (redesign PR2). -->
   <form
     class="relative px-0"
     @submit.prevent="submit"
@@ -774,7 +774,7 @@ function onKeydown(e: KeyboardEvent) {
           <div
             v-for="p in composer.pending"
             :key="p.id"
-            class="flex items-center gap-1.5 rounded-md border border-border bg-raised px-2 py-1 text-[12px]"
+            class="flex items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 text-[12px]"
           >
             <img
               v-if="p.previewUrl"
@@ -816,7 +816,7 @@ function onKeydown(e: KeyboardEvent) {
           v-if="cmdMenuOpen && cmdMatches.length"
           data-test="cmd-menu"
           role="listbox"
-          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md bg-raised py-1 shadow-float"
         >
           <li
             v-for="(c, i) in cmdMatches"
@@ -825,7 +825,7 @@ function onKeydown(e: KeyboardEvent) {
             role="option"
             :aria-selected="i === cmdActiveIdx"
             class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-[13px]"
-            :class="i === cmdActiveIdx ? 'bg-accent/10' : ''"
+            :class="i === cmdActiveIdx ? 'bg-accent-soft' : ''"
             @mousedown.prevent="pickCommand(c.name)"
             @mouseenter="cmdActiveIdx = i"
           >
@@ -840,7 +840,7 @@ function onKeydown(e: KeyboardEvent) {
           v-if="mentionMenuOpen && mentionMatches.length"
           data-test="mention-menu"
           role="listbox"
-          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md bg-raised py-1 shadow-float"
         >
           <li
             v-for="(agentItem, i) in mentionMatches"
@@ -849,7 +849,7 @@ function onKeydown(e: KeyboardEvent) {
             role="option"
             :aria-selected="i === mentionActiveIdx"
             class="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-[13px]"
-            :class="i === mentionActiveIdx ? 'bg-accent/10' : ''"
+            :class="i === mentionActiveIdx ? 'bg-accent-soft' : ''"
             @mousedown.prevent="pickMention(agentItem)"
             @mouseenter="mentionActiveIdx = i"
           >
@@ -913,7 +913,7 @@ function onKeydown(e: KeyboardEvent) {
           <ul
             v-if="modelMenuOpen && controls.modelAvailable.length"
             data-test="model-menu"
-            class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-40 overflow-y-auto rounded-lg border border-border bg-raised shadow-lg"
+            class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-40 overflow-y-auto rounded-lg bg-raised shadow-float"
           >
             <li v-for="m in controls.modelAvailable" :key="m">
               <button
@@ -922,7 +922,7 @@ function onKeydown(e: KeyboardEvent) {
                 class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
                 :class="
                   m === controls.modelCurrent
-                    ? 'bg-accent/10 text-accent'
+                    ? 'bg-accent-soft text-accent'
                     : 'hover:bg-fg/10 text-fg-muted'
                 "
                 @click="pickModel(m)"
@@ -953,7 +953,7 @@ function onKeydown(e: KeyboardEvent) {
             <ul
               v-if="effortMenuOpen"
               data-test="effort-menu"
-              class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-32 overflow-y-auto rounded-lg border border-border bg-raised shadow-lg"
+              class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-32 overflow-y-auto rounded-lg bg-raised shadow-float"
             >
               <li v-for="effort in controls.effortAvailable" :key="effort">
                 <button
@@ -962,7 +962,7 @@ function onKeydown(e: KeyboardEvent) {
                   class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
                   :class="
                     effort === controls.effortCurrent
-                      ? 'bg-accent/10 text-accent'
+                      ? 'bg-accent-soft text-accent'
                       : 'hover:bg-fg/10 text-fg-muted'
                   "
                   @click="pickEffort(effort)"

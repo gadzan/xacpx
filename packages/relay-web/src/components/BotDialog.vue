@@ -369,10 +369,10 @@ async function submit(): Promise<void> {
          aria-modal="true"
          :aria-labelledby="'bot-dialog-title'"
          tabindex="-1"
-         class="flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-surface text-fg shadow-2xl"
+         class="flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-xl bg-surface text-fg shadow-float"
          :class="activeTab === 'appearance' ? 'max-w-3xl' : 'max-w-lg'">
       <!-- Header -->
-      <div class="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
+      <div class="flex shrink-0 items-center justify-between px-5 py-3.5">
         <h2 id="bot-dialog-title" class="text-base font-semibold">
           {{ isEditing ? $t("bot.dialog.editTitle") : $t("bot.dialog.createTitle") }}
         </h2>
@@ -385,7 +385,7 @@ async function submit(): Promise<void> {
           <X :size="16" />
         </button>
       </div>
-      <div role="tablist" :aria-label="$t('bot.avatar.tabs.label')" class="flex shrink-0 gap-5 border-b border-border px-5">
+      <div role="tablist" :aria-label="$t('bot.avatar.tabs.label')" class="flex shrink-0 gap-5 px-5">
         <button v-for="tab in tabs" :id="`bot-tab-${tab}`" :key="tab" type="button" role="tab"
                 :aria-selected="activeTab === tab" :aria-controls="`bot-panel-${tab}`" :tabindex="activeTab === tab ? 0 : -1"
                 class="border-b-2 py-3 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -398,7 +398,7 @@ async function submit(): Promise<void> {
       <!-- Form Content -->
       <form class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-4 thin-scroll" @submit.prevent="submit">
         <!-- Error Banner -->
-        <div v-if="errorMessage" class="flex items-start gap-2.5 rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs text-danger">
+        <div v-if="errorMessage" class="flex items-start gap-2.5 rounded-lg bg-danger/10 p-3 text-xs text-danger">
           <AlertCircle :size="15" class="mt-0.5 shrink-0" />
           <div class="flex-1 leading-relaxed">{{ errorMessage }}</div>
         </div>
@@ -407,7 +407,7 @@ async function submit(): Promise<void> {
           instructions cannot be wiped) with an explicit Retry. -->
         <div v-if="isEditing && props.bot && !detailHydrated && detailLoadError"
              data-test="bot-detail-retry"
-             class="flex items-center justify-between gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
+             class="flex items-center justify-between gap-2.5 rounded-lg bg-warning/10 p-3 text-xs text-warning">
           <div class="flex-1 leading-relaxed">{{ $t("bot.validation.detailLoadFailed", { msg: detailLoadError }) }}</div>
           <button type="button"
                   data-test="bot-detail-retry-button"
@@ -437,7 +437,7 @@ async function submit(): Promise<void> {
             required
             maxlength="60"
             :placeholder="$t('bot.fields.namePlaceholder')"
-            class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
+            class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
           />
         </div>
 
@@ -453,7 +453,7 @@ async function submit(): Promise<void> {
             type="text"
             maxlength="100"
             :placeholder="$t('bot.fields.rolePlaceholder')"
-            class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
+            class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
           />
         </div>
 
@@ -473,7 +473,7 @@ async function submit(): Promise<void> {
               required
               @change="agentDirty = true"
               :disabled="identityLocked"
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option v-for="a in availableAgents" :key="a.name" :value="a.name">
                 {{ a.name }} {{ a.driver ? `(${a.driver})` : '' }}
@@ -492,7 +492,7 @@ async function submit(): Promise<void> {
               required
               :disabled="identityLocked"
               @change="workspaceDirty = true"
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option v-for="w in availableWorkspaces" :key="w.name" :value="w.name">
                 {{ w.name }}
@@ -512,7 +512,7 @@ async function submit(): Promise<void> {
             rows="4"
             :disabled="!detailHydrated"
             :placeholder="detailHydrated ? $t('bot.fields.instructionsPlaceholder') : $t('bot.fields.instructionsLoading')"
-            class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none transition-colors focus:border-accent resize-y disabled:cursor-wait disabled:opacity-60"
+            class="w-full rounded-lg bg-surface-2 px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
             @input="instructionsDirty = true"
           />
           <p class="mt-1 text-[11px] text-fg-muted">
@@ -545,12 +545,12 @@ async function submit(): Promise<void> {
           </div>
         <p v-if="storedEnabled === true && !enabled"
            data-test="bot-dialog-disable-note"
-           class="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
+           class="rounded-lg bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
           {{ $t("bot.lifecycle.disableNote") }}
         </p>
         <p v-else-if="storedEnabled === false && enabled"
            data-test="bot-dialog-reenable-note"
-           class="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
+           class="rounded-lg bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
           {{ $t("bot.lifecycle.reenableNote") }}
         </p>
         </section>
@@ -560,19 +560,19 @@ async function submit(): Promise<void> {
       </form>
 
       <!-- Footer -->
-      <div class="flex shrink-0 items-center justify-end gap-2.5 border-t border-border px-5 py-3 bg-surface/50">
+      <div class="flex shrink-0 items-center justify-end gap-2.5 px-5 py-3 bg-surface/50">
         <button
           v-if="isEditing && props.bot && props.bot.retired !== true"
           type="button"
           data-test="bot-dialog-remove"
-          class="mr-auto rounded-lg border border-danger/40 px-3 py-1.5 text-xs font-medium text-danger"
+          class="mr-auto rounded-lg px-3 py-1.5 text-xs font-medium text-danger"
           @click="removalOpen = true"
         >
           {{ $t("bot.removal.action") }}
         </button>
         <button
           type="button"
-          class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+          class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
           @click="emit('close')"
         >
           {{ $t("common.cancel") }}

@@ -317,7 +317,7 @@ async function handleLoadOlder(): Promise<void> {
   <div class="relative flex min-h-0 flex-1 flex-col">
   <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && turns.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
-      <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent/10 text-accent">
+      <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent">
         <Users :size="22" />
       </div>
       <h3 class="text-base font-semibold text-fg">{{ group?.title ?? "Group" }}</h3>
@@ -329,7 +329,7 @@ async function handleLoadOlder(): Promise<void> {
         type="button"
         data-test="group-load-older-button"
         :disabled="groupsStore.loadingOlder"
-        class="flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-fg-muted shadow-sm transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
+        class="flex items-center gap-1.5 rounded-full bg-surface px-3 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
         @click="handleLoadOlder"
       >
         <Loader2 v-if="groupsStore.loadingOlder" :size="12" class="animate-spin" />
@@ -366,7 +366,7 @@ async function handleLoadOlder(): Promise<void> {
           @jump="jumpToMessage"
         />
         <template v-else-if="m.role === 'human'">
-          <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2 text-[14px] leading-relaxed text-fg">
+          <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-md bg-accent-soft px-3.5 py-2 text-[14px] leading-relaxed text-fg">
             {{ m.content }}
           </div>
           <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
@@ -402,7 +402,7 @@ async function handleLoadOlder(): Promise<void> {
         v-if="run"
         data-test="group-run-card"
         :data-run-id="run.id"
-        class="rounded-xl border border-border bg-surface/60 p-3 shadow-sm"
+        class="rounded-xl bg-surface/60 p-3"
       >
         <div class="flex items-start justify-between gap-2">
           <div data-test="group-run-header" class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-semibold text-fg">
@@ -425,7 +425,7 @@ async function handleLoadOlder(): Promise<void> {
             v-if="run.state === 'queued' || run.state === 'running' || run.state === 'waiting-human'"
             type="button"
             data-test="group-stop-run-button"
-            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-danger/40 bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger transition-colors hover:bg-danger/20"
+            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger transition-colors hover:bg-danger/20"
             @click="handleCancel"
           >
             <CircleStop :size="11" />
@@ -459,7 +459,7 @@ async function handleLoadOlder(): Promise<void> {
         <div
           v-if="run.state === 'waiting-human'"
           data-test="group-waiting-human"
-          class="mt-2 rounded-lg border border-warning/30 bg-warning/10 px-2.5 py-2 text-[11px] leading-relaxed text-fg"
+          class="mt-2 rounded-lg bg-warning/10 px-2.5 py-2 text-[11px] leading-relaxed text-fg"
         >
           <p v-if="run.waitingQuestion" data-test="group-waiting-question">{{ run.waitingQuestion }}</p>
           <p class="mt-1 text-fg-muted">{{ $t("group.run.waitingManual") }}</p>
@@ -478,7 +478,7 @@ async function handleLoadOlder(): Promise<void> {
             data-test="group-member-row"
             :data-bot-id="turn.botId"
             :data-state="turn.state"
-            class="min-w-0 rounded-lg border border-border/60 bg-bg/60 px-2.5 py-1.5"
+            class="min-w-0 rounded-lg bg-bg/60 px-2.5 py-1.5"
           >
             <button
               type="button"
@@ -520,13 +520,13 @@ async function handleLoadOlder(): Promise<void> {
             </div>
 
             <div v-if="isExpanded(turn.id)" data-test="group-member-activity" class="mt-2">
-              <div v-if="liveForMember(turn.id) && liveForMember(turn.id)!.parts.length > 0" class="rounded-lg border border-border bg-surface/50 p-2.5">
+              <div v-if="liveForMember(turn.id) && liveForMember(turn.id)!.parts.length > 0" class="rounded-lg bg-surface/50 p-2.5">
                 <TurnParts
                   :parts="liveForMember(turn.id)!.parts"
                   :streaming="liveForMember(turn.id)!.status === 'streaming'"
                 />
               </div>
-              <div v-else-if="partsForMember(turn)?.length" class="rounded-lg border border-border bg-surface/40 p-2.5">
+              <div v-else-if="partsForMember(turn)?.length" class="rounded-lg bg-surface/40 p-2.5">
                 <TurnParts
                   :parts="partsForMember(turn)!"
                   :collapse-trace="true"
@@ -547,18 +547,18 @@ async function handleLoadOlder(): Promise<void> {
 
     </div>
 
-    <div v-if="run?.state === 'failed'" class="mt-3 flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-danger">
+    <div v-if="run?.state === 'failed'" class="mt-3 flex items-center gap-2 rounded-xl bg-danger/10 p-3 text-xs text-danger">
       <AlertCircle :size="16" class="shrink-0" />
       <div class="flex-1">
         <span class="font-semibold">{{ $t("bot.run.failed") }}: </span>
         <span>{{ run.completionReason || $t("bot.run.unknownError") }}</span>
       </div>
     </div>
-    <div v-else-if="run?.state === 'cancelled'" class="mt-3 flex items-center gap-2 rounded-xl border border-border bg-surface p-3 text-xs text-fg-muted">
+    <div v-else-if="run?.state === 'cancelled'" class="mt-3 flex items-center gap-2 rounded-xl bg-surface p-3 text-xs text-fg-muted">
       <CircleStop :size="15" class="shrink-0 text-danger" />
       <span>{{ $t("bot.run.cancelled") }}</span>
     </div>
-    <div v-else-if="run?.state === 'indeterminate'" class="mt-3 flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
+    <div v-else-if="run?.state === 'indeterminate'" class="mt-3 flex items-center gap-2 rounded-xl bg-warning/10 p-3 text-xs text-warning">
       <HelpCircle :size="16" class="shrink-0" />
       <div class="flex-1">
         <span class="font-semibold">{{ $t("bot.run.indeterminate") }}: </span>

@@ -110,8 +110,8 @@ it("stacks plan and composer as document-flow layers (plan → input), no status
   expect(plan.classes()).toContain("stack-layer--plan");
   // Plan is now the topmost strip, so it no longer pulls up under a status layer.
   expect(plan.classes()).not.toContain("stack-layer--pull");
-  expect(plan.classes()).toContain("shadow-e1");
-  expect(plan.classes()).not.toContain("shadow-e3");
+  expect(plan.classes()).not.toContain("shadow-e1");
+  expect(plan.classes()).not.toContain("shadow-float");
 
   // DOM order: plan (middle) → composer (top). Composer still pulls under the plan.
   const stackEl = stack.element as HTMLElement;

@@ -41,7 +41,7 @@ async function handleCreateTopic(): Promise<void> {
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
        @click.self="emit('close')">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-xl">
+    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-full max-w-sm rounded-xl bg-surface p-4 shadow-float">
       <h3 id="new-topic-title" class="text-sm font-semibold mb-2">{{ $t("bot.topic.createTitle") }}</h3>
       <p class="text-xs text-fg-muted mb-3">{{ $t("bot.topic.createHint") }}</p>
       <form @submit.prevent="handleCreateTopic">
@@ -51,12 +51,12 @@ async function handleCreateTopic(): Promise<void> {
           required
           maxlength="60"
           :placeholder="$t('bot.topic.titlePlaceholder')"
-          class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent mb-4"
+          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none mb-4"
         />
         <div class="flex items-center justify-end gap-2">
           <button
             type="button"
-            class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
+            class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
             @click="emit('close')"
           >
             {{ $t("common.cancel") }}

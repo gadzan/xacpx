@@ -131,8 +131,8 @@ const worktreeRunId = computed(() => {
 
 <template>
   <div class="flex h-full flex-col bg-bg text-fg">
-    <header class="flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
-      <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
+    <header class="flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+      <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
         <Users :size="15" />
       </div>
       <div class="flex min-w-0 flex-col">
@@ -160,7 +160,7 @@ const worktreeRunId = computed(() => {
       </button>
     </header>
 
-    <div class="flex shrink-0 items-center border-b border-border bg-surface/60 px-3 lg:px-5 py-1 text-xs backdrop-blur-md">
+    <div class="flex shrink-0 items-center bg-surface/60 px-3 lg:px-5 py-1 text-xs backdrop-blur-md">
       <TopicManager
         variant="group"
         :topics="groupsStore.currentTopics"
@@ -176,7 +176,7 @@ const worktreeRunId = computed(() => {
       />
     </div>
 
-    <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between border-b border-danger/20 bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
+    <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>
       <button type="button" @click="groupsStore.generalError = null; groupsStore.generalErrorCode = null">
         <X :size="14" />
@@ -184,7 +184,7 @@ const worktreeRunId = computed(() => {
     </div>
 
     <div v-if="memberStatus" data-test="group-member-status"
-         class="space-y-0.5 border-b border-warn/20 bg-warn/10 px-3 lg:px-5 py-1.5 text-xs text-fg">
+         class="space-y-0.5 bg-warn/10 px-3 lg:px-5 py-1.5 text-xs text-fg">
       <p v-if="memberStatus.kind === 'none-enabled'">{{ $t("group.members.noneEnabled") }}</p>
       <template v-else>
         <p data-test="group-disabled-members">{{ $t("group.members.disabled", { names: memberStatus.names }) }}</p>
@@ -223,7 +223,7 @@ const worktreeRunId = computed(() => {
       @cancel="handleCancel"
     />
     <div v-if="groupsStore.historyError && groupsStore.activeTopicId"
-         class="flex items-center justify-between border-t border-danger/20 bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
+         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.historyErrorDetail ?? groupsStore.historyError }}</span>
       <button type="button"
               class="rounded bg-danger/20 px-2 py-0.5 font-medium transition-colors hover:bg-danger/30"

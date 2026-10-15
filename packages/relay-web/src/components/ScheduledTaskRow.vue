@@ -53,7 +53,7 @@ async function cancel(id: string) {
 </script>
 
 <template>
-  <li data-test="scheduled-item" class="rounded-md border border-border bg-bg text-sm">
+  <li data-test="scheduled-item" class="rounded-md bg-bg text-sm">
     <!-- compact header (click to expand) + actions -->
     <div class="flex items-center gap-1 px-2 py-1.5">
       <button type="button" :data-test="`scheduled-toggle-${task.id}`" class="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer" @click="open = !open">
@@ -74,7 +74,7 @@ async function cancel(id: string) {
       </span>
     </div>
     <!-- expanded details -->
-    <div v-if="open" :data-test="`scheduled-detail-${task.id}`" class="space-y-1 border-t border-border px-2 py-1.5">
+    <div v-if="open" :data-test="`scheduled-detail-${task.id}`" class="space-y-1 px-2 py-1.5">
       <p class="whitespace-pre-wrap break-words text-[12.5px] text-fg">{{ task.message }}</p>
       <p class="font-mono text-[10.5px] tabular-nums text-fg-muted">{{ fmtDateTime(task.executeAt) }}</p>
       <p v-if="task.status === 'failed' && task.lastError" :data-test="`scheduled-error-${task.id}`" class="rounded bg-danger/10 px-2 py-1 text-[11px] text-danger">{{ task.lastError }}</p>

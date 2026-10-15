@@ -77,7 +77,7 @@ onBeforeUnmount(() => {
     <div
       ref="card"
       data-test="usage-popover"
-      class="fixed z-[60] w-60 rounded-lg border border-border bg-raised p-3 text-sm shadow-e2"
+      class="fixed z-[60] w-60 rounded-lg bg-raised p-3 text-sm shadow-float"
       :style="style"
       role="dialog"
     >

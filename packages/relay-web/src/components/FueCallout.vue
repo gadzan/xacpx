@@ -46,7 +46,7 @@ onBeforeUnmount(() => {
     <div
       ref="card"
       data-test="fue-callout"
-      class="fixed z-50 w-64 rounded-lg border border-border bg-raised p-3 text-sm shadow-lg"
+      class="fixed z-50 w-64 rounded-lg bg-raised p-3 text-sm shadow-float"
       :style="style"
       role="dialog"
     >

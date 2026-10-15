@@ -463,7 +463,7 @@ function handleRetry(): void {
 
 <template>
   <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
-    <div v-if="groupsStore.promptError" data-test="group-prompt-error" class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger">
+    <div v-if="groupsStore.promptError" data-test="group-prompt-error" class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-danger/10 px-3 py-1.5 text-xs text-danger">
       <span class="truncate">{{ groupsStore.promptErrorDetail ?? $t(`bot.errors.${groupsStore.promptError}`) }}</span>
       <button
         v-if="groupsStore.uncertainPromptText"
@@ -482,7 +482,7 @@ function handleRetry(): void {
           type="button"
           data-test="group-target-button"
           :disabled="disabled || groupsStore.hasUncertainPrompt"
-          class="flex items-center gap-1.5 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs font-medium text-fg transition-colors hover:border-accent/40 disabled:opacity-50"
+          class="flex items-center gap-1.5 rounded-lg bg-bg px-2.5 py-1.5 text-xs font-medium text-fg transition-colors hover: disabled:opacity-50"
           @click="toggleMenu"
         >
           <Users :size="13" class="text-accent" />
@@ -492,7 +492,7 @@ function handleRetry(): void {
         <div
           v-if="menuOpen"
           data-test="group-target-menu"
-          class="absolute bottom-full left-0 z-20 mb-1.5 w-64 overflow-hidden rounded-xl border border-border bg-raised shadow-e2"
+          class="absolute bottom-full left-0 z-20 mb-1.5 w-64 overflow-hidden rounded-xl bg-raised shadow-float"
         >
           <div class="max-h-64 overflow-y-auto p-1.5">
             <button
@@ -527,7 +527,7 @@ function handleRetry(): void {
               <span class="flex-1 truncate font-medium">{{ $t("group.target.everyone") }}</span>
               <Check v-if="isEveryone" :size="13" class="shrink-0 text-accent" />
             </button>
-            <div class="my-1 border-t border-border/60" />
+            <div class="my-1" />
             <div class="px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">
               {{ $t("group.target.selectMembers") }}
             </div>
@@ -578,14 +578,14 @@ function handleRetry(): void {
         <div
           v-if="slashHint"
           data-test="group-slash-hint"
-          class="absolute bottom-full left-0 z-20 mb-2 w-full rounded-xl border border-border bg-raised px-3 py-2 text-xs text-fg-muted shadow-e2"
+          class="absolute bottom-full left-0 z-20 mb-2 w-full rounded-xl bg-raised px-3 py-2 text-xs text-fg-muted shadow-float"
         >
           {{ $t("bot.errors.slashSelectMember") }}
         </div>
         <div
           v-else-if="slashMatches.length > 0"
           data-test="group-cmd-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-xl border border-border bg-raised py-1 shadow-e2"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-xl bg-raised py-1 shadow-float"
         >
           <button
             v-for="(command, index) in slashMatches"
@@ -593,7 +593,7 @@ function handleRetry(): void {
             type="button"
             data-test="group-cmd-item"
             class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
-            :class="index === cmdActiveIdx ? 'bg-accent/10' : ''"
+            :class="index === cmdActiveIdx ? 'bg-accent-soft' : ''"
             @mousedown.prevent="pickSlash(command.name)"
           >
             <span class="font-medium text-fg">/{{ command.name }}</span>
@@ -603,7 +603,7 @@ function handleRetry(): void {
         <div
           v-if="mentionMatches.length > 0"
           data-test="group-mention-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-xl border border-border bg-raised py-1 shadow-e2"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-xl bg-raised py-1 shadow-float"
         >
           <button
             v-for="(member, index) in mentionMatches"
@@ -612,7 +612,7 @@ function handleRetry(): void {
             data-test="group-mention-item"
             :data-bot-id="member.botId"
             class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
-            :class="index === mentionActiveIdx ? 'bg-accent/10' : ''"
+            :class="index === mentionActiveIdx ? 'bg-accent-soft' : ''"
             @mousedown.prevent="pickMention(member)"
           >
             <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>

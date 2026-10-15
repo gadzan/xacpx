@@ -94,7 +94,7 @@ describe("FilesPanel navigation rail", () => {
     files.diff = { workspace: "ws", files: [{ path: "src/a.ts", status: " M" }], diff: "+x\n-y\n", truncated: false } as never;
     await w.vm.$nextTick();
     await w.find('[data-test="diff-file"]').trigger("click");
-    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent-soft");
     // `files.diffPath` (the loaded-diff scope) is untouched by row selection — it's still
     // whatever loadDiff() set it to (null here, since loadDiff was never actually called).
     const diffPathBefore = files.diffPath;
@@ -109,7 +109,7 @@ describe("FilesPanel navigation rail", () => {
     // The local row highlight is cleared — back on the Changes tab, the row is no longer highlighted.
     files.tab = "changes";
     await w.vm.$nextTick();
-    expect(w.find('[data-test="diff-file"]').classes().join(" ")).not.toContain("bg-accent/10");
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).not.toContain("bg-accent-soft");
   });
 
   it("renders the tree root (no breadcrumb / up button)", async () => {
@@ -652,7 +652,7 @@ describe("FilesPanel center-tab routing", () => {
     expect(loadDiff).not.toHaveBeenCalled();
     // The changed-files list is still there (panel data untouched).
     expect(w.findAll('[data-test="diff-file"]').length).toBe(1);
-    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent-soft");
   });
 
   it("refreshing the Changes tab after selecting a changed-file row reloads the whole-tree diff, not the selected file", async () => {
@@ -692,7 +692,7 @@ describe("FilesPanel center-tab routing", () => {
     // touch files.diffPath (the loaded-diff scope) or trigger a reload by itself.
     await w.find('[data-test="diff-file"]').trigger("click");
     expect(files.diffPath).toBeNull();
-    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent-soft");
 
     // Refresh: the reviewer's bug scenario — must reload the WHOLE tree, not rescope to
     // whichever changed-file row was last clicked.
@@ -708,7 +708,7 @@ describe("FilesPanel center-tab routing", () => {
 
     // The row highlight still reflects the previously clicked file (local view state
     // survives the refresh, since it's independent of the reloaded files.diff).
-    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent/10");
+    expect(w.find('[data-test="diff-file"]').classes().join(" ")).toContain("bg-accent-soft");
   });
 
   it("clicking a changed file with no selected session is a no-op for the center-tabs store", async () => {

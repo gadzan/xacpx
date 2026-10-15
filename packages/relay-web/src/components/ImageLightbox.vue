@@ -119,7 +119,7 @@ function onPointerCancel(): void {
         :src="current.src"
         :alt="current.alt ?? ''"
         draggable="false"
-        class="absolute inset-0 m-auto max-h-full max-w-full object-contain shadow-2xl"
+        class="absolute inset-0 m-auto max-h-full max-w-full object-contain"
         :style="{ transform: `translateX(${dragDx}px)`, transition: dragging ? 'none' : 'transform 150ms ease-out' }"
       />
 

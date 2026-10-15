@@ -500,7 +500,7 @@ onUnmounted(() => {
          the content runs under the notch / status bar; extend the bar's surface up
          so its controls sit below the inset instead of behind the notch. env() is 0
          on desktop, so this is a no-op there. -->
-    <header class="sticky top-0 z-30 flex h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between border-b border-border bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
+    <header class="sticky top-0 z-30 flex h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl">
       <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. The
            sidebar collapse control lives in the sidebar's own header (and a slim edge
            handle below), not up here. -->
@@ -513,20 +513,20 @@ onUnmounted(() => {
         <button
           data-test="global-search"
           :aria-label='$t("nav.search")'
-          class="group flex h-7 items-center gap-2 rounded-lg border border-border bg-bg px-2.5 text-left transition-colors hover:border-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
+          class="group flex h-7 items-center gap-2 rounded-lg bg-bg px-2.5 text-left transition-colors hover: focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
           <span class="hidden flex-1 text-[12.5px] text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
-          <kbd class="hidden rounded border border-border bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
+          <kbd class="hidden rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <button
           data-test="toggle-terminal"
           :aria-label='$t("terminal.title")'
           :title='terminalCapable ? $t("terminal.title") : $t("terminal.unavailable")'
           :disabled="!chat.sessionAlias || !terminalCapable"
-          class="grid h-7 w-7 place-items-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
-          :class="currentKey && centerTabs.activeFor(currentKey) === 'terminal' ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-fg-muted hover:bg-raised'"
+          class="grid h-7 w-7 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+          :class="currentKey && centerTabs.activeFor(currentKey) === 'terminal' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised'"
           @click="currentKey && terminalCapable && centerTabs.openTerminal(currentKey)"
         >
           <SquareTerminal :size="15" />
@@ -537,8 +537,8 @@ onUnmounted(() => {
           :aria-label='$t("desktop.title")'
           :title='$t("desktop.title")'
           :disabled="!desktopToolbarTarget"
-          class="grid h-7 w-7 place-items-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
-          :class="desktopTabOpen ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-fg-muted hover:bg-raised'"
+          class="grid h-7 w-7 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+          :class="desktopTabOpen ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised'"
           @click="desktopTabOpen ? closeDesktop() : openDesktop()"
         >
           <Monitor :size="15" />
@@ -546,7 +546,7 @@ onUnmounted(() => {
         <button
           data-test="theme-toggle"
           :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
-          class="grid h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-7 w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           @click="theme.toggle()"
         >
           <Moon v-if="theme.mode === 'dark'" :size="15" />
@@ -556,7 +556,7 @@ onUnmounted(() => {
           to="/settings"
           data-test="settings-link"
           :aria-label='$t("nav.settings")'
-          class="grid h-7 w-7 place-items-center rounded-lg border border-border text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-7 w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           <Settings :size="15" />
         </router-link>
@@ -568,7 +568,7 @@ onUnmounted(() => {
          bar's border/background) in place of the session-name text — folding tabs into the
          one bar mobile already spends, instead of a second full-width row. The standalone
          strip below is desktop-only. Falls back to the app title when no session is open. -->
-    <div class="flex items-center gap-2 border-b border-border bg-surface px-2 py-1.5 lg:hidden">
+    <div class="flex items-center gap-2 bg-surface px-2 py-1.5 lg:hidden">
       <button data-test="open-instances" :aria-label='$t("nav.openInstances")'
               class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
       <CenterTabStrip v-if="currentKey" bare :session-key="currentKey" class="min-w-0 flex-1"
@@ -599,8 +599,8 @@ onUnmounted(() => {
 
       <!-- Left: instances. Off-canvas drawer < lg, static column ≥ lg. -->
       <div data-test="column" data-drawer="left"
-           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col border-r border-border bg-surface shadow-lg transition-[transform,width] pt-[env(safe-area-inset-top)] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
-           :class="[leftOpen ? 'translate-x-0' : '-translate-x-full', leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden lg:border-r-0' : 'lg:w-[248px]']">
+           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col bg-surface shadow-float transition-[transform,width] pt-[env(safe-area-inset-top)] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
+           :class="[leftOpen ? 'translate-x-0' : '-translate-x-full', leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[248px]']">
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
           <div class="flex items-center gap-2">
@@ -616,7 +616,7 @@ onUnmounted(() => {
 
       <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
       <button v-if="leftCollapsed" data-test="expand-left" :aria-label='$t("nav.showSidebar")' :title='$t("nav.showSidebar")'
-              class="hidden w-5 shrink-0 items-center justify-center border-r border-border bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
+              class="hidden w-5 shrink-0 items-center justify-center bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
               @click="leftCollapsed = false"><PanelLeftOpen :size="15" /></button>
 
       <!-- Center: per-session tab strip (pinned Chat + closable file/diff/terminal tabs),
@@ -683,7 +683,7 @@ onUnmounted(() => {
            fixed `w-72` drawer width applies. -->
       <div v-if="!directBotsStore.isBotSelected && !groupsStore.isGroupSelected"
            data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
+           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden bg-surface shadow-float transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'"
            :style="isDesktop ? { width: rightWidth + 'px' } : undefined">
         <!-- Resize handle: a thin grab strip on the panel's left edge (desktop only).
@@ -695,16 +695,16 @@ onUnmounted(() => {
              class="absolute inset-y-0 left-0 z-20 hidden w-1.5 cursor-col-resize touch-none select-none transition-colors lg:block"
              :class="rightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
              @pointerdown.prevent="rightResize.onPointerDown" />
-        <div class="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2.5">
+        <div class="flex h-9 shrink-0 items-center gap-1 px-2.5">
           <button data-test="right-tab-files"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
-                  :class="rightTab === 'files' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  :class="rightTab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'files'">
             <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
-                  :class="rightTab === 'tasks' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}
           </button>

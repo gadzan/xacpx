@@ -99,14 +99,14 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
     ref="scroller"
     :style="maskStyle"
     class="no-scrollbar flex select-none items-center gap-0.5 overflow-x-auto px-1 py-1 [-webkit-touch-callout:none]"
-    :class="props.bare ? '' : 'shrink-0 border-b border-border bg-surface'"
+    :class="props.bare ? '' : 'shrink-0 bg-surface'"
   >
     <!-- Pinned chat tab: never closable, never draggable, always first. -->
     <button
       type="button"
       data-test="tab-chat"
       class="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11.5px] transition-colors cursor-pointer"
-      :class="store.activeFor(props.sessionKey) === 'chat' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+      :class="store.activeFor(props.sessionKey) === 'chat' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
       @click="store.setActive(props.sessionKey, 'chat')"
     >
       <MessageSquare :size="13" />{{ $t("center.chat") }}
@@ -126,7 +126,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
       style="touch-action: pan-x"
       class="flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[11.5px] transition cursor-pointer"
       :class="[
-        tab.id === store.activeFor(props.sessionKey) ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
+        tab.id === store.activeFor(props.sessionKey) ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
         overId === tab.id ? 'ring-1 ring-inset ring-accent' : '',
         tab.id === draggingId ? 'scale-95 opacity-50' : '',
       ]"
