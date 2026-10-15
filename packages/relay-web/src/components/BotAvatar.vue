@@ -1,3 +1,7 @@
+<script lang="ts">
+const textSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+</script>
+
 <script setup lang="ts">
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, useId, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -21,8 +25,8 @@ const label = computed(() => [props.name, t(`bot.avatar.states.${state.value}`)]
 const text = computed(() => {
   if (props.avatar?.kind !== "text") return "";
   let value = "", count = 0;
-  for (const point of props.avatar.value) {
-    value += point;
+  for (const { segment } of textSegmenter.segment(props.avatar.value)) {
+    value += segment;
     if (++count === 2) break;
   }
   return value;
