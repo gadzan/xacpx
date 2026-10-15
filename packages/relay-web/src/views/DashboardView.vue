@@ -746,7 +746,7 @@ onUnmounted(() => {
         <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
       </span>
       <div class="flex min-w-0 flex-1 flex-col">
-        <span class="truncate text-base font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
+        <span class="truncate text-sm font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
         <span data-test="mobile-session-subtitle" class="truncate text-xs text-fg-muted">{{ sessionSubtitle }}</span>
       </div>
       <button type="button" data-test="mobile-more" :aria-label='$t("common.more")'

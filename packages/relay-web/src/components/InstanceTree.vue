@@ -911,7 +911,7 @@ const rowSwipes = computed(() => {
                   <!-- Two-line row. Only a cold session carries a secondary line today —
                        SessionDto has no activity timestamp, so no invented relative times. -->
                   <div v-else class="flex min-w-0 flex-1 flex-col">
-                    <span data-test="session-name" class="min-w-0 truncate max-lg:text-base text-sm font-medium"
+                    <span data-test="session-name" class="min-w-0 truncate text-sm font-medium"
                           :title="s.displayName || s.alias"
                           :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
                     <!-- Cold: awake session whose warm process has exited (TTL or otherwise);
