@@ -63,6 +63,20 @@ function stripBackgroundTile(svg: string): string {
   return stripped;
 }
 
+// Fill swaps applied after the tile strip, for marks whose ink was drawn in a colour that
+// only read against the stripped tile. Kiro's ghost body is white on its purple tile; with
+// the tile gone it would vanish on light themes, so it takes the tile's purple (eyes stay
+// #000). To keep Kiro's tile instead, delete this entry and add `kiro` to KEEP_TILE.
+const GLYPH_RECOLOR: Readonly<Record<string, readonly (readonly [string, string])[]>> = {
+  kiro: [['fill="#fff"', 'fill="#9046FF"']],
+};
+// Drivers whose background tile is kept (empty: every tile under a mark is stripped).
+const KEEP_TILE: ReadonlySet<string> = new Set<string>([]);
+
+function recolor(svg: string, swaps: readonly (readonly [string, string])[]): string {
+  return swaps.reduce((out, [from, to]) => out.split(from).join(to), svg);
+}
+
 /**
  * Scale about the ink centroid and place that centroid on the viewBox centre.
  * `cx`/`cy` are absolute viewBox coordinates of the ink centroid *before* the transform;
@@ -78,10 +92,11 @@ function fitGlyph(svg: string, scale: number, cx: number, cy: number): string {
 }
 
 // Optical fit after background-tile strip (PR #423 round 3). Acceptance at 32px:
-// ink-centroid |dx|,|dy| ≤ 0.5px; longest ink-bbox side 55–65% (unless the shorter side
-// is already in band — Claude — in which case size is left alone). Values measured from
-// the strip-only Playwright raster: scale + absolute ink centroid in viewBox units.
+// ink-centroid |dx|,|dy| ≤ 0.5px; longest ink-bbox side ≈60% (55–65%). Values measured
+// from the strip-only Playwright raster on @lobehub/icons-static-svg 1.91.0 (pinned; the
+// raw-SVG hash test fails on upgrade): scale + absolute ink centroid in viewBox units.
 const GLYPH_FIT: Readonly<Record<string, { readonly scale: number; readonly cx: number; readonly cy: number }>> = {
+  claude: { scale: 0.6, cx: 11.9995, cy: 11.745 },
   codex: { scale: 0.8, cx: 12.0659, cy: 11.9324 },
   gemini: { scale: 0.653617, cx: 11.9917, cy: 12.0002 },
   copilot: { scale: 0.6, cx: 12.0223, cy: 11.9595 },
@@ -92,6 +107,7 @@ const GLYPH_FIT: Readonly<Record<string, { readonly scale: number; readonly cx: 
   opencode: { scale: 0.717757, cx: 11.9999, cy: 12.0 },
   openclaw: { scale: 0.6, cx: 11.9955, cy: 12.3299 },
   kilocode: { scale: 0.6, cx: 11.9015, cy: 12.0546 },
+  kiro: { scale: 0.906344, cx: 12.352, cy: 12.1757 },
   qoder: { scale: 0.6, cx: 12.0418, cy: 12.3113 },
   trae: { scale: 0.6, cx: 12.5858, cy: 11.639 },
   omp: { scale: 0.872727, cx: 31.6111, cy: 28.9444 },
@@ -115,7 +131,9 @@ const ICONS: Record<string, string> = {
   omp,
 };
 for (const driver of Object.keys(ICONS)) {
-  let svg = stripBackgroundTile(ICONS[driver]!);
+  let svg = KEEP_TILE.has(driver) ? ICONS[driver]! : stripBackgroundTile(ICONS[driver]!);
+  const swaps = GLYPH_RECOLOR[driver];
+  if (swaps) svg = recolor(svg, swaps);
   const fit = GLYPH_FIT[driver];
   if (fit) svg = fitGlyph(svg, fit.scale, fit.cx, fit.cy);
   ICONS[driver] = svg;
@@ -127,6 +145,3 @@ export function agentIconSvg(driver: string | null | undefined): string | null {
   if (!driver) return null;
   return ICONS[driver.trim().toLowerCase()] ?? null;
 }
-
-/** Test helpers — not used by the UI. */
-export const __test__ = { stripBackgroundTile, fitGlyph, viewBoxOf, GLYPH_FIT };
