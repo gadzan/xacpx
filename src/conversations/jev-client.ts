@@ -595,38 +595,70 @@ function replaceAll(text: string, needle: string, replacement: string): string {
 }
 
 /**
+ * URL userinfo: everything after `scheme://` up to the LAST `@` before the
+ * host, so an unencoded `@` in a password (`http://bob:p@ss@proxy`) is removed
+ * whole. The class excludes whitespace, quotes, angle brackets and `/?#`, so a
+ * match cannot run across into a second URL in the same message (the next
+ * URL's `://` stops it).
+ */
+const URL_USERINFO = /([a-z][a-z0-9+.-]*:\/\/)[^\s/?#"'<>`]*@/gi;
+
+/** `Authorization` / `Proxy-Authorization` header values (`Basic <b64>`,
+ *  `Bearer <token>`, ...), e.g. a proxy echoing request headers in an error. */
+const AUTH_HEADER = /\b((?:proxy-)?authorization)(\s*[:=]\s*)(basic|bearer|token|negotiate|ntlm)[ \t]+[^\s,;"'<>]+/gi;
+
+/** Add `user`/`pass` and the `Basic` credential base64(user:pass) built from them. */
+function addCredentialNeedles(needles: Set<string>, user: string, pass: string): void {
+  if (user) needles.add(user);
+  if (pass) needles.add(pass);
+  if (user || pass) needles.add(Buffer.from(`${user}:${pass}`).toString("base64"));
+}
+
+function safeDecode(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    // A malformed escape still leaves the raw form redacted.
+    return part;
+  }
+}
+
+/**
  * Scrub credentials from text that is about to leave this module (an error
  * message, a log line, an RPC result, an upstream response excerpt):
- * - any `scheme://user[:pass]@` userinfo becomes `scheme://***@`;
- * - the given proxy URLs' username and password (raw and percent-decoded) and
+ * - any `scheme://user[:pass]@` userinfo (up to the last `@` before the host)
+ *   becomes `scheme://***@`;
+ * - any `Authorization:` / `Proxy-Authorization:` header value becomes
+ *   `<scheme> ***`;
+ * - the given proxy URLs' username, password and `Basic` credential
+ *   base64(user:pass) (each from the raw and the percent-decoded userinfo) and
  *   the API key, wherever they appear verbatim, become `***`.
  */
 export function redactJevSecrets(
   text: string,
   secrets: { proxyUrls?: ReadonlyArray<string | undefined>; apiKey?: string } = {},
 ): string {
-  let out = text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]*@/gi, "$1***@");
+  let out = text.replace(URL_USERINFO, "$1***@").replace(AUTH_HEADER, "$1$2$3 ***");
   const needles = new Set<string>();
   for (const proxyUrl of secrets.proxyUrls ?? []) {
     if (!proxyUrl) continue;
     try {
       const url = new URL(proxyUrl);
-      for (const part of [url.username, url.password]) {
-        if (!part) continue;
-        needles.add(part);
-        try {
-          needles.add(decodeURIComponent(part));
-        } catch {
-          // A malformed escape still leaves the raw form redacted.
-        }
-      }
+      // WHATWG URL splits userinfo at the last `@` and percent-encodes a raw
+      // `@` in the password, so the decoded form restores the original.
+      addCredentialNeedles(needles, url.username, url.password);
+      addCredentialNeedles(needles, safeDecode(url.username), safeDecode(url.password));
     } catch {
       // Unparseable: the userinfo regex above already covered `x://u:p@`.
       const at = proxyUrl.lastIndexOf("@");
       if (at > 0) {
         const scheme = proxyUrl.indexOf("://");
         const userinfo = proxyUrl.slice(scheme === -1 ? 0 : scheme + 3, at);
-        for (const part of userinfo.split(":")) if (part) needles.add(part);
+        const colon = userinfo.indexOf(":");
+        const user = colon === -1 ? userinfo : userinfo.slice(0, colon);
+        const pass = colon === -1 ? "" : userinfo.slice(colon + 1);
+        addCredentialNeedles(needles, user, pass);
+        addCredentialNeedles(needles, safeDecode(user), safeDecode(pass));
       }
     }
   }

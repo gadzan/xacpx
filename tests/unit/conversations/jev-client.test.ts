@@ -486,3 +486,84 @@ test("a proxy that echoes its credentials in the CONNECT refusal is redacted", a
     proxy.close();
   }
 });
+
+test("an unencoded @ in a proxy password is redacted whole, not left as a fragment", () => {
+  const raw = "http://bob:p@ssword123@proxy.test:8080";
+  // The userinfo regex alone (no configured proxy) runs to the last `@`.
+  expect(redactJevSecrets(`connect ${raw} failed`)).toBe("connect http://***@proxy.test:8080 failed");
+  // With the configured proxy the verbatim password (raw `@`) goes too.
+  const out = redactJevSecrets(`connect ${raw} failed; pass p@ssword123; enc p%40ssword123`, { proxyUrls: [raw] });
+  expect(out).toContain("http://***@proxy.test:8080");
+  expect(out).not.toContain("ssword123");
+});
+
+test("two credentialed URLs in one message are redacted separately, never merged", () => {
+  const spaced = redactJevSecrets("a http://u1:p@w1@h1.test:1/x then https://u2:p@w2@h2.test:2 end");
+  expect(spaced).toBe("a http://***@h1.test:1/x then https://***@h2.test:2 end");
+  const adjacent = redactJevSecrets("http://u1:p@w1@h1.test,http://u2:pw2@h2.test");
+  expect(adjacent).toBe("http://***@h1.test,http://***@h2.test");
+  const quoted = redactJevSecrets(`"http://u1:pw1@h1.test" and "mail@example.test"`);
+  expect(quoted).toBe(`"http://***@h1.test" and "mail@example.test"`);
+});
+
+test("the Basic proxy credential and Authorization header values are redacted", () => {
+  const proxyUrl = "http://proxyuser:p%40ss%3Aw0rd@127.0.0.1:7890";
+  const b64Decoded = Buffer.from("proxyuser:p@ss:w0rd").toString("base64");
+  const b64Raw = Buffer.from("proxyuser:p%40ss%3Aw0rd").toString("base64");
+  const body = [
+    "407 echoed request headers:",
+    `Proxy-Authorization: Basic ${b64Decoded}`,
+    "Authorization: Bearer some-other-bearer-token",
+    `x-seen-auth ${b64Decoded} / ${b64Raw}`,
+  ].join("\n");
+  const out = redactJevSecrets(body, { proxyUrls: [proxyUrl] });
+  expect(out).not.toContain(b64Decoded);
+  expect(out).not.toContain(b64Raw);
+  expect(out).not.toContain("some-other-bearer-token");
+  expect(out).toContain("Proxy-Authorization: Basic ***");
+  expect(out).toContain("Authorization: Bearer ***");
+  // A Basic header for credentials we were never told about is still scrubbed.
+  const foreign = Buffer.from("someone:else").toString("base64");
+  expect(redactJevSecrets(`proxy-authorization: basic ${foreign}`)).toBe("proxy-authorization: basic ***");
+  // Prose mentioning authorization is left alone.
+  expect(redactJevSecrets("authorization: required by proxy")).toBe("authorization: required by proxy");
+});
+
+test("an http-error body echoing the HTTPS_PROXY Basic credential is redacted", async () => {
+  const b64 = Buffer.from(`proxyuser:${PROXY_SECRET}`).toString("base64");
+  const { fetchImpl } = recordingFetch(() => new Response(
+    `bad gateway; saw credential ${b64}\nProxy-Authorization: Basic ${b64}`,
+    { status: 502 },
+  ));
+  const result = await askJevChoice(input({ fetchImpl, env: { HTTPS_PROXY: PROXY_WITH_CREDS } }));
+  expect(result).toMatchObject({ ok: false, code: "http-error" });
+  if (result.ok) return;
+  expect(result.message).not.toContain(b64);
+  expect(result.message).not.toContain(b64.slice(0, 12));
+});
+
+test("a proxy reflecting the raw Proxy-Authorization of a password with @ is redacted", async () => {
+  const proxy = createServer();
+  proxy.on("connect", (req, socket) => {
+    const auth = String(req.headers["proxy-authorization"] ?? "");
+    socket.write(`HTTP/1.1 407 denied ${auth.replace(/^Basic /, "")}\r\n\r\n`);
+    socket.end();
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const proxyPort = (proxy.address() as { port: number }).port;
+  try {
+    const result = await askJevChoice(input({
+      endpoint: "http://127.0.0.1:9/v1/systemone",
+      proxyUrl: `http://proxyuser:s3cret@pass@127.0.0.1:${proxyPort}`,
+      env: {},
+      timeoutMs: 5_000,
+    }));
+    expect(result).toMatchObject({ ok: false, code: "network" });
+    if (result.ok) return;
+    expect(result.message).toContain("407");
+    expect(result.message).not.toContain(Buffer.from("proxyuser:s3cret@pass").toString("base64"));
+    expect(result.message).not.toContain("s3cret");
+  } finally {
+    proxy.close();
+  }
+});
