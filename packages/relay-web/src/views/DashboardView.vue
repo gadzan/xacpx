@@ -22,6 +22,7 @@ import AgentIcon from "../components/AgentIcon.vue";
 import MobileSheet from "../components/MobileSheet.vue";
 import MobileConnStrip from "../components/MobileConnStrip.vue";
 import ChatPane from "../components/ChatPane.vue";
+import EmptySessionState, { type RecentSessionItem } from "../components/EmptySessionState.vue";
 import DirectBotPane from "../components/DirectBotPane.vue";
 import GroupPane from "../components/GroupPane.vue";
 import FileViewer from "../components/FileViewer.vue";
@@ -40,7 +41,7 @@ import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
 import { setNotificationClickHandler, initTabFocusTracker } from "../lib/local-notification";
-import { Search, Moon, Sun, Settings, X, ArrowLeft, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, ArrowLeft, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, PanelRightOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList } from "lucide-vue-next";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
@@ -78,6 +79,14 @@ function openRight(tab: "tasks" | "files") {
   rightTab.value = tab;
   rightOpen.value = true;
 }
+function closeRightColumn(): void {
+  if (isDesktop.value) rightCollapsed.value = true;
+  else rightOpen.value = false;
+}
+function onShowFiles(): void {
+  rightTab.value = "files";
+  rightCollapsed.value = false;
+}
 
 // Mobile edge-swipe for the right drawer: from the right edge swipe left to open
 // tasks/files; a swipe back toward the edge closes it. Inert on lg+ (static columns).
@@ -96,6 +105,9 @@ const swipe = createEdgeSwipe({
 // choice survives reloads. (Mobile has no instances column outside the home list.)
 const leftCollapsed = ref(localStorage.getItem("xacpx.leftCollapsed") === "1");
 watch(leftCollapsed, (v) => localStorage.setItem("xacpx.leftCollapsed", v ? "1" : "0"));
+// Desktop-only: collapse the right files/tasks column, persisted like leftCollapsed.
+const rightCollapsed = ref(localStorage.getItem("xacpx.rightCollapsed") === "1");
+watch(rightCollapsed, (v) => localStorage.setItem("xacpx.rightCollapsed", v ? "1" : "0"));
 
 // Desktop-only: drag the right panel's left edge to resize it. Mobile keeps the
 // fixed-width off-canvas drawer, so `isDesktop` gates both the handle and the
@@ -331,10 +343,34 @@ const instanceTree = ref<InstanceType<typeof InstanceTree> | null>(null);
 
 const isBotSelected = computed(() => directBotsStore.isBotSelected);
 const isGroupSelected = computed(() => groupsStore.isGroupSelected);
-/** Nothing selected: on <lg the instance tree becomes the main content (with the FAB).
- *  An instance desktop opened from the tree (no session needed) takes the screen too. */
-const mobileHome = computed(() => !currentKey.value && !isBotSelected.value && !isGroupSelected.value
+/** Nothing selected: no session, bot, group, or instance desktop viewer. On <lg the
+ *  instance tree becomes the main content (with the FAB); on lg the center column shows
+ *  the empty state instead. */
+const nothingSelected = computed(() => !currentKey.value && !isBotSelected.value && !isGroupSelected.value
   && !(desktopTabOpen.value && desktopInstanceId.value));
+// The right column is an off-canvas drawer on mobile (`rightOpen`) and a static column on
+// desktop; desktop hides it with no session selected and while the user collapsed it.
+const showRightColumn = computed(() => !isBotSelected.value && !isGroupSelected.value
+  && (!isDesktop.value || (!rightCollapsed.value && !!currentKey.value)));
+// Desktop empty state: recent sessions across online instances. SessionDto carries no
+// activity timestamp, so the order is the store's list order with the persisted
+// last-opened session bumped to the front.
+const RECENT_SESSION_LIMIT = 5;
+const recentSessions = computed<RecentSessionItem[]>(() => {
+  const last = loadPersistedSelection();
+  const rows: RecentSessionItem[] = [];
+  for (const inst of instances.instances) {
+    if (!inst.online) continue;
+    for (const s of inst.sessions) {
+      rows.push({ instanceId: inst.id, instanceName: inst.name, alias: s.alias, displayName: s.displayName, agent: s.agent, driver: s.driver });
+    }
+  }
+  if (last) {
+    const idx = rows.findIndex((r) => r.instanceId === last.instanceId && r.alias === last.alias);
+    if (idx > 0) rows.unshift(...rows.splice(idx, 1));
+  }
+  return rows.slice(0, RECENT_SESSION_LIMIT);
+});
 
 /** Mobile ←: back to the home list. Clears the chat, bot AND group selections — which
  *  also drops their persisted copies, so a refresh lands on home. `xacpx.lastInstance`
@@ -440,7 +476,7 @@ function onFabClick(): void {
   if (online.length === 1) instanceTree.value?.openNewSession(online[0].id);
   else if (online.length > 1) openSheet("fabInstance");
 }
-function onFabInstancePick(instanceId: string): void {
+function createSessionIn(instanceId: string): void {
   closeSheet();
   instanceTree.value?.openNewSession(instanceId);
 }
@@ -745,7 +781,7 @@ onUnmounted(() => {
            class="flex shrink-0 flex-col bg-surface transition-[width] max-lg:relative max-lg:w-full lg:static"
            :class="[
              leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[248px]',
-             mobileHome ? '' : 'max-lg:hidden',
+             nothingSelected ? '' : 'max-lg:hidden',
            ]">
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
@@ -778,7 +814,7 @@ onUnmounted(() => {
            scroll stay warm); `v-show` reveals only the current session's active tab. A
            pane only ever unmounts when its tab is closed (closeTab) or its session is
            cleared (clearSession). -->
-      <div data-test="column" class="relative flex min-w-0 flex-1 flex-col" :class="mobileHome ? 'max-lg:hidden' : ''">
+      <div data-test="column" class="relative flex min-w-0 flex-1 flex-col" :class="nothingSelected ? 'max-lg:hidden' : ''">
         <!-- Desktop-only standalone strip (the open tabs live in the mobile ⋯ sheet). The
              wrapper — not a class on the strip — owns the responsive show/hide so the
              strip's own `display:flex` never fights a `hidden`/`lg:flex` on the same node. -->
@@ -794,10 +830,13 @@ onUnmounted(() => {
             @back="goHome"
           />
           <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" />
+          <EmptySessionState v-else-if="nothingSelected" class="absolute inset-0"
+                             :sessions="recentSessions" :instances="fabInstances"
+                             @select="onSelect" @create="createSessionIn" />
           <ChatPane class="absolute inset-0"
                     :inert="directBotsStore.isBotSelected || groupsStore.isGroupSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"
-                    v-show="!directBotsStore.isBotSelected && !groupsStore.isGroupSelected && (!currentKey || centerTabs.activeFor(currentKey) === 'chat')"
-                    @show-files="rightTab = 'files'" />
+                    v-show="!!currentKey && centerTabs.activeFor(currentKey) === 'chat'"
+                    @show-files="onShowFiles" />
           <template v-for="{ key, tab } in centerTabs.allOpenTabs()" :key="key + '|' + tab.id">
             <FileViewer v-if="tab.kind === 'file' || tab.kind === 'diff'" class="absolute inset-0 z-10"
                         v-show="key === currentKey && centerTabs.activeFor(key) === tab.id"
@@ -822,11 +861,17 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- Slim edge handle to bring the right column back once collapsed (desktop only). -->
+      <button v-if="isDesktop && currentKey && rightCollapsed" data-test="expand-right"
+              :aria-label='$t("nav.showPanel")' :title='$t("nav.showPanel")'
+              class="hidden w-5 shrink-0 items-center justify-center bg-surface/60 text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:flex"
+              @click="rightCollapsed = false"><PanelRightOpen :size="15" /></button>
+
       <!-- Right: tasks. Off-canvas drawer < lg, static column ≥ lg. On desktop its
            width is the user-dragged `rightWidth` (inline style overrides lg:w-[296px],
            which stays as a no-JS fallback); on mobile no inline width is set so the
            fixed `w-72` drawer width applies. -->
-      <div v-if="!directBotsStore.isBotSelected && !groupsStore.isGroupSelected"
+      <div v-if="showRightColumn"
            data-test="column" data-drawer="right"
            class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden bg-surface shadow-float transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'"
@@ -853,8 +898,8 @@ onUnmounted(() => {
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}
           </button>
-          <button data-test="close-tasks" :aria-label='$t("nav.closeTasks")'
-                  class="ml-auto grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 lg:hidden" @click="rightOpen = false"><X :size="18" /></button>
+          <button data-test="close-tasks" :aria-label='$t("nav.hidePanel")' :title='$t("nav.hidePanel")'
+                  class="ml-auto grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2" @click="closeRightColumn"><X :size="18" /></button>
         </div>
         <div class="min-h-0 flex-1 overflow-hidden">
           <TaskPanel v-if="rightTab === 'tasks'" />
@@ -866,7 +911,7 @@ onUnmounted(() => {
     <!-- Mobile home (<lg, nothing selected): the FAB creates a session. One online
          instance creates straight away; several open the instance picker below (last
          used first). Disabled with no online instance. -->
-    <button v-if="mobileHome" type="button" data-test="fab-new-session"
+    <button v-if="nothingSelected" type="button" data-test="fab-new-session"
             class="fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] right-4 z-30 flex h-12 items-center gap-2 rounded-full bg-accent px-4 text-on-accent shadow-float transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 lg:hidden"
             :disabled="onlineInstances.length === 0"
             :aria-label='$t("instance.newSession")'
@@ -934,7 +979,7 @@ onUnmounted(() => {
     <MobileSheet v-if="activeSheet === 'fabInstance'" :title='$t("mobileBar.selectInstance")' test-id="fab-instance-sheet" @close="closeSheet">
       <button v-for="inst in fabInstances" :key="inst.id" type="button" data-test="fab-instance-option"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
-              @click="onFabInstancePick(inst.id)">
+              @click="createSessionIn(inst.id)">
         <span class="h-2 w-2 shrink-0 rounded-full bg-run" aria-hidden="true" />
         <span class="truncate">{{ inst.name }}</span>
       </button>
