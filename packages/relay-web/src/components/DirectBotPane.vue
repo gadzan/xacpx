@@ -359,7 +359,7 @@ function openRemoval(): void {
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ $t(`bot.errors.${directBotsStore.historyError}`) }}</span>
       <button type="button"
-              class="rounded-sm bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"
+              class="rounded-sm bg-danger/10 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger"
               @click="directBotsStore.instanceId && directBotsStore.activeConversationId && directBotsStore.loadHistory(directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId)">
         {{ $t("bot.prompt.retry") }}
       </button>

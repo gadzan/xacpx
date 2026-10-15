@@ -22,7 +22,7 @@ const chat = useChatStore();
             class="inline-flex max-w-[220px] items-center gap-1.5 rounded-full bg-bg px-2.5 py-1 text-xs text-fg-muted">
         <span class="truncate">{{ item.textPreview }}</span>
         <button type="button" data-test="queue-cancel" :aria-label="$t('chat.queueCancelAria')"
-                class="grid h-4 w-4 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger"
+                class="grid h-4 w-4 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
                 @click="chat.cancelQueuedItem(chat.instanceId!, chat.sessionAlias!, item.id)">
           <X :size="10" />
         </button>

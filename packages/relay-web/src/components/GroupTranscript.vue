@@ -425,7 +425,7 @@ async function handleLoadOlder(): Promise<void> {
             v-if="run.state === 'queued' || run.state === 'running' || run.state === 'waiting-human'"
             type="button"
             data-test="group-stop-run-button"
-            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger/20"
+            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger"
             @click="handleCancel"
           >
             <CircleStop :size="11" />

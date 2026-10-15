@@ -69,7 +69,7 @@ async function cancel(id: string) {
                 class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-accent/15 hover:text-accent"
                 @click="view"><Eye :size="13" /></button>
         <button v-if="task.status === 'pending'" data-test="cancel-scheduled" :title="$t('tasks.cancelScheduled')" :aria-label="$t('tasks.cancelScheduled')"
-                class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger"
+                class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
                 @click="cancel(task.id)"><Trash2 :size="13" /></button>
       </span>
     </div>

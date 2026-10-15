@@ -322,7 +322,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
               v-if="activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human')"
               type="button"
               data-test="stop-turn-hud-button"
-              class="flex items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger hover:bg-danger/20 transition-colors"
+              class="flex items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger"
               @click="emit('cancelRun')"
             >
               <CircleStop :size="11" />

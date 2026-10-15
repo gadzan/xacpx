@@ -72,7 +72,7 @@ async function remove(wsName: string): Promise<void> {
           <span class="font-medium text-fg">{{ w.name }}</span><span class="text-fg-muted"> — {{ w.cwd }}</span>
         </span>
         <button :data-test="`wm-remove-${w.name}`" :title="$t('workspaces.remove', { name: w.name })" :aria-label="$t('workspaces.removeAria', { name: w.name })"
-                class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-50"
+                class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
                 :disabled="busy" @click="remove(w.name)"><Trash2 :size="14" /></button>
       </li>
       <li v-if="!list.length" class="px-3 py-2 text-sm text-fg-muted">{{ $t("common.noMatch") }}</li>

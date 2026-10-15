@@ -469,7 +469,7 @@ function handleRetry(): void {
         v-if="groupsStore.uncertainPromptText"
         type="button"
         data-test="group-retry-prompt-button"
-        class="rounded-sm bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30"
+        class="rounded-sm bg-danger/10 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger"
         @click="handleRetry"
       >
         {{ $t("bot.prompt.retry") }}

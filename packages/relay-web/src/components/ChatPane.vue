@@ -155,7 +155,7 @@ onUnmounted(() => clearInterval(timer));
            class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger">
         <AlertTriangle :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
         <p class="min-w-0 flex-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-ui leading-relaxed">{{ chat.error }}</p>
-        <button type="button" class="-mr-0.5 -mt-0.5 shrink-0 rounded-sm p-1 text-danger/70 transition-colors hover:bg-danger/15 hover:text-danger"
+        <button type="button" class="-mr-0.5 -mt-0.5 shrink-0 rounded-sm p-1 text-danger/70 transition-colors hover:bg-danger/10 hover:text-danger"
                 :title="$t('common.dismissNotice')" @click="chat.error = ''"><X :size="14" /></button>
       </div>
       <!-- Cold-starting session: an optimistic row whose create RPC is still spinning up
