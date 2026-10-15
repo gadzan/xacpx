@@ -154,7 +154,7 @@ watch(
       v-if="expanded && message.handoff"
       :id="panelId"
       data-test="group-handoff-details"
-      class="mt-1 space-y-2 rounded-xl bg-surface/70 p-3 text-xs text-fg [overflow-wrap:anywhere]"
+      class="mt-1 space-y-2 rounded-2xl bg-surface/70 p-3 text-xs text-fg [overflow-wrap:anywhere]"
     >
       <dl class="space-y-2">
         <div><dt class="text-fg-muted">{{ t('group.handoff.from') }}</dt><dd>{{ fromName }}</dd></div>
@@ -167,10 +167,10 @@ watch(
       <div v-if="result" data-test="group-handoff-result">
         <p class="text-fg-muted">{{ t('group.handoff.result') }}</p>
         <p class="whitespace-pre-wrap">{{ resultPreview }}</p>
-        <button type="button" data-test="group-handoff-jump" class="mt-1 rounded text-accent underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" @click="emit('jump', result.id)">{{ t('group.handoff.jump') }}</button>
+        <button type="button" data-test="group-handoff-jump" class="mt-1 rounded-sm text-accent underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" @click="emit('jump', result.id)">{{ t('group.handoff.jump') }}</button>
       </div>
       <p v-else-if="turn || detail.state !== 'loading'" data-test="group-handoff-result-unavailable" class="text-fg-muted">{{ t('group.handoff.resultUnavailable') }}</p>
-      <button type="button" data-test="group-handoff-collapse" class="rounded text-fg-muted hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" @click="collapse">{{ t('group.handoff.collapse') }}</button>
+      <button type="button" data-test="group-handoff-collapse" class="rounded-sm text-fg-muted hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" @click="collapse">{{ t('group.handoff.collapse') }}</button>
     </div>
   </div>
 </template>

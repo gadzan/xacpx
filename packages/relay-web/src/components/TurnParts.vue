@@ -167,7 +167,7 @@ function toggleTrace(): void {
     <!-- Collapsed-trace header (finished turns): one muted row summarizing the hidden
          activity; expanding re-renders the trace items inline below it. -->
     <button v-if="collapsible" type="button" data-test="trace-toggle"
-            class="group flex w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 py-1 px-1.5 rounded-md text-left text-[11.5px] text-fg-muted transition-colors hover:text-fg hover:bg-fg/5"
+            class="group flex w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 py-1 px-1.5 rounded-sm text-left text-[11.5px] text-fg-muted transition-colors hover:text-fg hover:bg-fg/5"
             :aria-expanded="expanded" :aria-label="$t('turnTrace.toggleTrace')"
             :title="$t('turnTrace.toggleTrace')"
             :data-trace-key="traceKey ?? ''" @click="toggleTrace">

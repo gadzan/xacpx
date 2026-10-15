@@ -74,7 +74,7 @@ function rowElapsed(s: ToolStepDto): string {
 <template>
   <div data-test="tool-call-panel" class="text-xs">
     <button ref="header" type="button"
-            class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
+            class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-sm text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
             :aria-expanded="open" @click="onHeaderClick">
       <Wrench :size="13" class="shrink-0 text-fg-muted group-hover:text-fg" />
       <span class="text-[11.5px] font-medium text-fg-muted group-hover:text-fg">{{ $t("tools.toolSteps") }}</span>

@@ -89,7 +89,7 @@ const completionChip = computed<CompletionChip | null>(() => {
           <span
             v-if="message.peer.agent"
             data-test="peer-agent"
-            class="inline-flex shrink-0 items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-muted"
+            class="inline-flex shrink-0 items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-muted"
           >
             <AgentIcon :driver="message.peer.agent" :size="11" />
             <span>{{ message.peer.agent }}</span>
@@ -98,7 +98,7 @@ const completionChip = computed<CompletionChip | null>(() => {
           <span
             v-if="message.peer.workspace"
             data-test="peer-workspace"
-            class="inline-flex shrink-0 items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-muted"
+            class="inline-flex shrink-0 items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-muted"
           >
             <Folder :size="10" class="text-warn" />
             <span>{{ message.peer.workspace }}</span>

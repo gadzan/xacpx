@@ -105,7 +105,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
     <button
       type="button"
       data-test="tab-chat"
-      class="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11.5px] transition-colors cursor-pointer"
+      class="flex shrink-0 items-center gap-1.5 rounded-sm px-2.5 py-1.5 text-[11.5px] transition-colors cursor-pointer"
       :class="store.activeFor(props.sessionKey) === 'chat' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
       @click="store.setActive(props.sessionKey, 'chat')"
     >
@@ -124,7 +124,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
       data-test="tab"
       :data-tab-id="tab.id"
       style="touch-action: pan-x"
-      class="flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[11.5px] transition cursor-pointer"
+      class="flex shrink-0 items-center gap-1 rounded-sm px-2.5 py-1.5 text-[11.5px] transition cursor-pointer"
       :class="[
         tab.id === store.activeFor(props.sessionKey) ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
         overId === tab.id ? 'ring-1 ring-inset ring-accent' : '',
@@ -141,7 +141,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
         type="button"
         data-test="tab-close"
         :aria-label="$t('center.closeTab')"
-        class="ml-0.5 grid h-4 w-4 shrink-0 place-items-center rounded text-fg-muted opacity-60 hover:bg-surface hover:text-fg hover:opacity-100"
+        class="ml-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-sm text-fg-muted opacity-60 hover:bg-surface hover:text-fg hover:opacity-100"
         @click.stop="requestClose(tab.id)"
       >
         <X :size="11" />
@@ -155,7 +155,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
     <div
       data-test="tab-drop-end"
       :data-tab-id="TAB_DROP_END"
-      class="min-w-3 flex-1 self-stretch rounded-md"
+      class="min-w-3 flex-1 self-stretch rounded-sm"
       :class="overId === TAB_DROP_END ? 'ring-1 ring-inset ring-accent' : ''"
     />
   </div>

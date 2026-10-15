@@ -518,7 +518,7 @@ onUnmounted(() => {
         >
           <Search :size="14" class="text-fg-muted" />
           <span class="hidden flex-1 text-[12.5px] text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
-          <kbd class="hidden rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
+          <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <button
           data-test="toggle-terminal"
@@ -570,7 +570,7 @@ onUnmounted(() => {
          strip below is desktop-only. Falls back to the app title when no session is open. -->
     <div class="flex items-center gap-2 bg-surface px-2 py-1.5 lg:hidden">
       <button data-test="open-instances" :aria-label='$t("nav.openInstances")'
-              class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
+              class="rounded-sm p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
       <CenterTabStrip v-if="currentKey" bare :session-key="currentKey" class="min-w-0 flex-1"
                       @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
       <span v-else-if="directBotsStore.isBotSelected" class="min-w-0 flex-1 truncate text-center text-sm font-medium">
@@ -584,10 +584,10 @@ onUnmounted(() => {
       <span v-else class="min-w-0 flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
       <div v-if="!directBotsStore.isBotSelected && !groupsStore.isGroupSelected" class="flex shrink-0 items-center gap-0.5">
         <button data-test="open-files" :aria-label='$t("nav.openFiles")' :title='$t("nav.files")'
-                class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
+                class="grid h-8 w-8 place-items-center rounded-sm text-fg-muted hover:bg-fg/5"
                 @click="openRight('files')"><FileText :size="18" /></button>
         <button data-test="open-tasks" :aria-label='$t("nav.openTasks")' :title='$t("nav.tasks")'
-                class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
+                class="grid h-8 w-8 place-items-center rounded-sm text-fg-muted hover:bg-fg/5"
                 @click="openRight('tasks')"><List :size="18" /></button>
       </div>
     </div>
@@ -605,7 +605,7 @@ onUnmounted(() => {
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
           <div class="flex items-center gap-2">
             <button data-test="toggle-left" :aria-label='$t("nav.hideSidebar")' :title='$t("nav.hideSidebar")'
-                    class="hidden h-6 w-6 place-items-center rounded-md text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
+                    class="hidden h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
                     @click="leftCollapsed = true"><PanelLeftClose :size="15" /></button>
             <button data-test="close-instances" :aria-label='$t("nav.closeInstances")'
                     class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
@@ -697,13 +697,13 @@ onUnmounted(() => {
              @pointerdown.prevent="rightResize.onPointerDown" />
         <div class="flex h-9 shrink-0 items-center gap-1 px-2.5">
           <button data-test="right-tab-files"
-                  class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="rightTab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'files'">
             <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
-                  class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
                   :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}

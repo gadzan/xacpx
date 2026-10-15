@@ -58,40 +58,40 @@ function hint(installed: string): string {
 
 <template>
   <section class="space-y-3">
-    <p v-if="error" data-test="am-error" class="rounded bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ error }}</p>
+    <p v-if="error" data-test="am-error" class="rounded-sm bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ error }}</p>
     <input v-if="showFilter" v-model="filter" data-test="am-filter" :placeholder="$t('common.filter')"
-           class="w-full rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+           class="w-full rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
     <p v-if="!all.length" data-test="am-empty" class="text-sm text-fg-muted">{{ $t("agents.empty") }}</p>
-    <ul v-else class="max-h-64 overflow-y-auto rounded">
+    <ul v-else class="max-h-64 overflow-y-auto rounded-sm">
       <li v-for="a in list" :key="a.name" class="flex items-center justify-between gap-2 px-3 py-2 text-sm">
         <span class="min-w-0 truncate" :title="`${a.name} · ${a.driver}`">
           <span class="font-medium text-fg">{{ a.name }}</span><span class="text-fg-muted"> · {{ a.driver }}</span>
         </span>
         <button :data-test="`am-remove-${a.name}`" :title="$t('agents.remove', { name: a.name })" :aria-label="$t('agents.removeAria', { name: a.name })"
-                class="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-50"
+                class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-50"
                 :disabled="busy" @click="remove(a.name)"><Trash2 :size="14" /></button>
       </li>
       <li v-if="!list.length" class="px-3 py-2 text-sm text-fg-muted">{{ $t("common.noMatch") }}</li>
     </ul>
 
     <button v-if="!formOpen" type="button" data-test="am-add-toggle" @click="formOpen = true"
-            class="flex items-center gap-1.5 rounded bg-surface-2 px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-accent-soft hover:text-fg">
+            class="flex items-center gap-1.5 rounded-sm bg-surface-2 px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-accent-soft hover:text-fg">
       <Plus :size="14" /> {{ $t("agents.add") }}
     </button>
-    <div v-else class="space-y-2 rounded p-3">
+    <div v-else class="space-y-2 rounded-sm p-3">
       <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <select v-model="driver" data-test="am-driver" class="rounded bg-surface-2 px-2 py-1 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+        <select v-model="driver" data-test="am-driver" class="rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
           <option value="" disabled>{{ $t("agents.chooseDriver") }}</option>
           <option v-for="c in addableDrivers" :key="c.driver" :value="c.driver" :disabled="c.installed === 'unknown'">
             {{ c.driver }} ({{ hint(c.installed) }})
           </option>
         </select>
-        <input v-model="customName" data-test="am-name" :placeholder="$t('agents.namePlaceholder')" class="rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+        <input v-model="customName" data-test="am-name" :placeholder="$t('agents.namePlaceholder')" class="rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
       </div>
       <div class="flex gap-2">
-        <button data-test="am-add" class="rounded bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
+        <button data-test="am-add" class="rounded-sm bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
                 :disabled="busy || !driver" @click="add">{{ $t("common.add") }}</button>
-        <button type="button" data-test="am-add-cancel" class="rounded px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5 hover:text-fg" @click="formOpen = false">{{ $t("common.cancel") }}</button>
+        <button type="button" data-test="am-add-cancel" class="rounded-sm px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5 hover:text-fg" @click="formOpen = false">{{ $t("common.cancel") }}</button>
       </div>
     </div>
   </section>

@@ -366,7 +366,7 @@ async function handleLoadOlder(): Promise<void> {
           @jump="jumpToMessage"
         />
         <template v-else-if="m.role === 'human'">
-          <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-md bg-accent-soft px-3.5 py-2 text-[14px] leading-relaxed text-fg">
+          <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-[14px] leading-relaxed text-fg">
             {{ m.content }}
           </div>
           <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
@@ -402,7 +402,7 @@ async function handleLoadOlder(): Promise<void> {
         v-if="run"
         data-test="group-run-card"
         :data-run-id="run.id"
-        class="rounded-xl bg-surface/60 p-3"
+        class="rounded-2xl bg-surface/60 p-3"
       >
         <div class="flex items-start justify-between gap-2">
           <div data-test="group-run-header" class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-semibold text-fg">
@@ -425,7 +425,7 @@ async function handleLoadOlder(): Promise<void> {
             v-if="run.state === 'queued' || run.state === 'running' || run.state === 'waiting-human'"
             type="button"
             data-test="group-stop-run-button"
-            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger transition-colors hover:bg-danger/20"
+            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger transition-colors hover:bg-danger/20"
             @click="handleCancel"
           >
             <CircleStop :size="11" />
@@ -547,18 +547,18 @@ async function handleLoadOlder(): Promise<void> {
 
     </div>
 
-    <div v-if="run?.state === 'failed'" class="mt-3 flex items-center gap-2 rounded-xl bg-danger/10 p-3 text-xs text-danger">
+    <div v-if="run?.state === 'failed'" class="mt-3 flex items-center gap-2 rounded-2xl bg-danger/10 p-3 text-xs text-danger">
       <AlertCircle :size="16" class="shrink-0" />
       <div class="flex-1">
         <span class="font-semibold">{{ $t("bot.run.failed") }}: </span>
         <span>{{ run.completionReason || $t("bot.run.unknownError") }}</span>
       </div>
     </div>
-    <div v-else-if="run?.state === 'cancelled'" class="mt-3 flex items-center gap-2 rounded-xl bg-surface p-3 text-xs text-fg-muted">
+    <div v-else-if="run?.state === 'cancelled'" class="mt-3 flex items-center gap-2 rounded-2xl bg-surface p-3 text-xs text-fg-muted">
       <CircleStop :size="15" class="shrink-0 text-danger" />
       <span>{{ $t("bot.run.cancelled") }}</span>
     </div>
-    <div v-else-if="run?.state === 'indeterminate'" class="mt-3 flex items-center gap-2 rounded-xl bg-warning/10 p-3 text-xs text-warning">
+    <div v-else-if="run?.state === 'indeterminate'" class="mt-3 flex items-center gap-2 rounded-2xl bg-warning/10 p-3 text-xs text-warning">
       <HelpCircle :size="16" class="shrink-0" />
       <div class="flex-1">
         <span class="font-semibold">{{ $t("bot.run.indeterminate") }}: </span>

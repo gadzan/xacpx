@@ -77,7 +77,7 @@ async function copyCommand() {
             data-test="copy-command"
             :title="$t('login.copyCommand')"
             :aria-label="$t('login.copyCommand')"
-            class="flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-bg"
+            class="flex h-7 w-7 items-center justify-center rounded-sm transition-colors hover:bg-bg"
             :class="copied ? 'text-run' : 'text-fg-muted hover:text-fg'"
             @click="copyCommand"
           >
@@ -117,7 +117,7 @@ async function copyCommand() {
             :title="$t('login.toggleVisibility')"
             :aria-label="$t('login.toggleVisibility')"
             :aria-pressed="revealed"
-            class="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-fg-muted transition-colors hover:bg-surface hover:text-fg"
+            class="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-fg-muted transition-colors hover:bg-surface hover:text-fg"
             @click="revealed = !revealed"
           >
             <svg v-if="!revealed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

@@ -109,7 +109,7 @@ async function signIn() {
               data-test="copy-token"
               :title="$t('invite.copyToken')"
               :aria-label="$t('invite.copyToken')"
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm transition-colors hover:bg-bg"
               :class="copied ? 'text-run' : 'text-fg-muted hover:text-fg'"
               @click="copyToken"
             >
