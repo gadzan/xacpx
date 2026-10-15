@@ -127,7 +127,7 @@ async function submitRowConfirm(): Promise<void> {
           :data-topic-id="topic.id"
           :data-topic-status="topic.status"
           class="min-h-12 rounded-sm px-2 py-1.5 text-sm"
-          :class="topic.id === activeTopicId ? 'bg-accent/10' : ''"
+          :class="[topic.id === activeTopicId ? 'bg-accent/10' : '', topic.status === 'archived' ? 'text-fg-muted' : '']"
         >
           <div class="flex items-center gap-1">
             <button type="button" class="min-w-0 flex-1 truncate text-left" @click="selectTopic(topic)">
@@ -171,7 +171,7 @@ async function submitRowConfirm(): Promise<void> {
           :data-topic-id="topic.id"
           :data-topic-status="topic.status"
           class="rounded-sm px-2 py-1.5 text-sm"
-          :class="topic.id === activeTopicId ? 'bg-accent/10' : ''"
+          :class="[topic.id === activeTopicId ? 'bg-accent/10' : '', topic.status === 'archived' ? 'text-fg-muted' : '']"
         >
           <div class="flex items-center gap-1">
             <button type="button" class="min-w-0 flex-1 truncate text-left" @click="selectTopic(topic)">

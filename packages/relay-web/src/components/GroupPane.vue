@@ -181,23 +181,24 @@ const worktreeRunId = computed(() => {
       </div>
       <div class="flex min-w-0 flex-col">
         <h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
-        <TopicSwitcher
-          :topics="groupsStore.currentTopics"
-          :active-topic-id="groupsStore.activeTopicId"
-          :preview-topic="previewTopic"
-          :rename-topic="renameTopic"
-          :archive-topic="archiveTopic"
-          :restore-topic="restoreTopic"
-          :teardown-topic="teardownTopic"
-          :clear-topic="clearTopic"
-          @select="groupsStore.switchTopic"
-          @create="newTopicDialogOpen = true"
-        />
-        <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
-          <span>{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
+        <div class="flex min-w-0 items-center gap-1.5 text-xs text-fg-muted">
+          <TopicSwitcher
+            :topics="groupsStore.currentTopics"
+            :active-topic-id="groupsStore.activeTopicId"
+            :preview-topic="previewTopic"
+            :rename-topic="renameTopic"
+            :archive-topic="archiveTopic"
+            :restore-topic="restoreTopic"
+            :teardown-topic="teardownTopic"
+            :clear-topic="clearTopic"
+            @select="groupsStore.switchTopic"
+            @create="newTopicDialogOpen = true"
+          />
+          <span aria-hidden="true">·</span>
+          <span data-test="group-pane-member-count" class="shrink-0 whitespace-nowrap">{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
           <span v-if="group?.lifecycle === 'deleting'"
                 data-test="group-pane-deleting-badge"
-                class="rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
+                class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
             {{ $t("group.list.deleting") }}
           </span>
         </div>
