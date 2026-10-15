@@ -1,5 +1,5 @@
 # Changelog
-## [Unreleased]
+## [0.24.10-beta.3] - 2026-10-15
 
 ### Fixed
 
@@ -9,6 +9,36 @@
 ### Changed
 
 - Managed adapter pins refreshed (ACP initialize probe passes on both, still ACP protocol v1): Codex `2.1.1` → `2.2.2`, Claude `0.86.0` → `0.90.0`. Codex picks up `@openai/codex` 0.160.1, pre-session hook trust, the AIR `sessionIndex` extension, live `/mcp` status, and resuming an empty session after an app-server restart. Claude picks up `@agentclientprotocol/sdk` 1.8.0 and an updated Claude SDK, the AIR `sessionIndex` extension, subagents-RFD session reporting, and cancel/fork fixes (cancelled turns close their open tool calls and drop abandoned streamed output; forked sessions are promptable at once). No upstream breaking changes in either range. Recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities. The derived Codex acpxAgent alias hash moves `af1d3f1b4eee` → `3cf7475b4e53`.
+
+## [relay 0.14.12-beta.3] - 2026-10-15
+
+### Added
+
+- Relay Web redesign, landed in reviewed batches: Sky palette plus shared colour/radius/font-size/border/shadow tokens with AA-contrast button text; a mechanical `rounded-*` and type-scale codemod so the token set is the only place sizes live; bot avatars recentred and fitted to their agent marks; and a mobile layout pass.
+- Relay Web: conversation rows use a two-line layout and the dashboard gained a dedicated desktop empty state (§5.7, §5.11 of the redesign).
+- Desktop (macOS ARD): smooth-first request handling, forwarding backpressure with lower latency, and optional performance statistics on the tunnel path.
+
+### Fixed
+
+- Relay Web: login, settings, badge and danger surfaces follow the new type scale and token set.
+
+## [channel-relay 0.7.8-beta.3] - 2026-10-15
+
+### Added
+
+- Desktop ARD tunnel forwarding: flow-controlled forwarding with a new configurable backpressure bound, plus smooth-mode diagnostics on the connector side; `minXacpxVersion` raised to `0.24.10-beta.3`.
+
+## [channel-feishu 0.8.7-beta.3] - 2026-10-15
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.3` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [channel-discord 0.8.7-beta.3] - 2026-10-15
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.3` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
 
 ## [0.24.10-beta.2] - 2026-10-15
 
