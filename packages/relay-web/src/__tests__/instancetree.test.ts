@@ -9,13 +9,14 @@ import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
 import { useActionToastState, dismissToast, runToastAction } from "../lib/use-action-toast";
 import { useToasts } from "../lib/use-toasts";
+import { i18n } from "../i18n";
 const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
   id: "i1", name: "pc", online: true, lastSeenAt: null, sessions, sessionsLoaded, agents: [], workspaces: [],
 });
 
 describe("InstanceTree session management", () => {
   beforeEach(() => setActivePinia(createPinia()));
-  afterEach(() => settleConfirm(false)); // clear any dangling global confirm
+  afterEach(() => { settleConfirm(false); i18n.global.locale.value = "en"; });
 
   it("opens the new-session dialog from the + new session button", async () => {
     const store = useInstancesStore();
@@ -119,6 +120,32 @@ describe("InstanceTree session management", () => {
     const cold = w.findAll('[data-test="cold-indicator"]');
     expect(cold).toHaveLength(1);
     expect(cold[0]!.attributes("title")).toBe("Process exited — next message cold-starts.");
+  });
+
+  it("shows the cold subtitle as visible text on the secondary line of a cold row", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([
+      { alias: "cold", agent: "codex", workspace: "home", transportSession: "t1", running: false, archived: false, warm: false },
+      { alias: "warm", agent: "codex", workspace: "home", transportSession: "t2", running: false, archived: false, warm: true },
+      { alias: "slept", agent: "codex", workspace: "home", transportSession: "t3", running: false, archived: true, warm: false },
+    ])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const subs = w.findAll('[data-test="session-cold-subtitle"]');
+    expect(subs).toHaveLength(1);
+    expect(subs[0]!.text()).toBe("Not running · next message will cold-start");
+    expect(subs[0]!.classes()).toContain("truncate");
+    const row = w.findAll('[data-test="session-row"]')[0]!;
+    expect(row.find('[data-test="session-cold-subtitle"]').exists()).toBe(true);
+  });
+
+  it("localizes the cold subtitle in zh-CN", () => {
+    i18n.global.locale.value = "zh-CN";
+    const store = useInstancesStore();
+    store.instances = [instance([
+      { alias: "cold", agent: "codex", workspace: "home", transportSession: "t1", running: false, archived: false, warm: false },
+    ])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="session-cold-subtitle"]').text()).toBe("未运行 · 下条消息将冷启动");
   });
 
   it("shows a spinner on an optimistic 'creating' session row", () => {

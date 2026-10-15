@@ -908,9 +908,21 @@ const rowSwipes = computed(() => {
                          @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
                          @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
                          v-focus />
-                  <span v-else data-test="session-name" class="min-w-0 truncate max-lg:text-base text-ui font-medium"
-                        :title="s.displayName || s.alias"
-                        :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
+                  <!-- Two-line row. Only a cold session carries a secondary line today —
+                       SessionDto has no activity timestamp, so no invented relative times. -->
+                  <div v-else class="flex min-w-0 flex-1 flex-col">
+                    <span data-test="session-name" class="min-w-0 truncate max-lg:text-base text-sm font-medium"
+                          :title="s.displayName || s.alias"
+                          :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
+                    <!-- Cold: awake session whose warm process has exited (TTL or otherwise);
+                         next message cold-starts. Absent `warm` (old instance) shows nothing. -->
+                    <span v-if="!s.archived && s.warm === false" data-test="session-cold-subtitle"
+                          class="flex min-w-0 items-center gap-1 truncate text-xs text-fg-muted">
+                      <Unplug data-test="cold-indicator" :size="10" class="shrink-0" aria-hidden="true"
+                              :title="$t('instance.sessionColdTitle')" />
+                      {{ $t("instance.sessionColdSubtitle") }}
+                    </span>
+                  </div>
                   <!-- Archived state is shown visually by the dimmed name (no text badge), but that
                        greying carries no signal for screen readers — keep a visually-hidden label so
                        archived status is still announced. -->
@@ -920,11 +932,6 @@ const rowSwipes = computed(() => {
                   <Link2 v-if="s.native" data-test="native-badge" :size="12"
                          :aria-label="$t('instance.sessionNativeBadgeTitle')" :title="$t('instance.sessionNativeBadgeTitle')"
                          class="shrink-0 text-info" :class="s.archived ? 'opacity-60' : ''" />
-                  <!-- Cold indicator: awake session whose warm process has exited (TTL or otherwise);
-                       next message cold-starts. Absent `warm` (old instance) shows nothing. -->
-                  <Unplug v-if="!s.archived && s.warm === false" data-test="cold-indicator" :size="12"
-                          :aria-label="$t('instance.sessionColdTitle')" :title="$t('instance.sessionColdTitle')"
-                          class="shrink-0 text-fg-muted" />
                   <span v-if="!s.archived && elapsedLabel(inst.id, s.alias)" data-test="session-elapsed"
                         class="ml-auto shrink-0 font-mono text-xs tabular-nums text-run">{{ elapsedLabel(inst.id, s.alias) }}</span>
                 </button>
