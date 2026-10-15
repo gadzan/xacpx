@@ -315,7 +315,7 @@ function closeDesktop(): void {
 
 // ── Mobile (<lg) chrome ───────────────────────────────────────────────────────────
 // Below lg the old three-layer stack (global header + second bar + ChatPane chip row)
-// collapses into ONE 52px bar: [≡] [avatar] [title + subtitle] [⋯]. Desktop keeps the
+// collapses into ONE 52px bar: [←] [avatar] [title + subtitle] [⋯]. Desktop keeps the
 // global header and the chip row exactly as before, so everything below is only ever
 // reachable from the mobile markup.
 // One bottom sheet at a time: opening any sheet replaces the current one (the open-tabs
@@ -651,7 +651,7 @@ onUnmounted(() => {
         <button
           data-test="global-search"
           :aria-label='$t("nav.search")'
-          class="group flex h-10 lg:h-7 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-surface-2 active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
+          class="group flex h-10 lg:h-7 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-surface-2 active:bg-surface-2 lg:bg-bg lg:hover:bg-surface-2 lg:active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
