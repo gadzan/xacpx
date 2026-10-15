@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, readonly, ref, watch, type Component } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, type Component } from "vue";
 import { useI18n } from "vue-i18n";
 import { connectEvents, sendSubscribe, TerminalRequestError, isRetryableTerminalError } from "../api/events";
 import { useInstancesStore, supportsRmuxTerminal, supportsDesktop } from "../stores/instances";
@@ -20,7 +20,7 @@ import { migrateAwayFromLegacyTerminalIds } from "../lib/terminal-sessions";
 import InstanceTree from "../components/InstanceTree.vue";
 import AgentIcon from "../components/AgentIcon.vue";
 import MobileSheet from "../components/MobileSheet.vue";
-import MobileConnStrip, { CONN_EVER_OPENED } from "../components/MobileConnStrip.vue";
+import MobileConnStrip from "../components/MobileConnStrip.vue";
 import ChatPane from "../components/ChatPane.vue";
 import DirectBotPane from "../components/DirectBotPane.vue";
 import GroupPane from "../components/GroupPane.vue";
@@ -497,10 +497,6 @@ function onSelectGroup(instanceId: string, groupId: string) {
 }
 
 let everOnline = false;
-/** Reactive twin of `everOnline` for the mobile connection strip (PR4: warn only after the
- *  connection has been open once). The connection store's neutral state is PR5 work. */
-const connEverOpened = ref(false);
-provide(CONN_EVER_OPENED, readonly(connEverOpened));
 const subscribedInstanceIds = (): string[] => instances.instances.map((instance) => instance.id);
 async function reloadSnapshot() {
   await instances.loadInstances().catch(() => {});
@@ -530,7 +526,6 @@ function onStatus(online: boolean) {
       void groupsStore.reconcileOnReconnect();
     }
     everOnline = true;
-    connEverOpened.value = true;
   }
 }
 
@@ -655,8 +650,8 @@ onUnmounted(() => {
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
-          <span class="hidden flex-1 text-[12.5px] text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
-          <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-[10px] text-fg-muted sm:inline">⌘K</kbd>
+          <span class="hidden flex-1 text-ui text-fg-muted sm:inline">{{ $t("nav.searchPlaceholder") }}</span>
+          <kbd class="hidden rounded-sm bg-raised px-1.5 py-0.5 font-mono text-xs text-fg-muted sm:inline">⌘K</kbd>
         </button>
         <button
           data-test="toggle-terminal"
@@ -847,13 +842,13 @@ onUnmounted(() => {
              @pointerdown.prevent="rightResize.onPointerDown" />
         <div class="flex h-9 shrink-0 items-center gap-1 px-2.5">
           <button data-test="right-tab-files"
-                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
                   :class="rightTab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'files'">
             <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
-                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
                   :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}

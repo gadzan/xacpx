@@ -469,7 +469,7 @@ function handleRetry(): void {
         v-if="groupsStore.uncertainPromptText"
         type="button"
         data-test="group-retry-prompt-button"
-        class="rounded-sm bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30"
+        class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
         @click="handleRetry"
       >
         {{ $t("bot.prompt.retry") }}
@@ -528,7 +528,7 @@ function handleRetry(): void {
               <Check v-if="isEveryone" :size="13" class="shrink-0 text-accent" />
             </button>
             <div class="my-1" />
-            <div class="px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">
+            <div class="px-2.5 py-1 text-xs font-semibold uppercase tracking-wider text-fg-muted">
               {{ $t("group.target.selectMembers") }}
             </div>
             <button
@@ -542,16 +542,16 @@ function handleRetry(): void {
               <BotAvatar :avatar="b.avatar" :driver="driverFor(b)" :name="b.name" :size="24" static
                          :disabled="!b.enabled" :retired="b.retired" :class="!b.enabled ? 'opacity-50' : ''" />
               <span class="min-w-0 flex-1 truncate" :class="!b.enabled ? 'text-fg-muted' : 'text-fg'">{{ b.name }}</span>
-              <span v-if="!b.enabled" class="shrink-0 text-[10px] text-fg-muted">{{ $t("bot.status.disabled") }}</span>
+              <span v-if="!b.enabled" class="shrink-0 text-xs text-fg-muted">{{ $t("bot.status.disabled") }}</span>
               <Check v-else-if="selectedIds.includes(b.id)" :size="13" class="shrink-0 text-accent" />
             </button>
-            <p v-if="eligibleBots.length === 0" class="px-2.5 py-2 text-[11px] text-fg-muted">
+            <p v-if="eligibleBots.length === 0" class="px-2.5 py-2 text-xs text-fg-muted">
               {{ $t("group.target.noEligible") }}
             </p>
           </div>
         </div>
       </div>
-      <span class="hidden text-[11px] text-fg-muted sm:inline">{{ $t("group.target.hint") }}</span>
+      <span class="hidden text-xs text-fg-muted sm:inline">{{ $t("group.target.hint") }}</span>
     </div>
 
     <ConversationComposer
@@ -592,7 +592,7 @@ function handleRetry(): void {
             :key="command.name"
             type="button"
             data-test="group-cmd-item"
-            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
+            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-ui hover:bg-raised"
             :class="index === cmdActiveIdx ? 'bg-accent-soft' : ''"
             @mousedown.prevent="pickSlash(command.name)"
           >
@@ -611,17 +611,17 @@ function handleRetry(): void {
             type="button"
             data-test="group-mention-item"
             :data-bot-id="member.botId"
-            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-ui hover:bg-raised"
             :class="index === mentionActiveIdx ? 'bg-accent-soft' : ''"
             @mousedown.prevent="pickMention(member)"
           >
             <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
-            <span v-if="member.lead" class="shrink-0 text-[10px] text-accent">{{ $t("group.target.lead") }}</span>
-            <span v-if="member.role" class="shrink-0 truncate text-[10px] text-fg-muted">{{ member.role }}</span>
-            <span class="shrink-0 text-[10px]" :class="member.enabled ? 'text-fg-muted' : 'text-warning'">
+            <span v-if="member.lead" class="shrink-0 text-xs text-accent">{{ $t("group.target.lead") }}</span>
+            <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
+            <span class="shrink-0 text-xs" :class="member.enabled ? 'text-fg-muted' : 'text-warning'">
               {{ member.enabled ? $t("bot.status.enabled") : $t("bot.status.disabled") }}
             </span>
-            <span class="shrink-0 font-mono text-[10px] text-fg-muted">{{ member.botId }}</span>
+            <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
           </button>
         </div>
       </template>

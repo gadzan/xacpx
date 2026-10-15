@@ -28,7 +28,7 @@ for (const f of ["pwa-64x64.png", "pwa-192x192.png", "pwa-512x512.png", "favicon
 }
 rmSync(dir, { recursive: true, force: true });
 
-// Flatten onto #0E1116 (hard, opaque, full-bleed tiles) + build the apple-touch.
+// Flatten onto #10151C (hard, opaque, full-bleed tiles) + build the apple-touch.
 execSync("node scripts/finalize-icons.mjs public", { stdio: "inherit" });
 
 console.log("pwa icons -> public/");

@@ -136,13 +136,13 @@ const worktreeRunId = computed(() => {
         <Users :size="15" />
       </div>
       <div class="flex min-w-0 flex-col">
-        <h2 class="truncate text-[14px] font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
-        <div class="flex flex-wrap items-center gap-2 text-[10.5px] text-fg-muted">
+        <h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
+        <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
           <span>{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
           <span v-if="groupsStore.currentTopic">· {{ groupsStore.currentTopic.title }}</span>
           <span v-if="group?.lifecycle === 'deleting'"
                 data-test="group-pane-deleting-badge"
-                class="rounded-sm bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
+                class="rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
             {{ $t("group.list.deleting") }}
           </span>
         </div>
@@ -226,7 +226,7 @@ const worktreeRunId = computed(() => {
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.historyErrorDetail ?? groupsStore.historyError }}</span>
       <button type="button"
-              class="rounded-sm bg-danger/20 px-2 py-0.5 font-medium transition-colors hover:bg-danger/30"
+              class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
               @click="groupsStore.instanceId && groupsStore.activeConversationId && groupsStore.loadHistory(groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId)">
         {{ $t("bot.prompt.retry") }}
       </button>

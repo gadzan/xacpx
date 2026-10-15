@@ -81,14 +81,14 @@ onBeforeUnmount(() => {
       :style="style"
       role="dialog"
     >
-      <p class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.usage.contextWindow") }}</p>
+      <p class="mb-1 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.usage.contextWindow") }}</p>
       <div class="flex items-baseline justify-between tabular-nums">
         <span class="text-fg">{{ used.toLocaleString() }} / {{ size.toLocaleString() }}</span>
         <span class="text-fg-muted">{{ pct }}%</span>
       </div>
 
       <template v-if="breakdown">
-        <p class="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.usage.tokens") }}</p>
+        <p class="mb-1 mt-3 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.usage.tokens") }}</p>
         <dl class="space-y-0.5">
           <template v-for="row in breakdownRows" :key="row.key">
             <div v-if="num((breakdown as Record<string, number | undefined>)[row.key]) !== null" class="flex justify-between tabular-nums">
@@ -100,7 +100,7 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-if="costText() !== null">
-        <p class="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.usage.cost") }}</p>
+        <p class="mb-1 mt-3 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.usage.cost") }}</p>
         <div class="flex justify-between tabular-nums">
           <span class="text-fg-muted">{{ $t("chat.usage.cumulative") }}</span>
           <span class="text-fg">{{ costText() }}</span>

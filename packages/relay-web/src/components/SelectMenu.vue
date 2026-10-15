@@ -88,7 +88,7 @@ function flatIndex(groupIdx: number, optIdx: number): number {
     </button>
     <ul v-if="open" class="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg bg-raised py-1 shadow-float">
       <template v-for="(g, gi) in groups" :key="gi">
-        <li v-if="g.label" class="px-3 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-fg-muted">{{ g.label }}</li>
+        <li v-if="g.label" class="px-3 pb-0.5 pt-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">{{ g.label }}</li>
         <li v-for="(o, oi) in g.options" :key="o.value"
             :data-value="o.value"
             class="flex items-center justify-between px-3 py-1.5 text-sm"

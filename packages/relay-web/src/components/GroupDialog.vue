@@ -376,7 +376,7 @@ async function confirmDelete(): Promise<void> {
               <button type="button"
                       :data-test="`group-dialog-stop-run-${work.run.id}`"
                       :disabled="stoppingRunIds.includes(work.run.id)"
-                      class="flex shrink-0 items-center gap-1 rounded-sm bg-danger/15 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger/25 disabled:opacity-50"
+                      class="flex shrink-0 items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger disabled:opacity-50"
                       @click="stopRun(work.run.id)">
                 <Loader2 v-if="stoppingRunIds.includes(work.run.id)" :size="12" class="animate-spin" />
                 <span>{{ $t("bot.prompt.stopRun") }}</span>
@@ -431,11 +431,11 @@ async function confirmDelete(): Promise<void> {
               <span class="text-xs font-medium text-fg-muted">
                 {{ $t("group.manage.members") }} <span class="text-danger">*</span>
               </span>
-              <span data-test="group-dialog-member-count" class="text-[11px] text-fg-muted">
+              <span data-test="group-dialog-member-count" class="text-xs text-fg-muted">
                 {{ $t("group.manage.membersSelected", { count: memberIds.length }) }}
               </span>
             </div>
-            <p class="mb-1.5 text-[11px] text-fg-muted">{{ $t("group.manage.membersHint") }}</p>
+            <p class="mb-1.5 text-xs text-fg-muted">{{ $t("group.manage.membersHint") }}</p>
 
             <div v-if="catalogLoading && !catalogReady" class="flex items-center gap-1.5 py-2 text-xs text-fg-muted">
               <Loader2 :size="12" class="animate-spin" />
@@ -474,11 +474,11 @@ async function confirmDelete(): Promise<void> {
                   <span class="flex min-w-0 flex-1 flex-col">
                     <span class="truncate text-sm" :class="bot.enabled ? 'text-fg' : 'text-fg-muted'">
                       {{ bot.name }}
-                      <span v-if="hasDuplicateName(bot)" data-test="group-dialog-member-id" class="font-mono text-[10.5px] text-fg-muted">{{ bot.id }}</span>
+                      <span v-if="hasDuplicateName(bot)" data-test="group-dialog-member-id" class="font-mono text-xs text-fg-muted">{{ bot.id }}</span>
                     </span>
-                    <span class="truncate text-[11px] text-fg-muted">{{ [bot.role, bot.agent].filter(Boolean).join(" · ") }}</span>
+                    <span class="truncate text-xs text-fg-muted">{{ [bot.role, bot.agent].filter(Boolean).join(" · ") }}</span>
                   </span>
-                  <span class="flex shrink-0 items-center gap-1 text-[10.5px] text-fg-muted">
+                  <span class="flex shrink-0 items-center gap-1 text-xs text-fg-muted">
                     <span class="h-1.5 w-1.5 rounded-full" :class="bot.enabled ? 'bg-run' : 'bg-fg-muted'" />
                     {{ bot.enabled ? $t("bot.status.enabled") : $t("bot.status.disabled") }}
                   </span>
@@ -510,12 +510,12 @@ async function confirmDelete(): Promise<void> {
                 {{ botLabel(id) }}{{ botsById.get(id)?.enabled === false ? ` (${$t("bot.status.disabled")})` : "" }}
               </option>
             </select>
-            <p v-if="leadReassigned" data-test="group-dialog-lead-reassigned" class="mt-1 text-[11px] text-warn">
+            <p v-if="leadReassigned" data-test="group-dialog-lead-reassigned" class="mt-1 text-xs text-warn">
               {{ leadReassigned.next
                 ? $t("group.manage.leadReassigned", { previous: botLabel(leadReassigned.previous), next: botLabel(leadReassigned.next) })
                 : $t("group.manage.leadCleared", { previous: botLabel(leadReassigned.previous) }) }}
             </p>
-            <p class="mt-1 text-[11px] text-fg-muted">{{ $t("group.manage.leadHint") }}</p>
+            <p class="mt-1 text-xs text-fg-muted">{{ $t("group.manage.leadHint") }}</p>
           </div>
         </fieldset>
 

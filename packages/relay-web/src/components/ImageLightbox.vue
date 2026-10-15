@@ -97,10 +97,10 @@ function onPointerCancel(): void {
     >
       <!-- Top bar: position counter + filename, then close. -->
       <div class="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-3 p-3 text-white/90">
-        <span v-if="counter" data-test="lightbox-counter" class="rounded-full bg-white/10 px-2.5 py-1 font-mono text-[11px] tabular-nums">
+        <span v-if="counter" data-test="lightbox-counter" class="rounded-full bg-white/10 px-2.5 py-1 font-mono text-xs tabular-nums">
           {{ counter }}
         </span>
-        <span v-if="current?.alt" class="min-w-0 flex-1 truncate text-[12px] text-white/70">{{ current.alt }}</span>
+        <span v-if="current?.alt" class="min-w-0 flex-1 truncate text-ui text-white/70">{{ current.alt }}</span>
         <button
           type="button"
           data-test="lightbox-close"

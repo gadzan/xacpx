@@ -52,7 +52,7 @@ function openAt(attachmentIndex: number): void {
       <div
         v-else
         data-test="att-file"
-        class="flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-[13px]"
+        class="flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-ui"
       >
         <FileText :size="16" class="shrink-0 text-fg-muted" />
         <span class="max-w-[180px] truncate">{{ a.filename }}</span>

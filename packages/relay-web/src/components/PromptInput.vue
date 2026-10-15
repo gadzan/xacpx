@@ -774,7 +774,7 @@ function onKeydown(e: KeyboardEvent) {
           <div
             v-for="p in composer.pending"
             :key="p.id"
-            class="flex items-center gap-1.5 rounded-sm bg-surface-2 px-2 py-1 text-[12px]"
+            class="flex items-center gap-1.5 rounded-sm bg-surface-2 px-2 py-1 text-ui"
           >
             <img
               v-if="p.previewUrl"
@@ -824,7 +824,7 @@ function onKeydown(e: KeyboardEvent) {
             data-test="cmd-item"
             role="option"
             :aria-selected="i === cmdActiveIdx"
-            class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-[13px]"
+            class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-ui"
             :class="i === cmdActiveIdx ? 'bg-accent-soft' : ''"
             @mousedown.prevent="pickCommand(c.name)"
             @mouseenter="cmdActiveIdx = i"
@@ -848,7 +848,7 @@ function onKeydown(e: KeyboardEvent) {
             data-test="mention-item"
             role="option"
             :aria-selected="i === mentionActiveIdx"
-            class="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-[13px]"
+            class="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-ui"
             :class="i === mentionActiveIdx ? 'bg-accent-soft' : ''"
             @mousedown.prevent="pickMention(agentItem)"
             @mouseenter="mentionActiveIdx = i"
@@ -864,7 +864,7 @@ function onKeydown(e: KeyboardEvent) {
                   v-if="activityLabel(agentItem.activity)"
                   data-test="mention-activity"
                   :data-status="agentItem.activity?.status"
-                  class="shrink-0 text-[11px] font-medium"
+                  class="shrink-0 text-xs font-medium"
                   :class="activityClass(agentItem.activity?.status)"
                 >
                   {{ activityLabel(agentItem.activity) }}
@@ -873,7 +873,7 @@ function onKeydown(e: KeyboardEvent) {
               <div
                 v-if="formatSecondaryLine(agentItem, availableAgents)"
                 data-test="mention-secondary"
-                class="truncate text-[11px] text-fg-muted"
+                class="truncate text-xs text-fg-muted"
               >
                 {{ formatSecondaryLine(agentItem, availableAgents) }}
               </div>
@@ -897,7 +897,7 @@ function onKeydown(e: KeyboardEvent) {
           >
             <Brain :size="14" class="shrink-0 text-accent" />
             <span
-              class="min-w-0 truncate font-mono text-[11.5px] font-medium text-fg"
+              class="min-w-0 truncate font-mono text-xs font-medium text-fg"
               >{{
                 controls.modelCurrent
                   ? formatModelLabel(controls.modelCurrent)
@@ -945,7 +945,7 @@ function onKeydown(e: KeyboardEvent) {
               @click="toggleEffortMenu"
             >
               <SlidersHorizontal :size="14" class="text-accent" />
-              <span class="font-mono text-[11.5px] font-medium text-fg">{{
+              <span class="font-mono text-xs font-medium text-fg">{{
                 controls.effortCurrent ?? $t("chat.effort")
               }}</span>
               <ChevronDown :size="13" />
@@ -1018,7 +1018,7 @@ function onKeydown(e: KeyboardEvent) {
               />
             </span>
             <span
-              class="shrink-0 text-[11.5px] font-medium tabular-nums text-fg-muted"
+              class="shrink-0 text-xs font-medium tabular-nums text-fg-muted"
               >{{ context.pct }}%</span
             >
           </button>

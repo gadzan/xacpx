@@ -427,7 +427,7 @@ function onInput(): void {
       </div>
       <button
         type="button"
-        class="flex items-center gap-1 rounded-sm bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"
+        class="flex items-center gap-1 rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
         @click="handleRetry"
       >
         <RotateCcw :size="12" />
@@ -476,7 +476,7 @@ function onInput(): void {
             role="option"
             :aria-selected="index === cmdActiveIdx"
             data-test="direct-cmd-item"
-            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
+            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-ui hover:bg-raised"
             :class="index === cmdActiveIdx ? 'bg-accent-soft' : ''"
             @pointerdown.prevent
             @click="pickRow(index)"

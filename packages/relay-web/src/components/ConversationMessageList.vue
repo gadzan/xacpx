@@ -232,12 +232,12 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       >
         <!-- Human Message -->
         <TranscriptRow v-if="m.role === 'human'" own :row-id="m.id">
-          <div class="min-w-0 max-w-full rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-[14px] leading-relaxed text-fg">
+          <div class="min-w-0 max-w-full rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-sm leading-relaxed text-fg">
             <StreamMarkdown :text="m.content" />
           </div>
           <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
             <CopyButton :text="m.content" />
-            <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+            <span class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
           </div>
         </TranscriptRow>
 
@@ -257,13 +257,13 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           </div>
 
           <!-- Plain StreamMarkdown fallback -->
-          <div v-else class="w-full text-[14px] leading-relaxed text-fg">
+          <div v-else class="w-full text-sm leading-relaxed text-fg">
             <StreamMarkdown :text="m.content" />
           </div>
 
           <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
             <CopyButton :text="m.content" />
-            <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+            <span class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
           </div>
         </TranscriptRow>
 
@@ -304,7 +304,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <!-- Turn Live HUD Header -->
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-xs font-semibold text-fg">{{ bot?.name ?? "Bot" }}</span>
-            <div class="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium"
+            <div class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
                  :class="{
                    'bg-run/15 text-run': activeRun?.state === 'running',
                    'bg-warning/15 text-warning': activeRun?.state === 'queued' || activeRun?.state === 'waiting-human',
@@ -322,7 +322,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
               v-if="activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human')"
               type="button"
               data-test="stop-turn-hud-button"
-              class="flex items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger hover:bg-danger/20 transition-colors"
+              class="flex items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger"
               @click="emit('cancelRun')"
             >
               <CircleStop :size="11" />

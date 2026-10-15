@@ -262,7 +262,7 @@ onBeforeUnmount(() => {
   color: rgb(var(--c-accent));
   text-decoration: underline;
 }
-/* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono text-[12.5px] (mockup line 298) */
+/* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono 12.5px (mockup line 298) */
 .stream-md code {
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
@@ -272,12 +272,12 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
 }
 /* Code block: cool snippet panel (mockup lines 331–346) — bg-bg/raised, border-border,
-   rounded-lg, font-mono text-[13px], overflow-x with thin scrollbar. */
+   rounded-lg (10px), font-mono 13px, overflow-x with thin scrollbar. */
 .stream-md pre {
   background: rgb(var(--c-bg));
   color: rgb(var(--c-fg));
   border: 1px solid rgb(var(--c-border));
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0.65em 0.85em;
   overflow-x: auto;
   margin: 0.6em 0;
@@ -375,7 +375,7 @@ onBeforeUnmount(() => {
   max-height: 560px;
   overflow: hidden;
   border: 1px solid rgb(var(--c-border));
-  border-radius: 8px;
+  border-radius: 10px;
   background: rgb(var(--c-bg));
   box-shadow: none;
   touch-action: pan-y; /* one finger scrolls the page; the enhancer handles pinch + mouse drag */
@@ -398,7 +398,7 @@ onBeforeUnmount(() => {
   background: rgb(var(--c-bg));
   color: rgb(var(--c-fg));
   border: 1px solid rgb(var(--c-border));
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0.65em 0.85em;
   margin: 0;
   max-height: 560px;

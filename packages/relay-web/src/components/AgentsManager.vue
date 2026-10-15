@@ -68,7 +68,7 @@ function hint(installed: string): string {
           <span class="font-medium text-fg">{{ a.name }}</span><span class="text-fg-muted"> · {{ a.driver }}</span>
         </span>
         <button :data-test="`am-remove-${a.name}`" :title="$t('agents.remove', { name: a.name })" :aria-label="$t('agents.removeAria', { name: a.name })"
-                class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger disabled:opacity-50"
+                class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
                 :disabled="busy" @click="remove(a.name)"><Trash2 :size="14" /></button>
       </li>
       <li v-if="!list.length" class="px-3 py-2 text-sm text-fg-muted">{{ $t("common.noMatch") }}</li>

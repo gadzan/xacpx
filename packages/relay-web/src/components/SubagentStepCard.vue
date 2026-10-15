@@ -124,10 +124,10 @@ onBeforeUnmount(() => {
             class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-sm text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
             :aria-expanded="open" @click="onHeaderClick">
       <Bot :size="13" class="shrink-0 text-accent" />
-      <span class="shrink-0 font-medium text-[11.5px] text-accent">{{ $t("tools.subagent") }}</span>
-      <span class="min-w-0 truncate font-mono text-[11.5px] text-fg-muted group-hover:text-fg">{{ step.title }}</span>
+      <span class="shrink-0 font-medium text-xs text-accent">{{ $t("tools.subagent") }}</span>
+      <span class="min-w-0 truncate font-mono text-xs text-fg-muted group-hover:text-fg">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
-        <span class="font-mono text-[10.5px] text-fg-muted/70">
+        <span class="font-mono text-xs text-fg-muted/70">
           <template v-if="hasTrace">{{ $t("tools.traceCount", { count: children.length }) }}</template>
           <template v-else-if="status === 'running'">{{ $t("tools.running") }} · {{ elapsedLabel }}</template>
           <template v-else>{{ status === "error" ? $t("tools.failed") : $t("tools.finished") }}</template>
@@ -140,23 +140,23 @@ onBeforeUnmount(() => {
       </span>
     </button>
 
-    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-border/40 pl-3 py-0.5 text-[11px] text-fg-muted/80">
+    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-border/40 pl-3 py-0.5 text-xs text-fg-muted/80">
       <Transition v-if="hasTrace" name="activity-slide" mode="out-in">
         <div v-if="currentActivity" :key="currentActivity.toolCallId" class="flex min-w-0 items-center gap-2">
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="currentActivity.status === 'running' ? 'bg-accent' : currentActivity.status === 'error' ? 'bg-danger' : 'bg-run'" />
           <component :is="KIND_ICON[currentActivity.kind]" :size="12" class="shrink-0 text-fg-muted" />
-          <span class="truncate font-mono text-[10.5px] text-fg-muted" :title="currentActivity.title" :dir="isPathTitle(currentActivity) ? 'rtl' : undefined">{{ currentActivity.title }}</span>
-          <span v-if="activity.length > 1" class="ml-auto shrink-0 font-mono text-[9.5px] tabular-nums text-fg-muted/70">
+          <span class="truncate font-mono text-xs text-fg-muted" :title="currentActivity.title" :dir="isPathTitle(currentActivity) ? 'rtl' : undefined">{{ currentActivity.title }}</span>
+          <span v-if="activity.length > 1" class="ml-auto shrink-0 font-mono text-xs tabular-nums text-fg-muted/70">
             {{ activityIndex % activity.length + 1 }}/{{ activity.length }}
           </span>
         </div>
-        <div v-else key="waiting" class="flex min-w-0 items-center gap-2 text-[10.5px] text-fg-muted">
+        <div v-else key="waiting" class="flex min-w-0 items-center gap-2 text-xs text-fg-muted">
           <Loader2 v-if="status === 'running'" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
           <Check v-else :size="12" class="shrink-0 text-run" />
           <span>{{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}</span>
         </div>
       </Transition>
-      <div v-else class="flex min-w-0 items-center gap-2 text-[10.5px] text-fg-muted">
+      <div v-else class="flex min-w-0 items-center gap-2 text-xs text-fg-muted">
         <Loader2 v-if="status === 'running'" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
         <AlertTriangle v-else-if="status === 'error'" :size="12" class="shrink-0 text-danger" />
         <Check v-else :size="12" class="shrink-0 text-run" />
@@ -175,26 +175,26 @@ onBeforeUnmount(() => {
             <span class="h-1.5 w-1.5 rounded-full" :class="child.status === 'running' ? 'bg-accent' : child.status === 'error' ? 'bg-danger' : 'bg-run'" />
           </span>
           <component :is="KIND_ICON[child.kind]" :size="12" class="shrink-0 text-fg-muted" />
-          <span class="truncate font-mono text-[10.5px] text-fg-muted" :title="child.title" :dir="isPathTitle(child) ? 'rtl' : undefined">{{ child.title }}</span>
+          <span class="truncate font-mono text-xs text-fg-muted" :title="child.title" :dir="isPathTitle(child) ? 'rtl' : undefined">{{ child.title }}</span>
         </li>
       </ol>
       <template v-else>
         <div v-if="promptText" class="mb-2.5">
-          <p class="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
-          <p class="truncate font-mono text-[10.5px] text-fg-muted">{{ promptText }}</p>
+          <p class="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
+          <p class="truncate font-mono text-xs text-fg-muted">{{ promptText }}</p>
         </div>
         <div v-if="outputText" data-test="subagent-report">
-          <p class="mb-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.report") }}</p>
+          <p class="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.report") }}</p>
           <StreamMarkdown v-if="status !== 'running'" :text="outputText" />
           <pre v-else ref="streamEl" data-test="subagent-stream"
-               class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-bg/60 p-2 font-mono text-[10.5px] leading-relaxed text-fg-muted">{{ outputText }}</pre>
+               class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-bg/60 p-2 font-mono text-xs leading-relaxed text-fg-muted">{{ outputText }}</pre>
         </div>
-        <p v-else class="py-1 text-[10.5px] text-fg-muted">
+        <p v-else class="py-1 text-xs text-fg-muted">
           {{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}
         </p>
       </template>
       <button type="button" data-test="subagent-open-trace"
-              class="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-[10.5px] font-medium text-accent transition-colors hover:bg-fg/5"
+              class="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs font-medium text-accent transition-colors hover:bg-fg/5"
               @click="onOpenTrace">
         <ExternalLink :size="12" /> {{ $t("tools.viewFullTrace") }}
       </button>

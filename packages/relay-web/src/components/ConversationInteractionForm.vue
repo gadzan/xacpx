@@ -386,7 +386,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
   >
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0 flex-1 space-y-1">
-        <div class="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-warning">
+        <div class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-warning">
           <AlertTriangle :size="12" />
           <span>{{ t('bot.interaction.title') }}</span>
         </div>
@@ -398,7 +398,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
         <div
           v-if="agentName"
           data-test="interaction-agent"
-          class="flex items-center gap-1.5 text-[11px] text-fg-muted"
+          class="flex items-center gap-1.5 text-xs text-fg-muted"
         >
           <span class="uppercase tracking-wide">{{ t('bot.interaction.requestedBy') }}</span>
           <span class="font-medium text-fg">{{ agentName }}</span>
@@ -479,7 +479,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           :for="controlName(index, field)"
         >
           <span>{{ field.title }}</span>
-          <span v-if="!field.required" class="text-[10.5px] font-normal text-fg-muted">
+          <span v-if="!field.required" class="text-xs font-normal text-fg-muted">
             ({{ t('bot.interaction.optional') }})
           </span>
         </label>
@@ -491,18 +491,18 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           class="flex items-baseline gap-1.5 text-xs font-medium text-fg"
         >
           <span :id="`${controlName(index, field)}-legend`">{{ field.title }}</span>
-          <span v-if="!field.required" class="text-[10.5px] font-normal text-fg-muted">
+          <span v-if="!field.required" class="text-xs font-normal text-fg-muted">
             ({{ t('bot.interaction.optional') }})
           </span>
         </div>
-        <div v-if="field.description" class="text-[11px] leading-snug text-fg-muted">{{ field.description }}</div>
+        <div v-if="field.description" class="text-xs leading-snug text-fg-muted">{{ field.description }}</div>
         <!-- The required shape, shown as METADATA.
           Neither this renderer nor core executes it — core's rule is that an
           agent-supplied regex is never compiled, because uncontrolled regex
           evaluation is a resource-exhaustion vector. It exists so a human can see
           what the asking Agent expects and format their answer accordingly; the
           agent validates its own pattern against the answer it receives. -->
-        <div v-if="field.pattern" data-test="interaction-pattern" class="text-[11px] text-fg-muted">
+        <div v-if="field.pattern" data-test="interaction-pattern" class="text-xs text-fg-muted">
           <span class="uppercase tracking-wide">{{ t('bot.interaction.pattern') }}</span>
           <code class="ml-1">{{ field.pattern }}</code>
         </div>
@@ -591,7 +591,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
       <!-- Field-level problems the renderer can see. Surfaced BEFORE Submit, while
         the form is still open: the interaction resolves on submit, so an answer
         core rejects afterwards is one the user cannot correct. -->
-      <div v-if="invalidFields.length > 0" data-test="interaction-invalid" class="text-[11px] text-danger">
+      <div v-if="invalidFields.length > 0" data-test="interaction-invalid" class="text-xs text-danger">
         <div v-for="entry in invalidFields" :key="entry.field.key">
           {{ t('bot.interaction.fieldInvalid', {
             title: entry.field.title,
@@ -600,11 +600,11 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
         </div>
       </div>
 
-      <div v-if="requiredMissing.length > 0" class="text-[11px] text-warning">
+      <div v-if="requiredMissing.length > 0" class="text-xs text-warning">
         {{ t('bot.interaction.requiredMissing', { fields: requiredMissing.map((f) => f.title).join(', ') }) }}
       </div>
 
-      <div v-if="errorCode" data-test="interaction-error" class="text-[11px] font-medium text-danger">
+      <div v-if="errorCode" data-test="interaction-error" class="text-xs font-medium text-danger">
         {{ errorCode === 'interactionGone' ? t('bot.interaction.errorGone')
           : errorCode === 'connectorOutdated' ? t('bot.interaction.errorOutdated')
           : t('bot.interaction.errorFailed') }}

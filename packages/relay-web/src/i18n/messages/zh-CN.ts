@@ -20,6 +20,7 @@ export default {
     close: "关闭",
   },
   connection: {
+    connecting: "连接中…",
     online: "已连接",
     reconnecting: "重新连接中…",
   },
@@ -497,7 +498,6 @@ export default {
     keep: "保留",
   },
   login: {
-    window: "login",
     tokenLabel: "访问令牌",
     tokenPlaceholder: "粘贴 token…",
     runHint: "在主机上运行以生成 token，然后粘贴到下面。",
@@ -505,6 +505,11 @@ export default {
     signingIn: "登录中…",
     copyCommand: "复制命令",
     toggleVisibility: "显示或隐藏 token",
+    errors: {
+      "invalid-token": "Token 无效或已被撤销。请在主机上运行 xacpx-relay add token 重新生成。",
+      "request-failed": "无法连接到 relay，请检查网络后重试。",
+      fallback: "登录失败，请重试。",
+    },
   },
   invite: {
     window: "invite",
@@ -854,7 +859,7 @@ export default {
       completionerror: "无法加载建议",
       completionready: "没有匹配的建议",
       moreCompletions: "更多建议",
-      placeholder: "输入消息...（Enter 发送，Shift+Enter 换行）",
+      placeholder: "输入消息…",
       send: "发送",
       stop: "停止",
       stopRun: "停止运行",

@@ -121,18 +121,18 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
                @click="hasDetail ? onHeaderClick() : undefined">
       <component :is="KIND_ICON[step.kind]" :size="13" class="shrink-0 transition-colors"
                  :class="step.status === 'error' ? 'text-danger' : step.status === 'running' ? 'text-accent' : hasDetail ? 'text-fg-muted/80 group-hover:text-fg' : 'text-fg-muted/80'" />
-      <span class="shrink-0 font-medium text-[11.5px] text-fg-muted transition-colors"
+      <span class="shrink-0 font-medium text-xs text-fg-muted transition-colors"
             :class="hasDetail ? 'group-hover:text-fg' : ''">{{ kindLabel }}</span>
-      <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded-sm bg-accent-soft px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
-      <span class="min-w-0 font-mono text-[11.5px] text-fg-muted/90 break-all"
+      <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded-sm bg-accent-soft px-1 py-0.5 text-xs font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
+      <span class="min-w-0 font-mono text-xs text-fg-muted/90 break-all"
             :class="[(hasDetail ? 'group-hover:text-fg' : ''), hasDetail ? 'truncate' : '']" :title="step.title" :dir="hasDetail && pathTitle ? 'rtl' : undefined">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
-        <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-[11px]">
+        <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-xs">
           <span v-if="diffStats.add" class="text-run font-medium">+{{ diffStats.add }}</span>
           <span v-if="diffStats.del" class="text-danger font-medium">−{{ diffStats.del }}</span>
         </span>
-        <span v-if="step.durationMs !== undefined" class="font-mono text-[10.5px] text-fg-muted/70">{{ formatStepDuration(step.durationMs) }}</span>
-        <span v-else-if="runningElapsed" data-test="step-elapsed" class="font-mono text-[10.5px] text-fg-muted/70">{{ runningElapsed }}</span>
+        <span v-if="step.durationMs !== undefined" class="font-mono text-xs text-fg-muted/70">{{ formatStepDuration(step.durationMs) }}</span>
+        <span v-else-if="runningElapsed" data-test="step-elapsed" class="font-mono text-xs text-fg-muted/70">{{ runningElapsed }}</span>
         <Check v-if="step.status === 'success'" data-test="step-status-success" :size="12" class="text-run/70" />
         <Loader2 v-else-if="step.status === 'running'" data-test="step-status-running" :size="12" class="animate-spin motion-reduce:animate-none text-accent" />
         <AlertTriangle v-else data-test="step-status-error" :size="12" class="text-danger" />
@@ -148,7 +148,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
       </div>
       <template v-else>
         <div v-if="showErrorBanner" data-test="tool-step-error"
-             class="mb-1.5 flex items-start gap-1.5 rounded-sm bg-danger/10 px-2 py-1.5 text-danger font-mono text-[11px]">
+             class="mb-1.5 flex items-start gap-1.5 rounded-sm bg-danger/10 px-2 py-1.5 text-danger font-mono text-xs">
           <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
           <span class="whitespace-pre-wrap break-words leading-relaxed">{{ step.error }}</span>
         </div>

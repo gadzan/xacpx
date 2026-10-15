@@ -14,7 +14,7 @@
         <path d="M87 68 L100 81" stroke="#4F9BF5" />
       </g>
     </svg>
-    <span class="text-[15px] font-semibold tracking-tight text-fg">XACPX</span>
+    <span class="text-base font-semibold tracking-tight text-fg">XACPX</span>
     <span class="text-fg-muted text-xs font-medium tracking-wide">HUB</span>
   </div>
 </template>

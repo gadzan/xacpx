@@ -65,7 +65,7 @@ const completionChip = computed<CompletionChip | null>(() => {
   >
     <!-- Header -->
     <div
-      class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3.5 py-2 text-[12px]"
+      class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3.5 py-2 text-ui"
       :class="isSent ? 'text-accent' : 'text-fg-muted'"
     >
       <div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 font-medium">
@@ -89,7 +89,7 @@ const completionChip = computed<CompletionChip | null>(() => {
           <span
             v-if="message.peer.agent"
             data-test="peer-agent"
-            class="inline-flex shrink-0 items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-muted"
+            class="inline-flex shrink-0 items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-xs text-fg-muted"
           >
             <AgentIcon :driver="message.peer.agent" :size="11" />
             <span>{{ message.peer.agent }}</span>
@@ -98,7 +98,7 @@ const completionChip = computed<CompletionChip | null>(() => {
           <span
             v-if="message.peer.workspace"
             data-test="peer-workspace"
-            class="inline-flex shrink-0 items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-[11px] text-fg-muted"
+            class="inline-flex shrink-0 items-center gap-1 rounded-sm bg-surface-2 px-1.5 py-0.5 text-xs text-fg-muted"
           >
             <Folder :size="10" class="text-warn" />
             <span>{{ message.peer.workspace }}</span>
@@ -106,7 +106,7 @@ const completionChip = computed<CompletionChip | null>(() => {
         </span>
       </div>
 
-      <div class="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-fg-muted">
+      <div class="ml-auto flex shrink-0 items-center gap-2 text-xs text-fg-muted">
         <span
           v-if="completionChip"
           :data-test="completionChip.test"
@@ -136,7 +136,7 @@ const completionChip = computed<CompletionChip | null>(() => {
 
     <!-- Message Content Body -->
     <div class="px-3.5 py-2.5">
-      <StreamMarkdown v-if="message.content" :text="message.content" class="text-[13.5px] leading-relaxed text-fg" />
+      <StreamMarkdown v-if="message.content" :text="message.content" class="text-sm leading-relaxed text-fg" />
       <div class="mt-1 flex items-center justify-end text-fg-muted">
         <CopyButton v-if="message.content" :text="message.content" />
       </div>

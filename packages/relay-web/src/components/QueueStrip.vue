@@ -10,7 +10,7 @@ const chat = useChatStore();
        Renders nothing when the queue is empty — no v-if needed at the call site. -->
   <div v-if="chat.sessionQueue.length" data-test="queue-strip"
        class="flex w-fit max-w-full self-start items-center gap-2 rounded-2xl bg-surface/95 px-3 py-1.5 backdrop-blur-md">
-    <span class="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.queuedHeader") }}</span>
+    <span class="shrink-0 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.queuedHeader") }}</span>
     <TransitionGroup tag="div"
         move-class="transition-transform duration-200 ease-out motion-reduce:transition-none"
         enter-active-class="transition-all duration-200 ease-out motion-reduce:transition-none"
@@ -19,10 +19,10 @@ const chat = useChatStore();
         leave-to-class="opacity-0 scale-95"
         class="relative flex flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
       <span v-for="item in chat.sessionQueue" :key="item.id" data-test="queue-item"
-            class="inline-flex max-w-[220px] items-center gap-1.5 rounded-full bg-bg px-2.5 py-1 text-[11.5px] text-fg-muted">
+            class="inline-flex max-w-[220px] items-center gap-1.5 rounded-full bg-bg px-2.5 py-1 text-xs text-fg-muted">
         <span class="truncate">{{ item.textPreview }}</span>
         <button type="button" data-test="queue-cancel" :aria-label="$t('chat.queueCancelAria')"
-                class="grid h-4 w-4 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-danger/15 hover:text-danger"
+                class="grid h-4 w-4 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
                 @click="chat.cancelQueuedItem(chat.instanceId!, chat.sessionAlias!, item.id)">
           <X :size="10" />
         </button>
