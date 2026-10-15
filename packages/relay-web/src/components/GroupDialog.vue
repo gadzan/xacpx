@@ -376,7 +376,7 @@ async function confirmDelete(): Promise<void> {
               <button type="button"
                       :data-test="`group-dialog-stop-run-${work.run.id}`"
                       :disabled="stoppingRunIds.includes(work.run.id)"
-                      class="flex shrink-0 items-center gap-1 rounded-sm bg-danger/15 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger/25 disabled:opacity-50"
+                      class="flex shrink-0 items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger disabled:opacity-50"
                       @click="stopRun(work.run.id)">
                 <Loader2 v-if="stoppingRunIds.includes(work.run.id)" :size="12" class="animate-spin" />
                 <span>{{ $t("bot.prompt.stopRun") }}</span>

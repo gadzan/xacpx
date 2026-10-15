@@ -76,13 +76,9 @@ describe("LoginView", () => {
     expect(replace).toHaveBeenCalledWith("/");
   });
 
-  it("hides the enter hint unless the device has a hover pointer", () => {
+  it("renders no enter hint in the submit button", () => {
     const w = mount(LoginView);
-    const hint = w
-      .findAll('[data-test="signin"] span')
-      .find((s) => s.text().includes("enter"));
-    expect(hint?.classes()).toContain("hidden");
-    expect(hint?.classes()).toContain("[@media(hover:hover)]:inline");
+    expect(w.find('[data-test="signin"]').text()).not.toMatch(/enter|⏎/i);
   });
 
   it("localizes a known error code and does not redirect on failed login", async () => {

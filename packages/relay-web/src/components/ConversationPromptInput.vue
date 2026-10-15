@@ -427,7 +427,7 @@ function onInput(): void {
       </div>
       <button
         type="button"
-        class="flex items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger"
+        class="flex items-center gap-1 rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
         @click="handleRetry"
       >
         <RotateCcw :size="12" />

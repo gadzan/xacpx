@@ -150,8 +150,6 @@ async function copyCommand() {
           >
             <span class="login-arrow group-hover:translate-x-0.5" :class="pending ? 'opacity-60' : ''">▸</span>
             <span>{{ pending ? $t("login.signingIn") : $t("login.signIn") }}</span>
-            <!-- touch devices have no Enter key: hide the hint without hover -->
-            <span v-if="!pending" class="ml-auto hidden text-fg-muted [@media(hover:hover)]:inline">⏎ enter</span>
           </button>
         </div>
       </form>

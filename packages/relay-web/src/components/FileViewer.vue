@@ -275,7 +275,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <!-- save error / stale-conflict banner -->
       <div v-if="saveError" data-test="fv-save-error" class="m-3 flex items-center gap-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
         <span class="min-w-0 flex-1">{{ saveErrorLabel }}</span>
-        <button v-if="isStale" data-test="fv-reload" class="shrink-0 rounded-sm bg-danger/15 px-2 py-0.5 text-ui font-medium hover:bg-danger/25" @click="reloadFromDisk()">{{ $t("files.reload") }}</button>
+        <button v-if="isStale" data-test="fv-reload" class="shrink-0 rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 text-ui font-medium transition-colors" @click="reloadFromDisk()">{{ $t("files.reload") }}</button>
       </div>
       <!-- file content: one CodeMirror instance for read (editable:false) + edit (editable:true) -->
       <CodeEditor v-if="showEditor" ref="codeEditor" v-model="content" :filename="file!.path"
