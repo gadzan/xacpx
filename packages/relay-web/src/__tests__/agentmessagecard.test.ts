@@ -223,8 +223,7 @@ describe("AgentMessageCard", () => {
     const cls = wrapper.find('[data-test="agent-message-card"]').classes();
     expect(cls).toContain("mx-auto");
     expect(cls).not.toContain("ml-auto");
-    expect(cls).toContain("border-accent/25");
-    expect(cls).toContain("bg-accent/5");
+    expect(cls).toContain("bg-accent-soft");
     expect(cls).not.toContain("shadow-sm");
   });
 
@@ -243,8 +242,7 @@ describe("AgentMessageCard", () => {
     expect(cls).toContain("mr-auto");
     expect(cls).not.toContain("ml-auto");
     expect(cls).not.toContain("mx-auto");
-    expect(cls).toContain("border-accent/25");
-    expect(cls).toContain("bg-accent/5");
+    expect(cls).toContain("bg-accent-soft");
     expect(cls).not.toContain("shadow-sm");
   });
 });

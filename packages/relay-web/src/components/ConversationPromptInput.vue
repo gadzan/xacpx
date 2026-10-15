@@ -396,7 +396,7 @@ function onInput(): void {
     <!-- Disabled bot warning -->
     <div
       v-if="isBotDisabled"
-      class="mb-2 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning"
+ class="mb-2 flex items-center gap-2 rounded-lg bg-warning/10 px-3 py-1.5 text-xs text-warning"
     >
       <AlertCircle :size="14" class="shrink-0" />
       <span>{{ $t("bot.prompt.botDisabledWarning") }}</span>
@@ -405,7 +405,7 @@ function onInput(): void {
     <!-- Cancellation uncertainty (separate from prompt errors; no retry target) -->
     <div
       v-else-if="directBotsStore.cancelError"
-      class="mb-2 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning"
+ class="mb-2 flex items-center gap-2 rounded-lg bg-warning/10 px-3 py-1.5 text-xs text-warning"
     >
       <AlertCircle :size="14" class="shrink-0" />
       <span class="truncate">{{
@@ -416,7 +416,7 @@ function onInput(): void {
     <!-- Error Banner & Retry -->
     <div
       v-else-if="directBotsStore.promptError"
-      class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger"
+ class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-danger/10 px-3 py-1.5 text-xs text-danger"
     >
       <div class="flex items-center gap-2 min-w-0">
         <AlertCircle :size="14" class="shrink-0" />
@@ -466,7 +466,7 @@ function onInput(): void {
           role="listbox"
           :aria-label="$t('bot.prompt.completions')"
           data-test="direct-cmd-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-full overflow-y-auto rounded-xl border border-border bg-raised py-1 shadow-e2"
+ class="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-full overflow-y-auto rounded-xl bg-raised py-1 shadow-float"
         >
           <button
             v-for="(row, index) in rows"
@@ -477,7 +477,7 @@ function onInput(): void {
             :aria-selected="index === cmdActiveIdx"
             data-test="direct-cmd-item"
             class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
-            :class="index === cmdActiveIdx ? 'bg-accent/10' : ''"
+ :class="index === cmdActiveIdx ? 'bg-accent-soft' : ''"
             @pointerdown.prevent
             @click="pickRow(index)"
           >

@@ -65,7 +65,7 @@ async function handleCreate(): Promise<void> {
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
        @click.self="emit('close')">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="group-topic-title" tabindex="-1" class="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-xl">
+ <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="group-topic-title" tabindex="-1" class="w-full max-w-sm rounded-xl bg-surface p-4 shadow-float">
       <h3 id="group-topic-title" class="mb-2 text-sm font-semibold">{{ $t("group.topic.createTitle") }}</h3>
       <p class="mb-3 text-xs text-fg-muted">{{ $t("group.topic.createHint") }}</p>
       <form @submit.prevent="handleCreate">
@@ -75,14 +75,14 @@ async function handleCreate(): Promise<void> {
           required
           maxlength="60"
           :placeholder="$t('bot.topic.titlePlaceholder')"
-          class="mb-3 w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+ class="mb-3 w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none"
         />
         <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("bot.fields.workspace") }}</label>
         <select
           v-model="workspace"
           data-test="group-topic-workspace"
           required
-          class="mb-3 w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+ class="mb-3 w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none"
         >
           <option value="" disabled>
             {{ workspacesLoad === "loading" && !workspaces.length ? $t("common.loading") : $t("group.topic.workspacePlaceholder") }}
@@ -98,7 +98,7 @@ async function handleCreate(): Promise<void> {
         <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("group.topic.isolationLabel") }}</label>
         <select
           v-model="isolation"
-          class="mb-4 w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+ class="mb-4 w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none"
         >
           <option value="shared-single-writer">{{ $t("group.topic.isolationSingleWriter") }}</option>
           <option value="shared">{{ $t("group.topic.isolationShared") }}</option>
@@ -108,7 +108,7 @@ async function handleCreate(): Promise<void> {
         <div class="flex items-center justify-end gap-2">
           <button
             type="button"
-            class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
+ class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
             @click="emit('close')"
           >
             {{ $t("common.cancel") }}

@@ -313,8 +313,8 @@ async function confirmDelete(): Promise<void> {
          aria-labelledby="group-dialog-title"
          tabindex="-1"
          data-test="group-dialog"
-         class="flex max-h-full min-h-0 w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-surface text-fg shadow-2xl">
-      <div class="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
+ class="flex max-h-full min-h-0 w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-xl bg-surface text-fg shadow-float">
+ <div class="flex shrink-0 items-center justify-between px-5 py-3.5">
         <h2 id="group-dialog-title" class="text-base font-semibold">
           {{ isEditing ? $t("group.manage.editTitle") : $t("group.manage.createTitle") }}
         </h2>
@@ -331,7 +331,7 @@ async function confirmDelete(): Promise<void> {
       <form class="thin-scroll min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-4" @submit.prevent="submit">
         <div v-if="isDeleting"
              data-test="group-dialog-deleting"
-             class="flex items-start justify-between gap-2.5 rounded-lg border border-warn/30 bg-warn/10 p-3 text-xs text-warn">
+ class="flex items-start justify-between gap-2.5 rounded-lg bg-warn/10 p-3 text-xs text-warn">
           <div class="flex-1 leading-relaxed">{{ $t("group.manage.deletingNotice") }}</div>
           <button type="button"
                   data-test="group-dialog-retry-delete"
@@ -345,14 +345,14 @@ async function confirmDelete(): Promise<void> {
 
         <div v-if="errorMessage"
              data-test="group-dialog-error"
-             class="flex items-start gap-2.5 rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs text-danger">
+ class="flex items-start gap-2.5 rounded-lg bg-danger/10 p-3 text-xs text-danger">
           <AlertCircle :size="15" class="mt-0.5 shrink-0" />
           <div class="flex-1 leading-relaxed">{{ errorMessage }}</div>
         </div>
 
         <div v-if="memberWorkLoading || memberWork || memberWorkError"
              data-test="group-dialog-member-work"
-             class="space-y-2 rounded-lg border border-border bg-bg p-3 text-xs">
+ class="space-y-2 rounded-lg bg-bg p-3 text-xs">
           <div v-if="memberWorkLoading" class="flex items-center gap-1.5 text-fg-muted">
             <Loader2 :size="12" class="animate-spin" />
             <span>{{ $t("group.manage.memberWorkLoading") }}</span>
@@ -407,7 +407,7 @@ async function confirmDelete(): Promise<void> {
               required
               :maxlength="TITLE_MAX"
               :placeholder="$t('group.manage.namePlaceholder')"
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
+ class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
             />
           </div>
 
@@ -422,7 +422,7 @@ async function confirmDelete(): Promise<void> {
               rows="2"
               :maxlength="DESCRIPTION_MAX"
               :placeholder="$t('group.manage.descriptionPlaceholder')"
-              class="w-full resize-y rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none transition-colors focus:border-accent"
+ class="w-full resize-y rounded-lg bg-bg px-3 py-2 text-sm outline-none transition-colors"
             />
           </div>
 
@@ -452,7 +452,7 @@ async function confirmDelete(): Promise<void> {
             <template v-else>
               <div v-if="!isEditing && catalogReady && bots.length < 2"
                    data-test="group-dialog-need-bots"
-                   class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-accent/30 bg-accent/10 p-3 text-xs">
+ class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-accent-soft p-3 text-xs">
                 <span class="flex-1 leading-relaxed">{{ $t("group.manage.needBots", { count: bots.length }) }}</span>
                 <button type="button"
                         data-test="group-dialog-create-bot"
@@ -462,7 +462,7 @@ async function confirmDelete(): Promise<void> {
                   <span>{{ $t("bot.actions.newBot") }}</span>
                 </button>
               </div>
-              <div class="max-h-56 space-y-px overflow-y-auto rounded-lg border border-border bg-bg p-1 thin-scroll">
+ <div class="max-h-56 space-y-px overflow-y-auto rounded-lg bg-bg p-1 thin-scroll">
                 <label v-for="bot in bots"
                        :key="bot.id"
                        :data-test="`group-dialog-member-${bot.id}`"
@@ -502,7 +502,7 @@ async function confirmDelete(): Promise<void> {
               id="group-lead"
               v-model="leadBotId"
               data-test="group-dialog-lead"
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
+ class="w-full rounded-lg bg-bg px-3 py-1.5 text-sm outline-none transition-colors"
               @change="onLeadChange"
             >
               <option value="">{{ $t("group.manage.noLead") }}</option>
@@ -521,7 +521,7 @@ async function confirmDelete(): Promise<void> {
 
         <div v-if="confirmingDelete"
              data-test="group-dialog-delete-confirm"
-             class="space-y-2 rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs">
+ class="space-y-2 rounded-lg bg-danger/10 p-3 text-xs">
           <p class="font-semibold text-danger">{{ $t("group.manage.deleteConfirmTitle", { title: liveGroup?.title ?? title }) }}</p>
           <ul class="list-disc space-y-1 pl-4 leading-relaxed text-fg">
             <li data-test="group-dialog-delete-topics">
@@ -535,7 +535,7 @@ async function confirmDelete(): Promise<void> {
           </ul>
           <div class="flex justify-end gap-2 pt-1">
             <button type="button"
-                    class="rounded-lg border border-border px-3 py-1 font-medium text-fg-muted hover:bg-raised"
+ class="rounded-lg px-3 py-1 font-medium text-fg-muted hover:bg-raised"
                     @click="confirmingDelete = false">
               {{ $t("common.cancel") }}
             </button>
@@ -551,7 +551,7 @@ async function confirmDelete(): Promise<void> {
         </div>
       </form>
 
-      <div class="flex shrink-0 items-center justify-between gap-2.5 border-t border-border bg-surface/50 px-5 py-3">
+ <div class="flex shrink-0 items-center justify-between gap-2.5 bg-surface/50 px-5 py-3">
         <button v-if="isEditing && !isDeleting"
                 type="button"
                 data-test="group-dialog-delete"
@@ -565,7 +565,7 @@ async function confirmDelete(): Promise<void> {
         <div class="flex items-center gap-2.5">
           <button
             type="button"
-            class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+ class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
             @click="emit('close')"
           >
             {{ $t("common.cancel") }}

@@ -65,10 +65,10 @@ async function signIn() {
 
     <div
       data-test="invite-window"
-      class="relative w-[24rem] max-w-full overflow-hidden rounded-2xl border border-border bg-surface font-mono shadow-e3"
+ class="relative w-[24rem] max-w-full overflow-hidden rounded-2xl bg-surface font-mono"
     >
       <!-- window chrome -->
-      <div class="relative flex items-center border-b border-border bg-raised px-3.5 py-2.5">
+ <div class="relative flex items-center bg-raised px-3.5 py-2.5">
         <div aria-hidden="true" class="flex gap-[7px]">
           <span class="h-[11px] w-[11px] rounded-full opacity-90" style="background:#ff5f56"></span>
           <span class="h-[11px] w-[11px] rounded-full opacity-90" style="background:#ffbd2e"></span>
@@ -102,7 +102,7 @@ async function signIn() {
           <div class="flex items-center gap-2">
             <code
               data-test="invite-token"
-              class="min-w-0 flex-1 select-all break-all rounded-lg border border-border bg-bg px-3 py-2.5 text-[12.5px] tracking-[0.03em] text-fg"
+ class="min-w-0 flex-1 select-all break-all rounded-lg bg-bg px-3 py-2.5 text-[12.5px] tracking-[0.03em] text-fg"
             >{{ token }}</code>
             <button
               type="button"

@@ -43,11 +43,11 @@ async function copyCommand() {
 
     <form
       data-test="login-window"
-      class="relative w-[22rem] max-w-full overflow-hidden rounded-2xl border border-border bg-surface font-mono shadow-e3"
+ class="relative w-[22rem] max-w-full overflow-hidden rounded-2xl bg-surface font-mono"
       @submit.prevent="submit"
     >
       <!-- window chrome -->
-      <div class="relative flex items-center border-b border-border bg-raised px-3.5 py-2.5">
+ <div class="relative flex items-center bg-raised px-3.5 py-2.5">
         <div aria-hidden="true" class="flex gap-[7px]">
           <span class="h-[11px] w-[11px] rounded-full opacity-90" style="background:#ff5f56"></span>
           <span class="h-[11px] w-[11px] rounded-full opacity-90" style="background:#ffbd2e"></span>
@@ -109,7 +109,7 @@ async function copyCommand() {
             aria-describedby="login-hint"
             autocomplete="off"
             :disabled="pending"
-            class="login-input w-full rounded-lg border border-border bg-bg py-2.5 pl-3 pr-10 text-sm tracking-[0.05em] text-fg placeholder:tracking-normal placeholder:text-fg-muted disabled:opacity-50"
+ class="login-input w-full rounded-lg bg-surface-2 py-2.5 pl-3 pr-10 text-sm tracking-[0.05em] text-fg placeholder:tracking-normal placeholder:text-fg-muted disabled:opacity-50"
           />
           <button
             type="button"

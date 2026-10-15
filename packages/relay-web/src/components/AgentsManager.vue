@@ -60,9 +60,9 @@ function hint(installed: string): string {
   <section class="space-y-3">
     <p v-if="error" data-test="am-error" class="rounded bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ error }}</p>
     <input v-if="showFilter" v-model="filter" data-test="am-filter" :placeholder="$t('common.filter')"
-           class="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+ class="w-full rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
     <p v-if="!all.length" data-test="am-empty" class="text-sm text-fg-muted">{{ $t("agents.empty") }}</p>
-    <ul v-else class="max-h-64 divide-y divide-border overflow-y-auto rounded border border-border">
+ <ul v-else class="max-h-64 overflow-y-auto rounded">
       <li v-for="a in list" :key="a.name" class="flex items-center justify-between gap-2 px-3 py-2 text-sm">
         <span class="min-w-0 truncate" :title="`${a.name} · ${a.driver}`">
           <span class="font-medium text-fg">{{ a.name }}</span><span class="text-fg-muted"> · {{ a.driver }}</span>
@@ -75,18 +75,18 @@ function hint(installed: string): string {
     </ul>
 
     <button v-if="!formOpen" type="button" data-test="am-add-toggle" @click="formOpen = true"
-            class="flex items-center gap-1.5 rounded border border-dashed border-border px-3 py-1.5 text-sm text-fg-muted transition-colors hover:border-accent hover:text-fg">
+ class="flex items-center gap-1.5 rounded bg-surface-2 px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-accent-soft hover:text-fg">
       <Plus :size="14" /> {{ $t("agents.add") }}
     </button>
-    <div v-else class="space-y-2 rounded border border-border p-3">
+ <div v-else class="space-y-2 rounded p-3">
       <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <select v-model="driver" data-test="am-driver" class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+ <select v-model="driver" data-test="am-driver" class="rounded bg-surface-2 px-2 py-1 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
           <option value="" disabled>{{ $t("agents.chooseDriver") }}</option>
           <option v-for="c in addableDrivers" :key="c.driver" :value="c.driver" :disabled="c.installed === 'unknown'">
             {{ c.driver }} ({{ hint(c.installed) }})
           </option>
         </select>
-        <input v-model="customName" data-test="am-name" :placeholder="$t('agents.namePlaceholder')" class="rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+ <input v-model="customName" data-test="am-name" :placeholder="$t('agents.namePlaceholder')" class="rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
       </div>
       <div class="flex gap-2">
         <button data-test="am-add" class="rounded bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"

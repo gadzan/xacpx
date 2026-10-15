@@ -20,6 +20,7 @@ export default {
         warn: "rgb(var(--c-warn) / <alpha-value>)",
         danger: "rgb(var(--c-danger) / <alpha-value>)",
         "on-danger": "rgb(var(--c-on-danger) / <alpha-value>)",
+        "on-warn": "rgb(var(--c-on-warn) / <alpha-value>)",
         info: "rgb(var(--c-info) / <alpha-value>)",
       },
       fontFamily: {
@@ -27,10 +28,7 @@ export default {
         mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       boxShadow: {
-        e1: "var(--shadow-e1)",
-        e2: "var(--shadow-e2)",
-        e3: "var(--shadow-e3)",
-        dock: "var(--shadow-dock)",
+        float: "var(--shadow-float)",
       },
     },
   },

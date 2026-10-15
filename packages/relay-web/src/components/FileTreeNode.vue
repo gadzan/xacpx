@@ -149,7 +149,7 @@ async function onMenuSelect(key: string) {
              placement/selection that the row's select-none would otherwise inherit-block. -->
         <input v-else v-focus data-test="inline-name" v-model="inlineName" @click.stop
                @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
-               class="flex-1 select-text rounded border border-border bg-raised px-1 text-[12px]" />
+ class="flex-1 select-text rounded bg-raised px-1 text-[12px]" />
       </button>
       <span v-if="gitDot" data-test="fs-status" class="mx-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="gitDot"
             :title="entry.type === 'file' ? (files.changed[rel] || '') : $t('files.containsChanges')" />
@@ -160,7 +160,7 @@ async function onMenuSelect(key: string) {
       <input v-if="inlineMode && inlineMode.kind !== 'rename'" v-focus data-test="inline-name" v-model="inlineName" @click.stop
              @keyup.enter="submitInline" @keyup.esc="cancelInline" @blur="cancelInline"
              :style="{ marginLeft: (depth + 1) * 12 + 16 + 'px' }"
-             class="my-0.5 rounded border border-border bg-raised px-1 text-[12px]" />
+ class="my-0.5 rounded bg-raised px-1 text-[12px]" />
       <FileTreeNode v-for="c in visibleChildren" :key="c.name" :entry="c" :dir="rel" :depth="depth + 1"
                     :show-dotfiles="showDotfiles" :show-gitignored="showGitignored" @open-file="emit('openFile', $event)" />
       <div v-if="!visibleChildren.length && files.tree[rel]" class="py-0.5 text-[11px] text-fg-muted" :style="{ paddingLeft: (depth + 1) * 12 + 16 + 'px' }">{{ $t("files.tree.emptyFolder") }}</div>

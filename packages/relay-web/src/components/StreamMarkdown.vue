@@ -281,7 +281,7 @@ onBeforeUnmount(() => {
   padding: 0.65em 0.85em;
   overflow-x: auto;
   margin: 0.6em 0;
-  box-shadow: var(--shadow-e1);
+  box-shadow: none;
 }
 .stream-md pre::-webkit-scrollbar { height: 8px; }
 .stream-md pre::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
@@ -377,7 +377,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgb(var(--c-border));
   border-radius: 8px;
   background: rgb(var(--c-bg));
-  box-shadow: var(--shadow-e1);
+  box-shadow: none;
   touch-action: pan-y; /* one finger scrolls the page; the enhancer handles pinch + mouse drag */
   cursor: grab;
 }
@@ -403,7 +403,7 @@ onBeforeUnmount(() => {
   margin: 0;
   max-height: 560px;
   overflow: auto;
-  box-shadow: var(--shadow-e1);
+  box-shadow: none;
   white-space: pre;
 }
 .stream-md .mermaid-block.mmd-source-mode .mmd-viewport {

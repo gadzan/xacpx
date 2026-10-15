@@ -151,7 +151,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-full flex-col bg-bg" data-test="desktop-center">
-    <div class="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-surface/60 px-3 backdrop-blur-md">
+ <div class="flex h-11 shrink-0 items-center gap-2 bg-surface/60 px-3 backdrop-blur-md">
       <Monitor :size="15" class="shrink-0 text-fg-muted" />
       <span class="min-w-0 truncate text-[12.5px] text-fg">{{ props.instanceName || props.instanceId }}</span>
       <span data-test="desktop-status" class="shrink-0 text-[11px] text-fg-muted">{{ $t(statusLabel) }}</span>
@@ -161,7 +161,7 @@ onBeforeUnmount(() => {
                 :aria-label="$t(session.fit ? 'desktop.fit' : 'desktop.actual')"
                 :title="$t(session.fit ? 'desktop.fit' : 'desktop.actual')"
                 class="grid h-7 w-7 place-items-center rounded transition-colors"
-                :class="session.fit ? 'bg-accent/10 text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+ :class="session.fit ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
                 @click="toggleFit">
           <Minimize v-if="session.fit" :size="15" />
           <Maximize v-else :size="15" />
@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
                 :aria-label="$t(session.smooth ? 'desktop.smoothOn' : 'desktop.smoothOff')"
                 :title="$t('desktop.smoothHint')"
                 class="grid h-7 w-7 place-items-center rounded transition-colors"
-                :class="session.smooth ? 'bg-accent/10 text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+ :class="session.smooth ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
                 @click="toggleSmooth">
           <Gauge :size="15" />
         </button>
@@ -180,7 +180,7 @@ onBeforeUnmount(() => {
                 :aria-label="$t(fullscreen ? 'desktop.exitFullscreen' : 'desktop.fullscreen')"
                 :title="$t(fullscreen ? 'desktop.exitFullscreen' : 'desktop.fullscreen')"
                 class="grid h-7 w-7 place-items-center rounded transition-colors"
-                :class="fullscreen ? 'bg-accent/10 text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+ :class="fullscreen ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-raised hover:text-fg'"
                 @click="toggleFullscreen">
           <Shrink v-if="fullscreen" :size="15" />
           <Expand v-else :size="15" />
@@ -196,11 +196,11 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="session.status === 'error'" class="shrink-0 border-b border-border bg-surface px-3 py-2 text-[12px] text-fg-muted" data-test="desktop-error">
+ <div v-if="session.status === 'error'" class="shrink-0 bg-surface px-3 py-2 text-[12px] text-fg-muted" data-test="desktop-error">
       <span data-test="desktop-error-code" class="shrink-0">{{ errorDetail }}</span><span v-if="session.lastErrorMessage"> — {{ session.lastErrorMessage }}</span>
       <button type="button" class="ml-2 underline" @click="reconnect">{{ $t("desktop.reconnect") }}</button>
     </div>
-    <div v-else-if="session.status === 'closed'" class="shrink-0 border-b border-border bg-surface px-3 py-2 text-[12px] text-fg-muted" data-test="desktop-closed">
+ <div v-else-if="session.status === 'closed'" class="shrink-0 bg-surface px-3 py-2 text-[12px] text-fg-muted" data-test="desktop-closed">
       {{ closedDetail || $t("desktop.statusClosed") }}
       <button type="button" class="ml-2 underline" @click="reconnect">{{ $t("desktop.reconnect") }}</button>
     </div>
@@ -211,7 +211,7 @@ onBeforeUnmount(() => {
           data-test="desktop-macos-signin"
           class="absolute inset-0 z-20 grid place-items-center bg-bg/80"
           @submit.prevent="submitAccount">
-      <div class="w-72 space-y-2 rounded-lg border border-border bg-surface p-4">
+ <div class="w-72 space-y-2 rounded-lg bg-surface p-4">
         <p class="text-[13px] text-fg">{{ $t("desktop.macosSignInTitle", { name: props.instanceName || props.instanceId }) }}</p>
         <p class="text-[11.5px] text-fg-muted">{{ $t("desktop.macosSignInHint") }}</p>
         <input v-model="username"
@@ -220,13 +220,13 @@ onBeforeUnmount(() => {
                autocapitalize="off"
                spellcheck="false"
                :placeholder="$t('desktop.macosAccountName')"
-               class="w-full rounded border border-border bg-bg px-2 py-1 text-[13px] text-fg outline-none focus:border-accent" />
+ class="w-full rounded bg-bg px-2 py-1 text-[13px] text-fg outline-none" />
         <input v-model="password"
                data-test="desktop-macos-password"
                type="password"
                autocomplete="off"
                :placeholder="$t('desktop.macosPassword')"
-               class="w-full rounded border border-border bg-bg px-2 py-1 text-[13px] text-fg outline-none focus:border-accent" />
+ class="w-full rounded bg-bg px-2 py-1 text-[13px] text-fg outline-none" />
         <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-[11.5px] text-danger">
           {{ $t("desktop.macosRejected") }}
         </p>
@@ -240,14 +240,14 @@ onBeforeUnmount(() => {
     </form>
 
     <div v-if="vncPrompt"
-         class="absolute inset-x-0 bottom-0 z-20 flex items-center gap-2 border-t border-border bg-surface/95 px-3 py-2 backdrop-blur-md"
+ class="absolute inset-x-0 bottom-0 z-20 flex items-center gap-2 bg-surface/95 px-3 py-2 backdrop-blur-md"
          data-test="desktop-password-bar">
       <input v-model="password"
              data-test="desktop-password"
              type="password"
              autocomplete="off"
              :placeholder="$t('desktop.passwordPlaceholder')"
-             class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-[13px] text-fg outline-none focus:border-accent"
+ class="min-w-0 flex-1 rounded bg-bg px-2 py-1 text-[13px] text-fg outline-none"
              @keydown.enter.prevent="submitPassword" />
       <button data-test="desktop-password-submit"
               type="button"

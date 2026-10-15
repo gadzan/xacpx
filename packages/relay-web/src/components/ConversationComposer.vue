@@ -114,7 +114,7 @@ function onInput(event: Event): void {
        and stack layers above this card baseline to its top border. -->
   <form class="relative px-0" @submit.prevent="emit('send')">
     <div
-      class="relative rounded-2xl border border-border bg-surface shadow-dock transition-colors focus-within:border-accent/50"
+      class="relative rounded-2xl bg-surface transition-colors focus-within:ring-2 focus-within:ring-accent/40"
     >
       <slot name="menus" />
 
@@ -156,7 +156,7 @@ function onInput(event: Event): void {
             :aria-label="$t('common.cancel')"
             :title="$t('common.cancel')"
             :disabled="cancelling"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-danger text-on-danger shadow-e1 transition-all hover:opacity-90 hover:shadow-e2 disabled:opacity-50"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-danger text-on-danger transition-all hover:opacity-90 disabled:opacity-50"
             @click="emit('cancel')"
           >
             <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
@@ -169,7 +169,7 @@ function onInput(event: Event): void {
             :disabled="disabled || sending || sendDisabled || !hasSendable"
             :aria-label="$t('chat.send')"
             :title="$t('chat.send')"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent text-on-accent shadow-e1 transition-all hover:bg-accent-hover hover:shadow-e2 disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"
             @click="emit('send')"
           >
             <Loader2 v-if="sending" :size="12" class="animate-spin" />

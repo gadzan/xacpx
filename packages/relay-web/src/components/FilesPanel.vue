@@ -216,7 +216,7 @@ watch(
     </div>
     <template v-else>
       <!-- Active session's workspace (static — no picker) + Files / Changes tabs. -->
-      <div class="flex shrink-0 items-center gap-2 border-b border-border p-2">
+ <div class="flex shrink-0 items-center gap-2 p-2">
         <div data-test="ws-label" class="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-fg" :title="files.workspace ?? ''">
           <Folder :size="13" class="shrink-0 text-warn" />
           <span class="truncate font-medium">{{ files.workspace ?? "—" }}</span>
@@ -244,13 +244,13 @@ watch(
           </button>
           <button data-test="tab-files"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
-                  :class="files.tab === 'files' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+ :class="files.tab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="files.tab = 'files'">
             <FileText :size="13" />{{ $t("files.title") }}
           </button>
           <button data-test="tab-changes"
                   class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px] transition-colors cursor-pointer"
-                  :class="files.tab === 'changes' ? 'bg-accent/10 text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+ :class="files.tab === 'changes' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="files.tab = 'changes'">
             <List :size="13" />{{ $t("files.changes") }}
           </button>
@@ -266,10 +266,10 @@ watch(
       <!-- Files tab: pinned search (+ breadcrumb when browsing); only the listing scrolls. -->
       <div v-if="files.tab === 'files'" class="flex min-h-0 flex-1 flex-col">
         <!-- search (pinned): query + match-case/whole-word/regex + include/exclude + name/content mode -->
-        <div class="shrink-0 border-b border-border px-2 py-1 space-y-1">
+ <div class="shrink-0 px-2 py-1 space-y-1">
           <div class="flex items-center gap-1">
             <input v-model="searchInput" data-test="fs-search" :placeholder="$t(searchPlaceholder)"
-                   class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg placeholder:text-fg-muted" @input="onSearchInput" />
+ class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-xs text-fg placeholder:text-fg-muted" @input="onSearchInput" />
             <button data-test="search-matchcase" :title="$t('files.search.matchCase')" @click="files.searchOpts.matchCase = !files.searchOpts.matchCase"
                     class="grid h-6 w-6 place-items-center rounded text-[11px]" :class="files.searchOpts.matchCase ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">Aa</button>
             <button data-test="search-wholeword" :title="$t('files.search.wholeWord')" @click="files.searchOpts.wholeWord = !files.searchOpts.wholeWord"
@@ -279,8 +279,8 @@ watch(
             <button v-if="searchInput" :aria-label="$t('files.clearSearch')" class="text-fg-muted hover:text-fg" @click="clearSearch"><X :size="14" /></button>
           </div>
           <div class="flex items-center gap-1">
-            <input v-model="files.searchOpts.include" data-test="search-include" :placeholder="$t('files.search.include')" class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-0.5 text-[11px] text-fg placeholder:text-fg-muted" />
-            <input v-model="files.searchOpts.exclude" data-test="search-exclude" :placeholder="$t('files.search.exclude')" class="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-0.5 text-[11px] text-fg placeholder:text-fg-muted" />
+ <input v-model="files.searchOpts.include" data-test="search-include" :placeholder="$t('files.search.include')" class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-fg placeholder:text-fg-muted" />
+ <input v-model="files.searchOpts.exclude" data-test="search-exclude" :placeholder="$t('files.search.exclude')" class="min-w-0 flex-1 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-fg placeholder:text-fg-muted" />
           </div>
           <div class="flex items-center gap-1 text-[11px]">
             <button data-test="search-mode-name" @click="files.searchOpts.mode = 'name'" class="rounded px-2 py-0.5" :class="files.searchOpts.mode === 'name' ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byName") }}</button>
@@ -329,7 +329,7 @@ watch(
 
         <!-- browsing: dotfile/gitignore toggles, then the tree scrolls -->
         <template v-else>
-        <div class="flex shrink-0 items-center gap-3 border-b border-border px-2.5 py-1 text-[11px] text-fg-muted">
+ <div class="flex shrink-0 items-center gap-3 px-2.5 py-1 text-[11px] text-fg-muted">
           <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" data-test="toggle-dotfiles" v-model="showDotfiles" class="accent-accent" />{{ $t("files.toggle.showDotfiles") }}</label>
           <label class="flex items-center gap-1 cursor-pointer"><input type="checkbox" data-test="toggle-gitignored" v-model="showGitignored" class="accent-accent" />{{ $t("files.toggle.showGitignored") }}</label>
         </div>
@@ -337,7 +337,7 @@ watch(
         <!-- root-level new file/folder: dropped by the workspace-header ⋯ menu (openRootMenu). -->
         <input v-if="rootInline" v-focus data-test="root-inline-name" v-model="rootName"
                @keyup.enter="submitRoot" @keyup.esc="rootInline = null" @blur="rootInline = null"
-               class="mb-1 w-full rounded border border-border bg-raised px-1 text-[12px]" />
+ class="mb-1 w-full rounded bg-raised px-1 text-[12px]" />
 
         <!-- directory tree: recursive rows (chevron + folder/file icon), lazy-expanded -->
         <div class="min-h-0 flex-1 overflow-y-auto thin-scroll py-1 font-mono transition-opacity" :class="files.loadingDirs.has('') && rootChildren.length ? 'opacity-50' : ''" :aria-busy="files.loadingDirs.has('')">
@@ -358,11 +358,11 @@ watch(
       <div v-else class="flex min-h-0 flex-1 flex-col">
         <template v-if="files.diff">
           <!-- Compact Git context and operations (A), with expandable worktree context (C). -->
-          <div class="shrink-0 border-b border-border">
+ <div class="shrink-0">
             <div data-test="changes-summary" class="flex items-center gap-1.5 px-2.5 pt-2 pb-1">
               <GitBranch :size="12" class="shrink-0 text-accent" />
               <select v-if="git.status?.branch" data-test="git-branch-select" :value="git.status.branch" :disabled="gitBusy"
-                      class="min-w-0 max-w-[45%] truncate rounded border border-border bg-bg px-1.5 py-0.5 font-mono text-[11px] font-medium text-fg disabled:opacity-50"
+ class="min-w-0 max-w-[45%] truncate rounded bg-bg px-1.5 py-0.5 font-mono text-[11px] font-medium text-fg disabled:opacity-50"
                       @change="switchBranch">
                 <option v-for="branch in git.status.branches" :key="branch.name" :value="branch.name"
                         :disabled="!!branch.worktreePath && !branch.current">{{ branch.name }}{{ branch.worktreePath && !branch.current ? ` · ${$t('files.git.inWorktree')}` : '' }}</option>
@@ -371,7 +371,7 @@ watch(
               <span v-else-if="gitCtx?.detached" data-test="changes-branch" class="truncate font-mono text-[11.5px] italic text-fg-muted">{{ $t("files.detached") }}</span>
               <span v-else class="text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted">{{ $t("files.changes") }}</span>
               <span v-if="gitCtx?.worktree?.linked" data-test="worktree-linked"
-                    class="shrink-0 rounded-full border border-accent/30 bg-accent/10 px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">{{ $t("files.linked") }}</span>
+ class="shrink-0 rounded-full bg-accent-soft px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">{{ $t("files.linked") }}</span>
               <span class="flex-1" />
               <button data-test="git-new-branch" :title="$t('files.git.newBranch')" :disabled="gitBusy"
                       class="grid h-6 w-6 place-items-center rounded text-fg-muted hover:bg-raised hover:text-accent disabled:opacity-50"
@@ -385,12 +385,12 @@ watch(
                 <span class="text-danger">−{{ changesSummary.del }}</span>
               </div>
             </div>
-            <div v-if="showBranchCreate" data-test="git-branch-create" class="mx-2.5 mb-1.5 space-y-1 rounded border border-border bg-bg p-1.5">
+ <div v-if="showBranchCreate" data-test="git-branch-create" class="mx-2.5 mb-1.5 space-y-1 rounded bg-bg p-1.5">
               <input v-model="branchName" data-test="git-new-branch-name" :placeholder="$t('files.git.branchName')"
-                     class="w-full rounded border border-border bg-surface px-2 py-1 text-[11px] text-fg" />
+ class="w-full rounded bg-surface px-2 py-1 text-[11px] text-fg" />
               <div class="flex gap-1">
                 <input v-model="branchStart" :placeholder="$t('files.git.startPoint')"
-                       class="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-[11px] text-fg" />
+ class="min-w-0 flex-1 rounded bg-surface px-2 py-1 text-[11px] text-fg" />
                 <button data-test="git-create-branch" :disabled="gitBusy || !branchName.trim()"
                         class="rounded bg-accent px-2 py-1 text-[11px] font-medium text-on-accent disabled:opacity-50" @click="createBranch">{{ $t("files.git.create") }}</button>
               </div>
@@ -404,18 +404,18 @@ watch(
               <button data-test="git-pull" :disabled="gitBusy" class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="pullRemote"><Download :size="10" />{{ $t("files.git.pull") }}</button>
               <button data-test="git-push" :disabled="gitBusy || !git.status || git.status.detached" class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-fg-muted hover:bg-raised hover:text-fg disabled:opacity-50" @click="pushRemote"><Upload :size="10" />{{ $t("files.git.push") }}</button>
             </div>
-            <div v-if="showWorktrees" data-test="git-worktrees" class="border-t border-border/70 px-2.5 py-1.5 text-[10.5px]">
+ <div v-if="showWorktrees" data-test="git-worktrees" class="px-2.5 py-1.5 text-[10.5px]">
               <div v-for="tree in git.status?.worktrees ?? []" :key="tree.path" class="flex items-center gap-1.5 py-0.5">
                 <FolderGit2 :size="10" :class="tree.current ? 'text-accent' : 'text-fg-muted'" />
                 <span class="shrink-0 font-mono text-fg">{{ tree.branch ?? $t("files.detached") }}</span>
                 <span class="min-w-0 flex-1 truncate font-mono text-fg-muted" :title="tree.path">{{ tree.path }}</span>
               </div>
-              <button data-test="git-new-worktree" class="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-1 text-accent hover:bg-accent/10" @click="beginWorktreeCreate"><Plus :size="10" />{{ $t("files.git.newWorktree") }}</button>
-              <div v-if="showWorktreeCreate" data-test="git-worktree-create" class="mt-1 space-y-1 rounded border border-border bg-bg p-1.5">
+ <button data-test="git-new-worktree" class="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-1 text-accent hover:bg-accent-soft" @click="beginWorktreeCreate"><Plus :size="10" />{{ $t("files.git.newWorktree") }}</button>
+ <div v-if="showWorktreeCreate" data-test="git-worktree-create" class="mt-1 space-y-1 rounded bg-bg p-1.5">
                 <label class="flex items-center gap-1"><input v-model="worktreeCreateBranch" type="checkbox" class="accent-accent" />{{ $t("files.git.createBranch") }}</label>
-                <input v-model="worktreeBranch" data-test="git-worktree-branch" :placeholder="$t('files.git.branchName')" class="w-full rounded border border-border bg-surface px-2 py-1 text-fg" />
-                <input v-model="worktreeWorkspace" data-test="git-worktree-workspace" :placeholder="$t('files.git.workspaceName')" class="w-full rounded border border-border bg-surface px-2 py-1 text-fg" />
-                <input v-if="worktreeCreateBranch" v-model="worktreeStart" :placeholder="$t('files.git.startPoint')" class="w-full rounded border border-border bg-surface px-2 py-1 text-fg" />
+ <input v-model="worktreeBranch" data-test="git-worktree-branch" :placeholder="$t('files.git.branchName')" class="w-full rounded bg-surface px-2 py-1 text-fg" />
+ <input v-model="worktreeWorkspace" data-test="git-worktree-workspace" :placeholder="$t('files.git.workspaceName')" class="w-full rounded bg-surface px-2 py-1 text-fg" />
+ <input v-if="worktreeCreateBranch" v-model="worktreeStart" :placeholder="$t('files.git.startPoint')" class="w-full rounded bg-surface px-2 py-1 text-fg" />
                 <button data-test="git-create-worktree" :disabled="gitBusy || !worktreeBranch.trim() || !worktreeWorkspace.trim() || !activeSession?.agent"
                         class="rounded bg-accent px-2 py-1 font-medium text-on-accent disabled:opacity-50" @click="createWorktree">{{ $t("files.git.createAndOpen") }}</button>
               </div>
@@ -424,7 +424,7 @@ watch(
               <FolderGit2 :size="11" class="shrink-0 opacity-70" />
               <span class="truncate font-mono" dir="rtl">{{ gitCtx.worktree.root }}</span>
             </div>
-            <div v-if="gitMessage" data-test="git-operation-message" class="flex items-center gap-1 border-t border-border/70 px-2.5 py-1 text-[10.5px]" :class="gitMessage.ok ? 'text-fg-muted' : 'bg-danger/10 text-danger'">
+ <div v-if="gitMessage" data-test="git-operation-message" class="flex items-center gap-1 px-2.5 py-1 text-[10.5px]" :class="gitMessage.ok ? 'text-fg-muted' : 'bg-danger/10 text-danger'">
               <Loader2 v-if="git.operation" :size="10" class="animate-spin motion-reduce:animate-none" />
               <span class="break-all">{{ gitMessage.text }}</span>
             </div>
@@ -439,14 +439,14 @@ watch(
                   <span class="text-fg-muted">{{ s.items.length }}</span>
                 </button>
                 <button v-if="s.key !== 'staged'" data-test="git-stage-group" :disabled="gitBusy"
-                        class="rounded px-1 py-0.5 text-[10px] text-accent hover:bg-accent/10 disabled:opacity-50"
+ class="rounded px-1 py-0.5 text-[10px] text-accent hover:bg-accent-soft disabled:opacity-50"
                         @click="stage(s.items.map((item) => item.path))">{{ $t("files.git.stageAll") }}</button>
               </div>
               <ul v-show="!collapsed[s.key]" class="space-y-px pt-0.5">
                 <li v-for="f in s.items" :key="f.path" class="group flex items-center">
                   <button data-test="diff-file" :title="f.path"
                           class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left cursor-pointer"
-                          :class="selectedDiff === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="openDiff(f.path)">
+ :class="selectedDiff === f.path ? 'bg-accent-soft' : 'hover:bg-raised'" @click="openDiff(f.path)">
                     <span class="w-3 shrink-0 text-center font-mono text-[10.5px] uppercase" :class="statusBadge(f.status).cls">{{ statusBadge(f.status).label }}</span>
                     <span class="flex min-w-0 flex-1 items-baseline truncate font-mono text-[11px]">
                       <span v-if="splitPath(f.path).dir" class="truncate text-fg-muted">{{ splitPath(f.path).dir }}</span>
@@ -470,14 +470,14 @@ watch(
             </div>
             <div v-if="!changeSections.length" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("files.noChanges") }}</div>
           </div>
-          <div class="shrink-0 border-t border-border bg-surface p-2">
+ <div class="shrink-0 bg-surface p-2">
             <textarea v-model="commitMessage" data-test="git-commit-message" rows="2" :placeholder="$t('files.git.commitPlaceholder')"
-                      class="w-full resize-none rounded border border-border bg-bg px-2 py-1.5 text-[11.5px] text-fg placeholder:text-fg-muted disabled:opacity-50"
+ class="w-full resize-none rounded bg-surface-2 px-2 py-1.5 text-[11.5px] text-fg placeholder:text-fg-muted disabled:opacity-50"
                       :disabled="gitBusy" @keydown.meta.enter.prevent="commitStaged" @keydown.ctrl.enter.prevent="commitStaged" />
             <div class="mt-1 flex items-center gap-1.5">
               <span class="min-w-0 flex-1 truncate text-[10px] text-fg-muted">{{ $t("files.git.commitStaged", { n: stagedPaths.length }) }}</span>
               <button v-if="stageablePaths.length" data-test="git-stage-all" :disabled="gitBusy"
-                      class="rounded px-2 py-1 text-[10.5px] text-accent hover:bg-accent/10 disabled:opacity-50" @click="stage(stageablePaths)">{{ $t("files.git.stageAll") }}</button>
+ class="rounded px-2 py-1 text-[10.5px] text-accent hover:bg-accent-soft disabled:opacity-50" @click="stage(stageablePaths)">{{ $t("files.git.stageAll") }}</button>
               <button data-test="git-commit" :disabled="gitBusy || !commitMessage.trim() || !stagedPaths.length"
                       class="rounded bg-accent px-2.5 py-1 text-[10.5px] font-semibold text-on-accent disabled:opacity-40" @click="commitStaged">{{ $t("files.git.commit") }}</button>
             </div>

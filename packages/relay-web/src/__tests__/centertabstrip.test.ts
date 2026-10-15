@@ -129,7 +129,7 @@ describe("CenterTabStrip", () => {
 
     const w = mount(CenterTabStrip, { props: { sessionKey: K }, ...g });
     const cls = w.element.className;
-    expect(cls).toContain("border-b");
+    expect(cls).not.toContain("border-b"); // redesign PR2: no chrome border
     expect(cls).toContain("bg-surface");
   });
 

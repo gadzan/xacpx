@@ -136,10 +136,10 @@ function onStageClick(e: MouseEvent): void {
   width: 2rem;
   height: 2rem;
   border-radius: 8px;
-  border: 1px solid rgb(var(--c-border));
+  border: none;
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
-  box-shadow: var(--shadow-e1);
+  box-shadow: none;
 }
 .mv-controls button:hover {
   background: rgb(var(--c-bg-raised, var(--c-surface)));

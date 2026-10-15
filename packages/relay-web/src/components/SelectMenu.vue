@@ -81,22 +81,22 @@ function flatIndex(groupIdx: number, optIdx: number): number {
 <template>
   <div ref="boxEl" class="relative">
     <button type="button" :data-test="dataTest" :aria-label="ariaLabel" :aria-expanded="open"
-            class="flex w-full items-center justify-between rounded-lg border border-border bg-bg py-2 pl-3 pr-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+ class="flex w-full items-center justify-between rounded-lg bg-bg py-2 pl-3 pr-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             @click="toggle" @keydown="onKeydown">
       <span class="truncate" :class="selectedLabel ? 'text-fg' : 'text-fg-muted'">{{ selectedLabel || placeholder || "Select…" }}</span>
       <ChevronDown :size="16" class="ml-2 shrink-0 text-fg-muted transition-transform" :class="open ? 'rotate-180' : ''" />
     </button>
-    <ul v-if="open" class="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-border bg-raised py-1 shadow-xl">
+ <ul v-if="open" class="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-lg bg-raised py-1 shadow-float">
       <template v-for="(g, gi) in groups" :key="gi">
         <li v-if="g.label" class="px-3 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-fg-muted">{{ g.label }}</li>
         <li v-for="(o, oi) in g.options" :key="o.value"
             :data-value="o.value"
             class="flex items-center justify-between px-3 py-1.5 text-sm"
             :class="[
-              o.disabled ? 'cursor-not-allowed text-fg-muted/50'
-                : flatIndex(gi, oi) === highlight ? 'cursor-pointer bg-accent/15 text-fg'
-                : 'cursor-pointer text-fg-muted hover:bg-fg/5',
-            ]"
+ o.disabled ? 'cursor-not-allowed text-fg-muted/50'
+ : flatIndex(gi, oi) === highlight ? 'cursor-pointer bg-accent/15 text-fg'
+ : 'cursor-pointer text-fg-muted hover:bg-fg/5',
+ ]"
             @mousedown.prevent="pick(o)" @mouseenter="!o.disabled && (highlight = flatIndex(gi, oi))">
           <span class="truncate">{{ o.label }}</span>
           <Check v-if="o.value === modelValue" :size="14" class="ml-2 shrink-0 text-accent" />

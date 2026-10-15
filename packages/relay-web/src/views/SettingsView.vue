@@ -139,29 +139,29 @@ void onMounted(() => { void probeNotifications(); });
     <section data-test="theme-setting" class="mb-8">
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.appearance") }}</h2>
       <div class="space-y-3">
-        <div class="inline-flex gap-1 rounded-lg border border-border bg-bg p-1">
+ <div class="inline-flex gap-1 rounded-lg bg-bg p-1">
           <button
             data-test="theme-dark"
             class="rounded-md px-3 py-1 text-sm"
-            :class="theme.mode === 'dark' ? 'bg-accent/10 text-accent' : 'text-fg-muted hover:bg-fg/5'"
+ :class="theme.mode === 'dark' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
             @click="theme.set('dark')"
           >{{ $t("settings.dark") }}</button>
           <button
             data-test="theme-light"
             class="rounded-md px-3 py-1 text-sm"
-            :class="theme.mode === 'light' ? 'bg-accent/10 text-accent' : 'text-fg-muted hover:bg-fg/5'"
+ :class="theme.mode === 'light' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
             @click="theme.set('light')"
           >{{ $t("settings.light") }}</button>
         </div>
         <div data-test="language-setting" class="flex items-center gap-2">
           <span class="text-sm text-fg-muted">{{ $t("settings.language") }}</span>
-          <div class="inline-flex gap-1 rounded-lg border border-border bg-bg p-1">
+ <div class="inline-flex gap-1 rounded-lg bg-bg p-1">
             <button
               v-for="loc in SUPPORTED_LOCALES"
               :key="loc"
               :data-test="`lang-${loc}`"
               class="rounded-md px-3 py-1 text-sm"
-              :class="locale.locale === loc ? 'bg-accent/10 text-accent' : 'text-fg-muted hover:bg-fg/5'"
+ :class="locale.locale === loc ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
               @click="locale.set(loc)"
             >{{ localeLabels[loc] }}</button>
           </div>
@@ -172,10 +172,10 @@ void onMounted(() => { void probeNotifications(); });
     <section class="mb-8">
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.addInstance") }}</h2>
       <div class="flex gap-2">
-        <input v-model="pairingName" :placeholder='$t("settings.instanceNamePlaceholder")' class="flex-1 rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+ <input v-model="pairingName" :placeholder='$t("settings.instanceNamePlaceholder")' class="flex-1 rounded bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
         <button data-test="gen-pairing" class="rounded bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover" @click="genPairing">{{ $t("settings.generateToken") }}</button>
       </div>
-      <div v-if="pairing" class="mt-2 rounded bg-bg border border-border p-2 text-xs text-fg">
+ <div v-if="pairing" class="mt-2 rounded bg-bg p-2 text-xs text-fg">
         <div>{{ $t("settings.runOnHost") }}</div>
         <code class="block break-all">xacpx channel add relay --url &lt;this-relay-ws-url&gt; --token {{ pairing }}</code>
       </div>
@@ -217,7 +217,7 @@ void onMounted(() => { void probeNotifications(); });
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.account") }}</h2>
       <button
         data-test="logout"
-        class="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm text-fg-muted transition-colors hover:border-danger/40 hover:bg-danger/10 hover:text-danger"
+ class="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
         @click="onLogout"
       >
         <LogOut :size="15" />{{ $t("settings.signOut") }}

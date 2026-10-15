@@ -175,7 +175,7 @@ function toggleTrace(): void {
       <ChevronRight v-else :size="12" class="shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" />
       <span data-test="trace-label">{{ headerLabel }}</span>
       <span v-if="failedLabel" data-test="trace-failed"
-            class="inline-flex items-center shrink-0 rounded-full border border-danger/30 bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-danger">
+ class="inline-flex items-center shrink-0 rounded-full bg-danger/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-danger">
         {{ failedLabel }}
       </span>
     </button>

@@ -123,7 +123,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
                  :class="step.status === 'error' ? 'text-danger' : step.status === 'running' ? 'text-accent' : hasDetail ? 'text-fg-muted/80 group-hover:text-fg' : 'text-fg-muted/80'" />
       <span class="shrink-0 font-medium text-[11.5px] text-fg-muted transition-colors"
             :class="hasDetail ? 'group-hover:text-fg' : ''">{{ kindLabel }}</span>
-      <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
+ <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded bg-accent-soft px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
       <span class="min-w-0 font-mono text-[11.5px] text-fg-muted/90 break-all"
             :class="[(hasDetail ? 'group-hover:text-fg' : ''), hasDetail ? 'truncate' : '']" :title="step.title" :dir="hasDetail && pathTitle ? 'rtl' : undefined">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">

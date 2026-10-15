@@ -21,6 +21,7 @@
   --c-accent-soft: 234 242 254; /* #EAF2FE — selected-row tint; fg 14.1:1, accent 4.95:1 */
   --c-on-accent: 255 255 255;   /* #FFFFFF — text on filled accent; 5.58:1 (hover 6.79:1) */
   --c-on-danger: 255 255 255;   /* #FFFFFF — text on filled danger; 5.84:1 */
+  --c-on-warn: 255 255 255;     /* #FFFFFF — text on filled warn; 5.83:1 */
   /* Syntax highlighting tokens (CodeMirror githubHighlight, lib/cm-theme.ts) */
   --c-syn-keyword: #cf222e;
   --c-syn-string: #0a3069;
@@ -34,13 +35,8 @@
   --c-syn-constant: #0550ae;
   --c-syn-heading: #0550ae;
   --c-syn-link: #0a3069;
-  /* Elevation scale (soft, light theme) */
-  --shadow-e1: 0 1px 2px rgba(12,18,28,0.06), 0 1px 1px rgba(12,18,28,0.04);
-  --shadow-e2: 0 4px 12px rgba(12,18,28,0.08), 0 2px 4px rgba(12,18,28,0.05);
-  --shadow-e3: 0 12px 32px rgba(12,18,28,0.14), 0 4px 8px rgba(12,18,28,0.06);
-  /* Docked persistent surfaces (composer card). Softer + downward-biased: a stacked
-     group must read as ONE lifted card, not as bands where layer shadows overlap. */
-  --shadow-dock: 0 1px 2px rgba(12,18,28,0.04), 0 8px 20px rgba(12,18,28,0.06);
+  /* Single float shadow for overlays (menus, dialogs, toasts, drawers, FAB). */
+  --shadow-float: 0 8px 24px rgba(16,24,40,0.08);
 }
 .dark {
   /* Dark theme — palette A "Sky" (晴空) */
@@ -61,6 +57,7 @@
   --c-accent-soft: 24 42 64;    /* #182A40 — selected-row tint; fg 12.2:1, accent 5.6:1 */
   --c-on-accent: 11 20 34;      /* #0B1422 — dark text on filled accent; 7.08:1, hover 8.65:1 (white was 2.61) */
   --c-on-danger: 11 20 34;      /* #0B1422 — dark text on filled danger; 6.30:1 (white was 2.93) */
+  --c-on-warn: 11 20 34;        /* #0B1422 — dark text on filled warn; white was ~2.15 */
   /* Syntax highlighting tokens (CodeMirror githubHighlight, lib/cm-theme.ts) */
   --c-syn-keyword: #ff7b72;
   --c-syn-string: #a5d6ff;
@@ -74,12 +71,8 @@
   --c-syn-constant: #79c0ff;
   --c-syn-heading: #79c0ff;
   --c-syn-link: #a5d6ff;
-  /* Elevation scale (deeper, dark theme) */
-  --shadow-e1: 0 1px 2px rgba(0,0,0,0.5);
-  --shadow-e2: 0 6px 18px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.45);
-  --shadow-e3: 0 18px 48px rgba(0,0,0,0.7), 0 6px 16px rgba(0,0,0,0.55);
-  /* Matches the light-theme dock tier: lighter than e2, downward-biased. */
-  --shadow-dock: 0 1px 2px rgba(0,0,0,0.35), 0 8px 20px rgba(0,0,0,0.35);
+  /* Float shadow + hairline outline (shadow alone is invisible on dark). */
+  --shadow-float: 0 8px 24px rgba(0,0,0,0.32), 0 0 0 1px rgba(255,255,255,0.06);
 }
 
 /* Brand gradient — logo only */
@@ -101,16 +94,15 @@ a:focus-visible, button:focus-visible,
   border-radius: 6px;
 }
 
-/* No focus box-shadow on form fields. Authoritative override so per-component Tailwind
-   `focus-visible:ring-*` utilities (which compile to box-shadow) are neutralized too.
-   The accent border replaces the removed halo as the visible focus cue (WCAG 2.4.7) —
-   fields otherwise carry only a static `border-border` that doesn't change on focus. */
+/* Form-field focus: soft accent ring (redesign PR2 — inputs no longer carry a
+   static border, so border-color alone would be invisible). Matches composer
+   focus-within:ring-2 ring-accent/40. Buttons/links still use the branded
+   double-ring rule above. */
 input:focus, input:focus-visible,
 textarea:focus, textarea:focus-visible,
 select:focus, select:focus-visible {
-  box-shadow: none !important;
   outline: none;
-  border-color: rgb(var(--c-accent));
+  box-shadow: 0 0 0 2px rgb(var(--c-accent) / 0.4);
 }
 
 /* Live run-dot: expanding bright-green ring (matches mockup softpulse). */

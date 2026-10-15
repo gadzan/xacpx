@@ -76,11 +76,11 @@ onUnmounted(() => { epoch++; clearInterval(timer); });
   <div data-test="worktree-panel">
     <!-- Rendered outside the status gate: a failed first load has no status yet,
          so without this the user sees nothing at all and cannot retry manually. -->
-    <p v-if="error && !status" role="alert" class="border-t border-border px-4 py-2 text-xs text-danger">
+ <p v-if="error && !status" role="alert" class="px-4 py-2 text-xs text-danger">
       {{ error }}
       <button class="ml-2" :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
     </p>
-    <details v-if="status" class="border-t border-border px-4 py-2 text-xs">
+ <details v-if="status" class="px-4 py-2 text-xs">
       <summary>{{ t("group.worktree.title") }} · {{ status.integration?.state ?? status.disposition }}</summary>
       <p class="my-2 text-fg-muted">{{ t("group.worktree.boundary") }}</p>
       <p>{{ t("group.worktree.base") }}: <code>{{ status.baseCommitSha }}</code></p>
