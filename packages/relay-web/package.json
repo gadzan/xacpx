@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "codemod:radius": "node scripts/codemod-radius.mjs",
     "preview": "vite preview",
     "generate-pwa-icons": "node scripts/generate-pwa-icons.mjs",
     "test": "vitest run",
