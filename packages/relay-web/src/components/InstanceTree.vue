@@ -877,7 +877,7 @@ const rowSwipes = computed(() => {
                     <span
                       v-if="hasOpenTerminal(inst.id, s.alias)"
                       data-test="terminal-open-marker"
-                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent"
+                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-[2px] bg-surface text-accent ring-1 ring-accent"
                       :title="$t('instance.sessionTerminalOpenTitle')"
                       :aria-label="$t('instance.sessionTerminalOpenTitle')"
                     ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
@@ -888,7 +888,7 @@ const rowSwipes = computed(() => {
                   <span
                     v-else-if="hasOpenTerminal(inst.id, s.alias)"
                     data-test="terminal-open-marker"
-                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent"
+                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-[2px] bg-surface text-accent ring-1 ring-accent"
                     :title="$t('instance.sessionTerminalOpenTitle')"
                     :aria-label="$t('instance.sessionTerminalOpenTitle')"
                   ><SquareTerminal :size="8" :stroke-width="2.5" /></span>

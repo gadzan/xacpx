@@ -299,7 +299,7 @@ watch(
                 <button data-test="fs-hit" class="block w-full rounded-sm px-1.5 py-1 text-left hover:bg-raised" @click="openSearchResult(h.path, h.line)">
                   <div class="truncate font-mono text-[10.5px] text-fg-muted">{{ h.path }}<span class="text-accent">:{{ h.line }}</span></div>
                   <div class="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-5 text-fg-muted">
-                    <template v-for="(seg, j) in segments(h.text)" :key="j"><span :data-test="seg.hit ? 'hit-mark' : null" :class="seg.hit ? 'rounded-sm bg-warn/30 font-semibold text-fg' : ''">{{ seg.text }}</span></template>
+                    <template v-for="(seg, j) in segments(h.text)" :key="j"><span :data-test="seg.hit ? 'hit-mark' : null" :class="seg.hit ? 'rounded-[2px] bg-warn/30 font-semibold text-fg' : ''">{{ seg.text }}</span></template>
                   </div>
                 </button>
               </li>
@@ -345,7 +345,7 @@ watch(
                         :show-dotfiles="showDotfiles" :show-gitignored="showGitignored" @open-file="openTreeFile" />
           <div v-if="!rootChildren.length && files.loadingDirs.has('')" data-test="files-skeleton" aria-hidden="true" class="px-2.5">
             <div v-for="(w, i) in [58, 72, 44, 66, 38, 51]" :key="i" class="flex items-center gap-2 py-1.5" :style="{ paddingLeft: `${(i % 3) * 12}px` }">
-              <div class="h-3 w-3 shrink-0 animate-pulse rounded-sm bg-fg/10 motion-reduce:animate-none" />
+              <div class="h-3 w-3 shrink-0 animate-pulse rounded-[2px] bg-fg/10 motion-reduce:animate-none" />
               <div class="h-3 animate-pulse rounded-sm bg-fg/5 motion-reduce:animate-none" :style="{ width: `${w}%` }" />
             </div>
           </div>
@@ -492,7 +492,7 @@ watch(
         <div v-else-if="files.loading" data-test="changes-skeleton" aria-hidden="true" class="min-h-0 flex-1 overflow-hidden p-2.5">
           <div class="mb-2 h-3 w-16 animate-pulse rounded-sm bg-fg/10 motion-reduce:animate-none" />
           <div v-for="(w, i) in [82, 64, 91, 55, 73, 47]" :key="i" class="flex items-center gap-2 px-1.5 py-1.5">
-            <div class="h-3 w-3 shrink-0 animate-pulse rounded-sm bg-fg/10 motion-reduce:animate-none" />
+            <div class="h-3 w-3 shrink-0 animate-pulse rounded-[2px] bg-fg/10 motion-reduce:animate-none" />
             <div class="h-3 animate-pulse rounded-sm bg-fg/5 motion-reduce:animate-none" :style="{ width: `${w}%` }" />
           </div>
         </div>
