@@ -2,14 +2,20 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Archive, ChevronDown, MoreHorizontal, Plus, RotateCcw } from "lucide-vue-next";
-import type { TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu.vue";
 import MobileSheet from "./MobileSheet.vue";
-import { useTopicActions, type TopicActionHandlers } from "../lib/use-topic-actions";
+import { useTopicActions } from "../lib/use-topic-actions";
 
-const props = defineProps<TopicActionHandlers & {
+const props = defineProps<{
   topics: TopicSummaryDto[];
   activeTopicId: string | null;
+  previewTopic: (topicId: string) => Promise<TopicImpactDto>;
+  renameTopic: (topicId: string, title: string) => Promise<void>;
+  archiveTopic: (topicId: string) => Promise<void>;
+  restoreTopic: (topicId: string) => Promise<void>;
+  teardownTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
+  clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
 }>();
 const emit = defineEmits<{ select: [topicId: string]; create: [] }>();
 
