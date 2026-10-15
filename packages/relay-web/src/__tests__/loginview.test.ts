@@ -24,10 +24,10 @@ describe("LoginView", () => {
     else delete (navigator as { clipboard?: unknown }).clipboard;
   });
 
-  it("renders the terminal window chrome and the mint command", () => {
+  it("renders the brand lockup above the card and the mint command", () => {
     const w = mount(LoginView);
     expect(w.find('[data-test="login-window"]').exists()).toBe(true);
-    expect(w.text()).toContain("xacpx-relay");
+    expect(w.find("h1").text()).toBe("xacpx relay");
     expect(w.text()).toContain("xacpx-relay add token");
     expect(w.find('[data-test="signin"]').text()).toContain("Sign in");
   });
@@ -76,7 +76,16 @@ describe("LoginView", () => {
     expect(replace).toHaveBeenCalledWith("/");
   });
 
-  it("surfaces an error and does not redirect on failed login", async () => {
+  it("hides the enter hint unless the device has a hover pointer", () => {
+    const w = mount(LoginView);
+    const hint = w
+      .findAll('[data-test="signin"] span')
+      .find((s) => s.text().includes("enter"));
+    expect(hint?.classes()).toContain("hidden");
+    expect(hint?.classes()).toContain("[@media(hover:hover)]:inline");
+  });
+
+  it("localizes a known error code and does not redirect on failed login", async () => {
     const auth = useAuthStore();
     vi.spyOn(auth, "login").mockImplementation(async () => {
       auth.error = "invalid-token";
@@ -88,7 +97,20 @@ describe("LoginView", () => {
     expect(replace).not.toHaveBeenCalled();
     const err = w.find('[data-test="login-error"]');
     expect(err.exists()).toBe(true);
-    expect(err.text()).toContain("invalid-token");
+    expect(err.text()).toContain("invalid or has been revoked");
+    expect(err.text()).not.toContain("invalid-token");
     expect(err.attributes("role")).toBe("alert");
+  });
+
+  it("falls back to the generic message for an unknown error code", async () => {
+    const auth = useAuthStore();
+    vi.spyOn(auth, "login").mockImplementation(async () => {
+      auth.error = "rate-limited";
+      return false;
+    });
+    const w = mount(LoginView);
+    await w.find('[data-test="login-window"]').trigger("submit");
+    await flushPromises();
+    expect(w.find('[data-test="login-error"]').text()).toContain("Sign-in failed");
   });
 });

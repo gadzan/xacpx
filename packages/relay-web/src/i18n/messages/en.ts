@@ -501,7 +501,6 @@ export default {
     keep: "Keep",
   },
   login: {
-    window: "login",
     tokenLabel: "Access token",
     tokenPlaceholder: "paste token…",
     runHint: "Run this on the host to mint a token, then paste it below.",
@@ -509,6 +508,11 @@ export default {
     signingIn: "Signing in…",
     copyCommand: "Copy command",
     toggleVisibility: "Show or hide token",
+    errors: {
+      "invalid-token": "That token is invalid or has been revoked. Run xacpx-relay add token on the host to mint a new one.",
+      "request-failed": "Could not reach the relay. Check the network and try again.",
+      fallback: "Sign-in failed. Please try again.",
+    },
   },
   invite: {
     window: "invite",
