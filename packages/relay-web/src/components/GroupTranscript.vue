@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   AlertCircle,
-  Bot,
   CheckCircle2,
   ChevronDown,
   CircleStop,
@@ -28,7 +27,8 @@ import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import GroupHandoffEntry from "./GroupHandoffEntry.vue";
 import CopyButton from "./CopyButton.vue";
-import AgentIcon from "./AgentIcon.vue";
+import BotAvatar from "./BotAvatar.vue";
+import { botAvatarState } from "../lib/bot-avatar-state";
 import PlanPanel from "./PlanPanel.vue";
 import { fmtTime } from "../lib/format";
 
@@ -38,6 +38,7 @@ const props = defineProps<{
 
 const { t } = useI18n();
 const groupsStore = useGroupsStore();
+const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
 
 const expandedMembers = ref<Record<string, boolean>>({});
@@ -115,6 +116,25 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
 
 function liveForMember(memberTurnId: string): GroupLiveTurn | null {
   return groupsStore.liveTurnForMember(memberTurnId);
+}
+
+function avatarStateForMember(turn: MemberTurnSummaryDto) {
+  const active = run.value;
+  const scoped = active?.id === turn.runId && active.conversationId === turn.conversationId && active.topicId === turn.topicId;
+  return botAvatarState({
+    retired: botById.value[turn.botId]?.retired,
+    online: groupsStore.instanceId ? instancesStore.byId(groupsStore.instanceId)?.online : undefined,
+    runState: scoped ? active.state : undefined,
+    memberState: scoped ? turn.state : undefined,
+    liveStatus: scoped ? liveForMember(turn.id)?.status : undefined,
+    waiting: scoped && !!directBotsStore.interactionForMember(groupsStore.instanceId, turn),
+  });
+}
+
+function avatarActivityKeyForMember(turn: MemberTurnSummaryDto): string {
+  return [
+    groupsStore.instanceId, turn.botId, turn.conversationId, turn.topicId, turn.runId, turn.id,
+  ].join(":");
 }
 
 function partsForMember(turn: MemberTurnSummaryDto): TurnPartDto[] | undefined {
@@ -328,6 +348,12 @@ async function handleLoadOlder(): Promise<void> {
         :speaker="!m.handoff && m.role === 'bot' ? senderName(m.senderBotId) : undefined"
         :hide-leading-avatar="!!m.handoff"
       >
+        <template v-if="m.role === 'bot' && !m.handoff" #avatar>
+          <BotAvatar :avatar="m.senderBotId ? botById[m.senderBotId]?.avatar : undefined"
+                     :driver="m.senderBotId ? driverForBot(m.senderBotId) : undefined"
+                     :name="senderName(m.senderBotId)" :size="24" static
+                     :retired="m.senderBotId ? botById[m.senderBotId]?.retired : false" />
+        </template>
         <GroupHandoffEntry
           v-if="m.handoff"
           :message="m"
@@ -335,6 +361,8 @@ async function handleLoadOlder(): Promise<void> {
           :to-name="senderName(m.handoff.to)"
           :from-driver="m.senderBotId ? driverForBot(m.senderBotId) : undefined"
           :to-driver="driverForBot(m.handoff.to)"
+          :from-avatar="m.senderBotId ? botById[m.senderBotId]?.avatar : undefined"
+          :to-avatar="botById[m.handoff.to]?.avatar"
           @jump="jumpToMessage"
         />
         <template v-else-if="m.role === 'human'">
@@ -458,10 +486,11 @@ async function handleLoadOlder(): Promise<void> {
               class="flex w-full items-center gap-2 text-left"
               @click="toggleMember(turn.id)"
             >
-              <span class="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-border bg-surface text-accent">
-                <AgentIcon v-if="driverForBot(turn.botId)" :driver="driverForBot(turn.botId)!" :title="senderName(turn.botId)" :size="13" />
-                <Bot v-else :size="13" />
-              </span>
+              <BotAvatar :key="avatarActivityKeyForMember(turn)" :avatar="botById[turn.botId]?.avatar"
+                         :driver="driverForBot(turn.botId)" :name="senderName(turn.botId)" :size="24"
+                         :state="avatarStateForMember(turn)" :activity-key="avatarActivityKeyForMember(turn)"
+                         :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === turn.runId && groupsStore.liveCompletedMemberTurns.ids[turn.id] === true"
+                         :disabled="botById[turn.botId] ? !botById[turn.botId]!.enabled : false" :retired="botById[turn.botId]?.retired" />
               <span class="min-w-0 flex-1 truncate text-xs font-medium text-fg">{{ senderName(turn.botId) }}</span>
               <span
                 class="flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium"

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises } from "@vue/test-utils";
 import type {
   InteractionRequestDto,
+  MemberTurnSummaryDto,
   WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 
@@ -111,6 +112,30 @@ describe("useDirectBotsStore interactions", () => {
       },
     } as unknown as WebServerEvent;
   }
+
+  it("finds only an open interaction attributed to the exact instance and member task", () => {
+    const store = useDirectBotsStore();
+    const member: MemberTurnSummaryDto = {
+      id: "member-a", botId: "bot-a", conversationId: "c1", topicId: "t1", runId: "run-a",
+      batch: 1, attempt: 1, origin: "human-explicit", state: "running", createdAt: "now",
+    };
+    const request = formRequest({
+      conversation: { conversationId: "c1", topicId: "t1", runId: "run-a", botId: "bot-a", memberTurnId: "member-a" },
+    });
+    store.applyEvent(openedEvent(request));
+    store.applyEvent(openedEvent({ ...request, requestId: "foreign-instance" }, "inst_2"));
+    store.applyEvent(openedEvent({
+      ...request, requestId: "router-question", conversation: { conversationId: "c1", topicId: "t1", runId: "run-a" },
+    }));
+    expect(store.interactionForMember("inst_1", member)?.request.requestId).toBe("req-1");
+    expect(store.interactionForMember("inst_3", member)).toBeNull();
+    for (const patch of [
+      { id: "member-b" }, { botId: "bot-b" }, { runId: "run-b" },
+      { conversationId: "c2" }, { topicId: "t2" },
+    ]) expect(store.interactionForMember("inst_1", { ...member, ...patch })).toBeNull();
+    store.applyEvent(closedEvent("req-1", "withdrawn"));
+    expect(store.interactionForMember("inst_1", member)).toBeNull();
+  });
 
   it("an opened form is stored with EMPTY answers", () => {
     const store = useDirectBotsStore();

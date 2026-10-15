@@ -4,6 +4,10 @@
 
 Group PR9：Conversation history/message event 透传公开 `handoff` envelope，Run DTO 增加可选 `quarantinedBotIds`。relay-protocol 验证 envelope 只用于携带 sender/Run 的公开 system message，字段和长度严格限定；Web 按 message ID 去重重放，并单调合并当前 Run quarantine，薄/旧快照不能解除隔离。无新增 Group admission、external binding 或 channel mapping；执行绑定 token 不出现在 wire DTO。契约见 [Conversation runtime](conversation-runtime.md#public-structured-handoff-pr9)。
 
+Bot avatar cutover：`control.bots.create/update` 只写结构化 `BotAvatarConfig`；更新 `null` 清除、缺省保留，非法配置返回 `avatar_invalid`。旧字符串仅在 daemon 的磁盘读取边界迁移，不作为长期 wire 类型；Hub、protocol、connector、daemon 与 Web 按 [Relay 发布流程](relay-release.md) 配套升级。Web 不把不兼容头像响应放入渲染缓存。
+
+Elicitation 的任务归属从 core 已校验的精确 turn context 传入 `ChannelElicitationRequest.conversation`，再进入既有 `InteractionRequestDto.conversation`。已有产品 ID 支持精确 Bot / Run / MemberTurn 等待展示；不从 session alias、reply token 或事件先后顺序补出身份，权限与隐私路由不变。
+
 ## 服务端（@ganglion/xacpx-relay）
 
 - 运行时：Node >= 22.13（node:sqlite）或 Bun >= 1.2（bun:sqlite），SqlDriver 适配层自动选择。

@@ -1058,6 +1058,49 @@ function parseWebClientMessage(envelope) {
       return null;
   }
 }
+// packages/relay-protocol/src/bot-avatar.ts
+var BOT_AVATAR_SHAPES = ["cercle", "galet", "squircle", "capsule", "triangle", "hexagone", "nuage", "goutte"];
+var BOT_AVATAR_COLORS = ["encre", "brun", "rouge", "orange", "ambre", "vert", "turquoise", "bleu", "violet", "rose", "gris", "creme"];
+var BOT_AVATAR_EXPRESSIONS = ["neutre", "attentif", "surpris", "excite", "heureux", "hilare", "colere", "triste", "effraye", "mefiant", "confus", "curieux", "fier", "timide", "blase", "somnolent"];
+function isBotAvatarConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const avatar = value;
+  if (avatar.version !== 1)
+    return false;
+  if (avatar.kind === "text") {
+    return Object.keys(avatar).length === 3 && typeof avatar.value === "string" && avatar.value.trim().length > 0;
+  }
+  return avatar.kind === "character" && Object.keys(avatar).length === 6 && BOT_AVATAR_SHAPES.some((id) => id === avatar.shape) && BOT_AVATAR_COLORS.some((id) => id === avatar.color) && BOT_AVATAR_EXPRESSIONS.some((id) => id === avatar.expression) && (avatar.motion === "auto" || avatar.motion === "off");
+}
+function isBotAvatarWriteConfig(value) {
+  return isBotAvatarConfig(value) && (value.kind === "character" || value.value.length <= 512);
+}
+function copyBotAvatar(avatar) {
+  if (!avatar)
+    return;
+  return avatar.kind === "text" ? { version: 1, kind: "text", value: avatar.value } : { version: 1, kind: "character", shape: avatar.shape, color: avatar.color, expression: avatar.expression, motion: avatar.motion };
+}
+function parseStoredBotAvatar(value) {
+  if (value === undefined || value === null)
+    return;
+  if (typeof value === "string") {
+    if (!value.trim())
+      return;
+    return { version: 1, kind: "text", value };
+  }
+  return isBotAvatarConfig(value) ? copyBotAvatar(value) : null;
+}
+function sameBotAvatar(a, b) {
+  if (a === b)
+    return true;
+  if (!a || !b || a.kind !== b.kind)
+    return false;
+  if (a.kind === "text")
+    return b.kind === "text" && a.value === b.value;
+  return b.kind === "character" && a.shape === b.shape && a.color === b.color && a.expression === b.expression && a.motion === b.motion;
+}
+
 // packages/relay-protocol/src/type-guards.ts
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1449,11 +1492,11 @@ var validateBotsGet = (p) => {
 };
 var validateBotsCreate = (p) => {
   const o = fields(p);
-  return o && isStr(o.name) && isStr(o.agent) && isStr(o.workspace) && optStr(o.avatar) && optStr(o.role) && optStr(o.instructions) && optStr(o.model) && optStr(o.effort) && optBool(o.enabled) ? o : null;
+  return o && isStr(o.name) && isStr(o.agent) && isStr(o.workspace) && (o.avatar === undefined || isBotAvatarWriteConfig(o.avatar)) && optStr(o.role) && optStr(o.instructions) && optStr(o.model) && optStr(o.effort) && optBool(o.enabled) ? o : null;
 };
 var validateBotsUpdate = (p) => {
   const o = fields(p);
-  return o && isStr(o.id) && optStr(o.name) && optStrOrNull(o.avatar) && optStrOrNull(o.role) && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace) && optStrOrNull(o.model) && optStrOrNull(o.effort) && optBoolOrNull(o.enabled) ? o : null;
+  return o && isStr(o.id) && optStr(o.name) && (o.avatar === undefined || o.avatar === null || isBotAvatarWriteConfig(o.avatar)) && optStrOrNull(o.role) && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace) && optStrOrNull(o.model) && optStrOrNull(o.effort) && optBoolOrNull(o.enabled) ? o : null;
 };
 var validateBotsDelete = (p) => {
   const o = fields(p);
@@ -2408,6 +2451,9 @@ function parseConversationRouterState(value) {
   };
 }
 export {
+  BOT_AVATAR_COLORS,
+  BOT_AVATAR_EXPRESSIONS,
+  BOT_AVATAR_SHAPES,
   CONTROL_PAYLOAD_VALIDATORS,
   DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
   DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
@@ -2475,11 +2521,14 @@ export {
   WEB_EVENT_TYPE,
   adapterModels,
   classifySelection,
+  copyBotAvatar,
   decodeEnvelope,
   encodeEnvelope,
   errorCapability,
   errorPayload,
   hasOnlyKeys,
+  isBotAvatarConfig,
+  isBotAvatarWriteConfig,
   isBoundedStr,
   isConversationWorktreeStatus,
   isDesktopSecurityKind,
@@ -2508,10 +2557,12 @@ export {
   parseJevSettings,
   parseJevTestResult,
   parseRouterAvailability,
+  parseStoredBotAvatar,
   parseTerminalEventPayload,
   parseWebClientMessage,
   parseWebServerEvent,
   readyCapability,
+  sameBotAvatar,
   suggestionModels,
   unsupportedCapability,
   validAgentMentions,

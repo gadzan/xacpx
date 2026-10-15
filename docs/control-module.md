@@ -15,6 +15,12 @@
 调用转交给 `TurnQueue.submit`；唯一的提交前协调是等待同一逻辑会话已登记的 model/effort
 配置操作完成，避免紧随配置变更的 prompt 使用旧值。该等待不持有或改变 turn 并发状态。
 
+## Bot 头像与交互归属
+
+`BotProfile`、保留资料和公共 DTO 的 `avatar` 使用 relay-protocol 的 `BotAvatarConfig`：`version: 1` 的动态角色（固定形状、颜色、表情与 `motion: auto | off`）或纯文本。创建省略头像保留默认图标；更新省略 / `undefined` 不修改，`null` 清除。新文本写入上限为 512，非法配置返回 `avatar_invalid`；读取迁移不把这一写入上限套在历史数据上。返回值与已接受任务快照拥有独立配置对象。
+
+头像不是运行状态，不改变提示词、权限或调度。已授权的 Conversation 执行把固定的 `conversationId / topicId / botId / runId / memberTurnId` 传入精确 turn 的 elicitation context；公开频道请求只收到这些只读产品 ID，不收到执行 token 或 hidden alias。Relay 拒绝与产品路由矛盾的归属，不能通过“最新会话”推断任务。字段契约见 [设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
+
 ## 文件
 
 PR9 公开 handoff 走 execution-bound `group_send({to, task, expectedOutput?})` MCP primitive，不是公共 Control 方法。`groupExecutionToken` 只在 core-private execution port、TurnQueue 和 Chat metadata 内传递，不进入 public prompt、事件或 DTO。公开消息 DTO 可携带 `handoff`（sender MemberTurn、target、assignment/MemberTurn ID、task/expectedOutput）；Run DTO 可携带单调累计的 `quarantinedBotIds`，不修改全局 Bot profile。约束见 [Conversation runtime](conversation-runtime.md#public-structured-handoff-pr9)。

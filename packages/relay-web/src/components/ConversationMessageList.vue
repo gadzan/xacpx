@@ -4,7 +4,6 @@ import { useI18n } from "vue-i18n";
 import {
   AlertCircle,
   AlertTriangle,
-  Bot,
   CheckCircle2,
   CircleStop,
   Clock,
@@ -28,7 +27,8 @@ import TurnParts from "./TurnParts.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import CopyButton from "./CopyButton.vue";
-import AgentIcon from "./AgentIcon.vue";
+import BotAvatar from "./BotAvatar.vue";
+import { avatarHasOpenInteraction, botAvatarState, type BotAvatarState } from "../lib/bot-avatar-state";
 import PlanPanel from "./PlanPanel.vue";
 import ConversationInteractionForm from "./ConversationInteractionForm.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
@@ -45,6 +45,9 @@ const props = defineProps<{
   loadingHistory?: boolean;
   bot?: BotDetailDto | BotSummaryDto;
   instanceId?: string | null;
+  avatarState?: BotAvatarState;
+  avatarActivityKey?: string;
+  observedAvatarCompletion?: boolean;
   loadOlder?: () => Promise<void>;
   /** Open interaction awaiting an answer, if any. Passed in rather than read
    *  from the store: this component is a pure renderer and its parent already
@@ -93,6 +96,19 @@ const botDriver = computed(() => {
   const inst = instancesStore.byId(props.instanceId);
   return inst?.agents.find((a) => a.name === props.bot?.agent)?.driver;
 });
+
+const currentAvatarState = computed(() => props.avatarState ?? botAvatarState({
+  retired: props.bot?.retired,
+  online: props.instanceId ? instancesStore.byId(props.instanceId)?.online : undefined,
+  runState: props.activeRun?.state,
+  liveStatus: props.liveTurn?.status,
+  waiting: avatarHasOpenInteraction(props.pendingInteraction, {
+    instanceId: props.instanceId,
+    botId: props.bot?.id,
+    run: props.activeRun,
+    memberTurnId: props.activeMemberTurn?.id,
+  }),
+}));
 
 function onScroll(): void {
   const el = scroller.value;
@@ -196,10 +212,9 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       outcome state (e.g. cancelled before the first assistant row), not an
       empty conversation. -->
     <div v-if="!loadingHistory && messages.length === 0 && !liveTurn && !(activeRun && (activeRun.state === 'failed' || activeRun.state === 'cancelled' || activeRun.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
-      <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent/10 text-accent">
-        <AgentIcon v-if="botDriver" :driver="botDriver" :title="bot?.name ?? 'Bot'" :size="24" />
-        <Bot v-else :size="24" />
-      </div>
+      <BotAvatar class="mb-3" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="64"
+                 :state="currentAvatarState" :activity-key="avatarActivityKey" :observed-completion="observedAvatarCompletion"
+                 :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
       <h3 class="text-base font-semibold text-fg">{{ bot?.name ?? "Direct Bot" }}</h3>
       <p v-if="bot?.role" class="mt-0.5 text-xs text-fg-muted">{{ bot.role }}</p>
       <div v-if="bot && 'instructions' in bot && bot.instructions" class="mt-3 max-w-md rounded-xl border border-border bg-surface/60 p-3 text-left text-xs text-fg-muted leading-relaxed">
@@ -229,6 +244,9 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         <!-- Bot Message -->
         <TranscriptRow v-else-if="m.role === 'bot'" :driver="botDriver" :row-id="m.id"
                        :speaker="bot?.name ?? 'Bot'" :speaker-role="bot?.role">
+          <template #avatar>
+            <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="24" static :retired="bot?.retired" />
+          </template>
           <!-- Rich TurnParts if preserved from live stream -->
           <div v-if="partsForMessage(m)" class="w-full">
             <TurnParts
@@ -260,6 +278,11 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
            data-test="live-turn-container"
            :driver="botDriver"
            :speaker="bot?.name ?? 'Bot'" :speaker-role="bot?.role">
+        <template #avatar>
+          <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="24"
+                     :state="currentAvatarState" :activity-key="avatarActivityKey" :observed-completion="observedAvatarCompletion"
+                     :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
+        </template>
         <div class="flex flex-col items-start min-w-0 w-full space-y-2">
           <!-- Open interaction: rendered inside the turn's own banner so the form
             belongs to the turn that asked. A form belongs to one exact turn, and

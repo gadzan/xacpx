@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import {
-  Bot,
   ChevronDown,
   Folder,
   Pencil,
@@ -12,7 +11,8 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
-import AgentIcon from "./AgentIcon.vue";
+import BotAvatar from "./BotAvatar.vue";
+import { avatarHasOpenInteraction, botAvatarState } from "../lib/bot-avatar-state";
 import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
 import BotDialog from "./BotDialog.vue";
@@ -39,6 +39,25 @@ const botDriver = computed(() => {
   if (!bot.value || !instance.value) return undefined;
   return instance.value.agents.find((a) => a.name === bot.value?.agent)?.driver;
 });
+
+const avatarState = computed(() => botAvatarState({
+  retired: bot.value?.retired,
+  online: instance.value?.online,
+  runState: directBotsStore.activeRun?.state,
+  liveStatus: directBotsStore.liveTurn?.status,
+  waiting: avatarHasOpenInteraction(directBotsStore.pendingInteraction, {
+    instanceId: directBotsStore.instanceId,
+    botId: bot.value?.id,
+    run: directBotsStore.activeRun,
+    memberTurnId: directBotsStore.activeMemberTurn?.id,
+  }),
+}));
+const avatarActivityKey = computed(() => [
+  directBotsStore.instanceId, bot.value?.id, directBotsStore.activeConversationId,
+  directBotsStore.activeTopicId, directBotsStore.activeRun?.id,
+].join(":"));
+const observedCompletion = computed(() => !!directBotsStore.activeRun
+  && directBotsStore.liveCompletedRunId === directBotsStore.activeRun.id);
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
@@ -127,11 +146,9 @@ function openRemoval(): void {
     <!-- Top Header: Bot metadata & Actions -->
     <header class="flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
       <div class="flex items-center gap-3 min-w-0">
-        <!-- Bot Icon / Avatar -->
-        <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-accent/10 text-accent border border-accent/20">
-          <AgentIcon v-if="botDriver" :driver="botDriver" :title="bot?.name ?? 'Bot'" :size="15" />
-          <Bot v-else :size="15" />
-        </div>
+        <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
+                   :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
+                   :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
 
         <!-- Name, Role & Chips -->
         <div class="flex min-w-0 flex-col">
@@ -268,6 +285,9 @@ function openRemoval(): void {
       :loading-history="directBotsStore.loadingHistory"
       :bot="bot"
       :instance-id="directBotsStore.instanceId"
+      :avatar-state="avatarState"
+      :avatar-activity-key="avatarActivityKey"
+      :observed-avatar-completion="observedCompletion"
       :load-older="directBotsStore.loadOlder"
       @load-older="directBotsStore.loadOlder"
       @cancel-run="directBotsStore.cancelCurrentRun"

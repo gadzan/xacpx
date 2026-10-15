@@ -72,7 +72,7 @@ async function expectViewportLayout(dialog: Locator): Promise<void> {
   expect(layout.panel.bottom).toBeLessThanOrEqual(layout.viewport.height - 16);
   expect(layout.panel.center).toBeCloseTo(layout.viewport.width / 2, 0);
   expect(layout.horizontalOverflow).toBeLessThanOrEqual(1);
-  await expect(dialog.getByRole("heading")).toBeInViewport();
+  await expect(dialog.getByRole("heading").first()).toBeInViewport();
   await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeInViewport();
   await expect(dialog.getByRole("button", { name: "Create", exact: true })).toBeInViewport();
 }
@@ -131,8 +131,16 @@ for (const kind of ["bot", "group"] as const) {
       await expect.poll(() => form.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
       await expectViewportLayout(dialog);
       expect(await dialog.getByRole("button", { name: "Create", exact: true }).boundingBox()).toEqual(actionsBefore);
-      if (kind === "bot") await expect(dialog.locator("#bot-avatar")).toBeInViewport();
+      if (kind === "bot") await expect(dialog.getByRole("checkbox", { name: "Enabled", exact: true })).toBeInViewport();
       else await expect(dialog.getByTestId("group-dialog-lead")).toBeInViewport();
+    }
+    if (kind === "bot") {
+      await dialog.getByRole("tab", { name: "Avatar appearance", exact: true }).click();
+      await expectViewportLayout(dialog);
+      await dialog.getByTestId("avatar-shape-nuage").click();
+      await dialog.locator("form").evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      await expect(dialog.getByTestId("avatar-motion")).toBeInViewport();
+      await expectViewportLayout(dialog);
     }
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(dialog).toHaveCount(0);

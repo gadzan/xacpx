@@ -1,3 +1,4 @@
+import { parseStoredBotAvatar } from "@ganglion/xacpx-relay-protocol";
 import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 
@@ -941,14 +942,13 @@ function parseScheduledTasks(
   return tasks;
 }
 
-function isBotProfile(value: unknown): value is BotProfile {
+function isBotProfile(value: unknown): value is Omit<BotProfile, "avatar"> & { avatar?: unknown } {
   if (!isRecord(value)) {
     return false;
   }
   return (
     isString(value.id) &&
     isString(value.name) &&
-    isOptionalString(value.avatar) &&
     isOptionalString(value.role) &&
     isOptionalString(value.instructions) &&
     isString(value.agent) &&
@@ -975,8 +975,14 @@ function parseBotProfiles(
       dropped.push({ section: "bots", key: id, reason: "malformed bot profile" });
       continue;
     }
+    const avatar = parseStoredBotAvatar(value.avatar);
+    if (avatar === null) {
+      dropped.push({ section: "bots", key: id, reason: "malformed bot profile" });
+      continue;
+    }
     bots[id] = {
       ...value,
+      avatar,
       profileRevision: value.profileRevision ?? 1,
     };
   }

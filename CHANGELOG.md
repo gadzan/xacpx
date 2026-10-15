@@ -1,13 +1,60 @@
 # Changelog
 ## [Unreleased]
 
-### Added
-
-- **Jev-backed automatic collaboration:** the bundled router now asks TypeSafe Jev (`jev-1.13.0`, `POST https://api.typesafe.ai/v1/systemone`) one choice question (state = the request plus bounded recent context, criteria = each enabled member's role/name) and dispatches to exactly ONE member. Confidence below `JEV_MIN_CONFIDENCE` (0.6), an unknown pick, or any Jev error falls back to the Group lead (else the first enabled member). The decision carries a `routingReason` that the Run card renders ("已分派给 X" plus reason/confidence). Jev settings (endpoint, API key, optional proxy; an empty proxy falls back to the daemon's `HTTPS_PROXY`/`https_proxy`) live per instance in `~/.xacpx/jev.json` (mode 0600, never in config.json, never logged) behind new instance-scoped RPCs `control.jev.get|update|test`; the key is only ever returned masked. The instance dialog gains the settings and a connection test (HTTP 451 -> region blocked, configure a proxy; 401/403 -> bad key). Automatic collaboration is `ready` only with a Jev key (new availability code `jev-not-configured`), and the Group composer hides 自动协作 entirely unless the router is ready AND a key is configured. The lead mode stays the default. The deterministic fan-out stays in code but is no longer reachable from the UI.
-
 ### Changed
 
 - Managed adapter pins refreshed (ACP initialize probe passes on both, still ACP protocol v1): Codex `2.1.1` → `2.2.2`, Claude `0.86.0` → `0.90.0`. Codex picks up `@openai/codex` 0.160.1, pre-session hook trust, the AIR `sessionIndex` extension, live `/mcp` status, and resuming an empty session after an app-server restart. Claude picks up `@agentclientprotocol/sdk` 1.8.0 and an updated Claude SDK, the AIR `sessionIndex` extension, subagents-RFD session reporting, and cancel/fork fixes (cancelled turns close their open tool calls and drop abandoned streamed output; forked sessions are promptable at once). No upstream breaking changes in either range. Recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities. The derived Codex acpxAgent alias hash moves `af1d3f1b4eee` → `3cf7475b4e53`.
+
+## [0.24.10-beta.2] - 2026-10-15
+
+### Added
+
+- **Custom animated Bot avatars:** appearance tab with presets, shape/color/expression choices, live previews and motion control; shared SVG rendering across sidebar, Direct, Group, member selection and handoffs. Animation follows scoped live tasks, respects reduced motion/visibility, and never replays restored completion. Structured avatar contracts preserve legacy text and accepted snapshots; exact kernel-attested elicitation IDs enable truthful waiting states. Includes bloub MIT attribution. Upgrade the Relay stack together.
+- **Jev-backed automatic collaboration:** the bundled router now asks TypeSafe Jev (`jev-1.13.0`, `POST https://api.typesafe.ai/v1/systemone`) one choice question (state = the request plus bounded recent context, criteria = each enabled member's role/name) and dispatches to exactly ONE member. Confidence below `JEV_MIN_CONFIDENCE` (0.6), an unknown pick, or any Jev error falls back to the Group lead (else the first enabled member). The decision carries a `routingReason` that the Run card renders ("已分派给 X" plus reason/confidence). Jev settings (endpoint, API key, optional proxy; an empty proxy falls back to the daemon's `HTTPS_PROXY`/`https_proxy`) live per instance in `~/.xacpx/jev.json` (mode 0600, never in config.json, never logged) behind new instance-scoped RPCs `control.jev.get|update|test`; the key is only ever returned masked. The instance dialog gains the settings and a connection test (HTTP 451 -> region blocked, configure a proxy; 401/403 -> bad key). Automatic collaboration is `ready` only with a Jev key (new availability code `jev-not-configured`), and the Group composer hides 自动协作 entirely unless the router is ready AND a key is configured. The lead mode stays the default. The deterministic fan-out stays in code but is no longer reachable from the UI.
+
+### Fixed
+
+- **Legacy Bot emoji avatars stay intact:** text avatars display up to two complete Unicode grapheme clusters, preserving joined emoji and skin-tone modifiers without changing stored values.
+
+## [relay-protocol 0.6.4-beta.2] - 2026-10-15
+
+### Added
+
+- Structured Bot avatar contracts (presets, shape/colour/expression, motion) shared by every consumer, with legacy text avatars still accepted.
+- Jev settings wire (`control.jev.get|update|test`) and the run-level routing-reason field the Run card renders.
+
+## [relay 0.14.12-beta.2] - 2026-10-15
+
+### Added
+
+- Relay Web: custom animated Bot avatars — appearance tab in the Bot editor with live previews and motion control, and the shared SVG renderer wired into the sidebar, Direct, Group, member selection and handoff rows. Animation follows scoped live tasks, respects reduced motion and visibility, and never replays a restored completion.
+- Relay Web: Jev settings panel in the instance dialog with a connection test, and the dispatch-reason card on the Run.
+- Relay Web: 自动协作 is offered in the Group composer only while the router reports `ready` **and** a Jev key is configured.
+
+### Fixed
+
+- Relay Web: the working quip bubble anchors to the live turn instead of lagging behind it.
+- Relay Web: jump-to-latest is anchored outside the scroller; mention completions answer without awaiting command discovery, and command discovery is polled only in slash mode.
+- Relay Web: group auto-collaboration now shows the concrete reason it is unavailable instead of a generic refusal.
+- Relay Web: the group Run card stays readable on narrow viewports.
+
+## [channel-relay 0.7.8-beta.2] - 2026-10-15
+
+### Added
+
+- Bridge support for the Jev settings RPCs and the structured avatar/routing-reason conversation payloads; `minXacpxVersion` raised to `0.24.10-beta.2`.
+
+## [channel-feishu 0.8.7-beta.2] - 2026-10-15
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.2` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [channel-discord 0.8.7-beta.2] - 2026-10-15
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.2` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
 
 ## [0.24.10-beta.1] - 2026-10-14
 

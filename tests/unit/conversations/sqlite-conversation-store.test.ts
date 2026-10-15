@@ -1,11 +1,13 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expect, test } from "bun:test";
 
 import { snapshotBotProfile } from "../../../src/bots/bot-types";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { createDirectConversationId, createDirectTopicId } from "../../../src/domain/ids";
+import { ConversationError } from "../../../src/conversations/conversation-error";
+import { toRunDetail } from "../../../src/control/conversation-control-dtos";
 
 const NOW = "2026-09-15T12:00:00.000Z";
 const BOT_ID = "bot_reviewer";
@@ -50,6 +52,112 @@ test("acceptRequest atomically persists message, run, member turn, and pending d
   expect(accepted.dispatch.state).toBe("pending");
   expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 })).toHaveLength(1);
   store.close();
+});
+
+test("Run and MemberTurn avatar configs survive restart and cannot be mutated through returned snapshots", async () => {
+  const path = tempDb();
+  let store = await SqliteConversationStore.open(path);
+  try {
+    const profile = snapshot();
+    profile.presentation.avatar = {
+      version: 1, kind: "character", shape: "nuage", color: "bleu", expression: "curieux", motion: "auto",
+    };
+    const original = structuredClone(profile);
+    const accepted = store.acceptRequest({
+      conversationId: CONV, topicId: TOPIC, requestId: "avatar-config", botId: BOT_ID,
+      content: "review this", profileSnapshot: profile, now: NOW,
+    });
+    profile.presentation.avatar.color = "rouge";
+    const runAvatar = accepted.run.profileSnapshot.presentation.avatar;
+    const memberAvatar = accepted.memberTurn.profileSnapshot?.presentation.avatar;
+    if (runAvatar?.kind !== "character" || memberAvatar?.kind !== "character") throw new Error("missing avatar");
+    runAvatar.expression = "triste";
+    expect(memberAvatar).toEqual(original.presentation.avatar);
+    memberAvatar.motion = "off";
+    expect(store.getRun(accepted.run.id)?.profileSnapshot).toEqual(original);
+    expect(store.getMemberTurn(accepted.memberTurn.id)?.profileSnapshot).toEqual(original);
+    const run = store.getRun(accepted.run.id)!;
+    const dto = toRunDetail(run, []);
+    const dtoAvatar = dto.profileSnapshot.presentation.avatar;
+    if (dtoAvatar?.kind !== "character") throw new Error("missing DTO avatar");
+    dtoAvatar.shape = "cercle";
+    expect(run.profileSnapshot).toEqual(original);
+    store.close();
+    store = await SqliteConversationStore.open(path);
+    expect(store.getRun(accepted.run.id)?.profileSnapshot).toEqual(original);
+    expect(store.getMemberTurn(accepted.memberTurn.id)?.profileSnapshot).toEqual(original);
+    expect(store.getMessage(accepted.message.id)?.content).toBe("review this");
+    expect(store.getRun(accepted.run.id)?.state).toBe("queued");
+  } finally {
+    store.close();
+    rmSync(dirname(path), { recursive: true, force: true });
+  }
+});
+
+test("stored Run and MemberTurn snapshots normalize historical strings without dropping accepted work", async () => {
+  const path = tempDb();
+  let store = await SqliteConversationStore.open(path);
+  try {
+    const accepted = store.acceptRequest({
+      conversationId: CONV, topicId: TOPIC, requestId: "avatar-legacy", botId: BOT_ID,
+      content: "historical request", profileSnapshot: snapshot(), now: NOW,
+    });
+    const legacy = `  https://example.test/${"avatar".repeat(100)}.svg  `;
+    const historical = { ...snapshot(), presentation: { name: "Reviewer", avatar: legacy } };
+    const json = JSON.stringify(historical);
+    store.directWriteForTest("runs", accepted.run.id, { profile_snapshot_json: json });
+    store.directWriteForTest("member_turns", accepted.memberTurn.id, { profile_snapshot_json: json });
+    store.close();
+    store = await SqliteConversationStore.open(path);
+    const expected = { version: 1, kind: "text", value: legacy };
+    expect(store.getRun(accepted.run.id)?.profileSnapshot.presentation.avatar).toEqual(expected);
+    expect(store.getMemberTurn(accepted.memberTurn.id)?.profileSnapshot?.presentation.avatar).toEqual(expected);
+    expect(store.getRun(accepted.run.id)?.profileRevision).toBe(1);
+    expect(store.getRun(accepted.run.id)?.state).toBe("queued");
+    expect(store.getMessage(accepted.message.id)?.content).toBe("historical request");
+    for (const empty of ["", "  ", null]) {
+      const absent = JSON.stringify({ ...historical, presentation: { name: "Reviewer", avatar: empty } });
+      store.directWriteForTest("runs", accepted.run.id, { profile_snapshot_json: absent });
+      store.directWriteForTest("member_turns", accepted.memberTurn.id, { profile_snapshot_json: absent });
+      expect(store.getRun(accepted.run.id)?.profileSnapshot.presentation.avatar).toBeUndefined();
+      expect(store.getMemberTurn(accepted.memberTurn.id)?.profileSnapshot?.presentation.avatar).toBeUndefined();
+    }
+    store.directWriteForTest("runs", accepted.run.id, { profile_snapshot_json: json });
+    store.directWriteForTest("member_turns", accepted.memberTurn.id, { profile_snapshot_json: null });
+    const claimed = store.claimNextDispatch({ now: NOW, owner: "owner", leaseExpiresAt: "2026-09-15T12:00:30.000Z" });
+    expect(claimed?.memberSnapshot.presentation.avatar).toEqual(expected);
+  } finally {
+    store.close();
+    rmSync(dirname(path), { recursive: true, force: true });
+  }
+});
+
+test("malformed stored avatar configs retain the snapshot corruption failure", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  try {
+    const accepted = store.acceptRequest({
+      conversationId: CONV, topicId: TOPIC, requestId: "avatar-corrupt", botId: BOT_ID,
+      content: "request", profileSnapshot: snapshot(), now: NOW,
+    });
+    for (const avatar of [
+      { version: 2, kind: "text", value: "🤖" },
+      { version: 1, kind: "character", shape: "unknown", color: "bleu", expression: "curieux", motion: "auto" },
+    ]) {
+      const json = JSON.stringify({ ...snapshot(), presentation: { name: "Reviewer", avatar } });
+      store.directWriteForTest("runs", accepted.run.id, { profile_snapshot_json: json });
+      store.directWriteForTest("member_turns", accepted.memberTurn.id, { profile_snapshot_json: json });
+      expect(() => store.getRun(accepted.run.id)).toThrow(ConversationError);
+      expect(() => store.getMemberTurn(accepted.memberTurn.id)).toThrow(ConversationError);
+      try {
+        store.getRun(accepted.run.id);
+        throw new Error("corrupt avatar was accepted");
+      } catch (error) {
+        expect(error).toMatchObject({ code: "member_turn_corrupt" });
+      }
+    }
+  } finally {
+    store.close();
+  }
 });
 
 test("getAcceptedRequest returns the durable accepted rows without accepting again", async () => {

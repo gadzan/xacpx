@@ -194,6 +194,21 @@ test("a form on a non-Direct-Conversation route is refused as unsupported", asyn
   expect(hubCalled).toBe(false);
 });
 
+test("a contradictory task scope is refused before publishing a private form", async () => {
+  for (const mismatch of [{ conversationId: "other-conversation" }, { topicId: "other-topic" }]) {
+    let deliveries = 0;
+    const { channel, options } = makeHarness({
+      sendRequest: () => { deliveries++; throw new Error("unexpected delivery"); },
+    });
+    await startStarted(channel, options);
+    const request = Object.assign(coreRequest(), {
+      conversation: { conversationId: "conv-1", topicId: "topic-1", botId: "bot-a", runId: "run-a", memberTurnId: "member-a", ...mismatch },
+    });
+    await expect(channel.requestElicitation(request)).rejects.toThrow("unsupported-route");
+    expect(deliveries).toBe(0);
+  }
+});
+
 test("the schema title AND description are projected, not just the title", async () => {
   // The wire validator allows "message: """ on purpose — "a schema with a good title
   // needs no prose" — so the schema-level text can be the form's ENTIRE question.
