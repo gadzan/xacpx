@@ -63,15 +63,17 @@ function stripBackgroundTile(svg: string): string {
   return stripped;
 }
 
-// Fill swaps applied after the tile strip, for marks whose ink was drawn in a colour that
-// only read against the stripped tile. Kiro's ghost body is white on its purple tile; with
-// the tile gone it would vanish on light themes, so it takes the tile's purple (eyes stay
-// #000). To keep Kiro's tile instead, delete this entry and add `kiro` to KEEP_TILE.
+// Fill swaps for white ink that vanishes on light themes once it sits on the round frame
+// instead of a dark tile. Kiro's ghost body takes its stripped tile's purple (eyes stay #000).
+// Kimi's K is white in the brand file; it takes `currentColor`, which AgentIcon pins to the
+// body text colour (`text-fg`), so it is dark on light and light on dark. Its dot stays
+// #1783FF. Each fill is one constant; a value may be a hex or `currentColor`.
+const KIRO_GHOST_FILL = "#9046FF";
+const KIMI_K_FILL = "currentColor";
 const GLYPH_RECOLOR: Readonly<Record<string, readonly (readonly [string, string])[]>> = {
-  kiro: [['fill="#fff"', 'fill="#9046FF"']],
+  kiro: [['fill="#fff"', `fill="${KIRO_GHOST_FILL}"`]],
+  kimi: [['fill="#fff"', `fill="${KIMI_K_FILL}"`]],
 };
-// Drivers whose background tile is kept (empty: every tile under a mark is stripped).
-const KEEP_TILE: ReadonlySet<string> = new Set<string>([]);
 
 function recolor(svg: string, swaps: readonly (readonly [string, string])[]): string {
   return swaps.reduce((out, [from, to]) => out.split(from).join(to), svg);
@@ -131,7 +133,7 @@ const ICONS: Record<string, string> = {
   omp,
 };
 for (const driver of Object.keys(ICONS)) {
-  let svg = KEEP_TILE.has(driver) ? ICONS[driver]! : stripBackgroundTile(ICONS[driver]!);
+  let svg = stripBackgroundTile(ICONS[driver]!);
   const swaps = GLYPH_RECOLOR[driver];
   if (swaps) svg = recolor(svg, swaps);
   const fit = GLYPH_FIT[driver];

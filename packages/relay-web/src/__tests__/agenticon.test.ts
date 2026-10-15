@@ -69,6 +69,15 @@ describe("agentIconSvg", () => {
     for (const driver of ["gemini", "copilot", "cursor", "hermes", "qwen", "kimi", "opencode", "openclaw", "kilocode", "qoder", "trae", "omp"]) fit(driver);
   });
 
+  it("draws Kimi's white K in currentColor (body text) so it shows on both themes", () => {
+    const svg = new DOMParser().parseFromString(agentIconSvg("kimi")!, "image/svg+xml").documentElement;
+    const fills = [...svg.querySelectorAll("path")].map((el) => el.getAttribute("fill"));
+    // Path 0 is the brand dot (stays #1783FF), path 1 is the K.
+    expect(fills).toEqual(["#1783FF", "currentColor"]);
+    expect(fills.map((f) => f?.toLowerCase())).not.toContain("#fff");
+    expect(fills.map((f) => f?.toLowerCase())).not.toContain("#ffffff");
+  });
+
   it("recolours Kiro's ghost to the stripped tile's purple so it shows on light themes", () => {
     const svg = new DOMParser().parseFromString(agentIconSvg("kiro")!, "image/svg+xml").documentElement;
     const fills = [...svg.querySelectorAll("path")].map((el) => el.getAttribute("fill"));
@@ -133,6 +142,9 @@ describe("AgentIcon", () => {
     expect(inner.exists()).toBe(true);
     expect(inner.classes()).toContain("[&>svg]:h-full");
     expect(inner.classes()).toContain("[&>svg]:w-full");
+    // currentColor ink (Kimi's K, the monochrome marks) is always body text, whatever
+    // muted / selected colour the parent row sets.
+    expect(inner.classes()).toContain("text-fg");
   });
 
   it("falls back to the generic icon for an unknown driver", () => {
