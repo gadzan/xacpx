@@ -50,5 +50,14 @@ export const useConnectionStore = defineStore("connection", () => {
     offlineSince.value = next.online ? null : (offlineSince.value ?? Date.now());
   }
 
-  return { online, everOpened, offlineSince, setStatus };
+  /**
+   * Single-argument entry kept for DashboardView's events status callback. A
+   * socket only reports online from its open handler, so online=true implies
+   * a socket has opened; everOpened then latches for the page lifetime.
+   */
+  function setOnline(v: boolean): void {
+    setStatus({ online: v, everOpened: everOpened.value || v });
+  }
+
+  return { online, everOpened, offlineSince, setStatus, setOnline };
 });

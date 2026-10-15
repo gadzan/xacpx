@@ -94,6 +94,17 @@ describe("ConnectionBadge", () => {
     expect(w.find("span.rounded-full").classes()).toContain("bg-fg-muted");
   });
 
+  it("latches everOpened through the single-argument setOnline", () => {
+    const conn = useConnectionStore();
+    conn.setOnline(false);
+    expect(conn.everOpened).toBe(false);
+    conn.setOnline(true);
+    expect(conn.everOpened).toBe(true);
+    conn.setOnline(false);
+    expect(conn.everOpened).toBe(true);
+    expect(conn.online).toBe(false);
+  });
+
   it("shows the run-bright online state", () => {
     const conn = useConnectionStore();
     conn.setStatus({ online: true, everOpened: true });

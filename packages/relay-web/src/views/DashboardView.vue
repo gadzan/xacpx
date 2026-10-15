@@ -511,8 +511,8 @@ async function reloadSnapshot() {
     await tasks.loadFor(chat.instanceId, chat.sessionAlias).catch(() => {});
   }
 }
-function onStatus(online: boolean, everOpened: boolean) {
-  conn.setStatus({ online, everOpened });
+function onStatus(online: boolean) {
+  conn.setOnline(online);
   if (online) {
     // Subscribe to every owned instance so background turns keep their working/unread
     // state accurate even while the user is viewing a different instance.
