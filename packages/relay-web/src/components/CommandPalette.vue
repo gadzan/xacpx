@@ -69,7 +69,7 @@ onMounted(() => void nextTick(() => input.value?.focus()));
     <div class="w-full max-w-lg overflow-hidden rounded-xl bg-raised shadow-float">
       <div class="flex items-center gap-2 px-4 py-3">
         <Search :size="16" class="shrink-0 text-fg-muted" />
-        <input ref="input" v-model="query" data-test="palette-input"
+        <input ref="input" v-model="query" data-test="palette-input" data-ring="container"
                :placeholder='$t("palette.placeholder")'
                class="w-full bg-transparent text-sm text-fg placeholder:text-fg-muted outline-none"
                @input="active = 0; clampActive()" @keydown="onKeydown" />

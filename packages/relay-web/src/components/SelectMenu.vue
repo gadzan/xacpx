@@ -81,7 +81,7 @@ function flatIndex(groupIdx: number, optIdx: number): number {
 <template>
   <div ref="boxEl" class="relative">
     <button type="button" :data-test="dataTest" :aria-label="ariaLabel" :aria-expanded="open"
-            class="flex w-full items-center justify-between rounded-lg bg-bg py-2 pl-3 pr-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            class="flex w-full items-center justify-between rounded-lg bg-surface-2 py-2 pl-3 pr-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             @click="toggle" @keydown="onKeydown">
       <span class="truncate" :class="selectedLabel ? 'text-fg' : 'text-fg-muted'">{{ selectedLabel || placeholder || "Select…" }}</span>
       <ChevronDown :size="16" class="ml-2 shrink-0 text-fg-muted transition-transform" :class="open ? 'rotate-180' : ''" />

@@ -297,7 +297,7 @@ onMounted(async () => {
                 <button v-for="m in GROUP_MODES" :key="m" type="button" role="radio"
                         :aria-checked="groupMode === m" :data-test="`group-mode-${m}`"
                         class="flex-1 rounded px-2 py-1.5 text-xs"
-                        :class="groupMode === m ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                        :class="groupMode === m ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
                         @click="pickGroupMode(m)">
                   {{ m === 'instance' ? $t('instance.groupModeInstance') : m === 'workspace' ? $t('instance.groupModeWorkspace') : $t('instance.groupModeAgent') }}
                 </button>

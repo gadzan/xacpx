@@ -121,6 +121,7 @@ function onInput(event: Event): void {
       <textarea
         ref="textarea"
         :data-test="textareaTestId"
+        data-ring="container"
         :value="modelValue"
         rows="2"
         :role="combobox ? 'combobox' : undefined"

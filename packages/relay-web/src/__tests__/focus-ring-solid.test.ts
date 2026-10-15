@@ -27,4 +27,26 @@ describe("focus ring tokens", () => {
     const css = readFileSync(join(SRC, "style.css"), "utf8");
     expect(css).toContain("box-shadow: 0 0 0 2px rgb(var(--c-accent)) !important;");
   });
+
+  it("global field ring excludes data-ring=\"container\" fields", () => {
+    const css = readFileSync(join(SRC, "style.css"), "utf8");
+    const rule = css.match(/([^{}]*)\{[^}]*box-shadow: 0 0 0 2px rgb\(var\(--c-accent\)\) !important;/);
+    expect(rule).not.toBeNull();
+    const selectors = rule![1].replace(/\/\*[\s\S]*?\*\//g, "").split(",").map((x) => x.trim()).filter(Boolean);
+    expect(selectors.length).toBeGreaterThan(0);
+    for (const sel of selectors) expect(sel).toContain(':not([data-ring="container"])');
+    expect(selectors.some((sel) => sel.startsWith("input"))).toBe(true);
+    expect(selectors.some((sel) => sel.startsWith("textarea"))).toBe(true);
+  });
+
+  it("transparent fields inside ringed containers opt out via data-ring=\"container\"", () => {
+    const composer = readFileSync(join(SRC, "components/ConversationComposer.vue"), "utf8");
+    const textarea = composer.match(/<textarea[\s\S]*?>/)?.[0] ?? "";
+    expect(textarea).toContain('data-ring="container"');
+    expect(composer).toContain("focus-within:ring-2 focus-within:ring-accent");
+
+    const palette = readFileSync(join(SRC, "components/CommandPalette.vue"), "utf8");
+    const input = palette.match(/<input[^>]*data-test="palette-input"[\s\S]*?>/)?.[0] ?? "";
+    expect(input).toContain('data-ring="container"');
+  });
 });

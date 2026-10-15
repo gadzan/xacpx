@@ -323,11 +323,11 @@ async function submit(): Promise<void> {
             <div class="flex gap-1">
               <button type="button" data-test="ns-source-new"
                       class="flex-1 rounded px-2 py-1 text-xs"
-                      :class="sessionSource === 'new' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                      :class="sessionSource === 'new' ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
                       @click="sessionSource = 'new'">{{ $t("session.newSession") }}</button>
               <button type="button" data-test="ns-source-native"
                       class="flex-1 rounded px-2 py-1 text-xs"
-                      :class="sessionSource === 'native' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                      :class="sessionSource === 'native' ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
                       @click="sessionSource = 'native'">{{ $t("session.nativeSession") }}</button>
             </div>
           </div>
@@ -350,11 +350,11 @@ async function submit(): Promise<void> {
               <div v-if="sessionSource === 'new'" class="flex gap-1">
                 <button type="button" data-test="ns-ws-mode-existing"
                         class="rounded px-2 py-0.5 text-xs"
-                        :class="wsMode === 'existing' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                        :class="wsMode === 'existing' ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
                         @click="wsMode = 'existing'">{{ $t("session.existing") }}</button>
                 <button type="button" data-test="ns-ws-mode-path"
                         class="rounded px-2 py-0.5 text-xs"
-                        :class="wsMode === 'path' ? 'bg-accent text-on-accent' : 'bg-bg text-fg-muted hover:bg-fg/5'"
+                        :class="wsMode === 'path' ? 'bg-accent text-on-accent' : 'bg-surface-2 text-fg-muted hover:bg-fg/5'"
                         @click="wsMode = 'path'">{{ $t("session.newPath") }}</button>
               </div>
             </div>
