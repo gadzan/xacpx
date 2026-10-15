@@ -405,8 +405,18 @@ export function requestDesktop(
   return promise;
 }
 
-/** Connects to the relay /ws fan-out and invokes `onEvent` for each web event. Auto-reconnects. */
-export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus?: (online: boolean) => void): () => void {
+/**
+ * Connects to the relay /ws fan-out and invokes `onEvent` for each web event.
+ * Auto-reconnects.
+ *
+ * `onStatus(online, everOpened)` reports both the live socket state and whether
+ * any socket has opened in this page lifetime, so a first load that has not
+ * connected yet can render a neutral "connecting" state instead of an error.
+ */
+export function connectEvents(
+  onEvent: (event: WebServerEvent) => void,
+  onStatus?: (online: boolean, everOpened: boolean) => void,
+): () => void {
   let socket: WebSocket | null = null;
   let closed = false;
   let retry = 0;
@@ -444,12 +454,12 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
       const reconnected = wasReconnect || everOpened;
       retry = 0;
       everOpened = true;
-      onStatus?.(true);
+      onStatus?.(true, everOpened);
       if (reconnected) fireEventsReconnect();
     };
     ws.onclose = () => {
       if (!isCurrent()) return;
-      onStatus?.(false);
+      onStatus?.(false, everOpened);
       activeSocket = null;
       rejectAllPending("events-offline", "events socket closed");
       if (closed) return;

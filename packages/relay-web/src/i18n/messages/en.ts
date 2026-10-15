@@ -22,6 +22,7 @@ export default {
     close: "Close",
   },
   connection: {
+    connecting: "Connecting…",
     online: "Connected",
     reconnecting: "Reconnecting…",
   },

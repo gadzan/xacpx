@@ -20,6 +20,7 @@ export default {
     close: "关闭",
   },
   connection: {
+    connecting: "连接中…",
     online: "已连接",
     reconnecting: "重新连接中…",
   },
