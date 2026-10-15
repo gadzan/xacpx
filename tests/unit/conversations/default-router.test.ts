@@ -442,6 +442,22 @@ test("a throwing ask falls back instead of failing the run", async () => {
   expect(decision.reason).toContain("socket hang up");
 });
 
+test("a throwing ask never leaks proxy credentials or the key into the reason", async () => {
+  const proxyUrl = "http://proxyuser:s3cretpass@127.0.0.1:7890";
+  const ask = (async () => {
+    throw new Error(`tunnel via ${proxyUrl} failed (Bearer ${JEV_ENV.apiKey})`);
+  }) as unknown as Parameters<typeof decideJevRouterAssignment>[1];
+  const decision = expectDispatch(await decideJevRouterAssignment({
+    ...jevInput({ members: [member("bot_reviewer"), member("bot_lead")], leadBotId: "bot_lead" }),
+    jev: { ...JEV_ENV, proxyUrl },
+  }, ask));
+  expect(decision.assignments[0]?.botId).toBe("bot_lead");
+  expect(decision.reason).toContain("http://***@127.0.0.1:7890");
+  expect(decision.reason).not.toContain("s3cretpass");
+  expect(decision.reason).not.toContain("proxyuser");
+  expect(decision.reason).not.toContain(JEV_ENV.apiKey);
+});
+
 test("with no lead configured the first enabled member is the fallback", async () => {
   const { ask } = fakeAsk({ ok: true, choice: "bot_ghost", confidence: 0.99 });
   const decision = expectDispatch(await decideJevRouterAssignment(jevInput({

@@ -2778,6 +2778,58 @@ test("a dispatch decision's reason is durable on the run and projected to the DT
   }
 });
 
+test("the routing-reason backfill runs once, on the upgrade that adds the column", async () => {
+  const reason = "Jev dispatched to bot_reviewer (confidence 0.82).";
+  const router = new RecordingRouter([{
+    type: "dispatch",
+    mode: "single",
+    assignments: [{ id: "jev-0-bot_reviewer", botId: BOT_ID, task: "Review the patch", triggerMessageIds: [] }],
+    reason,
+  }]);
+  const harness = await createHarness({ router, autoKick: false });
+  let runId = "";
+  try {
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, "backfill-run");
+    runId = accepted.run.id;
+    await harness.dispatcher.kick();
+    await harness.service.awaitRouting();
+  } finally {
+    harness.store.close();
+  }
+  // Reproduce the pre-column schema: the reason exists only in the audit row.
+  const legacy = await createSqlDriver(harness.path);
+  try {
+    legacy.exec("ALTER TABLE runs DROP COLUMN routing_reason");
+  } finally {
+    legacy.close();
+  }
+  // First open after the upgrade: the column is added and backfilled from audit.
+  const upgraded = await SqliteConversationStore.open(harness.path);
+  try {
+    expect(upgraded.getRun(runId)?.routingReason).toBe(reason);
+  } finally {
+    upgraded.close();
+  }
+  // Now make a rerun observable: clear the durable value and rewrite the audit.
+  // A backfill that ran again on open would copy the rewritten audit back.
+  const tamper = await createSqlDriver(harness.path);
+  try {
+    tamper.run("UPDATE runs SET routing_reason = NULL WHERE id = ?", [runId]);
+    tamper.run("UPDATE routing_decisions SET reason = ? WHERE run_id = ?", ["rewritten audit", runId]);
+  } finally {
+    tamper.close();
+  }
+  for (let open = 0; open < 2; open += 1) {
+    const reopened = await SqliteConversationStore.open(harness.path);
+    try {
+      expect(reopened.getRun(runId)?.routingReason).toBeUndefined();
+    } finally {
+      reopened.close();
+    }
+  }
+});
+
 test("the group lead reaches the router input and a decision without a reason stays absent", async () => {
   const router = new RecordingRouter([{ type: "complete", reason: "done" }]);
   const harness = await createHarness({ router, autoKick: false });

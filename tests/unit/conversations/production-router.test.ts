@@ -643,6 +643,44 @@ test("a missing Jev key fails with jev-not-configured without spawning the route
   }
 });
 
+test("a missing command with no Jev key reports command-missing first, spawning nothing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-nocmd-nokey-"));
+  try {
+    // Enabled with no command at all, and no Jev handoff.
+    const config = createConfig();
+    config.conversations = { router: { enabled: true } };
+    const empty = await resolveProductionRouter({ config, env: { PATH: process.env.PATH ?? "" } });
+    expect(empty.availability).toEqual({
+      status: "failed",
+      configPath: ROUTER_CONFIG_PATH,
+      reason: { code: "command-missing", message: "conversations.router.command is missing." },
+    });
+    expect(empty.router).toBeUndefined();
+    // A configured but uninstalled command, still with no key (and an empty key).
+    const missing = join(dir, "not-installed-router.mjs");
+    for (const jev of [undefined, { ...JEV_HANDOFF, apiKey: "   " }]) {
+      const resolution = await resolveProductionRouter({
+        config: createConfig(missing),
+        env: { PATH: process.env.PATH ?? "" },
+        ...(jev ? { jev } : {}),
+      });
+      expect(resolution.availability).toEqual({
+        status: "failed",
+        configPath: ROUTER_CONFIG_PATH,
+        reason: { code: "command-missing", message: "conversations.router.command is not installed." },
+      });
+      expect(resolution.router).toBeUndefined();
+    }
+    // Once the command exists, the missing key is the reported cause.
+    const router = await writeRouter(dir, "dispatch");
+    const keyless = await resolveProductionRouter({ config: createConfig(router.command), env: router.env });
+    expect(keyless.availability).toMatchObject({ status: "failed", reason: { code: "jev-not-configured" } });
+    expect(await readLog(router.log)).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the decision process receives the Jev settings through its environment", async () => {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-router-jev-env-"));
   try {

@@ -19,7 +19,9 @@ import { withPrivateFileLock } from "../util/private-file";
  * Patch semantics (mirrors the wire payload):
  * - `endpoint` / `proxyUrl`: a string replaces; `proxyUrl: null` removes the
  *   override (empty = daemon process `HTTPS_PROXY` fallback);
- * - `apiKey`: a string sets, `null` clears, omitted keeps.
+ * - `apiKey`: a string sets, `null` clears, omitted keeps. Echoing the masked
+ *   preview (`keyMasked`) back keeps the stored key; a different masked-looking
+ *   value is rejected.
  */
 
 /** The persisted file shape. Every key is optional: absent means "not
@@ -64,6 +66,12 @@ function assertUrl(value: string, field: string): string {
     throw invalid(`${field} must use the http or https scheme`);
   }
   return trimmed;
+}
+
+/** True when `candidate` is exactly the masked preview of `stored` (what
+ *  `view()` returned as `keyMasked`) rather than a new key. */
+function isEchoedKeyMask(candidate: string, stored: string | undefined): boolean {
+  return stored !== undefined && candidate !== stored && candidate === maskJevKey(stored);
 }
 
 export class JevSettingsStore {
@@ -142,8 +150,16 @@ export class JevSettingsStore {
         && nextProxy !== stored.proxyUrl && nextProxy === maskProxyUrl(stored.proxyUrl))) {
         merged.proxyUrl = nextProxy;
       }
+      // Same rule for the key: the wire only ever shows `keyMasked`, so a
+      // client that echoes that preview back must not replace the real key
+      // with its own mask.
       if (clearKey) delete merged.apiKey;
-      else if (nextKey !== undefined) merged.apiKey = nextKey;
+      else if (nextKey !== undefined && !isEchoedKeyMask(nextKey, stored.apiKey)) {
+        // Any other masked-looking value (a stale preview of an older key) is
+        // never a real key: refuse it rather than store a useless secret.
+        if (nextKey.includes("…")) throw invalid("apiKey looks like a masked preview, not a key");
+        merged.apiKey = nextKey;
+      }
       await writeLocked(`${JSON.stringify(merged, null, 2)}\n`);
     });
     return await this.view();

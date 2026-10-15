@@ -295,7 +295,13 @@ async function postThroughProxy(
   request: JevRequest,
   timeoutMs: number,
 ): Promise<JevHttpResponse> {
-  const proxy = new URL(proxyUrl);
+  let proxy: URL;
+  try {
+    proxy = new URL(proxyUrl);
+  } catch {
+    // Never echo the raw value: it may carry `user:pass@` credentials.
+    throw new Error("the proxy URL is not a valid URL");
+  }
   if (proxy.protocol === "https:") {
     // A TLS connection to the proxy itself is not implemented; refusing is
     // safer than speaking plaintext CONNECT to port 80 of an https proxy.
@@ -323,6 +329,23 @@ async function postThroughProxy(
  * vocabulary of causes.
  */
 export async function askJevChoice(input: JevAskInput): Promise<JevAskResult> {
+  // Every failure text (network error, proxy CONNECT status line, upstream
+  // response excerpt) is scrubbed of proxy credentials and the API key before
+  // it reaches a caller: the connection test returns it over RPC and the
+  // router folds causes into a user-visible reason.
+  const env = input.env ?? process.env;
+  const redact = (text: string): string => redactJevSecrets(text, {
+    proxyUrls: [input.proxyUrl, env.HTTPS_PROXY, env.https_proxy],
+    apiKey: input.apiKey,
+  });
+  const result = await askJevChoiceUnredacted(input, redact);
+  return result.ok ? result : { ...result, message: redact(result.message) };
+}
+
+async function askJevChoiceUnredacted(
+  input: JevAskInput,
+  redact: (text: string) => string,
+): Promise<JevAskResult> {
   if (typeof input.apiKey !== "string" || input.apiKey.trim().length === 0) {
     return failure("no-key", "No Jev API key is configured for this instance.");
   }
@@ -332,9 +355,10 @@ export async function askJevChoice(input: JevAskInput): Promise<JevAskResult> {
   const startedAt = Date.now();
   const request = buildRequest(input);
   const timeoutMs = input.timeoutMs ?? DEFAULT_JEV_TIMEOUT_MS;
-  // An explicit proxy wins; empty falls back to the daemon process env. The
-  // platform fetch does not honor HTTPS_PROXY on its own, so the fallback is
-  // resolved here and routed through the same CONNECT tunnel.
+  // An explicit proxy wins; empty falls back to the daemon process env. Either
+  // is skipped when NO_PROXY matches the endpoint host. The platform fetch
+  // does not honor HTTPS_PROXY on its own, so the fallback is resolved here
+  // and routed through the same CONNECT tunnel.
   const proxyUrl = resolveJevProxyUrl(input.proxyUrl, input.env ?? process.env, request.url);
   let response: JevHttpResponse;
   try {
@@ -362,7 +386,9 @@ export async function askJevChoice(input: JevAskInput): Promise<JevAskResult> {
   }
   const latencyMs = Date.now() - startedAt;
   const text = await response.text().catch(() => "");
-  if (!response.ok) return statusFailure(response.status, text);
+  // Redact the whole body before statusFailure truncates it, so a secret cut
+  // in half by the excerpt bound cannot survive as an unmatched fragment.
+  if (!response.ok) return statusFailure(response.status, redact(text));
   let parsed: unknown;
   try {
     parsed = JSON.parse(text) as unknown;
@@ -374,25 +400,149 @@ export async function askJevChoice(input: JevAskInput): Promise<JevAskResult> {
   return { ok: true, choice: answer.choice, confidence: answer.confidence, latencyMs };
 }
 
-/** The proxy a Jev call uses: the explicit setting, else `HTTPS_PROXY` /
- *  `https_proxy` from the environment (skipped when `NO_PROXY` / `no_proxy`
- *  matches the target host), else none. An explicit setting always wins. */
+/**
+ * The proxy a Jev call uses: the explicit per-instance setting, else
+ * `HTTPS_PROXY` / `https_proxy` from the environment, else none.
+ *
+ * `NO_PROXY` / `no_proxy` is honored for BOTH sources: when it matches the
+ * target host the call goes direct even with an explicit Jev proxy configured.
+ * One rule for every proxy keeps the daemon consistent with the rest of the
+ * machine's tooling (an operator who exempts a host in NO_PROXY means it).
+ */
 export function resolveJevProxyUrl(
   explicit: string | undefined,
   env: NodeJS.ProcessEnv,
   targetUrl?: string,
 ): string | undefined {
-  const direct = explicit?.trim();
-  if (direct) return direct;
-  const candidate = env.HTTPS_PROXY?.trim() || env.https_proxy?.trim();
+  const candidate = explicit?.trim() || env.HTTPS_PROXY?.trim() || env.https_proxy?.trim();
   if (!candidate) return undefined;
   if (targetUrl && noProxyMatches(targetUrl, env.NO_PROXY ?? env.no_proxy)) return undefined;
   return candidate;
 }
 
-/** Conventional NO_PROXY matching: `*`, exact host, or domain suffix
- *  (`example.com` / `.example.com` both match `api.example.com`), with an
- *  optional `:port` restriction. */
+/** One parsed NO_PROXY entry. */
+type NoProxyEntry =
+  | { kind: "all" }
+  | { kind: "name"; name: string; port?: string }
+  | { kind: "ip"; family: 4 | 6; value: bigint; port?: string }
+  | { kind: "cidr"; family: 4 | 6; value: bigint; prefix: number };
+
+/** Parse a dotted-quad IPv4 literal; anything else is undefined. */
+function parseIpv4(text: string): bigint | undefined {
+  const parts = text.split(".");
+  if (parts.length !== 4) return undefined;
+  let value = 0n;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return undefined;
+    const octet = Number(part);
+    if (octet > 255) return undefined;
+    value = (value << 8n) | BigInt(octet);
+  }
+  return value;
+}
+
+/** Parse an IPv6 literal (with `::` compression and an optional embedded
+ *  IPv4 tail); anything else is undefined. Zone ids are not accepted. */
+function parseIpv6(text: string): bigint | undefined {
+  if (!text.includes(":") || text.includes("%")) return undefined;
+  const halves = text.split("::");
+  if (halves.length > 2) return undefined;
+  const toGroups = (half: string): number[] | undefined => {
+    if (half.length === 0) return [];
+    const groups: number[] = [];
+    const pieces = half.split(":");
+    for (let i = 0; i < pieces.length; i += 1) {
+      const piece = pieces[i]!;
+      if (i === pieces.length - 1 && piece.includes(".")) {
+        const v4 = parseIpv4(piece);
+        if (v4 === undefined) return undefined;
+        groups.push(Number(v4 >> 16n), Number(v4 & 0xffffn));
+        continue;
+      }
+      if (!/^[0-9a-f]{1,4}$/i.test(piece)) return undefined;
+      groups.push(Number.parseInt(piece, 16));
+    }
+    return groups;
+  };
+  const head = toGroups(halves[0]!);
+  const tail = halves.length === 2 ? toGroups(halves[1]!) : [];
+  if (!head || !tail) return undefined;
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return undefined;
+  const groups = [...head, ...Array<number>(halves.length === 2 ? missing : 0).fill(0), ...tail];
+  return groups.reduce((acc, group) => (acc << 16n) | BigInt(group), 0n);
+}
+
+function parseIp(text: string): { family: 4 | 6; value: bigint } | undefined {
+  const v4 = parseIpv4(text);
+  if (v4 !== undefined) return { family: 4, value: v4 };
+  const v6 = parseIpv6(text);
+  if (v6 !== undefined) return { family: 6, value: v6 };
+  return undefined;
+}
+
+/** Parse one NO_PROXY entry. Unreadable entries are skipped (undefined) rather
+ *  than widened into a match. */
+function parseNoProxyEntry(raw: string): NoProxyEntry | undefined {
+  let entry = raw.trim().toLowerCase();
+  if (!entry) return undefined;
+  if (entry === "*") return { kind: "all" };
+  // `[v6]` or `[v6]:port`.
+  if (entry.startsWith("[")) {
+    const close = entry.indexOf("]");
+    if (close === -1) return undefined;
+    const ip = parseIpv6(entry.slice(1, close));
+    const rest = entry.slice(close + 1);
+    if (ip === undefined) return undefined;
+    if (rest.length === 0) return { kind: "ip", family: 6, value: ip };
+    const port = /^:(\d{1,5})$/.exec(rest)?.[1];
+    return port ? { kind: "ip", family: 6, value: ip, port } : undefined;
+  }
+  // CIDR on an IP literal: `10.0.0.0/8`, `fd00::/8`.
+  const slash = entry.indexOf("/");
+  if (slash !== -1) {
+    const ip = parseIp(entry.slice(0, slash));
+    const prefixText = entry.slice(slash + 1);
+    if (!ip || !/^\d{1,3}$/.test(prefixText)) return undefined;
+    const prefix = Number(prefixText);
+    if (prefix > (ip.family === 4 ? 32 : 128)) return undefined;
+    return { kind: "cidr", family: ip.family, value: ip.value, prefix };
+  }
+  // A bare IPv6 literal has several colons and never carries a port.
+  const colons = entry.split(":").length - 1;
+  if (colons > 1) {
+    const ip = parseIpv6(entry);
+    return ip === undefined ? undefined : { kind: "ip", family: 6, value: ip };
+  }
+  let port: string | undefined;
+  if (colons === 1) {
+    const match = /^(.*):(\d{1,5})$/.exec(entry);
+    if (!match) return undefined;
+    entry = match[1]!;
+    port = match[2];
+  }
+  const ip = parseIpv4(entry);
+  if (ip !== undefined) return { kind: "ip", family: 4, value: ip, ...(port ? { port } : {}) };
+  // `.example.com` and `*.example.com` are the same rule as `example.com`.
+  const name = entry.replace(/^\*?\./, "").replace(/\.$/, "");
+  if (name.length === 0 || name.includes("*") || name.includes("/")) return undefined;
+  return { kind: "name", name, ...(port ? { port } : {}) };
+}
+
+/**
+ * Standard NO_PROXY matching (the curl/wget convention):
+ * - `*` alone exempts every host;
+ * - a host name matches itself and its subdomains on label boundaries:
+ *   `example.com`, `.example.com` and `*.example.com` all match `example.com`
+ *   and `api.example.com`, never `badexample.com`;
+ * - an IP literal (`10.0.0.1`, `::1`, `[::1]`) matches only that address —
+ *   never a suffix — and an IP CIDR (`10.0.0.0/8`, `fd00::/8`) matches the
+ *   addresses inside it; a host name never matches an IP entry or vice versa;
+ * - an optional `:port` (`example.com:8443`, `[::1]:8443`) restricts the entry
+ *   to that port (the target's default port when it names none).
+ * Entries are separated by commas and/or whitespace; unreadable ones are
+ * ignored rather than widened into a match.
+ */
 export function noProxyMatches(targetUrl: string, noProxy: string | undefined): boolean {
   if (!noProxy?.trim()) return false;
   let target: URL;
@@ -401,24 +551,94 @@ export function noProxyMatches(targetUrl: string, noProxy: string | undefined): 
   } catch {
     return false;
   }
-  const host = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const rawHost = target.hostname.toLowerCase();
+  const bracketed = rawHost.startsWith("[") && rawHost.endsWith("]");
+  const host = (bracketed ? rawHost.slice(1, -1) : rawHost).replace(/\.$/, "");
   const port = target.port || (target.protocol === "https:" ? "443" : "80");
+  const hostIp = bracketed ? (() => {
+    const v6 = parseIpv6(host);
+    return v6 === undefined ? undefined : { family: 6 as const, value: v6 };
+  })() : (() => {
+    const v4 = parseIpv4(host);
+    return v4 === undefined ? undefined : { family: 4 as const, value: v4 };
+  })();
   for (const raw of noProxy.split(/[\s,]+/)) {
-    const entry = raw.trim().toLowerCase();
+    const entry = parseNoProxyEntry(raw);
     if (!entry) continue;
-    if (entry === "*") return true;
-    let name = entry;
-    let entryPort: string | undefined;
-    const portMatch = /^(.*):(\d+)$/.exec(entry);
-    if (portMatch && !entry.includes("]") ) {
-      name = portMatch[1]!;
-      entryPort = portMatch[2];
+    switch (entry.kind) {
+      case "all":
+        return true;
+      case "name":
+        if (hostIp) continue;
+        if (entry.port && entry.port !== port) continue;
+        if (host === entry.name || host.endsWith(`.${entry.name}`)) return true;
+        continue;
+      case "ip":
+        if (!hostIp || hostIp.family !== entry.family) continue;
+        if (entry.port && entry.port !== port) continue;
+        if (hostIp.value === entry.value) return true;
+        continue;
+      case "cidr": {
+        if (!hostIp || hostIp.family !== entry.family) continue;
+        const bits = BigInt((entry.family === 4 ? 32 : 128) - entry.prefix);
+        if ((hostIp.value >> bits) === (entry.value >> bits)) return true;
+        continue;
+      }
     }
-    name = name.replace(/^\*?\./, "").replace(/^\[|\]$/g, "");
-    if (entryPort && entryPort !== port) continue;
-    if (host === name || host.endsWith(`.${name}`)) return true;
   }
   return false;
+}
+
+/** Replace every occurrence of `needle` in `text`. */
+function replaceAll(text: string, needle: string, replacement: string): string {
+  return needle.length === 0 ? text : text.split(needle).join(replacement);
+}
+
+/**
+ * Scrub credentials from text that is about to leave this module (an error
+ * message, a log line, an RPC result, an upstream response excerpt):
+ * - any `scheme://user[:pass]@` userinfo becomes `scheme://***@`;
+ * - the given proxy URLs' username and password (raw and percent-decoded) and
+ *   the API key, wherever they appear verbatim, become `***`.
+ */
+export function redactJevSecrets(
+  text: string,
+  secrets: { proxyUrls?: ReadonlyArray<string | undefined>; apiKey?: string } = {},
+): string {
+  let out = text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]*@/gi, "$1***@");
+  const needles = new Set<string>();
+  for (const proxyUrl of secrets.proxyUrls ?? []) {
+    if (!proxyUrl) continue;
+    try {
+      const url = new URL(proxyUrl);
+      for (const part of [url.username, url.password]) {
+        if (!part) continue;
+        needles.add(part);
+        try {
+          needles.add(decodeURIComponent(part));
+        } catch {
+          // A malformed escape still leaves the raw form redacted.
+        }
+      }
+    } catch {
+      // Unparseable: the userinfo regex above already covered `x://u:p@`.
+      const at = proxyUrl.lastIndexOf("@");
+      if (at > 0) {
+        const scheme = proxyUrl.indexOf("://");
+        const userinfo = proxyUrl.slice(scheme === -1 ? 0 : scheme + 3, at);
+        for (const part of userinfo.split(":")) if (part) needles.add(part);
+      }
+    }
+  }
+  if (secrets.apiKey?.trim()) needles.add(secrets.apiKey.trim());
+  // Longest first, so a password that contains the username is removed whole.
+  for (const needle of [...needles].sort((a, b) => b.length - a.length)) {
+    // Very short fragments (e.g. a one-letter user) would shred ordinary text;
+    // the userinfo regex still removes them from URLs.
+    if (needle.length < 3) continue;
+    out = replaceAll(out, needle, "***");
+  }
+  return out;
 }
 
 /** A proxy URL safe to log or return over the wire: any userinfo
