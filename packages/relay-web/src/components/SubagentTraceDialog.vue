@@ -84,7 +84,7 @@ useModalA11y(dialog, () => emit("close"));
               <ToolStepCard :step="row.step" />
             </div>
           </div>
-          <div v-else-if="!step.detail && !outputText" class="grid min-h-36 place-items-center rounded-2xl bg-surface-2 bg-bg/40 text-center">
+          <div v-else-if="!step.detail && !outputText" class="grid min-h-36 place-items-center rounded-2xl bg-surface-2 text-center">
             <div>
               <Loader2 v-if="status === 'running'" :size="18" class="mx-auto animate-spin motion-reduce:animate-none text-accent" />
               <Check v-else :size="18" class="mx-auto text-run" />

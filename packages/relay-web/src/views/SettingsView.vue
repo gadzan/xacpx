@@ -136,8 +136,8 @@ void onMounted(() => { void probeNotifications(); });
       <router-link to="/" class="text-sm text-fg-muted hover:underline">{{ $t("common.back") }}</router-link>
     </header>
 
-    <section data-test="theme-setting" class="mb-8">
-      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.appearance") }}</h2>
+    <section data-test="theme-setting" class="mb-6">
+      <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.appearance") }}</h2>
       <div class="space-y-3">
         <div class="inline-flex gap-1 rounded-lg bg-bg p-1">
           <button
@@ -169,11 +169,11 @@ void onMounted(() => { void probeNotifications(); });
       </div>
     </section>
 
-    <section class="mb-8">
-      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.addInstance") }}</h2>
+    <section class="mb-6">
+      <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.addInstance") }}</h2>
       <div class="flex gap-2">
         <input v-model="pairingName" :placeholder='$t("settings.instanceNamePlaceholder")' class="flex-1 rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
-        <button data-test="gen-pairing" class="rounded-sm bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover" @click="genPairing">{{ $t("settings.generateToken") }}</button>
+        <button data-test="gen-pairing" class="rounded-lg bg-surface-2 px-3 h-9 text-ui text-fg hover:bg-surface-2/80" @click="genPairing">{{ $t("settings.generateToken") }}</button>
       </div>
       <div v-if="pairing" class="mt-2 rounded-sm bg-bg p-2 text-xs text-fg">
         <div>{{ $t("settings.runOnHost") }}</div>
@@ -181,15 +181,15 @@ void onMounted(() => { void probeNotifications(); });
       </div>
     </section>
 
-    <section class="mb-8">
-      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.retentionTitle") }}</h2>
+    <section class="mb-6">
+      <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.retentionTitle") }}</h2>
       <p class="text-sm text-fg-muted" data-test="retention-body">
         {{ $t("settings.retentionBody", { max: retention?.maxPerSession ?? "—", days: retention?.days ?? "—" }) }}
       </p>
     </section>
 
-    <section class="mb-8">
-      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.relayTitle") }}</h2>
+    <section class="mb-6">
+      <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.relayTitle") }}</h2>
       <p class="text-sm text-fg-muted" data-test="relay-version">
         {{ $t("settings.relayVersion", { version: relay?.current ?? "—" }) }}
       </p>
@@ -198,8 +198,8 @@ void onMounted(() => { void probeNotifications(); });
       </p>
     </section>
 
-    <section class="mb-8" data-test="notif-setting">
-      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.notifTitle") }}</h2>
+    <section class="mb-6" data-test="notif-setting">
+      <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.notifTitle") }}</h2>
       <div class="flex items-center gap-3">
         <span data-test="notif-state" class="text-sm text-fg-muted">{{ notifStateLabel }}</span>
         <button
@@ -214,7 +214,7 @@ void onMounted(() => { void probeNotifications(); });
       <p v-if="isIos" class="mt-1 text-xs text-fg-muted" data-test="notif-ios-hint">{{ $t("settings.notifIosHint") }}</p>
     </section>
     <section>
-      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.account") }}</h2>
+      <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.account") }}</h2>
       <button
         data-test="logout"
         class="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
