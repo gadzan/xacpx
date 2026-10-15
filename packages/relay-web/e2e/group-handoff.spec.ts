@@ -58,8 +58,6 @@ async function openGroup(page: Page, locale = "en", messages = initial) {
   });
   await loginAndShowInstances(page);
   const nav = page.getByTestId("instance-nav-groups");
-  const box = await nav.boundingBox();
-  if (box && box.x < 0) await page.getByTestId("open-instances").click();
   await nav.click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
   await expect(page.getByTestId("group-run-card")).toHaveAttribute("data-run-id", current.id);

@@ -139,4 +139,18 @@ describe("createEdgeSwipe", () => {
     expect(() => swipe.onTouchEnd({})).not.toThrow();
     expect(openLeft).not.toHaveBeenCalled();
   });
+
+  it("never arms a left-edge gesture when no left handlers are given", () => {
+    const openRight = vi.fn();
+    const swipe = createEdgeSwipe({
+      isEnabled: () => true,
+      isRightOpen: () => false,
+      openRight,
+      closeRight: vi.fn(),
+      viewportWidth: () => 400,
+    });
+    swipe.onTouchStart(start(5, 200));
+    expect(() => swipe.onTouchEnd(end(120, 205))).not.toThrow();
+    expect(openRight).not.toHaveBeenCalled();
+  });
 });

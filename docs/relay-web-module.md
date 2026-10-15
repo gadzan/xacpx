@@ -381,15 +381,19 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 - `DashboardView.vue` 桌面（`lg:` ≥1024px）保持三栏静态布局，行为与改版前完全一致；窄屏（`<lg`）按选择状态分两种形态：
   - **选中会话 / Direct Bot**：全局顶栏（品牌、连接徽标、搜索、终端/桌面/主题/设置）在 `<lg` 隐藏
     （`:class="mobileSingleBar ? 'hidden lg:flex' : 'flex'"`，纯 CSS，桌面不受影响），改为**一条 52px 顶栏**
-    （`h-[calc(3.25rem+env(safe-area-inset-top))]`）：左按钮 `☰` 44px（开实例树抽屉，`data-test="open-instances"`）、
+    （`h-[calc(3.25rem+env(safe-area-inset-top))]`）：左按钮 `←` 44px（返回首页列表，`data-test="mobile-back"`）、
     中间头像（会话 = `AgentIcon`，Bot = `BotAvatar` 32）+ 标题（`text-base`）+ 副标题（`text-xs`：
     `实例 · agent · 分支`，缺项跳过，不会出现前导或连续 `·`）、右侧 `⋯` 40px 打开底部弹出菜单
     （`components/MobileSheet.vue`：`bg-raised rounded-t-2xl shadow-float`，backdrop / Esc 关闭，
     `useModalA11y` 负责焦点进入与归还，条目 ≥48px）。会话栏由 `DashboardView` 渲染；Bot 栏由
     `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet。
-    Group 选择仍显示旧移动条（本次不改 `GroupPane`）。
+    Group 选择仍显示旧移动条（本次不改 `GroupPane`），只把左按钮换成同样的 `←`。
+  - **`←` 返回**（会话 / Bot / 群组页通用，`DashboardView.goHome`）：关闭 sheet、右抽屉与桌面标签，再对 chat、
+    Direct Bot、群组三个 store 都调用 `clearSelection()`（各自顺带清掉持久化的选择，所以刷新后停在首页）；
+    `localStorage["xacpx.lastInstance"]` 保留，FAB 的「最近使用排前」依赖它。左边缘右滑手势已移除；
+    滑动返回暂不做（会和 iOS Safari 自带的返回手势冲突），以后用基于 `history.pushState` 的方案再加。
   - **未选中任何会话 / Bot / 群组（移动端首页）**：实例树直接作为主内容渲染——复用**同一个**
-    `InstanceTree` 实例，用 `max-lg:` 类把左栏从屏外抽屉改成流式全宽（不挂第二份副本，避免本地视图状态分叉），
+    `InstanceTree` 实例，左栏在 `<lg` 只在首页显示（全宽），选中后 `max-lg:hidden`（不挂第二份副本，避免本地视图状态分叉）；列表底部 `max-lg:pb-24`，FAB 不会盖住最后一行的 `⋯`；从树上打开的实例桌面也算离开首页，
     中栏占位符 `max-lg:hidden`；右下角 FAB「新建会话」（48px pill，`bg-accent text-on-accent shadow-float
     rounded-full`，含 safe-area）：唯一在线实例直接开 `NewSessionDialog`（经 `InstanceTree` 暴露的
     `openNewSession`），多个在线实例先弹实例选择 sheet，**上次使用的实例排最前**（来源 = `localStorage["xacpx.lastInstance"]`，每次打开会话时
@@ -400,15 +404,14 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     会替换掉 `⋯` sheet（不叠加），关闭后直接回到页面、不回 `⋯`：Chat + 每个打开的文件/diff/终端标签，点击切换、
     关闭走与桌面标签条同一 `requestCloseTab` 守卫路径（脏文件先确认、终端先 terminate）。
   - `ChatPane.vue` 的头部 chip 行在 `<lg` 隐藏（`hidden lg:flex`），桌面不变。
-  - 左栏（实例树）与右栏（任务面板）仍是**屏外抽屉**（`fixed inset-y-0` + `transform translate-x`），`lg:` 类把它们覆盖回静态列，
-    所以抽屉开合 `leftOpen`/`rightOpen` 仅在移动端可见、桌面无副作用——无需 JS 断点检测。
-  - 半透明 backdrop 点击关闭；选中会话自动关左抽屉直达对话；抽屉头部有 `✕` 关闭按钮（`lg:hidden`；
-    移动端首页不显示，因为树本身就是主内容、无处可关）。
+  - 移动端**没有左抽屉**。右栏（文件 / 任务面板）仍是**屏外抽屉**（`fixed inset-y-0` + `transform translate-x`），
+    `lg:` 类把它覆盖回静态列，所以 `rightOpen` 仅在移动端可见、桌面无副作用；半透明 backdrop 点击关闭，
+    右边缘左滑仍可打开。桌面（≥lg）左侧实例栏保持静态列，行为不变。
 - **连接提示条**：`components/MobileConnStrip.vue` 紧跟移动顶栏下方，仅当本页面生命周期内连接**曾经成功过**
   且当前离线时显示（「连上过」由 `DashboardView` 在 `onStatus` 里记录并通过 `provide(CONN_EVER_OPENED)`
   下发，Bot 页的条在断线期间挂载也能正确显示；connection store 仍只有 `online` 布尔，中性态属后续 PR）。
 - **触控目标**（`<lg`）：图标按钮 ≥40×40（`h-10 w-10 lg:h-7 lg:w-7` 之类，桌面尺寸保持原样），
-  主要操作（composer 发送/停止、FAB、返回/≡）44px；bottom sheet 条目 ≥48px。
+  主要操作（composer 发送/停止、FAB、返回 ←）44px；bottom sheet 条目 ≥48px。
 - **缩放与输入框字号**：`index.html` viewport 去掉 `maximum-scale=1, user-scalable=no`（恢复双指缩放），
   并在 `style.css` 末尾追加 `@media (pointer: coarse) { input, textarea, select { font-size: 16px !important } }`，
   避免 iOS 聚焦字号 <16px 的字段时自动放大。

@@ -40,7 +40,7 @@ import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
 import { setNotificationClickHandler, initTabFocusTracker } from "../lib/local-notification";
-import { Search, Moon, Sun, Settings, X, Menu, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, ArrowLeft, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList } from "lucide-vue-next";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
@@ -63,15 +63,15 @@ function onSwMessage(event: MessageEvent): void {
   }
 }
 
-// Mobile-only drawer state. On desktop (lg:) both panels are static columns and
-// these flags are visually irrelevant because the lg: classes override the transform.
-const leftOpen = ref(false);
+// Mobile-only drawer state (the right files/tasks panel). On desktop (lg:) it is a
+// static column and the flag is visually irrelevant because the lg: classes override
+// the transform. There is no left drawer on mobile: the instance list is the home
+// screen and the top bar's ← goes back to it (goHome below).
 const rightOpen = ref(false);
 const rightTab = ref<"tasks" | "files">("files");
 /** Instance-level Desktop tab (not a per-session center tab): one viewer per instance. */
 const desktopTabOpen = ref(false);
 function closeDrawers() {
-  leftOpen.value = false;
   rightOpen.value = false;
 }
 function openRight(tab: "tasks" | "files") {
@@ -79,24 +79,21 @@ function openRight(tab: "tasks" | "files") {
   rightOpen.value = true;
 }
 
-// Mobile edge-swipe drawers: from the left edge swipe right to open instances,
-// from the right edge swipe left to open tasks/files; when a drawer is open a
-// swipe back toward its edge closes it. Inert on lg+ (static columns).
+// Mobile edge-swipe for the right drawer: from the right edge swipe left to open
+// tasks/files; a swipe back toward the edge closes it. Inert on lg+ (static columns).
+// No left-edge gesture: there is no instances drawer any more, and a swipe-back would
+// fight iOS Safari's own back gesture (deferred to a history.pushState-based approach).
 const swipe = createEdgeSwipe({
   // < 1024px = the Tailwind `lg` boundary at which the drawers stop being
   // off-canvas. innerWidth ≥ the CSS viewport width (it includes a classic
   // scrollbar), so we never disable while the layout is still off-canvas.
   isEnabled: () => typeof window !== "undefined" && window.innerWidth < 1024,
-  isLeftOpen: () => leftOpen.value,
   isRightOpen: () => rightOpen.value,
-  // Mobile home: the tree already IS the main content, so there is no drawer to open.
-  openLeft: () => { if (!mobileHome.value) leftOpen.value = true; },
   openRight: () => { rightOpen.value = true; }, // keeps the last-used right tab
-  closeLeft: () => { leftOpen.value = false; },
   closeRight: () => { rightOpen.value = false; },
 });
 // Desktop-only: collapse the instances sidebar to reclaim width. Persisted so the
-// choice survives reloads. (Mobile uses the leftOpen off-canvas drawer instead.)
+// choice survives reloads. (Mobile has no instances column outside the home list.)
 const leftCollapsed = ref(localStorage.getItem("xacpx.leftCollapsed") === "1");
 watch(leftCollapsed, (v) => localStorage.setItem("xacpx.leftCollapsed", v ? "1" : "0"));
 
@@ -308,7 +305,6 @@ function openDesktop(instanceId?: string): void {
   desktops.viewFor(target);
   desktopTabOpen.value = true;
   rightOpen.value = false;
-  leftOpen.value = false;
 }
 
 function closeDesktop(): void {
@@ -335,8 +331,22 @@ const instanceTree = ref<InstanceType<typeof InstanceTree> | null>(null);
 
 const isBotSelected = computed(() => directBotsStore.isBotSelected);
 const isGroupSelected = computed(() => groupsStore.isGroupSelected);
-/** Nothing selected: on <lg the instance tree becomes the main content (with the FAB). */
-const mobileHome = computed(() => !currentKey.value && !isBotSelected.value && !isGroupSelected.value);
+/** Nothing selected: on <lg the instance tree becomes the main content (with the FAB).
+ *  An instance desktop opened from the tree (no session needed) takes the screen too. */
+const mobileHome = computed(() => !currentKey.value && !isBotSelected.value && !isGroupSelected.value
+  && !(desktopTabOpen.value && desktopInstanceId.value));
+
+/** Mobile ←: back to the home list. Clears the chat, bot AND group selections — which
+ *  also drops their persisted copies, so a refresh lands on home. `xacpx.lastInstance`
+ *  is deliberately kept (the FAB's recent-first order reads it). */
+function goHome(): void {
+  closeSheet();
+  rightOpen.value = false;
+  closeDesktop();
+  chat.clearSelection();
+  directBotsStore.clearSelection();
+  groupsStore.clearSelection();
+}
 /** Session view on <lg: the single session bar (+ connection strip). Bot / group views
  *  render their own chrome, so the bar steps aside even if a stale session key lingers. */
 const mobileSessionBar = computed(() => !!currentKey.value && !isBotSelected.value && !isGroupSelected.value);
@@ -462,7 +472,6 @@ function onSelect(instanceId: string, alias: string) {
   groupsStore.clearSelection();
   chat.select(instanceId, alias);
   void chat.loadHistory().catch(() => {});
-  leftOpen.value = false; // mobile: jump straight to the conversation
 }
 
 function onSelectBot(instanceId: string, botId: string) {
@@ -474,7 +483,6 @@ function onSelectBot(instanceId: string, botId: string) {
   chat.clearSelection();
   groupsStore.clearSelection();
   void directBotsStore.selectBot(instanceId, botId);
-  leftOpen.value = false;
 }
 
 function onSelectGroup(instanceId: string, groupId: string) {
@@ -486,7 +494,6 @@ function onSelectGroup(instanceId: string, groupId: string) {
   chat.clearSelection();
   directBotsStore.clearSelection();
   void groupsStore.selectGroup(instanceId, groupId);
-  leftOpen.value = false;
 }
 
 let everOnline = false;
@@ -644,7 +651,7 @@ onUnmounted(() => {
         <button
           data-test="global-search"
           :aria-label='$t("nav.search")'
-          class="group flex h-10 lg:h-7 items-center gap-2 rounded-lg bg-bg max-sm:bg-transparent max-sm:hover:bg-raised px-2.5 text-left transition-colors hover: focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
+          class="group flex h-10 lg:h-7 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-surface-2 active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
@@ -695,15 +702,15 @@ onUnmounted(() => {
     </header>
 
     <!-- Mobile single top bar (session view, <lg). ONE 52px row replaces the old global
-         header + second bar + ChatPane chip stack: the left button opens the instances
-         drawer (the affordance the old hamburger had), the right button opens the ⋯
+         header + second bar + ChatPane chip stack: ← returns to the home list (there is
+         no instances drawer on mobile), the right button opens the ⋯
          sheet that now carries files / tasks / terminal / desktop / the open
          center tabs. Desktop keeps the global header and the chip row untouched. -->
     <div v-if="mobileSessionBar" data-test="mobile-session-bar"
          class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
-      <button type="button" data-test="open-instances" :aria-label='$t("nav.openInstances")'
+      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")'
               class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              @click="leftOpen = true"><Menu :size="20" /></button>
+              @click="goHome"><ArrowLeft :size="20" /></button>
       <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-2">
         <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
       </span>
@@ -721,8 +728,9 @@ onUnmounted(() => {
 
     <!-- Groups keep the old mobile bar: GroupPane is NOT redesigned in this PR. -->
     <div v-else-if="isGroupSelected" class="flex items-center gap-2 bg-surface px-2 py-1.5 lg:hidden">
-      <button data-test="open-instances" :aria-label='$t("nav.openInstances")'
-              class="rounded-sm p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
+      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")'
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="goHome"><ArrowLeft :size="20" /></button>
       <span class="min-w-0 flex-1 truncate text-center text-sm font-medium">
         {{ groupsStore.currentGroup?.title ?? "Group" }}
         <span v-if="groupsStore.currentTopic" class="text-xs text-fg-muted font-normal"> · {{ groupsStore.currentTopic.title }}</span>
@@ -731,20 +739,18 @@ onUnmounted(() => {
 
     <div class="flex flex-1 overflow-hidden">
       <!-- Backdrop closes any open drawer (mobile only). -->
-      <div v-if="leftOpen || rightOpen" data-test="drawer-backdrop"
+      <div v-if="rightOpen" data-test="drawer-backdrop"
            class="fixed inset-0 z-30 bg-black/30 lg:hidden" @click="closeDrawers" />
 
-      <!-- Left: instances. Off-canvas drawer < lg, static column ≥ lg. On the mobile
-           HOME (nothing selected) the very same tree becomes the main content instead of
-           the "select a session" placeholder — one InstanceTree instance, no second copy
-           with diverging local state. `max-lg:` only re-flows it below lg; ≥ lg the
-           classes below are exactly what they were. -->
+      <!-- Left: instances. Static column ≥ lg (unchanged). Below lg it is ONLY the home
+           screen: with nothing selected the tree is the full-width main content; once a
+           session / bot / group is open it is hidden and ← in the top bar comes back here.
+           One InstanceTree instance, no second copy with diverging local state. -->
       <div data-test="column" data-drawer="left"
-           class="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85%] shrink-0 transform flex-col bg-surface shadow-float transition-[transform,width] pt-[env(safe-area-inset-top)] lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
+           class="flex shrink-0 flex-col bg-surface transition-[width] max-lg:relative max-lg:w-full lg:static"
            :class="[
-             leftOpen ? 'translate-x-0' : '-translate-x-full',
              leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[248px]',
-             mobileHome ? 'max-lg:relative max-lg:inset-auto max-lg:z-auto max-lg:w-full max-lg:max-w-none max-lg:translate-x-0 max-lg:transform-none max-lg:shadow-none max-lg:pt-0' : '',
+             mobileHome ? '' : 'max-lg:hidden',
            ]">
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
@@ -752,9 +758,6 @@ onUnmounted(() => {
             <button data-test="toggle-left" :aria-label='$t("nav.hideSidebar")' :title='$t("nav.hideSidebar")'
                     class="hidden h-6 w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg lg:grid"
                     @click="leftCollapsed = true"><PanelLeftClose :size="15" /></button>
-            <!-- Nothing to close when the tree IS the main content (mobile home). -->
-            <button v-if="!mobileHome" data-test="close-instances" :aria-label='$t("nav.closeInstances")'
-                    class="grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>
         </div>
         <InstanceTree ref="instanceTree" @select="onSelect" @select-bot="onSelectBot" @select-group="onSelectGroup" @open-desktop="openDesktop" />
@@ -793,7 +796,7 @@ onUnmounted(() => {
             class="absolute inset-0 z-10"
             @navigate-bot="onSelectBot"
             @navigate-group="onSelectGroup"
-            @open-instances="leftOpen = true"
+            @back="goHome"
           />
           <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" />
           <ChatPane class="absolute inset-0"

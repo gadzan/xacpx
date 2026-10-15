@@ -30,6 +30,9 @@ import { useConnectionStore } from "../stores/connection";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
+import { loadPersistedSelection } from "../stores/chat";
+import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 
 const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: true, "router-link": true };
 
@@ -69,7 +72,7 @@ test("renders the single mobile top bar with its more-sheet entries", async () =
   // One bar: instances drawer, title/subtitle, ⋯ trigger. The old second bar's
   // files/tasks buttons are gone — they live in the sheet now.
   expect(wrapper.find('[data-test="mobile-session-bar"]').exists()).toBe(true);
-  expect(wrapper.find('[data-test="open-instances"]').exists()).toBe(true);
+  expect(wrapper.find('[data-test="mobile-back"]').exists()).toBe(true);
   expect(wrapper.find('[data-test="open-files"]').exists()).toBe(false);
   expect(wrapper.find('[data-test="open-tasks"]').exists()).toBe(false);
 
@@ -98,18 +101,35 @@ test("chat column is shrinkable (min-w-0) so wide tool content can't push the ri
   expect(center.classes()).toContain("min-w-0");
 });
 
-test("instance drawer starts off-canvas and opens via the mobile bar's left button", async () => {
+test("mobile ← goes back to the home list and clears chat/bot/group selection (refresh stays home)", async () => {
   const wrapper = mountDash();
   await flushPromises();
   await selectSession();
+  const chat = useChatStore();
+  const bots = useDirectBotsStore();
+  const groups = useGroupsStore();
+  const botClear = vi.spyOn(bots, "clearSelection");
+  const groupClear = vi.spyOn(groups, "clearSelection");
+  localStorage.setItem("xrelay.selectedSession", JSON.stringify({ instanceId: "i1", alias: "demo" }));
+  localStorage.setItem("xacpx.lastInstance", "i1");
+  // In a session the instance list is hidden below lg (no drawer to slide in).
   const left = wrapper.find('[data-drawer="left"]');
-  expect(left.classes()).toContain("-translate-x-full");
-  expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(false);
+  expect(left.classes()).toContain("max-lg:hidden");
+  expect(left.classes().some((c) => c.includes("translate"))).toBe(false);
 
-  await wrapper.find('[data-test="open-instances"]').trigger("click");
-  expect(left.classes()).toContain("translate-x-0");
-  expect(left.classes()).not.toContain("-translate-x-full");
-  expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(true);
+  await wrapper.find('[data-test="mobile-back"]').trigger("click");
+  await flushPromises();
+  expect(chat.instanceId).toBeNull();
+  expect(chat.sessionAlias).toBeNull();
+  expect(botClear).toHaveBeenCalled();
+  expect(groupClear).toHaveBeenCalled();
+  // Persisted selection is gone, so a reload restores nothing and lands on home...
+  expect(loadPersistedSelection()).toBeNull();
+  // ...but the FAB's recent-instance memory survives.
+  expect(localStorage.getItem("xacpx.lastInstance")).toBe("i1");
+  expect(wrapper.find('[data-test="mobile-session-bar"]').exists()).toBe(false);
+  expect(wrapper.find('[data-test="fab-new-session"]').exists()).toBe(true);
+  expect(wrapper.find('[data-drawer="left"]').classes()).not.toContain("max-lg:hidden");
 });
 
 test("the more sheet's Files entry opens the Files drawer on the files tab", async () => {
@@ -177,31 +197,34 @@ test("tasks drawer opens via the more sheet's Tasks entry", async () => {
   expect(wrapper.find('[data-test="right-tab-tasks"]').classes()).toContain("text-accent");
 });
 
-test("backdrop click closes an open drawer", async () => {
+test("backdrop click closes the open files/tasks drawer", async () => {
   const wrapper = mountDash();
   await flushPromises();
   await selectSession();
-  await wrapper.find('[data-test="open-instances"]').trigger("click");
-  expect(wrapper.find('[data-drawer="left"]').classes()).toContain("translate-x-0");
+  await wrapper.find('[data-test="mobile-more"]').trigger("click");
+  await flushPromises();
+  await wrapper.find('[data-test="sheet-files"]').trigger("click");
+  await flushPromises();
+  expect(wrapper.find('[data-drawer="right"]').classes()).toContain("translate-x-0");
 
   await wrapper.find('[data-test="drawer-backdrop"]').trigger("click");
-  expect(wrapper.find('[data-drawer="left"]').classes()).toContain("-translate-x-full");
+  expect(wrapper.find('[data-drawer="right"]').classes()).toContain("translate-x-full");
   expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(false);
 });
 
-test("selecting a session closes the instance drawer and routes to chat", async () => {
+test("selecting a session from the home list routes to chat and hides the list below lg", async () => {
   const chat = useChatStore();
   const wrapper = mount(DashboardView, { global: { stubs: { ChatPane: true, TaskPanel: true, "router-link": true } } });
   await flushPromises();
-  await selectSession();
-  await wrapper.find('[data-test="open-instances"]').trigger("click");
-  expect(wrapper.find('[data-drawer="left"]').classes()).toContain("translate-x-0");
+  expect(wrapper.find('[data-drawer="left"]').classes()).not.toContain("max-lg:hidden");
 
   wrapper.findComponent({ name: "InstanceTree" }).vm.$emit("select", "i1", "backend");
   await flushPromises();
   expect(chat.instanceId).toBe("i1");
   expect(chat.sessionAlias).toBe("backend");
-  expect(wrapper.find('[data-drawer="left"]').classes()).toContain("-translate-x-full");
+  expect(wrapper.find('[data-drawer="left"]').classes()).toContain("max-lg:hidden");
+  // Desktop keeps the static sidebar column.
+  expect(wrapper.find('[data-drawer="left"]').classes()).toContain("lg:w-[248px]");
 });
 
 test("opening a file overlays the viewer but keeps the chat mounted (inert) so scroll is preserved without re-layout jank", async () => {
@@ -254,35 +277,19 @@ test("the sidebar header toggle collapses the instances column, and the edge han
   expect(wrapper.find('[data-test="expand-left"]').exists()).toBe(false);
 });
 
-test("edge-swipe right from the left edge opens the instances drawer (mobile)", async () => {
+test("a left-edge swipe does nothing on mobile (no instances drawer, no swipe-back yet)", async () => {
   const realWidth = window.innerWidth;
   Object.defineProperty(window, "innerWidth", { value: 500, configurable: true });
   try {
     const wrapper = mountDash();
     await flushPromises();
     await selectSession();
-    const left = wrapper.find('[data-drawer="left"]');
-    expect(left.classes()).toContain("-translate-x-full");
-
-    await wrapper.trigger("touchstart", { touches: [{ clientX: 6, clientY: 200 }] });
-    await wrapper.trigger("touchend", { changedTouches: [{ clientX: 110, clientY: 208 }] });
-
-    expect(left.classes()).toContain("translate-x-0");
-    expect(left.classes()).not.toContain("-translate-x-full");
-  } finally {
-    Object.defineProperty(window, "innerWidth", { value: realWidth, configurable: true });
-  }
-});
-
-test("edge-swipe right does nothing on the mobile home, where the tree is already the main content", async () => {
-  const realWidth = window.innerWidth;
-  Object.defineProperty(window, "innerWidth", { value: 500, configurable: true });
-  try {
-    const wrapper = mountDash();
-    await flushPromises();
+    const chat = useChatStore();
     await wrapper.trigger("touchstart", { touches: [{ clientX: 6, clientY: 200 }] });
     await wrapper.trigger("touchend", { changedTouches: [{ clientX: 110, clientY: 208 }] });
     expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(false);
+    expect(chat.sessionAlias).toBe("demo");
+    expect(wrapper.find('[data-drawer="left"]').classes()).toContain("max-lg:hidden");
   } finally {
     Object.defineProperty(window, "innerWidth", { value: realWidth, configurable: true });
   }
@@ -515,8 +522,8 @@ test("mobile home renders the tree as the main content plus the new-session FAB"
   // Same single tree instance, re-flowed into the main area below lg; the placeholder
   // column steps aside.
   const left = wrapper.find('[data-drawer="left"]');
-  expect(left.classes()).toContain("max-lg:relative");
   expect(left.classes()).toContain("max-lg:w-full");
+  expect(left.classes()).not.toContain("max-lg:hidden");
   expect(wrapper.find('[data-test="column"]:not([data-drawer])').classes()).toContain("max-lg:hidden");
   // The instance tree is rendered exactly once (drawer and main area share it).
   expect(wrapper.findAllComponents({ name: "InstanceTree" })).toHaveLength(1);

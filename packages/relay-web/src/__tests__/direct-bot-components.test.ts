@@ -1923,6 +1923,17 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("navigateGroup")?.[0]).toEqual(["i1", "g1"]);
     });
 
+    it("mobile bar's ← emits back (DashboardView returns to the home list)", async () => {
+      seedBot();
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      const back = wrapper.find('[data-test="mobile-back"]');
+      expect(back.exists()).toBe(true);
+      expect(back.attributes("aria-label")).toBe("Back");
+      await back.trigger("click");
+      expect(wrapper.emitted("back")).toHaveLength(1);
+      expect(wrapper.find('[data-test="open-instances"]').exists()).toBe(false);
+    });
+
     it("mobile more sheet's edit entry opens the bot dialog", async () => {
       seedBot();
       vi.spyOn(useInstancesStore(), "getAgentCapabilities").mockResolvedValue(needsSetupCapability(

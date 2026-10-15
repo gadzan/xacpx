@@ -36,11 +36,13 @@ export interface TouchLike {
 export interface EdgeSwipeOptions {
   /** Only act when the off-canvas (mobile) layout is active. */
   isEnabled: () => boolean;
-  isLeftOpen: () => boolean;
+  /** Left-drawer handlers are optional: without `openLeft` the left edge never arms a
+   *  gesture (the mobile dashboard has no left drawer; see DashboardView). */
+  isLeftOpen?: () => boolean;
   isRightOpen: () => boolean;
-  openLeft: () => void;
+  openLeft?: () => void;
   openRight: () => void;
-  closeLeft: () => void;
+  closeLeft?: () => void;
   closeRight: () => void;
   /** Defaults to `window.innerWidth`. */
   viewportWidth?: () => number;
@@ -66,6 +68,7 @@ export function createEdgeSwipe(opts: EdgeSwipeOptions): EdgeSwipeHandlers {
   let startX = 0;
   let startY = 0;
   let mode: Mode = null;
+  const isLeftOpen = () => opts.isLeftOpen?.() ?? false;
 
   // At touchstart the active touch is in `touches`; at touchend it has moved to
   // `changedTouches`. Each lookup prefers the list that holds the active point.
@@ -92,12 +95,12 @@ export function createEdgeSwipe(opts: EdgeSwipeOptions): EdgeSwipeHandlers {
     startX = p.clientX;
     startY = p.clientY;
     // An already-open drawer takes priority: this gesture may close it (backdrop only).
-    if (opts.isLeftOpen() || opts.isRightOpen()) {
+    if (isLeftOpen() || opts.isRightOpen()) {
       if (startedInsideDrawer(e)) return;
-      mode = opts.isLeftOpen() ? "close-left" : "close-right";
+      mode = isLeftOpen() ? "close-left" : "close-right";
       return;
     }
-    if (startX <= edgeZone) mode = "open-left";
+    if (startX <= edgeZone) mode = opts.openLeft ? "open-left" : null;
     else if (startX >= viewportWidth() - edgeZone) mode = "open-right";
   }
 
@@ -111,9 +114,9 @@ export function createEdgeSwipe(opts: EdgeSwipeOptions): EdgeSwipeHandlers {
     const dy = p.clientY - startY;
     if (Math.abs(dx) < threshold) return; // not far enough
     if (Math.abs(dx) <= Math.abs(dy)) return; // not horizontal-dominant
-    if (m === "open-left" && dx > 0) opts.openLeft();
+    if (m === "open-left" && dx > 0) opts.openLeft?.();
     else if (m === "open-right" && dx < 0) opts.openRight();
-    else if (m === "close-left" && dx < 0) opts.closeLeft();
+    else if (m === "close-left" && dx < 0) opts.closeLeft?.();
     else if (m === "close-right" && dx > 0) opts.closeRight();
   }
 

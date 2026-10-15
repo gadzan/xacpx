@@ -11,11 +11,10 @@ const test = base.extend({
   },
 });
 
+/** Desktop: the sidebar is always there. Mobile: ← back to the home list. */
 async function showSidebar(page: import("@playwright/test").Page): Promise<void> {
-  const open = page.getByTestId("open-instances");
-  if (await open.isVisible().catch(() => false)) {
-    await open.evaluate((el) => (el as HTMLElement).click());
-  }
+  const back = page.getByTestId("mobile-back");
+  if (await back.isVisible().catch(() => false)) await back.click();
 }
 
 function sessionRow(page: import("@playwright/test").Page, alias: string) {
@@ -54,6 +53,8 @@ test.describe("sidebar terminal-open marker", () => {
       await page.getByTestId("mobile-more").click();
       await page.getByTestId("sheet-open-tabs").click();
       await page.getByTestId("open-tab-close").first().click();
+      await expect(page.getByTestId("terminal-host")).toHaveCount(0);
+      await page.getByTestId("sheet-close").click(); // the open-tabs sheet stays up after a close
     } else {
       await page.getByTestId("tab-close").locator("visible=true").click();
     }

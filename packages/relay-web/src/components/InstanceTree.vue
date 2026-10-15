@@ -534,7 +534,7 @@ const rowSwipes = computed(() => {
 </script>
 
 <template>
-  <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5">
+  <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5 max-lg:pb-24">
     <!-- One instance card: header row + session area (flat or grouped) + footer.
          The card background is the level-1 zone of the tinted-zone hierarchy; group
          zones inside are one step lighter (visually isomorphic across all modes). -->

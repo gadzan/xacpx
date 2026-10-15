@@ -35,7 +35,7 @@ test.describe("mobile layout", () => {
 
     // (3) Touch targets: the bar's icon buttons and the sheet's close button are >= 40px,
     //     the composer's primary action is >= 44px.
-    for (const id of ["open-instances", "mobile-more"]) {
+    for (const id of ["mobile-back", "mobile-more"]) {
       const box = await page.getByTestId(id).boundingBox();
       expect(box, id).not.toBeNull();
       expect(box!.width, id).toBeGreaterThanOrEqual(40);
@@ -90,6 +90,44 @@ test.describe("mobile layout", () => {
     const box = await drawer.boundingBox();
     expect(box!.width).toBeGreaterThanOrEqual(viewport.width - 1);
     await expect(page.getByTestId("mobile-more-sheet")).toHaveCount(0);
+  });
+
+  test("← goes back to the home list, survives a reload, and there is no instances drawer", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
+    await loginAndShowInstances(page);
+    await page.getByTestId("session-row").first().getByTestId("session-name").click();
+    await expect(page.getByTestId("mobile-session-bar")).toBeVisible();
+    // In a session the list is gone (not an off-canvas drawer), and no hamburger is left.
+    await expect(page.locator('[data-drawer="left"]')).toBeHidden();
+    await expect(page.getByTestId("open-instances")).toHaveCount(0);
+
+    await page.getByTestId("mobile-back").click();
+    await expect(page.getByTestId("mobile-session-bar")).toHaveCount(0);
+    await expect(page.getByTestId("fab-new-session")).toBeVisible();
+    await expect(page.getByTestId("session-row").first()).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("xrelay.selectedSession"))).toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("xacpx.lastInstance"))).not.toBeNull();
+
+    // Refresh stays on home instead of restoring the session.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("fab-new-session")).toBeVisible();
+    await expect(page.getByTestId("mobile-session-bar")).toHaveCount(0);
+  });
+
+  test("home list leaves room under the last row for the FAB", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
+    await loginAndShowInstances(page);
+    const list = page.locator('[data-drawer="left"] nav').first();
+    // Scroll padding (max-lg:pb-24) keeps the last row clear of the FAB even when the
+    // list is long enough to scroll.
+    const pad = await list.evaluate((el) => parseFloat(getComputedStyle(el).paddingBottom));
+    expect(pad).toBeGreaterThanOrEqual(96);
+    await list.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    const fab = await page.getByTestId("fab-new-session").boundingBox();
+    const lastMenu = page.getByTestId("session-menu").last();
+    const menu = await lastMenu.boundingBox();
+    // The last row's ⋯ sits fully above the FAB.
+    expect(menu!.y + menu!.height).toBeLessThanOrEqual(fab!.y);
   });
 
   test("home FAB with one online instance opens the create dialog directly", async ({ page }, testInfo) => {

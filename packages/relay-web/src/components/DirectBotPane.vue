@@ -2,8 +2,8 @@
 import { computed, ref } from "vue";
 import {
   ChevronDown,
+  ArrowLeft,
   Folder,
-  Menu,
   MessagesSquare,
   MoreHorizontal,
   Pencil,
@@ -29,8 +29,8 @@ import TopicManager from "./TopicManager.vue";
 const emit = defineEmits<{
   navigateBot: [instanceId: string, botId: string];
   navigateGroup: [instanceId: string, groupId: string];
-  /** Mobile top bar's left button: open the instances drawer (owned by DashboardView). */
-  openInstances: [];
+  /** Mobile top bar's ←: back to the home list (DashboardView clears the selection). */
+  back: [];
 }>();
 
 const directBotsStore = useDirectBotsStore();
@@ -169,9 +169,9 @@ function openRemoval(): void {
          (opens the topic sheet), and ⋯ for the entries the desktop header carries.
          Desktop keeps the header below. -->
     <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
-      <button type="button" data-test="open-instances" :aria-label='$t("nav.openInstances")'
+      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")'
               class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              @click="emit('openInstances')"><Menu :size="20" /></button>
+              @click="emit('back')"><ArrowLeft :size="20" /></button>
       <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
                  :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
                  :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
