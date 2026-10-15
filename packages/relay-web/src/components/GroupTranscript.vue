@@ -351,7 +351,7 @@ async function handleLoadOlder(): Promise<void> {
         <template v-if="m.role === 'bot' && !m.handoff" #avatar>
           <BotAvatar :avatar="m.senderBotId ? botById[m.senderBotId]?.avatar : undefined"
                      :driver="m.senderBotId ? driverForBot(m.senderBotId) : undefined"
-                     :name="senderName(m.senderBotId)" :size="24" static
+                     :name="senderName(m.senderBotId)" :size="32" static
                      :retired="m.senderBotId ? botById[m.senderBotId]?.retired : false" />
         </template>
         <GroupHandoffEntry
@@ -487,7 +487,7 @@ async function handleLoadOlder(): Promise<void> {
               @click="toggleMember(turn.id)"
             >
               <BotAvatar :key="avatarActivityKeyForMember(turn)" :avatar="botById[turn.botId]?.avatar"
-                         :driver="driverForBot(turn.botId)" :name="senderName(turn.botId)" :size="24"
+                         :driver="driverForBot(turn.botId)" :name="senderName(turn.botId)" :size="32"
                          :state="avatarStateForMember(turn)" :activity-key="avatarActivityKeyForMember(turn)"
                          :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === turn.runId && groupsStore.liveCompletedMemberTurns.ids[turn.id] === true"
                          :disabled="botById[turn.botId] ? !botById[turn.botId]!.enabled : false" :retired="botById[turn.botId]?.retired" />
@@ -510,7 +510,7 @@ async function handleLoadOlder(): Promise<void> {
               </span>
               <ChevronDown :size="12" class="shrink-0 text-fg-muted transition-transform" :class="isExpanded(turn.id) ? 'rotate-180' : ''" />
             </button>
-            <div v-if="turn.assignmentId || turn.task || turn.dependsOn?.length || turn.blockedReason" data-test="group-member-details" class="mt-1 min-w-0 space-y-0.5 break-words pl-8 text-[11px] text-fg-muted [overflow-wrap:anywhere]">
+            <div v-if="turn.assignmentId || turn.task || turn.dependsOn?.length || turn.blockedReason" data-test="group-member-details" class="mt-1 min-w-0 space-y-0.5 break-words pl-10 text-[11px] text-fg-muted [overflow-wrap:anywhere]">
               <p v-if="turn.assignmentId" data-test="group-member-assignment">{{ $t("group.run.assignment") }} {{ turn.assignmentId }}</p>
               <p v-if="turn.task" data-test="group-member-task">{{ turn.task }}</p>
               <p v-if="turn.dependsOn?.length" data-test="group-member-depends">{{ $t("group.run.dependsOn") }} {{ turn.dependsOn.join(", ") }}</p>

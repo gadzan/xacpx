@@ -212,7 +212,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       outcome state (e.g. cancelled before the first assistant row), not an
       empty conversation. -->
     <div v-if="!loadingHistory && messages.length === 0 && !liveTurn && !(activeRun && (activeRun.state === 'failed' || activeRun.state === 'cancelled' || activeRun.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
-      <BotAvatar class="mb-3" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="64"
+      <BotAvatar class="mb-3" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="72"
                  :state="currentAvatarState" :activity-key="avatarActivityKey" :observed-completion="observedAvatarCompletion"
                  :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
       <h3 class="text-base font-semibold text-fg">{{ bot?.name ?? "Direct Bot" }}</h3>
@@ -245,7 +245,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         <TranscriptRow v-else-if="m.role === 'bot'" :driver="botDriver" :row-id="m.id"
                        :speaker="bot?.name ?? 'Bot'" :speaker-role="bot?.role">
           <template #avatar>
-            <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="24" static :retired="bot?.retired" />
+            <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32" static :retired="bot?.retired" />
           </template>
           <!-- Rich TurnParts if preserved from live stream -->
           <div v-if="partsForMessage(m)" class="w-full">
@@ -279,7 +279,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
            :driver="botDriver"
            :speaker="bot?.name ?? 'Bot'" :speaker-role="bot?.role">
         <template #avatar>
-          <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="24"
+          <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
                      :state="currentAvatarState" :activity-key="avatarActivityKey" :observed-completion="observedAvatarCompletion"
                      :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
         </template>

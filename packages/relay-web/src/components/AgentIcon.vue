@@ -33,7 +33,7 @@ const px = computed(() => `${props.size}px`);
     :class="fill ? 'grid h-full w-full' : 'inline-grid'"
     :style="fill ? undefined : { width: px, height: px }"
   >
-    <span v-if="svg" class="grid h-full w-full place-items-center [&>svg]:block [&>svg]:h-full [&>svg]:w-full" v-html="svg" />
+    <span v-if="svg" class="grid h-full w-full place-items-center text-fg [&>svg]:block [&>svg]:h-full [&>svg]:w-full" v-html="svg" />
     <Bot v-else :size="size" class="text-fg-muted" />
   </span>
 </template>
