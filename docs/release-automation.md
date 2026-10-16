@@ -19,6 +19,16 @@ node ./scripts/release.mjs publish --yes
 `bun run release:plan` and friends are aliases. `plan --json` emits the whole
 plan for scripting.
 
+`apply` writes the tree and stops so the CHANGELOG prose and the diff can be
+reviewed. `publish` reads the tree `apply` produced — it does **not** re-derive
+versions, because `apply` has already bumped every manifest and re-running the
+policy would propose a second bump. `publish` without `--yes` is a dry run of
+exactly what would be pushed.
+
+`plan` and `apply` diff **committed** state: the baseline is each package's last
+tag and the target is `HEAD`, so uncommitted work is invisible to detection (as
+it is to CI). Commit or merge first.
+
 ## What is automated
 
 | Step | How |
@@ -75,8 +85,20 @@ propagations are not obvious:
 imports no newer runtime export), and `weacpx-compat` never releases on its own
 — it is republished from the core workflow.
 
+The root `package.json` is judged by its **shipped fields** (`bin`, `exports`,
+`files`, `engines`, `dependencies`, …), not by "it changed". Adding an npm
+script or a devDependency ships nothing, and because a core release republishes
+every floor tracker, treating that as a core change would fan one tooling edit
+out into five releases. The `version` field is excluded too — bumping it *is*
+the release, not evidence for one.
+
 Paths that ship no bytes — `docs/`, `tests/`, `scripts/`, `.github/` — map to no
 package, so a docs-only or test-only change releases nothing.
+
+`apply` refuses to run when a manifest already carries a version with no tag:
+that means a previous `apply` has not been published, and applying again would
+compute the next version from it and burn a number nobody ships. Pass `--force`
+to bump past it.
 
 ## Publish mechanics
 

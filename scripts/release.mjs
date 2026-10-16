@@ -108,6 +108,7 @@ function parseArgs(argv) {
     else if (arg === "--stable") options.target = "stable";
     else if (arg === "--json") options.json = true;
     else if (arg === "--yes") options.yes = true;
+    else if (arg === "--force") options.force = true;
     else if (arg === "--skip-gates") options.skipGates = true;
     else if (arg === "--bump") options.bump = argv[++i];
     else throw new Error(`unknown argument: ${arg}`);
@@ -364,6 +365,16 @@ function cmdApply(plan, options) {
     console.log("nothing to release");
     return 0;
   }
+  // A manifest already carrying an unreleased version means a previous apply has
+  // not been published yet. Applying again would compute the NEXT version from
+  // it and burn a number nobody ships.
+  const pending = buildPublishPlan().releases;
+  if (pending.length > 0 && !options.force) {
+    throw new Error(
+      `the tree already carries an unreleased bump (${pending.map((r) => `${r.id} ${r.to}`).join(", ")}).\n`
+      + "Run `publish`, or revert those paths and re-plan. Pass --force to bump past them.",
+    );
+  }
   console.log(printPlan(plan));
   if (!options.yes) {
     console.error("\nrefusing to write without --yes (edits manifests, tests, lockfiles, CHANGELOG.md)");
@@ -584,7 +595,7 @@ function findRunForTag(tag) {
       { cwd: ROOT, encoding: "utf8" },
     ));
   } catch {
-    return null;
+    return undefined; // gh unavailable; distinguished from "no run yet"
   }
   return runs.find((run) => run.headBranch === tag) ?? null;
 }
@@ -594,12 +605,26 @@ function findRunForTag(tag) {
  *
  * A tag push is the normal trigger. It can silently produce no run (GitHub
  * drops some multi-tag push events), so a missing run is reported rather than
- * treated as success — the operator re-pushes that tag.
+ * treated as success — the operator re-pushes that tag. Give the run a window
+ * to register first: querying immediately after the push returns nothing and
+ * would send the operator off to re-push a tag that is already publishing.
  */
 async function awaitTagRun(tag) {
-  let run = findRunForTag(tag);
+  let run = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const found = findRunForTag(tag);
+    if (found === undefined) {
+      console.log(`  (could not query workflow runs for ${tag}; check \`gh run list\`)`);
+      return;
+    }
+    if (found) {
+      run = found;
+      break;
+    }
+    await sleep(5_000);
+  }
   if (!run) {
-    console.log(`  ${tag}: no workflow run found. Re-push the tag: git push origin ${tag}`);
+    console.log(`  ${tag}: still no workflow run. Re-push it: git push origin ${tag}`);
     return;
   }
   console.log(`  ${run.name} ${run.status}${run.conclusion ? ` ${run.conclusion}` : ""}`);
