@@ -63,7 +63,8 @@ describe("InstanceTree session-list cap", () => {
       { alias: "sleeping", agent: "claude", workspace: "home", transportSession: "ts", running: false, archived: true },
     ]), archivedSessionsLoaded: true }] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    await w.find('[data-test="toggle-archived-sessions"]').trigger("click");
+    await w.find('[data-test="instance-filter"]').trigger("click");
+    await w.find('[data-test="filter-sleeping-sessions"]').trigger("click");
     expect(w.findAll('[data-test="session-row"]')).toHaveLength(11);
     expect(w.find('[data-test="session-name"]').text()).toContain("s0");
     expect(w.findAll('[data-test="session-name"]')[10]!.text()).toContain("sleeping");

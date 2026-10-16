@@ -119,10 +119,11 @@ describe("InstanceTree session management", () => {
     // Only warm === false on a non-archived row lights up; warm/undefined/archived stay dark.
     const cold = w.findAll('[data-test="cold-indicator"]');
     expect(cold).toHaveLength(1);
-    expect(cold[0]!.attributes("title")).toBe("Process exited — next message cold-starts.");
+    // The reason lives in the icon's tooltip/aria-label, not a second row line.
+    expect(cold[0]!.attributes("aria-label")).toBe("Not running — the next message starts it automatically");
   });
 
-  it("shows the cold subtitle as visible text on the secondary line of a cold row", () => {
+  it("keeps a cold row single-line: only the 12px icon after the name, no subtitle text", () => {
     const store = useInstancesStore();
     store.instances = [instance([
       { alias: "cold", agent: "codex", workspace: "home", transportSession: "t1", running: false, archived: false, warm: false },
@@ -130,22 +131,23 @@ describe("InstanceTree session management", () => {
       { alias: "slept", agent: "codex", workspace: "home", transportSession: "t3", running: false, archived: true, warm: false },
     ])] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    const subs = w.findAll('[data-test="session-cold-subtitle"]');
-    expect(subs).toHaveLength(1);
-    expect(subs[0]!.text()).toBe("Not running · next message will cold-start");
-    expect(subs[0]!.classes()).toContain("truncate");
     const row = w.findAll('[data-test="session-row"]')[0]!;
-    expect(row.find('[data-test="session-cold-subtitle"]').exists()).toBe(true);
+    // The icon rides the name line (sibling of session-name, inside the same flex row).
+    const name = row.find('[data-test="session-name"]');
+    expect(name.text()).toBe("cold");
+    expect(name.element.nextElementSibling?.querySelector('[data-test="cold-indicator"]')).not.toBeNull();
+    // No secondary subtitle line anywhere.
+    expect(w.findAll('[data-test="session-cold-subtitle"]')).toHaveLength(0);
   });
 
-  it("localizes the cold subtitle in zh-CN", () => {
+  it("localizes the cold tooltip in zh-CN", () => {
     i18n.global.locale.value = "zh-CN";
     const store = useInstancesStore();
     store.instances = [instance([
       { alias: "cold", agent: "codex", workspace: "home", transportSession: "t1", running: false, archived: false, warm: false },
     ])] as never;
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    expect(w.find('[data-test="session-cold-subtitle"]').text()).toBe("未运行 · 下条消息将冷启动");
+    expect(w.find('[data-test="cold-indicator"]').attributes("aria-label")).toBe("未运行，发下一条消息时会自动启动");
   });
 
   it("shows a spinner on an optimistic 'creating' session row", () => {
@@ -402,7 +404,9 @@ describe("InstanceTree session management", () => {
       store.instances[0]!.archivedSessionsLoaded = true;
     });
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    await w.find('[data-test="toggle-archived-sessions"]').trigger("click");
+    // The sleeping-sessions toggle now lives in the tab row's filter menu.
+    await w.find('[data-test="instance-filter"]').trigger("click");
+    await w.find('[data-test="filter-sleeping-sessions"]').trigger("click");
     await w.vm.$nextTick();
     expect(w.findAll('[data-test="session-row"]')).toHaveLength(2);
     expect(w.find('[data-test="session-name"]').text()).toContain("active");

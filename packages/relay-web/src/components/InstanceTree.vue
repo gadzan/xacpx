@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, Bot, ChevronDown, ChevronRight, Folder, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users } from "lucide-vue-next";
+import { ArchiveRestore, Bot, Check, ChevronRight, Folder, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
 import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsDesktop } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
@@ -13,6 +13,8 @@ import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
 import { pushToast } from "../lib/use-toasts";
 import { useSwipeActions } from "../lib/use-swipe-actions";
+import { useDropdown } from "../lib/use-dropdown";
+import type { DropdownGroup } from "../lib/use-dropdown";
 import { groupSessions, dedupedSessionName, sessionPresentationName, archivedLast } from "../lib/sidebar-group-mode";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
@@ -21,6 +23,8 @@ import BotAvatar from "./BotAvatar.vue";
 import BotDialog from "./BotDialog.vue";
 import GroupDialog from "./GroupDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
+import DropdownPanel from "./DropdownPanel.vue";
+import Tooltip from "./Tooltip.vue";
 import type { GroupArchivedMode, GroupArchivedState, InstanceView } from "../stores/instances";
 import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
@@ -115,14 +119,17 @@ const enablingBots = ref<Set<string>>(new Set());
 function botsWithEnabled(instanceId: string, enabled: boolean): BotSummaryDto[] {
   return (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.enabled === enabled);
 }
-// The selected Bot keeps its row while the Disabled list is collapsed, so
-// disabling the open Bot does not make it vanish from the sidebar.
-function visibleBots(instanceId: string): BotSummaryDto[] {
+// The enabled Bots render in the list; the disabled ones live under the 已禁用
+// group title row below it (collapsed by default). The selected Bot keeps its
+// row while the Disabled list is collapsed, so disabling the open Bot does not
+// make it vanish from the sidebar.
+function enabledBots(instanceId: string): BotSummaryDto[] {
+  return botsWithEnabled(instanceId, true);
+}
+function shownDisabledBots(instanceId: string): BotSummaryDto[] {
   const disabled = botsWithEnabled(instanceId, false);
-  const shown = disabledBotsOpen.value.has(instanceId)
-    ? disabled
-    : disabled.filter((b) => directBotsStore.instanceId === instanceId && directBotsStore.selectedBotId === b.id);
-  return [...botsWithEnabled(instanceId, true), ...shown];
+  if (disabledBotsOpen.value.has(instanceId)) return disabled;
+  return disabled.filter((b) => directBotsStore.instanceId === instanceId && directBotsStore.selectedBotId === b.id);
 }
 function toggleDisabledBots(instanceId: string): void {
   const next = new Set(disabledBotsOpen.value);
@@ -348,15 +355,59 @@ function openGroupDialog(inst: InstanceView, key: string): void {
   };
 }
 
-// Desktop overflow (⋯) menu open-state, keyed by `${instanceId}:${alias}`.
-const openMenuFor = ref<string | null>(null);
+// Overflow (⋯) menu and the tab-row filter menu: one shared dropdown controller
+// each (only one panel of a kind is ever open) keyed by the row/instance it serves.
+const menuDd = useDropdown();
+const menuFor = ref<string | null>(null);
+const filterDd = useDropdown();
+const filterFor = ref<string | null>(null);
+function toggleMenuFor(key: string, el: HTMLElement): void {
+  menuDd.trigger = el;
+  if (menuDd.open && menuFor.value === key) {
+    menuDd.closeMenu();
+    return;
+  }
+  menuFor.value = key;
+  menuDd.openMenu();
+}
+function toggleFilterFor(instanceId: string, el: HTMLElement): void {
+  filterDd.trigger = el;
+  if (filterDd.open && filterFor.value === instanceId) {
+    filterDd.closeMenu();
+    return;
+  }
+  filterFor.value = instanceId;
+  filterDd.openMenu();
+}
+/** The ⋯ menu rows for a session (role=menu: rename, sleep/wake, delete). */
+function menuGroups(s: { alias: string; archived?: boolean }): DropdownGroup[] {
+  return [
+    {
+      rows: [
+        { value: "rename", label: t("instance.renameSession"), icon: Pencil, testId: "action-rename" },
+        s.archived
+          ? { value: "unarchive", label: t("instance.unarchiveSession"), icon: ArchiveRestore, testId: "action-unarchive" }
+          : { value: "archive", label: t("instance.archiveSession"), icon: Moon, testId: "action-archive" },
+        { value: "delete", label: t("common.delete"), icon: Trash2, danger: true, separatorBefore: true, testId: "delete-session" },
+      ],
+    },
+  ];
+}
+
+/** ⋯ menu activation: rename / sleep / wake / delete for the row it serves. */
+function onMenuSelect(id: string, s: { alias: string; archived?: boolean; displayName?: string }, value: string): void {
+  if (value === "rename") startRename(id, s);
+  else if (value === "archive") void onArchive(id, s.alias);
+  else if (value === "unarchive") void onUnarchive(id, s.alias);
+  else if (value === "delete") void askDelete(id, s.alias);
+}
 
 // Inline rename: the row currently being renamed, keyed `${instanceId}:${alias}`, plus its draft.
 const renamingFor = ref<string | null>(null);
 const renameDraft = ref("");
 
 function startRename(id: string, s: { alias: string; displayName?: string }) {
-  openMenuFor.value = null;
+  menuDd.closeMenu();
   renamingFor.value = `${id}:${s.alias}`;
   renameDraft.value = s.displayName ?? s.alias;
 }
@@ -381,7 +432,16 @@ const openSwipeFor = ref<string | null>(null);
 // follows the finger 1:1 (transition is off while dragging, on for the snap release).
 const draggingKey = ref<string | null>(null);
 const dragDx = ref(0);
-function onDocPointerDown() { openMenuFor.value = null; openSwipeFor.value = null; }
+// Outside mousedown closes the touch swipe reveal. Clicks inside an open dropdown
+// panel belong to that panel (the unified controller owns its own outside-close via
+// pointerdown), so they must not tear the panel down before the item's click lands.
+function onDocPointerDown(e: MouseEvent) {
+  const target = e.target as Element | null;
+  if (target?.closest?.("[data-dd-panel]")) return;
+  menuDd.closeMenu();
+  filterDd.closeMenu();
+  openSwipeFor.value = null;
+}
 onMounted(() => document.addEventListener("mousedown", onDocPointerDown));
 onUnmounted(() => document.removeEventListener("mousedown", onDocPointerDown));
 
@@ -411,7 +471,7 @@ function onRowTap(id: string, alias: string) {
 }
 
 async function onArchive(id: string, alias: string) {
-  openMenuFor.value = null;
+  menuDd.closeMenu();
   openSwipeFor.value = null;
   // RPC FIRST: a connector business error (HTTP 200 {error:…} surfaced by the
   // store's unwrap) must leave the UI untouched — tearing down tabs/terminal or
@@ -431,7 +491,7 @@ async function onArchive(id: string, alias: string) {
   showUndoToast(id, alias);
 }
 async function onUnarchive(id: string, alias: string) {
-  openMenuFor.value = null;
+  menuDd.closeMenu();
   openSwipeFor.value = null;
   try {
     await store.unarchiveSession(id, alias);
@@ -454,7 +514,7 @@ function showUndoToast(id: string, alias: string) {
 
 // Deleting a session is destructive and irreversible → confirm via the popup dialog.
 async function askDelete(id: string, alias: string) {
-  openMenuFor.value = null;
+  menuDd.closeMenu();
   openSwipeFor.value = null;
   const ok = await confirm({
     title: t("instance.deleteSessionTitle"),
@@ -516,7 +576,7 @@ const rowSwipes = computed(() => {
         const reveal = revealPx(s);
         map[key] = useSwipeActions({
           pointerTypes: ["touch", "pen"],
-          onMove: (dx) => { openMenuFor.value = null; draggingKey.value = key; dragDx.value = dx; },
+          onMove: (dx) => { menuDd.closeMenu(); draggingKey.value = key; dragDx.value = dx; },
           onEnd: (dx) => {
             // Snap open if the row ended past the halfway point, else closed.
             const base = openSwipeFor.value === key ? -reveal : 0;
@@ -546,14 +606,13 @@ const rowSwipes = computed(() => {
            toggle and the sibling Desktop entry stay independent interactive
            controls — a nested <button> is invalid HTML and breaks keyboard
            semantics. -->
-      <div class="group flex h-7 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-raised">
+      <div class="group flex h-7 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-surface-2">
         <button type="button"
                 class="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left transition-colors"
                 :aria-expanded="isExpanded(inst.id)"
                 data-test="instance-header-toggle"
                 @click="toggle(inst.id)">
-          <ChevronDown v-if="isExpanded(inst.id)" :size="12" class="shrink-0 text-fg-muted" />
-          <ChevronRight v-else :size="12" class="shrink-0 text-fg-muted" />
+          <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform duration-150" :class="isExpanded(inst.id) ? 'rotate-90' : ''" />
           <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
           <span class="truncate text-ui font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
                 :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
@@ -571,7 +630,7 @@ const rowSwipes = computed(() => {
                 data-test="instance-desktop"
                 :title="$t('desktop.title')"
                 :aria-label="$t('desktop.title')"
-                class="grid h-10 w-10 lg:h-6 lg:w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-accent"
+                class="grid h-10 w-10 lg:h-6 lg:w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-accent"
                 @click="emit('openDesktop', inst.id)">
           <Monitor :size="13" />
         </button>
@@ -581,13 +640,14 @@ const rowSwipes = computed(() => {
            Instead of a border-l indent rail, hierarchy reads from background tint +
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
-        <!-- Mode switcher: Sessions | Bots -->
+        <!-- Mode switcher: Sessions | Bots | Groups, with the instance-level
+             sleeping-sessions filter (③ icon trigger) on the right in Sessions mode. -->
         <div v-if="inst.online" class="flex items-center gap-1 pb-1 mb-1 px-1">
           <button
             type="button"
             data-test="instance-nav-sessions"
             class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'sessions' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+            :class="modeFor(inst.id) === 'sessions' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
             @click="setMode(inst.id, 'sessions')"
           >
             <MessageSquare :size="11" />
@@ -597,7 +657,7 @@ const rowSwipes = computed(() => {
             type="button"
             data-test="instance-nav-bots"
             class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'bots' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+            :class="modeFor(inst.id) === 'bots' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
             @click="setMode(inst.id, 'bots')"
           >
             <Bot :size="11" />
@@ -610,7 +670,7 @@ const rowSwipes = computed(() => {
             type="button"
             data-test="instance-nav-groups"
             class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'groups' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+            :class="modeFor(inst.id) === 'groups' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
             @click="setMode(inst.id, 'groups')"
           >
             <Users :size="11" />
@@ -619,6 +679,38 @@ const rowSwipes = computed(() => {
               {{ groupsStore.groupsByInstance[inst.id].length }}
             </span>
           </button>
+          <!-- Sleeping-sessions filter (③ icon trigger; accent dot while active).
+               Flat mode only: grouped modes page sleeping rows per group instead. -->
+          <div v-if="modeFor(inst.id) === 'sessions' && groupModeOf(inst) === 'instance'" class="relative ml-auto">
+            <button type="button"
+                    data-test="instance-filter"
+                    :aria-label='$t("instance.filter")'
+                    :aria-haspopup="true"
+                    :aria-expanded="filterDd.open && filterFor === inst.id"
+                    class="relative grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm transition-colors"
+                    :class="filterDd.open && filterFor === inst.id ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+                    @click.stop="toggleFilterFor(inst.id, $event.currentTarget as HTMLElement)">
+              <Filter :size="14" />
+              <span v-if="archivedIsExpanded(inst.id)" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
+            </button>
+            <DropdownPanel v-if="filterDd.open && filterFor === inst.id" :dd="filterDd" tone="raised" width="w-52"
+                           placement="bottom-end" role="menu"
+                           :title='$t("instance.filter")' test-id="instance-filter-menu"
+                           :nav-count="1" @navigate="void toggleArchived(inst.id)">
+              <template #default="{ mobile }">
+                <p class="px-2 pb-1 pt-1.5 text-xs text-fg-muted">{{ $t("instance.filterShow") }}</p>
+                <button type="button" data-test="filter-sleeping-sessions"
+                        class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm font-medium text-fg"
+                        :class="[mobile ? 'h-11' : 'h-8', filterDd.highlight === 0 ? 'bg-surface-2' : '']"
+                        @click="void toggleArchived(inst.id)">
+                  <Moon :size="14" class="shrink-0 text-fg-muted" />
+                  <span class="flex-1 truncate">{{ $t("instance.sleepingSessions") }}</span>
+                  <Check v-if="archivedIsExpanded(inst.id)" :size="14" class="shrink-0 text-accent" />
+                </button>
+                <p class="px-2 pb-1 text-xs text-fg-muted">{{ $t("instance.filterSleepHint") }}</p>
+              </template>
+            </DropdownPanel>
+          </div>
         </div>
 
         <!-- BOTS MODE -->
@@ -638,14 +730,11 @@ const rowSwipes = computed(() => {
                class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("bot.list.allDisabled") }}
           </div>
-          <div v-for="b in visibleBots(inst.id)"
+          <div v-for="b in enabledBots(inst.id)"
                :key="b.id"
                data-test="bot-row"
                class="group relative flex items-center rounded-sm transition-colors"
-               :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-raised'">
-            <!-- Selected accent bar -->
-            <span v-if="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id"
-                  class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
+               :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-surface-2'">
             <button
               class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
               @click="onBotTap(inst.id, b.id)"
@@ -683,7 +772,7 @@ const rowSwipes = computed(() => {
                 data-test="edit-bot-tree-button"
                 :title="$t('bot.actions.edit')"
                 :aria-label="$t('bot.actions.edit')"
-                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg"
+                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg"
                 @click.stop="botDialogFor = { instanceId: inst.id, instanceName: inst.name, bot: b }"
               >
                 <Pencil :size="11" />
@@ -702,8 +791,81 @@ const rowSwipes = computed(() => {
             </div>
           </div>
 
-          <!-- Bots footer -->
-          <div class="flex items-center justify-between pb-px pl-2 pt-1">
+          <!-- 已禁用 group title row below the enabled Bots; its rows render under it. -->
+          <button
+            v-if="botsWithEnabled(inst.id, false).length"
+            type="button"
+            data-test="bots-disabled-toggle"
+            :aria-expanded="disabledBotsOpen.has(inst.id)"
+            class="mt-1 flex h-7 w-full items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+            @click="toggleDisabledBots(inst.id)"
+          >
+            <ChevronRight :size="11" class="shrink-0 transition-transform duration-150" :class="disabledBotsOpen.has(inst.id) ? 'rotate-90' : ''" />
+            <span>{{ $t("bot.list.disabledToggle", { count: botsWithEnabled(inst.id, false).length }) }}</span>
+          </button>
+          <div v-for="b in shownDisabledBots(inst.id)"
+               :key="b.id"
+               data-test="bot-row"
+               class="group relative flex items-center rounded-sm transition-colors"
+               :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-surface-2'">
+            <button
+              class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
+              @click="onBotTap(inst.id, b.id)"
+            >
+              <span class="relative shrink-0">
+                <BotAvatar :avatar="b.avatar" :driver="driverForAgentName(inst, b.agent)" :name="b.name" :size="24"
+                           :disabled="!b.enabled" :retired="b.retired" :state="inst.online ? 'idle' : 'offline'"
+                           :class="!b.enabled ? 'opacity-50' : ''" />
+              </span>
+              <div class="flex flex-col min-w-0 flex-1">
+                <span v-if="b.retired" data-test="bot-removed" class="truncate text-xs text-fg-muted">{{ $t("bot.removal.removed") }}</span>
+                <span data-test="bot-name" class="min-w-0 truncate text-ui font-medium"
+                      :class="!b.enabled ? 'text-fg-muted' : (directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg')">
+                  {{ b.name }}
+                </span>
+                <span v-if="b.role" class="truncate text-xs text-fg-muted">{{ b.role }}</span>
+              </div>
+              <span class="h-1.5 w-1.5 rounded-full shrink-0"
+                    :class="b.enabled ? 'bg-run' : 'bg-fg-muted'"
+                    :title="b.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')" />
+            </button>
+            <button
+              v-if="!b.enabled"
+              type="button"
+              data-test="enable-bot-tree-button"
+              :disabled="enablingBots.has(`${inst.id}:${b.id}`)"
+              class="shrink-0 rounded-sm px-1.5 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
+              @click.stop="void enableBot(inst.id, b)"
+            >
+              {{ $t("bot.actions.enable") }}
+            </button>
+            <div class="flex items-center gap-0.5 pr-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                type="button"
+                data-test="edit-bot-tree-button"
+                :title="$t('bot.actions.edit')"
+                :aria-label="$t('bot.actions.edit')"
+                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg"
+                @click.stop="botDialogFor = { instanceId: inst.id, instanceName: inst.name, bot: b }"
+              >
+                <Pencil :size="11" />
+              </button>
+              <button
+                type="button"
+                data-test="delete-bot-tree-button"
+                :title="b.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
+                :aria-label="$t('bot.removal.action')"
+                :disabled="b.retired === true"
+                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+                @click.stop="openBotRemoval(inst.id, b)"
+              >
+                <Trash2 :size="11" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Bots footer: new Bot + manage (the disabled toggle moved above the list). -->
+          <div class="flex items-center gap-0.5 pb-px pl-2 pt-1">
             <button
               type="button"
               data-test="new-bot-button"
@@ -714,22 +876,10 @@ const rowSwipes = computed(() => {
               <span>{{ $t("bot.actions.newBot") }}</span>
             </button>
             <button
-              v-if="botsWithEnabled(inst.id, false).length"
-              type="button"
-              data-test="bots-disabled-toggle"
-              :aria-expanded="disabledBotsOpen.has(inst.id)"
-              class="ml-auto mr-1 flex items-center gap-0.5 rounded-sm px-1.5 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-              @click="toggleDisabledBots(inst.id)"
-            >
-              <ChevronDown v-if="disabledBotsOpen.has(inst.id)" :size="11" />
-              <ChevronRight v-else :size="11" />
-              <span>{{ $t("bot.list.disabledToggle", { count: botsWithEnabled(inst.id, false).length }) }}</span>
-            </button>
-            <button
               data-test="manage-instance-from-bots"
               :title="$t('instance.manage')"
               :aria-label="$t('instance.manage')"
-              class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
               @click="manageFor = { id: inst.id, name: inst.name }"
             >
               <Settings2 :size="13" />
@@ -763,9 +913,7 @@ const rowSwipes = computed(() => {
                :key="g.id"
                data-test="group-row"
                class="group relative flex items-center rounded-sm transition-colors"
-               :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-raised'">
-            <span v-if="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id"
-                  class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
+               :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-surface-2'">
             <button
               class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
               @click="onGroupTap(inst.id, g.id)"
@@ -792,7 +940,7 @@ const rowSwipes = computed(() => {
                 data-test="edit-group-tree-button"
                 :title="$t('group.manage.editTitle')"
                 :aria-label="$t('group.manage.editTitle')"
-                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg"
+                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg"
                 @click.stop="groupDialogFor = { instanceId: inst.id, instanceName: inst.name, group: g }"
               >
                 <Pencil :size="11" />
@@ -818,7 +966,7 @@ const rowSwipes = computed(() => {
         <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
                 class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs font-medium text-accent hover:bg-accent-soft"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
-          <ChevronDown :size="11" class="rotate-[-90deg]" />{{ $t("instance.loadSessions") }}
+          <ChevronRight :size="11" />{{ $t("instance.loadSessions") }}
         </button>
         <div v-if="inst.online && inst.sessionsLoading" data-test="sessions-loading"
              class="py-1 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
@@ -830,8 +978,7 @@ const rowSwipes = computed(() => {
             <button data-test="group-header" :aria-expanded="!isGroupCollapsed(inst, grp.key)"
                     class="flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 text-left transition-colors hover:bg-fg/5"
                     @click="toggleGroup(inst, grp.key)">
-              <ChevronDown v-if="!isGroupCollapsed(inst, grp.key)" :size="11" class="shrink-0 text-fg-muted" />
-              <ChevronRight v-else :size="11" class="shrink-0 text-fg-muted" />
+              <ChevronRight :size="11" class="shrink-0 text-fg-muted transition-transform duration-150" :class="isGroupCollapsed(inst, grp.key) ? '' : 'rotate-90'" />
               <Folder v-if="groupModeOf(inst) === 'workspace'" :size="12" class="shrink-0 text-fg-muted" />
               <AgentIcon v-else :driver="driverForAgentName(inst, grp.key)" :title="grp.key" :size="13" />
               <span data-test="group-name" class="min-w-0 truncate text-xs font-semibold text-fg-muted">{{ grp.key }}</span>
@@ -863,9 +1010,7 @@ const rowSwipes = computed(() => {
             >
               <!-- Foreground row content (spans the full row width). -->
               <div class="relative flex w-full shrink-0 items-center rounded-sm transition-colors"
-                   :class="isSelected(inst.id, s.alias) ? 'bg-accent-soft' : 'hover:bg-raised'">
-                <!-- Selected row: left accent bar. -->
-                <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
+                   :class="isSelected(inst.id, s.alias) ? 'bg-accent-soft' : 'hover:bg-surface-2'">
                 <button
                   class="relative flex min-h-[52px] lg:min-h-0 min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
                   @click="onRowTap(inst.id, s.alias)"
@@ -908,20 +1053,19 @@ const rowSwipes = computed(() => {
                          @click.stop @keydown.enter.prevent="commitRename(inst.id, s.alias)"
                          @keydown.escape.prevent="cancelRename" @blur="commitRename(inst.id, s.alias)"
                          v-focus />
-                  <!-- Two-line row. Only a cold session carries a secondary line today —
-                       SessionDto has no activity timestamp, so no invented relative times. -->
-                  <div v-else class="flex min-w-0 flex-1 flex-col">
+                  <!-- Single-line row. A cold session (warm process exited; next
+                       message cold-starts) carries only a 12px Unplug glyph after the
+                       name — the reason lives in its Tooltip. Absent `warm` (old
+                       instance) shows nothing. -->
+                  <div v-else class="flex min-w-0 flex-1 items-center">
                     <span data-test="session-name" class="min-w-0 truncate text-sm font-medium"
                           :title="s.displayName || s.alias"
                           :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
-                    <!-- Cold: awake session whose warm process has exited (TTL or otherwise);
-                         next message cold-starts. Absent `warm` (old instance) shows nothing. -->
-                    <span v-if="!s.archived && s.warm === false" data-test="session-cold-subtitle"
-                          class="flex min-w-0 items-center gap-1 truncate text-xs text-fg-muted">
-                      <Unplug data-test="cold-indicator" :size="10" class="shrink-0" aria-hidden="true"
-                              :title="$t('instance.sessionColdTitle')" />
-                      {{ $t("instance.sessionColdSubtitle") }}
-                    </span>
+                    <Tooltip v-if="!s.archived && s.warm === false" :text='$t("instance.sessionColdTooltip")'>
+                      <Unplug data-test="cold-indicator" :size="12" tabindex="0" role="img"
+                              :aria-label='$t("instance.sessionColdTooltip")'
+                              class="ml-1.5 shrink-0 text-fg-muted" />
+                    </Tooltip>
                   </div>
                   <!-- Archived state is shown visually by the dimmed name (no text badge), but that
                        greying carries no signal for screen readers — keep a visually-hidden label so
@@ -938,8 +1082,9 @@ const rowSwipes = computed(() => {
                 <!-- Row actions: desktop overflow (⋯) menu → archive / delete. Hidden when the instance is offline. -->
                 <div v-if="inst.online" data-test="session-actions" class="relative mr-1 shrink-0">
                   <button data-test="session-menu" :aria-label="$t('common.more')"
-                          class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
-                          @click.stop="openSwipeFor = null; openMenuFor = openMenuFor === `${inst.id}:${s.alias}` ? null : `${inst.id}:${s.alias}`"><MoreHorizontal :size="13" /></button>
+                          :aria-haspopup="true" :aria-expanded="menuDd.open && menuFor === `${inst.id}:${s.alias}`"
+                          class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+                          @click.stop="openSwipeFor = null; toggleMenuFor(`${inst.id}:${s.alias}`, $event.currentTarget as HTMLElement)"><MoreHorizontal :size="13" /></button>
                 </div>
               </div>
               <!-- Swipe-revealed action blocks (touch). Sit just past the right edge; the
@@ -954,19 +1099,14 @@ const rowSwipes = computed(() => {
               </template>
             </div>
             </div>
-            <!-- ⋯ dropdown: a child of the ROW (not the clip layer), so it overflows the
-                 row downward instead of being clipped to the row's height.
-                 `@mousedown.stop`: the document-level mousedown listener nulls openMenuFor,
-                 which would unmount this menu in the microtask BEFORE the item's click
-                 fires (mousedown → Vue flush → mouseup → click on a detached node), so
-                 archive/delete silently no-op. Stopping mousedown keeps the menu mounted. -->
-            <div v-if="inst.online && openMenuFor === `${inst.id}:${s.alias}`" @mousedown.stop
-                 class="absolute right-1 top-full z-30 mt-0.5 w-32 rounded-sm bg-raised py-1 shadow-float">
-              <button data-test="action-rename" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui text-fg hover:bg-surface-2" @click.stop="startRename(inst.id, s)"><Pencil :size="12" />{{ $t("instance.renameSession") }}</button>
-              <button v-if="!s.archived" data-test="action-archive" :title="$t('instance.sleepTooltip')" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui text-fg hover:bg-surface-2" @click.stop="onArchive(inst.id, s.alias)"><Moon :size="12" />{{ $t("instance.archiveSession") }}</button>
-              <button v-else data-test="action-unarchive" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui text-fg hover:bg-surface-2" @click.stop="onUnarchive(inst.id, s.alias)"><ArchiveRestore :size="12" />{{ $t("instance.unarchiveSession") }}</button>
-              <button data-test="delete-session" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-ui text-danger hover:bg-danger/10" @click.stop="askDelete(inst.id, s.alias)"><Trash2 :size="12" />{{ $t("common.delete") }}</button>
-            </div>
+            <!-- ⋯ menu: the unified action panel (③ icon trigger), a child of the ROW
+                 (not the clip layer) so it overflows the row downward instead of being
+                 clipped to the row's height. Sidebar panels use bg-raised. -->
+            <DropdownPanel v-if="inst.online && menuDd.open && menuFor === `${inst.id}:${s.alias}`"
+                           :dd="menuDd" tone="raised" width="w-40" placement="bottom-end" role="menu"
+                           :title="rowName(inst, s, grp.key)"
+                           :groups="menuGroups(s)"
+                           @select="onMenuSelect(inst.id, s, $event)" />
             </div>
             <!-- Per-group sleeping-session controls (grouped modes): page sleeping rows
                  from the server 5 at a time instead of flat mode's one-shot snapshot. -->
@@ -980,7 +1120,7 @@ const rowSwipes = computed(() => {
               <div v-if="grp.archivedState?.loading" data-test="group-archived-loading"
                    class="py-0.5 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
               <button v-else-if="groupArchivedIsExpanded(inst, grp.key) && grp.archivedState?.hasMore" data-test="group-load-more"
-                      class="w-full py-0.5 pl-2.5 text-left text-xs font-medium text-accent hover:text-fg"
+                      class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent transition-colors hover:bg-surface-2"
                       @click.stop="loadMoreGroupArchived(inst, grp.key)">
                 {{ $t("instance.loadMoreSessions") }}
               </button>
@@ -1006,25 +1146,21 @@ const rowSwipes = computed(() => {
               <!-- Instance-level ACTIVE-list load-more, deliberately NOT mode-gated: grouped modes
                    still page active sessions 20 at a time, and this is their only "next page" entry. -->
               <button v-if="inst.sessionsHasMore && !inst.sessionsLoading" data-test="sessions-load-more"
-                class="w-full py-1 pl-2.5 text-left text-xs font-medium text-accent hover:text-fg"
+                class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent transition-colors hover:bg-surface-2"
                 @click.stop="store.loadMoreSessions(inst.id).catch(() => {})">
           {{ $t("instance.loadMoreSessions") }}
         </button>
         <div v-if="inst.sessionsLoaded && !activeSessions(inst).length && !archivedIsExpanded(inst.id)" data-test="no-sessions"
              class="py-1 pl-2.5 text-xs text-fg-muted">{{ $t("instance.noSessions") }}</div>
 
-        <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria. -->
+        <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria.
+             The sleeping-sessions toggle moved to the tab row's filter menu. -->
         <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">
-          <button v-if="inst.online && inst.sessionsLoaded && groupModeOf(inst) === 'instance'" data-test="toggle-archived-sessions"
-                  :title="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
-                  :aria-label="$t(archivedIsExpanded(inst.id) ? 'instance.hideArchivedSessions' : 'instance.showArchivedSessions')"
-                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-                  @click="void toggleArchived(inst.id)"><ArchiveRestore :size="13" /></button>
           <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
                   class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft"
                   @click="dialogFor = { id: inst.id, name: inst.name }"><Plus :size="14" /></button>
           <button data-test="manage-instance" :title="$t('instance.manage')" :aria-label="$t('instance.manage')"
-                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
                   @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="13" /></button>
         </div>
         </template>

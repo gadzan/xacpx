@@ -27,7 +27,7 @@ describe("InstanceTree grouped sleeping sessions", () => {
     store.setGroupMode("i1", "workspace");
     const w = mountTree();
     expect(w.findAll('[data-test="group-toggle-archived"]')).toHaveLength(2);
-    expect(w.find('[data-test="toggle-archived-sessions"]').exists()).toBe(false);
+    expect(w.find('[data-test="instance-filter"]').exists()).toBe(false);
   });
 
   it("keeps the instance-level sleeping toggle in flat mode and shows no group toggles", () => {
@@ -35,7 +35,7 @@ describe("InstanceTree grouped sleeping sessions", () => {
     // Distinct id: other tests persist "workspace" for i1 in shared localStorage.
     store.instances = [{ ...instance([active("a", "backend")]), id: "i-flat" }] as never;
     const w = mountTree();
-    expect(w.find('[data-test="toggle-archived-sessions"]').exists()).toBe(true);
+    expect(w.find('[data-test="instance-filter"]').exists()).toBe(true);
     expect(w.find('[data-test="group-toggle-archived"]').exists()).toBe(false);
   });
 
