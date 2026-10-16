@@ -78,6 +78,17 @@ function git(args, { allowFailure = false } = {}) {
   }
 }
 
+/**
+ * Git output with no trimming.
+ *
+ * `git()` trims the whole string, which silently eats the leading status space
+ * of the FIRST line of `git status --porcelain` (whose lines are `XY PATH`).
+ * Anything that parses machine-readable output must use this instead.
+ */
+function gitRaw(args) {
+  return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" });
+}
+
 const readJson = (relativePath) => JSON.parse(readFileSync(join(ROOT, relativePath), "utf8"));
 const writeJson = (relativePath, value) =>
   writeFileSync(join(ROOT, relativePath), `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -500,11 +511,15 @@ function cmdCheck() {
 // ---------------------------------------------------------------------------
 
 function assertOnlyReleasePathsModified() {
-  const dirty = git(["status", "--porcelain"]).split("\n").filter(Boolean);
+  // `-z` keeps paths verbatim and, with --no-renames, emits exactly one record
+  // per entry — so the parse cannot be thrown off by a rename's second field.
+  const dirty = gitRaw(["status", "--porcelain", "-z", "--no-renames"])
+    .split("\0")
+    .filter((entry) => entry.length > 0);
   if (dirty.length === 0) throw new Error("nothing modified; run `apply` first");
   const unexpected = [];
-  for (const line of dirty) {
-    const path = line.slice(3).trim().replace(/^"|"$/g, "");
+  for (const entry of dirty) {
+    const path = entry.slice(3);
     if (TOOL_OWNED_PATHS.some((owned) => path === owned || path.startsWith(`${owned}/`))) continue;
     unexpected.push(path);
   }
