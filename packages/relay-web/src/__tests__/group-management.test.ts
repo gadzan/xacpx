@@ -153,7 +153,8 @@ describe("Group management", () => {
 
       await wrapper.find('[data-test="group-dialog-title"]').setValue("Launch");
       await selectMembers(wrapper, ["bot_off", "bot_b"]);
-      expect((wrapper.find('[data-test="group-dialog-lead"]').element as HTMLSelectElement).value).toBe("bot_b");
+      // The Lead picker is the unified SelectMenu: the trigger shows the suggested Lead.
+      expect(wrapper.find('[data-test="group-dialog-lead"]').text()).toContain("Tester");
 
       await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
       expect(groups.groupsByInstance["i1"] ?? []).toEqual([]);
@@ -202,7 +203,8 @@ describe("Group management", () => {
       await selectMembers(wrapper, ["bot_a", "bot_b"]);
 
       expect(wrapper.find('[data-test="group-dialog-member-bot_b"] [data-test="group-dialog-member-id"]').text()).toBe("bot_b");
-      const options = wrapper.findAll('[data-test="group-dialog-lead"] option').map((o) => o.text());
+      await wrapper.find('[data-test="group-dialog-lead"]').trigger("click");
+      const options = wrapper.findAll("[data-value]").map((o) => o.text());
       expect(options).toEqual(["No Lead", "Reviewer (bot_a)", "Reviewer (bot_b)"]);
     });
 
@@ -255,7 +257,8 @@ describe("Group management", () => {
       await flushPromises();
 
       await wrapper.find('[data-test="group-dialog-member-bot_a"] input').setValue(false);
-      expect((wrapper.find('[data-test="group-dialog-lead"]').element as HTMLSelectElement).value).toBe("bot_b");
+      // The Lead picker is the unified SelectMenu: the trigger shows the suggested Lead.
+      expect(wrapper.find('[data-test="group-dialog-lead"]').text()).toContain("Tester");
       expect(wrapper.find('[data-test="group-dialog-lead-reassigned"]').text()).toBe("Reviewer is no longer a member, so the Lead is now Tester.");
 
       await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
@@ -548,10 +551,11 @@ describe("Group management", () => {
       await wrapper.find('[data-test="group-first-topic-button"]').trigger("click");
       await flushPromises();
       const select = wrapper.find('[data-test="group-topic-workspace"]');
-      expect(select.findAll("option").map((o) => o.text())).toEqual(["Select a workspace", "repo"]);
+      await select.trigger("click");
+      expect(wrapper.findAll("[data-value]").map((o) => o.text())).toEqual(["Select a workspace", "repo"]);
 
       await wrapper.find('#group-topic-title ~ form input[type="text"]').setValue("Sprint");
-      await select.setValue("repo");
+      await wrapper.find('[data-value="repo"]').trigger("click");
       await wrapper.find("#group-topic-title ~ form").trigger("submit");
       await flushPromises();
       expect(rpcCalls("control.group.topics.create").map((c) => c.payload)).toEqual([
@@ -577,7 +581,8 @@ describe("Group management", () => {
       await wrapper.find('[data-test="group-topic-workspaces-retry"]').trigger("click");
       await flushPromises();
       expect(wrapper.find('[data-test="group-topic-workspaces-failed"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="group-topic-workspace"]').findAll("option").map((o) => o.text())).toEqual(["Select a workspace", "repo"]);
+      await wrapper.find('[data-test="group-topic-workspace"]').trigger("click");
+      expect(wrapper.findAll("[data-value]").map((o) => o.text())).toEqual(["Select a workspace", "repo"]);
     });
 
     it("hides the first-Topic prompt once a Topic exists", async () => {

@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Plus, Trash2 } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
 import { confirm } from "../lib/use-confirm";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 const props = defineProps<{ instanceId: string }>();
 const store = useInstancesStore();
@@ -54,6 +55,15 @@ async function remove(name: string): Promise<void> {
 function hint(installed: string): string {
   return installed === "builtin" ? t("agents.builtin") : installed === "yes" ? t("agents.installed") : t("agents.cliNotDetected");
 }
+const driverGroups = computed<SelectGroup[]>(() => [
+  {
+    options: addableDrivers.value.map((c) => ({
+      value: c.driver,
+      label: `${c.driver} (${hint(c.installed)})`,
+      disabled: c.installed === "unknown",
+    })),
+  },
+]);
 </script>
 
 <template>
@@ -80,12 +90,7 @@ function hint(installed: string): string {
     </button>
     <div v-else class="space-y-2 rounded-sm p-3">
       <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <select v-model="driver" data-test="am-driver" class="rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-          <option value="" disabled>{{ $t("agents.chooseDriver") }}</option>
-          <option v-for="c in addableDrivers" :key="c.driver" :value="c.driver" :disabled="c.installed === 'unknown'">
-            {{ c.driver }} ({{ hint(c.installed) }})
-          </option>
-        </select>
+        <SelectMenu v-model="driver" data-test="am-driver" :aria-label='$t("agents.chooseDriver")' :groups="driverGroups" :placeholder='$t("agents.chooseDriver")' />
         <input v-model="customName" data-test="am-name" :placeholder="$t('agents.namePlaceholder')" class="rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
       </div>
       <div class="flex gap-2">

@@ -104,13 +104,13 @@ for (const kind of ["bot", "group"] as const) {
     const dialog = await openDialog(page, kind);
     if (kind === "bot") {
       await dialog.locator("#bot-name").fill("Review assistant");
-      await expect(dialog.locator("#bot-agent")).toHaveValue("codex");
-      await expect(dialog.locator("#bot-workspace")).toHaveValue("repo");
+      await expect(dialog.locator("#bot-agent")).toHaveAttribute("data-selected", "codex");
+      await expect(dialog.locator("#bot-workspace")).toHaveAttribute("data-selected", "repo");
     } else {
       await dialog.getByTestId("group-dialog-title").fill("Release team");
       await dialog.getByTestId("group-dialog-member-bot_0").getByRole("checkbox").check();
       await dialog.getByTestId("group-dialog-member-bot_19").getByRole("checkbox").check();
-      await expect(dialog.getByTestId("group-dialog-lead")).toHaveValue("bot_0");
+      await expect(dialog.getByTestId("group-dialog-lead")).toHaveAttribute("data-selected", "bot_0");
     }
     await expect(dialog.getByRole("button", { name: "Create", exact: true })).toBeEnabled();
     await expectViewportLayout(dialog);

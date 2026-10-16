@@ -17,6 +17,8 @@ import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import BotAvatar from "./BotAvatar.vue";
 import ConversationComposer from "./ConversationComposer.vue";
+import DropdownPanel from "./DropdownPanel.vue";
+import { useDropdown } from "../lib/use-dropdown";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -39,7 +41,7 @@ const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
 const commandStore = useConversationCommandsStore();
 const promptText = ref("");
-const menuOpen = ref(false);
+const targetDd = useDropdown();
 const composer = ref<InstanceType<typeof ConversationComposer> | null>(null);
 const composing = ref(false);
 const collapsedCaret = ref(true);
@@ -116,11 +118,26 @@ watch(() => groupsStore.activeTopicId, () => {
 
 function toggleMenu(): void {
   if (props.disabled) return;
-  menuOpen.value = !menuOpen.value;
+  targetDd.toggle();
 }
 
 function closeMenu(): void {
-  menuOpen.value = false;
+  targetDd.closeMenu();
+}
+
+/** Keyboard activation order matches the rendered rows (disabled members excluded). */
+const navRows = computed<Array<() => void>>(() => {
+  const rows: Array<() => void> = [() => pickLead()];
+  if (automaticVisible.value) rows.push(() => pickAutomatic());
+  rows.push(() => pickEveryone());
+  for (const b of props.bots) {
+    if (b.enabled) rows.push(() => toggleMember(b.id));
+  }
+  return rows;
+});
+const navCount = computed(() => navRows.value.length);
+function onNavSelect(index: number): void {
+  navRows.value[index]?.();
 }
 
 function pickEveryone(): void {
@@ -480,76 +497,66 @@ function handleRetry(): void {
       <div class="relative">
         <button
           type="button"
+          :ref="(el) => (targetDd.trigger = el as HTMLElement | null)"
           data-test="group-target-button"
           :disabled="disabled || groupsStore.hasUncertainPrompt"
-          class="flex items-center gap-1.5 rounded-lg bg-bg px-2.5 py-1.5 text-xs font-medium text-fg transition-colors hover: disabled:opacity-50"
+          :aria-haspopup="true"
+          :aria-expanded="targetDd.open"
+          class="flex items-center gap-1.5 rounded-sm px-1 text-xs font-medium transition-colors disabled:opacity-50"
+          :class="targetDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
           @click="toggleMenu"
         >
           <Users :size="13" class="text-accent" />
           <span class="max-w-[180px] truncate">{{ selectionLabel }}</span>
-          <ChevronDown :size="12" class="text-fg-muted transition-transform" :class="menuOpen ? 'rotate-180' : ''" />
+          <ChevronDown :size="12" class="text-fg-muted transition-transform" :class="targetDd.open ? 'rotate-180' : ''" />
         </button>
-        <div
-          v-if="menuOpen"
-          data-test="group-target-menu"
-          class="absolute bottom-full left-0 z-20 mb-1.5 w-64 overflow-hidden rounded-2xl bg-raised shadow-float"
-        >
-          <div class="max-h-64 overflow-y-auto p-1.5">
-            <button
-              type="button"
-              data-test="group-target-lead"
-              class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-raised"
-              @click="pickLead"
-            >
-              <AtSign :size="13" class="shrink-0 text-fg-muted" />
+        <!-- One panel (unified §F): rows render in a slot (avatars + disabled notes);
+             composer panels open upward. -->
+        <DropdownPanel :dd="targetDd" tone="surface" width="w-64" placement="top"
+                       :title='$t("group.target.sendTo")' test-id="group-target-menu"
+                       :nav-count="navCount" @navigate="onNavSelect">
+          <template #default="{ mobile }">
+            <button type="button" data-test="group-target-lead"
+                    class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+                    :class="[mobile ? 'h-11' : 'h-8', 'text-fg']"
+                    @click="pickLead">
+              <AtSign :size="14" class="shrink-0 text-fg-muted" />
               <span class="flex-1 truncate font-medium">{{ $t("group.target.lead") }}</span>
             </button>
-            <button
-              v-if="automaticVisible"
-              type="button"
-              data-test="group-target-automatic"
-              class="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-raised"
-              @click="pickAutomatic"
-            >
-              <Bot :size="13" class="mt-0.5 shrink-0 text-fg-muted" />
-              <span class="min-w-0 flex-1">
-                <span class="block truncate font-medium">{{ $t("group.target.automatic") }}</span>
-              </span>
-              <Check v-if="isAutomatic" :size="13" class="mt-0.5 shrink-0 text-accent" />
+            <button v-if="automaticVisible" type="button" data-test="group-target-automatic"
+                    class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+                    :class="[mobile ? 'h-11' : 'h-8', 'text-fg']"
+                    @click="pickAutomatic">
+              <Bot :size="14" class="shrink-0 text-fg-muted" />
+              <span class="min-w-0 flex-1 truncate font-medium">{{ $t("group.target.automatic") }}</span>
+              <Check v-if="isAutomatic" :size="14" class="shrink-0 text-accent" />
             </button>
-            <button
-              type="button"
-              data-test="group-target-everyone"
-              class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-raised"
-              @click="pickEveryone"
-            >
-              <Users :size="13" class="shrink-0 text-fg-muted" />
+            <button type="button" data-test="group-target-everyone"
+                    class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+                    :class="[mobile ? 'h-11' : 'h-8', 'text-fg']"
+                    @click="pickEveryone">
+              <Users :size="14" class="shrink-0 text-fg-muted" />
               <span class="flex-1 truncate font-medium">{{ $t("group.target.everyone") }}</span>
-              <Check v-if="isEveryone" :size="13" class="shrink-0 text-accent" />
+              <Check v-if="isEveryone" :size="14" class="shrink-0 text-accent" />
             </button>
-            <div class="my-1" />
-            <div class="px-2.5 py-1 text-xs font-semibold uppercase tracking-wider text-fg-muted">
-              {{ $t("group.target.selectMembers") }}
-            </div>
-            <button
-              v-for="b in props.bots"
-              :key="b.id"
-              :data-test="`group-target-member-${b.id}`"
-              :disabled="!b.enabled"
-              class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-raised disabled:opacity-50"
-              @click="toggleMember(b.id)"
-            >
+            <p class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ $t("group.target.selectMembers") }}</p>
+            <button v-for="b in props.bots" :key="b.id"
+                    :data-test="`group-target-member-${b.id}`"
+                    :disabled="!b.enabled"
+                    class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+                    :class="[mobile ? 'h-11' : 'h-8', !b.enabled ? 'cursor-not-allowed text-fg-muted/50' : 'text-fg']"
+                    @click="toggleMember(b.id)">
               <BotAvatar :avatar="b.avatar" :driver="driverFor(b)" :name="b.name" :size="24" static
                          :disabled="!b.enabled" :retired="b.retired" :class="!b.enabled ? 'opacity-50' : ''" />
               <span class="min-w-0 flex-1 truncate" :class="!b.enabled ? 'text-fg-muted' : 'text-fg'">{{ b.name }}</span>
               <span v-if="!b.enabled" class="shrink-0 text-xs text-fg-muted">{{ $t("bot.status.disabled") }}</span>
-              <Check v-else-if="selectedIds.includes(b.id)" :size="13" class="shrink-0 text-accent" />
+              <Check v-else-if="selectedIds.includes(b.id)" :size="14" class="shrink-0 text-accent" />
             </button>
-            <p v-if="eligibleBots.length === 0" class="px-2.5 py-2 text-xs text-fg-muted">
+            <p v-if="eligibleBots.length === 0" class="px-2 py-2 text-sm text-fg-muted">
               {{ $t("group.target.noEligible") }}
             </p>
-          </div>
-        </div>
+          </template>
+        </DropdownPanel>
       </div>
       <span class="hidden text-xs text-fg-muted sm:inline">{{ $t("group.target.hint") }}</span>
     </div>
@@ -585,25 +592,25 @@ function handleRetry(): void {
         <div
           v-else-if="slashMatches.length > 0"
           data-test="group-cmd-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-2xl bg-raised py-1 shadow-float"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
         >
           <button
             v-for="(command, index) in slashMatches"
             :key="command.name"
             type="button"
             data-test="group-cmd-item"
-            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-ui hover:bg-raised"
-            :class="index === cmdActiveIdx ? 'bg-accent-soft' : ''"
+            class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+            :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
             @mousedown.prevent="pickSlash(command.name)"
           >
             <span class="font-medium text-fg">/{{ command.name }}</span>
-            <span v-if="command.description" class="truncate text-fg-muted">{{ command.description }}</span>
+            <span v-if="command.description" class="truncate text-xs text-fg-muted">{{ command.description }}</span>
           </button>
         </div>
         <div
           v-if="mentionMatches.length > 0"
           data-test="group-mention-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-2xl bg-raised py-1 shadow-float"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
         >
           <button
             v-for="(member, index) in mentionMatches"
@@ -611,8 +618,8 @@ function handleRetry(): void {
             type="button"
             data-test="group-mention-item"
             :data-bot-id="member.botId"
-            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-ui hover:bg-raised"
-            :class="index === mentionActiveIdx ? 'bg-accent-soft' : ''"
+            class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+            :class="index === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
             @mousedown.prevent="pickMention(member)"
           >
             <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>

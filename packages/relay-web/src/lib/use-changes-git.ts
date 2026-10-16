@@ -126,13 +126,11 @@ export function useChangesGit(instanceId: Ref<string | null>) {
     if (await runGit(() => git.commit(instanceId.value!, files.workspace!, message))) commitMessage.value = "";
   }
 
-  async function switchBranch(event: Event): Promise<void> {
-    const select = event.target as HTMLSelectElement;
-    const branch = select.value;
+  async function switchBranch(branch: string): Promise<void> {
     if (!instanceId.value || !files.workspace || !branch || branch === git.status?.branch) return;
-    if (!await runGit(() => git.checkout(instanceId.value!, files.workspace!, { branch }))) {
-      select.value = git.status?.branch ?? "";
-    }
+    // A rejected checkout surfaces its own error toast; the store refresh puts
+    // the real branch back on the trigger.
+    await runGit(() => git.checkout(instanceId.value!, files.workspace!, { branch }));
   }
 
   async function createBranch(): Promise<void> {

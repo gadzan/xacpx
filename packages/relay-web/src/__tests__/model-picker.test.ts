@@ -54,8 +54,9 @@ describe("ModelPicker", () => {
     expect(unsupportedView.get('[data-test="model-picker-recovery"]').text()).toContain("custom id");
     await unsupportedView.get('[data-test="ns-model"]').trigger("focus");
     expect(unsupportedView.find('[data-test="model-option"]').exists()).toBe(false);
+    // Suggestions render under a group label that marks them unverified.
+    expect(unsupportedView.get('[data-test="ns-model-list"]').text()).toContain("Suggestion, not adapter-verified");
     expect(unsupportedView.get('[data-test="model-suggestion"]').text()).toContain("my-config-id");
-    expect(unsupportedView.get('[data-test="model-suggestion"]').text()).toContain("not adapter-verified");
 
     const setup = needsSetupCapability(
       { code: "discovery-available", message: "no saved model list" },
@@ -113,13 +114,14 @@ describe("ModelPicker", () => {
       efforts: { status: "known", options: [{ id: "high", name: "high", source: "adapter" }, { id: "low", name: "low", source: "adapter" }] },
     });
     const wrapper = mountPicker(high, "gpt-a", "high");
-    expect(wrapper.findAll('[data-test="effort-option"]').map((option) => option.attributes("value"))).toEqual(["high", "low"]);
+    await wrapper.get('[data-test="model-picker-effort"]').trigger("click");
+    expect(wrapper.findAll('[data-test="effort-option"]').map((option) => option.attributes("data-value"))).toEqual(["", "high", "low"]);
     const xhigh = readyCapability("session", [{ modelId: "gpt-b" }], {
       fetchedAt: FETCHED,
       efforts: { status: "known", options: [{ id: "xhigh", name: "xhigh", source: "adapter" }] },
     });
     await wrapper.setProps({ state: xhigh, model: "gpt-b" });
-    expect(wrapper.findAll('[data-test="effort-option"]').map((option) => option.attributes("value"))).toEqual(["xhigh"]);
+    expect(wrapper.findAll('[data-test="effort-option"]').map((option) => option.attributes("data-value"))).toEqual(["", "xhigh"]);
 
     const failed = errorCapability(
       { code: "transport", message: "offline" },
@@ -129,7 +131,7 @@ describe("ModelPicker", () => {
     const merged = mergeEffortRefresh(xhigh, failed);
     expect(merged.efforts).toEqual(xhigh.efforts);
     await wrapper.setProps({ state: failed, carriedEfforts: xhigh.efforts.status === "known" ? xhigh.efforts.options : [] });
-    expect(wrapper.findAll('[data-test="effort-option"]').map((option) => option.attributes("value"))).toEqual(["xhigh"]);
+    expect(wrapper.findAll('[data-test="effort-option"]').map((option) => option.attributes("data-value"))).toEqual(["", "xhigh"]);
     expect(wrapper.get('[data-test="model-picker-reason"]').text()).toContain("offline");
   });
 });

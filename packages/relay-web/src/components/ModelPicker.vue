@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { AgentCapabilityState, CapabilityModel, SelectionEffect } from "@ganglion/xacpx-relay-protocol";
 import { classifySelection } from "@ganglion/xacpx-relay-protocol";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 const props = withDefaults(defineProps<{
   state: { status: "loading" } | AgentCapabilityState;
@@ -44,6 +45,14 @@ const effortOptions = computed(() => {
   }
   return props.carriedEfforts ?? [];
 });
+const effortGroups = computed<SelectGroup[]>(() => [
+  {
+    options: [
+      { value: "", label: t("capability.effortDefault"), testId: "effort-option" },
+      ...effortOptions.value.map((option) => ({ value: option.id, label: option.name, testId: "effort-option" })),
+    ],
+  },
+]);
 const appliedModelId = computed(() => settled.value?.status === "ready" ? settled.value.appliedModelId : undefined);
 const effect = computed((): SelectionEffect => classifySelection({
   selectedModelId: props.model,
@@ -95,8 +104,8 @@ function onCustom(event: Event): void {
   emit("update:model", (event.target as HTMLInputElement).value);
   open.value = true;
 }
-function onEffort(event: Event): void {
-  emit("update:effort", (event.target as HTMLInputElement).value);
+function onEffort(value: string): void {
+  emit("update:effort", value);
 }
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === "Escape" && open.value) {
@@ -137,47 +146,48 @@ function onKeydown(event: KeyboardEvent): void {
           @input="onCustom"
           @keydown="onKeydown"
         />
-        <ul v-if="open" :data-test="listTestId" class="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-lg bg-raised py-1 shadow-float">
-          <li data-test="model-picker-default" class="cursor-pointer px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @mousedown.prevent="pickModel('')">
-            {{ t("capability.defaultModel") }}
+        <ul v-if="open" :data-test="listTestId" class="absolute z-30 mt-1 max-h-80 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float">
+          <li>
+            <button type="button" data-test="model-picker-default" class="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-fg-muted hover:bg-surface-2" @mousedown.prevent="pickModel('')">
+              {{ t("capability.defaultModel") }}
+            </button>
           </li>
-          <li
-            v-for="entry in adapterModels"
-            :key="entry.modelId"
-            data-test="model-option"
-            :data-model-id="entry.modelId"
-            class="cursor-pointer px-3 py-1.5 text-sm text-fg hover:bg-fg/5"
-            @mousedown.prevent="pickModel(entry.modelId)"
-          >
-            <span class="block truncate">{{ entry.name }}</span>
-            <span v-if="entry.name !== entry.modelId" class="block truncate text-xs text-fg-muted">{{ entry.modelId }}</span>
+          <li v-for="entry in adapterModels" :key="entry.modelId">
+            <button type="button"
+                data-test="model-option"
+                :data-model-id="entry.modelId"
+                class="flex min-h-8 w-full flex-col items-start justify-center rounded-sm px-2 py-1 text-left text-sm text-fg hover:bg-surface-2"
+                @mousedown.prevent="pickModel(entry.modelId)"
+            >
+              <span class="block truncate">{{ entry.name }}</span>
+              <span v-if="entry.name !== entry.modelId" class="block truncate font-mono text-xs text-fg-muted">{{ entry.modelId }}</span>
+            </button>
           </li>
-          <li
-            v-for="entry in suggestions"
-            :key="`suggestion:${entry.modelId}`"
-            data-test="model-suggestion"
-            :data-model-id="entry.modelId"
-            class="cursor-pointer px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5"
-            @mousedown.prevent="pickModel(entry.modelId)"
-          >
-            {{ entry.modelId }}
-            <span class="ml-2 text-xs">{{ t("capability.suggestion") }}</span>
+          <li v-if="suggestions.length" class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ t("capability.suggestion") }}</li>
+          <li v-for="entry in suggestions" :key="`suggestion:${entry.modelId}`">
+            <button type="button"
+                data-test="model-suggestion"
+                :data-model-id="entry.modelId"
+                class="flex h-8 w-full items-center rounded-sm px-2 text-left font-mono text-ui text-fg hover:bg-surface-2"
+                @mousedown.prevent="pickModel(entry.modelId)"
+            >
+              {{ entry.modelId }}
+            </button>
           </li>
         </ul>
       </div>
       <div v-if="showEffort">
         <label class="mb-1.5 block text-xs font-medium text-fg-muted" for="model-picker-effort">{{ t("capability.efforts") }}</label>
-        <select
+        <SelectMenu
           v-if="effortOptions.length"
           id="model-picker-effort"
           data-test="model-picker-effort"
-          :value="effort"
-          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
-          @change="onEffort"
-        >
-          <option value="">{{ t("capability.effortDefault") }}</option>
-          <option v-for="option in effortOptions" :key="option.id" data-test="effort-option" :value="option.id">{{ option.name }}</option>
-        </select>
+          :model-value="effort"
+          :aria-label="t('capability.efforts')"
+          :title="t('capability.efforts')"
+          :groups="effortGroups"
+          @update:model-value="onEffort"
+        />
         <input
           v-else
           id="model-picker-effort"
@@ -185,7 +195,7 @@ function onKeydown(event: KeyboardEvent): void {
           :value="effort"
           class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
           :placeholder="t('capability.effortDefault')"
-          @input="onEffort"
+          @input="onEffort(($event.target as HTMLInputElement).value)"
         />
       </div>
     </div>

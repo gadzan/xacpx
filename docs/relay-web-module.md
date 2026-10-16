@@ -145,6 +145,28 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   新增结果报告区（结束后 markdown、运行中 mono 尾行），仅在既无子步骤也无委派/输出时才显示空态占位。轮播尊重
   `prefers-reduced-motion`，弹窗支持焦点圈定、Esc 和点击遮罩关闭。
 
+## 统一下拉框（`useDropdown` + `DropdownPanel` / `SelectMenu`）
+
+所有下拉（表单字段、行内文字触发器、图标 `⋯` 菜单）共用一套样式与交互，替代此前的原生 `<select>`
+与各处自制菜单：
+
+- `src/lib/use-dropdown.ts` ——  composable：`open`/`highlight`/`query`、`toggle`/`closeMenu`、
+  `navigate(count)`，document `pointerdown` 点外部关闭（排除触发器）、`Esc` 关闭并把焦点还给触发器、
+  同时只开一个（打开新的会关掉旧的）。触发器自己管 `aria-haspopup` / `aria-expanded`。
+- `src/components/DropdownPanel.vue` —— 浮层容器：`rounded-lg shadow-float` 无边框 `p-1`；主内容区
+  `bg-surface`（prop `tone="raised"` 时侧栏内 `bg-raised`）；行 `h-8 rounded-sm text-sm px-2`、
+  hover `bg-surface-2`，选中 = 右侧 accent `Check` + `font-medium`（不整行染色），危险项
+  `text-danger hover:bg-danger/10`，分组标签 `text-xs text-fg-muted`（不大写）；`>7` 项顶部搜索框。
+  `<lg` 时同样内容渲染进 `MobileSheet`（行高 `h-11`，`sheet-test-id` 可与桌面面板区分，
+  `sheet-z` 供对话框内嵌套使用）。
+- `src/components/SelectMenu.vue` —— 表单字段触发器（`bg-surface-2 rounded-lg h-9 text-sm`，替换全部
+  原生 `<select>`）：`groups`/`modelValue`/`placeholder`，选中值不在选项里时显示 placeholder（老
+  `<select>` 的首个 disabled 项语义）；选项行带 `data-value`，可带 `testId` 供测试定位。
+- 行内文字触发器 = `text-xs text-fg-muted` + `ChevronDown`（展开 `rotate-180`）；图标触发器
+  `h-6 w-6`（触屏 `h-10`）。`<lg` 的 `MobileSheet` 行不显示常驻高亮（当前项只有 ✓，hover/键盘高亮不上色），只保留按压反馈 `active:bg-surface-2`。
+- `src/components/Tooltip.vue` —— hover 300ms / 键盘聚焦显示、触屏 2s 的提示气泡
+  （`bg-fg text-bg text-xs rounded-sm px-2 py-1`），用于冷会话指示器等（SVG `title` 触屏不显示，已移除）。
+
 ## Composer 的模型与 effort 控件
 
 - 会话切换时 `session-controls` store 并行读取 `control.session.model.get` 与
@@ -229,12 +251,11 @@ effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合�
   仍可秒开首屏；仅删除会话与 logout 清缓存，见下文「IndexedDB 会话尾部缓存」）。
 - **冷会话指示器**：`SessionDto` 可选字段 `warm?: boolean`（实例侧 `SessionWarmthTracker` 60s 轮询
   queue-owner lock pid，温度翻转时推 `sessions-changed`，见 [docs/control-module.md](control-module.md)）。
-  仅「醒着且 `warm === false`」的会话行显示 `Unplug` 小图标（`data-test="cold-indicator"`，
-  title = `instance.sessionColdTitle`：进程已退出，下条消息将冷启动）；`warm` 缺失（老实例）或已睡眠
-  的行不显示。Hub 对 RPC 响应透传，老实例无需升级即可兼容。冷会话行为**两行结构**：主行会话名
-  （`text-sm`，不再是 `text-ui`），副行 `Unplug` + 可见副标题（`data-test="session-cold-subtitle"`，
-  `instance.sessionColdSubtitle`：未运行 · 下条消息将冷启动，`text-xs text-fg-muted`，`truncate` 截断）；
-  `SessionDto` 没有活动时间戳，其他状态不编造副行。
+  仅「醒着且 `warm === false`」的会话行在名称后显示 12px `Unplug` 图标（`data-test="cold-indicator"`），
+  理由放在新增的 `Tooltip.vue`（`bg-fg text-bg text-xs rounded-sm px-2 py-1`，hover 300ms / 键盘聚焦显示，
+  触屏点按显示 2s 后消失）里，文案 `instance.sessionColdTooltip`；`warm` 缺失（老实例）或已睡眠的行不显示。
+  Hub 对 RPC 响应透传，老实例无需升级即可兼容。冷会话行**单行**：名称 + Unplug，无副标题文字
+  （SVG `title` 在触屏上不显示，已全部移除）。
 - **打开终端指示器**：会话行不另占标题空间。`center-tabs` 里该会话仍挂着 Terminal tab 时，在
   左侧 Agent 图标右下角叠一个极小的 `SquareTerminal` 角标（`data-test="terminal-open-marker"`，
   title = `instance.sessionTerminalOpenTitle`）。切到其他会话时角标留在原行；关掉该 tab、睡眠或
@@ -258,17 +279,25 @@ effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合�
   响应式镜像在 instances store（`groupModeFor`/`setGroupMode`），改动即时生效。
 - **组由活跃 session 派生**（不读 workspaces/agents 目录），按服务器首现顺序排列；组内 active
   保持顺序。分组模式下**取消 10 行截断**（组折叠即长度控制，折叠为会话内状态、不持久化）。
-- **分组模式的睡眠会话按组分页加载**：每组底部有「显示已睡眠会话」开关，首次展开时经
-  `control.sessions.list {archivedOnly, workspace|agent, offset, limit:5}` 拉第一页，组内「加载更多」
-  每次追加一页直到 `hasMore=false`，可再次点击隐藏（缓存保留）。睡眠行排在该组活跃会话下方置灰。
-  组状态存 `InstanceView.groupArchived`（键 `${mode}:${groupKey}`，不并入 `inst.sessions`、不喂
-  `reconcileTailCache`），`sessions-changed`/archive/unarchive 只刷新已加载的组。最后一个活跃会话
-  被睡眠后，已加载过睡眠页的组仍保留显示。**平铺模式保持实例级一次性快照开关**（footer 按钮），
-  实例级「加载更多」在所有模式下保留（活跃列表超一页时的唯一入口）。
+- **睡眠会话只有一个实例级开关**：tab 行右侧筛选图标菜单（`Filter` 图标触发，勾选「已睡眠会话」
+  `instance.sleepingSessions`，开启时图标带 accent 圆点）在平铺与分组模式下都显示、都生效。
+  平铺模式开启时加载实例级睡眠快照；分组模式开启时为每个组经
+  `control.sessions.list {archivedOnly, workspace|agent, offset, limit:5}` 拉第一页，睡眠行显示在
+  **每个组内**、排在该组活跃会话下方置灰；还有更多时组底部只有**一个**「加载更多」，每次追加一页直到
+  `hasMore=false`。**组内不再有单独的睡眠开关**。关闭开关即隐藏（缓存保留）；开关开启时切换分组方式
+  或出现新组会补拉缺失的组。组状态存 `InstanceView.groupArchived`（键 `${mode}:${groupKey}`，不并入
+  `inst.sessions`、不喂 `reconcileTailCache`），`sessions-changed`/archive/unarchive 只刷新已加载的组。
+  开关开启时，最后一个活跃会话被睡眠后已加载过睡眠页的组仍保留显示。
+  实例级「加载更多」在所有模式下保留（活跃列表超一页时的唯一入口，`w-full h-8 rounded-lg text-ui
+  text-accent` 居中，`hover:bg-surface-2`）。
 - **会话列表自动加载**：进入页面、浏览器重连、实例从离线变在线时，自动为所有在线实例加载会话
   列表（`loadSessionsForOnlineInstances`）；手动「加载会话」按钮保留为失败兜底。
 - **视觉**：实例=浅色卡片、组=更浅一层的底色块 + 极小缩进（tinted-zone，三种模式视觉同构）。组头 =
   折叠箭头 + 类型图标（workspace→文件夹 / agent→品牌图标）+ 名称 + 计数；agent 分组下行内品牌图标去除。
+  所有折叠行（实例、组、已禁用 Bot 组）统一一个 `ChevronRight` + `rotate-90` + `transition 150ms`，
+  不再两图标切换；「已禁用」Bot 组作为分组标题行排在启用 Bot 列表下方。
+- **选中态**（会话行 / Bot 行）：只有 `bg-accent-soft` + 名称 `font-semibold text-accent`，左侧 3px
+  accent 条已移除；未选中行 hover `bg-surface-2`。
 - **前缀去重**（仅展示层）：workspace 组内剥掉 `<组名>-` 前缀、agent 组内剥掉 `-<组名>` 后缀
   （对应 `<workspace>-<agent>` 自动 alias），hover title 恒为全名；剥空则不剥。
 - **组头悬停 ＋**（触屏常显）打开 `NewSessionDialog` 并预填本组 workspace/agent
@@ -462,6 +491,9 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 
 - `src/api/client.ts` —— REST 客户端（登录、`/api/instances`、`/api/instances/:id/rpc` 代理调用、历史）；
 - `src/lib/render-markdown.ts` —— 净化版流式 markdown 渲染（markdown-it + remend + DOMPurify）；
+- `src/lib/use-dropdown.ts` —— 统一下拉框 composable（开关、键盘导航、外部点击/Esc 关闭、焦点归还；keydown 走捕获阶段，Esc 只关下拉不关宿主对话框；桌面面板在 Tab 把焦点移出触发器+面板时关闭）；
+- `src/components/DropdownPanel.vue`、`SelectMenu.vue`、`Tooltip.vue` —— 统一下拉浮层 / 表单字段下拉 /
+  hover 提示（见「统一下拉框」一节）；
 - `src/api/events.ts` —— WS 客户端（`connectEvents` → `/ws`，自动重连）；
 - `src/stores/auth.ts` —— 登录态；`src/stores/instances.ts` —— 实例/会话树 + `applyEvent`；
   `src/stores/chat.ts` —— 聊天流、NUL-key 流式缓冲、`error`、`loadHistory`/`loadOlder`/`ensureFullMessage`/`send` + `applyEvent`；
@@ -840,12 +872,13 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   - 客户端生成稳定的 `requestId`，发送失败或超时重试时复用原 `requestId` 保持幂等；
   - active Run 运行时提供 Stop 按钮，调用 `control.runs.cancel({ runId })` 精确取消当前 Run。
 
-### Group 话题切换（`TopicSwitcher.vue`）
+### 话题切换（`TopicSwitcher.vue`，群聊与 Bot 页共用）
 
 - `GroupPane` 只有一条顶栏：群组名下方是可点的当前话题副标题（纯文字 + `ChevronDown`，无 pill 底色，hover/press `bg-surface-2`），原第二行 `TopicManager` 与 meta 行里重复的话题名都已删除。桌面顶栏因此改为不透明 `bg-surface`：`backdrop-filter` 祖先会成为 `fixed`/`absolute` 后代的包含块，会把切换器 popover、确认框和行菜单一起困在几十 px 高的顶栏里。
 - 点副标题：`<lg` 打开 `MobileSheet`「切换话题」（`mobileBar.switchTopic`），≥lg 打开锚在触发器下方的 popover（`shadow-float rounded-lg bg-surface`）。两者内容一致：搜索框、话题列表、底部「+ 新建话题」（`bot.topic.new`）。行点选即切换并关闭；当前行 `bg-accent/10`；已收起 / 删除中的话题保留弱化图标。
 - 行内操作收在每行尾部 `⋯`（`ContextMenu`）：重命名（行内表单）、收起 / 恢复、删除 / 清空（默认话题只给清空）。删除与清空先 `topics.preview` 预览外部绑定与 worktree：有绑定未确认、或有未结束 worktree 时禁止提交；确认框沿用居中 / 底部 sheet 既有样式。打开按钮必须带 `@click.stop`：打开瞬间的那次点击会在监听器挂上后继续冒泡到 document，把自己关掉（`FilesPanel` 的根菜单同理）。
-- 动作状态机抽到 `lib/use-topic-actions.ts`，`TopicManager`（Bot 桌面第二行）与 `TopicSwitcher` 共用；`handlers` 在调用时读取，prop 更新能被拿到。Bot 桌面仍保留 `TopicManager` 第二行，Bot 移动端话题 sheet 仍在 `DirectBotPane` 内，本轮未改。
+- 动作状态机在 `lib/use-topic-actions.ts`；`handlers` 在调用时读取，prop 更新能被拿到。触发器在当前话题已收起 / 删除中时于标题后显示状态文字。
+- **Bot 页（`DirectBotPane`）复用同一个 `TopicSwitcher`**（`variant="direct"`，只改测试钩子：`topic-menu` / `new-topic-button` / `bot-topic-sheet`）：桌面放在顶栏 meta 行最前（「Default ⌄ · 角色 · 工作区 · agent · 模型」），popover 左对齐在触发器下方；移动端是顶栏副标题（无活跃话题时 `fallbackLabel` 显示角色 / agent），打开与群聊一致的 sheet。旧的 `TopicManager` 第二行（行内「重命名 / 收起 / 删除」、右侧独立「新建话题」）与 Bot 自制话题 sheet 已删除；「新建话题」只在面板底部，点击后焦点先回到触发器，再打开新建对话框（关闭对话框时焦点回到触发器）。Bot 桌面顶栏同样改为不透明 `bg-surface`（原因同上）。搜索框遵循统一下拉规则：话题 >7 条才出现。
 
 ### 断线与重连恢复
 

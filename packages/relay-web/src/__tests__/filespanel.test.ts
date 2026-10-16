@@ -372,16 +372,21 @@ describe("FilesPanel navigation rail", () => {
     files.workspace = "ws";
     files.tab = "changes";
     files.diff = { workspace: "ws", files: [], diff: "", truncated: false } as never;
+    const checkout = vi.spyOn(git, "checkout").mockResolvedValue({ ok: true });
+    vi.spyOn(files, "loadDiff").mockResolvedValue();
+    // Let the workspace watcher's refresh settle first: its mocked git-status reply
+    // has no branch, so it would otherwise clobber the seeded status below.
+    await flushPromises();
     git.status = {
       workspace: "ws", branch: "main", detached: false, ahead: 0, behind: 0,
       worktree: { root: "/repo", linked: false }, files: [],
       branches: [{ name: "main", current: true }, { name: "feature", current: false }], worktrees: [],
     } as never;
-    const checkout = vi.spyOn(git, "checkout").mockResolvedValue({ ok: true });
-    vi.spyOn(files, "loadDiff").mockResolvedValue();
     await w.vm.$nextTick();
 
-    await w.find('[data-test="git-branch-select"]').setValue("feature");
+    // The branch picker is the unified compact SelectMenu: open, then pick the row.
+    await w.find('[data-test="git-branch-select"]').trigger("click");
+    await w.find('[data-value="feature"]').trigger("click");
     await flushPromises();
 
     expect(checkout).toHaveBeenCalledWith("i1", "ws", { branch: "feature" });

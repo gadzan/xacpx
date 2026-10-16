@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, ChevronDown, MoreHorizontal, Plus, RotateCcw } from "lucide-vue-next";
+import { Archive, Check, ChevronDown, MoreHorizontal, Plus, RotateCcw } from "lucide-vue-next";
 import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu.vue";
-import MobileSheet from "./MobileSheet.vue";
+import DropdownPanel from "./DropdownPanel.vue";
+import { useDropdown } from "../lib/use-dropdown";
 import { useTopicActions } from "../lib/use-topic-actions";
 
 const props = defineProps<{
@@ -16,27 +17,23 @@ const props = defineProps<{
   restoreTopic: (topicId: string) => Promise<void>;
   teardownTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
   clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
+  /** Which page hosts the switcher: only changes the test hooks (group chat vs Bot page). */
+  variant?: "group" | "direct";
+  /** Pill text while no topic is active (default: the 「Default」 topic label). */
+  fallbackLabel?: string;
 }>();
 const emit = defineEmits<{ select: [topicId: string]; create: [] }>();
 
-// pendingId stays inside the composable: the switcher's actions live in a row menu, not
-// in inline per-row buttons, so nothing renders a pending state.
 const { editingId, draftTitle, actionError, confirmKind, confirmImpact, releaseBindings, confirming, confirmBlocked,
-  startRename, saveRename, archive, restore, openConfirm, closeConfirm, submitConfirm } = useTopicActions(props);
+  statusLabel, startRename, saveRename, archive, restore, openConfirm, closeConfirm, submitConfirm } = useTopicActions(props);
 
 const { t } = useI18n();
-const open = ref(false);
+const dd = useDropdown();
 const query = ref("");
 const rowMenu = ref<{ x: number; y: number; topic: TopicSummaryDto } | null>(null);
-// The pill renders a bottom sheet below lg and an anchored popover above it. The two trees
-// differ structurally (not just in CSS), so the breakpoint has to be a JS flag rather than
-// a media query; keep it in sync with the Tailwind `lg` breakpoint.
-const isMobile = ref(typeof window !== "undefined" && window.innerWidth < 1024);
-function onResize(): void { isMobile.value = window.innerWidth < 1024; }
-onMounted(() => window.addEventListener("resize", onResize));
-onBeforeUnmount(() => window.removeEventListener("resize", onResize));
 
 const active = computed(() => props.topics.find((topic) => topic.id === props.activeTopicId) ?? null);
+const direct = computed(() => props.variant === "direct");
 const visible = computed(() => {
   const needle = query.value.trim().toLowerCase();
   return props.topics.filter((topic) => {
@@ -46,7 +43,7 @@ const visible = computed(() => {
 });
 
 function closePanel(): void {
-  open.value = false;
+  dd.closeMenu();
   query.value = "";
   rowMenu.value = null;
 }
@@ -54,6 +51,14 @@ function closePanel(): void {
 function selectTopic(topic: TopicSummaryDto): void {
   emit("select", topic.id);
   closePanel();
+}
+
+// 「新建话题」 lives only at the panel bottom: close the panel and park focus on the
+// pill first, so the New Topic dialog restores focus there (the row button is gone).
+function createTopic(): void {
+  closePanel();
+  dd.trigger?.focus();
+  emit("create");
 }
 
 function openRowMenu(topic: TopicSummaryDto, event: MouseEvent): void {
@@ -98,102 +103,62 @@ async function submitRowConfirm(): Promise<void> {
   <div class="relative min-w-0">
     <button
       type="button"
-      data-test="group-topic-pill"
+      :data-test="direct ? 'topic-menu' : 'group-topic-pill'"
+      :ref="(el) => (dd.trigger = el as HTMLElement | null)"
       :data-topic-status="active?.status ?? 'active'"
-      :aria-expanded="open"
-      class="flex min-w-0 items-center gap-1 rounded-sm px-1 text-left text-xs text-fg-muted transition-colors hover:bg-surface-2 active:bg-surface-2"
-      @click="open = !open"
+      :aria-haspopup="true"
+      :aria-expanded="dd.open"
+      class="flex min-w-0 items-center gap-1 rounded-sm px-1 text-left text-xs transition-colors"
+      :class="dd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+      @click="dd.toggle()"
     >
-      <span class="truncate">{{ active?.title || $t("bot.topic.default") }}</span>
-      <ChevronDown :size="12" class="shrink-0" />
+      <span class="truncate">{{ active?.title || fallbackLabel || $t("bot.topic.default") }}</span>
+      <span v-if="active && statusLabel(active)" data-test="topic-pill-status" class="shrink-0 text-fg-muted">{{ statusLabel(active) }}</span>
+      <ChevronDown :size="12" class="shrink-0 transition-transform" :class="dd.open ? 'rotate-180' : ''" />
     </button>
 
-    <MobileSheet v-if="open && isMobile" :title='$t("mobileBar.switchTopic")' test-id="group-topic-sheet" @close="closePanel">
-      <div class="p-2">
-        <input
-          v-model="query"
-          type="search"
-          data-test="topic-search"
-          :placeholder="$t('bot.topic.search')"
-          class="w-full rounded-sm bg-surface-2 px-2 py-1 text-xs outline-none"
-        />
-      </div>
-      <ul class="p-1">
-        <li v-if="visible.length === 0" class="px-2 py-3 text-xs text-fg-muted">{{ $t("bot.topic.empty") }}</li>
-        <li
-          v-for="topic in visible"
-          :key="topic.id"
-          data-test="topic-row"
-          :data-topic-id="topic.id"
-          :data-topic-status="topic.status"
-          class="min-h-12 rounded-sm px-2 py-1.5 text-sm"
-          :class="[topic.id === activeTopicId ? 'bg-accent/10' : '', topic.status === 'archived' ? 'text-fg-muted' : '']"
-        >
-          <div class="flex items-center gap-1">
+    <!-- One panel (unified §F): popover on desktop, MobileSheet below lg. Rows are
+         caller-rendered (status glyph, trailing ⋯, inline rename form). -->
+    <DropdownPanel :dd="dd" tone="surface" width="w-80" placement="bottom"
+                   :title='$t("mobileBar.switchTopic")' :test-id="'topic-panel'" :sheet-test-id="direct ? 'bot-topic-sheet' : 'group-topic-sheet'"
+                   :searchable="topics.length > 7" :nav-count="visible.length"
+                   v-model:query="query"
+                   @navigate="(i) => selectTopic(visible[i]!)">
+      <template #default="{ mobile }">
+        <p v-if="!visible.length" class="px-2 py-3 text-sm text-fg-muted">{{ $t("bot.topic.empty") }}</p>
+        <div v-for="(topic, i) in visible" :key="topic.id"
+             data-test="topic-row" :data-topic-id="topic.id" :data-topic-status="topic.status"
+             class="group/row">
+          <div class="flex items-center gap-1 rounded-sm px-2 py-1.5 text-sm"
+               :class="[mobile ? 'min-h-11' : 'h-8',
+                        topic.id === activeTopicId ? 'font-medium text-fg' : 'text-fg',
+                        topic.status === 'archived' ? 'text-fg-muted' : '',
+                        !mobile && i === dd.highlight ? 'bg-surface-2' : '']">
             <button type="button" class="min-w-0 flex-1 truncate text-left" @click="selectTopic(topic)">
               {{ topic.title || $t("bot.topic.default") }}
             </button>
             <Archive v-if="topic.status === 'archived'" :size="12" class="shrink-0 text-fg-muted" />
             <RotateCcw v-if="topic.status === 'deleting'" :size="12" class="shrink-0 text-fg-muted" />
+            <Check v-if="topic.id === activeTopicId" :size="14" class="ml-auto shrink-0 text-accent" />
             <button type="button" data-test="topic-row-more" :aria-label="$t('common.more')"
                     class="shrink-0 rounded-sm p-1 text-fg-muted transition-colors hover:bg-surface-2"
+                    :class="[topic.id === activeTopicId ? '' : 'ml-auto',
+                             mobile ? '' : 'opacity-0 group-hover/row:opacity-100',
+                             i === dd.highlight && !mobile ? 'opacity-100' : '']"
                     @click.stop="openRowMenu(topic, $event)"><MoreHorizontal :size="14" /></button>
           </div>
-          <form v-if="editingId === topic.id" class="mt-1 flex gap-1" @submit.prevent="saveRename(topic)">
+          <form v-if="editingId === topic.id" class="mt-1 flex gap-1 px-2" @submit.prevent="saveRename(topic)">
             <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded-sm bg-surface-2 px-1 py-0.5 text-xs" />
             <button type="submit" data-test="topic-rename-save" class="rounded-sm bg-accent px-2 py-0.5 text-xs text-on-accent">{{ $t("bot.topic.save") }}</button>
           </form>
-        </li>
-      </ul>
-      <p v-if="actionError" data-test="topic-action-error" class="px-2 py-1 text-xs text-danger">{{ actionError }}</p>
-      <button type="button" data-test="group-new-topic-button"
-              class="flex min-h-12 items-center gap-2 rounded-sm px-2 py-2 text-left text-sm text-accent transition-colors hover:bg-surface-2"
-              @click="emit('create'); closePanel()"><Plus :size="14" class="shrink-0" /><span>{{ $t("bot.topic.new") }}</span></button>
-    </MobileSheet>
-
-    <div v-else-if="open" data-test="topic-panel"
-         class="absolute left-0 top-full z-30 mt-1 flex max-h-96 w-80 flex-col rounded-lg bg-surface p-1 shadow-float">
-      <div class="p-2">
-        <input
-          v-model="query"
-          type="search"
-          data-test="topic-search"
-          :placeholder="$t('bot.topic.search')"
-          class="w-full rounded-sm bg-surface-2 px-2 py-1 text-xs outline-none"
-        />
-      </div>
-      <ul class="min-h-0 flex-1 overflow-y-auto p-1">
-        <li v-if="visible.length === 0" class="px-2 py-3 text-xs text-fg-muted">{{ $t("bot.topic.empty") }}</li>
-        <li
-          v-for="topic in visible"
-          :key="topic.id"
-          data-test="topic-row"
-          :data-topic-id="topic.id"
-          :data-topic-status="topic.status"
-          class="rounded-sm px-2 py-1.5 text-sm"
-          :class="[topic.id === activeTopicId ? 'bg-accent/10' : '', topic.status === 'archived' ? 'text-fg-muted' : '']"
-        >
-          <div class="flex items-center gap-1">
-            <button type="button" class="min-w-0 flex-1 truncate text-left" @click="selectTopic(topic)">
-              {{ topic.title || $t("bot.topic.default") }}
-            </button>
-            <Archive v-if="topic.status === 'archived'" :size="12" class="shrink-0 text-fg-muted" />
-            <RotateCcw v-if="topic.status === 'deleting'" :size="12" class="shrink-0 text-fg-muted" />
-            <button type="button" data-test="topic-row-more" :aria-label="$t('common.more')"
-                    class="shrink-0 rounded-sm p-1 text-fg-muted transition-colors hover:bg-surface-2"
-                    @click.stop="openRowMenu(topic, $event)"><MoreHorizontal :size="14" /></button>
-          </div>
-          <form v-if="editingId === topic.id" class="mt-1 flex gap-1" @submit.prevent="saveRename(topic)">
-            <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded-sm bg-surface-2 px-1 py-0.5 text-xs" />
-            <button type="submit" data-test="topic-rename-save" class="rounded-sm bg-accent px-2 py-0.5 text-xs text-on-accent">{{ $t("bot.topic.save") }}</button>
-          </form>
-        </li>
-      </ul>
-      <p v-if="actionError" data-test="topic-action-error" class="px-2 py-1 text-xs text-danger">{{ actionError }}</p>
-      <button type="button" data-test="group-new-topic-button"
-              class="flex items-center gap-2 rounded-sm px-2 py-2 text-left text-sm text-accent transition-colors hover:bg-surface-2"
-              @click="emit('create'); closePanel()"><Plus :size="14" class="shrink-0" /><span>{{ $t("bot.topic.new") }}</span></button>
-    </div>
+        </div>
+        <p v-if="actionError" data-test="topic-action-error" class="px-2 py-1 text-xs text-danger">{{ actionError }}</p>
+        <button type="button" :data-test="direct ? 'new-topic-button' : 'group-new-topic-button'"
+                class="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm text-accent transition-colors hover:bg-surface-2"
+                :class="mobile ? 'min-h-11' : 'h-8'"
+                @click="createTopic"><Plus :size="14" class="shrink-0" /><span>{{ $t("bot.topic.new") }}</span></button>
+      </template>
+    </DropdownPanel>
 
     <ContextMenu v-if="rowMenu" :x="rowMenu.x" :y="rowMenu.y" :items="rowMenuItems"
                  @select="onRowMenuSelect" @close="rowMenu = null" />

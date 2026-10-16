@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { ref } from "vue";
 import { Plus } from "lucide-vue-next";
 import AgentIcon from "./AgentIcon.vue";
+import DropdownPanel from "./DropdownPanel.vue";
+import { useDropdown } from "../lib/use-dropdown";
 
 /** One row of the recent-sessions list. Identity is (instanceId, alias). */
 export interface RecentSessionItem {
@@ -29,28 +31,20 @@ const emit = defineEmits<{
   create: [instanceId: string];
 }>();
 
-const root = ref<HTMLElement | null>(null);
-const pickerOpen = ref(false);
+const pickerDd = useDropdown();
 
 function onCreate(): void {
   if (props.instances.length === 1) emit("create", props.instances[0]!.id);
-  else if (props.instances.length > 1) pickerOpen.value = !pickerOpen.value;
+  else if (props.instances.length > 1) pickerDd.toggle();
 }
 function onPick(instanceId: string): void {
-  pickerOpen.value = false;
+  pickerDd.closeMenu();
   emit("create", instanceId);
 }
-function onDocumentMouseDown(e: MouseEvent): void {
-  if (!pickerOpen.value) return;
-  const target = e.target as Node | null;
-  if (target && root.value && !root.value.contains(target)) pickerOpen.value = false;
-}
-onMounted(() => document.addEventListener("mousedown", onDocumentMouseDown));
-onUnmounted(() => document.removeEventListener("mousedown", onDocumentMouseDown));
 </script>
 
 <template>
-  <div ref="root" data-test="empty-session-state"
+  <div data-test="empty-session-state"
        class="flex h-full flex-col items-center justify-center gap-6 p-8">
     <h2 data-test="empty-state-title" class="text-lg font-semibold text-fg">{{ $t("chat.emptyStateTitle") }}</h2>
     <ul v-if="sessions.length" class="w-full max-w-sm space-y-1">
@@ -65,17 +59,24 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocumentMouseDown)
       </li>
     </ul>
     <div class="relative">
-      <ul v-if="pickerOpen" class="absolute bottom-full left-1/2 z-10 mb-2 w-56 -translate-x-1/2 overflow-hidden rounded-lg bg-raised py-1 shadow-float">
-        <li v-for="inst in instances" :key="inst.id">
-          <button type="button" data-test="empty-instance-option"
-                  class="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+      <DropdownPanel :dd="pickerDd" tone="surface" width="w-56" placement="top"
+                     :title='$t("instance.newSession")' test-id="empty-instance-panel"
+                     :nav-count="instances.length"
+                     @navigate="(i) => onPick(instances[i]!.id)">
+        <template #default="{ mobile }">
+          <p class="px-2 pb-1 pt-1.5 text-xs text-fg-muted">{{ $t("instance.pickInstance") }}</p>
+          <button v-for="(inst, i) in instances" :key="inst.id" type="button" data-test="empty-instance-option"
+                  class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm text-fg"
+                  :class="[mobile ? 'h-11' : 'h-8', !mobile && i === pickerDd.highlight ? 'bg-surface-2' : '']"
                   @click="onPick(inst.id)">
             <span class="h-2 w-2 shrink-0 rounded-full bg-run" aria-hidden="true" />
             <span class="min-w-0 truncate">{{ inst.name }}</span>
           </button>
-        </li>
-      </ul>
+        </template>
+      </DropdownPanel>
       <button type="button" data-test="empty-new-session"
+              :ref="(el) => (pickerDd.trigger = el as HTMLElement | null)"
+              :aria-haspopup="true" :aria-expanded="pickerDd.open"
               class="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent shadow-float transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               :disabled="instances.length === 0"
               @click="onCreate">

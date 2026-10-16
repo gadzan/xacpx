@@ -9,6 +9,7 @@ import { useModalA11y } from "../lib/use-modal-a11y";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import type { BotAvatarState } from "../lib/bot-avatar-state";
 import ModelPicker from "./ModelPicker.vue";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import BotAvatarEditor from "./BotAvatarEditor.vue";
 
@@ -170,8 +171,20 @@ const availableAgents = computed(() => {
 });
 const avatarDriver = computed(() => availableAgents.value.find((option) => option.name === agent.value)?.driver ?? agent.value);
 
+const agentGroups = computed<SelectGroup[]>(() => [
+  {
+    options: availableAgents.value.map((a) => ({
+      value: a.name,
+      label: a.driver ? `${a.name} (${a.driver})` : a.name,
+    })),
+  },
+]);
+
 // Available workspaces from instance
 const availableWorkspaces = computed(() => inst.value?.workspaces ?? []);
+const workspaceGroups = computed<SelectGroup[]>(() => [
+  { options: availableWorkspaces.value.map((w) => ({ value: w.name, label: w.name })) },
+]);
 // Revision of the authoritative detail that the untouched fields show. A
 // summary never carries instructions, so Save stays gated while this is null.
 // Submitting then could wipe instructions the user never saw.
@@ -467,18 +480,17 @@ async function submit(): Promise<void> {
             <p v-if="identityLocked" class="mb-1.5 text-xs text-fg-muted">
               {{ $t("bot.lifecycle.identityLocked") }}
             </p>
-            <select
+            <SelectMenu
               id="bot-agent"
               v-model="agent"
-              required
-              @change="agentDirty = true"
+              data-test="bot-agent"
+              :aria-label='$t("bot.fields.agent")'
+              :title='$t("bot.fields.agent")'
+              :placeholder='$t("bot.fields.agent")'
               :disabled="identityLocked"
-              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option v-for="a in availableAgents" :key="a.name" :value="a.name">
-                {{ a.name }} {{ a.driver ? `(${a.driver})` : '' }}
-              </option>
-            </select>
+              :groups="agentGroups"
+              @update:model-value="agentDirty = true"
+            />
           </div>
 
           <!-- Workspace -->
@@ -486,18 +498,17 @@ async function submit(): Promise<void> {
             <label for="bot-workspace" class="block text-xs font-medium text-fg-muted mb-1.5">
               {{ $t("bot.fields.workspace") }} <span class="text-danger">*</span>
             </label>
-            <select
+            <SelectMenu
               id="bot-workspace"
               v-model="workspace"
-              required
+              data-test="bot-workspace"
+              :aria-label='$t("bot.fields.workspace")'
+              :title='$t("bot.fields.workspace")'
+              :placeholder='$t("bot.fields.workspace")'
               :disabled="identityLocked"
-              @change="workspaceDirty = true"
-              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option v-for="w in availableWorkspaces" :key="w.name" :value="w.name">
-                {{ w.name }}
-              </option>
-            </select>
+              :groups="workspaceGroups"
+              @update:model-value="workspaceDirty = true"
+            />
           </div>
         </div>
 

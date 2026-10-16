@@ -11,14 +11,13 @@ export interface TopicActionHandlers {
   clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
 }
 
-// Shared action state machine for the two topic surfaces: TopicManager (the desktop strip
-// under the header) and TopicSwitcher (the GroupPane header pill). Both drive the same
-// rename / archive / restore / delete / clear flow, so the state lives here once.
+// Action state machine behind TopicSwitcher, the one topic surface shared by the group
+// chat (GroupPane) and the Bot page (DirectBotPane): rename / archive / restore /
+// delete / clear.
 export function useTopicActions(handlers: TopicActionHandlers) {
   const { t } = useI18n();
   const editingId = ref<string | null>(null);
   const draftTitle = ref("");
-  const pendingId = ref<string | null>(null);
   const actionError = ref<string | null>(null);
   const confirmKind = ref<"delete" | "clear" | null>(null);
   const confirmTopicId = ref<string | null>(null);
@@ -39,15 +38,12 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     return "";
   }
 
-  async function run(topicId: string, action: () => Promise<void>): Promise<void> {
-    pendingId.value = topicId;
+  async function run(_topicId: string, action: () => Promise<void>): Promise<void> {
     actionError.value = null;
     try {
       await action();
     } catch (error: unknown) {
       actionError.value = error instanceof Error ? error.message : String(error);
-    } finally {
-      pendingId.value = null;
     }
   }
 
@@ -123,7 +119,6 @@ export function useTopicActions(handlers: TopicActionHandlers) {
   return {
     editingId,
     draftTitle,
-    pendingId,
     actionError,
     confirmKind,
     confirmImpact,

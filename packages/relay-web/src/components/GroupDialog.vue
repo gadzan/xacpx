@@ -7,6 +7,7 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { pushToast } from "../lib/use-toasts";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 // The backend rejects a longer title or description.
 const TITLE_MAX = 80;
@@ -88,6 +89,18 @@ function botLabel(botId: string): string {
 function suggestedLead(ids: string[]): string {
   return ids.find((id) => botsById.value.get(id)?.enabled === true) ?? "";
 }
+
+const leadGroups = computed<SelectGroup[]>(() => [
+  {
+    options: [
+      { value: "", label: t("group.manage.noLead") },
+      ...memberIds.value.map((id) => ({
+        value: id,
+        label: `${botLabel(id)}${botsById.value.get(id)?.enabled === false ? ` (${t("bot.status.disabled")})` : ""}`,
+      })),
+    ],
+  },
+]);
 
 function toggleMember(botId: string): void {
   memberIds.value = memberIds.value.includes(botId)
@@ -498,18 +511,15 @@ async function confirmDelete(): Promise<void> {
             <label for="group-lead" class="mb-1.5 block text-xs font-medium text-fg-muted">
               {{ $t("group.manage.lead") }}
             </label>
-            <select
+            <SelectMenu
               id="group-lead"
               v-model="leadBotId"
               data-test="group-dialog-lead"
-              class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
-              @change="onLeadChange"
-            >
-              <option value="">{{ $t("group.manage.noLead") }}</option>
-              <option v-for="id in memberIds" :key="id" :value="id">
-                {{ botLabel(id) }}{{ botsById.get(id)?.enabled === false ? ` (${$t("bot.status.disabled")})` : "" }}
-              </option>
-            </select>
+              :aria-label='$t("group.manage.lead")'
+              :title='$t("group.manage.lead")'
+              :groups="leadGroups"
+              @update:model-value="onLeadChange"
+            />
             <p v-if="leadReassigned" data-test="group-dialog-lead-reassigned" class="mt-1 text-xs text-warn">
               {{ leadReassigned.next
                 ? $t("group.manage.leadReassigned", { previous: botLabel(leadReassigned.previous), next: botLabel(leadReassigned.next) })

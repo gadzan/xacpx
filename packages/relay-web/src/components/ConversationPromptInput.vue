@@ -466,7 +466,7 @@ function onInput(): void {
           role="listbox"
           :aria-label="$t('bot.prompt.completions')"
           data-test="direct-cmd-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-full overflow-y-auto rounded-2xl bg-raised py-1 shadow-float"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-80 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
         >
           <button
             v-for="(row, index) in rows"
@@ -476,8 +476,8 @@ function onInput(): void {
             role="option"
             :aria-selected="index === cmdActiveIdx"
             data-test="direct-cmd-item"
-            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-ui hover:bg-raised"
-            :class="index === cmdActiveIdx ? 'bg-accent-soft' : ''"
+            class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+            :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
             @pointerdown.prevent
             @click="pickRow(index)"
           >
