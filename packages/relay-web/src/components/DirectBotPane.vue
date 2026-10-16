@@ -26,7 +26,7 @@ import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
 import TopicSwitcher from "./TopicSwitcher.vue";
 import DropdownPanel from "./DropdownPanel.vue";
-import { useDropdown } from "../lib/use-dropdown";
+import { useDropdown, useIsMobile } from "../lib/use-dropdown";
 import type { DropdownGroup } from "../lib/use-dropdown";
 
 const emit = defineEmits<{
@@ -82,8 +82,8 @@ const activeSheet = ref<BotSheetId | null>(null);
 function openSheet(id: BotSheetId): void { activeSheet.value = id; }
 function closeSheet(): void { activeSheet.value = null; }
 
-/** Mobile subtitle while no topic is active: the bot's role, then its agent. */
-const mobileTopicFallback = computed(() => bot.value?.role || bot.value?.agent || "");
+/** One TopicSwitcher at a time: the mobile bar's below lg, the desktop header's from lg. */
+const isMobile = useIsMobile();
 
 function requireTopicContext(): { instanceId: string; conversationId: string } | null {
   const instanceId = directBotsStore.instanceId;
@@ -193,8 +193,8 @@ function openRemoval(): void {
       <div class="flex min-w-0 flex-1 flex-col">
         <span class="truncate text-sm font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
         <TopicSwitcher
+          v-if="isMobile"
           variant="direct"
-          :fallback-label="mobileTopicFallback"
           :topics="directBotsStore.currentTopics"
           :active-topic-id="directBotsStore.activeTopicId"
           :preview-topic="previewTopic"
@@ -239,6 +239,7 @@ function openRemoval(): void {
 
           <div class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
             <TopicSwitcher
+              v-if="!isMobile"
               variant="direct"
               :topics="directBotsStore.currentTopics"
               :active-topic-id="directBotsStore.activeTopicId"

@@ -19,8 +19,6 @@ const props = defineProps<{
   clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
   /** Which page hosts the switcher: only changes the test hooks (group chat vs Bot page). */
   variant?: "group" | "direct";
-  /** Pill text while no topic is active (default: the 「Default」 topic label). */
-  fallbackLabel?: string;
 }>();
 const emit = defineEmits<{ select: [topicId: string]; create: [] }>();
 
@@ -112,7 +110,7 @@ async function submitRowConfirm(): Promise<void> {
       :class="dd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
       @click="dd.toggle()"
     >
-      <span class="truncate">{{ active?.title || fallbackLabel || $t("bot.topic.default") }}</span>
+      <span class="truncate">{{ active?.title || $t("bot.topic.default") }}</span>
       <span v-if="active && statusLabel(active)" data-test="topic-pill-status" class="shrink-0 text-fg-muted">{{ statusLabel(active) }}</span>
       <ChevronDown :size="12" class="shrink-0 transition-transform" :class="dd.open ? 'rotate-180' : ''" />
     </button>

@@ -1382,8 +1382,9 @@ describe("Group Components", () => {
       const switchTopic = vi.spyOn(groups, "switchTopic").mockResolvedValue();
       const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
       await flushPromises();
-      // Index 0 is the mobile bar's pill (hidden below lg), index 1 the desktop header's.
-      await wrapper.findAll('[data-test="group-topic-pill"]')[1]!.trigger("click");
+      // Only the desktop header's pill is mounted from lg.
+      expect(wrapper.findAll('[data-test="group-topic-pill"]')).toHaveLength(1);
+      await wrapper.find('[data-test="group-topic-pill"]').trigger("click");
       const panel = wrapper.find('[data-test="topic-panel"]');
       expect(panel.exists()).toBe(true);
       expect(panel.find('[data-test="group-new-topic-button"]').exists()).toBe(true);
@@ -1398,7 +1399,7 @@ describe("Group Components", () => {
       const archiveTopic = vi.spyOn(groups, "archiveTopic").mockResolvedValue({} as never);
       const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
       await flushPromises();
-      await wrapper.findAll('[data-test="group-topic-pill"]')[1]!.trigger("click");
+      await wrapper.find('[data-test="group-topic-pill"]').trigger("click");
       const panel = wrapper.find('[data-test="topic-panel"]');
       await panel.findAll('[data-test="topic-row-more"]')[1]!.trigger("click");
       const menu = wrapper.find('[data-test="context-menu"]');
@@ -1415,11 +1416,41 @@ describe("Group Components", () => {
       vi.spyOn(groups, "archiveTopic").mockRejectedValue(new Error("archive blew up"));
       const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
       await flushPromises();
-      await wrapper.findAll('[data-test="group-topic-pill"]')[1]!.trigger("click");
+      await wrapper.find('[data-test="group-topic-pill"]').trigger("click");
       await wrapper.find('[data-test="topic-panel"]').findAll('[data-test="topic-row-more"]')[1]!.trigger("click");
       await wrapper.find('[data-test="menu-archive"]').trigger("click");
       await flushPromises();
       expect(wrapper.find('[data-test="topic-action-error"]').text()).toBe("archive blew up");
+    });
+
+    it("mounts exactly one TopicSwitcher per breakpoint: the header's on desktop, the mobile bar's below lg", async () => {
+      seedGroupSelection();
+      window.innerWidth = 1280;
+      const desktop = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(desktop.findAll('[data-test="group-topic-pill"]')).toHaveLength(1);
+      expect(desktop.find('header [data-test="group-topic-pill"]').exists()).toBe(true);
+      desktop.unmount();
+      window.innerWidth = 500;
+      const mobile = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(mobile.findAll('[data-test="group-topic-pill"]')).toHaveLength(1);
+      expect(mobile.find('header [data-test="group-topic-pill"]').exists()).toBe(false);
+      mobile.unmount();
+    });
+
+    it("shows Default on both mobile and desktop when no topic is active", async () => {
+      const groups = seedGroupSelection();
+      groups.activeTopicId = null;
+      for (const width of [1280, 500]) {
+        window.innerWidth = width;
+        const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+        await flushPromises();
+        const pills = wrapper.findAll('[data-test="group-topic-pill"]');
+        expect(pills).toHaveLength(1);
+        expect(pills[0]!.text()).toBe("Default");
+        wrapper.unmount();
+      }
     });
 
     it("mobile ⋯ sheet opens the group editor and ← emits back", async () => {

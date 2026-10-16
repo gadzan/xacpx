@@ -1873,8 +1873,10 @@ describe("Direct Bot Components", () => {
       window.innerWidth = 500;
       try {
         const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
-        // Index 0 is the mobile bar's pill; its label is the active topic.
-        const pill = wrapper.findAll('[data-test="topic-menu"]')[0]!;
+        // Below lg only the mobile bar's pill is mounted; its label is the active topic.
+        const pills = wrapper.findAll('[data-test="topic-menu"]');
+        expect(pills).toHaveLength(1);
+        const pill = pills[0]!;
         expect(pill.text()).toBe("Default");
         await pill.trigger("click");
         const sheet = wrapper.find('[data-test="bot-topic-sheet"]');
@@ -1898,11 +1900,60 @@ describe("Direct Bot Components", () => {
       }
     });
 
-    it("mobile bar subtitle falls back to the bot role when no topic is active", async () => {
+    it("mounts exactly one TopicSwitcher per breakpoint: the header's on desktop, the mobile bar's below lg", async () => {
+      seedBot();
+      const prevWidth = window.innerWidth;
+      try {
+        window.innerWidth = 1280;
+        const desktop = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        expect(desktop.findAll('[data-test="topic-menu"]')).toHaveLength(1);
+        expect(desktop.find('header [data-test="topic-menu"]').exists()).toBe(true);
+        desktop.unmount();
+        window.innerWidth = 500;
+        const mobile = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        expect(mobile.findAll('[data-test="topic-menu"]')).toHaveLength(1);
+        expect(mobile.find('header [data-test="topic-menu"]').exists()).toBe(false);
+        mobile.unmount();
+      } finally {
+        window.innerWidth = prevWidth;
+      }
+    });
+
+    it("swaps the mounted TopicSwitcher when the viewport crosses lg", async () => {
+      seedBot();
+      const prevWidth = window.innerWidth;
+      try {
+        window.innerWidth = 1280;
+        const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        expect(wrapper.find('header [data-test="topic-menu"]').exists()).toBe(true);
+        window.innerWidth = 500;
+        window.dispatchEvent(new Event("resize"));
+        await flushPromises();
+        expect(wrapper.findAll('[data-test="topic-menu"]')).toHaveLength(1);
+        expect(wrapper.find('header [data-test="topic-menu"]').exists()).toBe(false);
+        wrapper.unmount();
+      } finally {
+        window.innerWidth = prevWidth;
+      }
+    });
+
+    it("shows Default on both mobile and desktop when no topic is active (not the bot role)", async () => {
       seedBot();
       useDirectBotsStore().activeTopicId = null;
-      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
-      expect(wrapper.findAll('[data-test="topic-menu"]')[0]!.text()).toBe("Code QA");
+      const prevWidth = window.innerWidth;
+      try {
+        for (const width of [1280, 500]) {
+          window.innerWidth = width;
+          const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+          const pills = wrapper.findAll('[data-test="topic-menu"]');
+          expect(pills).toHaveLength(1);
+          expect(pills[0]!.text()).toBe("Default");
+          expect(pills[0]!.text()).not.toContain("Code QA");
+          wrapper.unmount();
+        }
+      } finally {
+        window.innerWidth = prevWidth;
+      }
     });
 
     it("desktop topic panel opens left-aligned under the pill, with new topic only at its bottom", async () => {
@@ -1910,7 +1961,7 @@ describe("Direct Bot Components", () => {
       const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
       // No standalone header 「新建话题」 entry any more.
       expect(wrapper.find('[data-test="new-topic-button"]').exists()).toBe(false);
-      await wrapper.findAll('[data-test="topic-menu"]')[1]!.trigger("click");
+      await wrapper.find('[data-test="topic-menu"]').trigger("click");
       const panel = wrapper.find('[data-test="topic-panel"]');
       expect(panel.exists()).toBe(true);
       expect(panel.classes()).toContain("left-0");
@@ -1931,7 +1982,7 @@ describe("Direct Bot Components", () => {
       const teardownTopic = vi.spyOn(directBots, "teardownTopic").mockResolvedValue({} as never);
       const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
       const openRowMenu = async () => {
-        if (!wrapper.find('[data-test="topic-panel"]').exists()) await wrapper.findAll('[data-test="topic-menu"]')[1]!.trigger("click");
+        if (!wrapper.find('[data-test="topic-panel"]').exists()) await wrapper.find('[data-test="topic-menu"]').trigger("click");
         await wrapper.find('[data-test="topic-panel"]').findAll('[data-test="topic-row-more"]')[1]!.trigger("click");
         return wrapper.find('[data-test="context-menu"]');
       };
@@ -2072,7 +2123,7 @@ describe("Direct Bot Components", () => {
         },
       });
       // 「新建话题」 sits at the bottom of the topic panel; the pill is the focus anchor.
-      const trigger = wrapper.findAll('[data-test="topic-menu"]')[1]!;
+      const trigger = wrapper.find('[data-test="topic-menu"]');
       (trigger.element as HTMLElement).focus();
       await trigger.trigger("click");
       await wrapper.find('[data-test="topic-panel"] [data-test="new-topic-button"]').trigger("click");
