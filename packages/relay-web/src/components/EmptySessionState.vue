@@ -67,7 +67,7 @@ function onPick(instanceId: string): void {
           <p class="px-2 pb-1 pt-1.5 text-xs text-fg-muted">{{ $t("instance.pickInstance") }}</p>
           <button v-for="(inst, i) in instances" :key="inst.id" type="button" data-test="empty-instance-option"
                   class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm text-fg"
-                  :class="[mobile ? 'h-11' : 'h-8', i === pickerDd.highlight ? 'bg-surface-2' : '']"
+                  :class="[mobile ? 'h-11' : 'h-8', !mobile && i === pickerDd.highlight ? 'bg-surface-2' : '']"
                   @click="onPick(inst.id)">
             <span class="h-2 w-2 shrink-0 rounded-full bg-run" aria-hidden="true" />
             <span class="min-w-0 truncate">{{ inst.name }}</span>

@@ -714,7 +714,7 @@ const rowSwipes = computed(() => {
                 <p class="px-2 pb-1 pt-1.5 text-xs text-fg-muted">{{ $t("instance.filterShow") }}</p>
                 <button type="button" data-test="filter-sleeping-sessions"
                         class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm font-medium text-fg"
-                        :class="[mobile ? 'h-11' : 'h-8', filterDd.highlight === 0 ? 'bg-surface-2' : '']"
+                        :class="[mobile ? 'h-11' : 'h-8', !mobile && filterDd.highlight === 0 ? 'bg-surface-2' : '']"
                         @click="void toggleArchived(inst.id)">
                   <Moon :size="14" class="shrink-0 text-fg-muted" />
                   <span class="flex-1 truncate">{{ $t("instance.sleepingSessions") }}</span>

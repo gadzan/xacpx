@@ -163,7 +163,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   原生 `<select>`）：`groups`/`modelValue`/`placeholder`，选中值不在选项里时显示 placeholder（老
   `<select>` 的首个 disabled 项语义）；选项行带 `data-value`，可带 `testId` 供测试定位。
 - 行内文字触发器 = `text-xs text-fg-muted` + `ChevronDown`（展开 `rotate-180`）；图标触发器
-  `h-6 w-6`（触屏 `h-10`）。
+  `h-6 w-6`（触屏 `h-10`）。`<lg` 的 `MobileSheet` 行不显示常驻高亮（当前项只有 ✓，hover/键盘高亮不上色），只保留按压反馈 `active:bg-surface-2`。
 - `src/components/Tooltip.vue` —— hover 300ms / 键盘聚焦显示、触屏 2s 的提示气泡
   （`bg-fg text-bg text-xs rounded-sm px-2 py-1`），用于冷会话指示器等（SVG `title` 触屏不显示，已移除）。
 

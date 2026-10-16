@@ -127,7 +127,8 @@ function rowClass(row: DropdownRow, mobile: boolean): string {
   const hl = isHighlighted(row);
   return [
     row.selected ? "font-medium text-fg" : "text-fg",
-    hl ? "bg-surface-2" : mobile ? "" : "hover:bg-surface-2",
+    // Touch sheet: no persistent highlight (selected = ✓ only), just press feedback.
+    mobile ? "active:bg-surface-2" : hl ? "bg-surface-2" : "hover:bg-surface-2",
   ].join(" ");
 }
 
@@ -162,7 +163,7 @@ const listRole = computed(() => props.role ?? "listbox");
               :disabled="row.disabled" :aria-selected="row.selected"
               class="flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm"
               :class="rowClass(row, true)"
-              @click="activate(row)" @mouseenter="!row.disabled && (dd.highlight = navIndexOf(row))">
+              @click="activate(row)">
         <component :is="row.icon" v-if="row.icon" :size="16" class="shrink-0 text-fg-muted" />
         <span class="min-w-0 truncate" :class="row.mono ? 'font-mono text-ui' : ''">{{ row.label }}</span>
         <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted/60">{{ row.hint }}</span>
