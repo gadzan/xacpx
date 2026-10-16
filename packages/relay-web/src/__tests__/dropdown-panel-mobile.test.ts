@@ -71,6 +71,7 @@ describe("DropdownPanel mobile sheet", () => {
   it("keeps the sheet open through a tap inside it, then selects on the tap's click", async () => {
     window.innerWidth = 420;
     picked.length = 0;
+    const w = await openSheet();
     const row = document.querySelectorAll<HTMLElement>('[data-test="row"]')[1]!;
     row.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
     await nextTick();

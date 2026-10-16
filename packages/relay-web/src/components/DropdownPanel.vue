@@ -146,7 +146,7 @@ const listRole = computed(() => props.role ?? "listbox");
 
 <template>
   <!-- <lg: the same rows inside a bottom sheet (title = the dropdown's scene name). -->
-  <MobileSheet v-if="isMobile && dd.open" :title="title ?? ''" :z-class="sheetZ" :test-id="sheetTestId ?? testId" @close="dd.closeMenu()">
+  <MobileSheet v-if="isMobile && dd.open" :title="title ?? ''" :z-class="sheetZ" :test-id="sheetTestId ?? testId" dd-panel @close="dd.closeMenu()">
     <div v-if="showSearch" class="px-1 pb-1 pt-1">
       <div class="flex h-11 items-center gap-2 rounded-lg bg-surface-2 px-3">
         <Search :size="16" class="shrink-0 text-fg-muted" />
