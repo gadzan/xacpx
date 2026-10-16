@@ -552,14 +552,19 @@ export function collectEdits({ releases, versions, previousVersions }) {
  * one bullet per PR (not one per commit inside it) and assigns by the PR's own
  * file list rather than by walking the commit graph.
  *
- * A PR belongs to a package when it touched a path that differs between that
- * package's last tag and HEAD — the same evidence the release itself is based
- * on, so a PR that already shipped with an earlier tag cannot be re-attributed.
+ * A PR belongs to a package when it merged after that package's last tag *and*
+ * touched a path that changed since it. Both halves are required. The time bound
+ * is not redundant: a path can be touched again long after it last shipped, so
+ * an old PR's file list can intersect today's `changedPaths` purely because the
+ * same file shows up in both — without the bound, one release re-lists every PR
+ * that ever edited a file it happens to touch again.
  *
- * @param {{prs:Array<{number:number,title:string,mergedAt:string,files:Array<string|{path:string}>}>, changedPaths:Record<string,string[]>}} input
+ * @param {{prs:Array<{number:number,title:string,mergedAt:string,files:Array<string|{path:string}>}>, changedPaths:Record<string,string[]>, sinceById?:Record<string,number>}} input
+ *   `sinceById` maps package id -> its last tag's commit time in epoch ms; a
+ *   package absent from it has no lower bound (it has never shipped).
  * @returns {Record<string,string[]>} package id -> bullet texts, oldest PR first
  */
-export function assignPrsToPackages({ prs, changedPaths }) {
+export function assignPrsToPackages({ prs, changedPaths, sinceById = {} }) {
   const ordered = [...prs].sort((a, b) => String(a.mergedAt).localeCompare(String(b.mergedAt)));
   const byPackage = {};
   for (const id of Object.keys(changedPaths)) byPackage[id] = [];
@@ -571,12 +576,51 @@ export function assignPrsToPackages({ prs, changedPaths }) {
         .map((file) => (typeof file === "string" ? file : file?.path))
         .filter(Boolean),
     );
+    const mergedAt = Date.parse(pr.mergedAt);
     for (const [id, paths] of Object.entries(changedPaths)) {
+      const since = sinceById[id];
+      if (since !== undefined && !(mergedAt > since)) continue;
       if (!paths.some((path) => touched.has(path))) continue;
       byPackage[id].push(`${pr.title} (#${pr.number})`);
     }
   }
   return byPackage;
+}
+
+// CHANGELOG.md's own vocabulary: `### Added` / `### Fixed` / `### Changed` and
+// friends, with no conventional-commit prefixes on the bullets. Mapping the
+// type is mechanical, so the draft does it; deciding that a given feat is
+// really a "Changed" is prose work and stays with the human.
+const SECTION_ORDER = ["Added", "Changed", "Fixed", "Docs", "Tests"];
+const SECTION_FOR_TYPE = {
+  feat: "Added",
+  feature: "Added",
+  fix: "Fixed",
+  docs: "Docs",
+  doc: "Docs",
+  test: "Tests",
+  tests: "Tests",
+};
+const KNOWN_TYPES = new Set([
+  ...Object.keys(SECTION_FOR_TYPE),
+  "chore", "refactor", "perf", "style", "build", "ci", "revert",
+]);
+
+/**
+ * Split a commit subject into its section and its prose.
+ *
+ * Only a prefix whose type is a real conventional-commit type is stripped, so a
+ * subject that merely contains a colon (`Update README: clarify`) survives
+ * intact instead of losing its first word to the parser.
+ *
+ * @param {string} subject
+ * @returns {{section:string, text:string}}
+ */
+export function splitBullet(subject) {
+  const match = /^([A-Za-z]+)(?:\([^()]*\))?!?:\s+(.+)$/s.exec(subject);
+  const type = match ? match[1].toLowerCase() : "";
+  if (!match || !KNOWN_TYPES.has(type)) return { section: "Changed", text: subject };
+  return { section: SECTION_FOR_TYPE[type] ?? "Changed", text: match[2] };
 }
 
 /**
@@ -591,11 +635,24 @@ export function renderChangelog(input) {
   const lines = [];
   for (const release of releases) {
     lines.push(`## [${changelogHeading(release)}] - ${date}`, "");
-    const bullets = release.subjects.length > 0
-      ? release.subjects
-      : ["Patch release; no user-visible behavior change beyond the version bump."];
-    for (const bullet of bullets) lines.push(`- ${bullet}`);
-    lines.push("");
+    if (release.subjects.length === 0) {
+      lines.push("- Patch release; no user-visible behavior change beyond the version bump.", "");
+      continue;
+    }
+    const sections = new Map();
+    for (const subject of release.subjects) {
+      const { section, text } = splitBullet(subject);
+      if (!sections.has(section)) sections.set(section, []);
+      sections.get(section).push(text);
+    }
+    const names = [...sections.keys()].sort(
+      (a, b) => SECTION_ORDER.indexOf(a) - SECTION_ORDER.indexOf(b),
+    );
+    for (const name of names) {
+      lines.push(`### ${name}`, "");
+      for (const text of sections.get(name)) lines.push(`- ${text}`);
+      lines.push("");
+    }
   }
   return lines.join("\n");
 }

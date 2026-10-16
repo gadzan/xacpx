@@ -15,6 +15,7 @@ import {
   precedingBeta,
   publishWaves,
   renderChangelog,
+  splitBullet,
   rootManifestShipsChanges,
   spliceChangelog,
   tagFor,
@@ -83,14 +84,28 @@ test("assignPrsToPackages maps each PR to the packages its files belong to, olde
   expect(Object.values(byPackage).flat().join("\n")).not.toContain("docs: unrelated");
 });
 
-test("assignPrsToPackages ignores a PR that only touched paths already shipped by a tag", () => {
-  // changedPaths is "paths that differ since the package's last tag", so a PR
-  // touching only settled paths cannot appear in it — and cannot be re-attributed.
+test("assignPrsToPackages excludes a PR merged before the package's last tag", () => {
+  // The regression this guards: intersecting path *names* alone re-lists every
+  // PR that ever edited a file this release happens to touch again, because a
+  // path name is in `changedPaths` whether or not it changed *in this window*.
+  // One real release drafted 86 bullets, most shipped months earlier.
   const byPackage = assignPrsToPackages({
-    changedPaths: { relay: ["packages/relay-web/src/new-thing.ts"] },
-    prs: [{ number: 1, title: "old", mergedAt: "2026-01-01T00:00:00Z", files: ["packages/relay-web/src/settled.ts"] }],
+    changedPaths: { relay: ["packages/relay-web/src/style.css"] },
+    sinceById: { relay: Date.parse("2026-10-16T00:00:00Z") },
+    prs: [
+      { number: 313, title: "feat(relay-web): composer column alignment", mergedAt: "2026-08-27T00:00:00Z", files: ["packages/relay-web/src/style.css"] },
+      { number: 434, title: "feat(relay-web): unified dropdown", mergedAt: "2026-10-16T09:00:00Z", files: ["packages/relay-web/src/style.css"] },
+    ],
   });
-  expect(byPackage.relay).toEqual([]);
+  expect(byPackage.relay).toEqual(["feat(relay-web): unified dropdown (#434)"]);
+});
+
+test("assignPrsToPackages treats a package with no tag as having no lower bound", () => {
+  const byPackage = assignPrsToPackages({
+    changedPaths: { "channel-discord": ["packages/channel-discord/src/index.ts"] },
+    prs: [{ number: 9, title: "feat(discord): initial plugin", mergedAt: "2026-01-01T00:00:00Z", files: ["packages/channel-discord/src/index.ts"] }],
+  });
+  expect(byPackage["channel-discord"]).toEqual(["feat(discord): initial plugin (#9)"]);
 });
 
 test("parseVersion splits a prerelease and rejects non-semver", () => {
@@ -322,9 +337,44 @@ test("renderChangelog labels core without a package prefix and others with one",
   });
   expect(rendered).toContain("## [0.24.10-beta.4] - 2026-10-15");
   expect(rendered).toContain("## [relay 0.14.12-beta.5] - 2026-10-15");
-  expect(rendered).toContain("- fix: a thing");
+  expect(rendered).toContain("- a thing");
   // An empty subject list still produces a section rather than a bare heading.
   expect(rendered).toMatch(/## \[relay 0\.14\.12-beta\.5\][\s\S]*- /);
+});
+
+test("renderChangelog groups subjects into the file's own sections, in a fixed order", () => {
+  const rendered = renderChangelog({
+    date: "2026-10-16",
+    releases: [{
+      id: "relay",
+      from: "0.14.12-beta.5",
+      to: "0.14.12-beta.6",
+      subjects: [
+        "fix(relay-web): mount one TopicSwitcher (#436)",
+        "feat(relay-web): unified dropdown (#434)",
+        "test(relay-web): stop DesktopTab tests racing (#435)",
+        "chore: bump a dev tool",
+      ],
+    }],
+  });
+  // Conventional-commit prefixes are the file's convention to drop; the PR
+  // reference stays because entries in this file do cite them.
+  expect(rendered).not.toContain("fix(relay-web):");
+  expect(rendered).toContain("- mount one TopicSwitcher (#436)");
+  expect(rendered.indexOf("### Added")).toBeLessThan(rendered.indexOf("### Changed"));
+  expect(rendered.indexOf("### Changed")).toBeLessThan(rendered.indexOf("### Fixed"));
+  expect(rendered.indexOf("### Fixed")).toBeLessThan(rendered.indexOf("### Tests"));
+  expect(rendered).toContain("- bump a dev tool");
+});
+
+test("splitBullet strips only a real conventional-commit type", () => {
+  expect(splitBullet("feat(relay-web)!: something")).toEqual({ section: "Added", text: "something" });
+  expect(splitBullet("fix: another")).toEqual({ section: "Fixed", text: "another" });
+  // A colon in prose is not a type: the first word must not be eaten.
+  expect(splitBullet("Update README: clarify the install step")).toEqual({
+    section: "Changed",
+    text: "Update README: clarify the install step",
+  });
 });
 
 test("spliceChangelog inserts a draft above the previous release", () => {

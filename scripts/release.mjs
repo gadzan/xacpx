@@ -133,6 +133,19 @@ function lastTagFor(id) {
 }
 
 /**
+ * Commit time of a tag in epoch milliseconds, or undefined when there is none.
+ *
+ * Used to bound the changelog's PR list: a path *name* can be touched again long
+ * after it last shipped, so membership in `changedPaths` says nothing about
+ * whether a given PR is inside the window. The tag's time does.
+ */
+function tagTimeFor(tag) {
+  if (!tag) return undefined;
+  const seconds = git(["log", "-1", "--format=%ct", tag], { allowFailure: true }).trim();
+  return seconds ? Number(seconds) * 1000 : undefined;
+}
+
+/**
  * Paths owned by a package that changed since its own last tag.
  *
  * Diffing per package rather than against one shared commit matters: core and
@@ -208,7 +221,10 @@ function buildPlan(options) {
   }
 
   const edits = collectEdits({ releases: releaseIds, versions: nextVersions, previousVersions: current });
-  const bullets = changelogBullets({ releases, changedPaths, lastTags });
+  const sinceById = Object.fromEntries(
+    Object.entries(lastTags).map(([id, tag]) => [id, tagTimeFor(tag)]).filter(([, ms]) => ms !== undefined),
+  );
+  const bullets = changelogBullets({ releases, changedPaths, lastTags, sinceById });
 
   return {
     target: options.target,
@@ -268,10 +284,10 @@ function subjectsFor(id, since, paths) {
  * bodies are deliberately unused — they run to several paragraphs, and the
  * CHANGELOG's convention is a one-line bullet per change.
  */
-function changelogBullets({ releases, changedPaths, lastTags }) {
+function changelogBullets({ releases, changedPaths, lastTags, sinceById }) {
   const byPackage = {};
   const prs = fetchMergedPrs();
-  const assigned = prs && prs.length > 0 ? assignPrsToPackages({ prs, changedPaths }) : null;
+  const assigned = prs && prs.length > 0 ? assignPrsToPackages({ prs, changedPaths, sinceById }) : null;
   const sources = new Set();
 
   for (const release of releases) {
