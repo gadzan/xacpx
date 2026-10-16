@@ -491,7 +491,7 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 
 - `src/api/client.ts` —— REST 客户端（登录、`/api/instances`、`/api/instances/:id/rpc` 代理调用、历史）；
 - `src/lib/render-markdown.ts` —— 净化版流式 markdown 渲染（markdown-it + remend + DOMPurify）；
-- `src/lib/use-dropdown.ts` —— 统一下拉框 composable（开关、键盘导航、外部点击/Esc 关闭、焦点归还）；
+- `src/lib/use-dropdown.ts` —— 统一下拉框 composable（开关、键盘导航、外部点击/Esc 关闭、焦点归还；keydown 走捕获阶段，Esc 只关下拉不关宿主对话框；桌面面板在 Tab 把焦点移出触发器+面板时关闭）；
 - `src/components/DropdownPanel.vue`、`SelectMenu.vue`、`Tooltip.vue` —— 统一下拉浮层 / 表单字段下拉 /
   hover 提示（见「统一下拉框」一节）；
 - `src/api/events.ts` —— WS 客户端（`connectEvents` → `/ws`，自动重连）；

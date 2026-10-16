@@ -111,7 +111,12 @@ export function useDropdown(): DropdownController {
     return from;
   }
 
+  // Set by a Tab keydown so the focusin that follows can close the desktop panel
+  // when keyboard focus leaves trigger + panel (pointer focus changes are left alone).
+  let tabbing = false;
+
   function onKeydown(e: KeyboardEvent): void {
+    tabbing = e.key === "Tab";
     if (!dd.open) return;
     // Another floating layer (e.g. a row's ContextMenu) owns the keyboard.
     if (keyboardOwner && keyboardOwner !== dd) return;
@@ -158,15 +163,28 @@ export function useDropdown(): DropdownController {
     dd.closeMenu();
   }
 
+  function onFocusIn(e: FocusEvent): void {
+    const viaTab = tabbing;
+    tabbing = false;
+    if (!dd.open || !viaTab || !dd.trigger) return;
+    // Desktop popover only; the <lg MobileSheet manages its own focus.
+    if (typeof window !== "undefined" && window.innerWidth < 1024) return;
+    const target = e.target as Element | null;
+    if (target && (dd.trigger.contains(target) || target.closest?.("[data-dd-panel]"))) return;
+    dd.closeMenu();
+  }
+
   onMounted(() => {
     // Capture phase: run before bubbling document listeners (useModalA11y), so its
     // Escape sees defaultPrevented regardless of which component mounted first.
     document.addEventListener("keydown", onKeydown, true);
     document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("focusin", onFocusIn, true);
   });
   onBeforeUnmount(() => {
     document.removeEventListener("keydown", onKeydown, true);
     document.removeEventListener("pointerdown", onPointerDown, true);
+    document.removeEventListener("focusin", onFocusIn, true);
     // Only release what this instance holds; another open dropdown keeps its claim.
     if (activeClose === closer) activeClose = null;
     releaseKeyboard(dd);
