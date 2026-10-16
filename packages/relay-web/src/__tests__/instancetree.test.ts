@@ -413,6 +413,26 @@ describe("InstanceTree session management", () => {
     expect(w.findAll('[data-test="session-name"]')[1]!.text()).toContain("sleeping");
   });
 
+  it("a second mouse click on the filter / row ⋯ trigger closes its panel (mousedown + click)", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "active", agent: "claude", workspace: "home", transportSession: "t1", running: false, archived: false }])] as never;
+    const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
+    const mouseClick = async (sel: string) => {
+      const el = w.find(sel);
+      await el.trigger("mousedown");
+      await el.trigger("click");
+    };
+    await mouseClick('[data-test="instance-filter"]');
+    expect(w.find('[data-test="instance-filter"]').attributes("aria-expanded")).toBe("true");
+    await mouseClick('[data-test="instance-filter"]');
+    expect(w.find('[data-test="instance-filter"]').attributes("aria-expanded")).toBe("false");
+    await mouseClick('[data-test="session-menu"]');
+    expect(document.querySelector('[data-test="action-rename"]')).not.toBeNull();
+    await mouseClick('[data-test="session-menu"]');
+    expect(document.querySelector('[data-test="action-rename"]')).toBeNull();
+    w.unmount();
+  });
+
   it("hides row actions when the instance is offline", () => {
     const store = useInstancesStore();
     store.instances = [{ ...instance([{ alias: "a", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }]), online: false }] as never;

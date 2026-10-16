@@ -450,8 +450,10 @@ const dragDx = ref(0);
 function onDocPointerDown(e: MouseEvent) {
   const target = e.target as Element | null;
   if (target?.closest?.("[data-dd-panel]")) return;
-  menuDd.closeMenu();
-  filterDd.closeMenu();
+  // A mousedown on a panel's own trigger must not close it: the click that follows
+  // would read "closed" and reopen it, so the trigger could never toggle it shut.
+  if (!(target && menuDd.trigger?.contains(target))) menuDd.closeMenu();
+  if (!(target && filterDd.trigger?.contains(target))) filterDd.closeMenu();
   openSwipeFor.value = null;
 }
 onMounted(() => document.addEventListener("mousedown", onDocPointerDown));
