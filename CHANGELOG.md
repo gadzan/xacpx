@@ -1,4 +1,10 @@
 # Changelog
+## [relay 0.14.12-beta.4] - 2026-10-15
+
+### Fixed
+
+- Relay Web: session and Bot titles render at `text-sm` on every breakpoint. The mobile-only `max-lg:text-base` bump on session rows and the `text-base` headers in the Direct Bot pane and dashboard are gone, so a title no longer changes size when the viewport crosses `lg` and stays consistent with the two-line row scale (§5.7).
+
 ## [0.24.10-beta.3] - 2026-10-15
 
 ### Fixed
