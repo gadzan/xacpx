@@ -499,8 +499,9 @@ function cmdCheck() {
 // publish
 // ---------------------------------------------------------------------------
 
-function assertOnlyReleasePathsModified(plan) {
+function assertOnlyReleasePathsModified() {
   const dirty = git(["status", "--porcelain"]).split("\n").filter(Boolean);
+  if (dirty.length === 0) throw new Error("nothing modified; run `apply` first");
   const unexpected = [];
   for (const line of dirty) {
     const path = line.slice(3).trim().replace(/^"|"$/g, "");
@@ -512,9 +513,6 @@ function assertOnlyReleasePathsModified(plan) {
       `refusing to publish: unrelated modified paths would be swept into the release commit:\n  ${unexpected.join("\n  ")}`,
     );
   }
-  const expected = plan.releases.length + 1; // manifests + CHANGELOG, at minimum
-  if (dirty.length === 0) throw new Error("nothing modified; run `apply` first");
-  void expected;
 }
 
 /**
@@ -536,6 +534,29 @@ function runGates() {
   console.log("== gates: metadata + publishability ==");
   execFileSync("node", [join(ROOT, "scripts", "release.mjs"), "check"], { cwd: ROOT, stdio: "inherit" });
   execFileSync("bun", ["run", "verify:publish"], { cwd: ROOT, stdio: "inherit" });
+}
+
+/**
+ * The release set as it stands in the APPLIED tree.
+ *
+ * `publish` must not re-derive versions: `apply` already bumped every manifest,
+ * so re-running the version policy would propose a second bump (the manifest is
+ * at `-beta.5`, so the "next" beta is `-beta.6`) and then refuse its own work.
+ * Instead, read what is pending off the tags — a manifest whose version has no
+ * tag yet, and which differs from the newest tag for its package, is exactly a
+ * release waiting to be pushed.
+ */
+function buildPublishPlan() {
+  const releases = [];
+  for (const pkg of PACKAGE_REGISTRY) {
+    const version = String(readJson(pkg.manifestPath).version ?? "");
+    const lastTag = lastTagFor(pkg.id);
+    if (lastTag === tagFor(pkg.id, version)) continue; // already released
+    const from = lastTag ? lastTag.slice(pkg.tagPrefix.length) : "";
+    if (from === version) continue; // tag exists under a different prefix shape
+    releases.push({ id: pkg.id, from, to: version, tag: tagFor(pkg.id, version) });
+  }
+  return { releases, waves: publishWaves(releases.map((release) => release.id)) };
 }
 
 /** Tag -> the publish workflow run it triggered, or null. */
@@ -587,11 +608,22 @@ async function awaitTagRun(tag) {
 
 async function cmdPublish(plan, options) {
   if (plan.releases.length === 0) {
-    console.log("nothing to release");
+    console.log("nothing to release: no manifest carries an unreleased version (run `apply` first)");
     return 0;
   }
+
+  // Printed before the --yes gate so `publish` without it doubles as a dry run
+  // of exactly what the applied tree would push.
+  console.log(`${plan.releases.length} package(s) pending from the applied tree:`);
+  for (const release of plan.releases) {
+    console.log(`  ${release.id.padEnd(16)} ${release.from} -> ${release.to}   ${release.tag}`);
+  }
+  for (const [index, wave] of plan.waves.entries()) {
+    console.log(`  wave ${index + 1}: ${wave.join(", ")}`);
+  }
+
   if (!options.yes) {
-    console.error("refusing to publish without --yes");
+    console.error("\nrefusing to publish without --yes (this pushes main and irreversible tags)");
     return 1;
   }
   const branch = git(["branch", "--show-current"]);
@@ -603,7 +635,7 @@ async function cmdPublish(plan, options) {
       throw new Error(`${release.id}: manifest is not ${release.to}; run \`apply\` first`);
     }
   }
-  assertOnlyReleasePathsModified(plan);
+  assertOnlyReleasePathsModified();
 
   if (!options.skipGates) runGates();
   dropProtocolDistChurn(plan);
@@ -644,13 +676,18 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.command === "check") process.exit(cmdCheck());
 
+  // `publish` reads the tree `apply` produced; everything else computes a fresh
+  // plan from the tags.
+  if (options.command === "publish") {
+    process.exit(await cmdPublish(buildPublishPlan(), options));
+  }
+
   const plan = buildPlan(options);
   if (options.command === "plan") {
     console.log(options.json ? JSON.stringify(plan, null, 2) : printPlan(plan));
     process.exit(0);
   }
-  if (options.command === "apply") process.exit(cmdApply(plan, options));
-  process.exit(await cmdPublish(plan, options));
+  process.exit(cmdApply(plan, options));
 }
 
 main().catch((error) => {
