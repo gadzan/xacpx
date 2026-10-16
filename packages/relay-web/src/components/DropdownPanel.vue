@@ -170,7 +170,7 @@ const listRole = computed(() => props.role ?? "listbox");
         <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent" />
       </button>
     </template>
-    <p v-if="!flatRows.length" class="px-3 py-3 text-sm text-fg-muted">{{ emptyText ?? t("common.noMatch") }}</p>
+    <p v-if="groups && !flatRows.length" class="px-3 py-3 text-sm text-fg-muted">{{ emptyText ?? t("common.noMatch") }}</p>
     <slot :mobile="true" />
   </MobileSheet>
 

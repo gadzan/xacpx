@@ -39,4 +39,23 @@ describe("DropdownPanel mobile sheet", () => {
     expect(rows[0]!.querySelector("svg")).not.toBeNull();
     w.unmount();
   });
+
+  it("slot-mode sheets (caller-rendered rows) never show the items-mode empty text", async () => {
+    window.innerWidth = 420;
+    const SlotHost = defineComponent({
+      setup() {
+        const dd = useDropdown();
+        return () => h("div", [
+          h("button", { "data-test": "trigger", onClick: () => dd.toggle() }, "open"),
+          h(DropdownPanel, { dd, title: "Topics", testId: "dd" }, { default: () => h("p", { "data-test": "slot-row" }, "Default") }),
+        ]);
+      },
+    });
+    const w = mount(SlotHost, { attachTo: document.body, global: { plugins: [i18n] } });
+    await w.find('[data-test="trigger"]').trigger("click");
+    await nextTick();
+    expect(document.querySelector('[data-test="slot-row"]')).not.toBeNull();
+    expect(document.body.textContent).not.toContain(i18n.global.t("common.noMatch"));
+    w.unmount();
+  });
 });
