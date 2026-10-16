@@ -46,6 +46,7 @@ const {
   parseVersion,
   publishWaves,
   renderChangelog,
+  rootManifestShipsChanges,
   spliceChangelog,
   tagFor,
 } = LIB;
@@ -127,7 +128,28 @@ function lastTagFor(id) {
 function changedPathsFor(id) {
   const since = lastTagFor(id);
   const args = since ? ["diff", "--name-only", `${since}..HEAD`] : ["ls-files"];
-  return git(args).split("\n").filter(Boolean).filter((path) => packageForPath(path) === id);
+  let paths = git(args).split("\n").filter(Boolean).filter((path) => packageForPath(path) === id);
+
+  // Root package.json holds both shipped metadata and dev-only script wiring.
+  // Only the shipped fields make a core release; adding an npm script does not.
+  if (id === "core" && paths.includes("package.json")) {
+    const before = since ? manifestAtTag(since, "package.json") : null;
+    if (!rootManifestShipsChanges(before, readJson("package.json"))) {
+      paths = paths.filter((path) => path !== "package.json");
+    }
+  }
+  return paths;
+}
+
+/** Parse a manifest as it existed at a tag, or null when it is absent there. */
+function manifestAtTag(tag, relativePath) {
+  const raw = git(["show", `${tag}:${relativePath}`], { allowFailure: true });
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 /** Whether the given base version was already released as a stable tag. */

@@ -239,6 +239,48 @@ export function nextVersion({ current, target, bump = "patch", newCycle = false,
 }
 
 /**
+ * Root `package.json` fields that change what core publishes.
+ *
+ * `scripts` and `devDependencies` are deliberately absent: adding a dev script
+ * ships nothing, so it must not trigger a core release. `version` is absent
+ * too — bumping it IS the release, not evidence for one.
+ */
+export const CORE_SHIPPED_FIELDS = [
+  "name",
+  "bin",
+  "main",
+  "types",
+  "type",
+  "exports",
+  "files",
+  "engines",
+  "dependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "publishConfig",
+];
+
+/**
+ * Whether a root package.json edit changes shipped behavior.
+ *
+ * Without this, a commit that only adds an npm script reads as "core changed",
+ * and because a core release republishes every floor tracker, one dev-tooling
+ * edit would fan out into five package releases.
+ *
+ * @param {unknown} before parsed package.json at the last core tag (null if none)
+ * @param {unknown} after parsed package.json at HEAD
+ */
+export function rootManifestShipsChanges(before, after) {
+  if (!before || typeof before !== "object" || typeof after !== "object" || after === null) return true;
+  for (const field of CORE_SHIPPED_FIELDS) {
+    const left = JSON.stringify(before[field] ?? null);
+    const right = JSON.stringify(after[field] ?? null);
+    if (left !== right) return true;
+  }
+  return false;
+}
+
+/**
  * Map a repo-relative path to the package that owns it.
  *
  * @returns {PackageId|null} null for paths that ship nothing (docs, tests, CI).

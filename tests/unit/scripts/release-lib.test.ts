@@ -14,9 +14,44 @@ import {
   precedingBeta,
   publishWaves,
   renderChangelog,
+  rootManifestShipsChanges,
   spliceChangelog,
   tagFor,
 } from "../../../scripts/release-lib.mjs";
+
+test("rootManifestShipsChanges ignores dev-only edits and catches shipped ones", () => {
+  const base = {
+    name: "@ganglion/xacpx",
+    version: "0.24.10-beta.3",
+    bin: { xacpx: "./dist/cli.js" },
+    exports: { "./plugin-api": { types: "./dist/plugin-api.d.ts", default: "./dist/plugin-api.js" } },
+    dependencies: { acpx: "0.19.5", "node-pty": "^1.1.0" },
+    scripts: { test: "node ./scripts/run-tests.mjs" },
+    devDependencies: { typescript: "^5.0.0" },
+  };
+
+  // The version bump and a new npm script are both release mechanics, not
+  // shipped behavior — otherwise adding a dev script would fan out into a core
+  // release plus every floor-tracking plugin.
+  expect(rootManifestShipsChanges(base, {
+    ...base,
+    version: "0.24.10-beta.4",
+    scripts: { ...base.scripts, "release:plan": "node ./scripts/release.mjs plan" },
+  })).toBe(false);
+  expect(rootManifestShipsChanges(base, {
+    ...base,
+    devDependencies: { ...base.devDependencies, vitest: "^3.0.0" },
+  })).toBe(false);
+
+  // Anything a consumer can observe does force a release.
+  expect(rootManifestShipsChanges(base, { ...base, dependencies: { ...base.dependencies, acpx: "0.19.6" } })).toBe(true);
+  expect(rootManifestShipsChanges(base, { ...base, bin: { xacpx: "./dist/main.js" } })).toBe(true);
+  expect(rootManifestShipsChanges(base, { ...base, engines: { node: ">=22" } })).toBe(true);
+  expect(rootManifestShipsChanges(base, { ...base, files: ["dist"] })).toBe(true);
+
+  // No baseline (never released) is treated as changed rather than skipped.
+  expect(rootManifestShipsChanges(null, base)).toBe(true);
+});
 
 test("parseVersion splits a prerelease and rejects non-semver", () => {
   expect(parseVersion("0.24.10-beta.3")).toEqual({ major: 0, minor: 24, patch: 10, prerelease: "beta.3" });
