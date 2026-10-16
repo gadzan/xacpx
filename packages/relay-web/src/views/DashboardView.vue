@@ -386,8 +386,8 @@ function goHome(): void {
 /** Session view on <lg: the single session bar (+ connection strip). Bot / group views
  *  render their own chrome, so the bar steps aside even if a stale session key lingers. */
 const mobileSessionBar = computed(() => !!currentKey.value && !isBotSelected.value && !isGroupSelected.value);
-/** Session or bot view: the global header steps aside for the single mobile bar. */
-const mobileSingleBar = computed(() => !!currentKey.value || isBotSelected.value);
+/** Session, bot, or group view: the global header steps aside for the single mobile bar. */
+const mobileSingleBar = computed(() => !!currentKey.value || isBotSelected.value || isGroupSelected.value);
 
 const sessionRow = computed(() =>
   chat.instanceId && chat.sessionAlias ? instances.findSessionRow(chat.instanceId, chat.sessionAlias) : undefined,
@@ -757,17 +757,6 @@ onUnmounted(() => {
          has been open at least once — see MobileConnStrip). -->
     <MobileConnStrip v-if="mobileSessionBar" />
 
-    <!-- Groups keep the old mobile bar: GroupPane is NOT redesigned in this PR. -->
-    <div v-else-if="isGroupSelected" class="flex items-center gap-2 bg-surface px-2 py-1.5 lg:hidden">
-      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")'
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              @click="goHome"><ArrowLeft :size="20" /></button>
-      <span class="min-w-0 flex-1 truncate text-center text-sm font-medium">
-        {{ groupsStore.currentGroup?.title ?? "Group" }}
-        <span v-if="groupsStore.currentTopic" class="text-xs text-fg-muted font-normal"> · {{ groupsStore.currentTopic.title }}</span>
-      </span>
-    </div>
-
     <div class="flex flex-1 overflow-hidden">
       <!-- Backdrop closes any open drawer (mobile only). -->
       <div v-if="rightOpen" data-test="drawer-backdrop"
@@ -829,7 +818,7 @@ onUnmounted(() => {
             @navigate-group="onSelectGroup"
             @back="goHome"
           />
-          <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" />
+          <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" @back="goHome" />
           <EmptySessionState v-else-if="nothingSelected" class="absolute inset-0"
                              :sessions="recentSessions" :instances="fabInstances"
                              @select="onSelect" @create="createSessionIn" />

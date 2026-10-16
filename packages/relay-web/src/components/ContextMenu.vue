@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, watch } from "vue";
-const props = defineProps<{ x: number; y: number; items: { key: string; label: string }[] }>();
+export interface ContextMenuItem {
+  key: string;
+  label: string;
+  /** Destructive entry: red text, red hover wash. */
+  danger?: boolean;
+  /** Rendered but inert (no click, dimmed). */
+  disabled?: boolean;
+}
+const props = defineProps<{ x: number; y: number; items: ContextMenuItem[] }>();
 const emit = defineEmits<{ select: [key: string]; close: [] }>();
 
 // Open at the click point, then clamp into the viewport so a menu near the right/bottom
@@ -29,8 +37,9 @@ onBeforeUnmount(() => { document.removeEventListener("click", onDocClick); docum
 <template>
   <div ref="el" data-test="context-menu" class="fixed z-50 min-w-40 rounded-sm bg-raised py-1 text-ui shadow-float"
        :style="{ left: pos.x + 'px', top: pos.y + 'px' }" @click.stop>
-    <button v-for="it in items" :key="it.key" :data-test="`menu-${it.key}`"
-            class="block w-full px-3 py-1.5 text-left text-fg hover:bg-surface-2"
+    <button v-for="it in items" :key="it.key" :data-test="`menu-${it.key}`" :disabled="it.disabled"
+            class="block w-full px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40"
+            :class="it.danger ? 'text-danger hover:bg-danger/10' : 'text-fg hover:bg-surface-2'"
             @click="emit('select', it.key); emit('close')">{{ it.label }}</button>
   </div>
 </template>
