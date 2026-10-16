@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createHash } from "node:crypto";
 import { agentIconSvg } from "../lib/agent-icons";
+import { scopeSvgIds } from "../lib/svg-ids";
 import codexRaw from "@lobehub/icons-static-svg/icons/codex-color.svg?raw";
 import claudeRaw from "@lobehub/icons-static-svg/icons/claudecode-color.svg?raw";
 import geminiRaw from "@lobehub/icons-static-svg/icons/gemini-color.svg?raw";
@@ -176,5 +177,40 @@ describe("AgentIcon", () => {
     // centered by the parent box's place-items-center.
     const w = mount(AgentIcon, { props: { driver: "nope", fill: true, size: 15 } });
     expect(w.find(".lucide-bot").exists()).toBe(true);
+  });
+});
+
+describe("AgentIcon svg ids", () => {
+  function idsAndRefs(html: string): { ids: string[]; refs: string[] } {
+    return {
+      ids: Array.from(html.matchAll(/\bid="([^"]+)"/g), (m) => m[1]!),
+      refs: Array.from(html.matchAll(/url\(#([^)]+)\)/g), (m) => m[1]!),
+    };
+  }
+
+  it("gives each mounted copy of a gradient glyph its own ids, and keeps refs pointing inside the same copy", () => {
+    const host = mount({
+      components: { AgentIcon },
+      template: `<div><AgentIcon driver="codex" /><AgentIcon driver="codex" /><AgentIcon driver="omp" /><AgentIcon driver="omp" /></div>`,
+    });
+    const icons = host.findAll('[data-test="agent-icon"]');
+    expect(icons).toHaveLength(4);
+    const seen = new Set<string>();
+    for (const icon of icons) {
+      const { ids, refs } = idsAndRefs(icon.html());
+      expect(ids.length).toBeGreaterThan(0);
+      for (const id of ids) {
+        expect(seen.has(id), id).toBe(false);
+        seen.add(id);
+      }
+      for (const ref of refs) expect(ids).toContain(ref);
+    }
+  });
+
+  it("leaves id-free glyphs and unrelated urls untouched", () => {
+    expect(scopeSvgIds(null, "x")).toBeNull();
+    const plain = agentIconSvg("claude")!;
+    expect(scopeSvgIds(plain, "v-1")).toBe(plain);
+    expect(scopeSvgIds(`<svg><path id="a" fill="url(#b)"/></svg>`, "v:1")).toBe(`<svg><path id="a-v1" fill="url(#b)"/></svg>`);
   });
 });

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useId } from "vue";
 import { Bot } from "lucide-vue-next";
 import { agentIconSvg } from "../lib/agent-icons";
+import { scopeSvgIds } from "../lib/svg-ids";
 
 // A square brand glyph for an agent driver. Renders the @lobehub/icons SVG when one exists
 // for the driver, else a generic robot fallback. The SVG is a build-time bundled constant
@@ -14,7 +15,10 @@ const props = withDefaults(defineProps<{ driver?: string | null; size?: number; 
   fill: false,
 });
 
-const svg = computed(() => agentIconSvg(props.driver));
+// Per-instance ids: see scopeSvgIds. Without this a hidden first copy of the glyph
+// (mobile bar on desktop) blanks every gradient-filled copy on the page.
+const uid = useId();
+const svg = computed(() => scopeSvgIds(agentIconSvg(props.driver), uid));
 const px = computed(() => `${props.size}px`);
 </script>
 
