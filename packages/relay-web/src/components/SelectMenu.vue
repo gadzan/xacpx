@@ -71,7 +71,7 @@ function onSelect(value: string): void {
             :id="id"
             :ref="(el) => (dd.trigger = el as HTMLElement | null)"
             :data-test="dataTest"
-            :data-value="modelValue"
+            :data-selected="modelValue"
             :aria-label="ariaLabel"
             :aria-haspopup="true"
             :aria-expanded="dd.open"
