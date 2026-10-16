@@ -43,6 +43,15 @@ it is to CI). Commit or merge first.
 | Lockfiles | `npm install --package-lock-only`, then `bun install`, then reconcile both |
 | CHANGELOG headings | `spliceChangelog` — keeps authored prose, adds a heading per package |
 
+One entry there looks like over-reach and is not: **a consumer's protocol range
+is rewritten even when that consumer is not released.** npm semver excludes
+prereleases unless the range names one, so `^0.4.0` does not match a workspace
+`0.4.2-beta.0` — npm then quietly resolves a stale registry copy into
+`packages/<consumer>/node_modules/`. Local builds stay green while `npm ci` or
+`build:packages` fails, or ships against the wrong protocol. `relay-web` is the
+easy one to miss: it is private, but its `vue-tsc` typecheck still needs the
+current protocol.
+
 ## Version policy
 
 **While a base version is unreleased, a new beta increments the counter.**
