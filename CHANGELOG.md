@@ -1,4 +1,25 @@
 # Changelog
+## [relay 0.14.12-beta.6] - 2026-10-16
+
+### Added
+
+- Relay Web: one dropdown stack for the whole app (#434). `lib/use-dropdown.ts` owns outside-pointerdown and Esc closing (Esc refocuses the trigger), ↑↓/Home/End/Enter/Space navigation, one-open-at-a-time, and `aria-haspopup`/`aria-expanded`; `DropdownPanel.vue` renders the panel (`rounded-lg shadow-float`, no border, h-8 rows, a trailing ✓ on the selected row, danger rows, `text-xs` group labels, and search once a list exceeds seven entries); `SelectMenu.vue` is the form-field trigger. Below `lg` a panel renders in a `MobileSheet` with h-11 rows.
+- Relay Web: `Tooltip.vue` (300 ms on hover and keyboard focus, 2 s on touch) carries the explanation for a cold-start session row's 12 px `Unplug` marker — that row is not running, and sending the next message starts it.
+
+### Changed
+
+- Relay Web: every native `<select>` is a `SelectMenu`, and the ad-hoc menus (model picker, composer, group composer, topic switcher and manager, context menu, files panel, agents manager, dialogs) go through the shared stack, so keyboard behavior is the same everywhere (#434).
+- Relay Web: session list cleanup (#434). Cold-start rows drop their subtitle; the selected row trades its 3 px left bar for `bg-accent-soft` with an accent semibold name and `hover:bg-surface-2`; collapse is one `ChevronRight` rotated 90° over 150 ms everywhere; disabled Bots move below the enabled ones under a 「已禁用」 group-title row; the sleep filter moves into the tab-row filter menu as an instance-level checkbox; 「加载更多会话」 stays alone at the bottom.
+
+### Fixed
+
+- Relay Web: agent avatars are back (#433). #428's hidden `mobile-session-bar` mounted the first `AgentIcon` in the DOM, and the gradient ids inside an inlined SVG are document-global — so every `fill="url(#…)"` in the app resolved to that copy, which Chrome does not render inside a `display:none` subtree. Brand icons with gradients (codex, omp, gemini, copilot, qwen, openclaw) went blank in the message rows, the busy row, and the sidebar; `lib/svg-ids.ts` now suffixes every SVG-defined id per instance and rewrites its `url(#…)`/`href="#…"` references, scoped by Vue's `useId()`.
+- Relay Web: each pane mounts one `TopicSwitcher` (chosen by `useIsMobile()`) instead of two with one hidden by CSS, and with no active topic both breakpoints show the `bot.topic.default` label — the mobile pill no longer falls back to the bot's role or agent (#436).
+
+### Tests
+
+- Relay Web: the `DesktopTab` error-i18n cases no longer race the noVNC socket that `open()` dialed for real under jsdom — a disconnect arriving 2–75 ms after the seeded error row was overwriting it, and the describe borrowed a leaked Pinia, so `-t` runs had none. Test-only; no product code changed (#435).
+
 ## [relay 0.14.12-beta.5] - 2026-10-16
 
 ### Changed
