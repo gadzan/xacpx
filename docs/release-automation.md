@@ -48,23 +48,27 @@ it is to CI). Commit or merge first.
 **While a base version is unreleased, a new beta increments the counter.**
 `0.24.10-beta.3` → `0.24.10-beta.4`. It does not move the base and reset to
 `-beta.0`; that claims a version nobody shipped and burns a number per beta.
-`--bump minor|major` with `newCycle` is the escape hatch for deliberately
-starting a new base.
 
 | Current | `--beta` | `--stable` |
 |---|---|---|
-| `X.Y.Z-beta.N` (base unreleased) | `X.Y.Z-beta.(N+1)` | `X.Y.Z` |
+| `X.Y.Z-beta.N` (base unreleased) | `X.Y.Z-beta.(N+1)` — `--bump` is **ignored** | `X.Y.Z` — `--bump` is **ignored** |
 | `X.Y.Z-beta.N` (base already tagged) | refuses — reconcile the manifest | `X.Y.Z` |
-| `X.Y.Z` | `bump(Z)-beta.0` | `bump(Z)` |
+| `X.Y.Z` | `bump(Z, --bump)-beta.0` | `bump(Z, --bump)` |
+
+`--bump` is never inferred: nothing in a diff reliably separates a feature from
+a fix, so the tool does not guess. It is read only when the manifest is a
+**stable** version, and it defaults to `patch`. Every other path ignores it, which
+is why a beta release needs no flag at all.
+
+`--new-cycle` forces the next base while the manifest is a prerelease
+(`--beta --bump minor --new-cycle` turns `0.24.10-beta.3` into
+`0.25.0-beta.0`); it refuses when that base is already tagged. Use it when you
+decide to abandon a doomed prerelease line rather than promote it.
 
 "Base already tagged" is read from git tags (`<prefix>X.Y.Z`), not the registry,
 so the policy is deterministic and offline-testable. A tag existing is not proof
 the npm publish succeeded, but the two diverge only when a release failed
 mid-flight, which is exactly the case that deserves a human.
-
-Automatic *base* bumps use `--bump patch` by default. `plan` prints the level it
-used; a feature release across a stable boundary should pass `--bump minor`
-explicitly.
 
 ## Which packages get released
 
@@ -138,20 +142,19 @@ content.
 
 ## Manual steps that remain
 
-- **The CHANGELOG prose.** `apply` drafts one bullet per commit subject under a
-  heading per package. That is a starting point, not a finished entry — read it
-  and rewrite the parts that need a human. An `## [Unreleased]` section as the
-  first section is honoured instead (relabelled, prose kept), so a cycle that
-  wrote its own notes keeps them. Older `## [Unreleased]` headings elsewhere in
-  the file are left alone.
-- **`--bump` across a stable boundary.** The tool cannot tell a feature from a
-  fix, so it defaults to `patch`.
+- **The CHANGELOG prose.** The draft picks its source per package: merged PR
+  **titles** when `gh` is available and the PR touched a path that changed since
+  that package's last tag, otherwise commit subjects. PR *bodies* are never
+  used — they run to several paragraphs, and the file's convention is a one-line
+  bullet per change. Either way it is a starting point: read it and rewrite what
+  needs a human. `plan` prints which source it used.
+- **`--bump` across a stable boundary.** See the version policy table.
 - **Deciding that a release is worth making.** `plan` reports changes; whether a
   three-line CSS tweak deserves its own `next` tag is a judgement call.
 
 ## Verification
 
-`check` is the CI-able guard against the drift this tool exists to prevent:
+`check` re-derives the invariants from the manifests and fails on drift:
 
 - compat shim version and `@ganglion/xacpx` range match core
 - each compatible plugin's `peerDependencies.xacpx` and `minXacpxVersion` match core
@@ -162,6 +165,14 @@ content.
 ```bash
 node ./scripts/release.mjs check
 ```
+
+It is not wired into CI. All of this metadata is derived by `apply`, so drift can
+only be introduced by a hand edit; if nobody hand-edits it, `check` never fires.
+Wiring it into `test.yml` would catch such an edit on the PR instead of at
+tag-push time, at the cost of one narrow false positive: a PR that regenerates
+`package-lock.json` while the bridge pins point at an unpublished version gets
+version-less stubs, which is exactly what `check` reports (and what `apply`
+pins). That is a deliberate call for the operator, not a default.
 
 `publish` runs `check`, `tsc --noEmit`, and `bun run verify:publish` before it
 commits. Pass `--skip-gates` only to recover from a tree already proven green.

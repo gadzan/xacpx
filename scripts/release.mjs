@@ -38,6 +38,7 @@ const {
   CHANGELOG_HEADER,
   COMPAT_MANIFEST,
   CORE_FLOOR_TRACKERS,
+  assignPrsToPackages,
   collectEdits,
   collectFloorViolations,
   expandReleaseSet,
@@ -109,6 +110,7 @@ function parseArgs(argv) {
     else if (arg === "--json") options.json = true;
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--force") options.force = true;
+    else if (arg === "--new-cycle") options.newCycle = true;
     else if (arg === "--skip-gates") options.skipGates = true;
     else if (arg === "--bump") options.bump = argv[++i];
     else throw new Error(`unknown argument: ${arg}`);
@@ -198,6 +200,7 @@ function buildPlan(options) {
       current: current[id],
       target: options.target,
       bump: options.bump,
+      newCycle: options.newCycle,
       baseReleased: releasedBaseExists(id, base),
     });
     nextVersions[id] = to;
@@ -205,6 +208,7 @@ function buildPlan(options) {
   }
 
   const edits = collectEdits({ releases: releaseIds, versions: nextVersions, previousVersions: current });
+  const bullets = changelogBullets({ releases, changedPaths, lastTags });
 
   return {
     target: options.target,
@@ -215,16 +219,35 @@ function buildPlan(options) {
     edits,
     changedPaths,
     lastTags,
+    changelogSource: bullets.source,
     changelog: renderChangelog({
       date: today(),
       releases: releases.map((release) => ({
         id: release.id,
         from: release.from,
         to: release.to,
-        subjects: subjectsFor(release.id, lastTags[release.id], changedPaths[release.id]),
+        subjects: bullets.byPackage[release.id] ?? [],
       })),
     }),
   };
+}
+
+/**
+ * Merged PRs, newest first, or null when `gh` is unavailable.
+ *
+ * `files` is what makes this useful: it assigns each PR to a package by the
+ * same evidence the release uses, so no commit-graph walk is needed.
+ */
+function fetchMergedPrs() {
+  try {
+    return JSON.parse(execFileSync(
+      "gh",
+      ["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,title,mergedAt,files"],
+      { cwd: ROOT, encoding: "utf8" },
+    ));
+  } catch {
+    return null;
+  }
 }
 
 /** Commit subjects that touched the given paths since a ref. */
@@ -235,6 +258,38 @@ function subjectsFor(id, since, paths) {
   args.push("--", ...paths);
   const subjects = git(args, { allowFailure: true }).split("\n").filter(Boolean);
   return [...new Set(subjects)];
+}
+
+/**
+ * Changelog bullets for every releasing package.
+ *
+ * Prefers one bullet per merged PR (its title), which is what a squash-merged
+ * repo wants; falls back to commit subjects when `gh` is not available. PR
+ * bodies are deliberately unused — they run to several paragraphs, and the
+ * CHANGELOG's convention is a one-line bullet per change.
+ */
+function changelogBullets({ releases, changedPaths, lastTags }) {
+  const byPackage = {};
+  const prs = fetchMergedPrs();
+  const assigned = prs && prs.length > 0 ? assignPrsToPackages({ prs, changedPaths }) : null;
+  const sources = new Set();
+
+  for (const release of releases) {
+    const fromPrs = assigned?.[release.id] ?? [];
+    if (fromPrs.length > 0) {
+      byPackage[release.id] = fromPrs;
+      sources.add("merged PR titles");
+      continue;
+    }
+    // Per package, not all-or-nothing: a directly pushed commit (or a PR the
+    // API has not surfaced yet) still describes its change.
+    const fromCommits = subjectsFor(release.id, lastTags[release.id], changedPaths[release.id]);
+    byPackage[release.id] = fromCommits;
+    if (fromCommits.length > 0) sources.add("commit subjects");
+  }
+
+  const source = sources.size === 0 ? "nothing found — write the entry by hand" : [...sources].join(" + ");
+  return { source, byPackage };
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +354,7 @@ function printPlan(plan) {
     out.push(`  [${edit.kind}] ${where}: ${edit.from} -> ${edit.to}`);
     out.push(`      ${edit.reason}`);
   }
-  out.push("", "changelog draft (review and edit before publishing):", "", plan.changelog);
+  out.push("", `changelog draft (source: ${plan.changelogSource}; review and edit before publishing):`, "", plan.changelog);
   return out.join("\n");
 }
 

@@ -545,6 +545,41 @@ export function collectEdits({ releases, versions, previousVersions }) {
 }
 
 /**
+ * Turn merged PRs into one changelog bullet per (package, PR).
+ *
+ * The repo squash-merges, so a commit subject already carries the PR title and
+ * number; using the PR list directly is still better because it yields exactly
+ * one bullet per PR (not one per commit inside it) and assigns by the PR's own
+ * file list rather than by walking the commit graph.
+ *
+ * A PR belongs to a package when it touched a path that differs between that
+ * package's last tag and HEAD — the same evidence the release itself is based
+ * on, so a PR that already shipped with an earlier tag cannot be re-attributed.
+ *
+ * @param {{prs:Array<{number:number,title:string,mergedAt:string,files:Array<string|{path:string}>}>, changedPaths:Record<string,string[]>}} input
+ * @returns {Record<string,string[]>} package id -> bullet texts, oldest PR first
+ */
+export function assignPrsToPackages({ prs, changedPaths }) {
+  const ordered = [...prs].sort((a, b) => String(a.mergedAt).localeCompare(String(b.mergedAt)));
+  const byPackage = {};
+  for (const id of Object.keys(changedPaths)) byPackage[id] = [];
+  for (const pr of ordered) {
+    // `gh pr list --json files` yields objects ({path, additions, …}), not
+    // strings; a bare string list is accepted too so a caller can pass either.
+    const touched = new Set(
+      (pr.files ?? [])
+        .map((file) => (typeof file === "string" ? file : file?.path))
+        .filter(Boolean),
+    );
+    for (const [id, paths] of Object.entries(changedPaths)) {
+      if (!paths.some((path) => touched.has(path))) continue;
+      byPackage[id].push(`${pr.title} (#${pr.number})`);
+    }
+  }
+  return byPackage;
+}
+
+/**
  * Render the CHANGELOG blocks for a release from the commit subjects that
  * produced it. The prose is mechanical on purpose: it is a starting point the
  * operator edits, not a substitute for writing the entry.

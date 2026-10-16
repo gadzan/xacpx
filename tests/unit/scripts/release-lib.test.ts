@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import {
   COMPAT_MANIFEST,
   PACKAGE_REGISTRY,
+  assignPrsToPackages,
   collectEdits,
   collectFloorViolations,
   compareVersions,
@@ -51,6 +52,45 @@ test("rootManifestShipsChanges ignores dev-only edits and catches shipped ones",
 
   // No baseline (never released) is treated as changed rather than skipped.
   expect(rootManifestShipsChanges(null, base)).toBe(true);
+});
+
+test("assignPrsToPackages maps each PR to the packages its files belong to, oldest first", () => {
+  const byPackage = assignPrsToPackages({
+    changedPaths: {
+      relay: ["packages/relay-web/src/style.css"],
+      core: ["src/main.ts", "src/adapters/adapter-catalog.ts"],
+      "channel-feishu": [],
+    },
+    prs: [
+      { number: 432, title: "feat(relay-web): GroupPane single topbar", mergedAt: "2026-10-16T10:00:00Z", files: ["packages/relay-web/src/style.css"] },
+      { number: 419, title: "chore(adapters): refresh managed pins", mergedAt: "2026-10-14T10:00:00Z", files: [{ path: "src/adapters/adapter-catalog.ts", additions: 4, changeType: "MODIFIED" }] },
+      { number: 400, title: "feat: spans both", mergedAt: "2026-10-15T10:00:00Z", files: ["src/main.ts", "packages/relay-web/src/style.css"] },
+      { number: 999, title: "docs: unrelated", mergedAt: "2026-10-15T11:00:00Z", files: ["docs/config-reference.md"] },
+    ],
+  });
+
+  // Ordered by mergedAt, not by the order gh returned them.
+  expect(byPackage.core).toEqual([
+    "chore(adapters): refresh managed pins (#419)",
+    "feat: spans both (#400)",
+  ]);
+  expect(byPackage.relay).toEqual([
+    "feat: spans both (#400)",
+    "feat(relay-web): GroupPane single topbar (#432)",
+  ]);
+  // A package with no intersection gets no bullets; a docs-only PR lands nowhere.
+  expect(byPackage["channel-feishu"]).toEqual([]);
+  expect(Object.values(byPackage).flat().join("\n")).not.toContain("docs: unrelated");
+});
+
+test("assignPrsToPackages ignores a PR that only touched paths already shipped by a tag", () => {
+  // changedPaths is "paths that differ since the package's last tag", so a PR
+  // touching only settled paths cannot appear in it — and cannot be re-attributed.
+  const byPackage = assignPrsToPackages({
+    changedPaths: { relay: ["packages/relay-web/src/new-thing.ts"] },
+    prs: [{ number: 1, title: "old", mergedAt: "2026-01-01T00:00:00Z", files: ["packages/relay-web/src/settled.ts"] }],
+  });
+  expect(byPackage.relay).toEqual([]);
 });
 
 test("parseVersion splits a prerelease and rejects non-semver", () => {
