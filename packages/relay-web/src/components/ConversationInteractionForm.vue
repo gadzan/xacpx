@@ -23,6 +23,7 @@ import type {
   InteractionRequestDto,
   InteractionValueDto,
 } from "@ganglion/xacpx-relay-protocol";
+import SelectMenu from "./SelectMenu.vue";
 
 const props = defineProps<{
   request: InteractionRequestDto;
@@ -372,10 +373,8 @@ function onTextInput(field: InteractionFieldDto, event: Event): void {
   if (result.ok) emit('answer', field.key, result.value);
 }
 
-function onSelect(field: InteractionFieldDto, event: Event): void {
-  const target = event.target as HTMLSelectElement | null;
-  if (!target) return;
-  emit('answer', field.key, target.value);
+function onSelect(field: InteractionFieldDto, value: string): void {
+  emit('answer', field.key, value);
 }
 </script>
 
@@ -526,19 +525,17 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
 
         <!-- Select: the option VALUE is the answer, so the label can be anything
           the agent wrote. The current selection is always visible. -->
-        <select
+        <SelectMenu
           v-else-if="field.kind === 'single-select'"
           :id="controlName(index, field)"
           :data-test="`interaction-select-${field.key}`"
-          class="w-full rounded-sm bg-surface-2 px-2 py-1.5 text-xs text-fg"
-          :value="String(hasAnswer(answers, field.key) ? answers[field.key] : '')"
-          @change="onSelect(field, $event)"
-        >
-          <option value="" disabled>{{ t('bot.interaction.choose') }}</option>
-          <option v-for="option in field.options ?? []" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </option>
-        </select>
+          :model-value="String(hasAnswer(answers, field.key) ? answers[field.key] : '')"
+          :aria-label="field.title"
+          :title="field.title"
+          :placeholder="t('bot.interaction.choose')"
+          :groups="[{ options: (field.options ?? []).map((o) => ({ value: o.value, label: o.label })) }]"
+          @update:model-value="onSelect(field, $event)"
+        />
 
         <!-- Multi-select: the answer is a string[] of option VALUES, so the
           renderer must produce an array. A single value here would be rejected by

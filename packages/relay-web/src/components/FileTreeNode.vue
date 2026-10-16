@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ChevronRight, ChevronDown, Folder, FolderOpen } from "lucide-vue-next";
+import { ChevronRight, Folder, FolderOpen } from "lucide-vue-next";
 import type { FsEntryDto } from "@ganglion/xacpx-relay-protocol";
 import { useFilesStore } from "../stores/files";
 import { iconForFile } from "../lib/file-icons";
@@ -140,7 +140,7 @@ async function onMenuSelect(key: string) {
               class="flex min-w-0 flex-1 items-center gap-1 py-0.5 pl-1 text-left"
               :style="{ paddingLeft: depth * 12 + 4 + 'px' }"
               @click="onRowClick" @contextmenu.prevent="openMenu" @pointerdown="onRowPointerDown">
-        <component :is="isOpen ? ChevronDown : ChevronRight" v-if="isDir" :size="12" class="shrink-0 text-fg-muted" />
+        <ChevronRight v-if="isDir" :size="12" class="shrink-0 text-fg-muted transition-transform duration-150" :class="isOpen ? 'rotate-90' : ''" />
         <span v-else class="w-3 shrink-0" />
         <component :is="isDir ? (isOpen ? FolderOpen : Folder) : iconForFile(entry.name)" :size="13"
                    class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />
@@ -166,7 +166,7 @@ async function onMenuSelect(key: string) {
       <div v-if="!visibleChildren.length && files.tree[rel]" class="py-0.5 text-xs text-fg-muted" :style="{ paddingLeft: (depth + 1) * 12 + 16 + 'px' }">{{ $t("files.tree.emptyFolder") }}</div>
     </div>
 
-    <ContextMenu v-if="menu && openMenuKey === rel" :x="menu.x" :y="menu.y"
+    <ContextMenu v-if="menu && openMenuKey === rel" :x="menu.x" :y="menu.y" :title="entry.name"
                  :items="isDir
                    ? [{ key: 'newFile', label: $t('files.menu.newFile') }, { key: 'newFolder', label: $t('files.menu.newFolder') },
                       { key: 'rename', label: $t('files.menu.rename') },

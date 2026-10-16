@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 const emit = defineEmits<{
   close: [];
@@ -10,6 +12,7 @@ const emit = defineEmits<{
 
 const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
+const { t } = useI18n();
 
 const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
@@ -26,6 +29,19 @@ const workspaces = computed(() => {
 });
 
 const workspacesLoad = ref<"loading" | "ready" | "failed">("loading");
+
+const workspaceGroups = computed<SelectGroup[]>(() => [
+  { options: workspaces.value.map((w) => ({ value: w.name, label: w.name })) },
+]);
+const isolationGroups = computed<SelectGroup[]>(() => [
+  {
+    options: [
+      { value: "shared-single-writer", label: t("group.topic.isolationSingleWriter") },
+      { value: "shared", label: t("group.topic.isolationShared") },
+      { value: "worktree-per-member", label: t("group.topic.isolationWorktree") },
+    ],
+  },
+]);
 
 async function loadWorkspaces(): Promise<void> {
   const instId = groupsStore.instanceId;
@@ -78,17 +94,14 @@ async function handleCreate(): Promise<void> {
           class="mb-3 w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none"
         />
         <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("bot.fields.workspace") }}</label>
-        <select
+        <SelectMenu
           v-model="workspace"
           data-test="group-topic-workspace"
-          required
-          class="mb-3 w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none"
-        >
-          <option value="" disabled>
-            {{ workspacesLoad === "loading" && !workspaces.length ? $t("common.loading") : $t("group.topic.workspacePlaceholder") }}
-          </option>
-          <option v-for="w in workspaces" :key="w.name" :value="w.name">{{ w.name }}</option>
-        </select>
+          :aria-label='$t("bot.fields.workspace")'
+          :title='$t("bot.fields.workspace")'
+          :placeholder="workspacesLoad === 'loading' && !workspaces.length ? $t('common.loading') : $t('group.topic.workspacePlaceholder')"
+          :groups="workspaceGroups"
+        />
         <p v-if="workspacesLoad === 'failed'" data-test="group-topic-workspaces-failed" class="-mt-2 mb-3 flex items-center gap-2 text-xs text-danger">
           <span>{{ $t("group.topic.workspacesFailed") }}</span>
           <button type="button" data-test="group-topic-workspaces-retry" class="font-medium underline" @click="loadWorkspaces">
@@ -96,14 +109,13 @@ async function handleCreate(): Promise<void> {
           </button>
         </p>
         <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("group.topic.isolationLabel") }}</label>
-        <select
+        <SelectMenu
           v-model="isolation"
-          class="mb-4 w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none"
-        >
-          <option value="shared-single-writer">{{ $t("group.topic.isolationSingleWriter") }}</option>
-          <option value="shared">{{ $t("group.topic.isolationShared") }}</option>
-          <option value="worktree-per-member">{{ $t("group.topic.isolationWorktree") }}</option>
-        </select>
+          data-test="group-topic-isolation"
+          :aria-label='$t("group.topic.isolationLabel")'
+          :title='$t("group.topic.isolationLabel")'
+          :groups="isolationGroups"
+        />
         <p class="mb-4 text-xs text-fg-muted">{{ $t(isolation === 'worktree-per-member' ? "group.worktree.boundary" : "group.topic.isolationHint") }}</p>
         <div class="flex items-center justify-end gap-2">
           <button

@@ -74,7 +74,9 @@ test("AgentsManager adds an agent from the catalog driver picker", async () => {
   const createAgent = vi.spyOn(store, "createAgent").mockResolvedValue(undefined as never);
   const w = mount(AgentsManager, { props: { instanceId: "i1" } });
   await w.get('[data-test="am-add-toggle"]').trigger("click");
-  await w.get('[data-test="am-driver"]').setValue("gemini");
+  // The driver picker is the unified SelectMenu: open the trigger, then pick the row.
+  await w.get('[data-test="am-driver"]').trigger("click");
+  await w.get('[data-value="gemini"]').trigger("click");
   await w.get('[data-test="am-add"]').trigger("click");
   expect(createAgent).toHaveBeenCalledWith("i1", "gemini", "gemini");
 });

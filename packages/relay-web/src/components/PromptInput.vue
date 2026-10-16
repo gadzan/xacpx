@@ -37,6 +37,9 @@ import {
   shortestUniqueSuffix,
 } from "../lib/sidebar-group-mode";
 import { useI18n } from "vue-i18n";
+import DropdownPanel from "./DropdownPanel.vue";
+import { useDropdown } from "../lib/use-dropdown";
+import type { DropdownGroup } from "../lib/use-dropdown";
 
 const { t } = useI18n();
 const props = defineProps<{
@@ -96,20 +99,42 @@ function toggleUsage(e: MouseEvent) {
 }
 
 // Load the session's model for the composer chip whenever the session changes.
-const modelMenuOpen = ref(false);
-const effortMenuOpen = ref(false);
+const modelDd = useDropdown();
+const effortDd = useDropdown();
+const modelGroups = computed<DropdownGroup[]>(() => [
+  {
+    rows: controls.modelAvailable.map((m) => ({
+      value: m,
+      label: formatModelLabel(m),
+      mono: true,
+      testId: "model-option",
+      selected: m === controls.modelCurrent,
+    })),
+  },
+]);
+const effortGroups = computed<DropdownGroup[]>(() => [
+  {
+    rows: controls.effortAvailable.map((effort) => ({
+      value: effort,
+      label: effort,
+      mono: true,
+      testId: "effort-option",
+      selected: effort === controls.effortCurrent,
+    })),
+  },
+]);
 watch(
   () => [props.instanceId, props.sessionAlias] as const,
   ([id, alias]) => {
     void controls.loadModel(id ?? null, alias ?? null);
     void controls.loadEffort(id ?? null, alias ?? null);
-    modelMenuOpen.value = false;
-    effortMenuOpen.value = false;
+    modelDd.closeMenu();
+    effortDd.closeMenu();
   },
   { immediate: true },
 );
 async function pickModel(id: string) {
-  modelMenuOpen.value = false;
+  modelDd.closeMenu();
   const instanceId = props.instanceId;
   const sessionAlias = props.sessionAlias;
   if (!instanceId || !sessionAlias) return;
@@ -119,18 +144,10 @@ async function pickModel(id: string) {
   }
 }
 async function pickEffort(effort: string) {
-  effortMenuOpen.value = false;
+  effortDd.closeMenu();
   if (props.instanceId && props.sessionAlias) {
     await controls.setEffort(props.instanceId, props.sessionAlias, effort);
   }
-}
-function toggleModelMenu() {
-  effortMenuOpen.value = false;
-  modelMenuOpen.value = !modelMenuOpen.value;
-}
-function toggleEffortMenu() {
-  modelMenuOpen.value = false;
-  effortMenuOpen.value = !effortMenuOpen.value;
 }
 const text = ref(loadDraft(props.draftKey ?? ""));
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -816,7 +833,7 @@ function onKeydown(e: KeyboardEvent) {
           v-if="cmdMenuOpen && cmdMatches.length"
           data-test="cmd-menu"
           role="listbox"
-          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-sm bg-raised py-1 shadow-float"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-80 overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
         >
           <li
             v-for="(c, i) in cmdMatches"
@@ -824,13 +841,13 @@ function onKeydown(e: KeyboardEvent) {
             data-test="cmd-item"
             role="option"
             :aria-selected="i === cmdActiveIdx"
-            class="flex cursor-pointer items-baseline gap-2 px-3 py-1.5 text-ui"
-            :class="i === cmdActiveIdx ? 'bg-accent-soft' : ''"
+            class="flex h-8 cursor-pointer items-center gap-2 rounded-sm px-2 text-sm"
+            :class="i === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
             @mousedown.prevent="pickCommand(c.name)"
             @mouseenter="cmdActiveIdx = i"
           >
             <span class="shrink-0 font-medium text-fg">/{{ c.name }}</span>
-            <span v-if="c.description" class="truncate text-fg-muted">{{
+            <span v-if="c.description" class="truncate text-xs text-fg-muted">{{
               c.description
             }}</span>
           </li>
@@ -840,7 +857,7 @@ function onKeydown(e: KeyboardEvent) {
           v-if="mentionMenuOpen && mentionMatches.length"
           data-test="mention-menu"
           role="listbox"
-          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-sm bg-raised py-1 shadow-float"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-80 overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
         >
           <li
             v-for="(agentItem, i) in mentionMatches"
@@ -848,8 +865,8 @@ function onKeydown(e: KeyboardEvent) {
             data-test="mention-item"
             role="option"
             :aria-selected="i === mentionActiveIdx"
-            class="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-ui"
-            :class="i === mentionActiveIdx ? 'bg-accent-soft' : ''"
+            class="flex min-h-8 cursor-pointer items-center justify-between gap-2 rounded-sm px-2 py-1 text-sm"
+            :class="i === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
             @mousedown.prevent="pickMention(agentItem)"
             @mouseenter="mentionActiveIdx = i"
           >
@@ -890,92 +907,49 @@ function onKeydown(e: KeyboardEvent) {
         >
           <button
             type="button"
+            :ref="(el) => (modelDd.trigger = el as HTMLElement | null)"
             data-test="model-chip"
-            class="flex min-w-0 items-center gap-1.5 px-1.5 py-1 rounded-sm text-fg-muted hover:bg-raised transition-colors disabled:opacity-60"
+            :aria-haspopup="true"
+            :aria-expanded="modelDd.open"
+            class="flex min-w-0 items-center gap-1.5 rounded-sm px-1 py-0.5 text-xs transition-colors disabled:opacity-60"
+            :class="modelDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
             :disabled="!controls.modelAvailable.length"
-            @click="toggleModelMenu"
+            @click="modelDd.toggle()"
           >
             <Brain :size="14" class="shrink-0 text-accent" />
-            <span
-              class="min-w-0 truncate font-mono text-xs font-medium text-fg"
-              >{{
+            <span class="min-w-0 truncate font-mono font-medium text-fg">{{
                 controls.modelCurrent
                   ? formatModelLabel(controls.modelCurrent)
                   : $t("chat.model")
-              }}</span
-            >
-            <ChevronDown
-              v-if="controls.modelAvailable.length"
-              :size="13"
-              class="shrink-0"
-            />
+              }}</span>
+            <ChevronDown v-if="controls.modelAvailable.length" :size="12"
+                         class="shrink-0 transition-transform" :class="modelDd.open ? 'rotate-180' : ''" />
           </button>
-          <ul
-            v-if="modelMenuOpen && controls.modelAvailable.length"
-            data-test="model-menu"
-            class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-40 overflow-y-auto rounded-lg bg-raised shadow-float"
-          >
-            <li v-for="m in controls.modelAvailable" :key="m">
-              <button
-                type="button"
-                data-test="model-option"
-                class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
-                :class="
-                  m === controls.modelCurrent
-                    ? 'bg-accent-soft text-accent'
-                    : 'hover:bg-fg/10 text-fg-muted'
-                "
-                @click="pickModel(m)"
-              >
-                <span class="font-mono">{{ formatModelLabel(m) }}</span>
-                <Check
-                  v-if="m === controls.modelCurrent"
-                  :size="14"
-                  class="ml-auto"
-                />
-              </button>
-            </li>
-          </ul>
+          <DropdownPanel v-if="controls.modelAvailable.length"
+                         :dd="modelDd" tone="surface" width="min-w-40" placement="top"
+                         :title='$t("chat.model")' test-id="model-menu"
+                         :groups="modelGroups" @select="pickModel" />
           <div v-if="controls.effortAvailable.length" class="relative shrink-0">
             <button
               type="button"
+              :ref="(el) => (effortDd.trigger = el as HTMLElement | null)"
               data-test="effort-chip"
-              class="flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-fg-muted transition-colors hover:bg-raised"
+              :aria-haspopup="true"
+              :aria-expanded="effortDd.open"
+              class="flex items-center gap-1.5 rounded-sm px-1 py-0.5 text-xs transition-colors"
+              :class="effortDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
               :title="$t('chat.effort')"
-              @click="toggleEffortMenu"
+              @click="effortDd.toggle()"
             >
               <SlidersHorizontal :size="14" class="text-accent" />
-              <span class="font-mono text-xs font-medium text-fg">{{
+              <span class="font-mono font-medium text-fg">{{
                 controls.effortCurrent ?? $t("chat.effort")
               }}</span>
-              <ChevronDown :size="13" />
+              <ChevronDown :size="12" class="shrink-0 transition-transform" :class="effortDd.open ? 'rotate-180' : ''" />
             </button>
-            <ul
-              v-if="effortMenuOpen"
-              data-test="effort-menu"
-              class="absolute bottom-full left-0 z-10 mb-1 max-h-48 min-w-32 overflow-y-auto rounded-lg bg-raised shadow-float"
-            >
-              <li v-for="effort in controls.effortAvailable" :key="effort">
-                <button
-                  type="button"
-                  data-test="effort-option"
-                  class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
-                  :class="
-                    effort === controls.effortCurrent
-                      ? 'bg-accent-soft text-accent'
-                      : 'hover:bg-fg/10 text-fg-muted'
-                  "
-                  @click="pickEffort(effort)"
-                >
-                  <span class="font-mono">{{ effort }}</span>
-                  <Check
-                    v-if="effort === controls.effortCurrent"
-                    :size="14"
-                    class="ml-auto"
-                  />
-                </button>
-              </li>
-            </ul>
+            <DropdownPanel :dd="effortDd" tone="surface" width="min-w-32" placement="top"
+                           :title='$t("chat.effort")' test-id="effort-menu"
+                           :groups="effortGroups" @select="pickEffort" />
           </div>
           <!-- context-usage meter: click to open the cost / token-breakdown popover -->
           <button

@@ -504,7 +504,7 @@ describe("ConversationInteractionForm field kinds", () => {
     expect(wrapper.emitted("answer")![0]).toEqual(["ok", true]);
   });
 
-  it("single-select emits the option VALUE, not the label", () => {
+  it("single-select emits the option VALUE, not the label", async () => {
     const wrapper = mountForm([
       {
         kind: "single-select",
@@ -514,9 +514,9 @@ describe("ConversationInteractionForm field kinds", () => {
         options: [{ value: "prod", label: "Production!" }],
       },
     ]);
-    const select = wrapper.find('[data-test="interaction-select-env"]');
-    (select.element as HTMLSelectElement).value = "prod";
-    select.trigger("change");
+    // The select is the unified SelectMenu: open the trigger, then pick the row.
+    await wrapper.find('[data-test="interaction-select-env"]').trigger("click");
+    await wrapper.find('[data-value="prod"]').trigger("click");
     expect(wrapper.emitted("answer")![0]).toEqual(["env", "prod"]);
   });
 });

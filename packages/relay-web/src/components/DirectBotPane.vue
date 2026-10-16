@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   ChevronDown,
   ArrowLeft,
@@ -25,6 +26,9 @@ import BotDialog from "./BotDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
 import TopicManager from "./TopicManager.vue";
+import DropdownPanel from "./DropdownPanel.vue";
+import { useDropdown } from "../lib/use-dropdown";
+import type { DropdownGroup } from "../lib/use-dropdown";
 
 const emit = defineEmits<{
   navigateBot: [instanceId: string, botId: string];
@@ -36,7 +40,7 @@ const emit = defineEmits<{
 const directBotsStore = useDirectBotsStore();
 const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
-const navOpen = ref(false);
+const { t } = useI18n();
 
 const bot = computed(() => directBotsStore.currentBot);
 const instance = computed(() =>
@@ -109,10 +113,16 @@ const memberGroups = computed(() => {
   return (groupsStore.groupsByInstance[instanceId] ?? []).filter((group) => group.botIds.includes(currentId));
 });
 
+const navDd = useDropdown();
+const navGroups = computed<DropdownGroup[]>(() => [
+  { label: t("bot.nav.talkWith"), rows: otherBots.value.map((other) => ({ value: `bot:${other.id}`, label: other.name, testId: "direct-nav-bot" })) },
+  { label: t("bot.nav.collaborate"), rows: memberGroups.value.map((group) => ({ value: `group:${group.id}`, label: group.title, testId: "direct-nav-group" })) },
+]);
+
 function openOtherBot(botId: string): void {
   const instanceId = directBotsStore.instanceId;
   if (!instanceId) return;
-  navOpen.value = false;
+  navDd.closeMenu();
   closeSheet();
   emit("navigateBot", instanceId, botId);
 }
@@ -120,9 +130,15 @@ function openOtherBot(botId: string): void {
 function openGroup(groupId: string): void {
   const instanceId = directBotsStore.instanceId;
   if (!instanceId) return;
-  navOpen.value = false;
+  navDd.closeMenu();
   closeSheet();
   emit("navigateGroup", instanceId, groupId);
+}
+
+function onNavSelect(value: string): void {
+  const [kind, id] = value.split(":") as ["bot" | "group", string];
+  if (kind === "bot") openOtherBot(id);
+  else openGroup(id);
 }
 
 async function renameTopic(topicId: string, title: string) {
@@ -230,42 +246,20 @@ function openRemoval(): void {
         <div class="relative">
           <button
             type="button"
+            :ref="(el) => (navDd.trigger = el as HTMLElement | null)"
             data-test="direct-nav-button"
-            class="rounded-lg px-2 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-            @click="navOpen = !navOpen"
+            :aria-haspopup="true"
+            :aria-expanded="navDd.open"
+            class="flex items-center gap-1 rounded-sm px-1 text-xs transition-colors"
+            :class="navDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            @click="navDd.toggle()"
           >
             {{ $t("bot.nav.talkWith") }}
+            <ChevronDown :size="12" class="shrink-0 transition-transform" :class="navDd.open ? 'rotate-180' : ''" />
           </button>
-          <div
-            v-if="navOpen"
-            data-test="direct-nav-menu"
-            class="absolute right-0 z-20 mt-1 w-64 overflow-hidden rounded-2xl bg-raised shadow-float"
-          >
-            <div class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</div>
-            <button
-              v-for="other in otherBots"
-              :key="other.id"
-              type="button"
-              data-test="direct-nav-bot"
-              class="block w-full truncate px-3 py-1.5 text-left text-xs hover:bg-surface-2"
-              @click="openOtherBot(other.id)"
-            >
-              {{ other.name }}
-            </button>
-            <p v-if="otherBots.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noOtherBot") }}</p>
-            <div class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.collaborate") }}</div>
-            <button
-              v-for="group in memberGroups"
-              :key="group.id"
-              type="button"
-              data-test="direct-nav-group"
-              class="block w-full truncate px-3 py-1.5 text-left text-xs hover:bg-surface-2"
-              @click="openGroup(group.id)"
-            >
-              {{ group.title }}
-            </button>
-            <p v-if="memberGroups.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noGroup") }}</p>
-          </div>
+          <DropdownPanel :dd="navDd" tone="surface" width="w-64" placement="bottom-end"
+                         :title='$t("bot.nav.talkWith")' test-id="direct-nav-menu" role="menu"
+                         :groups="navGroups" @select="onNavSelect" />
         </div>
         <button
           type="button"

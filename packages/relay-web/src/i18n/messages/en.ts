@@ -1027,6 +1027,7 @@ export default {
       lead: "Lead",
       everyone: "Everyone",
       selectMembers: "Select members",
+      sendTo: "Send to",
       memberCount: "{count} selected",
       noEligible: "No enabled members in this group.",
       automatic: "Automatic collaboration",

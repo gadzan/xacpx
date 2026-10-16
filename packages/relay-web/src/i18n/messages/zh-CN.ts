@@ -1024,6 +1024,7 @@ export default {
       lead: "负责人",
       everyone: "全体成员",
       selectMembers: "选择成员",
+      sendTo: "发给谁",
       memberCount: "已选 {count} 人",
       noEligible: "该群组暂无可用成员。",
       automatic: "自动协作",

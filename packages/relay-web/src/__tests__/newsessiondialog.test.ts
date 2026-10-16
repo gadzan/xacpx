@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { needsSetupCapability, readyCapability } from "@ganglion/xacpx-relay-protocol";
 import NewSessionDialog from "../components/NewSessionDialog.vue";
-import { useInstancesStore } from "../stores/instances";
+import { useInstancesStore, type InstanceStore } from "../stores/instances";
 import { i18n } from "../i18n";
+
+/** One mounted dialog under test: the wrapper plus the seeded instance store. */
+interface DialogHandle {
+  wrapper: VueWrapper;
+  store: InstanceStore;
+}
 
 interface DialogOptions {
   agents?: Array<{ name: string; driver: string }>;
@@ -15,7 +21,7 @@ interface DialogOptions {
   capabilityModels?: string[];
 }
 
-function mountDialog(opts: DialogOptions = {}) {
+function mountDialog(opts: DialogOptions = {}): DialogHandle {
   const store = useInstancesStore();
   store.instances = [{
     id: "i1", name: "pc", online: true, lastSeenAt: null,
@@ -53,11 +59,11 @@ function mountDialog(opts: DialogOptions = {}) {
   return { wrapper, store };
 }
 
-// The Agent/Workspace pickers are custom SelectMenu dropdowns (button + list), not native
-// <select>s — open the trigger then click the option by its data-value.
-async function pick(wrapper: ReturnType<typeof mountDialog>["wrapper"], trigger: string, value: string) {
+// The Agent/Workspace pickers are unified SelectMenu dropdowns (button + list), not native
+// <select>s — open the trigger then click the option row by its data-value.
+async function pick(wrapper: VueWrapper, trigger: string, value: string) {
   await wrapper.get(`[data-test="${trigger}"]`).trigger("click");
-  await wrapper.get(`[data-value="${value}"]`).trigger("mousedown");
+  await wrapper.get(`[data-value="${value}"]`).trigger("click");
 }
 
 describe("NewSessionDialog", () => {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { ChevronRight, Download, File, FileText, FileX, Folder, FolderGit2, GitBranch, List, Loader2, MoreHorizontal, Plus, RefreshCw, Undo2, Upload, X } from "lucide-vue-next";
 import { useFilesStore } from "../stores/files";
 import { useInstancesStore } from "../stores/instances";
@@ -10,6 +11,7 @@ import { openMenuKey, ROOT_MENU_KEY } from "../lib/tree-menu";
 import { useChangesGit } from "../lib/use-changes-git";
 import FileTreeNode from "./FileTreeNode.vue";
 import ContextMenu from "./ContextMenu.vue";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 // Navigation-only file rail: a file tree (Files) and a changed-files list (Changes).
 // Opening a file or a single-file diff shows it full-width in the center column (see
@@ -96,6 +98,18 @@ const {
   fetchRemote, pullRemote, pushRemote, beginWorktreeCreate, createWorktree,
   toggleGroup, statusBadge,
 } = useChangesGit(toRef(props, "instanceId"));
+
+const { t } = useI18n();
+const branchGroups = computed<SelectGroup[]>(() => [
+  {
+    options: (git.status?.branches ?? []).map((b) => ({
+      value: b.name,
+      label: b.name,
+      disabled: !!b.worktreePath && !b.current,
+      hint: b.worktreePath && !b.current ? t("files.git.inWorktree") : undefined,
+    })),
+  },
+]);
 
 // Debounced file-name search.
 const searchInput = ref("");
@@ -361,12 +375,12 @@ watch(
           <div class="shrink-0">
             <div data-test="changes-summary" class="flex items-center gap-1.5 px-2.5 pt-2 pb-1">
               <GitBranch :size="12" class="shrink-0 text-accent" />
-              <select v-if="git.status?.branch" data-test="git-branch-select" :value="git.status.branch" :disabled="gitBusy"
-                      class="min-w-0 max-w-[45%] truncate rounded-sm bg-surface-2 px-1.5 py-0.5 font-mono text-xs font-medium text-fg disabled:opacity-50"
-                      @change="switchBranch">
-                <option v-for="branch in git.status.branches" :key="branch.name" :value="branch.name"
-                        :disabled="!!branch.worktreePath && !branch.current">{{ branch.name }}{{ branch.worktreePath && !branch.current ? ` · ${$t('files.git.inWorktree')}` : '' }}</option>
-              </select>
+              <SelectMenu v-if="git.status?.branch" class="min-w-0 max-w-[45%]" compact
+                          data-test="git-branch-select"
+                          :model-value="git.status.branch" :disabled="gitBusy"
+                          :aria-label='$t("files.changes")' :title='$t("files.changes")'
+                          :groups="branchGroups"
+                          @update:model-value="switchBranch" />
               <span v-else-if="gitCtx?.branch" data-test="changes-branch" class="truncate font-mono text-xs font-medium text-fg">{{ gitCtx.branch }}</span>
               <span v-else-if="gitCtx?.detached" data-test="changes-branch" class="truncate font-mono text-xs italic text-fg-muted">{{ $t("files.detached") }}</span>
               <span v-else class="text-xs font-semibold uppercase tracking-wider text-fg-muted">{{ $t("files.changes") }}</span>

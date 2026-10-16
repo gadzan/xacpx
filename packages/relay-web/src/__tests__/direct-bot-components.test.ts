@@ -100,12 +100,13 @@ describe("Direct Bot Components", () => {
 
       const effortSelect = wrapper.find('[data-test="model-picker-effort"]');
       expect(effortSelect.exists()).toBe(true);
-      const options = effortSelect.findAll("option").map((o) => o.attributes("value"));
+      await effortSelect.trigger("click");
+      const values = wrapper.findAll('[data-test="effort-option"]').map((o) => o.attributes("data-value"));
       // Must include Default, medium, high, and xhigh
-      expect(options).toEqual(["", "medium", "high", "xhigh"]);
+      expect(values).toEqual(["", "medium", "high", "xhigh"]);
       // Unadvertised low and max must NOT be present
-      expect(options).not.toContain("low");
-      expect(options).not.toContain("max");
+      expect(values).not.toContain("low");
+      expect(values).not.toContain("max");
     });
 
     it("renders open effort input with datalist when no advertised efforts are provided", async () => {
@@ -162,8 +163,10 @@ describe("Direct Bot Components", () => {
         global: { plugins: [i18n] },
       });
       await flushPromises();
-      const options = wrapper.find("#bot-agent").findAll("option").map((o) => (o.element as HTMLOptionElement).value);
-      expect(options).toEqual(["reviewer"]);
+      const options = wrapper.find("#bot-agent");
+      await options.trigger("click");
+      const values = wrapper.findAll("[data-value]").map((o) => o.attributes("data-value"));
+      expect(values).toEqual(["reviewer"]);
     });
 
     it("submits create bot with valid inputs", async () => {
@@ -461,8 +464,8 @@ describe("Direct Bot Components", () => {
       });
       await flushPromises();
       // Unlocked before the authoritative detail arrives.
-      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(false);
-      expect((wrapper.find("#bot-workspace").element as HTMLSelectElement).disabled).toBe(false);
+      expect((wrapper.find("#bot-agent").element as HTMLButtonElement).disabled).toBe(false);
+      expect((wrapper.find("#bot-workspace").element as HTMLButtonElement).disabled).toBe(false);
 
       detailGate.resolve({
         bot: {
@@ -476,8 +479,8 @@ describe("Direct Bot Components", () => {
       await flushPromises();
 
       expect(loadDetailSpy).toHaveBeenCalledWith("i1", "bot_1");
-      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(true);
-      expect((wrapper.find("#bot-workspace").element as HTMLSelectElement).disabled).toBe(true);
+      expect((wrapper.find("#bot-agent").element as HTMLButtonElement).disabled).toBe(true);
+      expect((wrapper.find("#bot-workspace").element as HTMLButtonElement).disabled).toBe(true);
     });
 
     it("locks an open dialog when the list row converges hasRuntime=true despite a stale detail row", async () => {
@@ -526,7 +529,7 @@ describe("Direct Bot Components", () => {
         global: { plugins: [i18n] },
       });
       await flushPromises();
-      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(false);
+      expect((wrapper.find("#bot-agent").element as HTMLButtonElement).disabled).toBe(false);
 
       // Later catalog lifecycle convergence (e.g. remote topic creation for
       // this Bot) flips only the list row to hasRuntime=true while the stale
@@ -541,8 +544,8 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       await wrapper.vm.$nextTick();
 
-      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(true);
-      expect((wrapper.find("#bot-workspace").element as HTMLSelectElement).disabled).toBe(true);
+      expect((wrapper.find("#bot-agent").element as HTMLButtonElement).disabled).toBe(true);
+      expect((wrapper.find("#bot-workspace").element as HTMLButtonElement).disabled).toBe(true);
     });
 
     it("keeps newer instructions when a stale detail response resolves after a newer one", async () => {
@@ -1131,8 +1134,10 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       // User edits codex -> claude, then deliberately reverts claude ->
       // codex while the detail request is still in flight.
-      await wrapper.find("#bot-agent").setValue("claude");
-      await wrapper.find("#bot-agent").setValue("codex");
+      await wrapper.find("#bot-agent").trigger("click");
+      await wrapper.find('[data-value="claude"]').trigger("click");
+      await wrapper.find("#bot-agent").trigger("click");
+      await wrapper.find('[data-value="codex"]').trigger("click");
       // Authoritative rev2 detail arrives with agent claude.
       detailGate.resolve({
         bot: {
@@ -1144,7 +1149,7 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       await flushPromises();
       // The explicit user choice (codex) survives hydration, not rev2 claude.
-      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).value).toBe("codex");
+      expect(wrapper.find("#bot-agent").text()).toContain("codex");
 
       await wrapper.find("form").trigger("submit.prevent");
       await flushPromises();

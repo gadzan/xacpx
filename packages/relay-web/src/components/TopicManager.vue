@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Archive, ChevronDown, Plus, RotateCcw } from "lucide-vue-next";
+import { Archive, Check, ChevronDown, Plus, RotateCcw } from "lucide-vue-next";
 import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useTopicActions } from "../lib/use-topic-actions";
+import DropdownPanel from "./DropdownPanel.vue";
+import { useDropdown } from "../lib/use-dropdown";
 
 const props = defineProps<{
   variant: "direct" | "group";
@@ -21,7 +23,7 @@ const emit = defineEmits<{
   create: [];
 }>();
 
-const open = ref(false);
+const dd = useDropdown();
 const query = ref("");
 
 const { editingId, draftTitle, pendingId, actionError, confirmKind, confirmImpact, releaseBindings, confirming,
@@ -41,7 +43,7 @@ const visible = computed(() => {
 // with its error, and cancelling leaves the panel where the user left it.
 async function submitConfirmAndClose(): Promise<void> {
   await submitConfirm();
-  if (!confirmKind.value) open.value = false;
+  if (!confirmKind.value) dd.closeMenu();
 }
 </script>
 
@@ -49,15 +51,18 @@ async function submitConfirmAndClose(): Promise<void> {
   <div class="relative flex min-w-0 flex-1 items-center gap-2">
     <button
       type="button"
-      class="flex min-w-0 items-center gap-1 rounded-sm px-2 py-1 text-xs font-medium text-fg hover:bg-raised"
+      :ref="(el) => (dd.trigger = el as HTMLElement | null)"
+      class="flex min-w-0 items-center gap-1 rounded-sm px-2 py-1 text-xs transition-colors"
+      :class="dd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
       :data-test="variant === 'group' ? 'group-topic-pill' : 'topic-menu'"
       :data-topic-status="active?.status ?? 'active'"
-      :aria-expanded="open"
-      @click="open = !open"
+      :aria-haspopup="true"
+      :aria-expanded="dd.open"
+      @click="dd.toggle()"
     >
       <span class="truncate">{{ active?.title || $t("bot.topic.default") }}</span>
       <span v-if="active && statusLabel(active)" class="shrink-0 text-fg-muted">{{ statusLabel(active) }}</span>
-      <ChevronDown :size="12" class="shrink-0 text-fg-muted" />
+      <ChevronDown :size="12" class="shrink-0 text-fg-muted transition-transform" :class="dd.open ? 'rotate-180' : ''" />
     </button>
     <button
       type="button"
@@ -69,53 +74,52 @@ async function submitConfirmAndClose(): Promise<void> {
       <span>{{ $t("bot.topic.new") }}</span>
     </button>
 
-    <div
-      v-if="open"
-      data-test="topic-panel"
-      class="z-30 flex flex-col bg-surface shadow-float max-md:fixed max-md:inset-x-0 max-md:bottom-0 max-md:max-h-[70vh] max-md:rounded-t-2xl md:absolute md:right-0 md:top-full md:mt-1 md:max-h-96 md:w-80 md:rounded-lg"
-    >
-      <div class="p-2">
-        <input
-          v-model="query"
-          type="search"
-          data-test="topic-search"
-          :placeholder="$t('bot.topic.search')"
-          class="w-full rounded-sm bg-surface-2 px-2 py-1 text-xs outline-none"
-        />
-      </div>
-      <ul class="min-h-0 flex-1 overflow-y-auto p-1">
-        <li v-if="visible.length === 0" class="px-2 py-3 text-xs text-fg-muted">{{ $t("bot.topic.empty") }}</li>
-        <li
-          v-for="topic in visible"
-          :key="topic.id"
-          data-test="topic-row"
-          :data-topic-id="topic.id"
-          :data-topic-status="topic.status"
-          class="rounded-sm px-2 py-1.5 text-xs"
-          :class="topic.id === activeTopicId ? 'bg-accent-soft' : ''"
-        >
+    <!-- One panel (unified §F): popover on desktop, MobileSheet below lg. Row actions
+         stay inline (rename/archive/delete chips), matching the manager's density. -->
+    <DropdownPanel :dd="dd" tone="surface" width="w-80" placement="bottom-end"
+                   :title='$t("mobileBar.switchTopic")' test-id="topic-panel"
+                   :nav-count="visible.length" v-model:query="query"
+                   @navigate="(i) => { const topic = visible[i]; if (topic) { emit('select', topic.id); dd.closeMenu(); } }">
+      <template #default="{ mobile }">
+        <div class="p-2">
+          <input
+            v-model="query"
+            type="search"
+            data-test="topic-search"
+            :placeholder="$t('bot.topic.search')"
+            class="w-full rounded-sm bg-surface-2 px-2 py-1 text-xs outline-none"
+          />
+        </div>
+        <p v-if="!visible.length" class="px-2 py-3 text-sm text-fg-muted">{{ $t("bot.topic.empty") }}</p>
+        <div v-for="(topic, i) in visible" :key="topic.id"
+             data-test="topic-row" :data-topic-id="topic.id" :data-topic-status="topic.status"
+             class="flex flex-col gap-1 rounded-sm px-2 py-1.5 text-sm"
+             :class="[mobile ? 'min-h-11' : '', i === dd.highlight ? 'bg-surface-2' : '']">
           <div class="flex items-center gap-1">
-            <button type="button" class="min-w-0 flex-1 truncate text-left" @click="emit('select', topic.id); open = false">
+            <button type="button" class="min-w-0 flex-1 truncate text-left"
+                    :class="topic.id === activeTopicId ? 'font-medium text-fg' : 'text-fg'"
+                    @click="emit('select', topic.id); dd.closeMenu()">
               {{ topic.title || $t("bot.topic.default") }}
             </button>
             <Archive v-if="topic.status === 'archived'" :size="12" class="shrink-0 text-fg-muted" />
             <RotateCcw v-if="topic.status === 'deleting'" :size="12" class="shrink-0 text-fg-muted" />
+            <Check v-if="topic.id === activeTopicId" :size="14" class="shrink-0 text-accent" />
           </div>
-          <form v-if="editingId === topic.id" class="mt-1 flex gap-1" @submit.prevent="saveRename(topic)">
-            <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded-sm bg-surface-2 px-1 py-0.5" />
-            <button type="submit" data-test="topic-rename-save" class="rounded-sm bg-accent px-2 py-0.5 text-on-accent">{{ $t("bot.topic.save") }}</button>
+          <form v-if="editingId === topic.id" class="flex gap-1" @submit.prevent="saveRename(topic)">
+            <input v-model="draftTitle" data-test="topic-rename-input" maxlength="200" class="min-w-0 flex-1 rounded-sm bg-surface-2 px-1 py-0.5 text-xs" />
+            <button type="submit" data-test="topic-rename-save" class="rounded-sm bg-accent px-2 py-0.5 text-xs text-on-accent">{{ $t("bot.topic.save") }}</button>
           </form>
-          <div v-else class="mt-1 flex flex-wrap gap-1">
-            <button v-if="topic.status !== 'deleting'" type="button" data-test="topic-rename" class="rounded-sm px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="startRename(topic)">{{ $t("bot.topic.rename") }}</button>
-            <button v-if="topic.status === 'active'" type="button" data-test="topic-archive" class="rounded-sm px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="archive(topic)">{{ $t("bot.topic.archive") }}</button>
-            <button v-if="topic.status === 'archived'" type="button" data-test="topic-restore" class="rounded-sm px-1.5 py-0.5 text-fg-muted hover:bg-raised" :disabled="pendingId === topic.id" @click="restore(topic)">{{ $t("bot.topic.restore") }}</button>
-            <button v-if="topic.defaultDirect === true && topic.status !== 'deleting'" type="button" data-test="topic-clear" class="rounded-sm px-1.5 py-0.5 text-danger hover:bg-danger/10" :disabled="pendingId === topic.id" @click="openConfirm('clear', topic)">{{ $t("bot.topic.clear") }}</button>
-            <button v-if="topic.defaultDirect !== true && topic.status !== 'deleting'" type="button" data-test="topic-delete" class="rounded-sm px-1.5 py-0.5 text-danger hover:bg-danger/10" :disabled="pendingId === topic.id" @click="openConfirm('delete', topic)">{{ $t("bot.topic.delete") }}</button>
+          <div v-else class="flex flex-wrap gap-1">
+            <button v-if="topic.status !== 'deleting'" type="button" data-test="topic-rename" class="rounded-sm px-1.5 py-0.5 text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg" :disabled="pendingId === topic.id" @click="startRename(topic)">{{ $t("bot.topic.rename") }}</button>
+            <button v-if="topic.status === 'active'" type="button" data-test="topic-archive" class="rounded-sm px-1.5 py-0.5 text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg" :disabled="pendingId === topic.id" @click="archive(topic)">{{ $t("bot.topic.archive") }}</button>
+            <button v-if="topic.status === 'archived'" type="button" data-test="topic-restore" class="rounded-sm px-1.5 py-0.5 text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg" :disabled="pendingId === topic.id" @click="restore(topic)">{{ $t("bot.topic.restore") }}</button>
+            <button v-if="topic.defaultDirect === true && topic.status !== 'deleting'" type="button" data-test="topic-clear" class="rounded-sm px-1.5 py-0.5 text-danger transition-colors hover:bg-danger/10" :disabled="pendingId === topic.id" @click="openConfirm('clear', topic)">{{ $t("bot.topic.clear") }}</button>
+            <button v-if="topic.defaultDirect !== true && topic.status !== 'deleting'" type="button" data-test="topic-delete" class="rounded-sm px-1.5 py-0.5 text-danger transition-colors hover:bg-danger/10" :disabled="pendingId === topic.id" @click="openConfirm('delete', topic)">{{ $t("bot.topic.delete") }}</button>
           </div>
-        </li>
-      </ul>
-      <p v-if="actionError" data-test="topic-action-error" class="px-2 py-1 text-xs text-danger">{{ actionError }}</p>
-    </div>
+        </div>
+        <p v-if="actionError" data-test="topic-action-error" class="px-2 py-1 text-xs text-danger">{{ actionError }}</p>
+      </template>
+    </DropdownPanel>
 
     <div v-if="confirmKind" class="fixed inset-0 z-40 flex items-end justify-center bg-black/50 p-4 md:items-center" @click.self="closeConfirm">
       <div role="dialog" aria-modal="true" data-test="topic-confirm" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
