@@ -162,6 +162,7 @@ export default {
     selectWorkspace: "选择一个工作区",
     selectNative: "选择一个原生会话",
     close: "关闭",
+    deletedElsewhere: "该会话已被删除",
     starting: "正在启动 {agent}…",
     startingHint: "首次启动通常需要 10–40 秒，属正常现象——启动期间你可以继续浏览其它会话。",
     startFailed: "会话启动失败",

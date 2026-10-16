@@ -5,6 +5,7 @@ import { X } from "lucide-vue-next";
 import type { ConversationRouterUpdatePayload, JevUpdatePayload } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 import WorkspacesManager from "./WorkspacesManager.vue";
 import AgentsManager from "./AgentsManager.vue";
 
@@ -280,12 +281,12 @@ onMounted(async () => {
   <!-- Teleport to body: the mobile instance drawer uses `transform`, which would
        otherwise trap this fixed overlay inside the narrow off-canvas drawer. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="navigateBack">
     <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="manage-instance-title"
          class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl bg-raised shadow-float focus:outline-none" data-test="manage-instance-dialog">
       <header class="flex shrink-0 items-center justify-between px-5 py-3">
         <h2 id="manage-instance-title" class="truncate text-sm font-semibold text-fg">{{ $t("instance.manageTitle", { name }) }}</h2>
-        <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label="$t('instance.close')" @click="emit('close')"><X :size="16" /></button>
+        <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label="$t('instance.close')" @click="navigateBack"><X :size="16" /></button>
       </header>
       <div v-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("instance.dialogLoading") }}</div>
       <template v-else>

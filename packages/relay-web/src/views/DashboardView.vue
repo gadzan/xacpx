@@ -41,6 +41,7 @@ import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
 import { setNotificationClickHandler, initTabFocusTracker } from "../lib/local-notification";
+import { adoptHomeEntry, backInFlight, goHomeReclaiming, navigateBack, useMobileBack, type BackLayer } from "../lib/mobile-back";
 import { Search, Moon, Sun, Settings, X, ArrowLeft, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, PanelRightOpen, SquareTerminal, MoreHorizontal, Plus, MessageSquare, LayoutList } from "lucide-vue-next";
 
 const theme = useThemeStore();
@@ -72,16 +73,15 @@ const rightOpen = ref(false);
 const rightTab = ref<"tasks" | "files">("files");
 /** Instance-level Desktop tab (not a per-session center tab): one viewer per instance. */
 const desktopTabOpen = ref(false);
-function closeDrawers() {
-  rightOpen.value = false;
-}
 function openRight(tab: "tasks" | "files") {
   rightTab.value = tab;
   rightOpen.value = true;
 }
 function closeRightColumn(): void {
+  // Desktop collapses the static column; on mobile the drawer is a full-screen layer
+  // that owns a history entry, so closing it pops that entry like every other layer.
   if (isDesktop.value) rightCollapsed.value = true;
-  else rightOpen.value = false;
+  else navigateBack();
 }
 function onShowFiles(): void {
   rightTab.value = "files";
@@ -99,7 +99,8 @@ const swipe = createEdgeSwipe({
   isEnabled: () => typeof window !== "undefined" && window.innerWidth < 1024,
   isRightOpen: () => rightOpen.value,
   openRight: () => { rightOpen.value = true; }, // keeps the last-used right tab
-  closeRight: () => { rightOpen.value = false; },
+  // A swipe that closes the drawer pops its entry like every other close path.
+  closeRight: () => { navigateBack(); },
 });
 // Desktop-only: collapse the instances sidebar to reclaim width. Persisted so the
 // choice survives reloads. (Mobile has no instances column outside the home list.)
@@ -269,7 +270,24 @@ function reconcileCenterTabs() {
     }
   }
 }
-watch(() => instances.instances, reconcileCenterTabs, { deep: true });
+watch(() => instances.instances, () => { reconcileCenterTabs(); reconcileViewedSession(); }, { deep: true });
+
+/** The session being viewed was removed elsewhere (CLI, WeChat, another browser tab):
+ *  return home and say so instead of stranding the user on a dead transcript. Bot and
+ *  group stores already clear their own selection on removal, which the back stack
+ *  turns into a clean return home. */
+function reconcileViewedSession(): void {
+  const id = chat.instanceId;
+  const alias = chat.sessionAlias;
+  if (!id || !alias) return;
+  const inst = instances.byId(id);
+  // Only a fully loaded list is authoritative — same rule as reconcileCenterTabs,
+  // so a paginated fetch that has not reached the session yet cannot yank the user.
+  if (!inst?.sessionsLoaded || inst.sessionsHasMore) return;
+  if (validSessionKeys.value.has(sessionKey(id, alias))) return;
+  pushToast("info", "session.deletedElsewhere");
+  goHomeReclaiming();
+}
 
 const terminalCapable = computed(() => {
   const id = chat.instanceId;
@@ -383,6 +401,39 @@ function goHome(): void {
   directBotsStore.clearSelection();
   groupsStore.clearSelection();
 }
+/** The conversation pane as a back layer. Its close IS goHome: popping the pane entry
+ *  is the one thing that returns to the home list. */
+function paneLayer(): BackLayer | null {
+  if (chat.instanceId && chat.sessionAlias) {
+    return { kind: "pane", id: `chat:${sessionKey(chat.instanceId, chat.sessionAlias)}`, close: goHome };
+  }
+  if (directBotsStore.isBotSelected) {
+    return { kind: "pane", id: `bot:${directBotsStore.instanceId}:${directBotsStore.selectedBotId}`, close: goHome };
+  }
+  if (groupsStore.isGroupSelected) {
+    return { kind: "pane", id: `group:${groupsStore.instanceId}:${groupsStore.selectedGroupId}`, close: goHome };
+  }
+  return null;
+}
+/** Full-screen layers, bottom-up: a center tab (file / diff / terminal), the instance
+ *  desktop viewer, then the right files/tasks drawer. Closing one returns to the layer
+ *  below — a center tab falls back to the "chat" tab and stays in the open-tabs list. */
+function fullLayers(): BackLayer[] {
+  const out: BackLayer[] = [];
+  const key = currentKey.value;
+  const active = key ? centerTabs.activeFor(key) : "chat";
+  if (key && active !== "chat") {
+    out.push({ kind: "full", id: `center:${active}`, close: () => centerTabs.setActive(key, "chat") });
+  }
+  if (desktopTabOpen.value && desktopInstanceId.value) {
+    out.push({ kind: "full", id: `desktop:${desktopInstanceId.value}`, close: closeDesktop });
+  }
+  if (rightOpen.value) {
+    out.push({ kind: "full", id: "right", mobileOnly: true, close: () => { rightOpen.value = false; } });
+  }
+  return out;
+}
+useMobileBack({ pane: paneLayer, full: fullLayers });
 /** Session view on <lg: the single session bar (+ connection strip). Bot / group views
  *  render their own chrome, so the bar steps aside even if a stale session key lingers. */
 const mobileSessionBar = computed(() => !!currentKey.value && !isBotSelected.value && !isGroupSelected.value);
@@ -574,6 +625,14 @@ watch(
 
 onMounted(async () => {
   migrateAwayFromLegacyTerminalIds();
+  // Claim this entry as the home entry BEFORE anything pushes on top of it. A cold
+  // start straight into a pane (notification deep link, new tab, PWA restore) must
+  // have our home entry below the pane, so ← and the Android back key return home
+  // instead of leaving the site. The deep-link query is cleared here too.
+  const searchParams = typeof window !== "undefined" && window.location ? new URLSearchParams(window.location.search) : null;
+  const qInst = searchParams?.get("instanceId");
+  const qAlias = searchParams?.get("sessionAlias");
+  adoptHomeEntry(!!(qInst && qAlias));
   window.addEventListener("keydown", onGlobalKey);
   if (typeof window.matchMedia === "function") {
     desktopMql = window.matchMedia("(min-width: 1024px)");
@@ -618,16 +677,8 @@ onMounted(async () => {
   }, { immediate: true });
 
   // Return to query param session if opened from notification, else prior session
-  const searchParams = typeof window !== "undefined" && window.location ? new URLSearchParams(window.location.search) : null;
-  const qInst = searchParams?.get("instanceId");
-  const qAlias = searchParams?.get("sessionAlias");
   if (qInst && qAlias) {
     onSelect(qInst, qAlias);
-    try {
-      if (typeof window !== "undefined" && window.history && typeof window.history.replaceState === "function") {
-        window.history.replaceState({}, "", window.location.pathname);
-      }
-    } catch { /* ignore */ }
   } else {
     const persistedGroup = loadPersistedGroupSelection();
     if (persistedGroup && instances.byId(persistedGroup.instanceId)) {
@@ -739,9 +790,9 @@ onUnmounted(() => {
          center tabs. Desktop keeps the global header and the chip row untouched. -->
     <div v-if="mobileSessionBar" data-test="mobile-session-bar"
          class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
-      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")'
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              @click="goHome"><ArrowLeft :size="20" /></button>
+      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+              @click="navigateBack"><ArrowLeft :size="20" /></button>
       <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-2">
         <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
       </span>
@@ -760,7 +811,7 @@ onUnmounted(() => {
     <div class="flex flex-1 overflow-hidden">
       <!-- Backdrop closes any open drawer (mobile only). -->
       <div v-if="rightOpen" data-test="drawer-backdrop"
-           class="fixed inset-0 z-30 bg-black/30 lg:hidden" @click="closeDrawers" />
+           class="fixed inset-0 z-30 bg-black/30 lg:hidden" @click="navigateBack" />
 
       <!-- Left: instances. Static column ≥ lg (unchanged). Below lg it is ONLY the home
            screen: with nothing selected the tree is the full-width main content; once a
@@ -816,9 +867,9 @@ onUnmounted(() => {
             class="absolute inset-0 z-10"
             @navigate-bot="onSelectBot"
             @navigate-group="onSelectGroup"
-            @back="goHome"
+            @back="navigateBack"
           />
-          <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" @back="goHome" />
+          <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" @back="navigateBack" />
           <EmptySessionState v-else-if="nothingSelected" class="absolute inset-0"
                              :sessions="recentSessions" :instances="fabInstances"
                              @select="onSelect" @create="createSessionIn" />
@@ -846,7 +897,7 @@ onUnmounted(() => {
           <DesktopTab v-if="desktopTabOpen && desktopInstanceId" class="absolute inset-0 z-20"
                       :instance-id="desktopInstanceId"
                       :instance-name="instances.byId(desktopInstanceId)?.name ?? desktopInstanceId"
-                      @close="closeDesktop()" />
+                      @close="navigateBack" />
         </div>
       </div>
 

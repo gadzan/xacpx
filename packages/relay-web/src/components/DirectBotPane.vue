@@ -27,6 +27,7 @@ import NewTopicDialog from "./NewTopicDialog.vue";
 import TopicSwitcher from "./TopicSwitcher.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown, useIsMobile } from "../lib/use-dropdown";
+import { backInFlight } from "../lib/mobile-back";
 import type { DropdownGroup } from "../lib/use-dropdown";
 
 const emit = defineEmits<{
@@ -184,8 +185,8 @@ function openRemoval(): void {
          (opens the topic sheet), and ⋯ for the entries the desktop header carries.
          Desktop keeps the header below. -->
     <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
-      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")'
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
       <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
                  :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"

@@ -165,6 +165,7 @@ export default {
     selectWorkspace: "Select a workspace",
     selectNative: "Select a native session",
     close: "Close",
+    deletedElsewhere: "This session was deleted",
     starting: "Starting {agent}…",
     startingHint: "The first start can take 10–40s. This is normal — you can keep browsing while it spins up.",
     startFailed: "Couldn't start the session",

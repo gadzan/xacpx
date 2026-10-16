@@ -446,10 +446,9 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；
     Group 栏由 `GroupPane` 渲染（副标题同样是当前话题，`⋯` 只带编辑群组条目），`DashboardView` 不再渲染
     群组静态标题条，`mobileSingleBar` 也因此把群组选择算进去（全局顶栏在 `<lg` 让位）。
-  - **`←` 返回**（会话 / Bot / 群组页通用，`DashboardView.goHome`）：关闭 sheet、右抽屉与桌面标签，再对 chat、
-    Direct Bot、群组三个 store 都调用 `clearSelection()`（各自顺带清掉持久化的选择，所以刷新后停在首页）；
-    `localStorage["xacpx.lastInstance"]` 保留，FAB 的「最近使用排前」依赖它。左边缘右滑手势已移除；
-    滑动返回暂不做（会和 iOS Safari 自带的返回手势冲突），以后用基于 `history.pushState` 的方案再加。
+  - **`←` 返回**（会话 / Bot / 群组页通用）：不再直接清选择，而是弹掉浏览器历史里我们自己的条目，
+    由 popstate 关掉一层（sheet → 右抽屉/全屏标签 → 首页）。没有自有条目时（冷启动 / 深链 /
+    PWA 恢复）直接 `router.replace` 回首页，绝不离站。完整规则见下文「手机端返回：浏览器历史即层栈」。
   - **未选中任何会话 / Bot / 群组（移动端首页）**：实例树直接作为主内容渲染——复用**同一个**
     `InstanceTree` 实例，左栏在 `<lg` 只在首页显示（全宽），选中后 `max-lg:hidden`（不挂第二份副本，避免本地视图状态分叉）；列表底部 `max-lg:pb-24`，FAB 不会盖住最后一行的 `⋯`；从树上打开的实例桌面也算离开首页，
     中栏占位符 `max-lg:hidden`；右下角 FAB「新建会话」（48px pill，`bg-accent text-on-accent shadow-float
@@ -515,11 +514,45 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 - `ChatPane.vue` 不再自带「选择一个会话」占位：空状态归 `DashboardView` 所有，
   `chat.selectSession` i18n 键随之删除。
 
+## 手机端返回：浏览器历史即层栈（`src/lib/mobile-back.ts`）
+
+`<lg` 下顶栏 `←`、iOS Safari 左缘右滑、安卓返回键/手势共用同一个浏览器历史：一条历史条目 = 界面上一层，
+三者行为完全一致。`popstate` 只关一层，所有关闭路径都走同一个 `navigateBack()`，没有第二套 close 逻辑。
+
+- **条目从哪来**：`useMobileBack({ pane, full })`（会话 / Bot / 群组 pane 1 条，全屏层 = 中栏
+  文件/diff/终端/实例桌面标签 + 右文件/任务抽屉）+ `pushModal()`（遮罩层：MobileSheet、对话框、
+  ImageLightbox、Mermaid、SubagentTrace、ConfirmDialog、CommandPalette，#434 的 `DropdownPanel`
+  在 `<lg` 也渲染成 MobileSheet，因此自动覆盖）。同类叠同类（sheet→sheet、sheet→dialog、全屏→全屏）
+  走 `router.replace`，所以「返回」永远先回到首页。桌面小下拉 / ContextMenu / tooltip / 话题切换 /
+  首页 tab 切换**不建条目**。新建会话流程：FAB → 实例 sheet（push）→ 新建对话框（replace）→
+  创建成功 → pane（replace 成 `pane`），一次返回即回首页。
+- **返回顺序**：先关最上层遮罩（与 Esc 栈同序，一次一层）→ 再收全屏层（中栏标签回到「对话」标签，
+  标签仍留在已打开列表；右抽屉收起）→ 再 `goHome()`。在首页时不再拦截，正常离开站点
+  （没有「再按一次退出」）。
+- **`navigateBack()` 是唯一返回入口**（顶栏 `←`、sheet ×、backdrop、Esc、ConfirmDialog 取消、
+  ImageLightbox 关闭都走它）：有自己的条目就 `history.back()`，让 popstate 去关那一层；没有自有条目
+  （冷启动 / 深链 / PWA 恢复，或 Chrome「历史操作干预」跳过了非用户手势写入的条目）时直接
+  `router.replace` 回首页，**绝不离站**。返回飞行中 `backInFlight` 置位、`←` 禁用，连点不会逃逸。
+- **冷启动 / 深链**：顶层不是我们自己的条目时，`adoptHomeEntry()` 先 `router.replace` 回首页再
+  `router.push` 进 pane，vue-router 的 state（`back`/`current`/`position`）保持正确，`←` 与安卓返回键
+  都回首页；深链的 `?instanceId&sessionAlias` 照旧清掉。刷新时 `history.state` 保留，若顶层是遮罩 /
+  全屏条目则静默 `history.go(-n)` 回到 pane 条目。
+- **状态标签**：条目带 `history.state.xacpx = { layer, id, depth }`，popstate 按 `depth` 关到对应层；
+  快速连按返回时每个 popstate 只同步关一层，程序化返回用计数器跟踪，不会出现空条目。
+- **会话被别处删除**（CLI / 其他客户端，reconcile 移除）：自动回首页——`goHomeReclaiming()` 先关层再
+  `history.go(-depth)` 回收条目并忽略这次 popstate，不留死条目，同时 toast「该会话已被删除」
+  （`session.deletedElsewhere`，en / zh-CN）。Bot / 群组的 `clearSelection` 走同一条同步路径，
+  同样不留死条目。
+- **桌面（≥1024px）不建任何条目**；`<lg` → `≥lg`（iPad 旋转）时自动关闭仅移动端的浮层并回收其条目。
+- **不做自定义手势**：只用 iOS Safari 原生左缘右滑，pane↔首页、关层都没有滑动/淡入动画；左缘 24px 内
+  没有可横向滑动的元素（`use-swipe-actions` 在 `clientX < 24` 时不让行滑动接管）。
+
 ## 文件地图
 
 - `src/api/client.ts` —— REST 客户端（登录、`/api/instances`、`/api/instances/:id/rpc` 代理调用、历史）；
 - `src/lib/render-markdown.ts` —— 净化版流式 markdown 渲染（markdown-it + remend + DOMPurify）；
 - `src/lib/use-dropdown.ts` —— 统一下拉框 composable（开关、键盘导航、外部点击/Esc 关闭、焦点归还；keydown 走捕获阶段，Esc 只关下拉不关宿主对话框；桌面面板在 Tab 把焦点移出触发器+面板时关闭）；
+- `src/lib/mobile-back.ts` —— 手机端返回：浏览器历史即层栈（`<lg` 的 `←`/iOS 右滑/安卓返回键共用，见「手机端返回」一节）；
 - `src/components/DropdownPanel.vue`、`SelectMenu.vue`、`Tooltip.vue` —— 统一下拉浮层 / 表单字段下拉 /
   hover 提示（见「统一下拉框」一节）；
 - `src/api/events.ts` —— WS 客户端（`connectEvents` → `/ws`，自动重连）；

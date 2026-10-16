@@ -6,6 +6,7 @@ import MobileSheet from "./MobileSheet.vue";
 import GroupRunDetailHeader from "./GroupRunDetailHeader.vue";
 import GroupRunDetailContent from "./GroupRunDetailContent.vue";
 import { useDetailScrollMemory } from "../lib/use-detail-scroll-memory";
+import { navigateBack } from "../lib/mobile-back";
 
 const props = defineProps<{
   id: string;
@@ -68,7 +69,7 @@ function close(): void {
           class="max-h-[45dvh] shrink-0 overflow-y-auto border-b border-fg/5"
           variant="sheet" :run="run" :member-turn="memberTurn" :member-name="memberName" :topic-title="topicTitle"
           :attempt="attempt" :attempts="attempts" :stop-available="stopAvailable" :stop-pending="stopPending"
-          @close="close" @stop="emit('stop')" @attempt="emit('attempt', $event)"
+          @close="navigateBack" @stop="emit('stop')" @attempt="emit('attempt', $event)"
         />
       </template>
       <GroupRunDetailContent

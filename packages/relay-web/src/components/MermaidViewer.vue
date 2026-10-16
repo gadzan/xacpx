@@ -5,6 +5,7 @@ import { computeFit, createPanZoom, zoomToRectCenter, ZOOM_IN_FACTOR, ZOOM_OUT_F
 import { attachPanZoomGestures } from "../lib/pan-zoom-gestures";
 import { readSvgIntrinsicSize } from "../lib/svg-size";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 
 // Rendered only while open (parent v-if) → mount/unmount == open/close.
 defineProps<{ svg: string }>();
@@ -69,7 +70,7 @@ function onStagePointerDown(e: PointerEvent): void {
 function onStageClick(e: MouseEvent): void {
   if (e.target !== stageEl.value) return; // clicked the diagram, not the backdrop
   if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return; // was a drag
-  emit("close");
+  navigateBack();
 }
 </script>
 
@@ -91,7 +92,7 @@ function onStageClick(e: MouseEvent): void {
         <button type="button" aria-label="Zoom out" @click="zoomButton(ZOOM_OUT_FACTOR)"><ZoomOut :size="18" /></button>
         <button type="button" aria-label="Reset" @click="reset()"><RotateCcw :size="18" /></button>
         <button type="button" aria-label="Zoom in" @click="zoomButton(ZOOM_IN_FACTOR)"><ZoomIn :size="18" /></button>
-        <button type="button" aria-label="Close" @click="emit('close')"><X :size="18" /></button>
+        <button type="button" aria-label="Close" @click="navigateBack"><X :size="18" /></button>
       </div>
     </div>
   </Teleport>

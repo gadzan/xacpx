@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { ChevronLeft, ChevronRight, X } from "lucide-vue-next";
 import { closeLightbox, stepLightbox, useImageLightbox } from "../lib/use-image-lightbox";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 
 // Fullscreen image viewer for message images (attachment thumbnails and
 // markdown-embedded images). The parent gates this component with v-if on the
@@ -68,7 +69,7 @@ function onPointerUp(e: PointerEvent): void {
   }
   // A still pointer released on the empty backdrop (the stage itself, not the
   // image or a button) closes the viewer.
-  if (e.target === e.currentTarget) closeLightbox();
+  if (e.target === e.currentTarget) navigateBack();
 }
 
 function onPointerCancel(): void {
@@ -106,7 +107,7 @@ function onPointerCancel(): void {
           data-test="lightbox-close"
           class="pointer-events-auto grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/80 transition-colors hover:bg-white/10 hover:text-white"
           :aria-label="$t('common.dismiss')"
-          @click="closeLightbox()"
+          @click="navigateBack"
         >
           <X :size="18" />
         </button>

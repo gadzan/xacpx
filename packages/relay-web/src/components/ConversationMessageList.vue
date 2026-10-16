@@ -204,7 +204,10 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
 
 <template>
   <div class="relative flex min-h-0 flex-1 flex-col">
-  <div ref="scroller" data-test="conversation-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
+  <!-- px-4 on mobile (16px): a horizontally scrollable code block inside a message must
+       not start within 24px of the left screen edge, or it competes with the iOS Safari
+       back swipe. 16 + the block's own padding clears that. -->
+  <div ref="scroller" data-test="conversation-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 px-4 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <!-- Load Older Button -->
     <div v-if="hasMoreOlder" class="mb-4 flex justify-center">
       <button

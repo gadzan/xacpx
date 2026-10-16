@@ -15,6 +15,7 @@ import TopicSwitcher from "./TopicSwitcher.vue";
 import MobileConnStrip from "./MobileConnStrip.vue";
 import MobileSheet from "./MobileSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
+import { backInFlight } from "../lib/mobile-back";
 
 const emit = defineEmits<{
   /** Mobile top bar's ←: back to the home list (DashboardView clears the selection). */
@@ -148,8 +149,8 @@ const worktreeRunId = computed(() => {
          popover / confirm dialog live in TopicSwitcher, which stays clear of any
          backdrop-filtered ancestor (see the desktop header below). -->
     <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
-      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")'
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
       <div class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
         <Users :size="16" />

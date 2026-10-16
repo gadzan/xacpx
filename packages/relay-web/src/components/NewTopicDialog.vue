@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 import { useDirectBotsStore } from "../stores/direct-bots";
 
 const emit = defineEmits<{
@@ -40,7 +41,7 @@ async function handleCreateTopic(): Promise<void> {
 
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-       @click.self="emit('close')">
+       @click.self="navigateBack">
     <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
       <h3 id="new-topic-title" class="text-sm font-semibold mb-2">{{ $t("bot.topic.createTitle") }}</h3>
       <p class="text-xs text-fg-muted mb-3">{{ $t("bot.topic.createHint") }}</p>
@@ -57,7 +58,7 @@ async function handleCreateTopic(): Promise<void> {
           <button
             type="button"
             class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
-            @click="emit('close')"
+            @click="navigateBack"
           >
             {{ $t("common.cancel") }}
           </button>

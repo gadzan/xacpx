@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { MessageSquare, Search } from "lucide-vue-next";
 import { useInstancesStore } from "../stores/instances";
+import { navigateBack, pushModal } from "../lib/mobile-back";
 
 const emit = defineEmits<{
   close: [];
@@ -12,6 +13,10 @@ const instances = useInstancesStore();
 const query = ref("");
 const input = ref<HTMLInputElement | null>(null);
 const active = ref(0);
+
+// The palette is a masked overlay, so it owns a history entry while open: the Android
+// back key and the iOS swipe dismiss it instead of leaving the site.
+let unregister: (() => void) | null = null;
 
 interface Row {
   label: string;
@@ -55,17 +60,21 @@ function choose(row: Row) {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") { emit("close"); return; }
-  if (e.key === "ArrowDown") { e.preventDefault(); active.value = Math.min(active.value + 1, rows.value.length - 1); }
+  if (e.key === "Escape") { navigateBack(); return; }
+  else if (e.key === "ArrowDown") { e.preventDefault(); active.value = Math.min(active.value + 1, rows.value.length - 1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); active.value = Math.max(active.value - 1, 0); }
   else if (e.key === "Enter") { e.preventDefault(); const r = rows.value[active.value]; if (r) choose(r); }
 }
 
-onMounted(() => void nextTick(() => input.value?.focus()));
+onMounted(() => {
+  unregister = pushModal({ id: "palette", close: () => emit("close") });
+  void nextTick(() => input.value?.focus());
+});
+onBeforeUnmount(() => { unregister?.(); unregister = null; });
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-24" data-test="command-palette" @click.self="emit('close')">
+  <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-24" data-test="command-palette" @click.self="navigateBack">
     <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-raised shadow-float">
       <div class="flex items-center gap-2 px-4 py-3">
         <Search :size="16" class="shrink-0 text-fg-muted" />

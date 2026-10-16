@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 import { X } from "lucide-vue-next";
 defineOptions({ inheritAttrs: false });
 
@@ -36,14 +37,15 @@ const emit = defineEmits<{ close: [] }>();
 const panel = ref<HTMLElement | null>(null);
 const body = ref<HTMLElement | null>(null);
 defineExpose({ body });
-useModalA11y(panel, () => emit("close"), () =>
-  panel.value?.querySelector<HTMLElement>("[data-sheet-initial-focus]") ?? null,
-);
+useModalA11y(panel, () => emit("close"), {
+  mobileOnly: true,
+  initialFocus: () => panel.value?.querySelector<HTMLElement>("[data-sheet-initial-focus]") ?? null,
+});
 </script>
 
 <template>
   <!-- Attributes belong to the dialog, not its backdrop. -->
-  <div data-test="sheet-backdrop" class="sheet-backdrop fixed inset-0 bg-black/50 lg:hidden" :class="zClass ?? 'z-40'" @click="emit('close')" />
+  <div data-test="sheet-backdrop" class="sheet-backdrop fixed inset-0 bg-black/50 lg:hidden" :class="zClass ?? 'z-40'" @click="navigateBack" />
   <div ref="panel" v-bind="$attrs" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1"
        :data-dd-panel="ddPanel || undefined"
        :data-test="testId"
@@ -54,7 +56,7 @@ useModalA11y(panel, () => emit("close"), () =>
         <h2 class="min-w-0 truncate text-base font-semibold text-fg">{{ title }}</h2>
         <button v-if="showClose" type="button" data-test="sheet-close" :aria-label='$t("common.close")'
                 class="grid h-10 w-10 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                @click="emit('close')"><X :size="18" /></button>
+                @click="navigateBack"><X :size="18" /></button>
       </div>
     </slot>
     <div ref="body" class="thin-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain break-words"
