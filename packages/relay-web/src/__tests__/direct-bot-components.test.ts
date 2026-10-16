@@ -1865,33 +1865,98 @@ describe("Direct Bot Components", () => {
       ];
     }
 
-    it("mobile bar shows the topic as a tappable subtitle and switches from its sheet", async () => {
+    it("mobile bar uses TopicSwitcher: subtitle pill opens the shared sheet with search-free rows, ⋯ and new topic at the bottom", async () => {
       seedBot();
       const directBots = useDirectBotsStore();
       const switchTopicSpy = vi.spyOn(directBots, "switchTopic").mockResolvedValue();
-      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
-
-      // Subtitle is the active topic; no leading "·" and no wrapped meta lines.
-      expect(wrapper.find('[data-test="mobile-topic-switch"]').text()).toBe("Default");
-
-      await wrapper.find('[data-test="mobile-topic-switch"]').trigger("click");
-      const sheet = wrapper.find('[data-test="bot-topic-sheet"]');
-      expect(sheet.exists()).toBe(true);
-      expect(sheet.findAll('[data-test="sheet-topic-option"]')).toHaveLength(2);
-      expect(sheet.find('[data-test="sheet-new-topic"]').exists()).toBe(true);
-      // Active topic is the highlighted row.
-      expect(sheet.findAll('[data-test="sheet-topic-option"]')[0].classes()).toContain("bg-accent-soft");
-
-      await sheet.findAll('[data-test="sheet-topic-option"]')[1].trigger("click");
-      expect(switchTopicSpy).toHaveBeenCalledWith("t2");
-      expect(wrapper.find('[data-test="bot-topic-sheet"]').exists()).toBe(false);
+      const prevWidth = window.innerWidth;
+      window.innerWidth = 500;
+      try {
+        const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        // Index 0 is the mobile bar's pill; its label is the active topic.
+        const pill = wrapper.findAll('[data-test="topic-menu"]')[0]!;
+        expect(pill.text()).toBe("Default");
+        await pill.trigger("click");
+        const sheet = wrapper.find('[data-test="bot-topic-sheet"]');
+        expect(sheet.exists()).toBe(true);
+        const rows = sheet.findAll('[data-test="topic-row"]');
+        expect(rows).toHaveLength(2);
+        // Same row anatomy as the group chat sheet: trailing ⋯, no inline action chips.
+        expect(rows[1]!.find('[data-test="topic-row-more"]').exists()).toBe(true);
+        expect(sheet.find('[data-test="topic-rename"]').exists()).toBe(false);
+        expect(sheet.find('[data-test="topic-delete"]').exists()).toBe(false);
+        // 「新建话题」 is the last entry of the sheet.
+        const newTopic = sheet.find('[data-test="new-topic-button"]');
+        expect(newTopic.exists()).toBe(true);
+        const buttons = sheet.findAll("button");
+        expect(buttons[buttons.length - 1]!.element).toBe(newTopic.element);
+        await rows[1]!.find("button").trigger("click");
+        expect(switchTopicSpy).toHaveBeenCalledWith("t2");
+        expect(wrapper.find('[data-test="bot-topic-sheet"]').exists()).toBe(false);
+      } finally {
+        window.innerWidth = prevWidth;
+      }
     });
 
     it("mobile bar subtitle falls back to the bot role when no topic is active", async () => {
       seedBot();
       useDirectBotsStore().activeTopicId = null;
       const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
-      expect(wrapper.find('[data-test="mobile-topic-switch"]').text()).toBe("Code QA");
+      expect(wrapper.findAll('[data-test="topic-menu"]')[0]!.text()).toBe("Code QA");
+    });
+
+    it("desktop topic panel opens left-aligned under the pill, with new topic only at its bottom", async () => {
+      seedBot();
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      // No standalone header 「新建话题」 entry any more.
+      expect(wrapper.find('[data-test="new-topic-button"]').exists()).toBe(false);
+      await wrapper.findAll('[data-test="topic-menu"]')[1]!.trigger("click");
+      const panel = wrapper.find('[data-test="topic-panel"]');
+      expect(panel.exists()).toBe(true);
+      expect(panel.classes()).toContain("left-0");
+      expect(panel.classes()).not.toContain("right-0");
+      expect(wrapper.findAll('[data-test="new-topic-button"]')).toHaveLength(1);
+      expect(panel.find('[data-test="new-topic-button"]').exists()).toBe(true);
+    });
+
+    it("desktop row ⋯ menu renames, archives and deletes Bot topics through the store", async () => {
+      seedBot();
+      const directBots = useDirectBotsStore();
+      const updateTopic = vi.spyOn(directBots, "updateTopic").mockResolvedValue({} as never);
+      const archiveTopic = vi.spyOn(directBots, "archiveTopic").mockResolvedValue({} as never);
+      vi.spyOn(directBots, "previewTopic").mockResolvedValue({
+        topic: directBots.topicsByConversation["i1:c1"]![1]!, bindings: [], unsettledRunIds: [], indeterminateRunIds: [], worktreeRunIds: [],
+        actions: { rename: true, archive: true, restore: false, teardown: true, clear: false },
+      } as never);
+      const teardownTopic = vi.spyOn(directBots, "teardownTopic").mockResolvedValue({} as never);
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      const openRowMenu = async () => {
+        if (!wrapper.find('[data-test="topic-panel"]').exists()) await wrapper.findAll('[data-test="topic-menu"]')[1]!.trigger("click");
+        await wrapper.find('[data-test="topic-panel"]').findAll('[data-test="topic-row-more"]')[1]!.trigger("click");
+        return wrapper.find('[data-test="context-menu"]');
+      };
+
+      let menu = await openRowMenu();
+      expect(menu.find('[data-test="menu-rename"]').exists()).toBe(true);
+      expect(menu.find('[data-test="menu-archive"]').exists()).toBe(true);
+      expect(menu.find('[data-test="menu-delete"]').exists()).toBe(true);
+      await menu.find('[data-test="menu-rename"]').trigger("click");
+      await wrapper.find('[data-test="topic-rename-input"]').setValue("Renamed");
+      await wrapper.find('[data-test="topic-panel"] form').trigger("submit");
+      await flushPromises();
+      expect(updateTopic).toHaveBeenCalledWith("i1", "c1", "t2", "Renamed");
+
+      menu = await openRowMenu();
+      await menu.find('[data-test="menu-archive"]').trigger("click");
+      await flushPromises();
+      expect(archiveTopic).toHaveBeenCalledWith("i1", "c1", "t2");
+
+      menu = await openRowMenu();
+      await menu.find('[data-test="menu-delete"]').trigger("click");
+      await flushPromises();
+      await wrapper.find('[data-test="topic-confirm-submit"]').trigger("click");
+      await flushPromises();
+      expect(teardownTopic).toHaveBeenCalledWith("i1", "c1", "t2", expect.any(String), false);
     });
 
     it("mobile more sheet carries nav / edit / delete, and delete is disabled for a retired bot", async () => {
@@ -2006,9 +2071,11 @@ describe("Direct Bot Components", () => {
           plugins: [i18n],
         },
       });
-      const trigger = wrapper.find('[data-test="new-topic-button"]');
+      // 「新建话题」 sits at the bottom of the topic panel; the pill is the focus anchor.
+      const trigger = wrapper.findAll('[data-test="topic-menu"]')[1]!;
       (trigger.element as HTMLElement).focus();
       await trigger.trigger("click");
+      await wrapper.find('[data-test="topic-panel"] [data-test="new-topic-button"]').trigger("click");
       await flushPromises();
       const dialog = wrapper.find('[role="dialog"]');
       expect(dialog.exists()).toBe(true);

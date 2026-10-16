@@ -8,7 +8,6 @@ import {
   MessagesSquare,
   MoreHorizontal,
   Pencil,
-  Plus,
   Trash2,
   X,
 } from "lucide-vue-next";
@@ -25,7 +24,7 @@ import ConversationPromptInput from "./ConversationPromptInput.vue";
 import BotDialog from "./BotDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
-import TopicManager from "./TopicManager.vue";
+import TopicSwitcher from "./TopicSwitcher.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown } from "../lib/use-dropdown";
 import type { DropdownGroup } from "../lib/use-dropdown";
@@ -73,18 +72,18 @@ const observedCompletion = computed(() => !!directBotsStore.activeRun
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
-// Mobile (<lg) chrome: one 52px bar (avatar + name + tappable topic subtitle + ⋯) plus
-// the sheets its entries open. Desktop keeps the header/topic bar below untouched.
+// Mobile (<lg) chrome: one 52px bar (avatar + name + topic switcher subtitle + ⋯) plus
+// the sheets its ⋯ entries open. The topic switcher is the group chat's TopicSwitcher
+// (popover on desktop, its own MobileSheet below lg).
 // One bottom sheet at a time (same rule as DashboardView): opening "Talk with" from ⋯
 // replaces the ⋯ sheet instead of stacking on it.
-type BotSheetId = "more" | "nav" | "topic";
+type BotSheetId = "more" | "nav";
 const activeSheet = ref<BotSheetId | null>(null);
 function openSheet(id: BotSheetId): void { activeSheet.value = id; }
 function closeSheet(): void { activeSheet.value = null; }
 
-/** Bar subtitle: the active topic, falling back to the bot's role, then its agent. */
-const botSubtitle = computed(() =>
-  directBotsStore.currentTopic?.title || bot.value?.role || bot.value?.agent || "");
+/** Mobile subtitle while no topic is active: the bot's role, then its agent. */
+const mobileTopicFallback = computed(() => bot.value?.role || bot.value?.agent || "");
 
 function requireTopicContext(): { instanceId: string; conversationId: string } | null {
   const instanceId = directBotsStore.instanceId;
@@ -193,12 +192,20 @@ function openRemoval(): void {
                  :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
       <div class="flex min-w-0 flex-1 flex-col">
         <span class="truncate text-sm font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
-        <button type="button" data-test="mobile-topic-switch"
-                class="flex min-w-0 items-center gap-1 text-left"
-                @click="openSheet('topic')">
-          <span class="truncate text-xs text-fg-muted">{{ botSubtitle }}</span>
-          <ChevronDown :size="12" class="shrink-0 text-fg-muted" />
-        </button>
+        <TopicSwitcher
+          variant="direct"
+          :fallback-label="mobileTopicFallback"
+          :topics="directBotsStore.currentTopics"
+          :active-topic-id="directBotsStore.activeTopicId"
+          :preview-topic="previewTopic"
+          :rename-topic="renameTopic"
+          :archive-topic="archiveTopic"
+          :restore-topic="restoreTopic"
+          :teardown-topic="teardownTopic"
+          :clear-topic="clearTopic"
+          @select="directBotsStore.switchTopic"
+          @create="newTopicDialogOpen = true"
+        />
       </div>
       <button type="button" data-test="mobile-bot-more" :aria-label='$t("common.more")'
               class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -206,8 +213,11 @@ function openRemoval(): void {
     </div>
     <MobileConnStrip />
 
-    <!-- Top Header: Bot metadata & Actions (desktop only). -->
-    <header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+    <!-- Top Header: Bot metadata, topic switcher & actions (desktop only). Opaque on
+         purpose (same as GroupPane): a backdrop-filtered ancestor becomes the containing
+         block for fixed/absolute descendants and would trap TopicSwitcher's popover,
+         confirm dialog and row menu inside this header. -->
+    <header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
       <div class="flex items-center gap-3 min-w-0">
         <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
                    :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
@@ -228,6 +238,20 @@ function openRemoval(): void {
           </div>
 
           <div class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
+            <TopicSwitcher
+              variant="direct"
+              :topics="directBotsStore.currentTopics"
+              :active-topic-id="directBotsStore.activeTopicId"
+              :preview-topic="previewTopic"
+              :rename-topic="renameTopic"
+              :archive-topic="archiveTopic"
+              :restore-topic="restoreTopic"
+              :teardown-topic="teardownTopic"
+              :clear-topic="clearTopic"
+              @select="directBotsStore.switchTopic"
+              @create="newTopicDialogOpen = true"
+            />
+            <span aria-hidden="true">·</span>
             <span v-if="bot?.role" class="truncate font-medium text-fg/80">{{ bot.role }}</span>
             <span v-if="bot?.role">·</span>
             <span class="flex items-center gap-1">
@@ -287,22 +311,6 @@ function openRemoval(): void {
 
     <div v-if="bot?.retired" data-test="removed-bot-banner" class="bg-surface/60 px-3 lg:px-5 py-1.5 text-xs text-fg-muted">
       {{ $t("bot.removal.removedBanner") }}
-    </div>
-
-    <div class="hidden lg:flex shrink-0 items-center bg-surface/60 px-3 lg:px-5 py-1 text-xs backdrop-blur-md">
-      <TopicManager
-        variant="direct"
-        :topics="directBotsStore.currentTopics"
-        :active-topic-id="directBotsStore.activeTopicId"
-        :preview-topic="previewTopic"
-        :rename-topic="renameTopic"
-        :archive-topic="archiveTopic"
-        :restore-topic="restoreTopic"
-        :teardown-topic="teardownTopic"
-        :clear-topic="clearTopic"
-        @select="directBotsStore.switchTopic"
-        @create="newTopicDialogOpen = true"
-      />
     </div>
 
     <!-- Error Banner if any general error -->
@@ -424,22 +432,5 @@ function openRemoval(): void {
       <p v-if="memberGroups.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noGroup") }}</p>
     </MobileSheet>
 
-    <!-- Topic sheet (<lg): switch topic from the bar subtitle; full management stays on
-         desktop in TopicManager. -->
-    <MobileSheet v-if="activeSheet === 'topic'" :title='$t("mobileBar.switchTopic")' test-id="bot-topic-sheet" @close="closeSheet">
-      <button v-for="topic in directBotsStore.currentTopics" :key="topic.id" type="button" data-test="sheet-topic-option"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm transition-colors"
-              :class="topic.id === directBotsStore.activeTopicId ? 'bg-accent-soft text-accent' : 'text-fg hover:bg-surface-2'"
-              @click="directBotsStore.switchTopic(topic.id); closeSheet()">
-        <MessagesSquare :size="18" class="shrink-0" />
-        <span class="truncate">{{ topic.title }}</span>
-      </button>
-      <button type="button" data-test="sheet-new-topic"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-accent transition-colors hover:bg-surface-2"
-              @click="newTopicDialogOpen = true; closeSheet()">
-        <Plus :size="18" class="shrink-0" />
-        <span>{{ $t("bot.topic.new") }}</span>
-      </button>
-    </MobileSheet>
   </div>
 </template>

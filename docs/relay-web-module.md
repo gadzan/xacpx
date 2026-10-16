@@ -163,7 +163,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   原生 `<select>`）：`groups`/`modelValue`/`placeholder`，选中值不在选项里时显示 placeholder（老
   `<select>` 的首个 disabled 项语义）；选项行带 `data-value`，可带 `testId` 供测试定位。
 - 行内文字触发器 = `text-xs text-fg-muted` + `ChevronDown`（展开 `rotate-180`）；图标触发器
-  `h-6 w-6`（触屏 `h-10`）。`TopicManager` 的自制底部面板也已换 `MobileSheet`。
+  `h-6 w-6`（触屏 `h-10`）。
 - `src/components/Tooltip.vue` —— hover 300ms / 键盘聚焦显示、触屏 2s 的提示气泡
   （`bg-fg text-bg text-xs rounded-sm px-2 py-1`），用于冷会话指示器等（SVG `title` 触屏不显示，已移除）。
 
@@ -872,12 +872,13 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   - 客户端生成稳定的 `requestId`，发送失败或超时重试时复用原 `requestId` 保持幂等；
   - active Run 运行时提供 Stop 按钮，调用 `control.runs.cancel({ runId })` 精确取消当前 Run。
 
-### Group 话题切换（`TopicSwitcher.vue`）
+### 话题切换（`TopicSwitcher.vue`，群聊与 Bot 页共用）
 
 - `GroupPane` 只有一条顶栏：群组名下方是可点的当前话题副标题（纯文字 + `ChevronDown`，无 pill 底色，hover/press `bg-surface-2`），原第二行 `TopicManager` 与 meta 行里重复的话题名都已删除。桌面顶栏因此改为不透明 `bg-surface`：`backdrop-filter` 祖先会成为 `fixed`/`absolute` 后代的包含块，会把切换器 popover、确认框和行菜单一起困在几十 px 高的顶栏里。
 - 点副标题：`<lg` 打开 `MobileSheet`「切换话题」（`mobileBar.switchTopic`），≥lg 打开锚在触发器下方的 popover（`shadow-float rounded-lg bg-surface`）。两者内容一致：搜索框、话题列表、底部「+ 新建话题」（`bot.topic.new`）。行点选即切换并关闭；当前行 `bg-accent/10`；已收起 / 删除中的话题保留弱化图标。
 - 行内操作收在每行尾部 `⋯`（`ContextMenu`）：重命名（行内表单）、收起 / 恢复、删除 / 清空（默认话题只给清空）。删除与清空先 `topics.preview` 预览外部绑定与 worktree：有绑定未确认、或有未结束 worktree 时禁止提交；确认框沿用居中 / 底部 sheet 既有样式。打开按钮必须带 `@click.stop`：打开瞬间的那次点击会在监听器挂上后继续冒泡到 document，把自己关掉（`FilesPanel` 的根菜单同理）。
-- 动作状态机抽到 `lib/use-topic-actions.ts`，`TopicManager`（Bot 桌面第二行）与 `TopicSwitcher` 共用；`handlers` 在调用时读取，prop 更新能被拿到。Bot 桌面仍保留 `TopicManager` 第二行，Bot 移动端话题 sheet 仍在 `DirectBotPane` 内，本轮未改。
+- 动作状态机在 `lib/use-topic-actions.ts`；`handlers` 在调用时读取，prop 更新能被拿到。触发器在当前话题已收起 / 删除中时于标题后显示状态文字。
+- **Bot 页（`DirectBotPane`）复用同一个 `TopicSwitcher`**（`variant="direct"`，只改测试钩子：`topic-menu` / `new-topic-button` / `bot-topic-sheet`）：桌面放在顶栏 meta 行最前（「Default ⌄ · 角色 · 工作区 · agent · 模型」），popover 左对齐在触发器下方；移动端是顶栏副标题（无活跃话题时 `fallbackLabel` 显示角色 / agent），打开与群聊一致的 sheet。旧的 `TopicManager` 第二行（行内「重命名 / 收起 / 删除」、右侧独立「新建话题」）与 Bot 自制话题 sheet 已删除；「新建话题」只在面板底部，点击后焦点先回到触发器，再打开新建对话框（关闭对话框时焦点回到触发器）。Bot 桌面顶栏同样改为不透明 `bg-surface`（原因同上）。搜索框遵循统一下拉规则：话题 >7 条才出现。
 
 ### 断线与重连恢复
 
