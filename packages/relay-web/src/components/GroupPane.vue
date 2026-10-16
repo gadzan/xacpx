@@ -14,6 +14,7 @@ import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
 import TopicSwitcher from "./TopicSwitcher.vue";
 import MobileConnStrip from "./MobileConnStrip.vue";
 import MobileSheet from "./MobileSheet.vue";
+import { useIsMobile } from "../lib/use-dropdown";
 
 const emit = defineEmits<{
   /** Mobile top bar's ←: back to the home list (DashboardView clears the selection). */
@@ -80,6 +81,8 @@ async function clearTopic(topicId: string, requestId: string, releaseBindings: b
 }
 
 const group = computed(() => groupsStore.currentGroup);
+/** One TopicSwitcher at a time: the mobile bar's below lg, the desktop header's from lg. */
+const isMobile = useIsMobile();
 const bots = computed<BotSummaryDto[]>(() => {
   const instId = groupsStore.instanceId;
   if (!instId) return [];
@@ -154,6 +157,7 @@ const worktreeRunId = computed(() => {
       <div class="flex min-w-0 flex-1 flex-col">
         <span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span>
         <TopicSwitcher
+          v-if="isMobile"
           :topics="groupsStore.currentTopics"
           :active-topic-id="groupsStore.activeTopicId"
           :preview-topic="previewTopic"
@@ -183,6 +187,7 @@ const worktreeRunId = computed(() => {
         <h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
         <div class="flex min-w-0 items-center gap-1.5 text-xs text-fg-muted">
           <TopicSwitcher
+            v-if="!isMobile"
             :topics="groupsStore.currentTopics"
             :active-topic-id="groupsStore.activeTopicId"
             :preview-topic="previewTopic"
