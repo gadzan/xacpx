@@ -122,6 +122,13 @@ tag's workflow to leave `queued`/`in_progress` before moving on.
 Pushing a tag is the point of no return: it fires the npm workflow, and npm
 refuses to republish a version.
 
+npm can accept a publish asynchronously — the workflow logs
+`Your package is being processed and may take a few minutes to become available`
+and still exits 0 with `+ <pkg>@<version>`. Until that finishes, both the
+packument and the version document return 404, and the dist-tag still points at
+the previous release. A 404 in the first minutes after a green publish run is
+propagation, not failure; re-check before touching tags.
+
 `publish` refuses to run when the modified paths include anything outside the
 set this tool owns, so unrelated work in progress cannot be swept into the
 release commit. It also drops build-only churn in `packages/relay-protocol/dist`
