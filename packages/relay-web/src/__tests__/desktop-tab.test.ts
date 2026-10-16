@@ -425,8 +425,26 @@ describe("DesktopTab error i18n", () => {
   // "desktop-instance-offline") in an otherwise localized UI — the exact class
   // of bug that survived several review rounds because only two codes were
   // exercised by hand.
+  beforeEach(() => {
+    // Own Pinia per test: without it these tests only ran on the store leaked
+    // by the previous describe, and failed outright under `-t`.
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
   for (const code of DESKTOP_ERROR_CODES) {
     it(`translates ${code} instead of showing the raw code`, async () => {
+      // Inert RFB connection: the passthrough mock would load real noVNC and
+      // dial the ws URL; jsdom fails that socket within milliseconds and
+      // onDisconnect patches the row to desktop-stream-timeout/"disconnected",
+      // racing (and usually clobbering) the error row seeded below.
+      const { connectDesktopRfb } = await import("../lib/desktop-client");
+      vi.mocked(connectDesktopRfb).mockImplementationOnce(() => ({
+        sendCredentials: () => {},
+        setScaleViewport: () => {},
+        setSmoothFirst: () => {},
+        dispose: () => {},
+      }));
       const { i18n } = await import("../i18n");
       const wrapper = mount(DesktopTab, {
         props: { instanceId: "i1" },
