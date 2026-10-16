@@ -387,6 +387,6 @@ test("spliceChangelog with only [Unreleased] and one release leaves no stray bla
     date: "2026-10-16",
     draft: "unused\n",
   });
-  expect(next).toBe("# Changelog\n\n## [relay 0.14.12-beta.5] - 2026-10-16\n\n### Fixed\n\n- Only entry.\n");
+  expect(next).toBe("# Changelog\n## [relay 0.14.12-beta.5] - 2026-10-16\n\n### Fixed\n\n- Only entry.\n");
   expect(next).not.toMatch(/\n{3,}/);
 });

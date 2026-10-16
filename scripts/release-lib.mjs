@@ -595,7 +595,9 @@ export function spliceChangelog({ current, releases, date, draft }) {
   if (!first) throw new Error("spliceChangelog needs at least one release");
 
   if (!body.startsWith(UNRELEASED_HEADING)) {
-    return `${CHANGELOG_HEADER}\n${draft}${body}`;
+    // `draft` already ends with a newline after its last bullet; the extra one
+    // separates it from whatever section follows.
+    return `${CHANGELOG_HEADER}${draft}\n${body}`;
   }
 
   const afterHeading = body.slice(UNRELEASED_HEADING.length).replace(/^\n+/, "");
@@ -608,5 +610,5 @@ export function spliceChangelog({ current, releases, date, draft }) {
   if (others.length > 0) {
     block += `\n${renderChangelog({ date, releases: others.map((release) => ({ ...release, subjects: [] })) })}`;
   }
-  return `${CHANGELOG_HEADER}\n${block}${tail}`;
+  return `${CHANGELOG_HEADER}${block}${tail ? `\n${tail}` : ""}`;
 }
