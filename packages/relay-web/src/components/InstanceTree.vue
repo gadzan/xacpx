@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArchiveRestore, Bot, Check, ChevronRight, Folder, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
 import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsDesktop } from "../stores/instances";
@@ -227,9 +227,23 @@ async function toggleArchived(id: string): Promise<void> {
     return;
   }
   const inst = store.byId(id);
-  if (inst && !inst.archivedSessionsLoaded) await store.loadArchivedSessions(id).catch(() => {});
+  if (inst) await ensureSleepingLoaded(inst);
   next.add(id);
   archivedExpanded.value = next;
+}
+// The one instance-level 「已睡眠会话」 filter drives both layouts: flat mode loads the
+// instance snapshot, grouped modes load the first sleeping page of every visible group.
+async function ensureSleepingLoaded(inst: InstanceView): Promise<void> {
+  const mode = groupModeOf(inst);
+  if (mode === "instance") {
+    if (!inst.archivedSessionsLoaded) await store.loadArchivedSessions(inst.id).catch(() => {});
+    return;
+  }
+  await Promise.all(groupSessions(activeSessions(inst), mode).map((g) => {
+    const state = inst.groupArchived?.[groupArchivedKey(mode, g.key)];
+    if (state?.loaded || state?.loading) return undefined;
+    return store.loadGroupArchivedSessions(inst.id, mode, g.key).catch(() => {});
+  }));
 }
 function displaySessions(inst: InstanceView): InstanceView["sessions"] {
   if (!archivedIsExpanded(inst.id)) return activeSessions(inst);
@@ -267,14 +281,15 @@ function sectionsFor(inst: InstanceView): SidebarSection[] {
   // last active session was just archived stays visible with its sleeping rows).
   const groups = groupSessions(activeSessions(inst), mode);
   const present = new Set(groups.map((g) => g.key));
-  for (const recordKey of Object.keys(inst.groupArchived ?? {})) {
+  // Sleeping-only groups appear only while the sleeping filter is on.
+  for (const recordKey of archivedIsExpanded(inst.id) ? Object.keys(inst.groupArchived ?? {}) : []) {
     const parsed = parseGroupArchivedKey(recordKey);
     if (!parsed || parsed.mode !== mode) continue;
     if (!present.has(parsed.groupKey)) groups.push({ key: parsed.groupKey, sessions: [] });
   }
   return groups.map((g) => {
     const state = inst.groupArchived?.[groupArchivedKey(mode, g.key)];
-    const expanded = groupArchivedIsExpanded(inst, g.key);
+    const expanded = archivedIsExpanded(inst.id);
     return {
       key: g.key,
       sessions: g.sessions,
@@ -289,30 +304,27 @@ function sectionRows(section: SidebarSection): InstanceView["sessions"] {
   return [...section.sessions, ...(section.archivedSessions ?? [])];
 }
 
-// Per-group sleeping-session expansion (grouped modes). Keyed by mode like
-// collapsedGroups so switching modes never carries stale expansion over. Hiding
-// keeps the loaded page cached; re-showing only refetches when never loaded.
-const groupArchivedExpanded = ref<Set<string>>(new Set());
+// Group view state is keyed by mode so switching modes never carries stale state over.
 function groupViewKey(inst: InstanceView, key: string): string {
   return `${inst.id}:${groupModeOf(inst)}:${key}`;
 }
-function groupArchivedIsExpanded(inst: InstanceView, key: string): boolean {
-  return groupArchivedExpanded.value.has(groupViewKey(inst, key));
-}
-async function toggleGroupArchived(inst: InstanceView, key: string): Promise<void> {
-  const k = groupViewKey(inst, key);
-  const next = new Set(groupArchivedExpanded.value);
-  if (next.has(k)) {
-    next.delete(k);
-    groupArchivedExpanded.value = next;
-    return;
-  }
-  const mode = groupModeOf(inst) as GroupArchivedMode;
-  const state = inst.groupArchived?.[groupArchivedKey(mode, key)];
-  if (!state?.loaded) await store.loadGroupArchivedSessions(inst.id, mode, key).catch(() => {});
-  next.add(k);
-  groupArchivedExpanded.value = next;
-}
+// While the sleeping filter is on, a mode switch or a newly appearing group loads
+// whatever sleeping rows that layout still lacks (loaded/loading groups are skipped).
+watch(
+  () => store.instances
+    .filter((inst) => inst.online && archivedIsExpanded(inst.id))
+    .map((inst) => {
+      const mode = groupModeOf(inst);
+      const keys = mode === "instance" ? [] : groupSessions(activeSessions(inst), mode).map((g) => g.key);
+      return `${inst.id}|${mode}|${keys.join("\u0000")}`;
+    })
+    .join("\n"),
+  () => {
+    for (const inst of store.instances) {
+      if (inst.online && archivedIsExpanded(inst.id)) void ensureSleepingLoaded(inst);
+    }
+  },
+);
 function loadMoreGroupArchived(inst: InstanceView, key: string): void {
   const mode = groupModeOf(inst) as GroupArchivedMode;
   void store.loadGroupArchivedSessions(inst.id, mode, key, true).catch(() => {});
@@ -680,8 +692,9 @@ const rowSwipes = computed(() => {
             </span>
           </button>
           <!-- Sleeping-sessions filter (③ icon trigger; accent dot while active).
-               Flat mode only: grouped modes page sleeping rows per group instead. -->
-          <div v-if="modeFor(inst.id) === 'sessions' && groupModeOf(inst) === 'instance'" class="relative ml-auto">
+               One instance-level toggle for every layout: grouped modes show each
+               group's sleeping rows inside the group while it is on. -->
+          <div v-if="modeFor(inst.id) === 'sessions'" class="relative ml-auto">
             <button type="button"
                     data-test="instance-filter"
                     :aria-label='$t("instance.filter")'
@@ -1108,18 +1121,12 @@ const rowSwipes = computed(() => {
                            :groups="menuGroups(s)"
                            @select="onMenuSelect(inst.id, s, $event)" />
             </div>
-            <!-- Per-group sleeping-session controls (grouped modes): page sleeping rows
-                 from the server 5 at a time instead of flat mode's one-shot snapshot. -->
-            <template v-if="grp.key !== null && inst.online">
-              <button data-test="group-toggle-archived"
-                      class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs font-medium text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
-                      @click.stop="void toggleGroupArchived(inst, grp.key)">
-                <ArchiveRestore :size="11" class="shrink-0" />
-                {{ $t(groupArchivedIsExpanded(inst, grp.key) ? "instance.hideArchivedSessions" : "instance.showArchivedSessions") }}
-              </button>
+            <!-- Grouped modes page sleeping rows per group (5 at a time) while the
+                 instance-level sleeping filter is on: one load-more at the group bottom. -->
+            <template v-if="grp.key !== null && inst.online && archivedIsExpanded(inst.id)">
               <div v-if="grp.archivedState?.loading" data-test="group-archived-loading"
                    class="py-0.5 pl-2.5 text-xs text-fg-muted">{{ $t("instance.loading") }}</div>
-              <button v-else-if="groupArchivedIsExpanded(inst, grp.key) && grp.archivedState?.hasMore" data-test="group-load-more"
+              <button v-else-if="grp.archivedState?.hasMore" data-test="group-load-more"
                       class="mt-1 flex h-8 w-full items-center justify-center rounded-lg text-ui font-medium text-accent transition-colors hover:bg-surface-2"
                       @click.stop="loadMoreGroupArchived(inst, grp.key)">
                 {{ $t("instance.loadMoreSessions") }}

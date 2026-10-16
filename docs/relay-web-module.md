@@ -279,14 +279,15 @@ effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合�
   响应式镜像在 instances store（`groupModeFor`/`setGroupMode`），改动即时生效。
 - **组由活跃 session 派生**（不读 workspaces/agents 目录），按服务器首现顺序排列；组内 active
   保持顺序。分组模式下**取消 10 行截断**（组折叠即长度控制，折叠为会话内状态、不持久化）。
-- **分组模式的睡眠会话按组分页加载**：每组底部有「显示已睡眠会话」开关，首次展开时经
-  `control.sessions.list {archivedOnly, workspace|agent, offset, limit:5}` 拉第一页，组内「加载更多」
-  每次追加一页直到 `hasMore=false`，可再次点击隐藏（缓存保留）。睡眠行排在该组活跃会话下方置灰。
-  组状态存 `InstanceView.groupArchived`（键 `${mode}:${groupKey}`，不并入 `inst.sessions`、不喂
-  `reconcileTailCache`），`sessions-changed`/archive/unarchive 只刷新已加载的组。最后一个活跃会话
-  被睡眠后，已加载过睡眠页的组仍保留显示。**平铺模式的睡眠会话开关已移到 tab 行右侧的筛选图标菜单**
-  （`Filter` 图标触发，勾选「已睡眠会话」`instance.sleepingSessions`，开启时图标带 accent 圆点；
-  组内「显示已睡眠会话」开关与分组底部「加载更多」保留），
+- **睡眠会话只有一个实例级开关**：tab 行右侧筛选图标菜单（`Filter` 图标触发，勾选「已睡眠会话」
+  `instance.sleepingSessions`，开启时图标带 accent 圆点）在平铺与分组模式下都显示、都生效。
+  平铺模式开启时加载实例级睡眠快照；分组模式开启时为每个组经
+  `control.sessions.list {archivedOnly, workspace|agent, offset, limit:5}` 拉第一页，睡眠行显示在
+  **每个组内**、排在该组活跃会话下方置灰；还有更多时组底部只有**一个**「加载更多」，每次追加一页直到
+  `hasMore=false`。**组内不再有单独的睡眠开关**。关闭开关即隐藏（缓存保留）；开关开启时切换分组方式
+  或出现新组会补拉缺失的组。组状态存 `InstanceView.groupArchived`（键 `${mode}:${groupKey}`，不并入
+  `inst.sessions`、不喂 `reconcileTailCache`），`sessions-changed`/archive/unarchive 只刷新已加载的组。
+  开关开启时，最后一个活跃会话被睡眠后已加载过睡眠页的组仍保留显示。
   实例级「加载更多」在所有模式下保留（活跃列表超一页时的唯一入口，`w-full h-8 rounded-lg text-ui
   text-accent` 居中，`hover:bg-surface-2`）。
 - **会话列表自动加载**：进入页面、浏览器重连、实例从离线变在线时，自动为所有在线实例加载会话
