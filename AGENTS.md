@@ -120,6 +120,7 @@ Queue-owner termination requires birth-identity proof of the lease
 - Relay Hub deployment: [`docs/relay-deployment.md`](docs/relay-deployment.md)
 - Relay Hub module: [`docs/relay-module.md`](docs/relay-module.md)
 - Relay release runbook: [`docs/relay-release.md`](docs/relay-release.md)
+- Monorepo release automation (`scripts/release.mjs`: plan / apply / check / publish, version policy, derived-metadata table): [`docs/release-automation.md`](docs/release-automation.md)
 - Relay Web dashboard: [`docs/relay-web-module.md`](docs/relay-web-module.md)
 - Relay Hub RMUX terminal (process-owned): [`docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md`](docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md)
 - Relay RMUX terminal design (original lease-adopt): [`docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md`](docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md)
