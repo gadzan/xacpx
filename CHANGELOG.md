@@ -1,4 +1,16 @@
 # Changelog
+## [relay 0.14.12-beta.5] - 2026-10-16
+
+### Changed
+
+- Relay Web: `GroupPane` is down to a single top bar. The current topic is now a tappable subtitle under the group name — a `MobileSheet` below `lg`, an anchored popover at and above it — and the duplicate topic name in the second row and the meta row are gone.
+- New `TopicSwitcher.vue` owns topic switching: search, the topic list, and a `+ new topic` entry, with rename / archive / restore / delete / clear collected behind a per-row `⋯` menu. Delete and clear preview external bindings and worktrees through `topics.preview` and refuse to commit while a binding is unconfirmed or a worktree is unsettled.
+- The topic action state machine moved to `lib/use-topic-actions.ts` so `TopicManager` (Bot desktop second row) and `TopicSwitcher` share one implementation.
+
+### Fixed
+
+- Relay Web: the desktop group top bar is opaque `bg-surface`. A `backdrop-filter` ancestor becomes the containing block for `fixed`/`absolute` descendants, which trapped the topic popover, confirm dialog, and row menus inside the few-pixel-tall bar.
+
 ## [relay 0.14.12-beta.4] - 2026-10-15
 
 ### Fixed
