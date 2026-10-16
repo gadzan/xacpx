@@ -38,7 +38,7 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     return "";
   }
 
-  async function run(_topicId: string, action: () => Promise<void>): Promise<void> {
+  async function run(action: () => Promise<void>): Promise<void> {
     actionError.value = null;
     try {
       await action();
@@ -58,18 +58,18 @@ export function useTopicActions(handlers: TopicActionHandlers) {
       editingId.value = null;
       return;
     }
-    await run(topic.id, async () => {
+    await run(async () => {
       await handlers.renameTopic(topic.id, title);
       editingId.value = null;
     });
   }
 
   function archive(topic: TopicSummaryDto): Promise<void> {
-    return run(topic.id, () => handlers.archiveTopic(topic.id));
+    return run(() => handlers.archiveTopic(topic.id));
   }
 
   function restore(topic: TopicSummaryDto): Promise<void> {
-    return run(topic.id, () => handlers.restoreTopic(topic.id));
+    return run(() => handlers.restoreTopic(topic.id));
   }
 
   async function openConfirm(kind: "delete" | "clear", topic: TopicSummaryDto): Promise<void> {
