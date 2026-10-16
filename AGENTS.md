@@ -136,6 +136,7 @@ Queue-owner termination requires birth-identity proof of the lease
 - Control / Relay Bot + Conversation public API: [`docs/control-module.md`](docs/control-module.md), [`docs/relay-module.md`](docs/relay-module.md)
 ## Gotchas
 
+- **Version numbers and their derived metadata are generated, never hand-edited.** One release writes the same version into ~14 files (manifests, each compatible plugin's `peerDependencies.xacpx` and `minXacpxVersion`, the `@ganglion/xacpx-relay-protocol` ranges, the rmux-bridge platform versions, version literals baked into `tests/unit/packages/**`, and both lockfiles). A miss is green locally and fails only at tag-push time, when tags already exist and some packages may already be published. Use `node ./scripts/release.mjs apply` then `publish`; confirm with `check`. See [`docs/release-automation.md`](docs/release-automation.md).
 - **`node-pty` is a native module** — requires C++ build tools. If `bun install` fails on node-pty, the environment lacks a compiler toolchain.
 - **`CLAUDE.md` is a symlink to `AGENTS.md`** — only edit `AGENTS.md`, never `CLAUDE.md` directly.
 - **Smoke tests need real infrastructure** — `tests/smoke/` requires a real acpx binary and real WeChat login. Never run them in CI or automated checks without setup.
