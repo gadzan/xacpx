@@ -82,6 +82,22 @@ describe("NewSessionDialog accessibility", () => {
     wrapper.unmount();
   });
 
+  it("Escape with a SelectMenu (ns-agent) open closes only the dropdown; a second Escape closes the dialog", async () => {
+    const { wrapper } = mountDialog();
+    await flushPromises();
+    const agent = q<HTMLButtonElement>('[data-test="ns-agent"]');
+    agent.click();
+    await nextTick();
+    expect(agent.getAttribute("aria-expanded")).toBe("true");
+    agent.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await nextTick();
+    expect(agent.getAttribute("aria-expanded")).toBe("false"); // dropdown closed
+    expect(wrapper.emitted("close")).toBeFalsy(); // dialog stays open
+    agent.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(wrapper.emitted("close")).toBeTruthy();
+    wrapper.unmount();
+  });
+
   it("moves focus into the dialog on open", async () => {
     const outside = document.createElement("button");
     document.body.appendChild(outside);

@@ -70,6 +70,7 @@ export function releaseKeyboard(owner: object): void {
 
 export function useDropdown(): DropdownController {
   const nav = { count: 0, onSelect: (_i: number) => {} };
+  const closer = (): void => dd.closeMenu();
   const dd = reactive<DropdownController>({
     open: false,
     highlight: -1,
@@ -80,8 +81,8 @@ export function useDropdown(): DropdownController {
     },
     openMenu() {
       if (dd.open) return;
-      activeClose?.();
-      activeClose = () => dd.closeMenu();
+      if (activeClose !== closer) activeClose?.();
+      activeClose = closer;
       claimKeyboard(dd);
       dd.open = true;
     },
@@ -89,8 +90,8 @@ export function useDropdown(): DropdownController {
       if (!dd.open) return;
       dd.open = false;
       dd.highlight = -1;
-      if (activeClose) activeClose = null;
-      if (keyboardOwner === dd) claimKeyboard(null);
+      if (activeClose === closer) activeClose = null;
+      releaseKeyboard(dd);
       if (options?.focusTrigger) dd.trigger?.focus();
     },
     setNav(count, onSelect) {
@@ -158,13 +159,17 @@ export function useDropdown(): DropdownController {
   }
 
   onMounted(() => {
-    document.addEventListener("keydown", onKeydown);
+    // Capture phase: run before bubbling document listeners (useModalA11y), so its
+    // Escape sees defaultPrevented regardless of which component mounted first.
+    document.addEventListener("keydown", onKeydown, true);
     document.addEventListener("pointerdown", onPointerDown, true);
   });
   onBeforeUnmount(() => {
-    document.removeEventListener("keydown", onKeydown);
+    document.removeEventListener("keydown", onKeydown, true);
     document.removeEventListener("pointerdown", onPointerDown, true);
-    if (activeClose) activeClose = null;
+    // Only release what this instance holds; another open dropdown keeps its claim.
+    if (activeClose === closer) activeClose = null;
+    releaseKeyboard(dd);
   });
 
   return dd;

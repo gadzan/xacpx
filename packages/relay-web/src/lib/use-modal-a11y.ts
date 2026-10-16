@@ -23,6 +23,8 @@ export function useModalA11y(dialogEl: Ref<HTMLElement | null>, close: () => voi
   }
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") {
+      // A floating layer inside the dialog (dropdown) already consumed this Escape.
+      if (e.defaultPrevented) return;
       if (stack[stack.length - 1] !== close) return; // a nested dialog on top owns Escape
       e.preventDefault();
       close();
