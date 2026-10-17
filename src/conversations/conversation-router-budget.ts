@@ -44,7 +44,7 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
       || result !== assignment.result || dependsOn.length !== assignment.dependsOn.length
       || triggerMessageIds.length !== assignment.triggerMessageIds.length;
     return { ...assignment, task, expectedOutput, failureReason, result, dependsOn, triggerMessageIds,
-      ...(truncated ? { contextTruncated: true as const } : {}) };
+      ...(truncated ? { contextTruncated: true as const, resultTruncated: assignment.resultTruncated === true || result !== assignment.result } : {}) };
   });
   const memberMetadata = input.memberMetadata.slice(0, MAX_ROUTER_MEMBER_METADATA).map((member) => {
     const name = prefix(member.name, 128);

@@ -850,7 +850,9 @@ A prompt that tells a model not to use tools is not this proof. The startup stat
 
 ### The bundled default router
 
-With a Jev key configured (see below) the bundled router uses the Jev policy: one choice question to TypeSafe Jev, dispatch to exactly one enabled member, fallback to the Group lead (else the first enabled member) when confidence is below 0.6, the pick is unknown, or the call fails. Without a key, automatic collaboration resolves to `failed` / `jev-not-configured` and the composer hides it. The daemon passes Jev settings to `--decide` only through the environment (`XACPX_JEV_ENDPOINT`, `XACPX_JEV_API_KEY`, `XACPX_JEV_PROXY`, `XACPX_JEV_MODEL`), never argv. The fan-out described below is kept only as the no-key code path.
+With a Jev key configured, the bundled router makes at most two finite-choice calls per decision: choose the next action from durable results, then choose an enabled member. It can investigate, produce, verify, revise, answer, complete or ask for human input across task domains. Produced work requires verification of the latest deliverable before completion is available; a simple answer does not force extra members to speak. Action confidence below 0.6, unknown actions or failed action calls fall back to lead analysis only before any member result; later action uncertainty pauses as waiting-human. Member-selection uncertainty retains a confident action and uses the eligible lead or first candidate, preserving independent verification. Repeated identical member results also pause. See [automatic collaboration](conversation-runtime.md#bundled-adaptive-collaboration).
+
+Without a key, automatic collaboration resolves to failed / jev-not-configured and the composer hides it. The daemon passes Jev settings to --decide only through the environment (XACPX_JEV_ENDPOINT, XACPX_JEV_API_KEY, XACPX_JEV_PROXY, XACPX_JEV_MODEL), never argv. The fan-out described below is kept only as the no-key code path.
 
 ### Jev settings (`~/.xacpx/jev.json`)
 
@@ -862,7 +864,7 @@ Not part of config.json. Written atomically at mode 0600 next to the config and 
 
 Turning the switch on with no `command` configured writes this repository's own router, `dist/conversations/default-router-main.js`, and probes it. It is a real decision process held to the same contract as any operator's: it reports all seven restrictions above, and `production-router.ts` installs the engine only after that report is proven, so the default earns `ready` through the identical proof rather than a special case.
 
-Its decisions are deterministic, because it has no model, filesystem, or tools to reason with: it fans the Run's request out to every enabled member once, in parallel, then completes. It never synthesizes. An operator who wants model-driven routing configures their own `command`; a configured command always wins, and the daemon only writes the default when none is present.
+The legacy no-key policy fans the request out to every enabled member once, in parallel, then completes. Production automatic mode uses the adaptive Jev policy above. A configured custom command always wins, and the daemon only writes the default when none is present. The restricted router never accesses the filesystem or tools; members perform concrete work through the ordinary durable executor.
 
 The `unsupported` status still means the report did not prove the limit, and `failed` still means the command is missing, auth is empty, the probe failed, the probe timed out, or the report could not be read.
 

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, test } from "bun:test";
 
 import { parseRouterAvailability, ROUTER_CONFIG_PATH, type RoutingInput } from "@ganglion/xacpx-relay-protocol";
@@ -623,6 +623,45 @@ function routingInputForDecide(): RoutingInput {
     executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
   };
 }
+
+test("bundled subprocess advances from production to independent verification and completion", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-collaboration-process-"));
+  const choices = ["execute", "bot_a", "verify", "bot_b", "complete"];
+  const server = Bun.serve({ port: 0, async fetch(req) {
+    const request = await req.json() as { questions: { bot: { criteria: Record<string, string> } } };
+    const choice = choices.shift();
+    expect(choice).toBeDefined();
+    expect(Object.keys(request.questions.bot.criteria)).toContain(choice!);
+    return Response.json({ answers: { bot: { type: "choice", choice, confidence: 0.9 } } });
+  } });
+  try {
+    const build = await Bun.build({ entrypoints: [resolve("src/conversations/default-router-main.ts")],
+      target: "node", outdir: dir, naming: "router.mjs" });
+    expect(build.success).toBe(true);
+    const command = join(dir, "router.mjs");
+    const resolution = await resolveProductionRouter({ config: createConfig(command), env: { PATH: process.env.PATH ?? "" },
+      bundledRouterEntry: command, jev: { ...JEV_HANDOFF, endpoint: `http://127.0.0.1:${server.port}/v1/systemone` } });
+    expect(resolution.availability.status).toBe("ready");
+    const input = routingInputForDecide();
+    input.memberMetadata.push({ ...input.memberMetadata[0]!, botId: "bot_b", name: "B" });
+    for (let batch = 1; batch <= 3; batch++) {
+      const decision = await resolution.router!.decide(input);
+      if (batch === 3) { expect(decision.type).toBe("complete"); break; }
+      expect(decision.type).toBe("dispatch");
+      if (decision.type !== "dispatch") throw new Error("expected a concrete assignment");
+      const assignment = decision.assignments[0]!;
+      expect(assignment.id).toBe(batch === 1 ? "jev-v2-0-execute" : "jev-v2-1-verify");
+      expect(assignment.botId).toBe(batch === 1 ? "bot_a" : "bot_b");
+      input.completedAssignments.push({ ...assignment, dependsOn: assignment.dependsOn ?? [], outcome: "completed", attempt: 1, batch,
+        result: batch === 1 ? "Artifact v1 is available for inspection" : "Inspected artifact v1; all requested goals verified, no blockers" });
+      input.remainingBudget--;
+    }
+    expect(choices).toEqual([]);
+  } finally {
+    server.stop(true);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("a missing Jev key fails with jev-not-configured without spawning the router", async () => {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-router-jev-missing-"));

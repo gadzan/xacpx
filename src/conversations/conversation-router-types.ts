@@ -125,6 +125,8 @@ export interface RoutingAssignmentRecord {
   attempt: number;
   batch: number;
   contextTruncated?: true;
+  /** Distinguishes missing result evidence from a shortened task description. */
+  resultTruncated?: boolean;
 }
 
 /** Current Run state projected for the Router: everything it may reason with,
