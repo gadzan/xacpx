@@ -138,6 +138,16 @@ packument and the version document return 404, and the dist-tag still points at
 the previous release. A 404 in the first minutes after a green publish run is
 propagation, not failure; re-check before touching tags.
 
+The three views update at different times, measured on 0.14.12-beta.7: the
+version document resolved ~3.5 min after the run went green, the packument
+(`npm view <pkg> dist-tags`) still served the previous tag a minute later, and
+the dedicated dist-tags endpoint — a separate cache — reported the new tag
+immediately. Trust that one when the packument looks stale:
+
+```bash
+curl -s https://registry.npmjs.org/-/package/@ganglion%2Fxacpx-relay/dist-tags
+```
+
 `publish` refuses to run when the modified paths include anything outside the
 set this tool owns, so unrelated work in progress cannot be swept into the
 release commit. It also drops build-only churn in `packages/relay-protocol/dist`
