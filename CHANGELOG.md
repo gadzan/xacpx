@@ -1,4 +1,10 @@
 # Changelog
+## [relay 0.14.12-beta.7] - 2026-10-17
+
+### Fixed
+
+- Relay Web: a tap inside a mobile dropdown closed the sheet before the row underneath received its click. The shared outside-press handlers recognise a dropdown panel by `data-dd-panel`, and only the desktop panel carried the marker — the `<lg` bottom sheet did not, so the sheet's own contents counted as an outside press. `MobileSheet` now takes an opt-in `ddPanel` prop that emits the marker, enabled for `DropdownPanel` and `ContextMenu`; backdrops and ordinary navigation sheets still dismiss on an outside press (#437).
+
 ## [relay 0.14.12-beta.6] - 2026-10-16
 
 ### Added

@@ -102,7 +102,7 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.14.12-beta.6",
+      "version": "0.14.12-beta.7",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
