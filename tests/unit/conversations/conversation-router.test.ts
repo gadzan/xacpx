@@ -43,6 +43,7 @@ import { toConversationRun, toMemberTurnSummary } from "../../../src/control/con
 import type { ControlPromptResult } from "../../../src/control/control-service";
 import { validControlEvent } from "@ganglion/xacpx-relay-protocol";
 import { snapshotGroupMemberProfile } from "../../../src/bots/bot-types";
+import { decideJevRouterAssignment } from "../../../src/conversations/default-router";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createStrictOwnedSessionRelease } from "../../../src/sessions/owned-session-release";
@@ -54,6 +55,73 @@ const NOW = "2026-09-15T12:00:00.000Z";
 const BOT_ID = "bot_reviewer";
 const TESTER_ID = "bot_tester";
 const BUILDER_ID = "bot_builder";
+
+test("bundled collaboration policy drives a durable multi-member refinement loop through the real engine", async () => {
+  const script = ["analyze", BOT_ID, "execute", BUILDER_ID, "verify", TESTER_ID,
+    "revise", BUILDER_ID, "verify", TESTER_ID, "complete"];
+  const inputs: RoutingInput[] = [];
+  const executions: ConversationTurnRunInput[] = [];
+  const harness = await createHarness({ autoKick: false,
+    executionRunner: { async run(input) {
+      executions.push(input);
+      return { status: "completed", text: `Artifact revision ${executions.length}: ${executions.length === 3 ? "Found an unmet requirement" : "Result and check evidence"}` };
+    }, async cancel() { return { outcome: "cancelled" }; } },
+    router: { capabilityRestriction: RESTRICTED, async decide(input) {
+      inputs.push(structuredClone(input));
+      return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
+        members: input.memberMetadata, completedAssignments: input.completedAssignments,
+        completedAssignmentCount: input.completedAssignments.length, remainingBudget: input.remainingBudget,
+        publicTranscript: input.publicTranscript,
+        jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } }, async (question) => {
+          const choice = script.shift();
+          expect(choice).toBeDefined();
+          expect(question.choices.some((candidate) => candidate.key === choice)).toBe(true);
+          return { ok: true, choice: choice!, confidence: 0.9, latencyMs: 1 };
+        });
+    } },
+  });
+  try {
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, "short-general-goal");
+    for (let step = 0; step < 8 && harness.store.getRun(accepted.run.id)?.state !== "completed"; step++) {
+      await harness.dispatcher.kick(); await harness.service.awaitRouting();
+    }
+    const run = harness.store.getRun(accepted.run.id)!;
+    expect(run).toMatchObject({ state: "completed", consumedMemberTurns: 5 });
+    expect(script).toEqual([]);
+    expect(executions.map((input) => input.botId)).toEqual([BOT_ID, BUILDER_ID, TESTER_ID, BUILDER_ID, TESTER_ID]);
+    expect(executions[3]?.text).toContain("Found an unmet requirement");
+    expect(executions[4]?.text).toContain("Artifact revision 4");
+    expect(inputs.at(-1)?.completedAssignments).toHaveLength(5);
+    expect(harness.store.listMemberTurns(run.id).map((turn) => turn.assignmentId)).toEqual([
+      "jev-v2-0-analyze", "jev-v2-1-execute", "jev-v2-2-verify", "jev-v2-3-revise", "jev-v2-4-verify",
+    ]);
+    const reopened = await SqliteConversationStore.open(harness.path);
+    try {
+      expect(reopened.getRun(run.id)?.state).toBe("completed");
+      expect(reopened.listMemberTurns(run.id)).toHaveLength(5);
+    } finally { reopened.close(); }
+  } finally { await harness.service.awaitRouting(); harness.store.close(); }
+});
+
+test("cancelling a pending bundled collaboration assignment never starts or routes another member", async () => {
+  let calls = 0;
+  const harness = await createHarness({ autoKick: false, router: { capabilityRestriction: RESTRICTED, async decide(input) {
+    return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
+      members: input.memberMetadata, completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+      remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
+      async () => ({ ok: true, choice: ++calls === 1 ? "execute" : BUILDER_ID, confidence: 0.9, latencyMs: 1 }));
+  } } });
+  try {
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, "stop-before-start");
+    await harness.service.cancelRun(accepted.run.id);
+    await harness.dispatcher.kick(); await harness.service.awaitRouting();
+    expect(harness.store.getRun(accepted.run.id)?.state).toBe("cancelled");
+    expect(harness.runner.runs).toEqual([]);
+    expect(calls).toBe(2);
+  } finally { harness.store.close(); }
+});
 
 test("queued automatic Runs route in request order and never bypass an explicit Topic owner", async () => {
   const router = new RecordingRouter([{ type: "complete", reason: "automatic finished" }]);
