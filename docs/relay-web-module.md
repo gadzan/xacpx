@@ -151,14 +151,21 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 与各处自制菜单：
 
 - `src/lib/use-dropdown.ts` ——  composable：`open`/`highlight`/`query`、`toggle`/`closeMenu`、
-  `navigate(count)`，document `pointerdown` 点外部关闭（排除触发器）、`Esc` 关闭并把焦点还给触发器、
-  同时只开一个（打开新的会关掉旧的）。触发器自己管 `aria-haspopup` / `aria-expanded`。
+  `navigate(count)`，document `pointerdown` 点外部关闭（排除触发器，以及任何带 `data-dd-panel`
+  的浮层）、`Esc` 关闭并把焦点还给触发器、同时只开一个（打开新的会关掉旧的）。触发器自己管
+  `aria-haspopup` / `aria-expanded`。
 - `src/components/DropdownPanel.vue` —— 浮层容器：`rounded-lg shadow-float` 无边框 `p-1`；主内容区
   `bg-surface`（prop `tone="raised"` 时侧栏内 `bg-raised`）；行 `h-8 rounded-sm text-sm px-2`、
   hover `bg-surface-2`，选中 = 右侧 accent `Check` + `font-medium`（不整行染色），危险项
   `text-danger hover:bg-danger/10`，分组标签 `text-xs text-fg-muted`（不大写）；`>7` 项顶部搜索框。
   `<lg` 时同样内容渲染进 `MobileSheet`（行高 `h-11`，`sheet-test-id` 可与桌面面板区分，
-  `sheet-z` 供对话框内嵌套使用）。
+  `sheet-z` 供对话框内嵌套使用），该 sheet 用 `dd-panel` 打开 `data-dd-panel`：面板自身必须被
+  认作「下拉拥有的浮层」，否则 sheet 内的每次按压都算外部点击，pointerdown 就把弹层关掉，
+  随后的 click 到不了行（移动端整个下拉不可用）。
+- **`data-dd-panel` 的所有权契约**：只有「就是下拉/行菜单本身」的浮层才带这个标记
+  （桌面 popover、`<lg` 的 `MobileSheet`、以及两者形态的 `ContextMenu`）。普通页面 sheet
+  （`DashboardView` 的 `⋯`、已打开标签、FAB 实例选择器、`DirectBotPane`、`GroupPane` 的 sheet）
+  不带，因此在下拉打开时点它们仍会先关掉下拉。
 - `src/components/SelectMenu.vue` —— 表单字段触发器（`bg-surface-2 rounded-lg h-9 text-sm`，替换全部
   原生 `<select>`）：`groups`/`modelValue`/`placeholder`，选中值不在选项里时显示 placeholder（老
   `<select>` 的首个 disabled 项语义）；选项行带 `data-value`，可带 `testId` 供测试定位。
@@ -418,7 +425,8 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     中间头像（会话 = `AgentIcon`，Bot = `BotAvatar` 32）+ 标题（`text-base`）+ 副标题（`text-xs`：
     `实例 · agent · 分支`，缺项跳过，不会出现前导或连续 `·`）、右侧 `⋯` 40px 打开底部弹出菜单
     （`components/MobileSheet.vue`：`bg-raised rounded-t-2xl shadow-float`，backdrop / Esc 关闭，
-    `useModalA11y` 负责焦点进入与归还，条目 ≥48px）。会话栏由 `DashboardView` 渲染；Bot 栏由
+    `useModalA11y` 负责焦点进入与归还，条目 ≥48px；`dd-panel` 把面板标成「打开的下拉拥有的浮层」，
+    只有下拉 / 行菜单自己的 sheet 才开，见「统一下拉框」）。会话栏由 `DashboardView` 渲染；Bot 栏由
     `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；
     Group 栏由 `GroupPane` 渲染（副标题同样是当前话题，`⋯` 只带编辑群组条目），`DashboardView` 不再渲染
     群组静态标题条，`mobileSingleBar` 也因此把群组选择算进去（全局顶栏在 `<lg` 让位）。

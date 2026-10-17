@@ -96,7 +96,7 @@ onBeforeUnmount(() => {
 <template>
   <!-- <lg: the same items in a bottom sheet (right-click has no touch equivalent,
        so FileTreeNode long-press opens this). -->
-  <MobileSheet v-if="isMobile" :title="title ?? ''" @close="emit('close')">
+  <MobileSheet v-if="isMobile" :title="title ?? ''" dd-panel @close="emit('close')">
     <button v-for="(it, i) in items" :key="it.key" :data-test="`menu-${it.key}`" :disabled="it.disabled"
             class="flex h-11 w-full items-center rounded-lg px-3 text-left text-sm disabled:cursor-not-allowed"
             :class="rowClass(it, i)"

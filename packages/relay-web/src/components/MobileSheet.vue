@@ -11,7 +11,7 @@ import { X } from "lucide-vue-next";
 // Mount with `v-if` at the call site: useModalA11y's hooks must pair with the panel's
 // lifetime (an always-mounted sheet would swallow Escape while closed). Nested sheets
 // stack — only the top-most one owns Escape, so closing a child leaves the parent open.
-const props = defineProps<{ title: string; testId?: string; zClass?: string }>();
+const props = defineProps<{ title: string; testId?: string; zClass?: string; ddPanel?: boolean }>();
 const emit = defineEmits<{ close: [] }>();
 const panel = ref<HTMLElement | null>(null);
 useModalA11y(panel, () => emit("close"));
@@ -19,9 +19,10 @@ useModalA11y(panel, () => emit("close"));
 
 <template>
   <!-- Fragment root (backdrop + panel): no attribute fallthrough is expected, callers
-       pass only the title/testId props declared above. -->
+       pass only the props declared above. -->
   <div data-test="sheet-backdrop" class="fixed inset-0 bg-black/40 lg:hidden" :class="zClass ?? 'z-40'" @click="emit('close')" />
   <div ref="panel" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1"
+       :data-dd-panel="ddPanel || undefined"
        :data-test="testId"
        class="fixed inset-x-0 bottom-0 flex max-h-[85dvh] flex-col rounded-t-2xl bg-raised shadow-float lg:hidden" :class="zClass ?? 'z-40'">
     <div class="flex shrink-0 items-center justify-between gap-2 px-4 pb-1 pt-3">
