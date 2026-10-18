@@ -9,6 +9,7 @@ import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
 import { ConversationError } from "../../../src/conversations/conversation-error";
+import { GroupHandoffService } from "../../../src/conversations/group-handoff";
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
 import { ConversationRouterEngine } from "../../../src/conversations/conversation-router-engine";
 import { boundRoutingInput } from "../../../src/conversations/conversation-router-budget";
@@ -111,10 +112,22 @@ for (const scenario of ["long-history", "oversized-evidence"] as const) {
       : ["execute", BUILDER_ID, "verify", TESTER_ID, "verify", TESTER_ID, "revise", BUILDER_ID, "verify", TESTER_ID, "complete"];
     const calls: ConversationTurnRunInput[] = [];
     const inputs: RoutingInput[] = [];
+    const recoveredPages: string[] = [];
+    let handoffs!: GroupHandoffService;
     const harness = await createHarness({ autoKick: false,
       executionRunner: { async run(input) {
         calls.push(input);
         const n = calls.length;
+        if (scenario === "oversized-evidence" && n === 3) {
+          let offset = 0;
+          do {
+            const page = handoffs.readResult({ executionToken: input.groupExecutionToken!, args: { assignmentId: "jev-v2-1-verify", offset } });
+            if (page.kind !== "result") throw new Error("expected exact verification result");
+            recoveredPages.push(page.content);
+            if (page.nextOffset === null) break;
+            offset = page.nextOffset;
+          } while (true);
+        }
         const text = scenario === "long-history" ? `${n}:`.padEnd(4_000, "x")
           : n === 1 ? "Artifact v1" : n === 2 ? `${"check details ".repeat(400)}NEGATIVE FINDING AFTER PREFIX`
           : n === 3 ? "Artifact v1 has one unresolved negative finding" : n === 4 ? "Artifact v2 fixes that finding" : "Verified artifact v2, no unresolved findings";
@@ -132,6 +145,8 @@ for (const scenario of ["long-history", "oversized-evidence"] as const) {
           });
       } },
     });
+    handoffs = new GroupHandoffService({ store: harness.store, bots: harness.bots, state: harness.state, wake() {} });
+    harness.dispatcher.setHandoffService(handoffs);
     try {
       const { group, topic } = await createGroup(harness);
       const accepted = await acceptAutomatic(harness, group.id, topic.id, scenario);
@@ -143,11 +158,15 @@ for (const scenario of ["long-history", "oversized-evidence"] as const) {
       if (scenario === "long-history") {
         expect(inputs.at(-1)?.completedAssignments.at(-1)?.result).toBe("9:".padEnd(4_000, "x"));
         expect(inputs.at(-1)?.completedAssignments[0]?.resultTruncated).toBe(true);
+        expect(harness.store.listMemberTurns(accepted.run.id).at(-1)?.dependsOn).toEqual(["jev-v2-7-execute"]);
+        expect(calls.at(-1)?.text).not.toContain("1:".padEnd(4_000, "x"));
       } else {
         expect(inputs[2]?.completedAssignments.at(-1)?.resultTruncated).toBe(true);
         expect(calls[2]?.botId).toBe(TESTER_ID);
         expect(calls[2]?.text).toContain("Evidence recovery");
-        expect(calls[2]?.text).toContain("NEGATIVE FINDING AFTER PREFIX");
+        expect(calls[2]?.text).not.toContain("NEGATIVE FINDING AFTER PREFIX");
+        expect(calls[2]?.text).toContain("Result preview incomplete");
+        expect(recoveredPages.join("")).toContain("NEGATIVE FINDING AFTER PREFIX");
         expect(harness.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 200 })
           .some((message) => message.content.endsWith("NEGATIVE FINDING AFTER PREFIX"))).toBe(true);
       }
@@ -172,6 +191,89 @@ test("cancelling a pending bundled collaboration assignment never starts or rout
     expect(harness.runner.runs).toEqual([]);
     expect(calls).toBe(2);
   } finally { harness.store.close(); }
+});
+
+test("repeated oversized verification pauses durably with work and budget preserved", async () => {
+  const choices = ["execute", BUILDER_ID, "verify", TESTER_ID, "verify", TESTER_ID];
+  let calls = 0;
+  const harness = await createHarness({ autoKick: false,
+    executionRunner: { async run() {
+      calls++;
+      return { status: "completed", text: calls === 1 ? "Artifact v1" : `${"report ".repeat(700)}TAIL FINDING ${calls}` };
+    }, async cancel() { return { outcome: "cancelled" }; } },
+    router: { capabilityRestriction: RESTRICTED, async decide(input) {
+      return decideJevRouterAssignment({ request: input.request, members: input.memberMetadata,
+        completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+        remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
+        async (question) => {
+          const choice = choices.shift();
+          expect(question.choices.some((candidate) => candidate.key === choice)).toBe(true);
+          return { ok: true, choice: choice!, confidence: 0.9, latencyMs: 1 };
+        });
+    } },
+  });
+  try {
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, "oversized-loop");
+    for (let step = 0; step < 5; step++) { await harness.dispatcher.kick(); await harness.service.awaitRouting(); }
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "waiting-human", consumedMemberTurns: 3,
+      waitingQuestion: expect.stringContaining("two reports") });
+    expect(calls).toBe(3);
+    expect(choices).toEqual([]);
+    const reopened = await SqliteConversationStore.open(harness.path);
+    try {
+      expect(reopened.getRun(accepted.run.id)?.state).toBe("waiting-human");
+      const turns = reopened.listMemberTurns(accepted.run.id);
+      expect(turns).toHaveLength(3);
+      expect(reopened.getMemberResult(turns.at(-1)!)?.content).toEndWith("TAIL FINDING 3");
+    } finally { reopened.close(); }
+  } finally { await harness.service.awaitRouting(); harness.store.close(); }
+});
+
+test("bundled verification caps parallel dependency previews and keeps full results retrievable", async () => {
+  const producers = [BOT_ID, BUILDER_ID, "bot_extra1", "bot_extra2", "bot_extra3"];
+  let handoffs!: GroupHandoffService, verified = false;
+  const harness = await createHarness({ autoKick: false,
+    executionRunner: { async run(input) {
+      if (input.botId !== TESTER_ID) return { status: "completed", text: `${input.botId}:`.padEnd(5_000, "x") };
+      expect(input.text).toContain("Result preview incomplete: 0/5000 characters");
+      const inlineCharacters = (input.text.match(/x{100,}/g) ?? []).reduce((size, text) => size + text.length, 0);
+      expect(inlineCharacters).toBeGreaterThan(15_000);
+      expect(inlineCharacters).toBeLessThanOrEqual(16_000);
+      for (let i = 0; i < producers.length; i++) {
+        const page = handoffs.readResult({ executionToken: input.groupExecutionToken!, args: { assignmentId: `production-${i}`, offset: 4_000 } });
+        expect(page).toMatchObject({ kind: "result", content: "x".repeat(1_000), nextOffset: null });
+      }
+      verified = true;
+      return { status: "completed", text: "Verified all five deliverables with full tail evidence" };
+    }, async cancel() { return { outcome: "cancelled" }; } },
+    router: { capabilityRestriction: RESTRICTED, async decide(input) {
+      if (!input.completedAssignments.length) return { type: "dispatch", mode: "parallel", assignments: producers.map((botId, i) => ({
+        id: `production-${i}`, botId, task: "Produce one deliverable", triggerMessageIds: [],
+      })) };
+      const choices = input.completedAssignments.length === 5 ? ["verify", TESTER_ID] : ["complete"];
+      return decideJevRouterAssignment({ request: input.request, members: input.memberMetadata,
+        completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+        remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
+        async (question) => {
+          const choice = choices.shift()!;
+          expect(question.choices.some((candidate) => candidate.key === choice)).toBe(true);
+          return { ok: true, choice, confidence: 0.9, latencyMs: 1 };
+        });
+    } },
+  });
+  try {
+    const { group, topic } = await createGroup(harness);
+    for (const botId of producers.slice(2)) harness.state.bots[botId] = { ...structuredClone(harness.state.bots[BOT_ID]!), id: botId };
+    harness.state.conversations[group.id]!.botIds.push(...producers.slice(2));
+    handoffs = new GroupHandoffService({ store: harness.store, bots: harness.bots, state: harness.state, wake() {} });
+    harness.dispatcher.setHandoffService(handoffs);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, "parallel-evidence");
+    for (let step = 0; step < 4; step++) { await harness.dispatcher.kick(); await harness.service.awaitRouting(); }
+    expect(verified).toBe(true);
+    expect(harness.store.getRun(accepted.run.id)?.state).toBe("completed");
+    expect(harness.store.listMemberTurns(accepted.run.id).at(-1)?.dependsOn).toEqual(producers.map((_, i) => `production-${i}`));
+  } finally { await harness.service.awaitRouting(); harness.store.close(); }
 });
 
 test("queued automatic Runs route in request order and never bypass an explicit Topic owner", async () => {

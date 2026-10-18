@@ -13,7 +13,7 @@ function prefix(value: string, limit: number): string {
   return value.slice(0, end >= 0xD800 && end <= 0xDBFF ? limit - 1 : limit);
 }
 
-/** Bound model context only: durable records and execution prompts remain complete. */
+/** Bound Router snapshots only; durable public records remain complete. */
 export function boundRoutingInput(input: RoutingInput): RoutingInput {
   if (input.completedAssignments.length > MAX_ROUTER_ASSIGNMENTS_PER_DECISION) {
     throw new ConversationError("router_input_too_large", "Router assignment history exceeds its snapshot budget");
@@ -48,6 +48,7 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
       || result !== assignment.result || dependsOn.length !== assignment.dependsOn.length
       || triggerMessageIds.length !== assignment.triggerMessageIds.length;
     completedAssignments[index] = { ...assignment, task, expectedOutput, failureReason, result, dependsOn, triggerMessageIds,
+      ...(assignment.result !== undefined ? { resultCharacters: assignment.resultCharacters ?? assignment.result.length } : {}),
       ...(truncated ? { contextTruncated: true as const, resultTruncated: assignment.resultTruncated === true || result !== assignment.result } : {}) };
   }
   const memberMetadata = input.memberMetadata.slice(0, MAX_ROUTER_MEMBER_METADATA).map((member) => {
