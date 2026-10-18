@@ -595,6 +595,15 @@ require verification. Missing/truncated results cannot authorize completion;
 `resultTruncated` distinguishes result truncation from shortened task metadata.
 Older coarse truncation flags are handled conservatively.
 
+The 32,000-character result budget is allocated to newest batches first, while
+the history array retains its original order. Early audit truncation does not
+invalidate complete current verification. A completed batch with incomplete
+evidence may request `verify` again: that member receives the full durable
+dependencies and must return a complete summary within 2,000 characters, retaining
+artifact versions, negative findings and blockers. The clipped prefix itself is
+never approval. Reviewing the same version again cannot clear its producers from
+the independent-verifier exclusion set.
+
 Initial action-decision failure/low confidence falls back to lead analysis.
 An uncertain action after work exists or repeated identical member results pause
 as `waiting-human`. Ambiguous/failed member selection retains a confident action
@@ -609,6 +618,14 @@ See [design and plan](superpowers/specs/2026-10-18-general-automatic-collaborati
 Entry: `src/conversations/collaboration-policy.ts`, used by `default-router.ts` through
 the existing restricted subprocess. Legacy no-key fan-out and custom router
 contracts remain available.
+
+No-progress checks compare review/analysis results only within the current
+production version. The same verification text after new `execute`/`revise` work
+is valid; consecutive unchanged production or repeated checks of unchanged work
+still pause. The CLI's legacy no-key path also refuses Jev assignment history;
+production credential gating still rejects missing keys before a router exists.
+All successful execution dependencies are retained for now; narrowing that
+frontier to reduce provider context is a separate optimization.
 
 ## Production composition
 

@@ -411,6 +411,88 @@ test("new production invalidates a prior verification", async () => {
   expect(next.calls[0]?.choices.map((c) => c.key)).not.toContain("complete");
 });
 
+test("latest verification survives a history exceeding the total result budget", async () => {
+  const history: RoutingAssignmentRecord[] = Array.from({ length: 9 }, (_, i) => ({
+    id: `jev-v2-${i}-${i === 8 ? "verify" : "execute"}`, botId: i === 8 ? "bot_b" : "bot_a",
+    task: "work", dependsOn: [], triggerMessageIds: [], outcome: "completed", attempt: 1, batch: i + 1,
+    result: `${i}:`.padEnd(4_000, "x"),
+  }));
+  const bounded = boundRoutingInput({ ...routingInput(), completedAssignments: history }).completedAssignments;
+  expect(bounded.at(-1)?.result).toBe(history.at(-1)?.result);
+  expect(bounded.at(-1)?.resultTruncated).not.toBe(true);
+  expect(bounded[0]?.resultTruncated).toBe(true);
+  expect((await decideJevRouterAssignment(jevInput(bounded), scriptedAsk("complete").ask)).type).toBe("complete");
+});
+
+test("oversized verification can recover full evidence without approving its clipped prefix", async () => {
+  const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1, "artifact v1");
+  const review = settled(await decideJevRouterAssignment(jevInput([work]), scriptedAsk("verify", "bot_b").ask), 2, "check details".repeat(500));
+  const history = boundRoutingInput({ ...routingInput(), completedAssignments: [work, review] }).completedAssignments;
+  const next = scriptedAsk("verify", "bot_b");
+  const recovery = expectDispatch(await decideJevRouterAssignment(jevInput(history), next.ask));
+  expect(next.calls[0]?.choices.map((c) => c.key)).not.toContain("complete");
+  expect(next.calls[1]?.choices.map((c) => c.key)).toEqual(["bot_b"]);
+  expect(recovery.assignments[0]?.task).toContain("Evidence recovery");
+  expect(recovery.assignments[0]?.task).toContain("2,000 characters");
+  expect(recovery.assignments[0]?.dependsOn).toEqual([work.id, review.id]);
+  history.push(settled(recovery, 3, "Inspected full report and artifact v1; all goals verified, no unresolved findings"));
+  expect((await decideJevRouterAssignment(jevInput(history), scriptedAsk("complete").ask)).type).toBe("complete");
+});
+
+test("another review of the same artifact cannot clear its original producer", async () => {
+  const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1, "artifact v1");
+  const review = settled(await decideJevRouterAssignment(jevInput([work]), scriptedAsk("verify", "bot_b").ask), 2, "Need more evidence");
+  const analysis = { ...work, id: "jev-v2-2-analyze", batch: 3, result: "Check the original artifact again" };
+  const next = scriptedAsk("verify", "bot_b");
+  expectDispatch(await decideJevRouterAssignment(jevInput([work, review, analysis]), next.ask));
+  expect(next.calls[1]?.choices.map((c) => c.key)).toEqual(["bot_b"]);
+});
+
+for (const order of ["ascending", "descending", "mixed"] as const) {
+  test(`result budgets preserve the latest batch and ${order} history ordering`, () => {
+    const rows: RoutingAssignmentRecord[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `work-${i}`, botId: `bot_${i}`, task: "work", dependsOn: [], triggerMessageIds: [], outcome: "completed",
+      attempt: 1, batch: i < 8 ? i + 1 : 9, result: `${i}:`.padEnd(4_000, "x"),
+    }));
+    const history = order === "ascending" ? rows : order === "descending" ? rows.toReversed() : [...rows.slice(5), ...rows.slice(0, 5)];
+    const input = { ...routingInput(), completedAssignments: history };
+    const original = structuredClone(input);
+    const bounded = boundRoutingInput(input);
+    expect(bounded.completedAssignments.map((row) => row.id)).toEqual(history.map((row) => row.id));
+    expect(bounded.completedAssignments.filter((row) => row.batch === 9).map((row) => row.result)).toEqual(history.filter((row) => row.batch === 9).map((row) => row.result));
+    expect(bounded.completedAssignments.reduce((total, row) => total + (row.result?.length ?? 0), 0)).toBe(32_000);
+    expect(input).toEqual(original);
+    expect(boundRoutingInput(bounded)).toEqual(bounded);
+  });
+}
+
+test("identical verification text on different production versions is not a loop", async () => {
+  const history: RoutingAssignmentRecord[] = [];
+  for (const [action, bot, result] of [["execute", "bot_a", "feature one"], ["verify", "bot_b", "PASS"],
+    ["execute", "bot_a", "feature two"], ["verify", "bot_b", "PASS"]]) {
+    history.push(settled(await decideJevRouterAssignment(jevInput(history), scriptedAsk(action!, bot!).ask), history.length + 1, result));
+  }
+  expect((await decideJevRouterAssignment(jevInput(history), scriptedAsk("complete").ask)).type).toBe("complete");
+});
+
+test("consecutive unchanged execution and verification still trigger no-progress protection", async () => {
+  const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1, "unchanged artifact v1");
+  const sameWork = { ...work, id: "jev-v2-1-execute", batch: 2 };
+  expect((await decideJevRouterAssignment(jevInput([work, sameWork]), scriptedAsk().ask)).type).toBe("need-human");
+  const review = { ...work, id: "jev-v2-1-verify", botId: "bot_b", result: "PASS", batch: 2 };
+  const sameReview = { ...review, id: "jev-v2-2-verify", batch: 3 };
+  expect((await decideJevRouterAssignment(jevInput([work, review, sameReview]), scriptedAsk().ask)).type).toBe("need-human");
+});
+
+test("no-key CLI cannot turn in-progress Jev production into legacy completion", async () => {
+  const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1);
+  for (const memberMetadata of [routingInput().memberMetadata, []]) {
+    const capture = cliIo(["--decide"], JSON.stringify({ ...routingInput(), memberMetadata, completedAssignments: [work] }));
+    expect(await runDefaultRouterCli(capture.io)).toBe(0);
+    expect(JSON.parse(capture.stdout.join(""))).toMatchObject({ type: "need-human" });
+  }
+});
+
 test("intermediate analysis cannot turn unfinished production into a direct-answer completion", async () => {
   const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1);
   const analysis = settled(await decideJevRouterAssignment(jevInput([work]), scriptedAsk("analyze", "bot_b").ask), 2);
@@ -568,7 +650,8 @@ test("productive successive analyses continue while identical result loops pause
   const second = { ...first, id: "jev-v2-1-analyze", batch: 2, result: "Still analyzing" };
   expect((await decideJevRouterAssignment(jevInput([first, second]), scriptedAsk("answer", "bot_a").ask)).type).toBe("dispatch");
   const repeated = { ...first, id: "jev-v2-2-analyze", batch: 3 };
-  expect((await decideJevRouterAssignment(jevInput([first, { ...second, id: "jev-v2-1-execute" }, repeated]), scriptedAsk().ask)).type).toBe("need-human");
+  expect((await decideJevRouterAssignment(jevInput([first, repeated]), scriptedAsk().ask)).type).toBe("need-human");
+  expect((await decideJevRouterAssignment(jevInput([first, { ...second, id: "jev-v2-1-execute" }, repeated]), scriptedAsk("analyze", "bot_a").ask)).type).toBe("dispatch");
 });
 
 test("long requests retain verification instructions and generated ids remain within limits", async () => {

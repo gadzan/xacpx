@@ -31,7 +31,11 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
     publicTranscript[index] = { ...row, content, ...(content !== row.content ? { contextTruncated: true as const } : {}) };
   }
   let resultLeft = MAX_ROUTER_RESULT_CHARACTERS;
-  const completedAssignments = input.completedAssignments.map((assignment) => {
+  const completedAssignments = [...input.completedAssignments];
+  // Latest batches receive evidence first; retain the caller's history order.
+  const newestAssignments = input.completedAssignments.map((assignment, index) => ({ assignment, index }))
+    .sort((a, b) => b.assignment.batch - a.assignment.batch || a.index - b.index);
+  for (const { assignment, index } of newestAssignments) {
     const task = prefix(assignment.task, 1_000);
     const expectedOutput = assignment.expectedOutput === undefined ? undefined : prefix(assignment.expectedOutput, 500);
     const failureReason = assignment.failureReason === undefined ? undefined : prefix(assignment.failureReason, 512);
@@ -43,9 +47,9 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
       || failureReason !== assignment.failureReason
       || result !== assignment.result || dependsOn.length !== assignment.dependsOn.length
       || triggerMessageIds.length !== assignment.triggerMessageIds.length;
-    return { ...assignment, task, expectedOutput, failureReason, result, dependsOn, triggerMessageIds,
+    completedAssignments[index] = { ...assignment, task, expectedOutput, failureReason, result, dependsOn, triggerMessageIds,
       ...(truncated ? { contextTruncated: true as const, resultTruncated: assignment.resultTruncated === true || result !== assignment.result } : {}) };
-  });
+  }
   const memberMetadata = input.memberMetadata.slice(0, MAX_ROUTER_MEMBER_METADATA).map((member) => {
     const name = prefix(member.name, 128);
     const role = member.role === undefined ? undefined : prefix(member.role, 256);

@@ -75,6 +75,11 @@ export function decideDefaultRouterAssignment(input: DefaultRouterDecisionInput)
   if (request.length === 0) {
     return { type: "need-human", question: "The run request is empty." };
   }
+  // Production gates credentials before constructing a router. Also protect
+  // direct CLI use: never downgrade live Jev work into legacy completion.
+  if (input.completedAssignments?.some((row) => row.id.startsWith("jev-"))) {
+    return { type: "need-human", question: "Jev credentials are unavailable for this existing collaboration. Restore Jev before continuing; completed work is preserved." };
+  }
   // Disabled members stay routable in metadata but are never executable: the
   // gate rejects them, so the router must choose somebody else rather than
   // have the server repair a disabled selection.
@@ -216,8 +221,7 @@ export async function runDefaultRouterCli(io: DefaultRouterCliIo): Promise<numbe
     const input = readDecisionInput(JSON.parse(await io.readStdin()));
     // The daemon passes the instance's Jev settings through the environment
     // (never argv). With a key present the Jev policy decides; without one the
-    // bundled fan-out keeps working, so an unconfigured instance degrades to
-    // the old behavior instead of failing the Run.
+    // bundled fan-out is available only for runs without Jev assignment history.
     const jev = readJevRouterEnv(io.env ?? {});
     decision = jev
       ? await decideJevRouterAssignment({ ...input, jev })

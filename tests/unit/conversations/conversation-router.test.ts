@@ -104,6 +104,57 @@ test("bundled collaboration policy drives a durable multi-member refinement loop
   } finally { await harness.service.awaitRouting(); harness.store.close(); }
 });
 
+for (const scenario of ["long-history", "oversized-evidence"] as const) {
+  test(`real engine completes ${scenario} with exact durable verification evidence`, async () => {
+    const sequence = scenario === "long-history"
+      ? [...Array.from({ length: 8 }, () => ["execute", BUILDER_ID]).flat(), "verify", TESTER_ID, "complete"]
+      : ["execute", BUILDER_ID, "verify", TESTER_ID, "verify", TESTER_ID, "revise", BUILDER_ID, "verify", TESTER_ID, "complete"];
+    const calls: ConversationTurnRunInput[] = [];
+    const inputs: RoutingInput[] = [];
+    const harness = await createHarness({ autoKick: false,
+      executionRunner: { async run(input) {
+        calls.push(input);
+        const n = calls.length;
+        const text = scenario === "long-history" ? `${n}:`.padEnd(4_000, "x")
+          : n === 1 ? "Artifact v1" : n === 2 ? `${"check details ".repeat(400)}NEGATIVE FINDING AFTER PREFIX`
+          : n === 3 ? "Artifact v1 has one unresolved negative finding" : n === 4 ? "Artifact v2 fixes that finding" : "Verified artifact v2, no unresolved findings";
+        return { status: "completed", text };
+      }, async cancel() { return { outcome: "cancelled" }; } },
+      router: { capabilityRestriction: RESTRICTED, async decide(input) {
+        inputs.push(structuredClone(input));
+        return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
+          members: input.memberMetadata, completedAssignments: input.completedAssignments,
+          completedAssignmentCount: input.completedAssignments.length, remainingBudget: input.remainingBudget,
+          jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } }, async (question) => {
+            const choice = sequence.shift();
+            expect(question.choices.some((candidate) => candidate.key === choice)).toBe(true);
+            return { ok: true, choice: choice!, confidence: 0.9, latencyMs: 1 };
+          });
+      } },
+    });
+    try {
+      const { group, topic } = await createGroup(harness);
+      const accepted = await acceptAutomatic(harness, group.id, topic.id, scenario);
+      for (let step = 0; step < 12 && harness.store.getRun(accepted.run.id)?.state !== "completed"; step++) {
+        await harness.dispatcher.kick(); await harness.service.awaitRouting();
+      }
+      expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "completed", consumedMemberTurns: scenario === "long-history" ? 9 : 5 });
+      expect(sequence).toEqual([]);
+      if (scenario === "long-history") {
+        expect(inputs.at(-1)?.completedAssignments.at(-1)?.result).toBe("9:".padEnd(4_000, "x"));
+        expect(inputs.at(-1)?.completedAssignments[0]?.resultTruncated).toBe(true);
+      } else {
+        expect(inputs[2]?.completedAssignments.at(-1)?.resultTruncated).toBe(true);
+        expect(calls[2]?.botId).toBe(TESTER_ID);
+        expect(calls[2]?.text).toContain("Evidence recovery");
+        expect(calls[2]?.text).toContain("NEGATIVE FINDING AFTER PREFIX");
+        expect(harness.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 200 })
+          .some((message) => message.content.endsWith("NEGATIVE FINDING AFTER PREFIX"))).toBe(true);
+      }
+    } finally { await harness.service.awaitRouting(); harness.store.close(); }
+  });
+}
+
 test("cancelling a pending bundled collaboration assignment never starts or routes another member", async () => {
   let calls = 0;
   const harness = await createHarness({ autoKick: false, router: { capabilityRestriction: RESTRICTED, async decide(input) {

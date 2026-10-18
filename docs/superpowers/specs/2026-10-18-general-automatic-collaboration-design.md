@@ -122,7 +122,33 @@ judgment quality or an independent security boundary around member text.
 
 ## Verification record (2026-10-18)
 
-- 250 tests pass across default-router, Conversation Router engine, production
+### Review follow-up plan
+
+Implemented in the follow-up commit on PR #439; 261 focused tests pass, including
+real-engine long-history completion and exact evidence recovery. The root
+TypeScript check passes. The original implementation record below remains for
+comparison; expanded Windows regression limitations still apply.
+
+1. Allocate the 32,000-character result budget by descending batch recency while
+   preserving the caller's history order. A long earlier history must not starve
+   the latest verification; per-result limits and truncation flags remain strict.
+2. Offer another verification when a completed batch has incomplete/truncated
+   result evidence. Give that member exact durable dependencies and explicit
+   instructions to inspect the full evidence, preserve findings and return a
+   concise complete verification. A truncated verification cannot reset producer
+   independence or directly authorize completion.
+3. Scope repeated verification/analysis text to the current production frontier.
+   Identical checks on distinct execute/revise outputs are valid. Consecutive
+   identical execution results and repeated checks without intervening production
+   still stop as no progress. Do not compare parallel siblings as repeated rounds.
+4. Defensively refuse the no-key legacy path when Jev assignments already exist.
+   Production credential gating remains authoritative and is tested separately.
+5. Regress long histories, oversized evidence recovery, repeated PASS on distinct
+   artifacts, real loops and key-loss entry points; rerun focused suites, typecheck
+   and build, then update PR #439. Keep full-history execution dependencies as-is;
+   optimizing that frontier is a separate change that must preserve required proof.
+
+- Initial implementation: 250 tests pass across default-router, Conversation Router engine, production
   router subprocess, Jev client, SQLite store and Topic lifecycle suites. This
   includes domain-neutral transitions, independent verification, revision,
   cancellation, exact dependency results, process reconstruction and loopback
