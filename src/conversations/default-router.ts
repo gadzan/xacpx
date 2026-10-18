@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { decideCollaboration, readCollaborationHistory } from "./collaboration-policy";
 
 import {
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
@@ -7,12 +8,11 @@ import {
   type RouterCapabilityRestriction,
   type RoutingDecision,
   type RoutingMember,
+  type RoutingAssignmentRecord,
 } from "./conversation-router-types";
 import {
   DEFAULT_JEV_ENDPOINT,
   DEFAULT_JEV_MODEL,
-  JEV_ROUTER_QUESTION,
-  MAX_JEV_CHOICES,
   askJevChoice,
   redactJevSecrets,
   type JevAskResult,
@@ -29,25 +29,23 @@ import {
  * external-process contract an operator's router must satisfy, probed and
  * bounded by `production-router.ts` exactly like an operator-supplied one.
  *
- * The semantics are deliberately the least surprising ones available without a
- * model, a filesystem, or tools: fan the Run's request out to every enabled
- * member once, in parallel, then complete. It never synthesizes. A cleverer
- * policy would be invented behavior presented as intelligence, and a second
- * in-process routing path would bypass the capability proof the docs promise.
+ * Jev chooses a next action and member from durable result evidence on each
+ * pass. The no-key legacy path fans out once. Both use the same restricted
+ * external-process contract and the existing durable Conversation executor.
  *
  * Pure at import: nothing here touches the filesystem, the environment, or the
  * process until the caller invokes it.
  */
 
-/** Everything the default router is allowed to reason with, projected from the
- *  engine's `RoutingInput`. Deliberately narrower than `RoutingInput`: the
- *  transcript, the Run state, and the execution target are not evidence for a
- *  fixed fan-out, so they never reach this shape. */
+/** Public bounded engine evidence used by the bundled routing policies. */
 export interface DefaultRouterDecisionInput {
   request: string;
+  requestTruncated?: true;
   requestMessageId: string;
   members: readonly RoutingMember[];
   completedAssignmentCount: number;
+  /** Durable results, retained for the adaptive Jev policy. */
+  completedAssignments?: readonly RoutingAssignmentRecord[];
   remainingBudget: number;
   /** The Group's configured lead Bot, when one is set. */
   leadBotId?: string;
@@ -76,6 +74,11 @@ export function decideDefaultRouterAssignment(input: DefaultRouterDecisionInput)
   const request = input.request.trim();
   if (request.length === 0) {
     return { type: "need-human", question: "The run request is empty." };
+  }
+  // Production gates credentials before constructing a router. Also protect
+  // direct CLI use: never downgrade live Jev work into legacy completion.
+  if (input.completedAssignments?.some((row) => row.id.startsWith("jev-"))) {
+    return { type: "need-human", question: "Jev credentials are unavailable for this existing collaboration. Restore Jev before continuing; completed work is preserved." };
   }
   // Disabled members stay routable in metadata but are never executable: the
   // gate rejects them, so the router must choose somebody else rather than
@@ -112,16 +115,7 @@ export function decideDefaultRouterAssignment(input: DefaultRouterDecisionInput)
   return { type: "dispatch", mode: take === 1 ? "single" : "parallel", assignments };
 }
 
-/**
- * Confidence floor for a Jev pick. Below it the model is guessing, so the
- * policy falls back to the Group's lead instead of dispatching on a coin flip.
- */
-export const JEV_MIN_CONFIDENCE = 0.6;
-
-/** Bound on the transcript block folded into the Jev state message. */
-const JEV_CONTEXT_CHARACTERS = 2_000;
-const JEV_CONTEXT_ROWS = 6;
-const JEV_CONTEXT_ROW_CHARACTERS = 400;
+export { COLLABORATION_MIN_CONFIDENCE as JEV_MIN_CONFIDENCE } from "./collaboration-policy";
 
 /** The Jev connection settings the daemon passes to the bundled router via
  *  environment variables (never argv: argv is visible to every local process). */
@@ -160,141 +154,12 @@ const realJevAsk: JevAskFn = (input) =>
     choices: input.choices,
   });
 
-/** Best available description for one member. RoutingMember carries no Bot
- *  instruction text (that is execution configuration, not routing evidence);
- *  the role is the closest thing to a profile, the name the fallback. */
-function memberDescription(member: RoutingMember): string {
-  const role = member.role?.trim();
-  if (role) return role;
-  const name = member.name.trim();
-  return name.length > 0 ? name : member.botId;
-}
-
-/** Bounded newest-first transcript block for the Jev state message. */
-function recentContext(input: DefaultRouterDecisionInput): string {
-  const rows = (input.publicTranscript ?? []).slice(0, JEV_CONTEXT_ROWS);
-  if (rows.length === 0) return "";
-  const lines: string[] = [];
-  let left = JEV_CONTEXT_CHARACTERS;
-  for (const row of rows) {
-    const content = row.content.slice(0, Math.min(JEV_CONTEXT_ROW_CHARACTERS, left));
-    left -= content.length;
-    if (content.length === 0) break;
-    const speaker = row.role === "bot" ? (row.senderBotId ?? "bot") : row.role;
-    lines.push(`${speaker}: ${content}`);
-    if (left <= 0) break;
-  }
-  return lines.join("\n");
-}
-
-/** The single-assignment dispatch for one chosen member. */
-function dispatchTo(
-  member: RoutingMember,
-  input: DefaultRouterDecisionInput,
-  reason: string,
-): RoutingDecision {
-  const qualifiedId = `jev-0-${member.botId}`;
-  return {
-    type: "dispatch",
-    mode: "single",
-    assignments: [{
-      id: qualifiedId.length <= MAX_ROUTER_ASSIGNMENT_ID_LENGTH ? qualifiedId : "jev-0",
-      botId: member.botId,
-      task: input.request.trim().slice(0, MAX_ROUTER_TASK_LENGTH),
-      triggerMessageIds: input.requestMessageId.length > 0 ? [input.requestMessageId] : [],
-    }],
-    reason,
-  };
-}
-
-/**
- * The Jev routing policy: ask the model to pick ONE enabled member, dispatch
- * only to it, and fall back to the Group lead (else the first enabled member)
- * whenever the pick is untrustworthy.
- *
- * The guard order is the same contract as the fan-out: an empty request asks a
- * human, nobody enabled completes, an exhausted budget completes, and a Run
- * that already spent a round completes instead of looping.
- *
- * A decision always carries a human-readable `reason` — who was dispatched to,
- * why, and the confidence (or the fallback cause) — because the UI renders it
- * verbatim.
- */
+/** Adaptive collaboration uses the same restricted Router/finite-choice seam. */
 export async function decideJevRouterAssignment(
   input: JevRouterDecisionInput,
   ask: JevAskFn = realJevAsk,
 ): Promise<RoutingDecision> {
-  const request = input.request.trim();
-  if (request.length === 0) {
-    return { type: "need-human", question: "The run request is empty." };
-  }
-  const enabled = input.members.filter((member) => member.enabled);
-  if (enabled.length === 0) {
-    return { type: "complete", reason: "No enabled group members are available to assign." };
-  }
-  if (input.remainingBudget <= 0) {
-    return { type: "complete", reason: "The member turn budget is exhausted." };
-  }
-  if (input.completedAssignmentCount > 0) {
-    return { type: "complete", reason: "The router assigns one round per run." };
-  }
-  const fallback = (cause: string): RoutingDecision => {
-    const lead = input.leadBotId === undefined
-      ? undefined
-      : enabled.find((member) => member.botId === input.leadBotId);
-    const target = lead ?? enabled[0]!;
-    const why = lead
-      ? "the group lead"
-      : input.leadBotId === undefined
-        ? "the first enabled member (no group lead is configured)"
-        : "the first enabled member (the group lead is not enabled)";
-    return dispatchTo(
-      target,
-      input,
-      `Jev could not decide (${cause}); dispatched to ${why} ${target.botId}.`,
-    );
-  };
-  const choices: JevChoice[] = enabled.slice(0, MAX_JEV_CHOICES).map((member) => ({
-    key: member.botId,
-    description: memberDescription(member),
-  }));
-  const context = recentContext(input);
-  const message = context.length > 0 ? `${request}\n\nRecent context:\n${context}` : request;
-  let answer: JevAskResult;
-  try {
-    answer = await ask({
-      endpoint: input.jev.endpoint,
-      apiKey: input.jev.apiKey,
-      ...(input.jev.proxyUrl ? { proxyUrl: input.jev.proxyUrl } : {}),
-      model: input.jev.model,
-      message,
-      question: JEV_ROUTER_QUESTION,
-      choices,
-    });
-  } catch (error) {
-    // The reason is user-visible (Run card) and durable: never let a proxy
-    // credential or the key ride along in a thrown transport message.
-    const detail = redactJevSecrets(error instanceof Error ? error.message : String(error), {
-      proxyUrls: [input.jev.proxyUrl, process.env.HTTPS_PROXY, process.env.https_proxy],
-      apiKey: input.jev.apiKey,
-    });
-    return fallback(`the router call failed: ${detail}`);
-  }
-  if (!answer.ok) {
-    return fallback(`the router call failed: ${answer.code}`);
-  }
-  const picked = enabled.find((member) => member.botId === answer.choice);
-  if (!picked) {
-    return fallback(`the router named an unknown member "${answer.choice}"`);
-  }
-  if (answer.confidence < JEV_MIN_CONFIDENCE) {
-    return fallback(`low confidence ${answer.confidence.toFixed(2)}`);
-  }
-  return dispatchTo(
-    picked,
-    input,
-    `Jev dispatched to ${picked.botId} (confidence ${answer.confidence.toFixed(2)}).`,
-  );
+  return decideCollaboration(input, ask);
 }
 
 /**
@@ -356,8 +221,7 @@ export async function runDefaultRouterCli(io: DefaultRouterCliIo): Promise<numbe
     const input = readDecisionInput(JSON.parse(await io.readStdin()));
     // The daemon passes the instance's Jev settings through the environment
     // (never argv). With a key present the Jev policy decides; without one the
-    // bundled fan-out keeps working, so an unconfigured instance degrades to
-    // the old behavior instead of failing the Run.
+    // bundled fan-out is available only for runs without Jev assignment history.
     const jev = readJevRouterEnv(io.env ?? {});
     decision = jev
       ? await decideJevRouterAssignment({ ...input, jev })
@@ -425,9 +289,11 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
   const members: unknown[] = memberMetadata;
   return {
     request,
+    ...((value as { requestTruncated?: unknown }).requestTruncated === true ? { requestTruncated: true as const } : {}),
     requestMessageId,
     members: members.map((entry) => readMember(entry)),
     completedAssignmentCount: completedAssignments.length,
+    completedAssignments: readCollaborationHistory(completedAssignments),
     remainingBudget,
     ...(typeof leadBotId === "string" && leadBotId.trim().length > 0 ? { leadBotId } : {}),
     ...(Array.isArray(publicTranscript)
