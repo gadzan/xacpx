@@ -33,11 +33,14 @@ execution capabilities; do not add a second scheduler or domain-specific roles.
 4. Keep the complete durable audit and existing newest-first Router budget.
    Router truncation never becomes approval evidence. Two oversized/empty successful
    verification batches of an unchanged production version cause a deterministic
-   `need-human` pause unless a later compact report already recovered it. Original
-   durable result lengths survive budgeting: old compact reports clipped by the
+   `need-human` pause unless a later compact nonblank report already recovered it.
+   Only a successfully completed production advances the artifact-version boundary;
+   failed execute/revise attempts do not reset verification recovery. Original
+   durable result lengths and nonblank-content flags survive budgeting: old compact
+   reports clipped by the
    shared history budget do not count as failed recovery attempts or lose their
    ability to reset the retry counter. Size alone never authorizes completion.
-   Analyses and member changes do not reset this limit; new production does.
+   Analyses and member changes do not reset this limit; successful new production does.
    This bounds repeated evidence recovery without replaying production effects.
 5. Summaries must retain versions, unresolved findings and blockers. Older
    findings remain discoverable through the result catalog; no prose heuristic
@@ -75,3 +78,19 @@ interpreted every finding correctly or force it to use its read capability.
 - TypeScript no-emit check and acpx import boundary lint passed.
 - Full CLI/bridge/Router build passed.
 - No real Jev/external-channel end-to-end run was performed.
+
+## Review follow-up
+
+- Reproduced both reported recovery-counter defects with failing regressions.
+  Whitespace-only successful reports now count as missing evidence; failed
+  production attempts do not advance the recovery version boundary.
+- `resultHasContent` projects original nonblankness before any Router truncation,
+  survives JSON history parsing and repeated budgeting, and remains unknown for
+  legacy clipped prefixes that cannot prove whether the original was blank.
+  A complete later report still resets recovery even if its text leaves the
+  shared history budget; a whitespace-only report cannot do so.
+- Added real engine/SQLite scenarios for consecutive blank reviews and for
+  execute → oversized verify → analyze → failed revise → analyze → oversized
+  verify. Both pause durably with original evidence and unused budget retained.
+- Follow-up policy, engine and production-Router suites: 204 tests passed across
+  3 files. TypeScript no-emit, acpx import boundary lint and full build passed.

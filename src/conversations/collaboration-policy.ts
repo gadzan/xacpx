@@ -57,6 +57,7 @@ export function readCollaborationHistory(value: unknown): RoutingAssignmentRecor
       || !Number.isSafeInteger(row.batch) || (row.batch as number) < 1) throw new Error("invalid assignment attempt/batch");
     if (row.contextTruncated !== undefined && row.contextTruncated !== true) throw new Error("invalid truncation flag");
     if (row.resultTruncated !== undefined && typeof row.resultTruncated !== "boolean") throw new Error("invalid result truncation flag");
+    if (row.resultHasContent !== undefined && typeof row.resultHasContent !== "boolean") throw new Error("invalid original result content flag");
     if (row.resultCharacters !== undefined && (!Number.isSafeInteger(row.resultCharacters)
       || (row.resultCharacters as number) < 0 || (row.resultCharacters as number) < (typeof row.result === "string" ? row.result.length : 0))) {
       throw new Error("invalid original result size");
@@ -71,6 +72,7 @@ export function readCollaborationHistory(value: unknown): RoutingAssignmentRecor
       ...(row.contextTruncated === true ? { contextTruncated: true as const } : {}),
       ...(row.resultTruncated !== undefined ? { resultTruncated: row.resultTruncated as boolean } : {}),
       ...(row.resultCharacters !== undefined ? { resultCharacters: row.resultCharacters as number } : {}),
+      ...(row.resultHasContent !== undefined ? { resultHasContent: row.resultHasContent as boolean } : {}),
     };
   });
 }
@@ -104,13 +106,15 @@ function hasFullResult(row: RoutingAssignmentRecord): boolean {
 }
 
 function recoveryExhausted(history: RoutingAssignmentRecord[]): boolean {
-  const productionBatch = history.reduce((batch, row) => isProduction(row) ? Math.max(batch, row.batch) : batch, 0);
+  const productionBatch = history.reduce((batch, row) => isProduction(row) && row.outcome === "completed" ? Math.max(batch, row.batch) : batch, 0);
   const reviews = history.filter((row) => row.batch > productionBatch && actionOf(row) === "verify");
+  const hasOriginalContent = (row: RoutingAssignmentRecord): boolean | undefined => row.resultHasContent
+    ?? (row.result?.trim() ? true : hasFullResult(row) ? false : undefined);
   // A later compact batch resets the recovery counter, not the completion gate.
   // Count batches, not members; rebuild from durable sizes on every restart.
   const recoveredBatch = reviews.reduce((batch, row) => {
     const siblings = history.filter((other) => other.batch === row.batch);
-    return siblings.every((other) => other.outcome === "completed"
+    return siblings.every((other) => other.outcome === "completed" && hasOriginalContent(other) === true
       && (other.resultCharacters !== undefined
         ? other.resultCharacters > 0 && other.resultCharacters <= 4_000
         : !!other.result?.trim() && hasFullResult(other)))
@@ -119,8 +123,8 @@ function recoveryExhausted(history: RoutingAssignmentRecord[]): boolean {
   return new Set(reviews.filter((row) => row.batch > recoveredBatch && row.outcome === "completed"
     // An old report clipped only by the shared history budget is not a failed
     // recovery. Original lengths come from durable text before allocation.
-    && ((row.resultCharacters ?? row.result?.length ?? 0) > 4_000 || row.resultCharacters === 0
-      || (row.resultCharacters === undefined && !row.result?.trim()))).map((row) => row.batch)).size >= 2;
+    && ((row.resultCharacters ?? row.result?.length ?? 0) > 4_000
+      || hasOriginalContent(row) === false)).map((row) => row.batch)).size >= 2;
 }
 
 function dependencyFrontier(history: RoutingAssignmentRecord[]): string[] {

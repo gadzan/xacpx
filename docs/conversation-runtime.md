@@ -636,12 +636,13 @@ Enforced read-only launches still have no MCP capabilities; their selected
 dependencies remain complete inline. Missing access to older required evidence
 must be reported as a blocker, not as successful verification.
 
-Two oversized/empty successful verification batches for the same production version
+Two oversized/blank successful verification batches for the same production version
 pause deterministically before another recovery dispatch. Analyses or a reviewer
-change do not reset this counter; new production or a later compact verification
+change do not reset this counter; successful new production or a later compact nonblank verification
 does. Full audit results survive the pause. This limits recovery cost, while the
 existing evidence and independent-verifier gates continue to control completion.
-Original result lengths are carried separately from snapshot prefixes, so shared
+Original result lengths and nonblank-content flags are projected from durable text
+before truncation and carried separately from snapshot prefixes, so shared
 history-budget clipping of compact reports does not consume recovery attempts.
 See [follow-up design](superpowers/specs/2026-10-18-collaboration-evidence-frontier-design.md)
 and [tracking issue #440](https://github.com/gadzan/xacpx/issues/440).

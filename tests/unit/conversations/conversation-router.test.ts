@@ -193,42 +193,53 @@ test("cancelling a pending bundled collaboration assignment never starts or rout
   } finally { harness.store.close(); }
 });
 
-test("repeated oversized verification pauses durably with work and budget preserved", async () => {
-  const choices = ["execute", BUILDER_ID, "verify", TESTER_ID, "verify", TESTER_ID];
-  let calls = 0;
-  const harness = await createHarness({ autoKick: false,
-    executionRunner: { async run() {
-      calls++;
-      return { status: "completed", text: calls === 1 ? "Artifact v1" : `${"report ".repeat(700)}TAIL FINDING ${calls}` };
-    }, async cancel() { return { outcome: "cancelled" }; } },
-    router: { capabilityRestriction: RESTRICTED, async decide(input) {
-      return decideJevRouterAssignment({ request: input.request, members: input.memberMetadata,
-        completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
-        remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
-        async (question) => {
-          const choice = choices.shift();
-          expect(question.choices.some((candidate) => candidate.key === choice)).toBe(true);
-          return { ok: true, choice: choice!, confidence: 0.9, latencyMs: 1 };
-        });
-    } },
-  });
-  try {
-    const { group, topic } = await createGroup(harness);
-    const accepted = await acceptAutomatic(harness, group.id, topic.id, "oversized-loop");
-    for (let step = 0; step < 5; step++) { await harness.dispatcher.kick(); await harness.service.awaitRouting(); }
-    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "waiting-human", consumedMemberTurns: 3,
-      waitingQuestion: expect.stringContaining("two reports") });
-    expect(calls).toBe(3);
-    expect(choices).toEqual([]);
-    const reopened = await SqliteConversationStore.open(harness.path);
+for (const scenario of ["oversized", "blank", "failed-revision"] as const) {
+  test(`repeated ${scenario} verification pauses durably with work and budget preserved`, async () => {
+    const choices = scenario === "failed-revision"
+      ? ["execute", BUILDER_ID, "verify", TESTER_ID, "analyze", BOT_ID, "revise", BUILDER_ID, "analyze", BOT_ID, "verify", TESTER_ID]
+      : ["execute", BUILDER_ID, "verify", TESTER_ID, "verify", TESTER_ID];
+    const expectedTurns = scenario === "failed-revision" ? 6 : 3;
+    const lastReport = scenario === "blank" ? "\t " : `${"report ".repeat(700)}TAIL FINDING ${expectedTurns}`;
+    let calls = 0;
+    const harness = await createHarness({ autoKick: false,
+      executionRunner: { async run() {
+        calls++;
+        if (scenario === "failed-revision" && calls === 4) return { status: "failed", error: "No new artifact produced" };
+        const text = calls === 1 ? "Artifact v1"
+          : scenario === "blank" ? (calls === 2 ? "   \n" : lastReport)
+          : scenario === "failed-revision" && (calls === 3 || calls === 5) ? `Investigation ${calls}: v1 is unchanged`
+          : `${"report ".repeat(700)}TAIL FINDING ${calls}`;
+        return { status: "completed", text };
+      }, async cancel() { return { outcome: "cancelled" }; } },
+      router: { capabilityRestriction: RESTRICTED, async decide(input) {
+        return decideJevRouterAssignment({ request: input.request, members: input.memberMetadata,
+          completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+          remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
+          async (question) => {
+            const choice = choices.shift();
+            expect(question.choices.some((candidate) => candidate.key === choice)).toBe(true);
+            return { ok: true, choice: choice!, confidence: 0.9, latencyMs: 1 };
+          });
+      } },
+    });
     try {
-      expect(reopened.getRun(accepted.run.id)?.state).toBe("waiting-human");
-      const turns = reopened.listMemberTurns(accepted.run.id);
-      expect(turns).toHaveLength(3);
-      expect(reopened.getMemberResult(turns.at(-1)!)?.content).toEndWith("TAIL FINDING 3");
-    } finally { reopened.close(); }
-  } finally { await harness.service.awaitRouting(); harness.store.close(); }
-});
+      const { group, topic } = await createGroup(harness);
+      const accepted = await acceptAutomatic(harness, group.id, topic.id, `${scenario}-loop`);
+      for (let step = 0; step < expectedTurns + 2; step++) { await harness.dispatcher.kick(); await harness.service.awaitRouting(); }
+      expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "waiting-human", consumedMemberTurns: expectedTurns,
+        waitingQuestion: expect.stringContaining("two reports") });
+      expect(calls).toBe(expectedTurns);
+      expect(choices).toEqual([]);
+      const reopened = await SqliteConversationStore.open(harness.path);
+      try {
+        expect(reopened.getRun(accepted.run.id)?.state).toBe("waiting-human");
+        const turns = reopened.listMemberTurns(accepted.run.id);
+        expect(turns).toHaveLength(expectedTurns);
+        expect(reopened.getMemberResult(turns.at(-1)!)?.content).toBe(lastReport);
+      } finally { reopened.close(); }
+    } finally { await harness.service.awaitRouting(); harness.store.close(); }
+  });
+}
 
 test("bundled verification caps parallel dependency previews and keeps full results retrievable", async () => {
   const producers = [BOT_ID, BUILDER_ID, "bot_extra1", "bot_extra2", "bot_extra3"];
