@@ -1,14 +1,17 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   COMPAT_MANIFEST,
   PACKAGE_REGISTRY,
+  RELEASE_ARTIFACTS,
   assignPrsToPackages,
   collectEdits,
   collectFloorViolations,
   compareVersions,
   detectChanged,
   expandReleaseSet,
+  gateScope,
   nextVersion,
   packageForPath,
   parseVersion,
@@ -106,6 +109,35 @@ test("assignPrsToPackages treats a package with no tag as having no lower bound"
     prs: [{ number: 9, title: "feat(discord): initial plugin", mergedAt: "2026-01-01T00:00:00Z", files: ["packages/channel-discord/src/index.ts"] }],
   });
   expect(byPackage["channel-discord"]).toEqual(["feat(discord): initial plugin (#9)"]);
+});
+
+test("gateScope builds and verifies only what the release ships", () => {
+  // A relay-only release must not rebuild the root CLI or the channel plugins:
+  // their sources are unchanged, so their artifacts are the ones already on npm.
+  expect(gateScope(["relay"])).toEqual({ builds: ["build:relay"], verifyIds: ["relay"] });
+  // Core republishes the three floor trackers, so their artifacts do ship.
+  expect(gateScope(["core", "channel-feishu", "channel-discord"]).builds).toEqual([
+    "build",
+    "build:channel-feishu",
+    "build:channel-discord",
+  ]);
+  expect(gateScope(["core"]).verifyIds).toEqual(["root"]);
+});
+
+test("gateScope falls back to the unscoped gate for a package it cannot describe", () => {
+  // Null, not a partial scope: an unmapped package is one whose artifact cannot
+  // be assumed unchanged, and a silent partial gate would look like a pass.
+  expect(gateScope(["relay", "mystery"])).toBe(null);
+});
+
+test("every registry package has an artifact mapping pointing at a real script", () => {
+  const scripts = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).scripts;
+  for (const pkg of PACKAGE_REGISTRY) {
+    const spec = RELEASE_ARTIFACTS[pkg.id];
+    expect(spec).toBeDefined();
+    // A mapping naming a script that does not exist would only surface mid-release.
+    expect(scripts[spec.build]).toBeDefined();
+  }
 });
 
 test("parseVersion splits a prerelease and rejects non-semver", () => {

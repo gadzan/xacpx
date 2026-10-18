@@ -87,6 +87,47 @@ export const PACKAGE_REGISTRY = [
 ];
 
 /**
+ * Per-package build script and publish-verification id.
+ *
+ * `publish`'s pre-flight gate needs to build and verify only the packages this
+ * release ships. A package outside the release set owns no changed path (that
+ * is what put it outside the set), so its artifact is the same one already on
+ * npm — rebuilding it verifies a byte stream nobody is about to publish, while
+ * the shipping packages are still built and verified in full. The unscoped
+ * `verify:publish` still runs in the publish workflow before `npm publish`, so
+ * nothing ships on the strength of this scope alone.
+ */
+export const RELEASE_ARTIFACTS = {
+  core: { build: "build", verifyId: "root" },
+  "relay-protocol": { build: "build:relay-protocol", verifyId: "relay-protocol" },
+  relay: { build: "build:relay", verifyId: "relay" },
+  "channel-relay": { build: "build:channel-relay", verifyId: "channel-relay" },
+  "channel-feishu": { build: "build:channel-feishu", verifyId: "channel-feishu" },
+  "channel-discord": { build: "build:channel-discord", verifyId: "channel-discord" },
+  "channel-yuanbao": { build: "build:channel-yuanbao", verifyId: "channel-yuanbao" },
+};
+
+/**
+ * Builds and verification ids for a release set, or null when any id is
+ * unmapped.
+ *
+ * Null means "run the unscoped gate": a package this map cannot describe is one
+ * whose artifact cannot be assumed unchanged, and guessing there would trade a
+ * minute of build time for a publish that fails after the tag exists.
+ *
+ * @param {string[]} releaseIds
+ * @returns {{builds:string[], verifyIds:string[]}|null}
+ */
+export function gateScope(releaseIds) {
+  const specs = releaseIds.map((id) => RELEASE_ARTIFACTS[id]);
+  if (specs.some((spec) => spec === undefined)) return null;
+  return {
+    builds: specs.map((spec) => spec.build),
+    verifyIds: specs.map((spec) => spec.verifyId),
+  };
+}
+
+/**
  * Plugins that pin `minXacpxVersion` and `peerDependencies.xacpx` to the exact
  * core release they were verified against.
  *

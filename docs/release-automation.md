@@ -142,7 +142,11 @@ The three views update at different times, measured on 0.14.12-beta.7: the
 version document resolved ~3.5 min after the run went green, the packument
 (`npm view <pkg> dist-tags`) still served the previous tag a minute later, and
 the dedicated dist-tags endpoint — a separate cache — reported the new tag
-immediately. Trust that one when the packument looks stale:
+immediately. `publish` therefore polls that endpoint itself after each tag's
+workflow goes green (24 × 15s) and prints the dist-tag it found, so the wait is
+bounded, reported, and never misread. A poll that times out is a warning, not a
+failure: the publish already succeeded in CI, and the command prints the URL to
+re-check.
 
 ```bash
 curl -s https://registry.npmjs.org/-/package/@ganglion%2Fxacpx-relay/dist-tags
@@ -151,7 +155,7 @@ curl -s https://registry.npmjs.org/-/package/@ganglion%2Fxacpx-relay/dist-tags
 `publish` refuses to run when the modified paths include anything outside the
 set this tool owns, so unrelated work in progress cannot be swept into the
 release commit. It also drops build-only churn in `packages/relay-protocol/dist`
-when protocol is not part of the release — `verify:publish` rebuilds that file
+when protocol is not part of the release — the artifact gate rebuilds that file
 and bun's bundler sometimes renames a local, producing a diff with no semantic
 content.
 
@@ -173,7 +177,9 @@ content.
   that package's last tag, otherwise commit subjects. PR *bodies* are never
   used — they run to several paragraphs, and the file's convention is a one-line
   bullet per change. Either way it is a starting point: read it and rewrite what
-  needs a human. `plan` prints which source it used.
+  needs a human. `plan` prints which source it used, plus the tag and UTC commit
+  time the window was bounded by and how many bullets that produced — so there is
+  no reason to re-derive the window by hand, timezones included.
 - **`--bump` across a stable boundary.** See the version policy table.
 - **Deciding that a release is worth making.** `plan` reports changes; whether a
   three-line CSS tweak deserves its own `next` tag is a judgement call.
@@ -200,5 +206,25 @@ tag-push time, at the cost of one narrow false positive: a PR that regenerates
 version-less stubs, which is exactly what `check` reports (and what `apply`
 pins). That is a deliberate call for the operator, not a default.
 
-`publish` runs `check`, `tsc --noEmit`, and `bun run verify:publish` before it
-commits. Pass `--skip-gates` only to recover from a tree already proven green.
+`publish` runs three gates before it commits:
+
+1. `tsc --noEmit` — the whole repo, ~40s. The release commit is source, so this
+   does not shrink with the release.
+2. `check` — the invariants above, under a second.
+3. Build every package this release ships, then `verify-publish.mjs --packages
+   <those ids>`.
+
+Gate 3 is scoped on purpose. A package outside the release set owns no changed
+path — that is what put it outside the set — so its artifact is the one already
+on npm, and rebuilding it spends minutes re-verifying bytes nobody is about to
+publish. Measured for a relay-only release: **209s scoped against 446s
+unscoped**, with relay itself still built and verified in full.
+
+Scoping does not weaken what ships. The publish workflow runs the *unscoped*
+`bun run verify:publish` before `npm publish`, so no artifact reaches npm on the
+strength of a partial local gate; the local gate exists to move a failure in
+front of the tag, and it now does that for exactly the packages at risk. A
+release id with no entry in `RELEASE_ARTIFACTS` falls back to the unscoped gate,
+because an artifact that cannot be described cannot be assumed unchanged.
+
+`--skip-gates` exists only to recover from a tree already proven green.

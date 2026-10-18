@@ -38,10 +38,12 @@ const {
   CHANGELOG_HEADER,
   COMPAT_MANIFEST,
   CORE_FLOOR_TRACKERS,
+  RELEASE_ARTIFACTS,
   assignPrsToPackages,
   collectEdits,
   collectFloorViolations,
   expandReleaseSet,
+  gateScope,
   nextVersion,
   packageForPath,
   parseVersion,
@@ -69,6 +71,15 @@ const TOOL_OWNED_PATHS = [
   "packages/relay-protocol/dist",
   "packages/relay-web/package.json",
 ];
+
+/**
+ * Registry polls after a publish: 24 × 15s.
+ *
+ * Six minutes covers the slowest publish measured (3.5 min for the version
+ * document to resolve), while still bounding a command that already spent
+ * eleven minutes waiting on CI.
+ */
+const REGISTRY_ATTEMPTS = 24;
 
 function git(args, { allowFailure = false } = {}) {
   try {
@@ -236,6 +247,16 @@ function buildPlan(options) {
     changedPaths,
     lastTags,
     changelogSource: bullets.source,
+    changelogWindows: releases.map((release) => ({
+      id: release.id,
+      tag: lastTags[release.id] || "",
+      // The bound the PR list was filtered by, in UTC — the value an operator
+      // would otherwise recompute by hand, timezone bugs included.
+      since: sinceById[release.id] === undefined
+        ? ""
+        : new Date(sinceById[release.id]).toISOString().replace(".000Z", "Z"),
+      bullets: (bullets.byPackage[release.id] ?? []).length,
+    })),
     changelog: renderChangelog({
       date: today(),
       releases: releases.map((release) => ({
@@ -369,6 +390,13 @@ function printPlan(plan) {
     const where = edit.path ? `${edit.file} → ${edit.path.join(".")}` : edit.file;
     out.push(`  [${edit.kind}] ${where}: ${edit.from} -> ${edit.to}`);
     out.push(`      ${edit.reason}`);
+  }
+  out.push("", "changelog window (bullets are counted from merged PRs after each tag's commit time):");
+  for (const entry of plan.changelogWindows) {
+    const bound = entry.tag
+      ? `${entry.tag} since ${entry.since}`
+      : "no previous tag — unbounded";
+    out.push(`  ${entry.id.padEnd(16)} ${bound}, ${entry.bullets} bullet${entry.bullets === 1 ? "" : "s"}`);
   }
   out.push("", `changelog draft (source: ${plan.changelogSource}; review and edit before publishing):`, "", plan.changelog);
   return out.join("\n");
@@ -625,12 +653,39 @@ function dropProtocolDistChurn(plan) {
   console.log("reverted build-only churn in packages/relay-protocol/dist");
 }
 
-function runGates() {
+/**
+ * The pre-flight gate, sized to the release.
+ *
+ * Typecheck and metadata checks are whole-repo because they are cheap (39s and
+ * under a second). The artifact gate is not: building every package costs ~7
+ * minutes, and for a single-package release most of that builds artifacts
+ * nobody is about to publish. Only the packages in this release are built, and
+ * the verification is scoped to match — with a fallback to the unscoped
+ * `verify:publish` whenever a release id has no artifact mapping.
+ */
+function runGates(plan) {
   console.log("== gates: typecheck ==");
   execFileSync("bun", ["x", "tsc", "--noEmit"], { cwd: ROOT, stdio: "inherit" });
-  console.log("== gates: metadata + publishability ==");
+  console.log("== gates: metadata ==");
   execFileSync("node", [join(ROOT, "scripts", "release.mjs"), "check"], { cwd: ROOT, stdio: "inherit" });
-  execFileSync("bun", ["run", "verify:publish"], { cwd: ROOT, stdio: "inherit" });
+
+  const ids = plan.releases.map((release) => release.id);
+  const scope = gateScope(ids);
+  if (!scope) {
+    const unmapped = ids.filter((id) => RELEASE_ARTIFACTS[id] === undefined);
+    console.log(`== gates: artifacts (every package — no artifact mapping for ${unmapped.join(", ")}) ==`);
+    execFileSync("bun", ["run", "verify:publish"], { cwd: ROOT, stdio: "inherit" });
+    return;
+  }
+  console.log(`== gates: artifacts (${ids.join(", ")}) ==`);
+  for (const script of scope.builds) {
+    execFileSync("bun", ["run", script], { cwd: ROOT, stdio: "inherit" });
+  }
+  execFileSync(
+    "node",
+    [join(ROOT, "scripts", "verify-publish.mjs"), "--packages", scope.verifyIds.join(",")],
+    { cwd: ROOT, stdio: "inherit" },
+  );
 }
 
 /**
@@ -717,6 +772,40 @@ async function awaitTagRun(tag) {
   }
 }
 
+/**
+ * Wait for a released version to appear on the registry, then report its tag.
+ *
+ * The dedicated dist-tags endpoint keeps its own cache and updates first: on
+ * 0.14.12-beta.7 the packument still served the previous tag a minute after
+ * this endpoint was current, and minutes after the version document resolved.
+ * Polling `npm view` is how a finished release gets misread as a failed one.
+ *
+ * Never throws. The publish already succeeded in CI by the time this runs, so a
+ * registry that is slow to publish is something to report, not a reason to fail
+ * the command.
+ */
+async function reportRegistry(npmName, version) {
+  const url = `https://registry.npmjs.org/-/package/${npmName.replace("/", "%2F")}/dist-tags`;
+  for (let attempt = 1; attempt <= REGISTRY_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, { headers: { "cache-control": "no-cache" } });
+      if (response.ok) {
+        const tags = await response.json();
+        const live = Object.entries(tags).find(([, tagged]) => tagged === version);
+        if (live) {
+          console.log(`  ${npmName}@${version} is live on npm (dist-tag: ${live[0]})`);
+          return true;
+        }
+      }
+    } catch {
+      // A transient failure means the same thing as "not yet": keep waiting.
+    }
+    if (attempt < REGISTRY_ATTEMPTS) await sleep(15_000);
+  }
+  console.warn(`  ${npmName}@${version} is not visible yet — re-check ${url} before assuming the publish failed`);
+  return false;
+}
+
 async function cmdPublish(plan, options) {
   if (plan.releases.length === 0) {
     console.log("nothing to release: no manifest carries an unreleased version (run `apply` first)");
@@ -748,7 +837,7 @@ async function cmdPublish(plan, options) {
   }
   assertOnlyReleasePathsModified();
 
-  if (!options.skipGates) runGates();
+  if (!options.skipGates) runGates(plan);
   dropProtocolDistChurn(plan);
 
   const subject = `release: ${plan.releases.map((release) => `${release.id} ${release.to}`).join(" / ")}`;
@@ -762,6 +851,7 @@ async function cmdPublish(plan, options) {
   // Wave by wave. Nothing in a later wave may be pushed before the earlier
   // wave's packages resolve from the registry, or its smoke steps fail with
   // `ETARGET No matching version found`.
+  const unconfirmed = [];
   for (const [index, wave] of plan.waves.entries()) {
     console.log(`\n== wave ${index + 1}: ${wave.join(", ")} ==`);
     for (const id of wave) {
@@ -771,12 +861,18 @@ async function cmdPublish(plan, options) {
       git(["push", "origin", release.tag]);
       console.log(`pushed ${release.tag}`);
       await awaitTagRun(release.tag);
+      const npmName = registryEntry(id).npmName;
+      if (!(await reportRegistry(npmName, release.to))) unconfirmed.push(npmName);
     }
   }
 
-  console.log("\nall tags pushed. verify the registry next:");
-  for (const release of plan.releases) {
-    console.log(`  npm view ${registryEntry(release.id).npmName} dist-tags`);
+  if (unconfirmed.length === 0) {
+    console.log("\nall tags pushed; every released version is live on npm.");
+    return 0;
+  }
+  console.log("\nall tags pushed. Not visible on the registry yet — re-check before assuming failure:");
+  for (const npmName of unconfirmed) {
+    console.log(`  curl -s https://registry.npmjs.org/-/package/${npmName.replace("/", "%2F")}/dist-tags`);
   }
   return 0;
 }
