@@ -112,6 +112,7 @@ export interface XacpxMcpAgentSendArgs extends XacpxMcpAgentListArgs {
   completion?: AgentMessageCompletionMode;
 }
 export interface XacpxMcpTransport {
+  groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: (input: GroupSendInvocation) => Promise<{ runId: string; assignmentId: string; memberTurnId: string; messageId: string }>;
   delegateRequest: (input: XacpxMcpDelegateRequest) => Promise<RequestDelegateRpcResult>;
   createGroup: (input: XacpxMcpGroupNewArgs) => Promise<OrchestrationGroupRecord>;
@@ -140,6 +141,7 @@ export interface XacpxMcpTransport {
 }
 
 interface OrchestrationClientLike {
+  groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: OrchestrationClient["groupSend"];
   registerExternalCoordinator?: OrchestrationClient["registerExternalCoordinator"];
   delegateRequest: OrchestrationClient["delegateRequest"];
@@ -167,6 +169,10 @@ export function createOrchestrationTransport(
   const client = deps.client ?? new OrchestrationClient(endpoint);
 
   return {
+    groupReadResult: async (input) => {
+      if (!client.groupReadResult) throw new Error("Group result transport is not configured");
+      return await client.groupReadResult(input);
+    },
     groupSend: async (input) => {
       if (!client.groupSend) throw new Error("Group handoff transport is not configured");
       return await client.groupSend(input);

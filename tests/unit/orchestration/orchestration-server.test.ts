@@ -23,6 +23,19 @@ test("Group handoff IPC forwards trusted launch identity separately and rejects 
   expect(groupSend).toHaveBeenCalledTimes(1);
 });
 
+test("Group result IPC accepts only the launch token and public read args", async () => {
+  const groupReadResult = mock(async () => ({ kind: "catalog", assignments: [], nextOffset: null }));
+  const server = new OrchestrationServer(resolveOrchestrationEndpoint("/tmp/group-result-ipc"), makeServerHandlers(), { groupReadResult });
+  const params = { executionToken: "group-execution:one", args: { assignmentId: "work", offset: 4_000 } };
+  const call = async (input: unknown) => JSON.parse(await server.handleLine(JSON.stringify({ id: "req", method: "conversation.group_read_result", params: input })));
+  expect(await call(params)).toMatchObject({ ok: true, result: { kind: "catalog" } });
+  expect(groupReadResult).toHaveBeenCalledWith(params);
+  for (const invalid of [{ ...params, runId: "foreign" }, { ...params, executionToken: "x".repeat(129) }, { ...params, executionToken: "" }]) {
+    expect((await call(invalid)).ok).toBe(false);
+  }
+  expect(groupReadResult).toHaveBeenCalledTimes(1);
+});
+
 test("agent.list forwards only the trusted sender binding to Agent Messaging", async () => {
   const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
   const listReachable = mock(async () => [

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import { gateRoutingDecision } from "../../../src/conversations/conversation-router-gate";
 import { boundRoutingInput } from "../../../src/conversations/conversation-router-budget";
+import { readCollaborationHistory } from "../../../src/conversations/collaboration-policy";
 import {
   isRouterCapabilityRestricted,
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
@@ -369,7 +370,8 @@ test("short goals in different domains progress through investigation, work, ver
       if (answers[0] === "verify") expect(calls[1]?.choices.map((c) => c.key)).toEqual(["bot_b"]);
       if (history.length) {
         expect(dispatch.mode).toBe("sequential");
-        expect(dispatch.assignments[0]?.dependsOn).toEqual(history.map((row) => row.id));
+        expect(dispatch.assignments[0]?.dependsOn).toEqual(index === 4
+          ? [history[0]!.id, history[2]!.id, history[3]!.id] : history.map((row) => row.id));
         expect(calls[0]?.message).toContain(history.at(-1)!.result!);
       }
       // Validate every generated step with the real domain gate.
@@ -437,6 +439,114 @@ test("oversized verification can recover full evidence without approving its cli
   expect(recovery.assignments[0]?.dependsOn).toEqual([work.id, review.id]);
   history.push(settled(recovery, 3, "Inspected full report and artifact v1; all goals verified, no unresolved findings"));
   expect((await decideJevRouterAssignment(jevInput(history), scriptedAsk("complete").ask)).type).toBe("complete");
+});
+
+test("dependency frontier stays focused across many revisions and retains current analysis and review siblings", async () => {
+  const rows: RoutingAssignmentRecord[] = Array.from({ length: 20 }, (_, i) => ({
+    id: `jev-v2-${i}-${i % 2 ? "verify" : "execute"}`, botId: i % 2 ? "bot_b" : "bot_a",
+    task: `Task ${i}`, dependsOn: [], triggerMessageIds: [], outcome: "completed", attempt: 1,
+    batch: i + 1, result: `Distinct result ${i}`,
+  }));
+  const analysis = { ...rows[0]!, id: "jev-v2-20-analyze", batch: 21, result: "Investigated current feedback" };
+  const sibling = { ...rows[19]!, id: "jev-v2-21-verify", result: "Second independent finding" };
+  // A failed newer production must not hide earlier successful artifact evidence.
+  const failed = { ...rows[18]!, id: "jev-v2-22-revise", batch: 22, outcome: "failed" as const, result: undefined };
+  const decision = expectDispatch(await decideJevRouterAssignment(jevInput([...rows, sibling, analysis]), scriptedAsk("revise", "bot_a").ask));
+  expect(decision.assignments[0]?.dependsOn).toEqual([rows[18]!.id, rows[19]!.id, sibling.id, analysis.id]);
+  expect(decision.assignments[0]?.task).toContain("group_read_result");
+  const afterFailure = expectDispatch(await decideJevRouterAssignment(jevInput([...rows, sibling, analysis, failed]), scriptedAsk("revise", "bot_a").ask));
+  expect(afterFailure.assignments[0]?.dependsOn).toContain(rows[18]!.id);
+  expect(afterFailure.assignments[0]?.dependsOn).not.toContain(failed.id);
+});
+
+test("two oversized verification reports pause before another model call, without analysis or member reset", async () => {
+  const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1, "artifact v1");
+  const review = { ...work, id: "jev-v2-1-verify", botId: "bot_b", batch: 2, result: "first report ".repeat(400) };
+  const second = { ...review, id: "jev-v2-2-verify", batch: 3, botId: "bot_c", result: "second report ".repeat(400) };
+  const analysis = { ...work, id: "jev-v2-3-analyze", batch: 4, result: "Investigated the missing evidence" };
+  for (const rows of [[work, review, second], [work, review, second, analysis]]) {
+    const bounded = boundRoutingInput({ ...routingInput(), completedAssignments: rows }).completedAssignments;
+    const next = scriptedAsk();
+    const decision = await decideJevRouterAssignment(jevInput(bounded), next.ask);
+    expect(decision).toMatchObject({ type: "need-human", question: expect.stringContaining("two reports") });
+    expect(next.calls).toEqual([]);
+  }
+  const revision = { ...work, id: "jev-v2-4-revise", batch: 5, result: "artifact v2" };
+  const history = boundRoutingInput({ ...routingInput(), completedAssignments: [work, review, second, revision] }).completedAssignments;
+  expectDispatch(await decideJevRouterAssignment(jevInput(history), scriptedAsk("verify", "bot_b").ask));
+  const recovered = { ...review, id: "jev-v2-5-verify", batch: 6, result: "Verified v1, all goals covered and no unresolved findings" };
+  expect((await decideJevRouterAssignment(jevInput(boundRoutingInput({ ...routingInput(), completedAssignments: [work, review, second, recovered] }).completedAssignments), scriptedAsk("complete").ask)).type).toBe("complete");
+});
+
+test("history-budget clipping of earlier compact verifications does not consume recovery attempts", async () => {
+  const rows: RoutingAssignmentRecord[] = Array.from({ length: 12 }, (_, i) => ({
+    id: `jev-v2-${i}-${i === 0 ? "execute" : i < 3 ? "verify" : "analyze"}`, botId: i === 0 ? "bot_a" : "bot_b",
+    task: "work", dependsOn: [], triggerMessageIds: [], outcome: "completed", attempt: 1, batch: i + 1,
+    result: `${i}:`.padEnd(4_000, "x"),
+  }));
+  const bounded = boundRoutingInput({ ...routingInput(), completedAssignments: rows }).completedAssignments;
+  expect(bounded[1]?.result).toBe("");
+  expect(bounded[1]?.resultCharacters).toBe(4_000);
+  expectDispatch(await decideJevRouterAssignment(jevInput(bounded), scriptedAsk("verify", "bot_b").ask));
+  // A compact recovery report may itself leave the snapshot later; its size
+  // still resets the recovery counter without becoming completion evidence.
+  rows[1]!.result = "x".repeat(5_000);
+  rows[2]!.result = "y".repeat(5_000);
+  rows[3] = { ...rows[3]!, id: "jev-v2-3-verify", result: "Concise recovered findings, still unresolved" };
+  expectDispatch(await decideJevRouterAssignment(jevInput(boundRoutingInput({ ...routingInput(), completedAssignments: rows }).completedAssignments), scriptedAsk("verify", "bot_b").ask));
+});
+
+test("two whitespace-only verification reports exhaust recovery even with positive original lengths", async () => {
+  const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1, "artifact v1");
+  const first = { ...work, id: "jev-v2-1-verify", botId: "bot_b", batch: 2, result: "   \n" };
+  const second = { ...first, id: "jev-v2-2-verify", batch: 3, result: "\t " };
+  const history = readCollaborationHistory(JSON.parse(JSON.stringify(
+    boundRoutingInput({ ...routingInput(), completedAssignments: [work, first, second] }).completedAssignments)));
+  expect(history.slice(1).map((row) => row.resultHasContent)).toEqual([false, false]);
+  const next = scriptedAsk();
+  expect(await decideJevRouterAssignment(jevInput(history), next.ask)).toMatchObject({
+    type: "need-human", question: expect.stringContaining("two reports"),
+  });
+  expect(next.calls).toEqual([]);
+});
+
+test("a failed revision between oversized verification reports does not reset the artifact version", async () => {
+  const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1, "artifact v1");
+  const first = { ...work, id: "jev-v2-1-verify", botId: "bot_b", batch: 2, result: "first review ".repeat(400) };
+  const failed = { ...work, id: "jev-v2-2-revise", batch: 3, outcome: "failed" as const, result: undefined, failureReason: "No new artifact produced" };
+  const analysis = { ...work, id: "jev-v2-3-analyze", batch: 4, result: "v1 is still the current artifact" };
+  const second = { ...first, id: "jev-v2-4-verify", batch: 5, result: "second review ".repeat(400) };
+  const history = readCollaborationHistory(JSON.parse(JSON.stringify(
+    boundRoutingInput({ ...routingInput(), completedAssignments: [work, first, failed, analysis, second] }).completedAssignments)));
+  const next = scriptedAsk();
+  expect(await decideJevRouterAssignment(jevInput(history), next.ask)).toMatchObject({
+    type: "need-human", question: expect.stringContaining("two reports"),
+  });
+  expect(next.calls).toEqual([]);
+});
+
+test("original nonblank flags survive budget clipping and repeated serialization without inventing legacy evidence", async () => {
+  const work = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1, "artifact v1");
+  const review = { ...work, id: "jev-v2-1-verify", botId: "bot_b", batch: 2, result: "report ".repeat(700) };
+  const recovered = { ...review, id: "jev-v2-3-verify", batch: 4, result: `${" ".repeat(200)}All v1 findings listed` };
+  const rows = [work, review, { ...review, id: "jev-v2-2-verify", batch: 3, result: "other report ".repeat(400) }, recovered,
+    ...Array.from({ length: 8 }, (_, i) => ({ ...work, id: `jev-v2-${i + 4}-analyze`, batch: i + 5, result: `${i}:`.padEnd(4_000, "x") }))];
+  const bounded = boundRoutingInput({ ...routingInput(), completedAssignments: rows });
+  expect(bounded.completedAssignments[3]).toMatchObject({ result: "", resultTruncated: true, resultHasContent: true });
+  expect(boundRoutingInput(bounded)).toEqual(bounded);
+  const history = readCollaborationHistory(JSON.parse(JSON.stringify(bounded.completedAssignments)));
+  expectDispatch(await decideJevRouterAssignment(jevInput(history), scriptedAsk("verify", "bot_b").ask));
+  // Blank original text stays blank even after its prefix disappears entirely.
+  rows[3]!.result = " \n\t";
+  const blank = boundRoutingInput({ ...routingInput(), completedAssignments: rows });
+  expect(blank.completedAssignments[3]).toMatchObject({ result: "", resultHasContent: false, resultCharacters: 3 });
+  expect((await decideJevRouterAssignment(jevInput(readCollaborationHistory(JSON.parse(JSON.stringify(blank.completedAssignments)))), scriptedAsk().ask)).type).toBe("need-human");
+  // Older bounded snapshots without the flag cannot establish original blankness.
+  const legacy = structuredClone(bounded);
+  for (const row of legacy.completedAssignments) delete row.resultHasContent;
+  const rebound = boundRoutingInput(legacy);
+  expect(rebound.completedAssignments[3]?.resultHasContent).toBeUndefined();
+  expect(() => readCollaborationHistory([{ ...history[0]!, resultHasContent: "true" }])).toThrow("content flag");
 });
 
 test("another review of the same artifact cannot clear its original producer", async () => {

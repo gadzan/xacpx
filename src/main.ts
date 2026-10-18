@@ -1880,6 +1880,7 @@ export async function buildApp(
         return { runId: receipt.run.id, assignmentId: receipt.memberTurn.assignmentId!,
           memberTurnId: receipt.memberTurn.id, messageId: receipt.message.id };
       }),
+      groupReadResult: async (invocation) => await conversations.withOperation(async () => conversations.handoffs.readResult(invocation)),
       agentMessaging: {
         listReachable: async binding => binding.sourceHandle?.startsWith('direct-execution:')
           ? conversations.withOperation(async () => conversations.directMessaging.listReachable(binding))

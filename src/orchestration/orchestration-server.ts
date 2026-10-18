@@ -37,6 +37,7 @@ class OrchestrationInvalidRequestError extends Error {}
 
 const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
   "conversation.group_send",
+  "conversation.group_read_result",
   "agent.list",
   "agent.send",
   "coordinator.register_external",
@@ -59,6 +60,7 @@ const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
 ]);
 
 interface OrchestrationServerDeps {
+  groupReadResult?: (input: import("../conversations/group-handoff").GroupReadResultInvocation) => Promise<unknown>;
   groupSend?: (input: import("../conversations/group-handoff").GroupSendInvocation) => Promise<unknown>;
   createServer?: typeof createServer;
   removeFile?: (path: string) => Promise<void>;
@@ -185,6 +187,13 @@ export class OrchestrationServer {
 
   private async dispatch(method: OrchestrationRpcMethod, params: Record<string, unknown>): Promise<unknown> {
     switch (method) {
+      case "conversation.group_read_result": {
+        requireOnlyKeys(params, ["executionToken", "args"], "params");
+        const executionToken = requireString(params, "executionToken");
+        if (executionToken.length > 128) throw new OrchestrationInvalidRequestError("Group execution identity is too large");
+        if (!this.deps.groupReadResult) throw new OrchestrationInvalidRequestError("Group results are unavailable");
+        return await this.deps.groupReadResult({ executionToken, args: params.args });
+      }
       case "conversation.group_send": {
         requireOnlyKeys(params, ["executionToken", "invocationId", "args"], "params");
         const executionToken = requireString(params, "executionToken");

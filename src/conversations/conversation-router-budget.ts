@@ -13,7 +13,7 @@ function prefix(value: string, limit: number): string {
   return value.slice(0, end >= 0xD800 && end <= 0xDBFF ? limit - 1 : limit);
 }
 
-/** Bound model context only: durable records and execution prompts remain complete. */
+/** Bound Router snapshots only; durable public records remain complete. */
 export function boundRoutingInput(input: RoutingInput): RoutingInput {
   if (input.completedAssignments.length > MAX_ROUTER_ASSIGNMENTS_PER_DECISION) {
     throw new ConversationError("router_input_too_large", "Router assignment history exceeds its snapshot budget");
@@ -40,6 +40,13 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
     const expectedOutput = assignment.expectedOutput === undefined ? undefined : prefix(assignment.expectedOutput, 500);
     const failureReason = assignment.failureReason === undefined ? undefined : prefix(assignment.failureReason, 512);
     const result = assignment.result === undefined ? undefined : prefix(assignment.result, Math.min(4_000, resultLeft));
+    // Preserve original content truth across re-bounding. An empty/whitespace
+    // legacy prefix cannot prove the omitted original was itself blank.
+    const originalResultKnown = !assignment.resultTruncated
+      && (!assignment.contextTruncated || assignment.resultTruncated === false)
+      && (assignment.resultCharacters === undefined || assignment.resultCharacters === assignment.result?.length);
+    const resultHasContent = assignment.resultHasContent
+      ?? (assignment.result?.trim() ? true : originalResultKnown ? false : undefined);
     resultLeft -= result?.length ?? 0;
     const dependsOn = assignment.dependsOn.slice(0, MAX_ROUTER_DEPENDENCIES);
     const triggerMessageIds = assignment.triggerMessageIds.slice(0, MAX_ROUTER_TRIGGER_MESSAGE_IDS);
@@ -48,6 +55,8 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
       || result !== assignment.result || dependsOn.length !== assignment.dependsOn.length
       || triggerMessageIds.length !== assignment.triggerMessageIds.length;
     completedAssignments[index] = { ...assignment, task, expectedOutput, failureReason, result, dependsOn, triggerMessageIds,
+      ...(assignment.result !== undefined ? { resultCharacters: assignment.resultCharacters ?? assignment.result.length } : {}),
+      ...(assignment.result !== undefined && resultHasContent !== undefined ? { resultHasContent } : {}),
       ...(truncated ? { contextTruncated: true as const, resultTruncated: assignment.resultTruncated === true || result !== assignment.result } : {}) };
   }
   const memberMetadata = input.memberMetadata.slice(0, MAX_ROUTER_MEMBER_METADATA).map((member) => {

@@ -2058,12 +2058,35 @@ export class ConversationDispatcher {
     for (const message of this.referencedTranscript(work)) allowed.set(message.id, message);
     allowed.delete(request.id);
     const transcript = [...allowed.values()].sort((a, b) => a.seq - b.seq);
+    // Only bundled assignments opt into paginated evidence. Explicit/custom
+    // router and handoff contracts still receive their original full results.
+    const boundedEvidence = work.run.mode === "automatic" && work.memberTurn.origin === "router"
+      && work.memberTurn.effect !== "read-only"
+      && /^jev-v2-\d+-(answer|analyze|execute|verify|revise)$/.test(work.memberTurn.assignmentId ?? "");
+    const dependencyResults = new Map<string, string>();
+    if (boundedEvidence) {
+      for (const turn of this.store.listMemberTurns(work.run.id)) {
+        if (turn.state === "completed" && turn.assignmentId && work.memberTurn.dependsOn?.includes(turn.assignmentId)) {
+          dependencyResults.set(requireMemberResult(this.store, turn).id, turn.assignmentId);
+        }
+      }
+    }
+    let evidenceLeft = 16_000;
     const lines = transcript.map((message) => {
       if (message.role === "human") {
         return `Human: ${message.content}`;
       }
       const sender = message.senderBotId ? `Bot ${message.senderBotId}` : "Bot";
-      return `${sender}: ${message.content}`;
+      const assignmentId = dependencyResults.get(message.id);
+      if (!assignmentId) return `${sender}: ${message.content}`;
+      let end = Math.min(message.content.length, 4_000, evidenceLeft);
+      if (end < message.content.length && message.content.charCodeAt(end - 1) >= 0xd800
+        && message.content.charCodeAt(end - 1) <= 0xdbff) end--;
+      evidenceLeft -= end;
+      const preview = message.content.slice(0, end);
+      const omitted = end < message.content.length
+        ? `\n[Result preview incomplete: ${end}/${message.content.length} characters. Use group_read_result with assignmentId=${JSON.stringify(assignmentId)}, offset=${end}; follow nextOffset until null. Missing text may contain unresolved findings; this preview is not approval evidence.]` : "";
+      return `${sender} (assignment ${assignmentId}): ${preview}${omitted}`;
     });
     const requestText = request.content;
     if (lines.length === 0) {

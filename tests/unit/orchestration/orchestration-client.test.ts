@@ -12,6 +12,7 @@ import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-
 import { resolveOrchestrationEndpoint } from "../../../src/orchestration/orchestration-ipc";
 import { OrchestrationServer } from "../../../src/orchestration/orchestration-server";
 import { skipIfLocalIpcUnavailable } from "../../helpers/ipc-capability";
+import { createOrchestrationTransport } from "../../../src/mcp/xacpx-mcp-transport";
 
 test("task watch RPC timeout follows one minute default and twenty minute cap", () => {
   expect(getWatchRequestTimeoutMs(undefined, 30_000)).toBe(65_000);
@@ -26,6 +27,7 @@ test("agent client methods forward trusted binding and message fields", async ()
   const endpoint = resolveOrchestrationEndpoint(dir);
   const listInputs: unknown[] = [];
   const sendInputs: unknown[] = [];
+  const resultInputs: unknown[] = [];
   const server = new OrchestrationServer(
     endpoint,
     {
@@ -37,6 +39,7 @@ test("agent client methods forward trusted binding and message fields", async ()
       recordWorkerReply: async () => ({ taskId: "task-1" }) as never,
     },
     {
+      groupReadResult: async (input) => { resultInputs.push(input); return { kind: "catalog", assignments: [], nextOffset: null }; },
       agentMessaging: {
         listReachable: async (binding) => {
           listInputs.push(binding);
@@ -67,6 +70,10 @@ test("agent client methods forward trusted binding and message fields", async ()
 
   try {
     await server.start();
+    const resultInput = { executionToken: "group-execution:bound", args: { offset: 0 } };
+    expect(await createOrchestrationTransport(endpoint, { client }).groupReadResult!(resultInput))
+      .toEqual({ kind: "catalog", assignments: [], nextOffset: null });
+    expect(resultInputs).toEqual([resultInput]);
 
     await expect(
       client.agentList({ coordinatorSession: "backend:main", sourceHandle: "worker:review" }),
