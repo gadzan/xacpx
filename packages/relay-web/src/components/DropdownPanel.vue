@@ -59,7 +59,8 @@ const filtered = computed<DropdownGroup[]>(() => {
 });
 const flatRows = computed<DropdownRow[]>(() => filtered.value.flatMap((g) => g.rows));
 const navRows = computed<DropdownRow[]>(() => flatRows.value.filter((r) => !r.disabled));
-const showSearch = computed(() => props.searchable || flatRows.value.length > 7);
+const totalRows = computed(() => (props.groups ?? []).reduce((n, g) => n + g.rows.length, 0));
+const showSearch = computed(() => props.searchable || totalRows.value > 7);
 
 watch(() => query.value, (q) => emit("update:query", q));
 
@@ -147,7 +148,7 @@ const listRole = computed(() => props.role ?? "listbox");
 <template>
   <!-- <lg: the same rows inside a bottom sheet (title = the dropdown's scene name). -->
   <MobileSheet v-if="isMobile && dd.open" :title="title ?? ''" :z-class="sheetZ" :test-id="sheetTestId ?? testId" dd-panel @close="dd.closeMenu()">
-    <div v-if="showSearch" class="px-1 pb-1 pt-1">
+    <div v-if="showSearch" class="sticky top-0 z-10 -mx-2 bg-raised px-3 pb-1 pt-1">
       <div class="flex h-11 items-center gap-2 rounded-lg bg-surface-2 px-3">
         <Search :size="16" class="shrink-0 text-fg-muted" />
         <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
@@ -179,7 +180,7 @@ const listRole = computed(() => props.role ?? "listbox");
        :data-test="testId" :role="listRole" :aria-label="title"
        class="z-30 max-h-80 overflow-y-auto rounded-lg p-1 shadow-float"
        :class="[placementClass, panelTone, width ?? 'min-w-40']">
-    <div v-if="showSearch" class="p-1">
+    <div v-if="showSearch" class="sticky top-0 z-10 -mx-1 -mt-1 px-2 pb-1 pt-2" :class="panelTone">
       <div class="flex h-8 items-center gap-2 rounded-sm bg-surface-2 px-2">
         <Search :size="14" class="shrink-0 text-fg-muted" />
         <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
