@@ -1,9 +1,50 @@
 # Changelog
-## [Unreleased]
+## [relay-protocol 0.6.4-beta.3] - 2026-10-19
+
+### Added
+
+- Session readiness events can identify a successfully created or attached session by alias and transport identity, allowing Relay Web to refresh model and effort controls for that session incarnation (#445).
+
+## [relay 0.14.12-beta.8] - 2026-10-19
+
+### Changed
+
+- The Bot editor reuses ready capability lists for the same instance, agent, workspace and Bot, shares concurrent reads, and still re-probes on an explicit request (#444).
 
 ### Fixed
 
-- Relay Web: sidebar mode labels stay on one line when Bot and group totals are present. Totals now appear above their lists, and the sleeping-sessions filter sits in the instance header.
+- Dropdown search remains visible while filtering and stays at the top while scrolling, including when the query matches no rows (#443).
+- Newly created sessions refresh their model and effort controls after the adapter is ready, without letting late results overwrite a different selection (#445).
+- Sidebar mode labels stay on one line when Bot and group totals are present. Totals appear above their lists, and the sleeping-sessions filter sits in the instance header (#446).
+
+## [channel-relay 0.7.8-beta.4] - 2026-10-19
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.4`; protocol and rmux bridge pins follow this release. No channel behavior change.
+
+## [0.24.10-beta.4] - 2026-10-19
+
+### Added
+
+- Automatic Group collaboration chooses the next action and eligible member after each settled result, progressing through investigation, production, independent verification and revision. New deliverables require fresh verification before completion; uncertain decisions pause instead of claiming success (#439).
+
+### Fixed
+
+- Collaboration prompts use a bounded evidence frontier with paged access to durable public results. Repeated oversized or blank verification reports pause recovery after two attempts for unchanged work, while preserving full audit records (#441).
+- Successful session create/attach emits readiness with the session identity so model and effort controls can refresh after adapter startup (#445).
+
+## [channel-feishu 0.8.7-beta.4] - 2026-10-19
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.4` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.4] - 2026-10-19
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.4` with no channel behavior change.
 
 ## [relay 0.14.12-beta.7] - 2026-10-17
 

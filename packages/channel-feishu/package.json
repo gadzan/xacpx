@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-channel-feishu",
-  "version": "0.8.7-beta.3",
+  "version": "0.8.7-beta.4",
   "description": "Feishu channel plugin for xacpx.",
   "license": "MIT",
   "keywords": [
@@ -28,7 +28,7 @@
     "README.md"
   ],
   "peerDependencies": {
-    "xacpx": ">=0.24.10-beta.3"
+    "xacpx": ">=0.24.10-beta.4"
   },
   "peerDependenciesMeta": {
     "xacpx": {
