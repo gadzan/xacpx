@@ -159,12 +159,27 @@ when protocol is not part of the release — the artifact gate rebuilds that fil
 and bun's bundler sometimes renames a local, producing a diff with no semantic
 content.
 
+A wave is confirmed before the next one starts. `publish` polls that wave's
+packages together — their publishes run in parallel, so serialising the polls
+only adds up their propagation delays — and if any of them is still invisible it
+stops *there*, printing the URLs to re-check and naming the waves it did not
+push. Continuing would push a tag whose workflow installs a package that is not
+on the registry yet, which is the `ETARGET` failure the waves exist to prevent.
+
+That stop is resumable by design. The pending set is derived from tags, so
+everything already tagged drops out, and re-running `publish --yes` picks up
+exactly the waves that were left. A **clean tree is the marker for that resume**:
+the bumps are already committed, so `publish` skips the commit and instead
+refuses to tag if the gates left the tree altered — the tags must not point at a
+tree other than the one that was verified.
+
 ## Recovery
 
 | Symptom | Action |
 |---|---|
 | A tag produced no workflow run | Re-push that one tag: `git push origin <tag>`. GitHub drops some multi-tag push events. |
 | Smoke step fails with `ETARGET` | The previous wave is not on npm yet. Do not bump versions — re-run the failed jobs of the same tag. |
+| `publish` stopped after a wave as unconfirmed | Not a failed publish: the workflows reported success and the registry is catching up. Re-check the printed URLs, then re-run `publish --yes` — it resumes at the untagged waves. |
 | `npm test` fails on one unrelated timeout | Confirm locally on the release commit, then re-run the same tag. npm will not republish, so a new version would only add noise. |
 | `E403 ... previously published versions` | That package already published. Verify with `npm view <pkg> dist-tags` and treat it as done. |
 | A broken release commit, nothing published | Fix on main, `git tag -f`, force-push the tags. |
@@ -219,6 +234,17 @@ path — that is what put it outside the set — so its artifact is the one alre
 on npm, and rebuilding it spends minutes re-verifying bytes nobody is about to
 publish. Measured for a relay-only release: **209s scoped against 446s
 unscoped**, with relay itself still built and verified in full.
+
+One thing the scope does *not* cover, because the release ships it without
+publishing it: **a protocol release rewrites the protocol range in `relay`,
+`relay-web` and `channel-relay`**, and a consumer's own build is only in the gate
+when that consumer also ships. Two things make that a real hole — the relay
+builds mark the protocol `--external`, so a removed or renamed export surfaces
+when a consumer is compiled rather than when it is bundled; and the root `tsc
+--noEmit` does not cover it, because its `include` lists `src` only. So a
+protocol release additionally *compiles* every consumer it is not publishing
+(13s + 17s + 117s, measured). A consumer that also ships is skipped: its build
+compiles it, and relay's build compiles relay-web, which it bundles.
 
 Scoping does not weaken what ships. The publish workflow runs the *unscoped*
 `bun run verify:publish` before `npm publish`, so no artifact reaches npm on the

@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import {
   COMPAT_MANIFEST,
   PACKAGE_REGISTRY,
+  PROTOCOL_CONSUMERS,
+  PROTOCOL_CONSUMER_COMPILE,
   RELEASE_ARTIFACTS,
   assignPrsToPackages,
   changelogMaterial,
@@ -116,7 +118,7 @@ test("assignPrsToPackages treats a package with no tag as having no lower bound"
 test("gateScope builds and verifies only what the release ships", () => {
   // A relay-only release must not rebuild the root CLI or the channel plugins:
   // their sources are unchanged, so their artifacts are the ones already on npm.
-  expect(gateScope(["relay"])).toEqual({ builds: ["build:relay"], verifyIds: ["relay"] });
+  expect(gateScope(["relay"])).toEqual({ builds: ["build:relay"], verifyIds: ["relay"], compiles: [] });
   // Core republishes the three floor trackers, so their artifacts do ship.
   expect(gateScope(["core", "channel-feishu", "channel-discord"]).builds).toEqual([
     "build",
@@ -124,6 +126,29 @@ test("gateScope builds and verifies only what the release ships", () => {
     "build:channel-discord",
   ]);
   expect(gateScope(["core"]).verifyIds).toEqual(["root"]);
+});
+
+test("a protocol release compiles the consumers whose range it rewrites", () => {
+  // These consumers are not published by this release, but their protocol range
+  // moves — and a removed export surfaces at compile time, not at bundle time.
+  expect(gateScope(["relay-protocol"])?.compiles.map((compile) => compile.id)).toEqual([
+    "relay",
+    "relay-web",
+    "channel-relay",
+  ]);
+  // A consumer that also ships is compiled by its own build, and relay's build
+  // already compiles relay-web, which it bundles.
+  expect(gateScope(["relay-protocol", "relay"])?.compiles.map((compile) => compile.id))
+    .toEqual(["channel-relay"]);
+  expect(gateScope(["relay"])?.compiles).toEqual([]);
+});
+
+test("every protocol consumer has a compile command", () => {
+  for (const id of PROTOCOL_CONSUMERS) {
+    // A consumer with no command would be silently skipped by the protocol gate.
+    expect(PROTOCOL_CONSUMER_COMPILE[id]).toBeDefined();
+    expect(PROTOCOL_CONSUMER_COMPILE[id].command).toBeTruthy();
+  }
 });
 
 test("gateScope falls back to the unscoped gate for a package it cannot describe", () => {

@@ -83,6 +83,14 @@ const TOOL_OWNED_PATHS = [
  */
 const REGISTRY_ATTEMPTS = 24;
 
+/**
+ * Per-request ceiling.
+ *
+ * The attempt count bounds the wait *between* requests; without this, one
+ * request that never answers makes the total unbounded.
+ */
+const REGISTRY_REQUEST_TIMEOUT_MS = 10_000;
+
 function git(args, { allowFailure = false } = {}) {
   try {
     return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
@@ -426,6 +434,19 @@ function printPlan(plan) {
   }
   out.push("", "publish waves (sequential inside a wave, wait between waves):");
   for (const [index, wave] of plan.waves.entries()) out.push(`  wave ${index + 1}: ${wave.join(", ")}`);
+  out.push("", "pre-flight gate (runs on `publish`, before the commit):");
+  out.push("  tsc --noEmit (whole repo) + check");
+  const scope = gateScope(plan.releases.map((release) => release.id));
+  if (!scope) {
+    const unmapped = plan.releases.map((release) => release.id).filter((id) => RELEASE_ARTIFACTS[id] === undefined);
+    out.push(`  verify:publish (every package — nothing maps ${unmapped.join(", ")} to a build)`);
+  } else {
+    for (const script of scope.builds) out.push(`  ${script}`);
+    out.push(`  verify-publish --packages ${scope.verifyIds.join(",")}`);
+    for (const compile of scope.compiles) {
+      out.push(`  compile ${compile.id} (consumes the protocol this release rewrites)`);
+    }
+  }
   out.push("", "derived edits:");
   for (const edit of plan.edits) {
     if (edit.kind === "script") {
@@ -714,24 +735,39 @@ function cmdCheck() {
 // publish
 // ---------------------------------------------------------------------------
 
-function assertOnlyReleasePathsModified() {
+/**
+ * Verify that the working tree may be committed as this release.
+ *
+ * Returns true when the tree is already clean. That is the resume case: a
+ * previous run committed these bumps and stopped before tagging everything (a
+ * wave whose versions had not appeared on the registry yet), so there is nothing
+ * to apply, nothing to sweep, and the run goes straight to the tags.
+ *
+ * Otherwise every modified path must belong to this tool, so unrelated work in
+ * progress cannot be swept into the release commit.
+ */
+function assertReleaseTreeIsSweepable() {
   // `-z` keeps paths verbatim and, with --no-renames, emits exactly one record
   // per entry — so the parse cannot be thrown off by a rename's second field.
-  const dirty = gitRaw(["status", "--porcelain", "-z", "--no-renames"])
-    .split("\0")
-    .filter((entry) => entry.length > 0);
-  if (dirty.length === 0) throw new Error("nothing modified; run `apply` first");
-  const unexpected = [];
-  for (const entry of dirty) {
-    const path = entry.slice(3);
-    if (TOOL_OWNED_PATHS.some((owned) => path === owned || path.startsWith(`${owned}/`))) continue;
-    unexpected.push(path);
-  }
+  const dirty = dirtyPaths();
+  if (dirty.length === 0) return true;
+  const unexpected = dirty.filter(
+    (path) => !TOOL_OWNED_PATHS.some((owned) => path === owned || path.startsWith(`${owned}/`)),
+  );
   if (unexpected.length > 0) {
     throw new Error(
       `refusing to publish: unrelated modified paths would be swept into the release commit:\n  ${unexpected.join("\n  ")}`,
     );
   }
+  return false;
+}
+
+/** Modified paths in the working tree, one per entry. */
+function dirtyPaths() {
+  return gitRaw(["status", "--porcelain", "-z", "--no-renames"])
+    .split("\0")
+    .filter((entry) => entry.length > 0)
+    .map((entry) => entry.slice(3));
 }
 
 /**
@@ -780,6 +816,15 @@ function runGates(plan) {
     [join(ROOT, "scripts", "verify-publish.mjs"), "--packages", scope.verifyIds.join(",")],
     { cwd: ROOT, stdio: "inherit" },
   );
+  for (const compile of scope.compiles) {
+    // Only reachable on a protocol release: these consumers are not shipping,
+    // but this release rewrites the protocol range they compile against.
+    console.log(`  compiling ${compile.id}, which installs the protocol this release publishes`);
+    execFileSync(compile.command, compile.args, {
+      cwd: join(ROOT, compile.cwd ?? "."),
+      stdio: "inherit",
+    });
+  }
 }
 
 /**
@@ -882,7 +927,10 @@ async function reportRegistry(npmName, version) {
   const url = `https://registry.npmjs.org/-/package/${npmName.replace("/", "%2F")}/dist-tags`;
   for (let attempt = 1; attempt <= REGISTRY_ATTEMPTS; attempt += 1) {
     try {
-      const response = await fetch(url, { headers: { "cache-control": "no-cache" } });
+      const response = await fetch(url, {
+        headers: { "cache-control": "no-cache" },
+        signal: AbortSignal.timeout(REGISTRY_REQUEST_TIMEOUT_MS),
+      });
       if (response.ok) {
         const tags = await response.json();
         const live = Object.entries(tags).find(([, tagged]) => tagged === version);
@@ -931,25 +979,43 @@ async function cmdPublish(plan, options) {
       throw new Error(`${release.id}: manifest is not ${release.to}; run \`apply\` first`);
     }
   }
-  assertOnlyReleasePathsModified();
+  const resuming = assertReleaseTreeIsSweepable();
+  if (resuming) {
+    console.log("working tree is clean: these bumps are already committed, so this run resumes at the tags");
+  }
 
   if (!options.skipGates) runGates(plan);
   dropProtocolDistChurn(plan);
 
   const subject = `release: ${plan.releases.map((release) => `${release.id} ${release.to}`).join(" / ")}`;
-  git(["add", "-A"]);
-  git(["commit", "-m", subject]);
+  if (resuming) {
+    // Nothing to commit, so the tags must not point at a tree the gates left
+    // altered: that would publish something other than what was verified.
+    const leftover = dirtyPaths();
+    if (leftover.length > 0) {
+      throw new Error(
+        `resuming, but the gates left ${leftover.length} path(s) modified.`
+        + "\nCommit or discard them first — the tags would otherwise point at a tree that was not verified:"
+        + `\n  ${leftover.join("\n  ")}`,
+      );
+    }
+  } else {
+    git(["add", "-A"]);
+    git(["commit", "-m", subject]);
+  }
   const head = git(["rev-parse", "HEAD"]);
   for (const release of plan.releases) git(["tag", release.tag, head]);
   git(["push", "origin", "main"]);
-  console.log(`committed ${head}`);
+  console.log(resuming ? `tagging the existing commit ${head}` : `committed ${head}`);
 
   // Wave by wave. Nothing in a later wave may be pushed before the earlier
   // wave's packages resolve from the registry, or its smoke steps fail with
-  // `ETARGET No matching version found`.
-  const unconfirmed = [];
+  // `ETARGET No matching version found`. That is why an unconfirmed wave stops
+  // the run rather than being reported at the very end: continuing would push a
+  // tag whose workflow installs a package that is not there yet.
   for (const [index, wave] of plan.waves.entries()) {
     console.log(`\n== wave ${index + 1}: ${wave.join(", ")} ==`);
+    const pushed = [];
     for (const id of wave) {
       const release = plan.releases.find((candidate) => candidate.id === id);
       // relay and channel-relay share a wave but go one at a time: both are
@@ -957,19 +1023,31 @@ async function cmdPublish(plan, options) {
       git(["push", "origin", release.tag]);
       console.log(`pushed ${release.tag}`);
       await awaitTagRun(release.tag);
-      const npmName = registryEntry(id).npmName;
-      if (!(await reportRegistry(npmName, release.to))) unconfirmed.push(npmName);
+      pushed.push({ npmName: registryEntry(id).npmName, version: release.to });
+    }
+    // Poll the wave together: its packages publish in parallel, so waiting for
+    // them one after another adds up their propagation delays for nothing.
+    const confirmed = await Promise.all(
+      pushed.map(async (pkg) => ({ ...pkg, ok: await reportRegistry(pkg.npmName, pkg.version) })),
+    );
+    const missing = confirmed.filter((entry) => !entry.ok);
+    if (missing.length > 0) {
+      console.log(`\nstopped after wave ${index + 1}: ${missing.length} version(s) are not visible on npm yet.`);
+      console.log("The workflows reported success, so this is propagation, not a failed publish:");
+      for (const entry of missing) {
+        console.log(`  curl -s https://registry.npmjs.org/-/package/${entry.npmName.replace("/", "%2F")}/dist-tags`);
+      }
+      const remaining = plan.waves.slice(index + 1).flat();
+      if (remaining.length > 0) {
+        console.log(`\nNot pushed: ${remaining.join(", ")} — their workflows install the packages above.`);
+        console.log("Once those are visible, re-run `publish --yes`: the pending set is read from tags, so");
+        console.log("everything already tagged drops out and the run resumes where it stopped.");
+      }
+      return 1;
     }
   }
 
-  if (unconfirmed.length === 0) {
-    console.log("\nall tags pushed; every released version is live on npm.");
-    return 0;
-  }
-  console.log("\nall tags pushed. Not visible on the registry yet — re-check before assuming failure:");
-  for (const npmName of unconfirmed) {
-    console.log(`  curl -s https://registry.npmjs.org/-/package/${npmName.replace("/", "%2F")}/dist-tags`);
-  }
+  console.log("\nall tags pushed; every released version is live on npm.");
   return 0;
 }
 

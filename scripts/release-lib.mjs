@@ -108,22 +108,36 @@ export const RELEASE_ARTIFACTS = {
 };
 
 /**
- * Builds and verification ids for a release set, or null when any id is
- * unmapped.
+ * Builds, verification ids and extra compiles for a release set, or null when
+ * any id is unmapped.
  *
  * Null means "run the unscoped gate": a package this map cannot describe is one
  * whose artifact cannot be assumed unchanged, and guessing there would trade a
  * minute of build time for a publish that fails after the tag exists.
  *
+ * The one entry that is not "a package this release ships": a protocol release
+ * rewrites the protocol range in consumers it is not publishing, so those
+ * consumers are compiled even though their artifacts are not rebuilt. A consumer
+ * that also ships is skipped — its own build compiles it, and relay's build
+ * compiles relay-web, which is bundled into it.
+ *
  * @param {string[]} releaseIds
- * @returns {{builds:string[], verifyIds:string[]}|null}
+ * @returns {{builds:string[], verifyIds:string[], compiles:Array<{id:string,command:string,args:string[],cwd?:string}>}|null}
  */
 export function gateScope(releaseIds) {
   const specs = releaseIds.map((id) => RELEASE_ARTIFACTS[id]);
   if (specs.some((spec) => spec === undefined)) return null;
+  const covered = new Set(releaseIds);
+  if (covered.has("relay")) covered.add("relay-web");
+  const compiles = releaseIds.includes("relay-protocol")
+    ? PROTOCOL_CONSUMERS
+      .filter((id) => !covered.has(id))
+      .map((id) => ({ id, ...PROTOCOL_CONSUMER_COMPILE[id] }))
+    : [];
   return {
     builds: specs.map((spec) => spec.build),
     verifyIds: specs.map((spec) => spec.verifyId),
+    compiles,
   };
 }
 
@@ -146,6 +160,26 @@ export const COMPAT_MANIFEST = "weacpx-compat/package.json";
 
 /** Every consumer whose protocol dependency range must equal the protocol version. */
 export const PROTOCOL_CONSUMERS = ["relay", "relay-web", "channel-relay"];
+
+/**
+ * How to compile each protocol consumer, for the gate that runs when the
+ * protocol ships.
+ *
+ * A protocol release rewrites the range in all three consumers, but a consumer's
+ * own build is only in the gate when that consumer also ships. Two things make
+ * that a real hole rather than a theoretical one: the relay builds mark the
+ * protocol `--external`, so a removed or renamed export surfaces when a consumer
+ * is *compiled* rather than when it is bundled; and the root `tsc --noEmit` does
+ * not cover this, because its `include` lists `src` only.
+ *
+ * Compiling is the cheap half of building. Measured here: 13s (relay), 17s
+ * (channel-relay), 117s (relay-web, vue-tsc).
+ */
+export const PROTOCOL_CONSUMER_COMPILE = {
+  relay: { command: "bun", args: ["x", "tsc", "-p", "packages/relay/tsconfig.json"] },
+  "channel-relay": { command: "bun", args: ["x", "tsc", "-p", "packages/channel-relay/tsconfig.json"] },
+  "relay-web": { command: "bun", args: ["x", "vue-tsc", "--noEmit"], cwd: "packages/relay-web" },
+};
 
 /** Files carrying the core-floor literals that must move with a core release. */
 export const CORE_FLOOR_TEST_FILES = {
