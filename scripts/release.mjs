@@ -1019,7 +1019,26 @@ async function cmdPublish(plan, options) {
       // relay and channel-relay share a wave but go one at a time: both are
       // heavy ubuntu jobs and concurrent dispatch invites runner contention.
       git(["tag", release.tag, head]);
-      git(["push", "origin", release.tag]);
+      try {
+        git(["push", "origin", release.tag]);
+      } catch (error) {
+        // A local tag makes the next `buildPublishPlan()` treat the package as
+        // released, so it must not survive a push that never reached the
+        // remote. `ls-remote --exit-code` exits non-zero when the tag is
+        // absent, which `git()` turns into "" — but if the remote DOES have
+        // it (GitHub accepted the push and the error came after), the tag
+        // stays and recovery is a re-push, not a re-tag.
+        const remoteTag = git(["ls-remote", "--tags", "--exit-code", "origin", release.tag], { allowFailure: true });
+        if (remoteTag === "") {
+          git(["tag", "--delete", release.tag]);
+          throw new Error(
+            `push of ${release.tag} failed and the remote has no such tag;`
+            + " deleted the local tag so the next run re-tags this package."
+            + ` Original error: ${error.message}`,
+          );
+        }
+        throw error;
+      }
       console.log(`pushed ${release.tag}`);
       await awaitTagRun(release.tag);
       pushed.push({ npmName: registryEntry(id).npmName, version: release.to });

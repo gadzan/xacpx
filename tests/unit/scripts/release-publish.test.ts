@@ -69,8 +69,11 @@ function harness(options: {
   pending?: string[];
   clean?: boolean;
   fetch?: RegistryFetch;
+  failPushOf?: (tag: string) => boolean;
+  remoteTags?: Set<string>;
 } = {}) {
   const clock = virtualClock();
+  const remoteTags = options.remoteTags ?? new Set<string>();
   const pending = options.pending ?? ["relay-protocol", "relay"];
   const tags = new Set(releaseLib.PACKAGE_REGISTRY.map((pkg) =>
     releaseLib.tagFor(pkg.id, pending.includes(pkg.id) ? previousVersion : version),
@@ -124,11 +127,25 @@ function harness(options: {
           ? tag.startsWith(pattern.slice(0, -1))
           : tag === pattern).sort().reverse().join("\n");
       }
+      if (args[0] === "tag" && args[1] === "--delete") {
+        tags.delete(args[2]!);
+        return "";
+      }
       if (args[0] === "tag") {
         tags.add(args[1]!);
         return "";
       }
-      if (["add", "commit", "push"].includes(args[0]!)) return "";
+      if (args[0] === "ls-remote") {
+        return fixture.remoteTags.has(args[4]!) ? `${args[4]!}\n` : "";
+      }
+      if (args[0] === "push") {
+        if (args[1] === "origin" && options.failPushOf?.(args[2]!)) {
+          throw new Error("network unreachable");
+        }
+        fixture.remoteTags.add(args[2]!);
+        return "";
+      }
+      if (["add", "commit"].includes(args[0]!)) return "";
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     },
     console: Object.fromEntries(["log", "warn", "error"].map((method) => [
@@ -140,7 +157,8 @@ function harness(options: {
     AbortSignal: clock.AbortSignal,
     setTimeout: clock.setTimeout,
   }, { filename: "release.mjs" }) as ReleaseApi;
-  return { api, clock, tags, commands, events, output };
+  const fixture = { api, clock, tags, remoteTags, commands, events, output };
+  return fixture;
 }
 
 const notFound = (): RegistryResponse => ({ ok: false, json: async () => ({}) });
@@ -268,3 +286,37 @@ for (const consumer of ["relay", "channel-relay"]) {
     expect(fixture.output.join("\n")).toContain("all tags pushed");
   });
 }
+
+test("a failed tag push whose remote has no tag deletes the local tag and names the package", async () => {
+  const fixture = harness({ failPushOf: (tag) => tag === protocolTag });
+  const plan = fixture.api.buildPublishPlan();
+
+  await expect(fixture.api.cmdPublish(plan, publishOptions)).rejects.toThrow(
+    "deleted the local tag so the next run re-tags this package",
+  );
+  expect(fixture.tags.has(protocolTag)).toBe(false);
+  expect(fixture.remoteTags.has(protocolTag)).toBe(false);
+});
+
+test("a failed tag push whose remote already has the tag keeps it for a re-push", async () => {
+  const fixture = harness({
+    failPushOf: (tag) => tag === protocolTag,
+    remoteTags: new Set([protocolTag]),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  await expect(fixture.api.cmdPublish(plan, publishOptions)).rejects.toThrow("network unreachable");
+  expect(fixture.tags.has(protocolTag)).toBe(true);
+  expect(fixture.output.join("\n")).not.toContain("deleted the local tag");
+});
+
+test("a failed push of a later tag leaves earlier pushed tags untouched", async () => {
+  const relayTag = releaseLib.tagFor("relay", version);
+  const fixture = harness({ failPushOf: (tag) => tag === relayTag });
+  const plan = fixture.api.buildPublishPlan();
+
+  await expect(fixture.api.cmdPublish(plan, publishOptions)).rejects.toThrow("deleted the local tag");
+  expect(fixture.tags.has(protocolTag)).toBe(true);
+  expect(fixture.tags.has(relayTag)).toBe(false);
+  expect(fixture.remoteTags.has(protocolTag)).toBe(true);
+});
