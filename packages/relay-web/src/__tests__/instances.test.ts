@@ -577,19 +577,45 @@ describe("getAgentCapabilities", () => {
     return { promise, resolve };
   }
 
-  test("revalidates hidden adapter changes when form options reload with identical DTOs", async () => {
+  test("reuses a verified catalog when form options reload with the same config", async () => {
     const store = useInstancesStore();
-    let model = "adapter-a";
-    vi.spyOn(api, "rpc").mockImplementation(async (_instanceId, type) => {
-      if (type === "control.agents.capabilities.get") return catalog(model);
-      if (type === "control.workspaces.list") return { workspaces: [{ name: "w", cwd: "/repo" }] };
+    store.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true,
+      agents: [{ name: "codex", driver: "codex" }], workspaces: [{ name: "w", cwd: "/repo" }], agentCatalog: [],
+    }];
+    const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_instanceId, type) => {
+      if (type === "control.agents.capabilities.get") return catalog("adapter-a");
+      if (type === "control.workspaces.list") return { workspaces: [{ name: "w", cwd: "/repo", description: "same" }] };
       return { agents: [{ name: "codex", driver: "codex" }] };
     });
     await store.loadFormOptions("i1");
     await store.getAgentCapabilities("i1", input);
-    model = "adapter-b";
+    // Every dialog open reloads options; an unchanged answer must not cost an RPC.
     await store.loadFormOptions("i1");
-    expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ models: [{ modelId: "adapter-b" }] });
+    await store.loadFormOptions("i1");
+    await store.getAgentCapabilities("i1", input);
+    expect(rpc.mock.calls.filter(([, type]) => type === "control.agents.capabilities.get")).toHaveLength(1);
+  });
+
+  test.each([
+    ["agent driver", { agents: [{ name: "codex", driver: "claude" }], workspaces: [{ name: "w", cwd: "/repo" }] }],
+    ["workspace cwd", { agents: [{ name: "codex", driver: "codex" }], workspaces: [{ name: "w", cwd: "/repo-moved" }] }],
+  ])("a changed %s invalidates the catalog", async (_label, next) => {
+    const store = useInstancesStore();
+    store.instances = [{
+      id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true,
+      agents: [{ name: "codex", driver: "codex" }], workspaces: [{ name: "w", cwd: "/repo" }], agentCatalog: [],
+    }];
+    vi.spyOn(api, "rpc").mockImplementation(async (_instanceId, type) => {
+      if (type === "control.agents.capabilities.get") return catalog(store.byId("i1")!.workspaces[0]!.cwd);
+      if (type === "control.workspaces.list") return { workspaces: next.workspaces };
+      if (type === "control.agents.list") return { agents: next.agents };
+      return { agents: [] };
+    });
+    await store.getAgentCapabilities("i1", input);
+    await store.loadFormOptions("i1");
+    expect(await store.getAgentCapabilities("i1", input))
+      .toMatchObject({ models: [{ modelId: next.workspaces[0]!.cwd }] });
   });
 
   test("bounds reuse when adapter or authentication changes have no event", async () => {
@@ -604,10 +630,21 @@ describe("getAgentCapabilities", () => {
   test.each(["instance-status", "workspaces-changed", "bots-changed"] as const)(
     "%s invalidates ready data and pending reads only for that instance", async (type) => {
       const store = useInstancesStore();
+      store.instances = [
+        { id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
+        { id: "i2", name: "pc2", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] },
+      ];
       const old = deferred();
-      const rpc = vi.spyOn(api, "rpc").mockResolvedValue(catalog("new"));
+      let reads = 0;
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (instanceId, requestType) => {
+        if (requestType === "control.workspaces.list") return { workspaces: [] };
+        if (instanceId === "i2") return catalog("i2-new");
+        reads += 1;
+        if (reads === 1) return catalog("old");
+        if (reads === 2) return old.promise;
+        return catalog("new");
+      });
       await store.getAgentCapabilities("i2", input);
-      rpc.mockResolvedValueOnce(catalog("old")).mockReturnValueOnce(old.promise);
       await store.getAgentCapabilities("i1", input);
       const pending = store.getAgentCapabilities("i1", { ...input, probe: true });
       if (type === "instance-status") {
@@ -620,8 +657,9 @@ describe("getAgentCapabilities", () => {
       old.resolve(catalog("old"));
       await pending;
       expect(await store.getAgentCapabilities("i1", input)).toBe(fresh);
+      // i2's cached catalog survives an event about i1.
       const calls = rpc.mock.calls.length;
-      await store.getAgentCapabilities("i2", input);
+      expect(await store.getAgentCapabilities("i2", input)).toMatchObject({ models: [{ modelId: "i2-new" }] });
       expect(rpc).toHaveBeenCalledTimes(calls);
     },
   );

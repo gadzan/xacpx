@@ -631,29 +631,59 @@ export const useInstancesStore = defineStore("instances", () => {
     }
   }
 
+  /** What a capability answer actually depends on and the Web can see: each
+   *  agent's name + driver, each workspace's name + cwd. Descriptions and list
+   *  order never change an answer. The daemon's own fingerprint additionally
+   *  covers command/argv/auth, which is why an unchanged reload must NOT
+   *  invalidate — those unseen changes are handled by the TTL and explicit probe. */
+  function capabilityConfigSignature(agents: AgentDto[], workspaces: WorkspaceDto[]): string {
+    const entries = [
+      ...agents.map((agent) => `a:${agent.name}:${agent.driver}`),
+      ...workspaces.map((workspace) => `w:${workspace.name}:${workspace.cwd}`),
+    ].sort();
+    return JSON.stringify(entries);
+  }
+
   // Just the workspaces (for the file browser) — lighter than loadFormOptions, which
   // also pulls agents + the driver catalog.
   async function loadWorkspaces(instanceId: string): Promise<void> {
-    invalidateAgentCapabilities(instanceId);
+    const before = byId(instanceId);
+    const previous = before && capabilityConfigSignature(before.agents, before.workspaces);
     const { workspaces } = await api.rpc<{ workspaces: WorkspaceDto[] }>(instanceId, "control.workspaces.list");
     const inst = byId(instanceId);
-    if (inst) inst.workspaces = workspaces;
+    if (!inst) {
+      invalidateAgentCapabilities(instanceId);
+      return;
+    }
+    inst.workspaces = workspaces;
+    // A reload that returns the same identity must keep the cached catalog: the
+    // dialogs reload options on every open, and invalidating unconditionally
+    // would make every open pay the capability RPC this cache exists to avoid.
+    if (previous === undefined || previous !== capabilityConfigSignature(inst.agents, workspaces)) {
+      invalidateAgentCapabilities(instanceId);
+    }
   }
 
   // Pull the instance's configured agents + workspaces to drive the create-session
   // form's dropdowns. Called when the dialog opens.
   async function loadFormOptions(instanceId: string): Promise<void> {
-    invalidateAgentCapabilities(instanceId);
+    const before = byId(instanceId);
+    const previous = before && capabilityConfigSignature(before.agents, before.workspaces);
     const [{ agents }, { workspaces }, { agents: catalog }] = await Promise.all([
       api.rpc<{ agents: AgentDto[] }>(instanceId, "control.agents.list"),
       api.rpc<{ workspaces: WorkspaceDto[] }>(instanceId, "control.workspaces.list"),
       api.rpc<{ agents: AgentCatalogEntryDto[] }>(instanceId, "control.agents.catalog"),
     ]);
     const inst = byId(instanceId);
-    if (inst) {
-      inst.agents = agents;
-      inst.workspaces = workspaces;
-      inst.agentCatalog = catalog;
+    if (!inst) {
+      invalidateAgentCapabilities(instanceId);
+      return;
+    }
+    inst.agents = agents;
+    inst.workspaces = workspaces;
+    inst.agentCatalog = catalog;
+    if (previous === undefined || previous !== capabilityConfigSignature(agents, workspaces)) {
+      invalidateAgentCapabilities(instanceId);
     }
   }
 
