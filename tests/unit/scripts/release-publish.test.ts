@@ -71,6 +71,7 @@ function harness(options: {
   fetch?: RegistryFetch;
   failPushOf?: (tag: string) => boolean;
   remoteTags?: Set<string>;
+  remoteProbeOutcome?: "error";
 } = {}) {
   const clock = virtualClock();
   const remoteTags = options.remoteTags ?? new Set<string>();
@@ -136,7 +137,11 @@ function harness(options: {
         return "";
       }
       if (args[0] === "ls-remote") {
-        return fixture.remoteTags.has(args[4]!) ? `${args[4]!}\n` : "";
+        if (fixture.remoteProbeOutcome === "error") {
+          throw Object.assign(new Error("network unreachable"), { status: 128 });
+        }
+        if (fixture.remoteTags.has(args[4]!)) return `${args[4]!}\n`;
+        throw Object.assign(new Error(`no such ref: ${args[4]!}`), { status: 2 });
       }
       if (args[0] === "push") {
         if (args[1] === "origin" && options.failPushOf?.(args[2]!)) {
@@ -157,7 +162,7 @@ function harness(options: {
     AbortSignal: clock.AbortSignal,
     setTimeout: clock.setTimeout,
   }, { filename: "release.mjs" }) as ReleaseApi;
-  const fixture = { api, clock, tags, remoteTags, commands, events, output };
+  const fixture = { api, clock, tags, remoteTags, remoteProbeOutcome: options.remoteProbeOutcome, commands, events, output };
   return fixture;
 }
 
@@ -319,4 +324,16 @@ test("a failed push of a later tag leaves earlier pushed tags untouched", async 
   expect(fixture.tags.has(protocolTag)).toBe(true);
   expect(fixture.tags.has(relayTag)).toBe(false);
   expect(fixture.remoteTags.has(protocolTag)).toBe(true);
+});
+
+test("a remote probe failure keeps the local tag and asks for a manual check", async () => {
+  const fixture = harness({
+    failPushOf: (tag) => tag === protocolTag,
+    remoteProbeOutcome: "error",
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  await expect(fixture.api.cmdPublish(plan, publishOptions)).rejects.toThrow("remote state is unknown");
+  expect(fixture.tags.has(protocolTag)).toBe(true);
+  expect(fixture.remoteTags.has(protocolTag)).toBe(false);
 });

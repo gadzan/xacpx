@@ -88,6 +88,25 @@ function git(args, { allowFailure = false } = {}) {
 }
 
 /**
+ * Whether a remote tag reference exists.
+ *
+ * `git ls-remote --exit-code` exits 2 when no ref matches. That is the only
+ * state in which deleting the local tag is safe — any other failure (network,
+ * auth, config) leaves the remote state unknown, and the push error that led
+ * here may itself have fired after GitHub accepted the tag.
+ *
+ * @returns {"present"|"absent"|"unknown"} exit 0 / exit 2 / anything else.
+ */
+function probeRemoteTag(tag) {
+  try {
+    execFileSync("git", ["ls-remote", "--tags", "--exit-code", "origin", tag], { cwd: ROOT, encoding: "utf8" });
+    return "present";
+  } catch (error) {
+    return error?.status === 2 ? "absent" : "unknown";
+  }
+}
+
+/**
  * Git output with no trimming.
  *
  * `git()` trims the whole string, which silently eats the leading status space
@@ -1024,12 +1043,12 @@ async function cmdPublish(plan, options) {
       } catch (error) {
         // A local tag makes the next `buildPublishPlan()` treat the package as
         // released, so it must not survive a push that never reached the
-        // remote. `ls-remote --exit-code` exits non-zero when the tag is
-        // absent, which `git()` turns into "" — but if the remote DOES have
-        // it (GitHub accepted the push and the error came after), the tag
-        // stays and recovery is a re-push, not a re-tag.
-        const remoteTag = git(["ls-remote", "--tags", "--exit-code", "origin", release.tag], { allowFailure: true });
-        if (remoteTag === "") {
+        // remote. Only exit 2 proves that: if the remote DOES have it (GitHub
+        // accepted the push and the error came after), the tag stays and
+        // recovery is a re-push, not a re-tag. An unknowable remote keeps the
+        // tag too — the same network that broke the push can break this probe.
+        const remoteTag = probeRemoteTag(release.tag);
+        if (remoteTag === "absent") {
           git(["tag", "--delete", release.tag]);
           throw new Error(
             `push of ${release.tag} failed and the remote has no such tag;`
@@ -1037,10 +1056,17 @@ async function cmdPublish(plan, options) {
             + ` Original error: ${error.message}`,
           );
         }
+        if (remoteTag === "unknown") {
+          throw new Error(
+            `push of ${release.tag} failed and the remote state is unknown;`
+            + " kept the local tag, so check `git ls-remote --tags origin"
+            + ` ${release.tag}` + "` before re-running publish."
+            + ` Original error: ${error.message}`,
+          );
+        }
         throw error;
       }
       console.log(`pushed ${release.tag}`);
-      await awaitTagRun(release.tag);
       pushed.push({ npmName: registryEntry(id).npmName, version: release.to });
     }
     // Poll the wave together: its packages publish in parallel, so waiting for
