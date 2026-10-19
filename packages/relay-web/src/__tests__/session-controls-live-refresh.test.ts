@@ -56,6 +56,44 @@ describe("live session controls refresh", () => {
     vi.unstubAllGlobals();
   });
 
+  it("loads newly ready session controls after sessions-changed without a prompt or reselection", async () => {
+    let ready = false;
+    rpc.mockImplementation(async (_instanceId: string, type: string) => {
+      if (!ready) return { available: [] };
+      if (type === "control.session.model.get") return { current: "model-new", available: ["model-new", "model-alt"] };
+      if (type === "control.session.effort.get") return { current: "high", available: ["medium", "high"] };
+      throw new Error(`unexpected rpc: ${type}`);
+    });
+    const controls = useSessionControlsStore();
+    await Promise.all([controls.loadModel("i1", "new-session"), controls.loadEffort("i1", "new-session")]);
+    expect(controls.modelCurrent).toBeUndefined();
+    expect(controls.effortAvailable).toEqual([]);
+
+    const disconnect = connectEvents(() => {});
+    const ws = FakeWS.instances[0]!;
+    ws.onopen?.();
+    ready = true;
+    // Another instance's list change must not touch this selection.
+    pushEvent(ws, { kind: "control-event", instanceId: "other", event: { type: "sessions-changed" } });
+    await Promise.resolve();
+    expect(controls.modelCurrent).toBeUndefined();
+    pushEvent(ws, { kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
+    await vi.waitFor(() => {
+      expect(controls.modelCurrent).toBe("model-new");
+      expect(controls.modelAvailable).toEqual(["model-new", "model-alt"]);
+      expect(controls.effortCurrent).toBe("high");
+      expect(controls.effortAvailable).toEqual(["medium", "high"]);
+    });
+    expect(rpc).toHaveBeenCalledTimes(4);
+
+    // Once both controls are known, unrelated list churn must not re-query the adapter.
+    pushEvent(ws, { kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rpc).toHaveBeenCalledTimes(4);
+    disconnect();
+  });
+
   it("refreshes model and effort on first live activity before turn-finished", async () => {
     let model = { current: "model-old", available: ["model-old"] };
     let effort = { current: "medium", available: ["medium"] };

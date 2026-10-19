@@ -48,6 +48,8 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   // adapter-side config changes become visible during the turn instead of waiting for the
   // final history/session round-trip. A final refresh still converges authoritative state.
   let awaitingFirstActivityFor: string | null = null;
+  /** Context whose post-creation readiness read already ran (only the selected one matters). */
+  let readinessRefreshedFor: string | null = null;
 
   const cacheUser = (): string | null => useAuthStore().account?.username ?? null;
   const contextKey = (instanceId: string, alias: string): string => `${instanceId}\u0000${alias}`;
@@ -125,6 +127,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     effortLoading.value = false;
     clearEffortState();
     awaitingFirstActivityFor = null;
+    readinessRefreshedFor = null;
   }
 
   function resetForAccountChange(): void {
@@ -441,6 +444,24 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
 
     if (event.kind !== "control-event") return;
     const e = event.event;
+    if (e.type === "sessions-changed") {
+      // A session becomes listable before its adapter has advertised model/effort, so
+      // the composer can mount against that provisional row and read an empty control
+      // state. The backend emits this only after the full transport lifecycle settles,
+      // which makes it the readiness signal for a second authoritative read.
+      // Read at most once per context: agents that legitimately advertise no effort
+      // must not turn every unrelated rename/warmth flip into an adapter query.
+      const context = activeContext !== null && activeContext === effortActiveContext
+        ? activeContext
+        : null;
+      const instancePrefix = `${event.instanceId}\u0000`;
+      if (!context?.startsWith(instancePrefix)) return;
+      if (readinessRefreshedFor === context) return;
+      if (modelAvailable.value.length > 0 && effortAvailable.value.length > 0) return;
+      readinessRefreshedFor = context;
+      await refreshLiveControls(event.instanceId, context.slice(instancePrefix.length));
+      return;
+    }
     if (!("sessionAlias" in e) || typeof e.sessionAlias !== "string") return;
     const context = contextKey(event.instanceId, e.sessionAlias);
     if (!isSelectedContext(context)) return;

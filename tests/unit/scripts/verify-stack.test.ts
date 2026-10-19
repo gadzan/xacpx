@@ -64,6 +64,9 @@ describe("verify-stack helpers", () => {
   it("isolates HOME so the real relay credential is never reused", () => {
     const env = daemonEnv(statePaths());
     expect(env.HOME).toBe(statePaths().home);
+    // acpx reads USERPROFILE on Windows; leaving it real leaks the operator's
+    // ~/.acpx agent argv into the isolated stack (managed launches then fail).
+    expect(env.USERPROFILE).toBe(statePaths().home);
     expect(env.WEACPX_CONFIG).toBe(statePaths().config);
     expect(env.WEACPX_STATE).toBe(statePaths().state);
     expect(env.XACPX_PLUGIN_HOME).toBe(statePaths().plugins);
