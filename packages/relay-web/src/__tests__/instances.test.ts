@@ -592,6 +592,41 @@ describe("getAgentCapabilities", () => {
     if (state.status === "error") expect(state.reason.code).toBe("stale-response");
     vi.restoreAllMocks();
   });
+
+  test("reuses a ready Bot model catalog without another RPC and refreshes it on probe", async () => {
+    const store = useInstancesStore();
+    const { api } = await import("../api/client");
+    const rpc = vi.spyOn(api, "rpc")
+      .mockResolvedValueOnce({
+        status: "ready",
+        source: "session",
+        fetchedAt: "2026-10-09T00:00:00.000Z",
+        models: [{ modelId: "gpt-cached", name: "gpt-cached", source: "adapter" }],
+        suggestions: [],
+        efforts: { status: "known", options: [] },
+        effect: { kind: "default" },
+      })
+      .mockResolvedValueOnce({
+        status: "ready",
+        source: "probe",
+        fetchedAt: "2026-10-09T00:01:00.000Z",
+        models: [{ modelId: "gpt-refreshed", name: "gpt-refreshed", source: "adapter" }],
+        suggestions: [],
+        efforts: { status: "known", options: [] },
+        effect: { kind: "default" },
+      });
+    const input = { agent: "codex", workspace: "w", botId: "bot-1" };
+
+    const first = await store.getAgentCapabilities("i1", input);
+    const cached = await store.getAgentCapabilities("i1", input);
+    const refreshed = await store.getAgentCapabilities("i1", { ...input, probe: true });
+    const afterRefresh = await store.getAgentCapabilities("i1", input);
+
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(cached).toBe(first);
+    expect(refreshed.status === "ready" && refreshed.models[0]?.modelId).toBe("gpt-refreshed");
+    expect(afterRefresh).toBe(refreshed);
+  });
 });
 
 import { mount } from "@vue/test-utils";

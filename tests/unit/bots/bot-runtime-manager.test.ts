@@ -1164,6 +1164,45 @@ test("getOrCreateGroupMemberSession isolates direct vs group, group A vs B, topi
   ).rejects.toMatchObject({ code: "topic_not_found" });
 });
 
+test("the next group turn aligns a reused member session to the Bot's updated model", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  const reviewer = await bots.createBot({
+    name: "Reviewer",
+    agent: "codex",
+    workspace: "backend",
+    model: "gpt-before",
+  });
+  const tester = await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await bots.createGroup({ title: "Team", botIds: [reviewer.id, tester.id] });
+  const topicId = "topic_group_model_refresh";
+  state.conversation_topics[topicId] = {
+    id: topicId,
+    conversationId: group.id,
+    title: "Model refresh",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+
+  const first = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id,
+    conversationId: group.id,
+    topicId,
+  });
+  expect(sessions.getLogicalSessionRecord(first.sessionAlias)?.model).toBe("gpt-before");
+
+  await bots.updateBot(reviewer.id, { model: "gpt-after" });
+  const next = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id,
+    conversationId: group.id,
+    topicId,
+  });
+
+  expect(next.id).toBe(first.id);
+  expect(sessions.getLogicalSessionRecord(next.sessionAlias)?.model).toBe("gpt-after");
+});
+
 test("getOrCreateGroupMemberSession refuses a disabled member Bot", async () => {
   const { bots, runtime, state } = createHarness();
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

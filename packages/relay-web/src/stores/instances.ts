@@ -1028,7 +1028,43 @@ export const useInstancesStore = defineStore("instances", () => {
     }
   }
 
+  const agentCapabilityCache = new Map<string, AgentCapabilityState>();
+  const agentCapabilityInflight = new Map<string, Promise<AgentCapabilityState>>();
+
+  /** One cache key per (instance, agent, workspace, bot): the whole identity the
+   *  capability RPC answers for. Serialized so a bot-less request never collides
+   *  with a bot literally named "null". */
+  const capabilityKey = (instanceId: string, input: {
+    agent: string;
+    workspace: string;
+    botId?: string;
+  }): string => JSON.stringify([instanceId, input.agent, input.workspace, input.botId ?? null]);
+
   async function getAgentCapabilities(
+    instanceId: string,
+    input: { agent: string; workspace: string; botId?: string; probe?: boolean },
+  ): Promise<AgentCapabilityState> {
+    const key = capabilityKey(instanceId, input);
+    if (!input.probe) {
+      const cached = agentCapabilityCache.get(key);
+      if (cached) return cached;
+      const pending = agentCapabilityInflight.get(key);
+      if (pending) return pending;
+    }
+    const request = fetchAgentCapabilities(instanceId, input);
+    if (!input.probe) agentCapabilityInflight.set(key, request);
+    try {
+      const state = await request;
+      if (state.status === "ready") agentCapabilityCache.set(key, state);
+      return state;
+    } finally {
+      if (!input.probe && agentCapabilityInflight.get(key) === request) {
+        agentCapabilityInflight.delete(key);
+      }
+    }
+  }
+
+  async function fetchAgentCapabilities(
     instanceId: string,
     input: { agent: string; workspace: string; botId?: string; probe?: boolean },
   ): Promise<AgentCapabilityState> {
