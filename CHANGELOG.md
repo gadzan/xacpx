@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Fixed
+
+- Relay Web: sidebar mode labels stay on one line when Bot and group totals are present. Totals now appear above their lists, and the sleeping-sessions filter sits in the instance header.
+
 ## [relay 0.14.12-beta.7] - 2026-10-17
 
 ### Fixed

@@ -620,7 +620,7 @@ const rowSwipes = computed(() => {
            toggle and the sibling Desktop entry stay independent interactive
            controls — a nested <button> is invalid HTML and breaks keyboard
            semantics. -->
-      <div class="group flex h-7 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-surface-2">
+      <div class="group flex min-h-7 items-center gap-1.5 rounded-sm px-1.5 transition-colors hover:bg-surface-2">
         <button type="button"
                 class="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left transition-colors"
                 :aria-expanded="isExpanded(inst.id)"
@@ -648,88 +648,83 @@ const rowSwipes = computed(() => {
                 @click="emit('openDesktop', inst.id)">
           <Monitor :size="13" />
         </button>
+        <div v-if="inst.online && isExpanded(inst.id) && modeFor(inst.id) === 'sessions'" class="relative shrink-0">
+          <button type="button"
+                  data-test="instance-filter"
+                  :aria-label='$t("instance.filter")'
+                  :aria-haspopup="true"
+                  :aria-expanded="filterDd.open && filterFor === inst.id"
+                  class="relative grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm transition-colors"
+                  :class="filterDd.open && filterFor === inst.id ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+                  @click.stop="toggleFilterFor(inst.id, $event.currentTarget as HTMLElement)">
+            <Filter :size="14" />
+            <span v-if="archivedIsExpanded(inst.id)" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
+          </button>
+          <DropdownPanel v-if="filterDd.open && filterFor === inst.id" :dd="filterDd" tone="raised" width="w-52"
+                         placement="bottom-end" role="menu"
+                         :title='$t("instance.filter")' test-id="instance-filter-menu"
+                         :nav-count="1" @navigate="void toggleArchived(inst.id)">
+            <template #default="{ mobile }">
+              <p class="px-2 pb-1 pt-1.5 text-xs text-fg-muted">{{ $t("instance.filterShow") }}</p>
+              <button type="button" data-test="filter-sleeping-sessions"
+                      class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm font-medium text-fg"
+                      :class="[mobile ? 'h-11' : 'h-8', !mobile && filterDd.highlight === 0 ? 'bg-surface-2' : '']"
+                      @click="void toggleArchived(inst.id)">
+                <Moon :size="14" class="shrink-0 text-fg-muted" />
+                <span class="flex-1 truncate">{{ $t("instance.sleepingSessions") }}</span>
+                <Check v-if="archivedIsExpanded(inst.id)" :size="14" class="shrink-0 text-accent" />
+              </button>
+              <p class="px-2 pb-1 text-xs text-fg-muted">{{ $t("instance.filterSleepHint") }}</p>
+            </template>
+          </DropdownPanel>
+        </div>
       </div>
 
       <!-- Session area: flat rows, or tinted group zones (workspace/agent mode).
            Instead of a border-l indent rail, hierarchy reads from background tint +
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
-        <!-- Mode switcher: Sessions | Bots | Groups, with the instance-level
-             sleeping-sessions filter (③ icon trigger) on the right in Sessions mode. -->
-        <div v-if="inst.online" class="flex items-center gap-1 pb-1 mb-1 px-1">
+        <div v-if="inst.online" class="flex min-w-0 items-center gap-1 pb-1 mb-1 px-1">
           <button
             type="button"
             data-test="instance-nav-sessions"
-            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
+            class="flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm px-1.5 py-0.5 text-xs font-medium transition-colors"
             :class="modeFor(inst.id) === 'sessions' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
             @click="setMode(inst.id, 'sessions')"
           >
-            <MessageSquare :size="11" />
-            <span>{{ $t("nav.sessions") }}</span>
+            <MessageSquare :size="11" class="shrink-0" />
+            <span class="truncate" :title="$t('nav.sessions')">{{ $t("nav.sessions") }}</span>
           </button>
           <button
             type="button"
             data-test="instance-nav-bots"
-            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
+            class="flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm px-1.5 py-0.5 text-xs font-medium transition-colors"
             :class="modeFor(inst.id) === 'bots' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
             @click="setMode(inst.id, 'bots')"
           >
-            <Bot :size="11" />
-            <span>{{ $t("nav.bots") }}</span>
-            <span v-if="directBotsStore.botsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-xs tabular-nums opacity-80">
-              {{ directBotsStore.botsByInstance[inst.id].length }}
-            </span>
+            <Bot :size="11" class="shrink-0" />
+            <span class="truncate" :title="$t('nav.bots')">{{ $t("nav.bots") }}</span>
           </button>
           <button
             type="button"
             data-test="instance-nav-groups"
-            class="flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-medium transition-colors"
+            class="flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm px-1.5 py-0.5 text-xs font-medium transition-colors"
             :class="modeFor(inst.id) === 'groups' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
             @click="setMode(inst.id, 'groups')"
           >
-            <Users :size="11" />
-            <span>{{ $t("nav.groups") }}</span>
-            <span v-if="groupsStore.groupsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-xs tabular-nums opacity-80">
-              {{ groupsStore.groupsByInstance[inst.id].length }}
-            </span>
+            <Users :size="11" class="shrink-0" />
+            <span class="truncate" :title="$t('nav.groups')">{{ $t("nav.groups") }}</span>
           </button>
-          <!-- Sleeping-sessions filter (③ icon trigger; accent dot while active).
-               One instance-level toggle for every layout: grouped modes show each
-               group's sleeping rows inside the group while it is on. -->
-          <div v-if="modeFor(inst.id) === 'sessions'" class="relative ml-auto">
-            <button type="button"
-                    data-test="instance-filter"
-                    :aria-label='$t("instance.filter")'
-                    :aria-haspopup="true"
-                    :aria-expanded="filterDd.open && filterFor === inst.id"
-                    class="relative grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm transition-colors"
-                    :class="filterDd.open && filterFor === inst.id ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
-                    @click.stop="toggleFilterFor(inst.id, $event.currentTarget as HTMLElement)">
-              <Filter :size="14" />
-              <span v-if="archivedIsExpanded(inst.id)" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
-            </button>
-            <DropdownPanel v-if="filterDd.open && filterFor === inst.id" :dd="filterDd" tone="raised" width="w-52"
-                           placement="bottom-end" role="menu"
-                           :title='$t("instance.filter")' test-id="instance-filter-menu"
-                           :nav-count="1" @navigate="void toggleArchived(inst.id)">
-              <template #default="{ mobile }">
-                <p class="px-2 pb-1 pt-1.5 text-xs text-fg-muted">{{ $t("instance.filterShow") }}</p>
-                <button type="button" data-test="filter-sleeping-sessions"
-                        class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm font-medium text-fg"
-                        :class="[mobile ? 'h-11' : 'h-8', !mobile && filterDd.highlight === 0 ? 'bg-surface-2' : '']"
-                        @click="void toggleArchived(inst.id)">
-                  <Moon :size="14" class="shrink-0 text-fg-muted" />
-                  <span class="flex-1 truncate">{{ $t("instance.sleepingSessions") }}</span>
-                  <Check v-if="archivedIsExpanded(inst.id)" :size="14" class="shrink-0 text-accent" />
-                </button>
-                <p class="px-2 pb-1 text-xs text-fg-muted">{{ $t("instance.filterSleepHint") }}</p>
-              </template>
-            </DropdownPanel>
-          </div>
         </div>
 
         <!-- BOTS MODE -->
         <div v-if="inst.online && modeFor(inst.id) === 'bots'" class="space-y-px">
+          <div v-if="directBotsStore.botsByInstance[inst.id]?.length"
+               data-test="bots-list-count"
+               class="flex items-center gap-1.5 py-1 pl-2.5 text-xs text-fg-muted">
+            <span>{{ $t("nav.bots") }}</span>
+            <span class="font-mono tabular-nums">{{ directBotsStore.botsByInstance[inst.id].length }}</span>
+          </div>
           <div v-if="(directBotsStore.loadingBotsByInstance[inst.id] ?? 0) > 0 && !directBotsStore.botsLoaded[inst.id]"
                data-test="bots-loading"
                class="py-1 pl-2.5 text-xs text-fg-muted">
@@ -903,6 +898,12 @@ const rowSwipes = computed(() => {
         </div>
         <!-- GROUPS MODE -->
         <div v-if="inst.online && modeFor(inst.id) === 'groups'" class="space-y-px">
+          <div v-if="groupsStore.groupsByInstance[inst.id]?.length"
+               data-test="groups-list-count"
+               class="flex items-center gap-1.5 py-1 pl-2.5 text-xs text-fg-muted">
+            <span>{{ $t("nav.groups") }}</span>
+            <span class="font-mono tabular-nums">{{ groupsStore.groupsByInstance[inst.id].length }}</span>
+          </div>
           <div v-if="(groupsStore.loadingGroupsByInstance[inst.id] ?? 0) > 0 && !groupsStore.groupsLoaded[inst.id]"
                data-test="groups-loading"
                class="py-1 pl-2.5 text-xs text-fg-muted">

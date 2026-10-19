@@ -850,7 +850,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 - **Bot / Group 管理弹层的移动端布局**：`BotDialog.vue` 与 `GroupDialog.vue` 使用 Teleport 挂到 `body`，避免实例侧栏的 `transform` 把 fixed 遮罩限制在侧栏内。遮罩按动态视口高度和设备安全区留白；标题与操作栏不收缩，仅表单内容滚动。Group 的 fieldset 显式允许收缩，长成员名称和说明不会撑宽窄屏表单。
 
-- **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots` 模式切换；切到 Bots 时展示 Bot 列表，包含名称、角色、agent、workspace 与启用状态；
+- **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots | Groups` 模式切换；切到 Bots 时展示 Bot 列表（名称、角色、agent、workspace 与启用状态），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
 - **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。agent/workspace 复用实例已有目录与工作区配置。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
 - **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatar.vue`）**：Bot 弹层分为基本设置与头像外观；支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，切换标签页不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
 - **头像状态与资源**：侧栏只展示身份，不聚合全局忙碌。Direct 按当前 Conversation / Topic / Run，Group 按精确 MemberTurn 与交互归属展示；完成动作只由已观察到的同任务完成事件授权，恢复快照与重连不回放。历史消息、选项、成员选择器和交接双头像静态渲染；可见动态头像共用一个帧时钟，离屏、隐藏、减少动态效果与卸载释放或暂停相应资源。普通 Session 与 Agent 品牌图标仍使用 `AgentIcon`。
@@ -860,7 +860,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 复用 `enabled` 开关，不新增后端状态，权限与调度语义保持不变。
 
-- **侧栏过滤**：Bots 模式的日常列表只显示启用的 Bot。底栏的「已禁用（N）」按钮展开或收起禁用列表；当前选中的禁用 Bot 在收起时仍保留一行，避免禁用后从侧栏消失。全部禁用时显示 `no-enabled-bots` 提示，而不是空列表。实例标签上的数量仍是 Bot 总数。
+- **侧栏过滤**：Bots 模式的日常列表只显示启用的 Bot。底栏的「已禁用（N）」按钮展开或收起禁用列表；当前选中的禁用 Bot 在收起时仍保留一行，避免禁用后从侧栏消失。全部禁用时显示 `no-enabled-bots` 提示，而不是空列表。Bot 列表顶部标题行的数量仍是 Bot 总数，包含已禁用的 Bot。
 - **恢复入口**：禁用行常驻「启用」按钮，调用 `bots.update({ enabled: true })`。成功后提示「禁用期间排队的工作可能立即开始」；失败或超时提示无法确认，并重新拉取 Bot 列表，以列表为准。
 - **`BotDialog` 说明**：与已保存的 `enabled`（优先取已加载的详情）比较。由启用改为禁用时说明：新消息被拒绝；已在运行的 Run 会继续，直到结束或在对话中点 Stop；排队的工作等待，重新启用后可能开始；禁用期间其他 Bot 交接给它的任务会失败。由禁用改为启用时提示可能唤醒排队工作。
 - **Group 成员状态（`GroupPane.vue`）**：Group 成员配置不受侧栏过滤影响，成员数和目标菜单仍包含禁用成员。Bot 目录已确认时，面板列出禁用成员；Lead 被禁用时，用与 Composer 默认目标相同的 `eligibleTargetFor` 规则说明新消息默认发给谁（启用成员中按 ID 排序的第一个）；全部成员禁用时提示无法发送新工作。目录未确认时不显示，避免把「未加载」误报为「全部禁用」。
