@@ -181,7 +181,7 @@ before any new tag is pushed.
 | Symptom | Action |
 |---|---|
 | A tag produced no workflow run | Re-push that one tag: `git push origin <tag>`. GitHub drops some multi-tag push events. |
-| `git push` of a release tag fails | If the remote has no such tag (`ls-remote --exit-code` exits 2), `publish` deletes its local tag and exits, so the next run re-tags. If the remote already has it, recovery is `git push origin <tag>` (the row above). An `ls-remote` network or auth failure is neither outcome: the tag is kept and the run exits, asking for `git ls-remote --tags origin <tag>` before re-running. |
+| `git push` of a release tag fails | If the remote has no such tag (`ls-remote --exit-code` exits 2), `publish` deletes its local tag and exits, so the next run re-tags. If the remote already has it, recovery is `git push origin <tag>` (the row above). An `ls-remote` network or auth failure is neither outcome: the tag is kept and the run exits without polling the registry for that wave. Then check `git ls-remote --tags origin <tag>`: if it is absent, delete the local tag and re-run `publish --yes`; if it is present, `git push origin <tag>` and let its workflow run before continuing. |
 | Smoke step fails with `ETARGET` | The previous wave is not on npm yet. Do not bump versions — re-run the failed jobs of the same tag. |
 | `publish` stopped after a wave as unconfirmed | Not a failed publish: the workflows reported success and the registry is catching up. Re-check the printed URLs, then re-run `publish --yes` — it resumes at the untagged waves. |
 | `npm test` fails on one unrelated timeout | Confirm locally on the release commit, then re-run the same tag. npm will not republish, so a new version would only add noise. |

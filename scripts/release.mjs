@@ -1067,6 +1067,7 @@ async function cmdPublish(plan, options) {
         throw error;
       }
       console.log(`pushed ${release.tag}`);
+      await awaitTagRun(release.tag);
       pushed.push({ npmName: registryEntry(id).npmName, version: release.to });
     }
     // Poll the wave together: its packages publish in parallel, so waiting for

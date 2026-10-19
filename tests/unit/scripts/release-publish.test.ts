@@ -72,6 +72,8 @@ function harness(options: {
   failPushOf?: (tag: string) => boolean;
   remoteTags?: Set<string>;
   remoteProbeOutcome?: "error";
+  workflowByTag?: Record<string, { status: string; conclusion?: string | null }>;
+  workflowRun?: { status: string; conclusion?: string | null };
 } = {}) {
   const clock = virtualClock();
   const remoteTags = options.remoteTags ?? new Set<string>();
@@ -109,12 +111,19 @@ function harness(options: {
       commands.push([command, ...args]);
       events.push([command, ...args].join(" "));
       if (command === "gh" && args[0] === "run" && args[1] === "list") {
-        return JSON.stringify([...tags].map((tag) => ({
-          headBranch: tag,
-          name: "publish",
-          status: "completed",
-          conclusion: "success",
-        })));
+        return JSON.stringify([...tags].map((tag) => {
+          const outcome = fixture.workflowByTag[tag];
+          return {
+            headBranch: tag,
+            name: "publish",
+            status: outcome?.status ?? "completed",
+            conclusion: outcome?.conclusion ?? "success",
+          };
+        }));
+      }
+      if (command === "gh" && args[0] === "run" && args[1] === "view") {
+        const run = options.workflowRun ?? { status: "completed", conclusion: "success" };
+        return JSON.stringify(run);
       }
       if (command !== "git") throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
       if (args[0] === "branch") return "main";
@@ -162,7 +171,7 @@ function harness(options: {
     AbortSignal: clock.AbortSignal,
     setTimeout: clock.setTimeout,
   }, { filename: "release.mjs" }) as ReleaseApi;
-  const fixture = { api, clock, tags, remoteTags, remoteProbeOutcome: options.remoteProbeOutcome, commands, events, output };
+  const fixture = { api, clock, tags, remoteTags, workflowByTag: options.workflowByTag ?? {}, remoteProbeOutcome: options.remoteProbeOutcome, commands, events, output };
   return fixture;
 }
 
@@ -336,4 +345,33 @@ test("a remote probe failure keeps the local tag and asks for a manual check", a
   await expect(fixture.api.cmdPublish(plan, publishOptions)).rejects.toThrow("remote state is unknown");
   expect(fixture.tags.has(protocolTag)).toBe(true);
   expect(fixture.remoteTags.has(protocolTag)).toBe(false);
+});
+
+test("the registry is not polled until each tag's workflow run has completed", async () => {
+  const fixture = harness({
+    pending: ["relay-protocol"],
+    clean: true,
+    workflowByTag: { [protocolTag]: { status: "queued", conclusion: null } },
+    workflowRun: { status: "completed", conclusion: "success" },
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(0);
+  const viewIndex = fixture.events.findIndex((event) => event.startsWith("gh run view "));
+  const registryIndex = fixture.events.findIndex((event) => event.startsWith("registry "));
+  expect(viewIndex).toBeGreaterThanOrEqual(0);
+  expect(registryIndex).toBeGreaterThan(viewIndex);
+  expect(fixture.events).toContain(`git push origin ${protocolTag}`);
+});
+
+test("a failed publish workflow stops the run before the registry is polled", async () => {
+  const relayTag = releaseLib.tagFor("relay", version);
+  const fixture = harness({
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "failure" } },
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  await expect(fixture.api.cmdPublish(plan, publishOptions)).rejects.toThrow("publish run concluded failure");
+  expect(fixture.events.some((event) => event.startsWith("registry "))).toBe(false);
+  expect(fixture.events.some((event) => event === `git push origin ${relayTag}`)).toBe(false);
 });
