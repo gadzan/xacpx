@@ -14,6 +14,7 @@ import {
   type TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
+import { api } from "../api/client";
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
@@ -1269,6 +1270,35 @@ describe("Direct Bot Components", () => {
       wrapper.unmount();
       optionsGate.resolve();
       await flushPromises();
+    });
+
+    it("reuses the verified catalog across two editor opens with unchanged config", async () => {
+      vi.restoreAllMocks();
+      seedLocalInstance();
+      const capability = readyCapability("cache", [{ modelId: "gpt-cached" }], {
+        fetchedAt: "2026-10-19T00:00:00.000Z",
+        efforts: { status: "known", options: [] },
+      });
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_instanceId, type) => {
+        if (type === "control.agents.capabilities.get") return capability;
+        if (type === "control.workspaces.list") return { workspaces: [{ name: "repo", cwd: "/repo" }] };
+        if (type === "control.agents.list") return { agents: [{ name: "codex", driver: "codex" }] };
+        return { agents: [] };
+      });
+
+      const first = mount(BotDialog, { props: { instanceId: "i1", instanceName: "Local" }, global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(rpc.mock.calls.filter(([, type]) => type === "control.agents.capabilities.get")).toHaveLength(1);
+      first.unmount();
+
+      // Closing and reopening the editor reloads form options, but the adapter,
+      // workspace, and auth are unchanged: the cached catalog must still answer.
+      const second = mount(BotDialog, { props: { instanceId: "i1", instanceName: "Local" }, global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(rpc.mock.calls.filter(([, type]) => type === "control.agents.capabilities.get")).toHaveLength(1);
+      await second.get('[data-test="bot-model"]').trigger("focus");
+      expect(second.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-cached");
+      second.unmount();
     });
   });
 

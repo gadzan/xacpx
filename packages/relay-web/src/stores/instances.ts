@@ -334,6 +334,7 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function loadInstances(): Promise<void> {
+    invalidateAgentCapabilities();
     const { instances: rows } = await api.get<{ instances: Array<Omit<InstanceView, "sessions" | "sessionsLoaded" | "agents" | "workspaces" | "agentCatalog" | "capabilities"> & { capabilities?: string[] }> }>("/api/instances");
     instances.value = rows.map((r) => {
       const prev = byId(r.id);
@@ -630,27 +631,59 @@ export const useInstancesStore = defineStore("instances", () => {
     }
   }
 
+  /** What a capability answer actually depends on and the Web can see: each
+   *  agent's name + driver, each workspace's name + cwd. Descriptions and list
+   *  order never change an answer. The daemon's own fingerprint additionally
+   *  covers command/argv/auth, which is why an unchanged reload must NOT
+   *  invalidate — those unseen changes are handled by the TTL and explicit probe. */
+  function capabilityConfigSignature(agents: AgentDto[], workspaces: WorkspaceDto[]): string {
+    const entries = [
+      ...agents.map((agent) => `a:${agent.name}:${agent.driver}`),
+      ...workspaces.map((workspace) => `w:${workspace.name}:${workspace.cwd}`),
+    ].sort();
+    return JSON.stringify(entries);
+  }
+
   // Just the workspaces (for the file browser) — lighter than loadFormOptions, which
   // also pulls agents + the driver catalog.
   async function loadWorkspaces(instanceId: string): Promise<void> {
+    const before = byId(instanceId);
+    const previous = before && capabilityConfigSignature(before.agents, before.workspaces);
     const { workspaces } = await api.rpc<{ workspaces: WorkspaceDto[] }>(instanceId, "control.workspaces.list");
     const inst = byId(instanceId);
-    if (inst) inst.workspaces = workspaces;
+    if (!inst) {
+      invalidateAgentCapabilities(instanceId);
+      return;
+    }
+    inst.workspaces = workspaces;
+    // A reload that returns the same identity must keep the cached catalog: the
+    // dialogs reload options on every open, and invalidating unconditionally
+    // would make every open pay the capability RPC this cache exists to avoid.
+    if (previous === undefined || previous !== capabilityConfigSignature(inst.agents, workspaces)) {
+      invalidateAgentCapabilities(instanceId);
+    }
   }
 
   // Pull the instance's configured agents + workspaces to drive the create-session
   // form's dropdowns. Called when the dialog opens.
   async function loadFormOptions(instanceId: string): Promise<void> {
+    const before = byId(instanceId);
+    const previous = before && capabilityConfigSignature(before.agents, before.workspaces);
     const [{ agents }, { workspaces }, { agents: catalog }] = await Promise.all([
       api.rpc<{ agents: AgentDto[] }>(instanceId, "control.agents.list"),
       api.rpc<{ workspaces: WorkspaceDto[] }>(instanceId, "control.workspaces.list"),
       api.rpc<{ agents: AgentCatalogEntryDto[] }>(instanceId, "control.agents.catalog"),
     ]);
     const inst = byId(instanceId);
-    if (inst) {
-      inst.agents = agents;
-      inst.workspaces = workspaces;
-      inst.agentCatalog = catalog;
+    if (!inst) {
+      invalidateAgentCapabilities(instanceId);
+      return;
+    }
+    inst.agents = agents;
+    inst.workspaces = workspaces;
+    inst.agentCatalog = catalog;
+    if (previous === undefined || previous !== capabilityConfigSignature(agents, workspaces)) {
+      invalidateAgentCapabilities(instanceId);
     }
   }
 
@@ -1028,7 +1061,64 @@ export const useInstancesStore = defineStore("instances", () => {
     }
   }
 
+  const agentCapabilityCache = new Map<string, {
+    instanceId: string;
+    state: AgentCapabilityState;
+    expiresAt: number;
+  }>();
+  const agentCapabilityInflight = new Map<string, {
+    instanceId: string;
+    request: Promise<AgentCapabilityState>;
+  }>();
+
+  function invalidateAgentCapabilities(instanceId?: string): void {
+    for (const entries of [agentCapabilityCache, agentCapabilityInflight]) {
+      for (const [key, entry] of entries) {
+        if (instanceId === undefined || entry.instanceId === instanceId) entries.delete(key);
+      }
+    }
+  }
+
+  // The daemon alone knows the adapter/auth fingerprint. This key only coalesces
+  // UI reads; form reloads/events invalidate it and unobserved changes expire it.
+  const capabilityKey = (instanceId: string, input: {
+    agent: string;
+    workspace: string;
+    botId?: string;
+  }): string => JSON.stringify([instanceId, input.agent, input.workspace, input.botId ?? null]);
+
   async function getAgentCapabilities(
+    instanceId: string,
+    input: { agent: string; workspace: string; botId?: string; probe?: boolean },
+  ): Promise<AgentCapabilityState> {
+    const key = capabilityKey(instanceId, input);
+    if (!input.probe) {
+      const pending = agentCapabilityInflight.get(key);
+      if (pending) return pending.request;
+      const cached = agentCapabilityCache.get(key);
+      if (cached && cached.expiresAt > Date.now()) return cached.state;
+    }
+    const request = fetchAgentCapabilities(instanceId, input);
+    const entry = { instanceId, request };
+    agentCapabilityInflight.set(key, entry);
+    try {
+      const state = await request;
+      if (agentCapabilityInflight.get(key) === entry) {
+        if (state.status === "ready" && !state.reason) {
+          agentCapabilityCache.set(key, { instanceId, state, expiresAt: Date.now() + 60_000 });
+        } else if (state.status === "ready") {
+          // A probe that failed over a saved list is a transient warning, not a
+          // verified snapshot; the next read must reach the daemon again.
+          agentCapabilityCache.delete(key);
+        }
+      }
+      return state;
+    } finally {
+      if (agentCapabilityInflight.get(key) === entry) agentCapabilityInflight.delete(key);
+    }
+  }
+
+  async function fetchAgentCapabilities(
     instanceId: string,
     input: { agent: string; workspace: string; botId?: string; probe?: boolean },
   ): Promise<AgentCapabilityState> {
@@ -1215,6 +1305,7 @@ export const useInstancesStore = defineStore("instances", () => {
 
   function applyEvent(event: WebServerEvent): void {
     if (event.kind === "instance-status") {
+      invalidateAgentCapabilities(event.instanceId);
       const inst = byId(event.instanceId);
       if (inst) {
         inst.online = event.online;
@@ -1231,9 +1322,12 @@ export const useInstancesStore = defineStore("instances", () => {
       if (inst?.archivedSessionsLoaded) void loadArchivedSessions(event.instanceId).catch(() => {});
       if (inst) refreshLoadedGroupArchivedSessions(event.instanceId);
     } else if (event.kind === "control-event" && event.event.type === "workspaces-changed") {
+      invalidateAgentCapabilities(event.instanceId);
       // A workspace was added/removed/edited on the instance (e.g. `xacpx workspace add`
       // from the terminal) — re-fetch so the file browser + create-session form reflect it.
       void loadWorkspaces(event.instanceId).catch(() => {});
+    } else if (event.kind === "control-event" && event.event.type === "bots-changed") {
+      invalidateAgentCapabilities(event.instanceId);
     } else if (event.kind === "control-event" && event.event.type === "conversation-router-changed") {
       // Automatic collaboration was switched on another client/surface — re-read so the
       // composer's automatic target and the instance dialog's panel converge. The panel

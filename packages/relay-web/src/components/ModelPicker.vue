@@ -92,8 +92,10 @@ const recovery = computed(() => {
 const canFetch = computed(() => {
   const state = settled.value;
   if (!state) return false;
-  if (state.status === "needs-setup") return state.reason.code === "discovery-available";
-  return state.status === "ready" && state.reason !== undefined;
+  // A verified list still needs an escape hatch: the adapter command or auth
+  // may change on the machine without any event this client can observe.
+  if (state.status === "ready") return true;
+  return state.status === "needs-setup" && state.reason.code === "discovery-available";
 });
 
 function pickModel(modelId: string): void {

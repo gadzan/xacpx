@@ -223,6 +223,8 @@ effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合�
 
 已验证的模型列表会持久化在 `state.json` 的 `capability_lists` 段（按键：agent + 工作区 cwd + 启动身份 + 鉴权材料），因此关闭再打开 Bot 编辑框、或重启 daemon 后仍会显示列表。点击“获取模型列表”永远重新探测，不会直接回放旧列表；刷新失败时旧列表仍然可用，但 `reason` 明确标注它不是刚验证过的结果，并提供重试入口。adapter pin、command/argv、工作目录或鉴权材料变化会换键，旧列表不会被误用。
 
+Web 侧另有一层短命缓存，只用于消除重复 RPC：键为 instance + agent + workspace + bot，并发相同读取合并为一次请求。它不能替代 daemon 指纹（前端看不到 command/argv/鉴权），因此失效边界必须显式：`loadInstances`（重连快照）、实例上下线、`workspaces-changed`、`bots-changed` 无条件清理该实例；`loadFormOptions`/`loadWorkspaces` 只在 agent 名称/driver 或 workspace 名称/cwd 实际变化时清理——对话框每次打开都会重载配置，若无条件清理，跨次打开就再也命中不了缓存，PR #444 的收益会被抵消。未被事件覆盖的变更（直接改配置文件、重新登录 adapter）由 60 秒有效期和显式 Probe 兜底。写回只允许最新发出的请求生效，旧响应不能覆盖新 probe；带失败 `reason` 的 ready 只是临时告警，不进入缓存，下一次普通读取仍会询问 daemon。已验证的列表始终保留“获取模型列表”按钮，作为显式刷新入口。
+
 ## 会话创建对话框（`NewSessionDialog.vue`）
 
 - 点击实例树 `+ new session` 打开一个弹窗（取代原先简陋的内联三输入框）。打开时经
