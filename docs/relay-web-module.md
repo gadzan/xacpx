@@ -189,11 +189,15 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - session/实例切换以独立 context revision 丢弃 model 与 effort 的迟到响应，避免旧会话结果污染
   当前 composer。没有广告 effort 的 agent 不显示控件，也不会触发设置请求。
 - 新建会话的控件初始化：逻辑会话先可被 `control.sessions.list` 看到，adapter 启动完成后才广告
-  model/effort，因此 composer 可能先读到空结果（模型 chip 置灰、effort chip 不出现）。实例侧在
-  整个 transport 生命周期结束后才发 `sessions-changed`，store 以它作为就绪信号对当前选中会话补做
-  一次 `refreshLiveControls`。该补拉**每个 context 至多一次**，且 model/effort 都已知时跳过，避免
-  合法不广告 effort 的 agent 在每次 rename/warmth 翻转时都触发 adapter 查询；其他实例的事件、
-  以及已切换走的会话一律忽略。
+  model/effort，因此 composer 可能先读到空结果（模型 chip 置灰、effort chip 不出现）。
+  **只有创建/attach 成功后的那条 `sessions-changed` 携带 `readySessionAlias` +
+  `readyTransportSession`**（返回体里的真实 display alias 与 transport incarnation）；
+  rename、archive、warmth 翻转等普通列表变化仍是 payload-free 事件，因此不会被误当成就绪信号。
+  Web 仅当这两个字段与当前选中的实例 / alias / 行内 `transportSession` 完全匹配时补拉一次
+  `refreshLiveControls`；等待用户模型设置落地期间 incarnation 变化则放弃本次补拉。
+  成功读到空 effort 目录视为该 adapter 不支持 effort（停止重试）；**仅 RPC 失败才重试**，
+  最多 3 次（500ms / 1000ms 退避），且不跨 incarnation、不跨账号代次。
+  后续同 incarnation 的 ready 事件允许再次补拉（覆盖暂时性失败），普通事件永不触发查询。
 
 ## 阶段五加固（审计修复）
 

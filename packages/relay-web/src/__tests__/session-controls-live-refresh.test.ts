@@ -15,6 +15,7 @@ vi.mock("../api/client", () => ({
 import { connectEvents, _resetTerminalRequestStateForTests } from "../api/events";
 import { dismissToast, useToasts } from "../lib/use-toasts";
 import { useSessionControlsStore } from "../stores/session-controls";
+import { useInstancesStore } from "../stores/instances";
 
 class FakeWS {
   static instances: FakeWS[] = [];
@@ -39,6 +40,14 @@ function clearToasts(): void {
   for (const toast of [...useToasts().value]) dismissToast(toast.id);
 }
 
+function seedReadySession(): void {
+  useInstancesStore().instances = [{
+    id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+    agents: [], workspaces: [], agentCatalog: [],
+    sessions: [{ alias: "new-session", agent: "codex", workspace: "home", transportSession: "t-new", running: false, archived: false }],
+  }];
+}
+
 describe("live session controls refresh", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -56,7 +65,8 @@ describe("live session controls refresh", () => {
     vi.unstubAllGlobals();
   });
 
-  it("loads newly ready session controls after sessions-changed without a prompt or reselection", async () => {
+  it("ignores early list changes and loads controls only for the ready session incarnation", async () => {
+    seedReadySession();
     let ready = false;
     rpc.mockImplementation(async (_instanceId: string, type: string) => {
       if (!ready) return { available: [] };
@@ -66,32 +76,107 @@ describe("live session controls refresh", () => {
     });
     const controls = useSessionControlsStore();
     await Promise.all([controls.loadModel("i1", "new-session"), controls.loadEffort("i1", "new-session")]);
-    expect(controls.modelCurrent).toBeUndefined();
-    expect(controls.effortAvailable).toEqual([]);
-
     const disconnect = connectEvents(() => {});
     const ws = FakeWS.instances[0]!;
     ws.onopen?.();
-    ready = true;
-    // Another instance's list change must not touch this selection.
-    pushEvent(ws, { kind: "control-event", instanceId: "other", event: { type: "sessions-changed" } });
-    await Promise.resolve();
+
+    // Rename/warmth changes can arrive while the selected adapter still returns empty.
+    await controls.applyLiveEvent({ kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
     expect(controls.modelCurrent).toBeUndefined();
-    pushEvent(ws, { kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
+    expect(controls.effortAvailable).toEqual([]);
+    expect(rpc).toHaveBeenCalledTimes(2);
+    ready = true;
+    for (const [instanceId, alias, transport] of [["other", "new-session", "t-new"], ["i1", "another", "t-new"], ["i1", "new-session", "t-old"]]) {
+      await controls.applyLiveEvent({ kind: "control-event", instanceId, event: {
+        type: "sessions-changed", readySessionAlias: alias, readyTransportSession: transport,
+      } });
+    }
+    expect(rpc).toHaveBeenCalledTimes(2);
+    pushEvent(ws, { kind: "control-event", instanceId: "i1", event: {
+      type: "sessions-changed", readySessionAlias: "new-session", readyTransportSession: "t-new",
+    } });
     await vi.waitFor(() => {
       expect(controls.modelCurrent).toBe("model-new");
       expect(controls.modelAvailable).toEqual(["model-new", "model-alt"]);
       expect(controls.effortCurrent).toBe("high");
       expect(controls.effortAvailable).toEqual(["medium", "high"]);
     });
-    expect(rpc).toHaveBeenCalledTimes(4);
-
-    // Once both controls are known, unrelated list churn must not re-query the adapter.
-    pushEvent(ws, { kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
-    await Promise.resolve();
-    await Promise.resolve();
+    await controls.applyLiveEvent({ kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
     expect(rpc).toHaveBeenCalledTimes(4);
     disconnect();
+  });
+
+  it("retries transient ready-read failures and treats an empty effort catalog as supported absence", async () => {
+    seedReadySession();
+    let ready = false;
+    let modelReads = 0;
+    let effortReads = 0;
+    rpc.mockImplementation(async (_instanceId: string, type: string) => {
+      if (!ready) return { available: [] };
+      if (type === "control.session.model.get") {
+        if (++modelReads === 1) throw new Error("temporary network failure");
+        return { current: "model-new", available: ["model-new"] };
+      }
+      if (type === "control.session.effort.get") {
+        if (++effortReads === 1) return { error: { code: "timeout", message: "temporary read failure" } };
+        return { available: [] };
+      }
+      throw new Error(`unexpected rpc: ${type}`);
+    });
+    const controls = useSessionControlsStore();
+    await Promise.all([controls.loadModel("i1", "new-session"), controls.loadEffort("i1", "new-session")]);
+    ready = true;
+    await controls.applyLiveEvent({ kind: "control-event", instanceId: "i1", event: {
+      type: "sessions-changed", readySessionAlias: "new-session", readyTransportSession: "t-new",
+    } });
+    expect(controls.modelCurrent).toBe("model-new");
+    expect(controls.effortAvailable).toEqual([]);
+    expect(modelReads).toBe(2);
+    expect(effortReads).toBe(2);
+    await controls.applyLiveEvent({ kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
+    expect(modelReads).toBe(2);
+    expect(effortReads).toBe(2);
+  });
+
+  it("bounds failed ready reads and permits a later explicit readiness refresh", async () => {
+    seedReadySession();
+    rpc.mockResolvedValue({ available: [] });
+    const controls = useSessionControlsStore();
+    await Promise.all([controls.loadModel("i1", "new-session"), controls.loadEffort("i1", "new-session")]);
+    rpc.mockRejectedValue(new Error("offline"));
+    const event: WebServerEvent = { kind: "control-event", instanceId: "i1", event: {
+      type: "sessions-changed", readySessionAlias: "new-session", readyTransportSession: "t-new",
+    } };
+    await controls.applyLiveEvent(event);
+    expect(rpc).toHaveBeenCalledTimes(8);
+    expect(controls.modelCurrent).toBeUndefined();
+    rpc.mockImplementation(async (_id: string, type: string) => type === "control.session.model.get"
+      ? { current: "recovered", available: ["recovered"] }
+      : { current: "high", available: ["high"] });
+    await controls.applyLiveEvent(event);
+    expect(controls.modelCurrent).toBe("recovered");
+    expect(controls.effortCurrent).toBe("high");
+  });
+
+  it("drops a ready refresh when its incarnation changes while a mutation is pending", async () => {
+    seedReadySession();
+    rpc.mockResolvedValue({ available: [] });
+    const controls = useSessionControlsStore();
+    await Promise.all([controls.loadModel("i1", "new-session"), controls.loadEffort("i1", "new-session")]);
+    const pendingSet = Promise.withResolvers<unknown>();
+    rpc.mockImplementation((_id: string, type: string) => type === "control.session.model.set"
+      ? pendingSet.promise
+      : Promise.resolve({ current: "replacement", available: ["replacement"] }));
+    const setting = controls.setModel("i1", "new-session", "chosen");
+    const refreshing = controls.applyLiveEvent({ kind: "control-event", instanceId: "i1", event: {
+      type: "sessions-changed", readySessionAlias: "new-session", readyTransportSession: "t-new",
+    } });
+    useInstancesStore().instances[0]!.sessions[0]!.transportSession = "t-replacement";
+    pendingSet.resolve({ ok: true, current: "chosen" });
+    await setting;
+    await refreshing;
+    expect(rpc).toHaveBeenCalledTimes(3);
+    expect(controls.modelCurrent).toBe("chosen");
   });
 
   it("refreshes model and effort on first live activity before turn-finished", async () => {

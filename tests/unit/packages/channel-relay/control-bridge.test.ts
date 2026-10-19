@@ -1319,12 +1319,22 @@ test("subscribeControlEvents forwards events and unsubscribes", () => {
   subscribeControlEvents(control as never, (type, payload) =>
     sent.push({ type, payload }),
   );
-  emit({ type: "sessions-changed" });
+  emit({
+    type: "sessions-changed",
+    readySessionAlias: "docs-2",
+    readyTransportSession: "xacpx-docs-2",
+  });
   emit({ type: "conversation-router-changed" });
   expect(sent).toEqual([
     {
       type: MSG.instanceEvent,
-      payload: { event: { type: "sessions-changed" } },
+      payload: {
+        event: {
+          type: "sessions-changed",
+          readySessionAlias: "docs-2",
+          readyTransportSession: "xacpx-docs-2",
+        },
+      },
     },
     {
       type: MSG.instanceEvent,

@@ -130,6 +130,26 @@ function roundtrip(event: any) {
   return parseWebServerEvent(webEventEnvelope(event));
 }
 
+test("sessions-changed accepts ready metadata only as a complete non-empty pair", () => {
+  const wrap = (extra: Record<string, unknown>) =>
+    webEventEnvelope({
+      kind: "control-event",
+      instanceId: "i",
+      event: { type: "sessions-changed", ...extra },
+    } as never);
+  // Plain list churn keeps both fields absent.
+  expect(parseWebServerEvent(wrap({}))).not.toBeNull();
+  expect(parseWebServerEvent(wrap({ readySessionAlias: "docs-2", readyTransportSession: "xacpx-docs-2" }))).not.toBeNull();
+  // Half a pair cannot identify a session incarnation.
+  expect(parseWebServerEvent(wrap({ readySessionAlias: "docs-2" }))).toBeNull();
+  expect(parseWebServerEvent(wrap({ readyTransportSession: "xacpx-docs-2" }))).toBeNull();
+  // Empty or non-string fields are not metadata.
+  expect(parseWebServerEvent(wrap({ readySessionAlias: "", readyTransportSession: "xacpx-docs-2" }))).toBeNull();
+  expect(parseWebServerEvent(wrap({ readySessionAlias: "docs-2", readyTransportSession: "" }))).toBeNull();
+  expect(parseWebServerEvent(wrap({ readySessionAlias: 1, readyTransportSession: "xacpx-docs-2" }))).toBeNull();
+  expect(parseWebServerEvent(wrap({ readySessionAlias: "docs-2", readyTransportSession: 1 }))).toBeNull();
+});
+
 test("conversation-topic-changed validates executionTarget shape", () => {
   const topic = {
     id: "topic_1",
