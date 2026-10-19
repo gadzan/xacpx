@@ -1,6 +1,6 @@
 import { setActivePinia, createPinia } from "pinia";
-import { beforeEach, describe, expect, test, vi } from "vitest";
-import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { readyCapability, RELAY_CAPABILITIES, type AgentCapabilityState } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { supportsRmuxTerminal, useInstancesStore } from "../stores/instances";
 
@@ -562,6 +562,113 @@ describe("agent catalog + management actions", () => {
 
 describe("getAgentCapabilities", () => {
   beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const input = { agent: "codex", workspace: "w", botId: "bot-1" };
+  const catalog = (modelId: string) => readyCapability("cache", [{ modelId }], {
+    fetchedAt: "2026-10-19T00:00:00.000Z",
+  });
+  function deferred() {
+    let resolve!: (state: AgentCapabilityState) => void;
+    const promise = new Promise<AgentCapabilityState>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  test("revalidates hidden adapter changes when form options reload with identical DTOs", async () => {
+    const store = useInstancesStore();
+    let model = "adapter-a";
+    vi.spyOn(api, "rpc").mockImplementation(async (_instanceId, type) => {
+      if (type === "control.agents.capabilities.get") return catalog(model);
+      if (type === "control.workspaces.list") return { workspaces: [{ name: "w", cwd: "/repo" }] };
+      return { agents: [{ name: "codex", driver: "codex" }] };
+    });
+    await store.loadFormOptions("i1");
+    await store.getAgentCapabilities("i1", input);
+    model = "adapter-b";
+    await store.loadFormOptions("i1");
+    expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ models: [{ modelId: "adapter-b" }] });
+  });
+
+  test("bounds reuse when adapter or authentication changes have no event", async () => {
+    vi.useFakeTimers();
+    const store = useInstancesStore();
+    vi.spyOn(api, "rpc").mockResolvedValueOnce(catalog("old")).mockResolvedValueOnce(catalog("new"));
+    await store.getAgentCapabilities("i1", input);
+    vi.advanceTimersByTime(60_000);
+    expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ models: [{ modelId: "new" }] });
+  });
+
+  test.each(["instance-status", "workspaces-changed", "bots-changed"] as const)(
+    "%s invalidates ready data and pending reads only for that instance", async (type) => {
+      const store = useInstancesStore();
+      const old = deferred();
+      const rpc = vi.spyOn(api, "rpc").mockResolvedValue(catalog("new"));
+      await store.getAgentCapabilities("i2", input);
+      rpc.mockResolvedValueOnce(catalog("old")).mockReturnValueOnce(old.promise);
+      await store.getAgentCapabilities("i1", input);
+      const pending = store.getAgentCapabilities("i1", { ...input, probe: true });
+      if (type === "instance-status") {
+        store.applyEvent({ kind: "instance-status", instanceId: "i1", online: false });
+      } else {
+        store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type } });
+      }
+      const fresh = await store.getAgentCapabilities("i1", input);
+      expect(fresh).toMatchObject({ models: [{ modelId: "new" }] });
+      old.resolve(catalog("old"));
+      await pending;
+      expect(await store.getAgentCapabilities("i1", input)).toBe(fresh);
+      const calls = rpc.mock.calls.length;
+      await store.getAgentCapabilities("i2", input);
+      expect(rpc).toHaveBeenCalledTimes(calls);
+    },
+  );
+
+  test("snapshot reload drops results from before an events reconnect", async () => {
+    const store = useInstancesStore();
+    const old = deferred();
+    vi.spyOn(api, "rpc").mockReturnValueOnce(old.promise).mockResolvedValue(catalog("new"));
+    vi.spyOn(api, "get").mockResolvedValue({ instances: [], endpoints: [] });
+    const pending = store.getAgentCapabilities("i1", input);
+    await store.loadInstances();
+    old.resolve(catalog("old"));
+    await pending;
+    expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ models: [{ modelId: "new" }] });
+  });
+
+  test.each([false, true])("a newer probe wins over an older request (older probe: %s)", async (probe) => {
+    const store = useInstancesStore();
+    const old = deferred();
+    const fresh = deferred();
+    const rpc = vi.spyOn(api, "rpc").mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+    const first = store.getAgentCapabilities("i1", { ...input, probe });
+    const second = store.getAgentCapabilities("i1", { ...input, probe: true });
+    const joined = store.getAgentCapabilities("i1", input);
+    fresh.resolve(catalog("new"));
+    const newest = await second;
+    expect(await joined).toBe(newest);
+    old.resolve(catalog("old"));
+    await first;
+    expect(await store.getAgentCapabilities("i1", input)).toBe(newest);
+    expect(rpc).toHaveBeenCalledTimes(2);
+  });
+
+  test("a failed probe keeps its list visible but ordinary reads revalidate without the failure", async () => {
+    const store = useInstancesStore();
+    const failed = { ...catalog("saved"), reason: { code: "transport" as const, message: "offline" } };
+    const rpc = vi.spyOn(api, "rpc")
+      .mockResolvedValueOnce(catalog("saved"))
+      .mockResolvedValueOnce(failed)
+      .mockResolvedValueOnce(catalog("recovered"));
+    await store.getAgentCapabilities("i1", input);
+    expect(await store.getAgentCapabilities("i1", { ...input, probe: true })).toMatchObject(failed);
+    const recovered = await store.getAgentCapabilities("i1", input);
+    expect(recovered).toMatchObject({ models: [{ modelId: "recovered" }] });
+    expect(recovered).not.toHaveProperty("reason");
+    expect(rpc).toHaveBeenCalledTimes(3);
+  });
 
   test("parses a ready payload and keeps the model id intact", async () => {
     const store = useInstancesStore();

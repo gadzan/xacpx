@@ -43,6 +43,18 @@ describe("ModelPicker", () => {
     expect(wrapper.emitted("update:model")?.at(-1)).toEqual(["vendor/custom"]);
   });
 
+  it("can explicitly refresh a verified catalog after the adapter changes", async () => {
+    const wrapper = mountPicker(readyCapability("cache", [{ modelId: "old" }], { fetchedAt: FETCHED }));
+    await wrapper.get('[data-test="model-picker-fetch"]').trigger("click");
+    expect(wrapper.emitted("fetch")).toEqual([[]]);
+    await wrapper.setProps({ state: { status: "loading" } });
+    expect(wrapper.find('[data-test="model-picker-fetch"]').exists()).toBe(false);
+    await wrapper.setProps({ state: readyCapability("probe", [{ modelId: "new" }], { fetchedAt: FETCHED }) });
+    await wrapper.get('[data-test="ns-model"]').trigger("focus");
+    expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("new");
+    expect(wrapper.find('[data-test="model-picker-fetch"]').exists()).toBe(true);
+  });
+
   it("shows unsupported and needs-setup with a reason, and keeps suggestions unmarked as adapter models", async () => {
     const unsupported = unsupportedCapability(
       { code: "adapter-cannot-enumerate", message: "this adapter cannot list models" },
