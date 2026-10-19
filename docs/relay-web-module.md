@@ -194,7 +194,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `readyTransportSession`**（返回体里的真实 display alias 与 transport incarnation）；
   rename、archive、warmth 翻转等普通列表变化仍是 payload-free 事件，因此不会被误当成就绪信号。
   Web 仅当这两个字段与当前选中的实例 / alias / 行内 `transportSession` 完全匹配时补拉一次
-  `refreshLiveControls`；等待用户模型设置落地期间 incarnation 变化则放弃本次补拉。
+  `refreshLiveControls`；等待用户模型设置落地期间或 GET 在飞行时 incarnation 变化则丢弃旧读取。
+  model/effort 在缓存恢复、RPC 返回及异常清理的提交点重新校验，过期结果不更新当前值、
+  可选项、权威回滚值或持久缓存。
   成功读到空 effort 目录视为该 adapter 不支持 effort（停止重试）；**仅 RPC 失败才重试**，
   最多 3 次（500ms / 1000ms 退避），且不跨 incarnation、不跨账号代次。
   后续同 incarnation 的 ready 事件允许再次补拉（覆盖暂时性失败），普通事件永不触发查询。

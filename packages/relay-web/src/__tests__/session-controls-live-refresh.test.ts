@@ -16,6 +16,8 @@ import { connectEvents, _resetTerminalRequestStateForTests } from "../api/events
 import { dismissToast, useToasts } from "../lib/use-toasts";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useInstancesStore } from "../stores/instances";
+import { useAuthStore } from "../stores/auth";
+import { read as readViewSnapshot } from "../lib/view-snapshot-cache";
 
 class FakeWS {
   static instances: FakeWS[] = [];
@@ -177,6 +179,51 @@ describe("live session controls refresh", () => {
     await refreshing;
     expect(rpc).toHaveBeenCalledTimes(3);
     expect(controls.modelCurrent).toBe("chosen");
+  });
+
+  it("discards in-flight ready GET results after incarnation replacement without poisoning rollback or snapshots", async () => {
+    seedReadySession();
+    const username = "ready-in-flight-incarnation";
+    useAuthStore().account = { username };
+    rpc.mockImplementation(async (_id: string, type: string) => type === "control.session.model.get"
+      ? { current: "baseline-model", available: ["baseline-model"] }
+      : { current: "medium", available: ["medium"] });
+    const controls = useSessionControlsStore();
+    await Promise.all([controls.loadModel("i1", "new-session"), controls.loadEffort("i1", "new-session")]);
+    const modelGet = Promise.withResolvers<unknown>();
+    const effortGet = Promise.withResolvers<unknown>();
+    rpc.mockImplementation((_id: string, type: string) => type === "control.session.model.get"
+      ? modelGet.promise : effortGet.promise);
+    const refreshing = controls.applyLiveEvent({ kind: "control-event", instanceId: "i1", event: {
+      type: "sessions-changed", readySessionAlias: "new-session", readyTransportSession: "t-new",
+    } });
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(4));
+    useInstancesStore().instances[0]!.sessions[0]!.transportSession = "t-replacement";
+    modelGet.resolve({ current: "stale-model", available: ["stale-model"] });
+    effortGet.resolve({ current: "high", available: ["high"] });
+    await refreshing;
+
+    expect(controls.modelCurrent).toBe("baseline-model");
+    expect(controls.modelAvailable).toEqual(["baseline-model"]);
+    expect(controls.effortCurrent).toBe("medium");
+    expect(controls.effortAvailable).toEqual(["medium"]);
+    expect(controls.modelLoading).toBe(false);
+    expect(controls.effortLoading).toBe(false);
+    expect(await readViewSnapshot(username, "session-model", "i1", "new-session"))
+      .toEqual({ current: "baseline-model", available: ["baseline-model"] });
+    expect(await readViewSnapshot(username, "session-effort", "i1", "new-session"))
+      .toEqual({ current: "medium", available: ["medium"] });
+
+    rpc.mockResolvedValue({ error: { code: "internal", message: "set failed" } });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await expect(controls.setEffort("i1", "new-session", "low")).resolves.toBe(false);
+      await expect(controls.setModel("i1", "new-session", "chosen")).resolves.toBe(false);
+      expect(controls.modelCurrent).toBe("baseline-model");
+      expect(controls.effortCurrent).toBe("medium");
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("refreshes model and effort on first live activity before turn-finished", async () => {

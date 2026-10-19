@@ -138,7 +138,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     authoritativeEfforts.clear();
   }
 
-  async function loadModel(instanceId: string | null, alias: string | null): Promise<boolean> {
+  async function loadModel(instanceId: string | null, alias: string | null, isValid?: () => boolean): Promise<boolean> {
     if (!instanceId || !alias) { reset(); return false; }
     const context = contextKey(instanceId, alias);
     if (activeContext !== context) {
@@ -159,13 +159,13 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       const pendingSet = pendingModelSets.get(context);
       if (pendingSet) {
         await pendingSet;
-        if (!isCurrentRequest(context, revision)) return false;
+        if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
       }
       const user = cacheOwner;
       if (user) {
         const snapshot = viewCache.peek<ControlSnapshot>(user, "session-model", instanceId, alias)
           ?? await viewCache.read<ControlSnapshot>(user, "session-model", instanceId, alias);
-        if (!isCurrentRequest(context, revision) || cacheUser() !== user) return false;
+        if (!isCurrentRequest(context, revision) || cacheUser() !== user || (isValid && !isValid())) return false;
         if (snapshot) {
           applyModelSnapshot(snapshot);
           seeded = true;
@@ -176,7 +176,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       // after the latest mutation settles, otherwise the load can publish the
       // pre-mutation model and make the later set response look stale.
       const r = await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: alias });
-      if (!isCurrentRequest(context, revision)) return false;
+      if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
       if (isErrorPayload(r)) {
         if (!seeded) clearModelState();
         return false;
@@ -189,7 +189,8 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       cacheModel(cacheOwner, instanceId, alias, { current: modelCurrent.value, available: modelAvailable.value }, cacheToken);
       return true;
     } catch {
-      if (isCurrentRequest(context, revision) && !seeded) clearModelState();
+      if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
+      if (!seeded) clearModelState();
       return false;
     } finally {
       if (isCurrentRequest(context, revision)) modelLoading.value = false;
@@ -271,7 +272,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     }
   }
 
-  async function loadEffort(instanceId: string | null, alias: string | null): Promise<boolean> {
+  async function loadEffort(instanceId: string | null, alias: string | null, isValid?: () => boolean): Promise<boolean> {
     if (!instanceId || !alias) {
       effortActiveContext = null;
       effortRevision += 1;
@@ -297,20 +298,20 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       const pendingSet = pendingEffortSets.get(context);
       if (pendingSet) {
         await pendingSet;
-        if (effortActiveContext !== context || effortRevision !== revision) return false;
+        if (effortActiveContext !== context || effortRevision !== revision || (isValid && !isValid())) return false;
       }
       const user = cacheOwner;
       if (user) {
         const snapshot = viewCache.peek<ControlSnapshot>(user, "session-effort", instanceId, alias)
           ?? await viewCache.read<ControlSnapshot>(user, "session-effort", instanceId, alias);
-        if (effortActiveContext !== context || effortRevision !== revision || cacheUser() !== user) return false;
+        if (effortActiveContext !== context || effortRevision !== revision || cacheUser() !== user || (isValid && !isValid())) return false;
         if (snapshot) {
           applyEffortSnapshot(snapshot);
           seeded = true;
         }
       }
       const effortResult = await api.rpc<SessionEffortResult>(instanceId, "control.session.effort.get", { sessionAlias: alias });
-      if (effortActiveContext !== context || effortRevision !== revision) return false;
+      if (effortActiveContext !== context || effortRevision !== revision || (isValid && !isValid())) return false;
       if (isErrorPayload(effortResult)) {
         if (!seeded) clearEffortState();
         return false;
@@ -321,7 +322,8 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       cacheEffort(cacheOwner, instanceId, alias, { current: effortCurrent.value, available: effortAvailable.value }, cacheToken);
       return true;
     } catch {
-      if (effortActiveContext === context && effortRevision === revision && !seeded) clearEffortState();
+      if (effortActiveContext !== context || effortRevision !== revision || (isValid && !isValid())) return false;
+      if (!seeded) clearEffortState();
       return false;
     } finally {
       if (effortActiveContext === context && effortRevision === revision) effortLoading.value = false;
@@ -420,8 +422,8 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     await waitForPendingControlMutations(context);
     if (!isSelectedContext(context) || (isValid && !isValid())) return false;
     const results = await Promise.all([
-      loadModel(instanceId, alias),
-      loadEffort(instanceId, alias),
+      loadModel(instanceId, alias, isValid),
+      loadEffort(instanceId, alias, isValid),
     ]);
     return results.every(Boolean);
   }
