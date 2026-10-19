@@ -404,7 +404,6 @@ describe("InstanceTree session management", () => {
       store.instances[0]!.archivedSessionsLoaded = true;
     });
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
-    // The sleeping-sessions toggle now lives in the tab row's filter menu.
     await w.find('[data-test="instance-filter"]').trigger("click");
     await w.find('[data-test="filter-sleeping-sessions"]').trigger("click");
     await w.vm.$nextTick();
