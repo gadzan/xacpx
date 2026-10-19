@@ -732,6 +732,8 @@ export type ControlEventDto = {
     conversation?: ConversationTurnCorrelationDto;
 } | {
     type: "sessions-changed";
+    readySessionAlias?: string;
+    readyTransportSession?: string;
 } | {
     type: "workspaces-changed";
 } | {

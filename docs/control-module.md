@@ -120,6 +120,11 @@ Phase 10C：Group Topic 可选 `target.isolation: "worktree-per-member"`；
 | `conversationHistory(input)` | Durable Topic `seq` 游标分页（`afterSeq` / `beforeSeq` / `limit`），返回 `oldestSeq` / `newestSeq` / `hasMoreBefore` / `hasMoreAfter`。 |
 | `getRun(runId)` / `cancelRun(runId)` | Exact Run 查询/取消。`indeterminate` 原样公开，不映射成 `failed`。 |
 | `createSession(alias, agent, workspace, agentSessionId?)` | 创建逻辑会话，发出 `sessions-changed` 事件。带 `agentSessionId` 时走 native attach（resume 已有 agent-native rollout）。`listNativeSessions` 会隐藏已被 product-owned LogicalSession 占用的 native ID（展示过滤）；attach 在 `resumeAgentSession` 前再次检查，直接提交 hidden native ID 失败 `hidden_session`。Ownership 按 native catalog（cwd + 去掉 ACP output-guard 后的物理 selector：argv identity / raw command / bare agent），不是 workspace/agent 配置名、`driver` 标签或 ACP spawn wrapper。同一 catalog 存在 product-owned candidate 但 transport 无法证明其 native identity 时 fail-closed。Managed overlay `acpxAgent` 丢失 argv 时 selector 为 unproven，但已知 cwd 会保留：只拒绝该 cwd 的 attach，不锁死其它目录。 |
+  **就绪标记**：transport 生命周期（创建或 native attach）真正完成后才发出的那条 `sessions-changed`
+  额外携带 `readySessionAlias`（返回体的真实 display alias，含 `-2` 冲突后缀）与
+  `readyTransportSession`（该 incarnation 的 transport session）。rename / archive /
+  unarchive / remove / warmth 翻转 / `clear` 等其余 `sessions-changed` 仍是 payload-free；
+  消费者不得把这些通用列表变化当作 adapter 已就绪。
 | `removeSession(alias)` | 删除逻辑会话，发出 `sessions-changed` 事件；返回 `{ wasActive: boolean }`。 |
 | `listScheduledTasks(chatKey)` | 返回指定 chatKey 下的待执行定时任务列表。 |
 | `createScheduledTask(input)` | 创建定时任务，发出 `scheduled-changed` 事件。 |

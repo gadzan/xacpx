@@ -1300,7 +1300,11 @@ export class ControlService {
           workspace,
           model,
         );
-    this.deps.events.emit({ type: "sessions-changed" });
+    this.deps.events.emit({
+      type: "sessions-changed",
+      readySessionAlias: toDisplaySessionAlias(session.alias),
+      readyTransportSession: session.transportSession,
+    });
     if (nativeHistory.length > 0) {
       // The emitted alias must match the ACTUALLY-created session (which may have
       // a `-2`/`-3` suffix derived from the original request when the desired alias

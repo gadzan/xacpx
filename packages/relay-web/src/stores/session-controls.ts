@@ -13,6 +13,7 @@ import { subscribeWebEvents } from "../api/events";
 import { pushToast } from "../lib/use-toasts";
 import * as viewCache from "../lib/view-snapshot-cache";
 import { useAuthStore } from "./auth";
+import { useInstancesStore } from "./instances";
 
 type ControlSnapshot = { current?: string; available: string[] };
 
@@ -48,6 +49,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   // adapter-side config changes become visible during the turn instead of waiting for the
   // final history/session round-trip. A final refresh still converges authoritative state.
   let awaitingFirstActivityFor: string | null = null;
+  const pendingReadyRefreshes = new Map<string, Promise<void>>();
 
   const cacheUser = (): string | null => useAuthStore().account?.username ?? null;
   const contextKey = (instanceId: string, alias: string): string => `${instanceId}\u0000${alias}`;
@@ -136,8 +138,8 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     authoritativeEfforts.clear();
   }
 
-  async function loadModel(instanceId: string | null, alias: string | null): Promise<void> {
-    if (!instanceId || !alias) { reset(); return; }
+  async function loadModel(instanceId: string | null, alias: string | null, isValid?: () => boolean): Promise<boolean> {
+    if (!instanceId || !alias) { reset(); return false; }
     const context = contextKey(instanceId, alias);
     if (activeContext !== context) {
       clearModelState();
@@ -157,13 +159,13 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       const pendingSet = pendingModelSets.get(context);
       if (pendingSet) {
         await pendingSet;
-        if (!isCurrentRequest(context, revision)) return;
+        if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
       }
       const user = cacheOwner;
       if (user) {
         const snapshot = viewCache.peek<ControlSnapshot>(user, "session-model", instanceId, alias)
           ?? await viewCache.read<ControlSnapshot>(user, "session-model", instanceId, alias);
-        if (!isCurrentRequest(context, revision) || cacheUser() !== user) return;
+        if (!isCurrentRequest(context, revision) || cacheUser() !== user || (isValid && !isValid())) return false;
         if (snapshot) {
           applyModelSnapshot(snapshot);
           seeded = true;
@@ -174,10 +176,10 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       // after the latest mutation settles, otherwise the load can publish the
       // pre-mutation model and make the later set response look stale.
       const r = await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: alias });
-      if (!isCurrentRequest(context, revision)) return;
+      if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
       if (isErrorPayload(r)) {
         if (!seeded) clearModelState();
-        return;
+        return false;
       }
       modelCurrent.value = typeof r.current === "string" ? r.current : undefined;
       recordAuthoritativeModel(context, revision, modelCurrent.value);
@@ -185,8 +187,11 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       // not blow up the composer's `available.length` reads (white-screens the input).
       modelAvailable.value = Array.isArray(r.available) ? r.available : [];
       cacheModel(cacheOwner, instanceId, alias, { current: modelCurrent.value, available: modelAvailable.value }, cacheToken);
+      return true;
     } catch {
-      if (isCurrentRequest(context, revision) && !seeded) clearModelState();
+      if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
+      if (!seeded) clearModelState();
+      return false;
     } finally {
       if (isCurrentRequest(context, revision)) modelLoading.value = false;
     }
@@ -267,14 +272,14 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     }
   }
 
-  async function loadEffort(instanceId: string | null, alias: string | null): Promise<void> {
+  async function loadEffort(instanceId: string | null, alias: string | null, isValid?: () => boolean): Promise<boolean> {
     if (!instanceId || !alias) {
       effortActiveContext = null;
       effortRevision += 1;
       effortLoading.value = false;
       clearEffortState();
       awaitingFirstActivityFor = null;
-      return;
+      return false;
     }
     const context = contextKey(instanceId, alias);
     if (effortActiveContext !== context) {
@@ -293,30 +298,33 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       const pendingSet = pendingEffortSets.get(context);
       if (pendingSet) {
         await pendingSet;
-        if (effortActiveContext !== context || effortRevision !== revision) return;
+        if (effortActiveContext !== context || effortRevision !== revision || (isValid && !isValid())) return false;
       }
       const user = cacheOwner;
       if (user) {
         const snapshot = viewCache.peek<ControlSnapshot>(user, "session-effort", instanceId, alias)
           ?? await viewCache.read<ControlSnapshot>(user, "session-effort", instanceId, alias);
-        if (effortActiveContext !== context || effortRevision !== revision || cacheUser() !== user) return;
+        if (effortActiveContext !== context || effortRevision !== revision || cacheUser() !== user || (isValid && !isValid())) return false;
         if (snapshot) {
           applyEffortSnapshot(snapshot);
           seeded = true;
         }
       }
       const effortResult = await api.rpc<SessionEffortResult>(instanceId, "control.session.effort.get", { sessionAlias: alias });
-      if (effortActiveContext !== context || effortRevision !== revision) return;
+      if (effortActiveContext !== context || effortRevision !== revision || (isValid && !isValid())) return false;
       if (isErrorPayload(effortResult)) {
         if (!seeded) clearEffortState();
-        return;
+        return false;
       }
       effortCurrent.value = typeof effortResult.current === "string" ? effortResult.current : undefined;
       recordAuthoritativeEffort(context, revision, effortCurrent.value);
       effortAvailable.value = Array.isArray(effortResult.available) ? effortResult.available : [];
       cacheEffort(cacheOwner, instanceId, alias, { current: effortCurrent.value, available: effortAvailable.value }, cacheToken);
+      return true;
     } catch {
-      if (effortActiveContext === context && effortRevision === revision && !seeded) clearEffortState();
+      if (effortActiveContext !== context || effortRevision !== revision || (isValid && !isValid())) return false;
+      if (!seeded) clearEffortState();
+      return false;
     } finally {
       if (effortActiveContext === context && effortRevision === revision) effortLoading.value = false;
     }
@@ -403,18 +411,52 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     }
   }
 
-  async function refreshLiveControls(instanceId: string, alias: string): Promise<void> {
+  async function refreshLiveControls(
+    instanceId: string,
+    alias: string,
+    isValid?: () => boolean,
+  ): Promise<boolean> {
     const context = contextKey(instanceId, alias);
-    if (!isSelectedContext(context)) return;
-    // A passive readback must not take revision ownership away from a user mutation.
-    // Let setModel/setEffort finish (including rollback + error toast) first, then
-    // re-check selection and only now let loadModel/loadEffort allocate fresh revisions.
+    if (!isSelectedContext(context) || (isValid && !isValid())) return false;
+    // Passive reads wait for mutations to settle before taking revision ownership.
     await waitForPendingControlMutations(context);
-    if (!isSelectedContext(context)) return;
-    await Promise.all([
-      loadModel(instanceId, alias),
-      loadEffort(instanceId, alias),
+    if (!isSelectedContext(context) || (isValid && !isValid())) return false;
+    const results = await Promise.all([
+      loadModel(instanceId, alias, isValid),
+      loadEffort(instanceId, alias, isValid),
     ]);
+    return results.every(Boolean);
+  }
+
+  async function refreshReadyControls(instanceId: string, alias: string, transportSession: string): Promise<void> {
+    const context = contextKey(instanceId, alias);
+    const generation = accountGeneration;
+    const isValid = () => generation === accountGeneration
+      && activeContext === context && effortActiveContext === context
+      && useInstancesStore().findSessionRow(instanceId, alias)?.transportSession === transportSession;
+    if (!isValid()) return;
+    const key = JSON.stringify([generation, context, transportSession]);
+    const pending = pendingReadyRefreshes.get(key);
+    if (pending) return pending;
+    const operation = (async () => {
+      // Readiness is explicit; an empty successful catalog means unsupported, not pending.
+      // Only failed reads retry, at most three attempts, and never across a new incarnation.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt > 0) {
+          const delay = Promise.withResolvers<void>();
+          setTimeout(delay.resolve, attempt * 500);
+          await delay.promise;
+        }
+        if (!isValid()) return;
+        if (await refreshLiveControls(instanceId, alias, isValid)) return;
+      }
+    })();
+    pendingReadyRefreshes.set(key, operation);
+    try {
+      await operation;
+    } finally {
+      if (pendingReadyRefreshes.get(key) === operation) pendingReadyRefreshes.delete(key);
+    }
   }
 
   /**
@@ -441,6 +483,12 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
 
     if (event.kind !== "control-event") return;
     const e = event.event;
+    if (e.type === "sessions-changed") {
+      if (e.readySessionAlias && e.readyTransportSession) {
+        await refreshReadyControls(event.instanceId, e.readySessionAlias, e.readyTransportSession);
+      }
+      return;
+    }
     if (!("sessionAlias" in e) || typeof e.sessionAlias !== "string") return;
     const context = contextKey(event.instanceId, e.sessionAlias);
     if (!isSelectedContext(context)) return;

@@ -6,6 +6,7 @@ import {
   type ControlEvent,
 } from "../../../src/control/control-event-bus";
 import { registerKnownChannelId } from "../../../src/channels/channel-scope";
+import type { ResolvedSession } from "../../../src/transport/types";
 
 registerKnownChannelId("relay");
 function makeDeps() {
@@ -434,7 +435,11 @@ test("createSession runs the transport lifecycle and emits sessions-changed", as
       workspace: "/ws/docs",
     },
   ]);
-  expect(seen).toContainEqual({ type: "sessions-changed" });
+  expect(seen).toContainEqual({
+    type: "sessions-changed",
+    readySessionAlias: "docs",
+    readyTransportSession: "xacpx-backend",
+  });
 });
 
 test("createSession forwards a model override to the fresh-create lifecycle", async () => {
@@ -522,7 +527,63 @@ test("createSession with an agentSessionId resumes the native session instead of
       agentSessionId: "ses_abc",
     },
   ]);
-  expect(seen).toContainEqual({ type: "sessions-changed" });
+  expect(seen).toContainEqual({
+    type: "sessions-changed",
+    readySessionAlias: "resumed",
+    readyTransportSession: "xacpx-backend",
+  });
+});
+
+test("createSession defers ready metadata until the transport resolves and maps the actual alias", async () => {
+  const { deps, seen } = makeDeps();
+  const transport = Promise.withResolvers<ResolvedSession>();
+  const started = Promise.withResolvers<void>();
+  deps.createSessionWithTransport = async () => {
+    started.resolve();
+    return await transport.promise;
+  };
+  const control = new ControlService(deps as never);
+  const creating = control.createSession(
+    "relay:acct",
+    "docs",
+    "codex",
+    "/ws/docs",
+  );
+  await started.promise;
+  // A generic list refresh can land while the create is still booting. It must not
+  // masquerade as the ready signal: no ready metadata exists until the transport does.
+  deps.events.emit({ type: "sessions-changed" });
+  expect(seen).toEqual([{ type: "sessions-changed" }]);
+  // The transport resolved a collision-suffixed incarnation. The ready signal must
+  // name the session that actually exists, not the requested display alias.
+  transport.resolve({
+    alias: "relay:docs-2",
+    agent: "codex",
+    workspace: "/ws/docs",
+    transportSession: "xacpx-docs-2",
+  });
+  const created = await creating;
+  expect(created.alias).toBe("docs-2");
+  expect(seen).toEqual([
+    { type: "sessions-changed" },
+    {
+      type: "sessions-changed",
+      readySessionAlias: "docs-2",
+      readyTransportSession: "xacpx-docs-2",
+    },
+  ]);
+});
+
+test("createSession emits no ready metadata when the transport lifecycle fails", async () => {
+  const { deps, seen } = makeDeps();
+  deps.createSessionWithTransport = async () => {
+    throw new Error("transport create failed");
+  };
+  const control = new ControlService(deps as never);
+  await expect(
+    control.createSession("relay:acct", "docs", "codex", "/ws/docs"),
+  ).rejects.toThrow("transport create failed");
+  expect(seen).toEqual([]);
 });
 
 test("removeSession delegates and emits sessions-changed", async () => {

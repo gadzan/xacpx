@@ -832,6 +832,7 @@ function validControlEvent(e) {
     case "agent-message-completion":
       return typeof c.sessionAlias === "string" && optStr(c.messageId) && (c.completionStatus === "completed" || c.completionStatus === "failed" || c.completionStatus === "cancelled");
     case "sessions-changed":
+      return c.readySessionAlias === undefined && c.readyTransportSession === undefined || typeof c.readySessionAlias === "string" && c.readySessionAlias.length > 0 && typeof c.readyTransportSession === "string" && c.readyTransportSession.length > 0;
     case "workspaces-changed":
     case "conversation-router-changed":
     case "orchestration-changed":

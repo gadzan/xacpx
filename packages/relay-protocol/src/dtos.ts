@@ -711,7 +711,8 @@ export type ControlEventDto =
       startedAt?: number;
       conversation?: ConversationTurnCorrelationDto;
     }
-  | { type: "sessions-changed" }
+  // Present only after successful create/attach; identifies the ready session incarnation.
+  | { type: "sessions-changed"; readySessionAlias?: string; readyTransportSession?: string }
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
   // re-fetches the workspace list. No payload.
   | { type: "workspaces-changed" }

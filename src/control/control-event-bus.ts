@@ -53,7 +53,9 @@ export type ControlEvent =
   // instance.notice kind "queue-overflow"; it is not forwarded as a control-event
   // and must never become a chat/history row.
   | { type: "queue-overflow-tip"; chatKey: string; sessionAlias: string; confirmed: boolean; text: string }
-  | { type: "sessions-changed" }
+  // Present only after a successful create/attach lifecycle. Identifies the exact public
+  // session incarnation whose transport is ready; ordinary list changes omit both.
+  | { type: "sessions-changed"; readySessionAlias?: string; readyTransportSession?: string }
   // The set of configured workspaces changed (e.g. a separate `xacpx workspace add`
   // CLI process edited config.json, or a `/config` mutation). Carries no payload;
   // structured consumers re-fetch the workspace list.

@@ -169,6 +169,10 @@ export function daemonEnv(paths) {
     WEACPX_STATE: paths.state,
     XACPX_PLUGIN_HOME: paths.plugins,
     HOME: paths.home,
+    // acpx resolves its own config through USERPROFILE on Windows, not HOME; without
+    // this the daemon reads the operator's real ~/.acpx agent argv and every
+    // managed-adapter launch fails or mutates real state.
+    USERPROFILE: paths.home,
   };
 }
 
