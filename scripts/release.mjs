@@ -40,6 +40,7 @@ const {
   CORE_FLOOR_TRACKERS,
   RELEASE_ARTIFACTS,
   assignPrsToPackages,
+  changelogMaterial,
   collectEdits,
   collectFloorViolations,
   expandReleaseSet,
@@ -47,6 +48,7 @@ const {
   nextVersion,
   packageForPath,
   parseVersion,
+  prsForPackages,
   publishWaves,
   renderChangelog,
   rootManifestShipsChanges,
@@ -101,6 +103,37 @@ function gitRaw(args) {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" });
 }
 
+/**
+ * How far this checkout is from origin/main.
+ *
+ * `apply` writes versions derived from the working tree and `publish` pushes it,
+ * so releasing from a stale checkout either computes from superseded manifests or
+ * fails at the push — after the gates have spent minutes. Knowing requires a
+ * fetch: the local `origin/main` ref is only as fresh as the last one.
+ *
+ * @returns {{behind:number, ahead:number}|null} null when there is no remote or
+ *   git cannot answer (offline). Not knowing is not a reason to block a release.
+ */
+function originGap() {
+  if (git(["remote"], { allowFailure: true }).trim() === "") return null;
+  git(["fetch", "origin", "main", "--quiet"], { allowFailure: true });
+  const behind = git(["rev-list", "--count", "HEAD..origin/main"], { allowFailure: true }).trim();
+  const ahead = git(["rev-list", "--count", "origin/main..HEAD"], { allowFailure: true }).trim();
+  if (behind === "" || ahead === "") return null;
+  return { behind: Number(behind), ahead: Number(ahead) };
+}
+
+/** Refuse to touch the tree when it is behind origin/main. */
+function assertUpToDate() {
+  const gap = originGap();
+  if (!gap || gap.behind === 0) return;
+  throw new Error(
+    `this checkout is ${gap.behind} commit(s) behind origin/main.`
+    + "\nA release reads the working tree, so pull first:"
+    + "\n  git pull --ff-only origin main",
+  );
+}
+
 const readJson = (relativePath) => JSON.parse(readFileSync(join(ROOT, relativePath), "utf8"));
 const writeJson = (relativePath, value) =>
   writeFileSync(join(ROOT, relativePath), `${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -127,7 +160,7 @@ function parseArgs(argv) {
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!["patch", "minor", "major"].includes(options.bump)) throw new Error(`--bump must be patch|minor|major`);
-  if (!["plan", "apply", "check", "publish"].includes(options.command)) {
+  if (!["plan", "notes", "apply", "check", "publish"].includes(options.command)) {
     throw new Error(`unknown command: ${options.command}`);
   }
   return options;
@@ -273,14 +306,26 @@ function buildPlan(options) {
  * Merged PRs, newest first, or null when `gh` is unavailable.
  *
  * `files` is what makes this useful: it assigns each PR to a package by the
- * same evidence the release uses, so no commit-graph walk is needed.
+ * same evidence the release uses, so no commit-graph walk is needed. Descriptions
+ * are only fetched when asked for — they are large, and only `notes` needs them.
+ *
+ * @param {{withBody?:boolean}} [options]
  */
-function fetchMergedPrs() {
+function fetchMergedPrs({ withBody = false } = {}) {
+  const fields = ["number", "title", "mergedAt", "files"];
+  if (withBody) fields.push("body");
   try {
     return JSON.parse(execFileSync(
       "gh",
-      ["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,title,mergedAt,files"],
-      { cwd: ROOT, encoding: "utf8" },
+      ["pr", "list", "--state", "merged", "--limit", "200", "--json", fields.join(",")],
+      {
+        cwd: ROOT,
+        encoding: "utf8",
+        // Descriptions are ~1.3 MB over 200 PRs, past execFileSync's 1 MiB
+        // default. Without this the call throws, the catch below swallows it,
+        // and the tool reports "gh is unavailable" while gh is answering fine.
+        maxBuffer: 64 * 1024 * 1024,
+      },
     ));
   } catch {
     return null;
@@ -459,11 +504,60 @@ function prependChangelog(plan) {
   );
 }
 
+/**
+ * The material for a CHANGELOG entry: the descriptions of this release's PRs.
+ *
+ * `plan` drafts one line per PR, which is enough to see what shipped and not
+ * enough to write why it mattered. This prints the other half, pre-filtered to
+ * the window and grouped per package, so the writer never has to go looking
+ * through PRs one at a time.
+ */
+function cmdNotes(plan) {
+  if (plan.releases.length === 0) {
+    console.log("nothing to release: no package has changes since its last tag");
+    return 0;
+  }
+  const prs = fetchMergedPrs({ withBody: true });
+  if (!prs || prs.length === 0) {
+    console.log("gh returned no merged PRs, so there are no descriptions to show.");
+    console.log("Write the entry from the commit subjects in the `plan` draft.");
+    return 0;
+  }
+  const sinceById = Object.fromEntries(
+    plan.changelogWindows
+      .filter((window) => window.since !== "")
+      .map((window) => [window.id, Date.parse(window.since)]),
+  );
+  const changedPaths = Object.fromEntries(
+    plan.releases.map((release) => [release.id, plan.changedPaths[release.id]]),
+  );
+  const byPackage = prsForPackages({ prs, changedPaths, sinceById });
+
+  for (const release of plan.releases) {
+    const list = byPackage[release.id] ?? [];
+    console.log(`\n${"═".repeat(78)}`);
+    console.log(`${release.id} ${release.to} — ${list.length} PR(s) in the window`);
+    console.log("═".repeat(78));
+    if (list.length === 0) {
+      console.log("no merged PR here, so the draft fell back to commit subjects");
+      continue;
+    }
+    for (const pr of list) {
+      const material = changelogMaterial(pr.body);
+      console.log(`\n#${pr.number} ${pr.title}`);
+      console.log(material === "" ? "(this PR body has no description, only verification)" : material);
+    }
+  }
+  console.log("\nRaw material, not a draft: the entry is one line per user-visible change, in the file's own voice.");
+  return 0;
+}
+
 function cmdApply(plan, options) {
   if (plan.releases.length === 0) {
     console.log("nothing to release");
     return 0;
   }
+  assertUpToDate();
   // A manifest already carrying an unreleased version means a previous apply has
   // not been published yet. Applying again would compute the NEXT version from
   // it and burn a number nobody ships.
@@ -828,6 +922,8 @@ async function cmdPublish(plan, options) {
   }
   const branch = git(["branch", "--show-current"]);
   if (branch !== "main") throw new Error(`on branch ${branch}; releases are tagged from main`);
+  // Before the gates, not after: catching this at `git push` costs the gates.
+  assertUpToDate();
 
   for (const release of plan.releases) {
     if (git(["tag", "--list", release.tag])) throw new Error(`tag ${release.tag} already exists`);
@@ -890,7 +986,13 @@ async function main() {
   }
 
   const plan = buildPlan(options);
+  if (options.command === "notes") process.exit(cmdNotes(plan));
   if (options.command === "plan") {
+    const gap = originGap();
+    if (gap && gap.behind > 0) {
+      console.log(`warning: this checkout is ${gap.behind} commit(s) behind origin/main`
+        + " — the plan reads the local tree, so pull before applying.\n");
+    }
     console.log(options.json ? JSON.stringify(plan, null, 2) : printPlan(plan));
     process.exit(0);
   }

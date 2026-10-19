@@ -586,12 +586,7 @@ export function collectEdits({ releases, versions, previousVersions }) {
 }
 
 /**
- * Turn merged PRs into one changelog bullet per (package, PR).
- *
- * The repo squash-merges, so a commit subject already carries the PR title and
- * number; using the PR list directly is still better because it yields exactly
- * one bullet per PR (not one per commit inside it) and assigns by the PR's own
- * file list rather than by walking the commit graph.
+ * The merged PRs inside each package's changelog window, oldest first.
  *
  * A PR belongs to a package when it merged after that package's last tag *and*
  * touched a path that changed since it. Both halves are required. The time bound
@@ -600,12 +595,17 @@ export function collectEdits({ releases, versions, previousVersions }) {
  * same file shows up in both — without the bound, one release re-lists every PR
  * that ever edited a file it happens to touch again.
  *
- * @param {{prs:Array<{number:number,title:string,mergedAt:string,files:Array<string|{path:string}>}>, changedPaths:Record<string,string[]>, sinceById?:Record<string,number>}} input
+ * The repo squash-merges, so a commit subject already carries the PR title and
+ * number; going to the PR list directly is still better because it yields the
+ * PR's own file list rather than a commit-graph walk, and because it carries the
+ * description that `notes` hands to whoever writes the CHANGELOG entry.
+ *
+ * @param {{prs:Array<{number:number,title:string,mergedAt:string,files:Array<string|{path:string}>,body?:string}>, changedPaths:Record<string,string[]>, sinceById?:Record<string,number>}} input
  *   `sinceById` maps package id -> its last tag's commit time in epoch ms; a
  *   package absent from it has no lower bound (it has never shipped).
- * @returns {Record<string,string[]>} package id -> bullet texts, oldest PR first
+ * @returns {Record<string,Array<{number:number,title:string,mergedAt:string,body:string}>>}
  */
-export function assignPrsToPackages({ prs, changedPaths, sinceById = {} }) {
+export function prsForPackages({ prs, changedPaths, sinceById = {} }) {
   const ordered = [...prs].sort((a, b) => String(a.mergedAt).localeCompare(String(b.mergedAt)));
   const byPackage = {};
   for (const id of Object.keys(changedPaths)) byPackage[id] = [];
@@ -622,10 +622,56 @@ export function assignPrsToPackages({ prs, changedPaths, sinceById = {} }) {
       const since = sinceById[id];
       if (since !== undefined && !(mergedAt > since)) continue;
       if (!paths.some((path) => touched.has(path))) continue;
-      byPackage[id].push(`${pr.title} (#${pr.number})`);
+      // `body` is only present when the caller asked gh for it; the changelog
+      // draft needs the title, `notes` needs the description.
+      byPackage[id].push({
+        number: pr.number,
+        title: pr.title,
+        mergedAt: pr.mergedAt,
+        body: typeof pr.body === "string" ? pr.body : "",
+      });
     }
   }
   return byPackage;
+}
+
+/** The same selection, formatted as one changelog bullet per PR. */
+export function assignPrsToPackages(input) {
+  const byPackage = prsForPackages(input);
+  return Object.fromEntries(
+    Object.entries(byPackage).map(([id, list]) => [id, list.map((pr) => `${pr.title} (#${pr.number})`)]),
+  );
+}
+
+/**
+ * Where a PR description stops being changelog material.
+ *
+ * Two shapes, because the repo's PRs use both: a markdown heading (`## Tests`,
+ * anything after it is that section) and a bare label line (`Validation:` with
+ * nothing else on the line). A sentence that merely starts with "Tests pass …"
+ * is prose, not a boundary, so the label form requires the line to end there.
+ */
+const SECTION_HEADING = /^#{1,6}\s*(?:verification|validat(?:e|ed|ion)|tests?|testing|screenshots?|验证|测试|截图)/i;
+const SECTION_LABEL = /^(?:verification|validat(?:e|ed|ion)|tests?|testing|screenshots?|验证|测试|截图)\s*[:：]\s*$/i;
+
+/**
+ * The part of a PR description that can feed a CHANGELOG entry.
+ *
+ * Cuts at the first verification-style heading or label: a release reader wants
+ * what changed, not how it was checked, and screenshots/test steps are noise in
+ * a file whose convention is one line per user-visible change.
+ *
+ * @param {string} body
+ * @returns {string} the description, or "" when the body opens with verification
+ */
+export function changelogMaterial(body) {
+  const kept = [];
+  for (const line of String(body ?? "").split("\n")) {
+    const trimmed = line.trim();
+    if (SECTION_HEADING.test(trimmed) || SECTION_LABEL.test(trimmed)) break;
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 // CHANGELOG.md's own vocabulary: `### Added` / `### Fixed` / `### Changed` and

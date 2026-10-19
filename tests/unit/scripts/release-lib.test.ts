@@ -6,6 +6,7 @@ import {
   PACKAGE_REGISTRY,
   RELEASE_ARTIFACTS,
   assignPrsToPackages,
+  changelogMaterial,
   collectEdits,
   collectFloorViolations,
   compareVersions,
@@ -16,6 +17,7 @@ import {
   packageForPath,
   parseVersion,
   precedingBeta,
+  prsForPackages,
   publishWaves,
   renderChangelog,
   splitBullet,
@@ -138,6 +140,54 @@ test("every registry package has an artifact mapping pointing at a real script",
     // A mapping naming a script that does not exist would only surface mid-release.
     expect(scripts[spec.build]).toBeDefined();
   }
+});
+
+test("changelogMaterial keeps the description and drops how it was verified", () => {
+  const body = [
+    "Automatic collaboration replays every successful predecessor, so a short request stalls.",
+    "",
+    "- Keep successful rows from the latest production.",
+    "",
+    "Validation:",
+    "- 417 core tests passed.",
+    "- Windows socket chmod reproduced on main too.",
+  ].join("\n");
+  expect(changelogMaterial(body)).toBe([
+    "Automatic collaboration replays every successful predecessor, so a short request stalls.",
+    "",
+    "- Keep successful rows from the latest production.",
+  ].join("\n"));
+});
+
+test("changelogMaterial cuts at headings and labels without cutting prose", () => {
+  expect(changelogMaterial("## Why\n\nSomething broke.\n\n## Tests\n- ran them")).toBe("## Why\n\nSomething broke.");
+  expect(changelogMaterial("Description.\n\n## 验证\n\n过了")).toBe("Description.");
+  // A sentence that opens with the word is prose, not a section boundary.
+  expect(changelogMaterial("Verification: this is a sentence, not a label"))
+    .toBe("Verification: this is a sentence, not a label");
+  expect(changelogMaterial("Mentions verification of the latest deliverable mid-sentence."))
+    .toBe("Mentions verification of the latest deliverable mid-sentence.");
+  expect(changelogMaterial("")).toBe("");
+});
+
+test("prsForPackages returns the window's PRs, and assignPrsToPackages formats them as bullets", () => {
+  const input = {
+    changedPaths: { relay: ["packages/relay-web/src/style.css"] },
+    prs: [{
+      number: 434,
+      title: "feat(relay-web): unified dropdown",
+      mergedAt: "2026-10-16T10:09:51Z",
+      files: [{ path: "packages/relay-web/src/style.css" }],
+      body: "Why it mattered.",
+    }],
+  };
+  expect(prsForPackages(input).relay).toEqual([{
+    number: 434,
+    title: "feat(relay-web): unified dropdown",
+    mergedAt: "2026-10-16T10:09:51Z",
+    body: "Why it mattered.",
+  }]);
+  expect(assignPrsToPackages(input).relay).toEqual(["feat(relay-web): unified dropdown (#434)"]);
 });
 
 test("parseVersion splits a prerelease and rejects non-semver", () => {
