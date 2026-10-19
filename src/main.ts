@@ -2395,6 +2395,12 @@ export async function buildApp(
     stateStore: debouncedStateStore,
     sessions,
     control: conversationKernel(control),
+    controlEvents,
+    onTraceError: (error) => {
+      void logger.error("conversations.trace_failed", "public member trace recording failed", {
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {});
+    },
     messagingNodeId: messagingNodeIdentity.nodeId,
     sqlitePath: resolveConversationStorePath(paths.configPath),
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),

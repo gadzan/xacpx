@@ -1,5 +1,6 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
 import type { AgentAddressDto, AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, InteractionRequestDto, InteractionSnapshotDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { RunsDetailsBatchResult, RunsTraceGetResult } from "./messages.js";
 import {
   MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
   MAX_DESKTOP_REQUEST_ID_LENGTH,
@@ -580,7 +581,9 @@ function validConversationCorrelation(value: unknown): boolean {
     && typeof c.topicId === "string"
     && typeof c.botId === "string"
     && typeof c.runId === "string"
-    && typeof c.memberTurnId === "string";
+    && typeof c.memberTurnId === "string"
+    && (c.attempt === undefined || (typeof c.attempt === "number" && Number.isSafeInteger(c.attempt) && c.attempt >= 1))
+    && (c.sourceTurnId === undefined || (typeof c.sourceTurnId === "string" && c.sourceTurnId.length > 0 && c.sourceTurnId.length <= 128));
 }
 
 function validExecutionTarget(value: unknown): boolean {
@@ -664,6 +667,8 @@ function validInteractionRequest(value: unknown): boolean {
     if (!optInteractionProductId(conv.runId)) return false;
     if (!optInteractionProductId(conv.memberTurnId)) return false;
     if (!optInteractionProductId(conv.promptRequestId)) return false;
+    if (conv.attempt !== undefined && (typeof conv.attempt !== "number" || !Number.isSafeInteger(conv.attempt) || conv.attempt < 1)) return false;
+    if (conv.sourceTurnId !== undefined && (typeof conv.sourceTurnId !== "string" || !conv.sourceTurnId || conv.sourceTurnId.length > 128)) return false;
     // No hidden runtime alias may travel as a product routing key.
     for (const item of Object.values(conv)) {
       if (typeof item === "string" && item.startsWith("brt_")) return false;
@@ -815,6 +820,94 @@ function validMemberTurnSummary(value: unknown): boolean {
     && (c.blockedReason === undefined
       || c.blockedReason === "human-authority-required"
       || c.blockedReason === "human-authority-unknown");
+}
+
+const historyObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const historyId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 128;
+const historyInt = (value: unknown, min = 0): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= min;
+const historyKeys = (value: Record<string, unknown>, allowed: readonly string[]): boolean =>
+  Object.keys(value).every((key) => allowed.includes(key));
+function historyBytes(value: unknown, max: number): boolean {
+  try { return new TextEncoder().encode(JSON.stringify(value)).byteLength <= max; } catch { return false; }
+}
+const historyPlan = (value: unknown): boolean => Array.isArray(value) && value.length <= 200 && value.every(entry =>
+  historyObject(entry) && historyKeys(entry, ["content", "priority", "status"])
+  && typeof entry.content === "string" && entry.content.length <= 16000
+  && (entry.priority === undefined || ["high", "medium", "low"].includes(entry.priority as string))
+  && ["pending", "in_progress", "completed"].includes(entry.status as string));
+
+export function isRunsDetailsBatchResult(value: unknown): value is RunsDetailsBatchResult {
+  if (!historyObject(value) || !historyKeys(value, ["runs", "missingRunIds"]) || !historyBytes(value, 2 * 1024 * 1024)
+    || !Array.isArray(value.runs) || value.runs.length > 50) return false;
+  const body = value as { runs: unknown[]; missingRunIds?: unknown };
+  const ids = new Set<string>();
+  for (const run of body.runs) {
+    if (!historyObject(run)) return false;
+    const keys = Object.keys(run);
+    if (!keys.every((key) => ["id", "conversationId", "topicId", "requestMessageId", "requestId", "mode", "state", "createdAt", "memberTurns", "profileSnapshot", "worktree"].includes(key))) return false;
+    if (typeof run.createdAt !== "string" || !historyObject(run.profileSnapshot) || !historyId(run.id) || ids.has(run.id as string)
+      || typeof run.conversationId !== "string" || typeof run.topicId !== "string"
+      || typeof run.requestMessageId !== "string" || typeof run.requestId !== "string"
+      || (run.mode !== "explicit" && run.mode !== "automatic")
+      || (run.state !== "queued" && run.state !== "running" && run.state !== "waiting-human"
+        && run.state !== "completed" && run.state !== "failed" && run.state !== "cancelled"
+        && run.state !== "indeterminate")
+      || !Array.isArray(run.memberTurns) || (run.memberTurns as unknown[]).length > 1000
+      || !(run.memberTurns as unknown[]).every(validMemberTurnSummary)) return false;
+    ids.add(run.id as string);
+    const snapshot = run.profileSnapshot;
+    if (!historyKeys(snapshot, ["revision", "capturedAt", "presentation"])
+      || !historyInt(snapshot.revision, 1) || typeof snapshot.capturedAt !== "string" || !historyObject(snapshot.presentation)
+      || !historyKeys(snapshot.presentation, ["name", "avatar", "role"])
+      || typeof snapshot.presentation.name !== "string" || !optStr(snapshot.presentation.role)) return false;
+  }
+  if (body.missingRunIds === undefined) return true;
+  if (!Array.isArray(body.missingRunIds)) return false;
+  const missing = body.missingRunIds;
+  return missing.length <= 50 && missing.every((id) => historyId(id) && !ids.has(id)) && new Set(missing).size === missing.length;
+}
+
+export function isRunsTraceGetResult(value: unknown): value is RunsTraceGetResult {
+  if (!historyObject(value) || !historyKeys(value, ["memberTurnId", "attempt", "recordingState", "completenessReason", "events", "nextSeq", "hasMore", "plan", "attempts"])
+    || !historyBytes(value, 512 * 1024)) return false;
+  const body = value as {
+    memberTurnId: unknown; attempt: unknown; recordingState: unknown; completenessReason: unknown;
+    events: unknown; nextSeq: unknown; hasMore: unknown; plan: unknown; attempts: unknown;
+  };
+  if (!historyId(body.memberTurnId) || !historyInt(body.attempt, 1)
+    || !["recording", "complete", "interrupted", "unavailable"].includes(body.recordingState as string)
+    || !optStr(body.completenessReason) || typeof body.hasMore !== "boolean"
+    || (body.nextSeq !== undefined && !historyInt(body.nextSeq, 1))
+    || (body.attempts !== undefined && (!Array.isArray(body.attempts) || (body.attempts as unknown[]).length > 200
+      || !(body.attempts as unknown[]).every((attempt) => historyInt(attempt, 1))))) return false;
+  if (!Array.isArray(body.events)) return false;
+  const events = body.events as unknown[];
+  let previous = 0;
+  for (const event of events) {
+    if (!historyObject(event) || !historyKeys(event, ["seq", "kind", "payload", "createdAt"])
+      || !historyInt(event.seq, 1) || (event.seq as number) <= previous || typeof event.createdAt !== "string"
+      || !historyObject(event.payload)) return false;
+    previous = event.seq as number;
+    const payload = event.payload;
+    switch (event.kind) {
+      case "text": case "reasoning":
+        if (!historyKeys(payload, ["text"]) || typeof payload.text !== "string") return false;
+        break;
+      case "tool":
+        if (!historyKeys(payload, ["step"]) || !historyObject(payload.step) || !validToolStep(payload.step)
+          || !historyKeys(payload.step, ["toolCallId", "parentToolCallId", "isSubagent", "toolName", "kind", "title", "titleIsPath", "status", "detail", "terminalId", "durationMs", "startedAt", "error", "agentMessageId"])) return false;
+        break;
+      case "plan": if (!historyKeys(payload, ["entries"]) || !historyPlan(payload.entries)) return false; break;
+      case "terminal":
+        if (!historyKeys(payload, ["ok", "cancelled", "errorMessage"]) || typeof payload.ok !== "boolean"
+          || !optBool(payload.cancelled) || !optStr(payload.errorMessage)) return false;
+        break;
+      default: return false;
+    }
+  }
+  return (body.nextSeq === undefined || (body.nextSeq as number) === previous)
+    && (!(body.hasMore as boolean) || (events.length > 0 && body.nextSeq !== undefined));
 }
 
 /**

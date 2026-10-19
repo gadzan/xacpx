@@ -11,6 +11,8 @@ import type { AppConfig } from "../config/types";
 import { ConversationError } from "./conversation-error";
 import type { ConversationExecutionPort } from "./conversation-execution-port";
 import type { ConversationProductEventSink } from "./conversation-product-events";
+import type { ControlEventBus } from "../control/control-event-bus";
+import { GroupMemberTraceRecorder } from "./group-member-trace-recorder";
 import { resolveRuntimeDirFromConfigPath } from "../daemon/daemon-files";
 import type { AsyncMutex } from "../orchestration/async-mutex";
 import { createStrictOwnedSessionRelease, type ReleaseOwnedSession } from "../sessions/owned-session-release";
@@ -95,6 +97,8 @@ export interface CreateConversationRuntimeInput {
   sqlitePath: string;
   releaseOwnedSession: ReleaseOwnedSession;
   onProductEvent?: ConversationProductEventSink;
+  controlEvents?: ControlEventBus;
+  onTraceError?: (error: unknown) => void;
   /** First fatal lease or background scheduling error. `undefined` is a real value. */
   onSchedulingFailure?: (error: unknown) => void;
   authorityEpoch?: string;
@@ -138,6 +142,11 @@ export async function createConversationRuntime(
   const store = await SqliteConversationStore.open(input.sqlitePath, {
     ...(input.beforeLeaseRenewal ? { beforeLeaseRenewal: input.beforeLeaseRenewal } : {}),
   });
+  const traceRecorder = input.controlEvents ? new GroupMemberTraceRecorder({
+    store, state: input.state, events: input.controlEvents,
+    ...(input.now ? { now: () => input.now!().toISOString() } : {}),
+    ...(input.onTraceError ? { onError: input.onTraceError } : {}),
+  }) : undefined;
   const shared = {
     ...(input.stateMutex ? { stateMutex: input.stateMutex } : {}),
     ...(input.now ? { now: input.now } : {}),
@@ -235,6 +244,7 @@ export async function createConversationRuntime(
       ...(routerEngine ? { routerEngine } : {}),
       ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
       ...(input.onSchedulingFailure ? { onSchedulingFailure: input.onSchedulingFailure } : {}),
+      onBeforeStoreClose: () => traceRecorder?.dispose(),
       ...(input.beforeAcceptPersist ? { beforeAcceptPersist: input.beforeAcceptPersist } : {}),
       ...(input.afterTeardownMarkedDeleting ? { afterTeardownMarkedDeleting: input.afterTeardownMarkedDeleting } : {}),
       ...(input.beforeTeardownFinalize ? { beforeTeardownFinalize: input.beforeTeardownFinalize } : {}),
@@ -318,7 +328,10 @@ export async function createConversationRuntime(
     },
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
-    activateAfterConsumerLock: () => runs.activateAfterConsumerLock(),
+    activateAfterConsumerLock: () => {
+      traceRecorder?.activate();
+      return runs.activateAfterConsumerLock();
+    },
     assertOpen,
     withOperation,
     shutdown: () => {

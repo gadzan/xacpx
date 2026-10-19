@@ -274,6 +274,8 @@ export interface ConversationTurnCorrelationDto {
   botId?: string;
   runId?: string;
   memberTurnId?: string;
+  attempt?: number;
+  sourceTurnId?: string;
   /**
    * Hub-issued id for the prompt row that started this turn, when it was
    * pre-written. Present on the correlation so a consumer can join a turn to its
@@ -562,6 +564,27 @@ export interface MemberTurnSummaryDto {
 export interface ConversationRunDetailDto extends ConversationRunDto {
   profileSnapshot?: BotProfileSnapshotDto;
   memberTurns: MemberTurnSummaryDto[];
+}
+
+export interface ConversationRunHistoryDetailDto extends Omit<ConversationRunDetailDto, "profileSnapshot"> {
+  profileSnapshot?: Pick<BotProfileSnapshotDto, "revision" | "capturedAt" | "presentation">;
+}
+
+export type ConversationRunTraceEventDto = { seq: number; createdAt: string } & (
+  | { kind: "text" | "reasoning"; payload: { text: string } }
+  | { kind: "tool"; payload: { step: ToolStepDto } }
+  | { kind: "plan"; payload: { entries: PlanEntryDto[] } }
+  | { kind: "terminal"; payload: { ok: boolean; cancelled?: boolean; errorMessage?: string } }
+);
+export interface ConversationRunTraceDto {
+  memberTurnId: string;
+  attempt: number;
+  recordingState: "recording" | "complete" | "interrupted" | "unavailable";
+  completenessReason?: string;
+  events: ConversationRunTraceEventDto[];
+  nextSeq?: number;
+  hasMore: boolean;
+  attempts?: number[];
 }
 
 export interface ConversationWorktreeStatusDto {

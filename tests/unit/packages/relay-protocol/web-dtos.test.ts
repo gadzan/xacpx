@@ -1,10 +1,11 @@
 // tests/unit/packages/relay-protocol/web-dtos.test.ts
-import { expect, test } from "bun:test";
 import {
   WEB_CLIENT_TYPE,
   WEB_EVENT_TYPE,
   decodeEnvelope,
   encodeEnvelope,
+  isRunsDetailsBatchResult,
+  isRunsTraceGetResult,
   parseWebClientMessage,
   parseWebServerEvent,
   validControlEvent,
@@ -1131,4 +1132,40 @@ test("rejects malformed values for the new tool-step and tool-detail fields", ()
       event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { ...base, detail: badDetail } },
     })).toBeNull();
   }
+});
+
+test("history details batch response exposes presentation-only snapshots and bounded missing ids", () => {
+  const run = { id: "r", conversationId: "c", topicId: "t", requestMessageId: "m", requestId: "q",
+    mode: "explicit", state: "running", createdAt: "now", memberTurns: [] };
+  const result = { runs: [{ ...run, profileSnapshot: { revision: 1, capturedAt: "now", presentation: { name: "bot" } } }],
+    missingRunIds: ["gone"] };
+  expect(isRunsDetailsBatchResult(result)).toBe(true);
+  for (const bad of [{}, { runs: [{ ...result.runs[0], extra: 1 }] },
+    { runs: [{ ...run, profileSnapshot: { revision: 1, capturedAt: "now", presentation: { name: "bot" }, behavior: {} } }] },
+    { runs: [{ ...run, profileSnapshot: { revision: 1, capturedAt: "now",
+      presentation: { name: "bot", execution: { agent: "a", workspace: "w" } } } }] },
+    { runs: [{ ...result.runs[0], id: "" }] }, { runs: [result.runs[0], result.runs[0]] },
+    { runs: [result.runs[0]], missingRunIds: [""] }]) {
+    expect(isRunsDetailsBatchResult(bad)).toBe(false);
+  }
+  expect(isRunsDetailsBatchResult({ runs: [] })).toBe(true);
+  expect(isRunsDetailsBatchResult({ runs: [result.runs[0]], missingRunIds: ["r2"] })).toBe(true);
+});
+
+test("trace response is typed, sequential, and byte-bounded with durable attempt listing", () => {
+  const page = { memberTurnId: "m", attempt: 2, recordingState: "complete",
+    events: [{ seq: 1, kind: "text", payload: { text: "hi" }, createdAt: "now" }],
+    nextSeq: 1, hasMore: false, attempts: [1, 2] };
+  expect(isRunsTraceGetResult(page)).toBe(true);
+  for (const bad of [{}, { ...page, kind: "x" }, { ...page, attempt: 0 },
+    { ...page, events: [{ seq: 2, kind: "text", payload: { text: 1 }, createdAt: "now" }] },
+    { ...page, events: [{ seq: 1, kind: "text", payload: { rawInput: "x" }, createdAt: "now" }] },
+    { ...page, events: [{ seq: 1, kind: "tool", payload: { step: { toolCallId: 1 } }, createdAt: "now" }] },
+    { ...page, events: [{ seq: 2, kind: "text", payload: { text: "a" }, createdAt: "now" }, { seq: 1, kind: "text", payload: { text: "b" }, createdAt: "now" }] },
+    { ...page, nextSeq: 2 }, { ...page, nextSeq: 1, hasMore: true, events: [] },
+    { ...page, attempts: [0] }, { ...page, attempts: ["1"] }, { ...page, weird: 1 }]) {
+    expect(isRunsTraceGetResult(bad)).toBe(false);
+  }
+  expect(isRunsTraceGetResult({ ...page, events: Array.from({ length: 201 },
+    (_, i) => ({ seq: i + 1, kind: "text" as const, payload: { text: "x" }, createdAt: "now" })) })).toBe(false);
 });

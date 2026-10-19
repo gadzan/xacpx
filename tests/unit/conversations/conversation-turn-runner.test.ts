@@ -72,6 +72,30 @@ const input = {
   promptRequestId: "sturn_1",
 };
 
+test("physical attempt identity reaches the control seam without deriving it from the prompt request", async () => {
+  const control = fakeControl();
+  const seen: unknown[] = [];
+  const promptImmediate = control.promptImmediate.bind(control);
+  control.promptImmediate = async (request) => {
+    seen.push("conversation" in request ? request.conversation : undefined);
+    return await promptImmediate(request);
+  };
+  const runner = new ControlConversationTurnRunner(control);
+  await runner.run({ ...input, attempt: 2, sourceTurnId: "sturn_attempt_2" });
+  await runner.run(input);
+  expect(seen).toEqual([
+    {
+      conversationId: input.conversationId, topicId: input.topicId, botId: input.botId,
+      runId: input.runId, memberTurnId: input.memberTurnId,
+      attempt: 2, sourceTurnId: "sturn_attempt_2",
+    },
+    {
+      conversationId: input.conversationId, topicId: input.topicId, botId: input.botId,
+      runId: input.runId, memberTurnId: input.memberTurnId,
+    },
+  ]);
+});
+
 test("cancel after a proven completion reports completed, not cancelled", async () => {
   const control = fakeControl();
   const runner = new ControlConversationTurnRunner(control);

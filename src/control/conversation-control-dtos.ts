@@ -15,6 +15,8 @@ export interface ConversationTurnCorrelation {
   botId: string;
   runId: string;
   memberTurnId: string;
+  attempt?: number;
+  sourceTurnId?: string;
 }
 
 export interface BotSummaryDto {

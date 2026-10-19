@@ -219,6 +219,62 @@ test("trusted Conversation execution fails closed when its exact session alias c
   expect(result).toEqual({ ok: false, errorMessage: "session resolution failed" });
   expect(chats).toBe(0);
 });
+test("every public correlated event retains the physical attempt identity", async () => {
+  const conversation = {
+    conversationId: "group_1", topicId: "topic_1", botId: "bot_1",
+    runId: "run_1", memberTurnId: "member_1", attempt: 2, sourceTurnId: "sturn_2",
+  };
+  const { runner, captured } = makeRunner(async (opts) => {
+    await opts.reply("output");
+    opts.onThought("visible thought");
+    opts.onToolEvent({ toolCallId: "tool_1", title: "Read", status: "completed" });
+    opts.onPlan([]);
+    opts.onUsage({ used: 1, size: 2 });
+    opts.onCommands([]);
+    return { text: "done" };
+  });
+  await runner.run({ ...REQ, turnOrigin: "orchestration", conversation }, new AbortController().signal);
+  for (const type of ["turn-started", "turn-output", "turn-thought", "tool-event", "plan", "turn-usage", "agent-commands", "turn-finished"]) {
+    const events = captured.filter((event) => event.type === type);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect("conversation" in event && event.conversation).toEqual(conversation);
+    }
+  }
+});
+
+test("a late callback from an earlier attempt keeps its original correlation", async () => {
+  const first = {
+    conversationId: "group_1", topicId: "topic_1", botId: "bot_1",
+    runId: "run_1", memberTurnId: "member_1", attempt: 1, sourceTurnId: "sturn_1",
+  };
+  const second = { ...first, attempt: 2, sourceTurnId: "sturn_2" };
+  let lateThought: ((chunk: string) => void) | undefined;
+  const { runner, captured } = makeRunner(async (opts) => {
+    lateThought ??= opts.onThought;
+    return { text: "done" };
+  });
+  await runner.run({ ...REQ, turnOrigin: "orchestration", conversation: first }, new AbortController().signal);
+  await runner.run({ ...REQ, turnOrigin: "orchestration", conversation: second }, new AbortController().signal);
+  lateThought!("late public thought");
+  expect(captured.find((event) => event.type === "turn-thought")).toMatchObject({
+    chunk: "late public thought", conversation: first,
+  });
+});
+
+
+test("failed physical turns preserve identity on the terminal observation", async () => {
+  const conversation = {
+    conversationId: "group_1", topicId: "topic_1", botId: "bot_1",
+    runId: "run_1", memberTurnId: "member_1", attempt: 3, sourceTurnId: "sturn_3",
+  };
+  const { runner, captured } = makeRunner(async () => { throw new Error("provider failed"); });
+  await runner.run({ ...REQ, turnOrigin: "orchestration", conversation }, new AbortController().signal);
+  expect(captured.find((event) => event.type === "turn-finished")).toMatchObject({
+    ok: false, conversation,
+  });
+});
+
 
 test("onActivity is invoked on each agent event", async () => {
   let calls = 0;

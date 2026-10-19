@@ -66,6 +66,8 @@ import {
   type QueueCancelPayload,
   type RunsCancelPayload,
   type RunsGetPayload,
+  type RunsDetailsBatchPayload,
+  type RunsTraceGetPayload,
   type RunsListPayload,
   type ScheduledCancelPayload,
   type ScheduledCreatePayload,
@@ -758,6 +760,26 @@ const validateRunsGet: Validator<RunsGetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsGetPayload) : null;
 };
+const traceProductId = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 128;
+const traceInteger = (v: unknown, min: number, max = Number.MAX_SAFE_INTEGER): v is number =>
+  typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max;
+const validateRunsDetailsBatch: Validator<RunsDetailsBatchPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).some(k => !["conversationId", "topicId", "runIds"].includes(k))) return null;
+  return traceProductId(o.conversationId) && traceProductId(o.topicId)
+    && Array.isArray(o.runIds) && o.runIds.length >= 1 && o.runIds.length <= 50
+    && o.runIds.every(traceProductId) && new Set(o.runIds).size === o.runIds.length
+    ? o as unknown as RunsDetailsBatchPayload : null;
+};
+const validateRunsTraceGet: Validator<RunsTraceGetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).some(k => !["conversationId", "topicId", "runId", "memberTurnId", "attempt", "afterSeq", "limit"].includes(k))) return null;
+  return traceProductId(o.conversationId) && traceProductId(o.topicId) && traceProductId(o.runId)
+    && traceProductId(o.memberTurnId) && traceInteger(o.attempt, 1)
+    && (o.afterSeq === undefined || traceInteger(o.afterSeq, 0))
+    && (o.limit === undefined || traceInteger(o.limit, 1, 200))
+    ? o as unknown as RunsTraceGetPayload : null;
+};
 export type ConversationWorktreePayload =
   | { action: "preview"; runId: string; botIds: string[] }
   | { action: "integrate"; runId: string; requestId: string; previewId: string; snapshotUncommitted: true }
@@ -951,6 +973,8 @@ export const validateInteractionRequest: Validator<InteractionRequestPayload> = 
     if (!optProductId(c.runId)) return null;
     if (!optProductId(c.memberTurnId)) return null;
     if (!optProductId(c.promptRequestId)) return null;
+    if (c.attempt !== undefined && !traceInteger(c.attempt, 1)) return null;
+    if (!optProductId(c.sourceTurnId)) return null;
     for (const value of Object.values(c)) {
       if (typeof value === "string" && value.startsWith("brt_")) return null;
     }
@@ -1116,6 +1140,7 @@ export type ControlRpcType =
   | typeof MSG.conversationWorktree
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
+  | typeof MSG.runsDetailsBatch | typeof MSG.runsTraceGet
   | typeof MSG.interactionRequest | typeof MSG.interactionRespond
   | typeof MSG.interactionWithdraw;
 
@@ -1218,6 +1243,8 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationBindingsDelete]: validateConversationBindingDelete,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
+  [MSG.runsDetailsBatch]: validateRunsDetailsBatch,
+  [MSG.runsTraceGet]: validateRunsTraceGet,
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
   [MSG.interactionRequest]: validateInteractionRequest,

@@ -35,6 +35,8 @@ import type {
   ConversationPromptResponseDto,
   ConversationTargetDto,
   ConversationRunDetailDto,
+  ConversationRunHistoryDetailDto,
+  ConversationRunTraceDto,
   ConversationRunDto,
   ConversationSummaryDto,
   ConversationTurnCorrelationDto,
@@ -185,6 +187,8 @@ export const MSG = {
   conversationBindingsDelete: "control.conversation.bindings.delete",
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
+  runsDetailsBatch: "control.runs.details.batch",
+  runsTraceGet: "control.runs.trace.get",
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
   /**
@@ -729,6 +733,25 @@ export interface RunsGetPayload {
 export interface RunsGetResult {
   run: ConversationRunDetailDto;
 }
+export interface RunsDetailsBatchPayload {
+  conversationId: string;
+  topicId: string;
+  runIds: string[];
+}
+export interface RunsDetailsBatchResult {
+  runs: ConversationRunHistoryDetailDto[];
+  missingRunIds?: string[];
+}
+export interface RunsTraceGetPayload {
+  conversationId: string;
+  topicId: string;
+  runId: string;
+  memberTurnId: string;
+  attempt: number;
+  afterSeq?: number;
+  limit?: number;
+}
+export type RunsTraceGetResult = ConversationRunTraceDto;
 export interface RunsListPayload {
   conversationId: string;
   topicId: string;

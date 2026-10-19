@@ -4,6 +4,7 @@ import type { SessionService } from "../sessions/session-service";
 import { AgentCapabilityService, type CapabilityAdvertisement, type CapabilityCacheStore } from "../agents/capability-discovery";
 import { advertisedCommandsFor, hasAdvertisedCommands, rememberAdvertisedCommands, markCommandRevision, markCommandAdapterRevision } from "../conversations/advertised-commands";
 import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
+import type { RunsDetailsBatchPayload, RunsDetailsBatchResult, RunsTraceGetPayload, RunsTraceGetResult } from "@ganglion/xacpx-relay-protocol";
 import type {
   AgentCapabilityState,
   ConversationRouterConfigState,
@@ -2789,6 +2790,107 @@ export class ControlService {
     if (runtime.runs.isPeerTopic(result.run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
     const worktree = runtime.store.worktrees.get(runId);
     return { ...toRunDetail(result.run, result.memberTurns), ...(worktree ? { worktree: worktreeStatus(worktree) } : {}) };
+  }
+
+  getRunDetailsBatch(input: RunsDetailsBatchPayload): RunsDetailsBatchResult {
+    const runtime = this.requireConversations();
+    this.assertPublicRunHistoryScope(runtime, input.conversationId, input.topicId);
+    if (!Array.isArray(input.runIds) || input.runIds.length < 1 || input.runIds.length > 50
+      || input.runIds.some(id => typeof id !== "string" || !id.trim())
+      || new Set(input.runIds).size !== input.runIds.length) {
+      throw new ConversationError("invalid-payload", "runIds must contain 1 to 50 unique Run ids");
+    }
+    const runs: RunsDetailsBatchResult["runs"] = [];
+    const missingRunIds: string[] = [];
+    for (const runId of input.runIds) {
+      const run = runtime.store.getRun(runId);
+      if (!run) {
+        missingRunIds.push(runId);
+        continue;
+      }
+      if (run.conversationId !== input.conversationId || run.topicId !== input.topicId
+        || runtime.runs.isPeerTopic(run.topicId)) {
+        throw new ConversationError("run_not_found", "Run does not belong to this public Topic");
+      }
+      const { profileSnapshot, ...detail } = this.getRun(runId);
+      runs.push({
+        ...detail,
+        ...(profileSnapshot ? {
+          profileSnapshot: {
+            revision: profileSnapshot.revision,
+            capturedAt: profileSnapshot.capturedAt,
+            presentation: profileSnapshot.presentation,
+          },
+        } : {}),
+      });
+    }
+    return missingRunIds.length > 0 ? { runs, missingRunIds } : { runs };
+  }
+
+  private assertPublicRunHistoryScope(runtime: ConversationRuntime, conversationId: string, topicId: string): void {
+    if (runtime.runs.isPeerTopic(topicId)
+      || !runtime.runs.listTopics(conversationId).some(topic => topic.id === topicId)) {
+      throw new ConversationError("topic_not_found", "public Topic does not belong to this Conversation");
+    }
+  }
+
+  getRunTrace(input: RunsTraceGetPayload): RunsTraceGetResult {
+    const runtime = this.requireConversations();
+    this.assertPublicRunHistoryScope(runtime, input.conversationId, input.topicId);
+    if (!Number.isSafeInteger(input.attempt) || input.attempt < 1
+      || (input.afterSeq !== undefined && (!Number.isSafeInteger(input.afterSeq) || input.afterSeq < 0))
+      || (input.limit !== undefined && (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 200))) {
+      throw new ConversationError("invalid-payload", "invalid trace attempt or page bounds");
+    }
+    const run = runtime.store.getRun(input.runId);
+    if (!run || run.conversationId !== input.conversationId || run.topicId !== input.topicId
+      || runtime.runs.isPeerTopic(run.topicId)) {
+      throw new ConversationError("run_not_found", "Run does not belong to this public Topic");
+    }
+    const member = runtime.store.getMemberTurn(input.memberTurnId);
+    if (!member || member.runId !== run.id || input.attempt > member.attempt) {
+      throw new ConversationError("member_turn_not_found", "member attempt does not belong to this Run");
+    }
+    const traceQuery = {
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      runId: run.id,
+      memberTurnId: member.id,
+      attempt: input.attempt,
+    };
+    const page = runtime.store.traces.listEvents(traceQuery, {
+      ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
+      limit: input.limit ?? 100,
+      maxBytes: 512 * 1024,
+    });
+    const attempts = typeof runtime.store.traces.listAttempts === "function"
+      ? runtime.store.traces.listAttempts({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        runId: run.id,
+        memberTurnId: member.id,
+      }).map(record => record.identity.attempt).filter(attempt => Number.isSafeInteger(attempt) && attempt >= 1).sort((a, b) => a - b).slice(0, 200)
+      : [];
+    if (!page) return {
+      memberTurnId: member.id,
+      attempt: input.attempt,
+      recordingState: "unavailable",
+      completenessReason: "not-recorded",
+      events: [],
+      hasMore: false,
+      ...(attempts.length > 0 ? { attempts } : {}),
+    };
+    return {
+      memberTurnId: member.id,
+      attempt: input.attempt,
+      recordingState: page.recordingState,
+      ...(page.completenessReason !== undefined ? { completenessReason: page.completenessReason } : {}),
+      events: page.events,
+      ...(page.events.length > 0 && page.nextSeq >= 1 ? { nextSeq: page.nextSeq } : {}),
+      hasMore: page.hasMore,
+      ...(page.plan !== undefined ? { plan: page.plan } : {}),
+      ...(attempts.length > 0 ? { attempts } : {}),
+    };
   }
 
   async operateConversationWorktree(input: import("../conversations/conversation-worktree-types").WorktreeOperation) {
