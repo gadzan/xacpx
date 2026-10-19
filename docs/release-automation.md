@@ -142,11 +142,12 @@ The three views update at different times, measured on 0.14.12-beta.7: the
 version document resolved ~3.5 min after the run went green, the packument
 (`npm view <pkg> dist-tags`) still served the previous tag a minute later, and
 the dedicated dist-tags endpoint — a separate cache — reported the new tag
-immediately. `publish` therefore polls that endpoint itself after each tag's
-workflow goes green (24 × 15s) and prints the dist-tag it found, so the wait is
-bounded, reported, and never misread. A poll that times out is a warning, not a
-failure: the publish already succeeded in CI, and the command prints the URL to
-re-check.
+immediately. `publish` therefore polls that endpoint after each wave's workflows
+finish, with up to 24 attempts and 15-second retry delays. Each request, including
+its response body, has a 10-second timeout. A six-minute deadline includes both
+requests and delays; the final request or delay is shortened to fit. An
+unconfirmed version stops the command with exit code 1 and prints the URL to
+re-check; this does not mean npm rejected the publish.
 
 ```bash
 curl -s https://registry.npmjs.org/-/package/@ganglion%2Fxacpx-relay/dist-tags
@@ -166,12 +167,14 @@ stops *there*, printing the URLs to re-check and naming the waves it did not
 push. Continuing would push a tag whose workflow installs a package that is not
 on the registry yet, which is the `ETARGET` failure the waves exist to prevent.
 
-That stop is resumable by design. The pending set is derived from tags, so
-everything already tagged drops out, and re-running `publish --yes` picks up
-exactly the waves that were left. A **clean tree is the marker for that resume**:
-the bumps are already committed, so `publish` skips the commit and instead
-refuses to tag if the gates left the tree altered — the tags must not point at a
-tree other than the one that was verified.
+That stop is resumable by design. Tags are created only when their package is
+about to be pushed, so waves that never started remain in the pending set.
+Re-running `publish --yes` picks up those waves. A **clean tree is the marker for
+that resume**: the bumps are already committed, so `publish` skips the commit and
+refuses to tag if the gates left the tree altered. Before resuming a relay or
+channel-relay release whose protocol tag already exists, it confirms that
+protocol version on the registry again. An unconfirmed protocol stops the retry
+before any new tag is pushed.
 
 ## Recovery
 
@@ -223,8 +226,8 @@ pins). That is a deliberate call for the operator, not a default.
 
 `publish` runs three gates before it commits:
 
-1. `tsc --noEmit` — the whole repo, ~40s. The release commit is source, so this
-   does not shrink with the release.
+1. `tsc --noEmit` — root `src/**/*.ts`, ~40s. The release commit is source, so
+   this does not shrink with the release.
 2. `check` — the invariants above, under a second.
 3. Build every package this release ships, then `verify-publish.mjs --packages
    <those ids>`.

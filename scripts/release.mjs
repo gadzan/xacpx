@@ -74,21 +74,8 @@ const TOOL_OWNED_PATHS = [
   "packages/relay-web/package.json",
 ];
 
-/**
- * Registry polls after a publish: 24 × 15s.
- *
- * Six minutes covers the slowest publish measured (3.5 min for the version
- * document to resolve), while still bounding a command that already spent
- * eleven minutes waiting on CI.
- */
 const REGISTRY_ATTEMPTS = 24;
-
-/**
- * Per-request ceiling.
- *
- * The attempt count bounds the wait *between* requests; without this, one
- * request that never answers makes the total unbounded.
- */
+const REGISTRY_POLL_TIMEOUT_MS = 6 * 60_000;
 const REGISTRY_REQUEST_TIMEOUT_MS = 10_000;
 
 function git(args, { allowFailure = false } = {}) {
@@ -786,12 +773,10 @@ function dropProtocolDistChurn(plan) {
 /**
  * The pre-flight gate, sized to the release.
  *
- * Typecheck and metadata checks are whole-repo because they are cheap (39s and
- * under a second). The artifact gate is not: building every package costs ~7
- * minutes, and for a single-package release most of that builds artifacts
- * nobody is about to publish. Only the packages in this release are built, and
- * the verification is scoped to match — with a fallback to the unscoped
- * `verify:publish` whenever a release id has no artifact mapping.
+ * Root typecheck and metadata checks always run. The artifact gate is scoped:
+ * only packages in this release are built and packed, plus protocol consumers
+ * are compiled whenever the protocol ships. An unmapped release id falls back
+ * to the unscoped `verify:publish` gate.
  */
 function runGates(plan) {
   console.log("== gates: typecheck ==");
@@ -919,17 +904,20 @@ async function awaitTagRun(tag) {
  * this endpoint was current, and minutes after the version document resolved.
  * Polling `npm view` is how a finished release gets misread as a failed one.
  *
- * Never throws. The publish already succeeded in CI by the time this runs, so a
- * registry that is slow to publish is something to report, not a reason to fail
- * the command.
+ * An unconfirmed registry stops later waves without treating an already
+ * published version as a failed publish. The deadline includes response bodies
+ * and retry delays.
  */
 async function reportRegistry(npmName, version) {
   const url = `https://registry.npmjs.org/-/package/${npmName.replace("/", "%2F")}/dist-tags`;
+  const deadline = performance.now() + REGISTRY_POLL_TIMEOUT_MS;
   for (let attempt = 1; attempt <= REGISTRY_ATTEMPTS; attempt += 1) {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining <= 0) break;
     try {
       const response = await fetch(url, {
         headers: { "cache-control": "no-cache" },
-        signal: AbortSignal.timeout(REGISTRY_REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(Math.min(REGISTRY_REQUEST_TIMEOUT_MS, remaining)),
       });
       if (response.ok) {
         const tags = await response.json();
@@ -942,7 +930,8 @@ async function reportRegistry(npmName, version) {
     } catch {
       // A transient failure means the same thing as "not yet": keep waiting.
     }
-    if (attempt < REGISTRY_ATTEMPTS) await sleep(15_000);
+    const delay = Math.min(15_000, deadline - performance.now());
+    if (attempt < REGISTRY_ATTEMPTS && delay > 0) await sleep(delay);
   }
   console.warn(`  ${npmName}@${version} is not visible yet — re-check ${url} before assuming the publish failed`);
   return false;
@@ -999,12 +988,21 @@ async function cmdPublish(plan, options) {
         + `\n  ${leftover.join("\n  ")}`,
       );
     }
+    const needsProtocol = plan.releases.some((release) => ["relay", "channel-relay"].includes(release.id));
+    if (needsProtocol && !plan.releases.some((release) => release.id === "relay-protocol")) {
+      const protocol = registryEntry("relay-protocol");
+      const version = readJson(protocol.manifestPath).version;
+      if (!await reportRegistry(protocol.npmName, version)) {
+        console.log("Stopped before pushing tags: the preceding protocol wave is still unconfirmed.");
+        console.log("Re-check the registry URL above, then re-run `publish --yes` once it is visible.");
+        return 1;
+      }
+    }
   } else {
     git(["add", "-A"]);
     git(["commit", "-m", subject]);
   }
   const head = git(["rev-parse", "HEAD"]);
-  for (const release of plan.releases) git(["tag", release.tag, head]);
   git(["push", "origin", "main"]);
   console.log(resuming ? `tagging the existing commit ${head}` : `committed ${head}`);
 
@@ -1020,6 +1018,7 @@ async function cmdPublish(plan, options) {
       const release = plan.releases.find((candidate) => candidate.id === id);
       // relay and channel-relay share a wave but go one at a time: both are
       // heavy ubuntu jobs and concurrent dispatch invites runner contention.
+      git(["tag", release.tag, head]);
       git(["push", "origin", release.tag]);
       console.log(`pushed ${release.tag}`);
       await awaitTagRun(release.tag);
