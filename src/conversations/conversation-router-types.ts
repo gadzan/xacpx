@@ -125,6 +125,12 @@ export interface RoutingAssignmentRecord {
   attempt: number;
   batch: number;
   contextTruncated?: true;
+  /** Distinguishes missing result evidence from a shortened task description. */
+  resultTruncated?: boolean;
+  /** Original durable public result size, before Router context allocation. */
+  resultCharacters?: number;
+  /** Whether the original durable result contains non-whitespace text. */
+  resultHasContent?: boolean;
 }
 
 /** Current Run state projected for the Router: everything it may reason with,

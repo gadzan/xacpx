@@ -222,6 +222,10 @@ export class OrchestrationClient {
     return await this.request("conversation.group_send", input);
   }
 
+  async groupReadResult(input: import("../conversations/group-handoff").GroupReadResultInvocation): Promise<import("../conversations/group-handoff").GroupResultPage> {
+    return await this.request("conversation.group_read_result", input);
+  }
+
   async agentSend(input: AgentSendRpcInput): Promise<AgentMessageReceipt> {
     return await this.request<AgentMessageReceipt>("agent.send", input);
   }

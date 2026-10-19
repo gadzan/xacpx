@@ -17,18 +17,20 @@ import { createMemoryTransport } from "../../../src/mcp/xacpx-mcp-transport";
 import type { OrchestrationTaskRecord } from "../../../src/orchestration/orchestration-types";
 import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 
-test("Group MCP advertises only public group_send and derives trusted invocation identity", async () => {
+test("Group MCP exposes only public assignment tools with runtime-bound identity", async () => {
   const calls: unknown[] = [];
+  const reads: unknown[] = [];
   const token = "group-execution:trusted-launch";
   const transport = createMemoryTransport(async () => { throw new Error("Group cannot delegate"); });
   transport.groupSend = async (input) => { calls.push(input); return { runId: "run", assignmentId: "assignment", memberTurnId: "member", messageId: "message" }; };
+  transport.groupReadResult = async (input) => { reads.push(input); return { kind: "result", assignmentId: "assignment", messageId: "message", content: "tail finding", totalCharacters: 4_012, nextOffset: null }; };
   const server = createXacpxMcpServer({ transport, coordinatorSession: token, sourceHandle: token });
   const client = new Client({ name: "group-test", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   try {
     await server.connect(b); await client.connect(a);
     const list = await client.listTools();
-    expect(list.tools.map((tool) => tool.name)).toEqual(["group_send"]);
+    expect(list.tools.map((tool) => tool.name)).toEqual(["group_send", "group_read_result"]);
     expect(Object.keys(list.tools[0]!.inputSchema.properties!)).toEqual(["to", "task", "expectedOutput"]);
     expect(list.tools[0]!.inputSchema.additionalProperties).toBe(false);
     await expect(client.callTool({ name: "group_send", arguments: { to: "bot_b", task: "task", from: "bot_spoof" } })).rejects.toBeDefined();
@@ -38,6 +40,15 @@ test("Group MCP advertises only public group_send and derives trusted invocation
     expect(calls).toEqual([{ executionToken: token, invocationId: expect.stringMatching(/^number:\d+$/), args: { to: "bot_b", task: "task", expectedOutput: "output" } }]);
     await expect(client.callTool({ name: "agent_send", arguments: { to: "any", message: "private" } })).rejects.toBeDefined();
     expect(JSON.stringify(result)).not.toContain(token);
+    expect(Object.keys(list.tools[1]!.inputSchema.properties!)).toEqual(["assignmentId", "offset", "limit"]);
+    await expect(client.callTool({ name: "group_read_result", arguments: { runId: "foreign" } })).rejects.toBeDefined();
+    await expect(client.callTool({ name: "group_read_result", arguments: { assignmentId: "assignment", limit: 4_001 } })).rejects.toBeDefined();
+    expect(reads).toEqual([]);
+    const page = await client.callTool({ name: "group_read_result", arguments: { assignmentId: "assignment", offset: 4_000 } });
+    expect(page.isError).not.toBe(true);
+    expect(reads).toEqual([{ executionToken: token, args: { assignmentId: "assignment", offset: 4_000 } }]);
+    expect(JSON.stringify(page)).toContain("tail finding");
+    expect(JSON.stringify(page)).not.toContain(token);
   } finally { await client.close(); await server.close(); }
 });
 

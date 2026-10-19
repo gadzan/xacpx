@@ -88,6 +88,94 @@ async function harness(options: { onRun?: (input: ConversationTurnRunInput) => P
 
 type Harness = Awaited<ReturnType<typeof harness>>;
 
+test("live members page exact public results without cross-Run or stale-token access", async () => {
+  let h!: Harness, foreignAssignment = "", reads = 0;
+  let finalToken = "";
+  const body = `${"a".repeat(3_999)}😀${"b".repeat(4_100)}TAIL NEGATIVE FINDING`;
+  const router: ConversationRouter = { capabilityRestriction: RESTRICTED, async decide(input) {
+    if (!input.completedAssignments.length) return { type: "dispatch", mode: "single", assignments: [{
+      id: h.store.getRun(input.runId)?.requestId === "prior" ? "foreign-assignment" : "source-assignment", botId: A, task: "produce evidence", triggerMessageIds: [],
+    }] };
+    if (input.completedAssignments.length === 1) return { type: "dispatch", mode: "sequential", assignments: [{
+      id: "reader-assignment", botId: B, task: "read evidence", dependsOn: [input.completedAssignments[0]!.id], triggerMessageIds: [],
+    }] };
+    if (input.completedAssignments.length === 2) return { type: "dispatch", mode: "single", assignments: [{
+      id: "catalog-reader", botId: C, task: "inspect catalog pages", triggerMessageIds: [],
+    }] };
+    return { type: "complete", reason: "fixture completed" };
+  } };
+  h = await harness({ router, onRun: async (input) => {
+    if (input.botId === A) return { status: "completed", text: body };
+    const token = input.groupExecutionToken!;
+    finalToken = token;
+    const read = (args: unknown) => h.handoffs.readResult({ executionToken: token, args });
+    if (input.botId === C) {
+      expect(read({ limit: 1 })).toMatchObject({ kind: "catalog", nextOffset: 1 });
+      expect(read({ offset: 1, limit: 1 })).toMatchObject({ kind: "catalog", assignments: [{ assignmentId: "reader-assignment" }], nextOffset: null });
+      return { status: "completed", text: "Catalog evidence remains discoverable" };
+    }
+    // Custom router assignments retain their original full dependency contract.
+    expect(input.text).toContain("TAIL NEGATIVE FINDING");
+    const source = h.store.listMemberTurns(input.runId).find((turn) => turn.botId === A)!;
+    const catalog = read({ limit: 1 });
+    expect(catalog).toMatchObject({ kind: "catalog", assignments: [{ assignmentId: source.assignmentId, state: "completed" }] });
+    const chunks: string[] = [];
+    let offset = 0, messageId: string | undefined;
+    do {
+      const page = read({ assignmentId: source.assignmentId, offset });
+      if (page.kind !== "result") throw new Error("result expected");
+      expect(page.content.length).toBeLessThanOrEqual(4_000);
+      expect(page.totalCharacters).toBe(body.length);
+      if (messageId) expect(page.messageId).toBe(messageId);
+      messageId = page.messageId;
+      chunks.push(page.content);
+      if (page.nextOffset === null) break;
+      expect(page.nextOffset).toBeGreaterThan(offset);
+      offset = page.nextOffset;
+    } while (true);
+    expect(chunks.join("")).toBe(body);
+    expect(chunks[0]).toHaveLength(3_999);
+    for (const args of [{ runId: input.runId }, { assignmentId: source.assignmentId, senderBotId: A },
+      { assignmentId: source.assignmentId, limit: 4_001 }, { offset: -1 }, { offset: 0.5 }, { limit: 17 },
+      { assignmentId: source.assignmentId, offset: 4_000 }, { assignmentId: "reader-assignment" },
+      { assignmentId: source.assignmentId, offset: 3_999, limit: 1 }]) {
+      expect(() => read(args)).toThrow();
+    }
+    if (foreignAssignment) expect(() => read({ assignmentId: foreignAssignment })).toThrow("no completed public assignment");
+    // A public source identity mismatch must not return an arbitrary Bot row.
+    const result = h.store.getMemberResult(source)!;
+    h.store.directWriteForTest("messages", result.id, { source_turn_json: JSON.stringify({ sessionAlias: "spoof", turnId: "spoof" }) });
+    try { expect(() => read({ assignmentId: source.assignmentId })).toThrow(); }
+    finally { h.store.directWriteForTest("messages", result.id, { source_turn_json: JSON.stringify(result.sourceTurn) }); }
+    h.store.directWriteForTest("runs", input.runId, { completion_reason: "human-cancelled" });
+    try { expect(() => read({})).toThrow("live bound Group execution"); }
+    finally { h.store.directWriteForTest("runs", input.runId, { completion_reason: null }); }
+    const dispatch = h.store.getDispatchForMemberTurn(input.memberTurnId)!;
+    h.store.directWriteForTest("pending_dispatches", dispatch.id, { owner: "another-consumer" });
+    try { expect(() => read({})).toThrow("live bound Group execution"); }
+    finally { h.store.directWriteForTest("pending_dispatches", dispatch.id, { owner: dispatch.owner! }); }
+    reads++;
+    return { status: "completed", text: "Read full evidence, tail finding retained" };
+  } });
+  const accept = async (requestId: string) => {
+    const result = await h.service.acceptGroupPrompt({ conversationId: h.group.id, topicId: h.topic.id,
+      requestId, text: "Inspect the original evidence", target: { mode: "automatic" },
+      humanIngress: { chatKey: "relay:test", senderId: "human", chatType: "direct" } });
+    await h.service.awaitRouting();
+    for (let step = 0; step < 4; step++) { await h.dispatcher.kick(); await h.service.awaitRouting(); }
+    return result;
+  };
+  try {
+    await accept("prior");
+    foreignAssignment = "foreign-assignment";
+    await accept("current");
+    expect(reads).toBe(2);
+    expect(() => h.handoffs.readResult({ executionToken: finalToken, args: {} })).toThrow("live bound Group execution");
+    h.handoffs.close();
+    expect(() => h.handoffs.readResult({ executionToken: finalToken, args: {} })).toThrow("closed");
+  } finally { await h.service.awaitRouting(); h.store.close(); }
+});
+
 test("public handoff and explicit siblings share the existing single-writer scheduler", async () => {
   let h!: Harness, active = 0, peak = 0;
   h = await harness({ onRun: async (input) => {

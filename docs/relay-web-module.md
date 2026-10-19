@@ -904,6 +904,8 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - **超时语义**：`timeout` / `instance-offline` / `instance-reconnected` 的创建与保存结果未知（`groups.create` 没有 requestId），界面提示先查看已刷新的列表，不显示为成功或失败。
 - **跨页面同步**：`conversations-changed` 会刷新任何已加载过的实例群组列表，即使当前没有选中群组。
 
+自动协作每轮按已有结果选择下一步行动和合适成员，支持分析、执行、验证、修正和结束；无需用户描述人员安排。简单问答可以直接完成，产出类任务需要验证最新结果。已有结果后的路由不确定或无进展会显示 waiting-human；预算耗尽仍是失败。公开指派卡的任务与 routingReason 展示当前行动，后续行动沿用同一 Run，不要求所有成员都发言。详见[通用协作策略](conversation-runtime.md#bundled-adaptive-collaboration)。
+
 ### Group 公开交接入口（PR #411）
 
 `GroupTranscript.vue` 在公开 `group_send` 消息的原始位置渲染 `GroupHandoffEntry.vue`。默认只显示两个重叠的 24px Bot 身份头像（未配置时回退 Agent 图标），重叠 8px，按钮触控高度 44px；双头像始终静态。不会额外显示行头像或说话人文本。Enter、Space 或点击展开详情，Escape 或收起按钮关闭并恢复焦点。名称与头像使用当前 Bot 资料，已移除或不可用的 Bot 保留资料或现有名称 / ID 回退。

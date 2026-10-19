@@ -570,6 +570,83 @@ While physical cancellation is pending, a completion reason on a queued/running 
 
 Terminal pre-start member failures also wake eligible automatic routing through the same durable batch-settlement path as provider results. A failed member cannot leave its Run parked in dispatching; corrupted completed dependency evidence subsequently fails the Run before another Router call. Shutdown stops new dispatcher claims at entry, before draining routing and existing execution, so an active member's settlement cannot start another queued Topic during shutdown.
 
+### Bundled adaptive collaboration
+
+The bundled Jev policy chooses a next action, then an enabled member, on every
+settled batch. It retains durable assignment results instead of reducing them
+to a count. Actions are `answer`, `analyze`, `execute`, `verify`, `revise`, `complete`
+and `need-human`, shared by engineering, research, writing and planning. Public roles
+guide selection; no job titles or mandatory speaking order are encoded. There
+are at most two finite-choice HTTP calls per router decision.
+
+The first pass cannot complete. Produced work requires successful verification
+of the latest deliverable before completion is offered; subsequent production
+or revision invalidates that verification. A direct factual answer may finish
+without review. Verification uses a different enabled member from the current
+producers when available; a single enabled member may self-check. A completed
+provider turn is never proof of approval. Jev evaluates evidence and unresolved
+findings through a structured choice response, with no tools or second scheduler.
+
+Generated `jev-v2-<ordinal>-<action>` assignments depend on successful rows in
+the latest successful production, analysis, verification and settled batches
+(all successful siblings retained). Older evidence stays in SQLite, accessible through `group_read_result`;
+omission from the input frontier never means a finding has been resolved.
+Every pass reconstructs progress from SQLite; unused IDs, generation fences,
+cancellation and budgets still govern admission. Legacy and public-handoff work
+require verification. Missing/truncated results cannot authorize completion;
+`resultTruncated` distinguishes result truncation from shortened task metadata.
+Older coarse truncation flags are handled conservatively.
+
+The 32,000-character result budget is allocated to newest batches first, while
+the history array retains its original order. Early audit truncation does not
+invalidate complete current verification. A completed batch with incomplete
+evidence may request `verify` again: that member can page through full durable
+results and must return a complete summary within 2,000 characters, retaining
+artifact versions, negative findings and blockers. The clipped prefix itself is
+never approval. Reviewing the same version again cannot clear its producers from
+the independent-verifier exclusion set.
+
+Initial action-decision failure/low confidence falls back to lead analysis.
+An uncertain action after work exists or repeated identical member results pause
+as `waiting-human`. Ambiguous/failed member selection retains a confident action
+and uses the eligible lead or first candidate; verifier independence still applies.
+This uses the existing new-request recovery UX. No enabled
+member is also a pause. Engine budget exhaustion stays `failed/budget-exhausted`.
+No new authority, automatic worktree integration/publication or concurrent-writer
+exemption is introduced. Members report artifact access/version limitations
+rather than approve inaccessible work.
+
+See [design and plan](superpowers/specs/2026-10-18-general-automatic-collaboration-design.md).
+Entry: `src/conversations/collaboration-policy.ts`, used by `default-router.ts` through
+the existing restricted subprocess. Legacy no-key fan-out and custom router
+contracts remain available.
+
+No-progress checks compare review/analysis results only within the current
+production version. The same verification text after new `execute`/`revise` work
+is valid; consecutive unchanged production or repeated checks of unchanged work
+still pause. The CLI's legacy no-key path also refuses Jev assignment history;
+production credential gating still rejects missing keys before a router exists.
+For bundled assignments only, dependency previews are limited to 4,000 characters
+per result and 16,000 total, with explicit omission markers. `group_read_result`
+lists settled assignments or reads a completed result in pages of at most 4,000
+characters. Its runtime token binds the current execution, Run and Topic; callers
+cannot choose a foreign scope. Retired/cancelled execution tokens cannot read.
+Custom router and explicit/handoff prompts retain their existing semantics.
+Enforced read-only launches still have no MCP capabilities; their selected
+dependencies remain complete inline. Missing access to older required evidence
+must be reported as a blocker, not as successful verification.
+
+Two oversized/blank successful verification batches for the same production version
+pause deterministically before another recovery dispatch. Analyses or a reviewer
+change do not reset this counter; successful new production or a later compact nonblank verification
+does. Full audit results survive the pause. This limits recovery cost, while the
+existing evidence and independent-verifier gates continue to control completion.
+Original result lengths and nonblank-content flags are projected from durable text
+before truncation and carried separately from snapshot prefixes, so shared
+history-budget clipping of compact reports does not consume recovery attempts.
+See [follow-up design](superpowers/specs/2026-10-18-collaboration-evidence-frontier-design.md)
+and [tracking issue #440](https://github.com/gadzan/xacpx/issues/440).
+
 ## Production composition
 
 `buildApp` (`src/main.ts`) constructs the production Conversation runtime via `createConversationRuntime` (`src/conversations/conversation-composition.ts`) **before** Control/Relay accept Conversation requests. Construction is **passive**:
@@ -646,7 +723,7 @@ Private member-to-member handoff, cross-account routing, and the full blocked-pe
 
 `group_send({ to, task, expectedOutput? })` is available only on a currently executing Group member's xacpx MCP launch. Input is strict: no sender, scope, Run, origin, authority, or idempotency fields. Bot IDs are at most 128 characters, task 16,000, expected output 8,000; empty/whitespace-only, NUL, unknown fields and malformed values reject before durable work. Public member metadata supplies canonical Bot IDs without hidden Bot instructions.
 
-`GroupHandoffService` binds a private random capability after the durable execution-start fence, carrying the exact sender MemberTurn/sourceTurn/dispatch owner/generation. The core-private Control execution port passes it through TurnQueue/Chat metadata into immutable MCP launch identity. A Group launch exposes only `group_send`; it does not register an external orchestration coordinator. The capability is never a tool argument, prompt body or public event/DTO. Return, shutdown and replacement execution revoke old capabilities. Public Control callers cannot set one. Local IPC retains the same-OS-user trust boundary; an execution capability is not an OS sandbox.
+`GroupHandoffService` binds a private random capability after the durable execution-start fence, carrying the exact sender MemberTurn/sourceTurn/dispatch owner/generation. The core-private Control execution port passes it through TurnQueue/Chat metadata into immutable MCP launch identity. A Group launch exposes only `group_send` and read-only `group_read_result`; it does not register an external orchestration coordinator. The capability is never a tool argument, prompt body or public event/DTO. Return, shutdown and replacement execution revoke old capabilities. Public Control callers cannot set one. Local IPC retains the same-OS-user trust boundary; an execution capability is not an OS sandbox.
 
 The sender guarantee applies to the bound MCP tool interface: model arguments cannot choose or override its identity. The local IPC endpoint authenticates no presenting process; it validates the execution named by the bearer capability. A same-user process that obtains another live execution's capability can present that identity. Group member subprocesses normally share the daemon's OS account and fall within the existing [same-user trust boundary](external-mcp.md#security-the-trust-boundary-is-the-user-account), which predates PR9. Mutually untrusted Bots with unrestricted terminal access require an additional isolation boundary; neither the internal WeakMap nor launch rotation provides that boundary.
 
