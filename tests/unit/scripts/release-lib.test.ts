@@ -1,18 +1,25 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   COMPAT_MANIFEST,
   PACKAGE_REGISTRY,
+  PROTOCOL_CONSUMERS,
+  PROTOCOL_CONSUMER_COMPILE,
+  RELEASE_ARTIFACTS,
   assignPrsToPackages,
+  changelogMaterial,
   collectEdits,
   collectFloorViolations,
   compareVersions,
   detectChanged,
   expandReleaseSet,
+  gateScope,
   nextVersion,
   packageForPath,
   parseVersion,
   precedingBeta,
+  prsForPackages,
   publishWaves,
   renderChangelog,
   splitBullet,
@@ -106,6 +113,106 @@ test("assignPrsToPackages treats a package with no tag as having no lower bound"
     prs: [{ number: 9, title: "feat(discord): initial plugin", mergedAt: "2026-01-01T00:00:00Z", files: ["packages/channel-discord/src/index.ts"] }],
   });
   expect(byPackage["channel-discord"]).toEqual(["feat(discord): initial plugin (#9)"]);
+});
+
+test("gateScope builds and verifies only what the release ships", () => {
+  // A relay-only release must not rebuild the root CLI or the channel plugins:
+  // their sources are unchanged, so their artifacts are the ones already on npm.
+  expect(gateScope(["relay"])).toEqual({ builds: ["build:relay"], verifyIds: ["relay"], compiles: [] });
+  // Core republishes the three floor trackers, so their artifacts do ship.
+  expect(gateScope(["core", "channel-feishu", "channel-discord"]).builds).toEqual([
+    "build",
+    "build:channel-feishu",
+    "build:channel-discord",
+  ]);
+  expect(gateScope(["core"]).verifyIds).toEqual(["root"]);
+});
+
+test("a protocol release compiles the consumers whose range it rewrites", () => {
+  // These consumers are not published by this release, but their protocol range
+  // moves — and a removed export surfaces at compile time, not at bundle time.
+  expect(gateScope(["relay-protocol"])?.compiles.map((compile) => compile.id)).toEqual([
+    "relay",
+    "relay-web",
+    "channel-relay",
+  ]);
+  // A consumer that also ships is compiled by its own build, and relay's build
+  // already compiles relay-web, which it bundles.
+  expect(gateScope(["relay-protocol", "relay"])?.compiles.map((compile) => compile.id))
+    .toEqual(["channel-relay"]);
+  expect(gateScope(["relay"])?.compiles).toEqual([]);
+});
+
+test("every protocol consumer has a compile command", () => {
+  for (const id of PROTOCOL_CONSUMERS) {
+    // A consumer with no command would be silently skipped by the protocol gate.
+    expect(PROTOCOL_CONSUMER_COMPILE[id]).toBeDefined();
+    expect(PROTOCOL_CONSUMER_COMPILE[id].command).toBeTruthy();
+  }
+});
+
+test("gateScope falls back to the unscoped gate for a package it cannot describe", () => {
+  // Null, not a partial scope: an unmapped package is one whose artifact cannot
+  // be assumed unchanged, and a silent partial gate would look like a pass.
+  expect(gateScope(["relay", "mystery"])).toBe(null);
+});
+
+test("every registry package has an artifact mapping pointing at a real script", () => {
+  const scripts = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).scripts;
+  for (const pkg of PACKAGE_REGISTRY) {
+    const spec = RELEASE_ARTIFACTS[pkg.id];
+    expect(spec).toBeDefined();
+    // A mapping naming a script that does not exist would only surface mid-release.
+    expect(scripts[spec.build]).toBeDefined();
+  }
+});
+
+test("changelogMaterial keeps the description and drops how it was verified", () => {
+  const body = [
+    "Automatic collaboration replays every successful predecessor, so a short request stalls.",
+    "",
+    "- Keep successful rows from the latest production.",
+    "",
+    "Validation:",
+    "- 417 core tests passed.",
+    "- Windows socket chmod reproduced on main too.",
+  ].join("\n");
+  expect(changelogMaterial(body)).toBe([
+    "Automatic collaboration replays every successful predecessor, so a short request stalls.",
+    "",
+    "- Keep successful rows from the latest production.",
+  ].join("\n"));
+});
+
+test("changelogMaterial cuts at headings and labels without cutting prose", () => {
+  expect(changelogMaterial("## Why\n\nSomething broke.\n\n## Tests\n- ran them")).toBe("## Why\n\nSomething broke.");
+  expect(changelogMaterial("Description.\n\n## 验证\n\n过了")).toBe("Description.");
+  // A sentence that opens with the word is prose, not a section boundary.
+  expect(changelogMaterial("Verification: this is a sentence, not a label"))
+    .toBe("Verification: this is a sentence, not a label");
+  expect(changelogMaterial("Mentions verification of the latest deliverable mid-sentence."))
+    .toBe("Mentions verification of the latest deliverable mid-sentence.");
+  expect(changelogMaterial("")).toBe("");
+});
+
+test("prsForPackages returns the window's PRs, and assignPrsToPackages formats them as bullets", () => {
+  const input = {
+    changedPaths: { relay: ["packages/relay-web/src/style.css"] },
+    prs: [{
+      number: 434,
+      title: "feat(relay-web): unified dropdown",
+      mergedAt: "2026-10-16T10:09:51Z",
+      files: [{ path: "packages/relay-web/src/style.css" }],
+      body: "Why it mattered.",
+    }],
+  };
+  expect(prsForPackages(input).relay).toEqual([{
+    number: 434,
+    title: "feat(relay-web): unified dropdown",
+    mergedAt: "2026-10-16T10:09:51Z",
+    body: "Why it mattered.",
+  }]);
+  expect(assignPrsToPackages(input).relay).toEqual(["feat(relay-web): unified dropdown (#434)"]);
 });
 
 test("parseVersion splits a prerelease and rejects non-semver", () => {

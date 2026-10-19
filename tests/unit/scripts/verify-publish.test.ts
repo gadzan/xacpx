@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   DEFAULT_PACKAGES,
   collectPublishVerificationFailures,
+  parsePackageSelection,
 } from "../../../scripts/verify-publish.mjs";
 
 type PublishPackageConfig = {
@@ -223,4 +224,24 @@ test("DEFAULT_PACKAGES registers every publishable package under packages/", asy
 
   expect(checked).toBeGreaterThan(0);
   expect(violations).toEqual([]);
+});
+
+test("parsePackageSelection verifies everything without the flag, and only the named packages with it", () => {
+  expect(parsePackageSelection([])).toBe(null);
+  expect(parsePackageSelection(["--packages", "relay,root"])?.map((pkg) => pkg.id)).toEqual([
+    "root",
+    "relay",
+  ]);
+  // Whitespace around ids is a shell artefact, not a package name.
+  expect(parsePackageSelection(["--packages", " relay , relay-protocol "])?.map((pkg) => pkg.id)).toEqual([
+    "relay-protocol",
+    "relay",
+  ]);
+});
+
+test("parsePackageSelection refuses a selection it cannot honour", () => {
+  // A release gate that quietly verified fewer packages than asked is worse than
+  // one that stops: the caller reads "passed" as "these packages are fine".
+  expect(() => parsePackageSelection(["--packages", "relay,nope"])).toThrow(/unknown package id/);
+  expect(() => parsePackageSelection(["--packages", ""])).toThrow(/comma-separated/);
 });

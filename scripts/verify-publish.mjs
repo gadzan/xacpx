@@ -451,15 +451,50 @@ function isTextFile(file) {
   return /\.(json|md|ts|tsx|js|mjs|cjs|yaml|yml|toml)$/.test(file);
 }
 
+/**
+ * Resolve `--packages a,b` into the subset of DEFAULT_PACKAGES to verify.
+ *
+ * Null when the flag is absent, which keeps the unscoped behaviour of verifying
+ * every package. An unknown id throws rather than quietly verifying a smaller
+ * set than the caller asked for — the caller is a release gate, and "verified
+ * nothing" must never look like "verified fine".
+ *
+ * @param {string[]} argv
+ * @returns {PublishPackageConfig[]|null}
+ */
+export function parsePackageSelection(argv) {
+  const index = argv.indexOf("--packages");
+  if (index === -1) return null;
+  const ids = (argv[index + 1] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    throw new Error("--packages needs a comma-separated list of package ids");
+  }
+  const unknown = ids.filter((id) => !DEFAULT_PACKAGES.some((pkg) => pkg.id === id));
+  if (unknown.length > 0) {
+    const known = DEFAULT_PACKAGES.map((pkg) => pkg.id).join(", ");
+    throw new Error(`unknown package id(s): ${unknown.join(", ")} (known: ${known})`);
+  }
+  return DEFAULT_PACKAGES.filter((pkg) => ids.includes(pkg.id));
+}
+
 async function main() {
-  const failures = await collectPublishVerificationFailures();
+  let selected;
+  try {
+    selected = parsePackageSelection(process.argv.slice(2));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+    return;
+  }
+  const failures = await collectPublishVerificationFailures(selected ? { packages: selected } : {});
   if (failures.length > 0) {
     console.error("Publish verification failed:");
     for (const failure of failures) console.error(`- ${failure}`);
     process.exitCode = 1;
     return;
   }
-  console.log("Publish verification passed.");
+  const scope = selected ? ` (${selected.map((pkg) => pkg.id).join(", ")})` : "";
+  console.log(`Publish verification passed${scope}.`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

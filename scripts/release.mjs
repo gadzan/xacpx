@@ -38,13 +38,17 @@ const {
   CHANGELOG_HEADER,
   COMPAT_MANIFEST,
   CORE_FLOOR_TRACKERS,
+  RELEASE_ARTIFACTS,
   assignPrsToPackages,
+  changelogMaterial,
   collectEdits,
   collectFloorViolations,
   expandReleaseSet,
+  gateScope,
   nextVersion,
   packageForPath,
   parseVersion,
+  prsForPackages,
   publishWaves,
   renderChangelog,
   rootManifestShipsChanges,
@@ -70,12 +74,35 @@ const TOOL_OWNED_PATHS = [
   "packages/relay-web/package.json",
 ];
 
+const REGISTRY_ATTEMPTS = 24;
+const REGISTRY_POLL_TIMEOUT_MS = 6 * 60_000;
+const REGISTRY_REQUEST_TIMEOUT_MS = 10_000;
+
 function git(args, { allowFailure = false } = {}) {
   try {
     return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
   } catch (error) {
     if (allowFailure) return "";
     throw error;
+  }
+}
+
+/**
+ * Whether a remote tag reference exists.
+ *
+ * `git ls-remote --exit-code` exits 2 when no ref matches. That is the only
+ * state in which deleting the local tag is safe — any other failure (network,
+ * auth, config) leaves the remote state unknown, and the push error that led
+ * here may itself have fired after GitHub accepted the tag.
+ *
+ * @returns {"present"|"absent"|"unknown"} exit 0 / exit 2 / anything else.
+ */
+function probeRemoteTag(tag) {
+  try {
+    execFileSync("git", ["ls-remote", "--tags", "--exit-code", "origin", tag], { cwd: ROOT, encoding: "utf8" });
+    return "present";
+  } catch (error) {
+    return error?.status === 2 ? "absent" : "unknown";
   }
 }
 
@@ -88,6 +115,37 @@ function git(args, { allowFailure = false } = {}) {
  */
 function gitRaw(args) {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" });
+}
+
+/**
+ * How far this checkout is from origin/main.
+ *
+ * `apply` writes versions derived from the working tree and `publish` pushes it,
+ * so releasing from a stale checkout either computes from superseded manifests or
+ * fails at the push — after the gates have spent minutes. Knowing requires a
+ * fetch: the local `origin/main` ref is only as fresh as the last one.
+ *
+ * @returns {{behind:number, ahead:number}|null} null when there is no remote or
+ *   git cannot answer (offline). Not knowing is not a reason to block a release.
+ */
+function originGap() {
+  if (git(["remote"], { allowFailure: true }).trim() === "") return null;
+  git(["fetch", "origin", "main", "--quiet"], { allowFailure: true });
+  const behind = git(["rev-list", "--count", "HEAD..origin/main"], { allowFailure: true }).trim();
+  const ahead = git(["rev-list", "--count", "origin/main..HEAD"], { allowFailure: true }).trim();
+  if (behind === "" || ahead === "") return null;
+  return { behind: Number(behind), ahead: Number(ahead) };
+}
+
+/** Refuse to touch the tree when it is behind origin/main. */
+function assertUpToDate() {
+  const gap = originGap();
+  if (!gap || gap.behind === 0) return;
+  throw new Error(
+    `this checkout is ${gap.behind} commit(s) behind origin/main.`
+    + "\nA release reads the working tree, so pull first:"
+    + "\n  git pull --ff-only origin main",
+  );
 }
 
 const readJson = (relativePath) => JSON.parse(readFileSync(join(ROOT, relativePath), "utf8"));
@@ -116,7 +174,7 @@ function parseArgs(argv) {
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!["patch", "minor", "major"].includes(options.bump)) throw new Error(`--bump must be patch|minor|major`);
-  if (!["plan", "apply", "check", "publish"].includes(options.command)) {
+  if (!["plan", "notes", "apply", "check", "publish"].includes(options.command)) {
     throw new Error(`unknown command: ${options.command}`);
   }
   return options;
@@ -236,6 +294,16 @@ function buildPlan(options) {
     changedPaths,
     lastTags,
     changelogSource: bullets.source,
+    changelogWindows: releases.map((release) => ({
+      id: release.id,
+      tag: lastTags[release.id] || "",
+      // The bound the PR list was filtered by, in UTC — the value an operator
+      // would otherwise recompute by hand, timezone bugs included.
+      since: sinceById[release.id] === undefined
+        ? ""
+        : new Date(sinceById[release.id]).toISOString().replace(".000Z", "Z"),
+      bullets: (bullets.byPackage[release.id] ?? []).length,
+    })),
     changelog: renderChangelog({
       date: today(),
       releases: releases.map((release) => ({
@@ -252,14 +320,26 @@ function buildPlan(options) {
  * Merged PRs, newest first, or null when `gh` is unavailable.
  *
  * `files` is what makes this useful: it assigns each PR to a package by the
- * same evidence the release uses, so no commit-graph walk is needed.
+ * same evidence the release uses, so no commit-graph walk is needed. Descriptions
+ * are only fetched when asked for — they are large, and only `notes` needs them.
+ *
+ * @param {{withBody?:boolean}} [options]
  */
-function fetchMergedPrs() {
+function fetchMergedPrs({ withBody = false } = {}) {
+  const fields = ["number", "title", "mergedAt", "files"];
+  if (withBody) fields.push("body");
   try {
     return JSON.parse(execFileSync(
       "gh",
-      ["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,title,mergedAt,files"],
-      { cwd: ROOT, encoding: "utf8" },
+      ["pr", "list", "--state", "merged", "--limit", "200", "--json", fields.join(",")],
+      {
+        cwd: ROOT,
+        encoding: "utf8",
+        // Descriptions are ~1.3 MB over 200 PRs, past execFileSync's 1 MiB
+        // default. Without this the call throws, the catch below swallows it,
+        // and the tool reports "gh is unavailable" while gh is answering fine.
+        maxBuffer: 64 * 1024 * 1024,
+      },
     ));
   } catch {
     return null;
@@ -360,6 +440,19 @@ function printPlan(plan) {
   }
   out.push("", "publish waves (sequential inside a wave, wait between waves):");
   for (const [index, wave] of plan.waves.entries()) out.push(`  wave ${index + 1}: ${wave.join(", ")}`);
+  out.push("", "pre-flight gate (runs on `publish`, before the commit):");
+  out.push("  tsc --noEmit (whole repo) + check");
+  const scope = gateScope(plan.releases.map((release) => release.id));
+  if (!scope) {
+    const unmapped = plan.releases.map((release) => release.id).filter((id) => RELEASE_ARTIFACTS[id] === undefined);
+    out.push(`  verify:publish (every package — nothing maps ${unmapped.join(", ")} to a build)`);
+  } else {
+    for (const script of scope.builds) out.push(`  ${script}`);
+    out.push(`  verify-publish --packages ${scope.verifyIds.join(",")}`);
+    for (const compile of scope.compiles) {
+      out.push(`  compile ${compile.id} (consumes the protocol this release rewrites)`);
+    }
+  }
   out.push("", "derived edits:");
   for (const edit of plan.edits) {
     if (edit.kind === "script") {
@@ -369,6 +462,13 @@ function printPlan(plan) {
     const where = edit.path ? `${edit.file} → ${edit.path.join(".")}` : edit.file;
     out.push(`  [${edit.kind}] ${where}: ${edit.from} -> ${edit.to}`);
     out.push(`      ${edit.reason}`);
+  }
+  out.push("", "changelog window (bullets are counted from merged PRs after each tag's commit time):");
+  for (const entry of plan.changelogWindows) {
+    const bound = entry.tag
+      ? `${entry.tag} since ${entry.since}`
+      : "no previous tag — unbounded";
+    out.push(`  ${entry.id.padEnd(16)} ${bound}, ${entry.bullets} bullet${entry.bullets === 1 ? "" : "s"}`);
   }
   out.push("", `changelog draft (source: ${plan.changelogSource}; review and edit before publishing):`, "", plan.changelog);
   return out.join("\n");
@@ -431,11 +531,60 @@ function prependChangelog(plan) {
   );
 }
 
+/**
+ * The material for a CHANGELOG entry: the descriptions of this release's PRs.
+ *
+ * `plan` drafts one line per PR, which is enough to see what shipped and not
+ * enough to write why it mattered. This prints the other half, pre-filtered to
+ * the window and grouped per package, so the writer never has to go looking
+ * through PRs one at a time.
+ */
+function cmdNotes(plan) {
+  if (plan.releases.length === 0) {
+    console.log("nothing to release: no package has changes since its last tag");
+    return 0;
+  }
+  const prs = fetchMergedPrs({ withBody: true });
+  if (!prs || prs.length === 0) {
+    console.log("gh returned no merged PRs, so there are no descriptions to show.");
+    console.log("Write the entry from the commit subjects in the `plan` draft.");
+    return 0;
+  }
+  const sinceById = Object.fromEntries(
+    plan.changelogWindows
+      .filter((window) => window.since !== "")
+      .map((window) => [window.id, Date.parse(window.since)]),
+  );
+  const changedPaths = Object.fromEntries(
+    plan.releases.map((release) => [release.id, plan.changedPaths[release.id]]),
+  );
+  const byPackage = prsForPackages({ prs, changedPaths, sinceById });
+
+  for (const release of plan.releases) {
+    const list = byPackage[release.id] ?? [];
+    console.log(`\n${"═".repeat(78)}`);
+    console.log(`${release.id} ${release.to} — ${list.length} PR(s) in the window`);
+    console.log("═".repeat(78));
+    if (list.length === 0) {
+      console.log("no merged PR here, so the draft fell back to commit subjects");
+      continue;
+    }
+    for (const pr of list) {
+      const material = changelogMaterial(pr.body);
+      console.log(`\n#${pr.number} ${pr.title}`);
+      console.log(material === "" ? "(this PR body has no description, only verification)" : material);
+    }
+  }
+  console.log("\nRaw material, not a draft: the entry is one line per user-visible change, in the file's own voice.");
+  return 0;
+}
+
 function cmdApply(plan, options) {
   if (plan.releases.length === 0) {
     console.log("nothing to release");
     return 0;
   }
+  assertUpToDate();
   // A manifest already carrying an unreleased version means a previous apply has
   // not been published yet. Applying again would compute the NEXT version from
   // it and burn a number nobody ships.
@@ -592,24 +741,39 @@ function cmdCheck() {
 // publish
 // ---------------------------------------------------------------------------
 
-function assertOnlyReleasePathsModified() {
+/**
+ * Verify that the working tree may be committed as this release.
+ *
+ * Returns true when the tree is already clean. That is the resume case: a
+ * previous run committed these bumps and stopped before tagging everything (a
+ * wave whose versions had not appeared on the registry yet), so there is nothing
+ * to apply, nothing to sweep, and the run goes straight to the tags.
+ *
+ * Otherwise every modified path must belong to this tool, so unrelated work in
+ * progress cannot be swept into the release commit.
+ */
+function assertReleaseTreeIsSweepable() {
   // `-z` keeps paths verbatim and, with --no-renames, emits exactly one record
   // per entry — so the parse cannot be thrown off by a rename's second field.
-  const dirty = gitRaw(["status", "--porcelain", "-z", "--no-renames"])
-    .split("\0")
-    .filter((entry) => entry.length > 0);
-  if (dirty.length === 0) throw new Error("nothing modified; run `apply` first");
-  const unexpected = [];
-  for (const entry of dirty) {
-    const path = entry.slice(3);
-    if (TOOL_OWNED_PATHS.some((owned) => path === owned || path.startsWith(`${owned}/`))) continue;
-    unexpected.push(path);
-  }
+  const dirty = dirtyPaths();
+  if (dirty.length === 0) return true;
+  const unexpected = dirty.filter(
+    (path) => !TOOL_OWNED_PATHS.some((owned) => path === owned || path.startsWith(`${owned}/`)),
+  );
   if (unexpected.length > 0) {
     throw new Error(
       `refusing to publish: unrelated modified paths would be swept into the release commit:\n  ${unexpected.join("\n  ")}`,
     );
   }
+  return false;
+}
+
+/** Modified paths in the working tree, one per entry. */
+function dirtyPaths() {
+  return gitRaw(["status", "--porcelain", "-z", "--no-renames"])
+    .split("\0")
+    .filter((entry) => entry.length > 0)
+    .map((entry) => entry.slice(3));
 }
 
 /**
@@ -625,12 +789,46 @@ function dropProtocolDistChurn(plan) {
   console.log("reverted build-only churn in packages/relay-protocol/dist");
 }
 
-function runGates() {
+/**
+ * The pre-flight gate, sized to the release.
+ *
+ * Root typecheck and metadata checks always run. The artifact gate is scoped:
+ * only packages in this release are built and packed, plus protocol consumers
+ * are compiled whenever the protocol ships. An unmapped release id falls back
+ * to the unscoped `verify:publish` gate.
+ */
+function runGates(plan) {
   console.log("== gates: typecheck ==");
   execFileSync("bun", ["x", "tsc", "--noEmit"], { cwd: ROOT, stdio: "inherit" });
-  console.log("== gates: metadata + publishability ==");
+  console.log("== gates: metadata ==");
   execFileSync("node", [join(ROOT, "scripts", "release.mjs"), "check"], { cwd: ROOT, stdio: "inherit" });
-  execFileSync("bun", ["run", "verify:publish"], { cwd: ROOT, stdio: "inherit" });
+
+  const ids = plan.releases.map((release) => release.id);
+  const scope = gateScope(ids);
+  if (!scope) {
+    const unmapped = ids.filter((id) => RELEASE_ARTIFACTS[id] === undefined);
+    console.log(`== gates: artifacts (every package — no artifact mapping for ${unmapped.join(", ")}) ==`);
+    execFileSync("bun", ["run", "verify:publish"], { cwd: ROOT, stdio: "inherit" });
+    return;
+  }
+  console.log(`== gates: artifacts (${ids.join(", ")}) ==`);
+  for (const script of scope.builds) {
+    execFileSync("bun", ["run", script], { cwd: ROOT, stdio: "inherit" });
+  }
+  execFileSync(
+    "node",
+    [join(ROOT, "scripts", "verify-publish.mjs"), "--packages", scope.verifyIds.join(",")],
+    { cwd: ROOT, stdio: "inherit" },
+  );
+  for (const compile of scope.compiles) {
+    // Only reachable on a protocol release: these consumers are not shipping,
+    // but this release rewrites the protocol range they compile against.
+    console.log(`  compiling ${compile.id}, which installs the protocol this release publishes`);
+    execFileSync(compile.command, compile.args, {
+      cwd: join(ROOT, compile.cwd ?? "."),
+      stdio: "inherit",
+    });
+  }
 }
 
 /**
@@ -717,6 +915,47 @@ async function awaitTagRun(tag) {
   }
 }
 
+/**
+ * Wait for a released version to appear on the registry, then report its tag.
+ *
+ * The dedicated dist-tags endpoint keeps its own cache and updates first: on
+ * 0.14.12-beta.7 the packument still served the previous tag a minute after
+ * this endpoint was current, and minutes after the version document resolved.
+ * Polling `npm view` is how a finished release gets misread as a failed one.
+ *
+ * An unconfirmed registry stops later waves without treating an already
+ * published version as a failed publish. The deadline includes response bodies
+ * and retry delays.
+ */
+async function reportRegistry(npmName, version) {
+  const url = `https://registry.npmjs.org/-/package/${npmName.replace("/", "%2F")}/dist-tags`;
+  const deadline = performance.now() + REGISTRY_POLL_TIMEOUT_MS;
+  for (let attempt = 1; attempt <= REGISTRY_ATTEMPTS; attempt += 1) {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining <= 0) break;
+    try {
+      const response = await fetch(url, {
+        headers: { "cache-control": "no-cache" },
+        signal: AbortSignal.timeout(Math.min(REGISTRY_REQUEST_TIMEOUT_MS, remaining)),
+      });
+      if (response.ok) {
+        const tags = await response.json();
+        const live = Object.entries(tags).find(([, tagged]) => tagged === version);
+        if (live) {
+          console.log(`  ${npmName}@${version} is live on npm (dist-tag: ${live[0]})`);
+          return true;
+        }
+      }
+    } catch {
+      // A transient failure means the same thing as "not yet": keep waiting.
+    }
+    const delay = Math.min(15_000, deadline - performance.now());
+    if (attempt < REGISTRY_ATTEMPTS && delay > 0) await sleep(delay);
+  }
+  console.warn(`  ${npmName}@${version} is not visible yet — re-check ${url} before assuming the publish failed`);
+  return false;
+}
+
 async function cmdPublish(plan, options) {
   if (plan.releases.length === 0) {
     console.log("nothing to release: no manifest carries an unreleased version (run `apply` first)");
@@ -739,6 +978,8 @@ async function cmdPublish(plan, options) {
   }
   const branch = git(["branch", "--show-current"]);
   if (branch !== "main") throw new Error(`on branch ${branch}; releases are tagged from main`);
+  // Before the gates, not after: catching this at `git push` costs the gates.
+  assertUpToDate();
 
   for (const release of plan.releases) {
     if (git(["tag", "--list", release.tag])) throw new Error(`tag ${release.tag} already exists`);
@@ -746,38 +987,112 @@ async function cmdPublish(plan, options) {
       throw new Error(`${release.id}: manifest is not ${release.to}; run \`apply\` first`);
     }
   }
-  assertOnlyReleasePathsModified();
+  const resuming = assertReleaseTreeIsSweepable();
+  if (resuming) {
+    console.log("working tree is clean: these bumps are already committed, so this run resumes at the tags");
+  }
 
-  if (!options.skipGates) runGates();
+  if (!options.skipGates) runGates(plan);
   dropProtocolDistChurn(plan);
 
   const subject = `release: ${plan.releases.map((release) => `${release.id} ${release.to}`).join(" / ")}`;
-  git(["add", "-A"]);
-  git(["commit", "-m", subject]);
+  if (resuming) {
+    // Nothing to commit, so the tags must not point at a tree the gates left
+    // altered: that would publish something other than what was verified.
+    const leftover = dirtyPaths();
+    if (leftover.length > 0) {
+      throw new Error(
+        `resuming, but the gates left ${leftover.length} path(s) modified.`
+        + "\nCommit or discard them first — the tags would otherwise point at a tree that was not verified:"
+        + `\n  ${leftover.join("\n  ")}`,
+      );
+    }
+    const needsProtocol = plan.releases.some((release) => ["relay", "channel-relay"].includes(release.id));
+    if (needsProtocol && !plan.releases.some((release) => release.id === "relay-protocol")) {
+      const protocol = registryEntry("relay-protocol");
+      const version = readJson(protocol.manifestPath).version;
+      if (!await reportRegistry(protocol.npmName, version)) {
+        console.log("Stopped before pushing tags: the preceding protocol wave is still unconfirmed.");
+        console.log("Re-check the registry URL above, then re-run `publish --yes` once it is visible.");
+        return 1;
+      }
+    }
+  } else {
+    git(["add", "-A"]);
+    git(["commit", "-m", subject]);
+  }
   const head = git(["rev-parse", "HEAD"]);
-  for (const release of plan.releases) git(["tag", release.tag, head]);
   git(["push", "origin", "main"]);
-  console.log(`committed ${head}`);
+  console.log(resuming ? `tagging the existing commit ${head}` : `committed ${head}`);
 
   // Wave by wave. Nothing in a later wave may be pushed before the earlier
   // wave's packages resolve from the registry, or its smoke steps fail with
-  // `ETARGET No matching version found`.
+  // `ETARGET No matching version found`. That is why an unconfirmed wave stops
+  // the run rather than being reported at the very end: continuing would push a
+  // tag whose workflow installs a package that is not there yet.
   for (const [index, wave] of plan.waves.entries()) {
     console.log(`\n== wave ${index + 1}: ${wave.join(", ")} ==`);
+    const pushed = [];
     for (const id of wave) {
       const release = plan.releases.find((candidate) => candidate.id === id);
       // relay and channel-relay share a wave but go one at a time: both are
       // heavy ubuntu jobs and concurrent dispatch invites runner contention.
-      git(["push", "origin", release.tag]);
+      git(["tag", release.tag, head]);
+      try {
+        git(["push", "origin", release.tag]);
+      } catch (error) {
+        // A local tag makes the next `buildPublishPlan()` treat the package as
+        // released, so it must not survive a push that never reached the
+        // remote. Only exit 2 proves that: if the remote DOES have it (GitHub
+        // accepted the push and the error came after), the tag stays and
+        // recovery is a re-push, not a re-tag. An unknowable remote keeps the
+        // tag too — the same network that broke the push can break this probe.
+        const remoteTag = probeRemoteTag(release.tag);
+        if (remoteTag === "absent") {
+          git(["tag", "--delete", release.tag]);
+          throw new Error(
+            `push of ${release.tag} failed and the remote has no such tag;`
+            + " deleted the local tag so the next run re-tags this package."
+            + ` Original error: ${error.message}`,
+          );
+        }
+        if (remoteTag === "unknown") {
+          throw new Error(
+            `push of ${release.tag} failed and the remote state is unknown;`
+            + " kept the local tag, so check `git ls-remote --tags origin"
+            + ` ${release.tag}` + "` before re-running publish."
+            + ` Original error: ${error.message}`,
+          );
+        }
+        throw error;
+      }
       console.log(`pushed ${release.tag}`);
       await awaitTagRun(release.tag);
+      pushed.push({ npmName: registryEntry(id).npmName, version: release.to });
+    }
+    // Poll the wave together: its packages publish in parallel, so waiting for
+    // them one after another adds up their propagation delays for nothing.
+    const confirmed = await Promise.all(
+      pushed.map(async (pkg) => ({ ...pkg, ok: await reportRegistry(pkg.npmName, pkg.version) })),
+    );
+    const missing = confirmed.filter((entry) => !entry.ok);
+    if (missing.length > 0) {
+      console.log(`\nstopped after wave ${index + 1}: ${missing.length} version(s) are not visible on npm yet.`);
+      console.log("The workflows reported success, so this is propagation, not a failed publish:");
+      for (const entry of missing) {
+        console.log(`  curl -s https://registry.npmjs.org/-/package/${entry.npmName.replace("/", "%2F")}/dist-tags`);
+      }
+      const remaining = plan.waves.slice(index + 1).flat();
+      if (remaining.length > 0) {
+        console.log(`\nNot pushed: ${remaining.join(", ")} — their workflows install the packages above.`);
+        console.log("Once those are visible, re-run `publish --yes`: the pending set is read from tags, so");
+        console.log("everything already tagged drops out and the run resumes where it stopped.");
+      }
+      return 1;
     }
   }
 
-  console.log("\nall tags pushed. verify the registry next:");
-  for (const release of plan.releases) {
-    console.log(`  npm view ${registryEntry(release.id).npmName} dist-tags`);
-  }
+  console.log("\nall tags pushed; every released version is live on npm.");
   return 0;
 }
 
@@ -794,7 +1109,13 @@ async function main() {
   }
 
   const plan = buildPlan(options);
+  if (options.command === "notes") process.exit(cmdNotes(plan));
   if (options.command === "plan") {
+    const gap = originGap();
+    if (gap && gap.behind > 0) {
+      console.log(`warning: this checkout is ${gap.behind} commit(s) behind origin/main`
+        + " — the plan reads the local tree, so pull before applying.\n");
+    }
     console.log(options.json ? JSON.stringify(plan, null, 2) : printPlan(plan));
     process.exit(0);
   }
