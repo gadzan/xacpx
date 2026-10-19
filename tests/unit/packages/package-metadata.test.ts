@@ -119,3 +119,15 @@ test("npm lockfile has no versionless installed package entries", () => {
   // dependencies. An { optional: true } placeholder crashes before tests start.
   expect(versionless).toEqual([]);
 });
+
+test("npm lockfile contains every pinned rmux-bridge optional package", () => {
+  const relay = readJson("packages/channel-relay/package.json");
+  const lock = readJson("package-lock.json");
+  for (const [name, version] of Object.entries(relay.optionalDependencies)) {
+    if (!name.startsWith("@ganglion/xacpx-rmux-bridge-")) continue;
+    const entry = lock.packages[`node_modules/${name}`];
+    expect(entry).toBeDefined();
+    expect(entry.version).toBe(version);
+    expect(entry.optional).toBe(true);
+  }
+});

@@ -210,20 +210,20 @@ before any new tag is pushed.
 - compat shim version and `@ganglion/xacpx` range match core
 - each compatible plugin's `peerDependencies.xacpx` and `minXacpxVersion` match core
 - each protocol consumer's range matches the protocol version
-- no version-less `rmux-bridge` stub in `package-lock.json` (that shape crashes
-  `npm ci` with `Invalid Version:` once the platform packages exist on the registry)
+- every `rmux-bridge` optional pin has a matching installed package entry in
+  `package-lock.json`; missing entries fail `npm ci` with `Missing:`, and
+  versionless entries can crash it with `Invalid Version:`
 
 ```bash
 node ./scripts/release.mjs check
 ```
 
-It is not wired into CI. All of this metadata is derived by `apply`, so drift can
-only be introduced by a hand edit; if nobody hand-edits it, `check` never fires.
-Wiring it into `test.yml` would catch such an edit on the PR instead of at
-tag-push time, at the cost of one narrow false positive: a PR that regenerates
-`package-lock.json` while the bridge pins point at an unpublished version gets
-version-less stubs, which is exactly what `check` reports (and what `apply`
-pins). That is a deliberate call for the operator, not a default.
+It is not wired into CI. `apply` reconciles bridge entries from channel-relay's
+manifest after `npm install --package-lock-only --ignore-scripts` and `bun install`.
+When a bridge version has not been published yet, npm can omit its optional
+entry or leave a versionless stub. Reconciliation restores `{ optional: true,
+version: <manifest pin> }` in either case and keeps registry metadata on entries
+whose versions already match. The npm generation options remain unchanged.
 
 `publish` runs three gates before it commits:
 

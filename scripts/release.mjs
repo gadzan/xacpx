@@ -624,11 +624,10 @@ function cmdApply(plan, options) {
 // ---------------------------------------------------------------------------
 
 /**
- * npm rewrites package-lock.json correctly except for the rmux-bridge optional
- * stubs. Those degrade to `{ optional: true }` for a version npm cannot resolve
- * yet, and that shape then crashes `npm ci` with `Invalid Version:` once the
- * platform packages are on the registry. Giving the stub an explicit version is
- * valid in both states.
+ * npm can omit rmux-bridge optional packages while their release version is not
+ * published yet, or leave versionless stubs that crash `npm ci`. Reconcile every
+ * manifest pin after generation so both absent and versionless entries have an
+ * explicit version, retaining registry metadata for already matching entries.
  *
  * `bun install` is still run for the dependency graph, but it does not rewrite
  * the `workspaces` block, so that block is reconciled from the manifests.
@@ -639,16 +638,17 @@ function syncLockfiles() {
 
   const lockPath = join(ROOT, "package-lock.json");
   const lock = JSON.parse(readFileSync(lockPath, "utf8"));
-  const stubVersion = readJson("packages/channel-relay/package.json").version;
+  const optionalDependencies = readJson("packages/channel-relay/package.json").optionalDependencies ?? {};
   let pinned = 0;
-  for (const [key, value] of Object.entries(lock.packages)) {
-    if (!key.includes("rmux-bridge") || key.includes("platform-packages")) continue;
-    if (typeof value.version === "string" && value.version.length > 0) continue;
-    lock.packages[key] = { optional: true, version: stubVersion };
+  for (const [name, version] of Object.entries(optionalDependencies)) {
+    if (!name.startsWith("@ganglion/xacpx-rmux-bridge-")) continue;
+    const key = `node_modules/${name}`;
+    if (lock.packages[key]?.version === version) continue;
+    lock.packages[key] = { optional: true, version };
     pinned += 1;
   }
   writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`, "utf8");
-  if (pinned > 0) console.log(`pinned ${pinned} version-less rmux-bridge lockfile stub(s) to ${stubVersion}`);
+  if (pinned > 0) console.log(`reconciled ${pinned} rmux-bridge lockfile pin(s) from channel-relay`);
 
   reconcileBunLock();
 }
@@ -728,6 +728,16 @@ function cmdCheck() {
     .filter(([, entry]) => typeof entry.version !== "string" || entry.version.length === 0)
     .map(([key]) => key);
   for (const key of versionless) violations.push(`package-lock.json: ${key} has no version (breaks npm ci)`);
+  const optionalDependencies = readJson("packages/channel-relay/package.json").optionalDependencies ?? {};
+  for (const [name, version] of Object.entries(optionalDependencies)) {
+    if (!name.startsWith("@ganglion/xacpx-rmux-bridge-")) continue;
+    const key = `node_modules/${name}`;
+    const entry = lock.packages[key];
+    if (!entry) violations.push(`package-lock.json: ${key} is missing (breaks npm ci)`);
+    else if (entry.version !== version) {
+      violations.push(`package-lock.json: ${key} version is ${entry.version}, expected ${version}`);
+    }
+  }
 
   if (violations.length === 0) {
     console.log("release metadata is consistent");

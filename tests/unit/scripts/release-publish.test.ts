@@ -375,3 +375,55 @@ test("a failed publish workflow stops the run before the registry is polled", as
   expect(fixture.events.some((event) => event.startsWith("registry "))).toBe(false);
   expect(fixture.events.some((event) => event === `git push origin ${relayTag}`)).toBe(false);
 });
+
+test("lock reconciliation restores missing bridge pins and check rejects drift", () => {
+  const prefix = "@ganglion/xacpx-rmux-bridge-";
+  const optionalDependencies = Object.fromEntries(
+    ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"]
+      .map((platform) => [`${prefix}${platform}`, version]),
+  );
+  const matching = { version, optional: true, resolved: "https://registry.example/bridge.tgz", integrity: "sha512-fixture" };
+  let lock: { packages: Record<string, { optional?: boolean; version?: string; resolved?: string }> } = {
+    packages: {
+      [`node_modules/${prefix}darwin-x64`]: { optional: true },
+      [`node_modules/${prefix}linux-arm64`]: { optional: true, version: previousVersion, resolved: "stale.tgz" },
+      [`node_modules/${prefix}linux-x64`]: matching,
+      "node_modules/unrelated": { version: previousVersion },
+    },
+  };
+  const isolatedFunction = (name: string) => {
+    const start = source.indexOf(`function ${name}() {`);
+    return source.slice(start, source.indexOf("\n}", start) + 2);
+  };
+  const errors: string[] = [];
+  const api = runInNewContext(
+    `${isolatedFunction("syncLockfiles")}\n${isolatedFunction("cmdCheck")}\n({ syncLockfiles, cmdCheck });`,
+    {
+      ROOT: root,
+      join,
+      readJson(path: string) {
+        if (path === "package-lock.json") return lock;
+        if (path === "packages/channel-relay/package.json") return { version, optionalDependencies };
+        throw new Error(`Unexpected file read: ${path}`);
+      },
+      readFileSync: () => JSON.stringify(lock),
+      writeFileSync: (_path: string, contents: string) => { lock = JSON.parse(contents); },
+      execFileSync() {},
+      reconcileBunLock() {},
+      floorViolations: () => [],
+      console: { log() {}, error: (message: string) => errors.push(message) },
+    },
+  ) as { syncLockfiles: () => void; cmdCheck: () => number };
+
+  expect(api.cmdCheck()).toBe(1);
+  expect(errors.some((line) => line.includes("darwin-arm64 is missing"))).toBe(true);
+  expect(errors.some((line) => line.includes(`expected ${version}`))).toBe(true);
+  api.syncLockfiles();
+  for (const [name, pin] of Object.entries(optionalDependencies)) {
+    expect(lock.packages[`node_modules/${name}`]).toMatchObject({ optional: true, version: pin });
+  }
+  expect(lock.packages[`node_modules/${prefix}linux-x64`]).toEqual(matching);
+  expect(lock.packages[`node_modules/${prefix}linux-arm64`]?.resolved).toBeUndefined();
+  expect(lock.packages["node_modules/unrelated"]).toEqual({ version: previousVersion });
+  expect(api.cmdCheck()).toBe(0);
+});
