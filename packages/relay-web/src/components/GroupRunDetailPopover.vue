@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { X } from "lucide-vue-next";
+import { X, CircleStop } from "lucide-vue-next";
 import { computePopoverPlacement } from "../lib/group-run-presentation";
 import { useI18n } from "vue-i18n";
 import GroupRunDetailContent from "./GroupRunDetailContent.vue";
@@ -178,7 +178,21 @@ const style = computed(() => ({
         :data-placement="placement.placement"
       >
         <div class="flex shrink-0 items-center justify-between gap-2 border-b border-fg/10 px-3 py-2">
-          <span class="text-xs font-semibold text-fg-muted">{{ $t("group.detail.title") }}</span>
+          <span class="truncate text-xs font-semibold text-fg-muted">{{ $t("group.detail.title") }}</span>
+          <!-- Reachable without scrolling the trace: a stalled Run is stopped
+               from the card's first row, not from underneath recorded output. -->
+          <button
+            v-if="stopAvailable"
+            type="button"
+            data-test="group-stop-run-button"
+            class="flex shrink-0 items-center gap-1.5 rounded-sm bg-danger/10 px-2 py-1 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger disabled:opacity-60"
+            :disabled="stopPending === true"
+            :title="$t('group.detail.stopAllMembers')"
+            @click.stop="emit('stop')"
+          >
+            <CircleStop :size="12" />
+            <span>{{ $t("group.detail.stopRun") }}</span>
+          </button>
           <button
             type="button"
             data-test="group-detail-close"

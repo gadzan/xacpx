@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { CircleStop, Clock, HelpCircle, AlertCircle, CircleX, Loader2 } from "lucide-vue-next";
+import { Clock, HelpCircle, AlertCircle, CircleX, Loader2 } from "lucide-vue-next";
 import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
@@ -17,8 +17,8 @@ import type { TraceReplayStatus } from "../lib/group-run-presentation";
  * Everything the old run card showed lives here: member status, assignment and
  * task, attempt, duration, failure/blocked reason, expected output, recorded
  * TurnParts, Run state/reason/budget/routing decision, Plan, worktree/shared
- * workspace note, waiting-human question, and the Run-level Stop. Stop targets
- * the whole exact active Run — never a single member.
+ * workspace note, and the waiting-human question. The Run-level Stop lives in
+ * the popover header and targets the whole exact active Run — never one member.
  */
 const props = defineProps<{
   run: ConversationRunDto;
@@ -284,16 +284,5 @@ function selectAttempt(event: Event): void {
     <p v-if="canStop" data-test="group-stop-explanation" class="text-xs text-fg-muted">
       {{ $t("group.detail.stopAllMembers") }}
     </p>
-    <button
-      v-if="canStop"
-      type="button"
-      data-test="group-stop-run-button"
-      class="flex items-center justify-center gap-1.5 rounded-sm bg-danger/10 px-2 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger disabled:opacity-60"
-      :disabled="stopPending === true"
-      @click.stop="emit('stop')"
-    >
-      <CircleStop :size="12" />
-      <span>{{ $t("group.detail.stopRun") }}</span>
-    </button>
   </div>
 </template>
