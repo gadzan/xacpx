@@ -2898,7 +2898,7 @@ describe("useGroupsStore durable trace cache", () => {
     expect(store.runHistoryDetails).toEqual({});
   });
 
-  it("queues a terminal refresh behind the in-flight initial read and completes the tail by seq", async () => {
+  it.each([false, true])("queues terminal catch-up behind an initial read with reopen=%s", async (reopen) => {
     const store = await ready();
     vi.useFakeTimers();
     try {
@@ -2919,6 +2919,10 @@ describe("useGroupsStore durable trace cache", () => {
       expect(requests).toEqual([{ conversationId: "conversation_g", topicId: "topic_1", runId: run.id,
         memberTurnId: member.id, attempt: 2, limit: 100 }]);
       expect(store.tracePages[key]).toMatchObject({ loading: true, events: [] });
+      if (reopen) {
+        store.setOpenTrace(null);
+        store.setOpenTrace(member.id, 2);
+      }
 
       store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
         type: "member-turn-finished", run: { ...run, state: "completed" },

@@ -934,8 +934,12 @@ export const useGroupsStore = defineStore("groups", () => {
         failTracePage(key, err);
       })
       .finally(() => {
-        if (traceRequests[requestKey] === pending) delete traceRequests[requestKey];
-        if (generation === runHistoryGeneration && openTrace === opened && opened?.pending && opened.timer === undefined) flushOpenTrace(opened);
+        if (traceRequests[requestKey] !== pending) return;
+        delete traceRequests[requestKey];
+        const current = openTrace;
+        if (generation === runHistoryGeneration && historyScopeKey() === scope
+          && current?.memberTurnId === memberTurnId && current.attempt === attempt
+          && current.pending && current.timer === undefined) flushOpenTrace(current);
       });
     traceRequests[requestKey] = pending;
   }
