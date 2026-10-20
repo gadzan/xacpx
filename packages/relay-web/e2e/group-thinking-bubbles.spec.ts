@@ -321,16 +321,26 @@ test("history prepend, duplicate live messages and canonical promotion preserve 
   const scroller = page.getByTestId("group-transcript-scroller");
   const anchor = page.locator('[data-row-id="reply_turn_first"]');
   const trigger = bubble(page, "turn_first");
-  await trigger.scrollIntoViewIfNeeded();
-  // Let content-visibility replace estimated row heights before sampling the
-  // anchor, as GroupTranscript.handleLoadOlder does after a prepend.
-  const before = await scroller.evaluate(async (el) => {
-    el.scrollTop = 0;
-    el.dispatchEvent(new Event("scroll"));
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-    const row = document.querySelector('[data-row-id="reply_turn_first"]');
-    return row ? row.getBoundingClientRect().top : Number.NaN;
-  });
+  const rowAbove = page.locator('[data-row-id="request_history"]');
+  // `content-visibility: auto` lays an unpainted row out at its size estimate
+  // and swaps in the measured height when it paints. Render the row above the
+  // reader first and let the position settle, or the baseline holds an estimate
+  // the browser replaces later and the anchor looks like it moved on its own.
+  await rowAbove.scrollIntoViewIfNeeded();
+  await scroller.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); });
+  let previous = Number.NaN;
+  await expect.poll(async () => {
+    const current = await anchor.evaluate((el) => el.getBoundingClientRect().top);
+    const settled = current === previous;
+    previous = current;
+    return settled;
+  }).toBe(true);
+  const before = await anchor.evaluate((el) => el.getBoundingClientRect().top);
+  console.log("ANCHOR-BASELINE", JSON.stringify({
+    before,
+    rowAboveHeight: await rowAbove.evaluate((el) => el.getBoundingClientRect().height),
+    scrollTop: await scroller.evaluate((el) => el.scrollTop),
+  }));
   const offset = () => anchor.evaluate((el) => el.getBoundingClientRect().top);
   await trigger.click();
   await expect(detail(page)).toContainText("RECORDED turn_first chunk 1");
