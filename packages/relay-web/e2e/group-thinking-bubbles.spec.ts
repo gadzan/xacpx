@@ -328,20 +328,15 @@ test("history prepend, duplicate live messages and canonical promotion preserve 
   // the browser replaces later and the anchor looks like it moved on its own.
   await rowAbove.scrollIntoViewIfNeeded();
   await scroller.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); });
+  const offset = () => anchor.evaluate((el) => el.getBoundingClientRect().top);
   let previous = Number.NaN;
   await expect.poll(async () => {
-    const current = await anchor.evaluate((el) => el.getBoundingClientRect().top);
+    const current = await offset();
     const settled = current === previous;
     previous = current;
     return settled;
   }).toBe(true);
-  const before = await anchor.evaluate((el) => el.getBoundingClientRect().top);
-  console.log("ANCHOR-BASELINE", JSON.stringify({
-    before,
-    rowAboveHeight: await rowAbove.evaluate((el) => el.getBoundingClientRect().height),
-    scrollTop: await scroller.evaluate((el) => el.scrollTop),
-  }));
-  const offset = () => anchor.evaluate((el) => el.getBoundingClientRect().top);
+  const before = await offset();
   await trigger.click();
   await expect(detail(page)).toContainText("RECORDED turn_first chunk 1");
   await expect.poll(offset).toBeCloseTo(before, 0);
