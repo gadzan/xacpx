@@ -483,6 +483,17 @@ and requires explicit snapshot consent. These operations obey the daemon's
 can expire before a multi-step Git operation finishes: refetch the durable Run and use
 the same integration request identity/recover rather than initiating another decision.
 
+`control.runs.details.batch` (`{conversationId, topicId, runIds}`) returns up to 50
+Run details for one public Topic and lists unknown ids in `missingRunIds`.
+`control.runs.trace.get` (`{conversationId, topicId, runId, memberTurnId, attempt,
+afterSeq?, limit?}`) returns one bounded page of a MemberTurn's recorded public
+process. Both are read-only and scoped to the requesting public Topic; a private
+peer Topic rejects. A member turn with no recorded process answers
+`unavailable` with `not-recorded`, and a daemon that predates the trace RPC
+answers `unsupported-rpc`, so the Web shows the recorded-process panel only when
+the operation is supported. Neither call changes the active Run, the composer
+target, Stop authority or scheduling.
+
 Authenticated instance Control RPC exposes `control.conversation.bindings.list`
 (`{}` → `{bindings}`), `.set` (`{chatKey, conversationId, topicId?}` → `{binding}`)
 and `.delete` (`{chatKey}` → `{ok:true}`). These are instance-owner management

@@ -932,6 +932,21 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 `groups.loadHandoffRunDetail()` 按需查询历史 `runs.get`。只读缓存按实例、Conversation、Topic、Run 隔离，最多保留 20 个详情，同 Run 的并发请求合并。切换选择、相关事件、重连或删除使缓存失效，并丢弃迟到响应。`handoffDetailRevision` 通知已展开组件重新读取。此路径不更新 active Run、composer、取消状态、计划或历史游标。普通 `agent_send` 和私聊消息不会复制到 Group。
 
+### Group Agent 思考气泡（PR #447）
+
+多 Agent 群组话题不再渲染底部的 Collaboration Run 卡片。每个真实 MemberTurn 在
+`GroupTranscript.vue` 里是一条普通 Bot 行（`GroupAgentTurnRow.vue`）：配置的 32px 头像、
+Bot 名称、名称下方的思考气泡（`AgentThinkingBubble.vue`）和下方的规范公开回复。同一个 Bot 被
+多次分配时，每次分配各有自己的气泡和过程。零成员的自动 Run 仍由中性的路由行承载，
+不虚构 Agent 身份。
+
+新功能不改既有调度：气泡只读地投影已有的 durable MemberTurn 与 Run，不写 activeRun、
+不给 composer 换目标，也不触发服务端调度。
+
+气泡状态取 MemberTurn 的 durable 状态。`running` 与 `streaming` 才播放脉冲动画，
+`prefers-reduced-motion` 下关闭动画；点击区域不小于 44×44 CSS px，带本地化名称、
+`aria-haspopup="dialog"` 和指向浮层的 `aria-controls`。
+
 ## 阶段范围边界
 
 Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。

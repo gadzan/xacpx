@@ -777,6 +777,45 @@ Pre-commit failure leaves no handoff rows. Commit before response/start leaves o
 
 **Follow-up before Direct Bot product release:** global dispatcher parallelism (more than one claimed execution in flight across Topics/Bots) is not part of this contract. Keep the current drain/claim sequencing until that work is designed. The drain launches the first claim globally, then admits only same-Run siblings concurrently (Topic isolation decides overlap); unrelated Topics/Bots wait for the next pass, after the cohort settles. A pass that defers Topics on pre-start failure takes at most chained extra passes with the deferrals preserved — never a retry without progress. An unexpected execution failure that escapes the handled settlement paths rejects the drain (and therefore fails activation) after every launched execution settles; it is never swallowed into a successful kick.
 
+## Durable public member traces (PR #447)
+
+A Group MemberTurn's public execution trace is recorded in `conversations.sqlite`
+while the adapter runs. It survives browser reload, Topic switch, reconnect and
+a real daemon restart; a trace that never started is reported as unrecorded
+instead of as an empty success.
+
+Identity is the physical attempt, not the logical turn. `member_turn_traces` is
+keyed by `(member_turn_id, attempt)`, and every write re-proves that key still
+matches one durable MemberTurn row: same `source_turn_id`, Run, Conversation,
+Topic and Bot. A stale execution that keeps streaming after a retry cannot
+append to the newer attempt, because the attempt it was admitted under no
+longer matches. `member_turn_trace_events` stores one row per `seq` with an
+`(member_turn_id, attempt, seq)` primary key, so a duplicate or out-of-order
+batch rejects rather than overwrites.
+
+Only public, already-normalized values are stored. A reasoning event carries
+its public text, a plan event the replace-latest entry list, a tool event the
+same `ToolStepDto` the transcript renders, and a terminal event the outcome.
+Raw adapter payloads, hidden provider reasoning, and unnormalized tool input or
+output are rejected at the store boundary rather than filtered later. A batch
+that exceeds the per-event or per-page byte bound marks the trace interrupted
+instead of silently dropping content.
+
+Recording writes are batched and coalesced, then flushed on a short timer so a
+live bubble updates without a write per token. Each flush is one transaction
+with a batch fingerprint, so a retried flush is a no-op instead of a duplicate
+append. On daemon start, traces still marked `recording` from the previous
+process are sealed `interrupted` with `consumer_restarted`; they are never
+presented as complete. A later attempt starts a new trace record.
+
+Reads are a bounded page through `control.runs.trace.get`: scope
+`(conversationId, topicId, runId, memberTurnId, attempt)`, an `afterSeq`
+cursor, and a bounded `limit`. The read is read-only and does not touch the
+active Run, composer target, Stop target or scheduling. A Run or member turn
+outside that public Topic, or a private peer Topic, rejects. A member turn with
+no trace returns explicit `unavailable` with `not-recorded` rather than an
+empty success, so the UI can say the process was never recorded.
+
 ## External channel bindings (PR10)
 
 An admitted channel chat may bind to one Conversation and Topic through
