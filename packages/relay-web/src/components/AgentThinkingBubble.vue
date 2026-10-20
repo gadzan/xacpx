@@ -85,7 +85,7 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
   place-items: center;
   width: 44px;
   height: 44px;
-  margin: -6px;
+  margin: 0;
   border-radius: 12px;
   color: rgb(var(--c-fg-muted));
   background: transparent;
