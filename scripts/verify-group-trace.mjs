@@ -868,6 +868,7 @@ async function main() {
     assertEqual(unavailable4F.completenessReason, "not-recorded", "cancelled-before-provider member must say not-recorded");
     assertEqual(unavailable4F.events ?? [], [], "cancelled-before-provider member must have no fabricated trace events");
     assertEqual(unavailable4F.hasMore, false, "cancelled-before-provider member must have no more pages");
+    report.missingNoProviderStart.checked = true;
     report.missingNoProviderStart.members = [
       { memberTurnId: cancelledMember.id, attempt: cancelledMember.attempt, recordingState: unavailable4F.recordingState, completenessReason: unavailable4F.completenessReason },
     ];

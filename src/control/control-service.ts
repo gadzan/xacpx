@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import {createHash} from "node:crypto";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
@@ -2824,10 +2825,17 @@ export class ControlService {
         } : {}),
       });
     }
-    return missingRunIds.length > 0 ? { runs, missingRunIds } : { runs };
+    const result = missingRunIds.length > 0 ? { runs, missingRunIds } : { runs };
+    if (Buffer.byteLength(JSON.stringify(result), "utf8") > 1024 * 1024) {
+      throw new ConversationError("invalid-payload", "Run detail response exceeds the 1 MiB bound; request fewer Runs");
+    }
+    return result;
   }
 
   private assertPublicRunHistoryScope(runtime: ConversationRuntime, conversationId: string, topicId: string): void {
+    if (!runtime.runs.listGroups().some(group => group.id === conversationId)) {
+      throw new ConversationError("conversation_not_found", "public Group Conversation not found");
+    }
     if (runtime.runs.isPeerTopic(topicId)
       || !runtime.runs.listTopics(conversationId).some(topic => topic.id === topicId)) {
       throw new ConversationError("topic_not_found", "public Topic does not belong to this Conversation");
@@ -2848,7 +2856,8 @@ export class ControlService {
       throw new ConversationError("run_not_found", "Run does not belong to this public Topic");
     }
     const member = runtime.store.getMemberTurn(input.memberTurnId);
-    if (!member || member.runId !== run.id || input.attempt > member.attempt) {
+    if (!member || member.runId !== run.id || member.conversationId !== input.conversationId
+      || member.topicId !== input.topicId || input.attempt > member.attempt) {
       throw new ConversationError("member_turn_not_found", "member attempt does not belong to this Run");
     }
     const traceQuery = {
@@ -2863,14 +2872,12 @@ export class ControlService {
       limit: input.limit ?? 100,
       maxBytes: 512 * 1024,
     });
-    const attempts = typeof runtime.store.traces.listAttempts === "function"
-      ? runtime.store.traces.listAttempts({
-        conversationId: input.conversationId,
-        topicId: input.topicId,
-        runId: run.id,
-        memberTurnId: member.id,
-      }).map(record => record.identity.attempt).filter(attempt => Number.isSafeInteger(attempt) && attempt >= 1).sort((a, b) => a - b).slice(0, 200)
-      : [];
+    const attempts = runtime.store.traces.listAttempts({
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      runId: run.id,
+      memberTurnId: member.id,
+    }).map(record => record.identity.attempt).sort((a, b) => a - b).slice(0, 200);
     if (!page) return {
       memberTurnId: member.id,
       attempt: input.attempt,

@@ -214,6 +214,8 @@ var MSG = {
   conversationBindingsDelete: "control.conversation.bindings.delete",
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
+  runsDetailsBatch: "control.runs.details.batch",
+  runsTraceGet: "control.runs.trace.get",
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
   interactionRequest: "control.interaction.request",
@@ -306,6 +308,49 @@ function validAgentMentions(text, value) {
   }
   return true;
 }
+// packages/relay-protocol/src/bot-avatar.ts
+var BOT_AVATAR_SHAPES = ["cercle", "galet", "squircle", "capsule", "triangle", "hexagone", "nuage", "goutte"];
+var BOT_AVATAR_COLORS = ["encre", "brun", "rouge", "orange", "ambre", "vert", "turquoise", "bleu", "violet", "rose", "gris", "creme"];
+var BOT_AVATAR_EXPRESSIONS = ["neutre", "attentif", "surpris", "excite", "heureux", "hilare", "colere", "triste", "effraye", "mefiant", "confus", "curieux", "fier", "timide", "blase", "somnolent"];
+function isBotAvatarConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const avatar = value;
+  if (avatar.version !== 1)
+    return false;
+  if (avatar.kind === "text") {
+    return Object.keys(avatar).length === 3 && typeof avatar.value === "string" && avatar.value.trim().length > 0;
+  }
+  return avatar.kind === "character" && Object.keys(avatar).length === 6 && BOT_AVATAR_SHAPES.some((id) => id === avatar.shape) && BOT_AVATAR_COLORS.some((id) => id === avatar.color) && BOT_AVATAR_EXPRESSIONS.some((id) => id === avatar.expression) && (avatar.motion === "auto" || avatar.motion === "off");
+}
+function isBotAvatarWriteConfig(value) {
+  return isBotAvatarConfig(value) && (value.kind === "character" || value.value.length <= 512);
+}
+function copyBotAvatar(avatar) {
+  if (!avatar)
+    return;
+  return avatar.kind === "text" ? { version: 1, kind: "text", value: avatar.value } : { version: 1, kind: "character", shape: avatar.shape, color: avatar.color, expression: avatar.expression, motion: avatar.motion };
+}
+function parseStoredBotAvatar(value) {
+  if (value === undefined || value === null)
+    return;
+  if (typeof value === "string") {
+    if (!value.trim())
+      return;
+    return { version: 1, kind: "text", value };
+  }
+  return isBotAvatarConfig(value) ? copyBotAvatar(value) : null;
+}
+function sameBotAvatar(a, b) {
+  if (a === b)
+    return true;
+  if (!a || !b || a.kind !== b.kind)
+    return false;
+  if (a.kind === "text")
+    return b.kind === "text" && a.value === b.value;
+  return b.kind === "character" && a.shape === b.shape && a.color === b.color && a.expression === b.expression && a.motion === b.motion;
+}
+
 // packages/relay-protocol/src/validate-primitives.ts
 var isObj = (v) => typeof v === "object" && v !== null;
 var hasOnlyKeys = (value, allowed) => Object.keys(value).every((key) => Object.hasOwn(allowed, key));
@@ -626,7 +671,7 @@ function validConversationCorrelation(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.runId === "string" && typeof c.memberTurnId === "string";
+  return typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.runId === "string" && typeof c.memberTurnId === "string" && (c.attempt === undefined || typeof c.attempt === "number" && Number.isSafeInteger(c.attempt) && c.attempt >= 1) && (c.sourceTurnId === undefined || typeof c.sourceTurnId === "string" && c.sourceTurnId.length > 0 && c.sourceTurnId.length <= 128);
 }
 function validExecutionTarget(value) {
   if (value === undefined)
@@ -682,6 +727,10 @@ function validInteractionRequest(value) {
     if (!optInteractionProductId(conv.memberTurnId))
       return false;
     if (!optInteractionProductId(conv.promptRequestId))
+      return false;
+    if (conv.attempt !== undefined && (typeof conv.attempt !== "number" || !Number.isSafeInteger(conv.attempt) || conv.attempt < 1))
+      return false;
+    if (conv.sourceTurnId !== undefined && (typeof conv.sourceTurnId !== "string" || !conv.sourceTurnId || conv.sourceTurnId.length > 128))
       return false;
     for (const item of Object.values(conv)) {
       if (typeof item === "string" && item.startsWith("brt_"))
@@ -763,7 +812,7 @@ function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && (c.worktree === undefined || isConversationWorktreeStatus(c.worktree)) && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
+  return typeof c.id === "string" && (c.worktree === undefined || isConversationWorktreeStatus(c.worktree)) && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.routingReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
 }
 function isConversationWorktreeStatus(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -789,6 +838,206 @@ function validMemberTurnSummary(value) {
     return false;
   const c = value;
   return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && (c.effect === undefined || c.effect === "unknown" || c.effect === "read-only" || c.effect === "mutating") && (c.effectProvenance === undefined || c.effect === "read-only" && c.effectProvenance === "declared-enforced") && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown");
+}
+var historyObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var historyId = (value) => typeof value === "string" && value.length > 0 && value.length <= 128;
+var historyInt = (value, min = 0) => typeof value === "number" && Number.isSafeInteger(value) && value >= min;
+var historyKeys = (value, allowed) => Object.keys(value).every((key) => allowed.includes(key));
+function historyBytes(value, max) {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength <= max;
+  } catch {
+    return false;
+  }
+}
+function isPublicPlanEntryDto(value) {
+  return historyObject(value) && historyKeys(value, ["content", "priority", "status"]) && typeof value.content === "string" && value.content.length <= 16000 && (value.priority === undefined || value.priority === "high" || value.priority === "medium" || value.priority === "low") && (value.status === "pending" || value.status === "in_progress" || value.status === "completed");
+}
+function isPublicPlanEntriesDto(value) {
+  return Array.isArray(value) && value.length <= 200 && value.every(isPublicPlanEntryDto);
+}
+var historyRunKeys = [
+  "id",
+  "conversationId",
+  "topicId",
+  "requestMessageId",
+  "requestId",
+  "mode",
+  "state",
+  "completionReason",
+  "profileRevision",
+  "activeBatch",
+  "maxMemberTurns",
+  "consumedMemberTurns",
+  "failedBotIds",
+  "unavailableBotIds",
+  "quarantinedBotIds",
+  "routingState",
+  "routingReason",
+  "waitingQuestion",
+  "createdAt",
+  "startedAt",
+  "finishedAt",
+  "memberTurns",
+  "profileSnapshot",
+  "worktree"
+];
+var historyMemberKeys = [
+  "id",
+  "runId",
+  "conversationId",
+  "topicId",
+  "botId",
+  "batch",
+  "memberIndex",
+  "attempt",
+  "origin",
+  "state",
+  "effect",
+  "effectProvenance",
+  "promptRequestId",
+  "createdAt",
+  "startedAt",
+  "finishedAt",
+  "assignmentId",
+  "task",
+  "expectedOutput",
+  "dependsOn",
+  "failureReason",
+  "blockedReason"
+];
+function historyWorktree(value, runId) {
+  if (!isConversationWorktreeStatus(value) || !historyObject(value) || !historyKeys(value, ["runId", "baseCommitSha", "disposition", "revision", "resources", "preview", "integration", "orphanWorktreePaths"]) || value.runId !== runId)
+    return false;
+  if (!value.resources.every((resource) => historyKeys(resource, ["id", "botId", "kind", "state", "worktreePath", "branchRef", "snapshotSha", "lastError"])))
+    return false;
+  if (value.preview !== undefined && (!historyKeys(value.preview, ["id", "createdAt", "members"]) || !value.preview.members.every((member) => historyKeys(member, ["botId", "worktreeId", "head", "tree", "files", "diff"]))))
+    return false;
+  return value.integration === undefined || historyKeys(value.integration, [
+    "id",
+    "generation",
+    "operationSource",
+    "requestId",
+    "previewId",
+    "state",
+    "resourceId",
+    "orderedBotIds",
+    "patches",
+    "nextIndex",
+    "candidateCommitSha",
+    "expectedParent",
+    "conflictFiles",
+    "createdAt",
+    "updatedAt",
+    "lastError"
+  ]);
+}
+function isRunsDetailsBatchResult(value) {
+  if (!historyObject(value) || !historyKeys(value, ["runs", "missingRunIds"]) || !historyBytes(value, 1024 * 1024) || !Array.isArray(value.runs) || value.runs.length > 50)
+    return false;
+  const ids = new Set;
+  const memberIds = new Set;
+  let conversationId;
+  let topicId;
+  for (const run of value.runs) {
+    if (!historyObject(run) || !historyKeys(run, historyRunKeys) || !validConversationRun(run) || !historyId(run.id) || ids.has(run.id) || !historyId(run.conversationId) || !historyId(run.topicId) || !historyId(run.requestMessageId) || !historyId(run.requestId) || !historyInt(run.profileRevision) || conversationId !== undefined && run.conversationId !== conversationId || topicId !== undefined && run.topicId !== topicId || ![run.activeBatch, run.maxMemberTurns, run.consumedMemberTurns].every((n) => n === undefined || historyInt(n)) || ![run.failedBotIds, run.unavailableBotIds, run.quarantinedBotIds].every((list) => list === undefined || Array.isArray(list) && list.every(historyId) && new Set(list).size === list.length) || run.worktree !== undefined && !historyWorktree(run.worktree, run.id) || !Array.isArray(run.memberTurns) || run.memberTurns.length > 1000)
+      return false;
+    ids.add(run.id);
+    conversationId = run.conversationId;
+    topicId = run.topicId;
+    for (const member of run.memberTurns) {
+      if (!historyObject(member) || !historyKeys(member, historyMemberKeys) || !validMemberTurnSummary(member) || !historyId(member.id) || memberIds.has(member.id) || !historyId(member.botId) || member.runId !== run.id || member.conversationId !== run.conversationId || member.topicId !== run.topicId || !historyInt(member.batch) || !historyInt(member.attempt, 1))
+        return false;
+      memberIds.add(member.id);
+    }
+    if (run.profileSnapshot !== undefined) {
+      const snapshot = run.profileSnapshot;
+      if (!historyObject(snapshot) || !historyKeys(snapshot, ["revision", "capturedAt", "presentation"]) || !historyInt(snapshot.revision, 1) || typeof snapshot.capturedAt !== "string" || !historyObject(snapshot.presentation) || !historyKeys(snapshot.presentation, ["name", "avatar", "role"]) || typeof snapshot.presentation.name !== "string" || !optStr(snapshot.presentation.role) || snapshot.presentation.avatar !== undefined && !isBotAvatarConfig(snapshot.presentation.avatar))
+        return false;
+    }
+  }
+  if (value.missingRunIds === undefined)
+    return true;
+  return Array.isArray(value.missingRunIds) && value.missingRunIds.length <= 50 && value.missingRunIds.every((id) => historyId(id) && !ids.has(id)) && new Set(value.missingRunIds).size === value.missingRunIds.length;
+}
+function isPublicToolStepDto(value) {
+  if (!historyObject(value) || !validToolStep(value) || !historyKeys(value, [
+    "toolCallId",
+    "parentToolCallId",
+    "isSubagent",
+    "toolName",
+    "kind",
+    "title",
+    "titleIsPath",
+    "status",
+    "detail",
+    "terminalId",
+    "durationMs",
+    "startedAt",
+    "error",
+    "agentMessageId"
+  ]) || typeof value.error === "string" && value.error.length > 4000)
+    return false;
+  if (value.detail === undefined)
+    return true;
+  const detail = value.detail;
+  if (!historyObject(detail))
+    return false;
+  switch (detail.type) {
+    case "diff":
+      return historyKeys(detail, ["type", "path", "oldText", "newText", "instruction"]);
+    case "read":
+      return historyKeys(detail, ["type", "path", "lines", "preview"]);
+    case "command":
+      return historyKeys(detail, ["type", "command", "output", "exitCode", "truncated"]) && (detail.exitCode === undefined || typeof detail.exitCode === "number" && Number.isFinite(detail.exitCode));
+    case "search":
+      return historyKeys(detail, ["type", "query", "output", "count", "truncated"]);
+    case "text":
+      return historyKeys(detail, ["type", "text", "output"]);
+    case "fields":
+      return historyKeys(detail, ["type", "fields", "output"]) && Array.isArray(detail.fields) && detail.fields.every((field) => historyObject(field) && historyKeys(field, ["label", "value"]));
+    default:
+      return false;
+  }
+}
+function isRunsTraceGetResult(value) {
+  if (!historyObject(value) || !historyKeys(value, ["memberTurnId", "attempt", "recordingState", "completenessReason", "events", "nextSeq", "hasMore", "plan", "attempts"]) || !historyBytes(value, 512 * 1024))
+    return false;
+  const body = value;
+  if (!historyId(body.memberTurnId) || !historyInt(body.attempt, 1) || !["recording", "complete", "interrupted", "unavailable"].includes(body.recordingState) || !optStr(body.completenessReason) || typeof body.completenessReason === "string" && body.completenessReason.length > 4000 || typeof body.hasMore !== "boolean" || body.nextSeq !== undefined && !historyInt(body.nextSeq) || body.plan !== undefined && !isPublicPlanEntriesDto(body.plan) || body.attempts !== undefined && (!Array.isArray(body.attempts) || body.attempts.length > 200 || !body.attempts.every((attempt) => historyInt(attempt, 1)) || new Set(body.attempts).size !== body.attempts.length))
+    return false;
+  if (!Array.isArray(body.events) || body.events.length > 100)
+    return false;
+  const events = body.events;
+  let previous = 0;
+  for (const event of events) {
+    if (!historyObject(event) || !historyKeys(event, ["seq", "kind", "payload", "createdAt"]) || !historyInt(event.seq, 1) || event.seq <= previous || typeof event.createdAt !== "string" || !historyObject(event.payload) || !historyBytes(event, 128 * 1024))
+      return false;
+    previous = event.seq;
+    const payload = event.payload;
+    switch (event.kind) {
+      case "text":
+      case "reasoning":
+        if (!historyKeys(payload, ["text"]) || typeof payload.text !== "string")
+          return false;
+        break;
+      case "tool":
+        if (!historyKeys(payload, ["step"]) || !isPublicToolStepDto(payload.step))
+          return false;
+        break;
+      case "plan":
+        if (!historyKeys(payload, ["entries"]) || !isPublicPlanEntriesDto(payload.entries))
+          return false;
+        break;
+      case "terminal":
+        if (!historyKeys(payload, ["ok", "cancelled", "errorMessage"]) || typeof payload.ok !== "boolean" || !optBool(payload.cancelled) || !optStr(payload.errorMessage) || typeof payload.errorMessage === "string" && payload.errorMessage.length > 4000)
+          return false;
+        break;
+      default:
+        return false;
+    }
+  }
+  return (events.length === 0 || body.nextSeq === undefined || body.nextSeq === previous) && (!body.hasMore || events.length > 0 && body.nextSeq !== undefined);
 }
 function validInteractionOpenShape(c) {
   return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validInteractionRequest(c.interaction);
@@ -1059,49 +1308,6 @@ function parseWebClientMessage(envelope) {
       return null;
   }
 }
-// packages/relay-protocol/src/bot-avatar.ts
-var BOT_AVATAR_SHAPES = ["cercle", "galet", "squircle", "capsule", "triangle", "hexagone", "nuage", "goutte"];
-var BOT_AVATAR_COLORS = ["encre", "brun", "rouge", "orange", "ambre", "vert", "turquoise", "bleu", "violet", "rose", "gris", "creme"];
-var BOT_AVATAR_EXPRESSIONS = ["neutre", "attentif", "surpris", "excite", "heureux", "hilare", "colere", "triste", "effraye", "mefiant", "confus", "curieux", "fier", "timide", "blase", "somnolent"];
-function isBotAvatarConfig(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const avatar = value;
-  if (avatar.version !== 1)
-    return false;
-  if (avatar.kind === "text") {
-    return Object.keys(avatar).length === 3 && typeof avatar.value === "string" && avatar.value.trim().length > 0;
-  }
-  return avatar.kind === "character" && Object.keys(avatar).length === 6 && BOT_AVATAR_SHAPES.some((id) => id === avatar.shape) && BOT_AVATAR_COLORS.some((id) => id === avatar.color) && BOT_AVATAR_EXPRESSIONS.some((id) => id === avatar.expression) && (avatar.motion === "auto" || avatar.motion === "off");
-}
-function isBotAvatarWriteConfig(value) {
-  return isBotAvatarConfig(value) && (value.kind === "character" || value.value.length <= 512);
-}
-function copyBotAvatar(avatar) {
-  if (!avatar)
-    return;
-  return avatar.kind === "text" ? { version: 1, kind: "text", value: avatar.value } : { version: 1, kind: "character", shape: avatar.shape, color: avatar.color, expression: avatar.expression, motion: avatar.motion };
-}
-function parseStoredBotAvatar(value) {
-  if (value === undefined || value === null)
-    return;
-  if (typeof value === "string") {
-    if (!value.trim())
-      return;
-    return { version: 1, kind: "text", value };
-  }
-  return isBotAvatarConfig(value) ? copyBotAvatar(value) : null;
-}
-function sameBotAvatar(a, b) {
-  if (a === b)
-    return true;
-  if (!a || !b || a.kind !== b.kind)
-    return false;
-  if (a.kind === "text")
-    return b.kind === "text" && a.value === b.value;
-  return b.kind === "character" && a.shape === b.shape && a.color === b.color && a.expression === b.expression && a.motion === b.motion;
-}
-
 // packages/relay-protocol/src/type-guards.ts
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1686,6 +1892,20 @@ var validateRunsGet = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? o : null;
 };
+var traceProductId = (v) => typeof v === "string" && v.length > 0 && v.length <= 128;
+var traceInteger = (v, min, max = Number.MAX_SAFE_INTEGER) => typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max;
+var validateRunsDetailsBatch = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).some((k) => !["conversationId", "topicId", "runIds"].includes(k)))
+    return null;
+  return traceProductId(o.conversationId) && traceProductId(o.topicId) && Array.isArray(o.runIds) && o.runIds.length >= 1 && o.runIds.length <= 50 && o.runIds.every(traceProductId) && new Set(o.runIds).size === o.runIds.length ? o : null;
+};
+var validateRunsTraceGet = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).some((k) => !["conversationId", "topicId", "runId", "memberTurnId", "attempt", "afterSeq", "limit"].includes(k)))
+    return null;
+  return traceProductId(o.conversationId) && traceProductId(o.topicId) && traceProductId(o.runId) && traceProductId(o.memberTurnId) && traceInteger(o.attempt, 1) && (o.afterSeq === undefined || traceInteger(o.afterSeq, 0)) && (o.limit === undefined || traceInteger(o.limit, 1, 200)) ? o : null;
+};
 var validateConversationWorktree = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.runId) || !o.runId || !isStr(o.action))
@@ -1825,6 +2045,10 @@ var validateInteractionRequest = (p) => {
     if (!optProductId(c.memberTurnId))
       return null;
     if (!optProductId(c.promptRequestId))
+      return null;
+    if (c.attempt !== undefined && !traceInteger(c.attempt, 1))
+      return null;
+    if (!optProductId(c.sourceTurnId))
       return null;
     for (const value of Object.values(c)) {
       if (typeof value === "string" && value.startsWith("brt_"))
@@ -2025,6 +2249,8 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationBindingsDelete]: validateConversationBindingDelete,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
+  [MSG.runsDetailsBatch]: validateRunsDetailsBatch,
+  [MSG.runsTraceGet]: validateRunsTraceGet,
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
   [MSG.interactionRequest]: validateInteractionRequest,
@@ -2451,6 +2677,367 @@ function parseConversationRouterState(value) {
     }
   };
 }
+// packages/relay-protocol/src/tool-presentation.ts
+var TEXT_CAP = 8000;
+var DIFF_CAP = 4000;
+var INSTRUCTION_CAP = 300;
+var TRUNCATED_SUFFIX_MARK = `
+…(truncated)`;
+var TRUNCATED_PREFIX_MARK = `(truncated)…
+`;
+function cap(s, n = TEXT_CAP) {
+  return s.length > n ? s.slice(0, n) + TRUNCATED_SUFFIX_MARK : s;
+}
+function capTail(s, n = TEXT_CAP) {
+  return s.length > n ? TRUNCATED_PREFIX_MARK + s.slice(s.length - n) : s;
+}
+function asString(v) {
+  if (typeof v === "string")
+    return v;
+  if (typeof v === "number" || typeof v === "boolean")
+    return String(v);
+  return;
+}
+function rec(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+function toolInput(v) {
+  const input = rec(v);
+  const nested = rec(input.args);
+  return Object.keys(nested).length > 0 ? nested : input;
+}
+function blocksOf(content) {
+  if (Array.isArray(content))
+    return content.filter((b) => b && typeof b === "object");
+  if (content && typeof content === "object")
+    return [content];
+  return [];
+}
+function textFromContentBlock(cb) {
+  switch (cb.type) {
+    case "text":
+      return asString(cb.text);
+    case "resource_link":
+      return asString(cb.title) ?? asString(cb.name) ?? asString(cb.uri);
+    case "resource": {
+      const r = rec(cb.resource);
+      const text = asString(r.text);
+      if (text)
+        return text;
+      const uri = asString(r.uri);
+      return uri ? `[resource] ${uri}` : undefined;
+    }
+    case "terminal": {
+      const terminalId = asString(cb.terminalId) ?? asString(cb.id);
+      return terminalId ? `[terminal ${terminalId}]` : "[terminal]";
+    }
+    default:
+      return;
+  }
+}
+function textFromBlocks(blocks) {
+  const parts = [];
+  for (const b of blocks) {
+    const t = b.type === "content" ? textFromContentBlock(rec(b.content)) : textFromContentBlock(b);
+    if (t)
+      parts.push(t);
+  }
+  return parts.length ? parts.join(`
+`) : undefined;
+}
+function diffBlock(blocks) {
+  return blocks.find((b) => b.type === "diff");
+}
+function terminalBlockId(blocks) {
+  const block = blocks.find((b) => b.type === "terminal");
+  if (!block)
+    return;
+  return asString(block.terminalId) ?? asString(block.id);
+}
+function parsedCmd0(input) {
+  const pc = input.parsed_cmd;
+  if (Array.isArray(pc) && pc[0] && typeof pc[0] === "object")
+    return pc[0];
+  return;
+}
+function locationPath(event) {
+  const locs = event.locations;
+  if (Array.isArray(locs) && locs[0] && typeof locs[0] === "object") {
+    const l = locs[0];
+    return asString(l.path) ?? asString(l.file);
+  }
+  return;
+}
+function readLines(input) {
+  const { offset, limit } = input;
+  if (typeof offset === "number" && typeof limit === "number")
+    return `${offset}–${offset + limit}`;
+  if (typeof limit === "number")
+    return `first ${limit}`;
+  return;
+}
+function isDegradedTitle(title, toolName) {
+  const trimmed = (title ?? "").trim();
+  if (trimmed.length === 0)
+    return true;
+  if (trimmed.toLowerCase() === toolName.trim().toLowerCase())
+    return true;
+  if (/^[^\s]*\|[^\s]*$/.test(trimmed))
+    return true;
+  return false;
+}
+var INTERNAL_INPUT_KEYS = new Set(["_toolName"]);
+function primitiveFields(input) {
+  const out = [];
+  for (const [label, v] of Object.entries(input)) {
+    if (INTERNAL_INPUT_KEYS.has(label))
+      continue;
+    const value = asString(v);
+    if (value !== undefined)
+      out.push({ label, value: cap(value) });
+  }
+  return out;
+}
+function firstPresent(input, keys) {
+  for (const key of keys) {
+    const value = asString(input[key]);
+    if (value !== undefined)
+      return { key, value };
+  }
+  return;
+}
+function countSummary(output) {
+  const parts = [];
+  if (typeof output.totalMatches === "number")
+    parts.push(`${output.totalMatches} matches`);
+  if (typeof output.totalFiles === "number")
+    parts.push(`${output.totalFiles} files`);
+  if (parts.length === 0)
+    return;
+  if (output.truncated === true)
+    parts.push("truncated");
+  return parts.join(" · ");
+}
+var AGENT_MSG_ID_RE = /^msg_[A-Za-z0-9_-]{1,124}$/;
+var AGENT_RECEIPT_STATUSES = { injected: true, queued: true, failed: true };
+function agentReceiptMessageId(v) {
+  const r = rec(v);
+  const messageId = typeof r.messageId === "string" ? r.messageId : undefined;
+  if (!messageId || !AGENT_MSG_ID_RE.test(messageId))
+    return;
+  return typeof r.status === "string" && AGENT_RECEIPT_STATUSES[r.status] === true ? messageId : undefined;
+}
+var AGENT_SEND_RECEIPT_MARKER_RE = /xacpx-agent-send-receipt:v1 (\{[^\n]*\})/;
+function extractAgentMessageId(event) {
+  const output = rec(event.rawOutput);
+  const direct = agentReceiptMessageId(output.structuredContent) ?? agentReceiptMessageId(output);
+  if (direct)
+    return direct;
+  const result = rec(output.result);
+  const enveloped = agentReceiptMessageId(result.structuredContent) ?? agentReceiptMessageId(result);
+  if (enveloped)
+    return enveloped;
+  const blockReceipt = textBlockOf(blocksOf(event.content)[0] ?? {});
+  if (blockReceipt) {
+    const found = receiptFromText(blockReceipt.text);
+    if (found)
+      return found;
+  }
+  for (const block of blocksOf(result.content)) {
+    const tb = textBlockOf(block);
+    if (!tb)
+      continue;
+    const found = receiptFromText(tb.text);
+    if (found)
+      return found;
+  }
+  for (const block of blocksOf(output.content)) {
+    const tb = textBlockOf(block);
+    if (!tb)
+      continue;
+    const found = receiptFromText(tb.text);
+    if (found)
+      return found;
+  }
+  const rawText = typeof event.rawOutput === "string" ? event.rawOutput : asString(output.output) ?? asString(output.text);
+  if (rawText !== undefined) {
+    const found = receiptFromText(rawText);
+    if (found)
+      return found;
+  }
+  return;
+}
+function textBlockOf(block) {
+  return block && block.type === "text" && typeof block.text === "string" ? { text: block.text } : undefined;
+}
+function receiptFromText(text) {
+  try {
+    const direct = agentReceiptMessageId(JSON.parse(text));
+    if (direct)
+      return direct;
+  } catch {}
+  const marker = text.match(AGENT_SEND_RECEIPT_MARKER_RE);
+  if (marker?.[1]) {
+    try {
+      return agentReceiptMessageId(JSON.parse(marker[1]));
+    } catch {}
+  }
+  return;
+}
+function toolUseEventToStepDto(event) {
+  const input = toolInput(event.rawInput);
+  const blocks = blocksOf(event.content);
+  const output = rec(event.rawOutput);
+  const rawOutputText = asString(event.rawOutput);
+  const terminalOut = asString(output.formatted_output);
+  const pc = parsedCmd0(input);
+  const fallbackTitle = event.summary ?? event.toolName;
+  const terminalId = terminalBlockId(blocks);
+  const meta = rec(output.metadata);
+  const metaTruncated = typeof meta.truncated === "boolean" ? meta.truncated : undefined;
+  const metaCount = typeof meta.count === "number" ? meta.count : typeof meta.matches === "number" ? meta.matches : typeof meta.totalMatches === "number" ? meta.totalMatches : undefined;
+  const errMsg = event.status === "error" ? asString(output.error) ?? asString(output.message) ?? textFromBlocks(blocks) ?? asString(output.output) ?? asString(output.text) ?? terminalOut ?? rawOutputText : undefined;
+  const toolIdentity = event.machineToolName ?? event.toolName;
+  const agentMessageId = toolIdentity === "agent_send" || /__?agent_send$/.test(toolIdentity) ? extractAgentMessageId(event) : undefined;
+  const base = {
+    toolCallId: event.toolCallId,
+    ...event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {},
+    ...event.isSubagent ? { isSubagent: true } : {},
+    toolName: event.toolName,
+    kind: event.kind,
+    status: event.status,
+    ...event.durationMs !== undefined ? { durationMs: event.durationMs } : {},
+    ...event.startedAt !== undefined ? { startedAt: event.startedAt } : {},
+    ...errMsg ? { error: cap(errMsg, 2000) } : {},
+    ...terminalId ? { terminalId } : {},
+    ...agentMessageId ? { agentMessageId } : {}
+  };
+  if (event.isSubagent) {
+    const prompt = asString(input.prompt) ?? asString(input.description) ?? asString(input.task) ?? asString(input.instructions) ?? event.summary ?? "";
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    const detail = { type: "text", text: cap(prompt), ...out ? { output: capTail(out) } : {} };
+    return { ...base, title: fallbackTitle, detail };
+  }
+  if (event.kind === "edit") {
+    const diff = diffBlock(blocks);
+    const sourcePath = asString(diff?.path) ?? locationPath(event) ?? asString(input.file_path) ?? asString(input.path);
+    const path = sourcePath ?? fallbackTitle;
+    const title = isDegradedTitle(fallbackTitle, event.toolName) ? path : fallbackTitle;
+    const titleIsPath = sourcePath !== undefined && title === sourcePath;
+    const oldText = asString(diff?.oldText) ?? asString(input.old_string) ?? asString(input.oldText);
+    const newText = asString(diff?.newText) ?? asString(input.new_string) ?? asString(input.newText) ?? asString(input.content);
+    const instruction = asString(input.instruction) ?? asString(input.description);
+    if (diff || oldText !== undefined || newText !== undefined) {
+      if ((oldText ?? "") === "" && (newText ?? "") === "" && !instruction) {
+        return titleIsPath ? { ...base, title: path, titleIsPath } : { ...base, title: path };
+      }
+      const detail = {
+        type: "diff",
+        path,
+        oldText: cap(oldText ?? "", DIFF_CAP),
+        newText: cap(newText ?? "", DIFF_CAP),
+        ...instruction ? { instruction: cap(instruction, INSTRUCTION_CAP) } : {}
+      };
+      return titleIsPath ? { ...base, title, titleIsPath, detail } : { ...base, title, detail };
+    }
+    const locPath = locationPath(event);
+    const picked = locPath === undefined ? firstPresent(input, ["file_path", "path"]) : undefined;
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    if (fields.length === 0)
+      return { ...base, title };
+    return { ...base, title, detail: { type: "fields", fields } };
+  }
+  if (event.kind === "read") {
+    const sourcePath = asString(input.file_path) ?? asString(input.path) ?? asString(pc?.name) ?? locationPath(event);
+    const path = sourcePath ?? fallbackTitle;
+    const title = isDegradedTitle(fallbackTitle, event.toolName) ? path : fallbackTitle;
+    const titleIsPath = sourcePath !== undefined && title === sourcePath;
+    const lines = readLines(input);
+    const preview = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? asString(output.content) ?? rawOutputText;
+    if (!lines && !preview)
+      return titleIsPath ? { ...base, title, titleIsPath } : { ...base, title };
+    const detail = { type: "read", path, ...lines ? { lines } : {}, ...preview ? { preview: capTail(preview) } : {} };
+    return titleIsPath ? { ...base, title, titleIsPath, detail } : { ...base, title, detail };
+  }
+  if (event.kind === "execute") {
+    const command = asString(input.command) ?? asString(input.cmd) ?? asString(pc?.cmd) ?? fallbackTitle;
+    const title = isDegradedTitle(fallbackTitle, event.toolName) ? command : fallbackTitle;
+    const out = asString(output.stdout) ?? terminalOut ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
+    const exitCode = typeof output.exitCode === "number" ? output.exitCode : typeof output.exit_code === "number" ? output.exit_code : undefined;
+    if (!out && exitCode === undefined)
+      return { ...base, title };
+    const detail = {
+      type: "command",
+      command,
+      ...out ? { output: capTail(out) } : {},
+      ...exitCode !== undefined ? { exitCode } : {},
+      ...metaTruncated !== undefined ? { truncated: metaTruncated } : {}
+    };
+    return { ...base, title, detail };
+  }
+  if (event.kind === "search") {
+    const globPattern = asString(input.glob_pattern);
+    const targetDirectory = asString(input.target_directory);
+    const scope = targetDirectory ?? asString(input.path);
+    const pattern = asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd);
+    const query = globPattern ? scope ? `${globPattern} in ${scope}` : globPattern : pattern ? scope ? `${pattern} in ${scope}` : pattern : fallbackTitle;
+    const title = isDegradedTitle(fallbackTitle, event.toolName) ? query : fallbackTitle;
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
+    if (!out && metaCount === undefined && metaTruncated === undefined)
+      return { ...base, title };
+    const detail = {
+      type: "search",
+      query,
+      ...out ? { output: capTail(out) } : {},
+      ...metaCount !== undefined ? { count: metaCount } : {},
+      ...metaTruncated !== undefined ? { truncated: metaTruncated } : {}
+    };
+    return { ...base, title, detail };
+  }
+  if (event.kind === "think") {
+    const mode = asString(input.target_mode_id) ?? asString(input.mode_id);
+    const explanation = asString(input.explanation);
+    const text = mode && explanation ? `${mode}: ${explanation}` : explanation ?? mode ?? asString(input.description) ?? asString(input.prompt) ?? textFromBlocks(blocks) ?? "";
+    if (!text)
+      return { ...base, title: fallbackTitle };
+    return { ...base, title: fallbackTitle, detail: { type: "text", text: cap(text) } };
+  }
+  if (event.kind === "delete") {
+    const picked = firstPresent(input, ["file_path", "path"]);
+    const path = picked?.value ?? locationPath(event) ?? fallbackTitle;
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
+      return { ...base, title: path };
+    return { ...base, title: path, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
+  }
+  if (event.kind === "move") {
+    const fromPicked = firstPresent(input, ["from", "source", "src", "old_path", "oldPath"]);
+    const toPicked = firstPresent(input, ["to", "destination", "dest", "new_path", "newPath"]);
+    const from = fromPicked?.value;
+    const to = toPicked?.value;
+    const title = from && to ? `${from} → ${to}` : from ?? to ?? locationPath(event) ?? fallbackTitle;
+    const fields = primitiveFields(input).filter((f) => f.label !== fromPicked?.key && f.label !== toPicked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
+      return { ...base, title };
+    return { ...base, title, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
+  }
+  if (event.kind === "fetch") {
+    const picked = firstPresent(input, ["url", "uri", "href"]);
+    const url = picked?.value ?? fallbackTitle;
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
+      return { ...base, title: url };
+    return { ...base, title: url, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
+  }
+  const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+  const fields = primitiveFields(input);
+  if (fields.length === 0 && !out)
+    return { ...base, title: fallbackTitle };
+  return { ...base, title: fallbackTitle, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
+}
 export {
   BOT_AVATAR_COLORS,
   BOT_AVATAR_EXPRESSIONS,
@@ -2518,6 +3105,8 @@ export {
   TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
   TERMINAL_REBASE_CHUNK_BYTES,
   TERMINAL_RPC_TIMEOUT_MS,
+  TRUNCATED_PREFIX_MARK,
+  TRUNCATED_SUFFIX_MARK,
   WEB_CLIENT_TYPE,
   WEB_EVENT_TYPE,
   adapterModels,
@@ -2537,7 +3126,12 @@ export {
   isIntInRange,
   isNonNegInt,
   isObj,
+  isPublicPlanEntriesDto,
+  isPublicPlanEntryDto,
+  isPublicToolStepDto,
   isRecord,
+  isRunsDetailsBatchResult,
+  isRunsTraceGetResult,
   isStr,
   knownEfforts,
   maxBase64EncodedLength,
@@ -2565,6 +3159,7 @@ export {
   readyCapability,
   sameBotAvatar,
   suggestionModels,
+  toolUseEventToStepDto,
   unsupportedCapability,
   validAgentMentions,
   validControlEvent,

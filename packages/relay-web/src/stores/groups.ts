@@ -3,13 +3,18 @@ import { computed, ref, watch } from "vue";
 import {
   MSG,
   isErrorPayload,
+  isRunsDetailsBatchResult,
+  isRunsTraceGetResult,
   type BotSummaryDto,
   type ConversationHistoryResponseDto,
   type ConversationMessageDto,
   type ConversationPromptResponseDto,
   type ConversationRunDetailDto,
   type ConversationRunDto,
+  type ConversationRunHistoryDetailDto,
   type ConversationRunStateDto,
+  type ConversationRunTraceDto,
+  type ConversationRunTraceEventDto,
   type ConversationTargetDto,
   type GroupDetailDto,
   type GroupsCreatePayload,
@@ -51,6 +56,7 @@ export interface GroupLiveTurn {
   status: "working" | "streaming";
   startedAt: number;
   revision: number;
+  attempt?: number;
 }
 
 export type GroupTargetSelection =
@@ -554,6 +560,7 @@ export const useGroupsStore = defineStore("groups", () => {
   const runParts = ref<Record<string, TurnPartDto[]>>({});
   const runPartsComplete = ref<Record<string, true>>({});
   const runPartsTruncated = ref<Record<string, true>>({});
+  const runPartsAttempt: Record<string, number> = {};
   const completeRunParts = computed<Record<string, TurnPartDto[]>>(() => {
     const out: Record<string, TurnPartDto[]> = {};
     for (const [id, parts] of Object.entries(runParts.value)) {
@@ -561,6 +568,71 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     return out;
   });
+
+  /** Scoped historical read model for thinking bubbles. Independent of
+   *  activeRun ownership by construction: no writer here may set activeRun,
+   *  memberTurnsById, cancellingRunId, uncertainPrompt, planByRunId or any
+   *  transcript cursor. Keys always include the full scope tuple so a stale
+   *  response can never bleed across Topics. */
+  const runHistoryDetails = ref<Record<string, ConversationRunHistoryDetailDto>>({});
+  const runHistoryDetailRevision = ref(0);
+  /** Coalesced in-flight batch reads, keyed by scope + sorted run ids. */
+  const runDetailRequests: Record<string, Promise<void>> = {};
+  /** Lazily loaded durable trace pages, keyed by scope + member + attempt. */
+  const tracePages = ref<Record<string, {
+    events: ConversationRunTraceEventDto[];
+    nextSeq?: number;
+    hasMore: boolean;
+    hasEarlier?: boolean;
+    firstSeq?: number;
+    recordingState: ConversationRunTraceDto["recordingState"];
+    completenessReason?: string;
+    plan?: PlanEntryDto[];
+    attempts?: number[];
+    loading: boolean;
+    error: string | null;
+  }>>({});
+  const traceRequests: Record<string, Promise<void>> = {};
+  /** Generation fencing for every historical read; bumped on scope change. */
+  let runHistoryGeneration = 0;
+  const requestedRunIds = new Set<string>();
+  let openTrace: { memberTurnId: string; attempt: number } | null = null;
+  const traceCacheOrder: string[] = [];
+  const MAX_TRACE_ENTRIES = 24;
+  const MAX_TRACE_EVENTS = 1000;
+
+  watch(() => [instanceId.value, activeConversationId.value, activeTopicId.value].join(":"), clearRunHistory, { flush: "sync" });
+
+  function historyScopeKey(
+    iId: string | null = instanceId.value,
+    cId: string | null = activeConversationId.value,
+    tId: string | null = activeTopicId.value,
+  ): string | null {
+    if (!iId || !cId || !tId) return null;
+    return `${iId}:${cId}:${tId}`;
+  }
+
+  function runHistoryKey(scope: string, runId: string): string {
+    return `${scope}:${runId}`;
+  }
+
+  function tracePageKey(scope: string, memberTurnId: string, attempt: number): string {
+    return `${scope}:${memberTurnId}:${attempt}`;
+  }
+
+  /** Drop every historical cache entry for the current scope. Called on
+   *  selection/Topic/instance change; never touches activeRun. */
+  function clearRunHistory(): void {
+    runHistoryGeneration += 1;
+    runHistoryDetails.value = {};
+    tracePages.value = {};
+    requestedRunIds.clear();
+    openTrace = null;
+    traceCacheOrder.length = 0;
+    for (const key of Object.keys(runDetailRequests)) delete runDetailRequests[key];
+    for (const key of Object.keys(traceRequests)) delete traceRequests[key];
+    runHistoryDetailRevision.value += 1;
+  }
 
   /** A MemberTurn survives recovery, but its physical execution trace does not.
    * Retire all trace projections together whenever durable attempt identity
@@ -575,9 +647,253 @@ export const useGroupsStore = defineStore("groups", () => {
         delete runParts.value[key];
         delete runPartsComplete.value[key];
         delete runPartsTruncated.value[key];
+        delete runPartsAttempt[key];
       }
     }
     memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, incoming);
+  }
+  /** Historical snapshots enrich display only; delayed reads cannot regress attempts. */
+  function adoptHistoryDetail(scope: string, detail: ConversationRunHistoryDetailDto): void {
+    const key = runHistoryKey(scope, detail.id);
+    const previous = runHistoryDetails.value[key];
+    const members = new Map((previous?.memberTurns ?? []).map((turn) => [turn.id, turn]));
+    for (const turn of detail.memberTurns) members.set(turn.id, mergeMemberTurn(members.get(turn.id) ?? null, turn));
+    const merged = { ...detail, ...mergeRun(previous ?? null, detail), memberTurns: [...members.values()] };
+    runHistoryDetails.value = { ...runHistoryDetails.value, [key]: merged };
+  }
+
+  /** A durable trace page as the wire returns it; the local cache keeps the
+   *  plan snapshot separately, so the merge widens the wire DTO with the
+   *  optional plan field the strict decoder already validated. */
+  interface TracePageWire extends ConversationRunTraceDto {
+    plan?: PlanEntryDto[];
+  }
+  function adoptTracePage(
+    scope: string,
+    memberTurnId: string,
+    attempt: number,
+    page: TracePageWire,
+  ): void {
+    const key = tracePageKey(scope, memberTurnId, attempt);
+    const previous = tracePages.value[key];
+    const prevEvents = previous && !previous.error ? previous.events : [];
+    // Idempotent ordered merge on stable seq: replay may resend committed
+    // events and live frames may arrive while the durable cursor advances.
+    const bySeq = new Map<number, ConversationRunTraceEventDto>();
+    for (const event of prevEvents) bySeq.set(event.seq, event);
+    for (const event of page.events) bySeq.set(event.seq, event);
+    const events = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+    const hasEarlier = previous?.hasEarlier === true || events.length > MAX_TRACE_EVENTS;
+    if (events.length > MAX_TRACE_EVENTS) events.splice(0, events.length - MAX_TRACE_EVENTS);
+    tracePages.value = {
+      ...tracePages.value,
+      [key]: {
+        events,
+        nextSeq: page.nextSeq ?? previous?.nextSeq,
+        hasMore: page.hasMore,
+        hasEarlier,
+        firstSeq: events[0]?.seq,
+        recordingState: page.recordingState,
+        ...(page.completenessReason !== undefined ? { completenessReason: page.completenessReason } : previous?.completenessReason !== undefined ? { completenessReason: previous.completenessReason } : {}),
+        ...(page.plan !== undefined ? { plan: page.plan } : previous?.plan !== undefined ? { plan: previous.plan } : {}),
+        ...(page.attempts !== undefined ? { attempts: page.attempts } : previous?.attempts !== undefined ? { attempts: previous.attempts } : {}),
+        loading: false,
+        error: null,
+      },
+    };
+    touchTraceCache(key);
+  }
+
+  function touchTraceCache(key: string): void {
+    const index = traceCacheOrder.indexOf(key);
+    if (index >= 0) traceCacheOrder.splice(index, 1);
+    traceCacheOrder.push(key);
+    while (traceCacheOrder.length > MAX_TRACE_ENTRIES) {
+      const retired = traceCacheOrder.shift()!;
+      delete tracePages.value[retired];
+    }
+  }
+
+  /**
+   * Non-blocking visible batch read. Collects uncached run ids from the
+   * current transcript, fetches in id-bounded coalesced batches, decodes
+   * strictly (unsupported-RPC → silent no-op so legacy connectors keep the
+   * live path), and drops stale generations. Never mutates activeRun,
+   * memberTurnsById, cancellingRunId, uncertainPrompt, planByRunId or
+   * transcript cursors.
+   */
+  function ensureRunDetails(runIds: string[], refresh = false): void {
+    const scope = historyScopeKey();
+    const iId = instanceId.value;
+    const cId = activeConversationId.value;
+    const tId = activeTopicId.value;
+    if (!scope || !iId || !cId || !tId) return;
+    for (const id of runIds) if (typeof id === "string" && id) requestedRunIds.add(id);
+    const missing = [...new Set(runIds)].filter(
+      (id) => typeof id === "string" && id && (refresh || !runHistoryDetails.value[runHistoryKey(scope, id)]),
+    );
+    if (missing.length === 0) return;
+    // Bounded concurrency: chunks of ≤50 per the wire cap.
+    for (let start = 0; start < missing.length; start += 50) {
+      const chunk = missing.slice(start, start + 50).sort();
+      const requestKey = `${scope}:batch:${chunk.join(",")}`;
+      if (runDetailRequests[requestKey] !== undefined) continue;
+      const generation = runHistoryGeneration;
+      const pending = api
+        .rpc<{ runs: ConversationRunHistoryDetailDto[]; missingRunIds?: string[] }>(
+          iId, MSG.runsDetailsBatch, { conversationId: cId, topicId: tId, runIds: chunk },
+        )
+        .then((raw) => {
+          if (generation !== runHistoryGeneration) return;
+          if (!historyScopeKey() || historyScopeKey() !== scope) return;
+          let decoded: { runs: ConversationRunHistoryDetailDto[]; missingRunIds?: string[] };
+          try {
+            decoded = unwrapRpc(raw);
+          } catch {
+            return;
+          }
+          if (!isRunsDetailsBatchResult(decoded)) return;
+          for (const detail of decoded.runs) {
+            if (
+              detail.conversationId !== cId || detail.topicId !== tId ||
+              !chunk.includes(detail.id)
+            ) continue;
+            adoptHistoryDetail(scope, detail);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (runDetailRequests[requestKey] === pending) delete runDetailRequests[requestKey];
+        });
+      runDetailRequests[requestKey] = pending;
+    }
+  }
+
+  /** Reconnect retires transport reads and catches up only the opened attempt. */
+  function refreshRunDetails(): void {
+    const scope = historyScopeKey();
+    if (!scope) return;
+    runHistoryGeneration += 1;
+    for (const key of Object.keys(runDetailRequests)) delete runDetailRequests[key];
+    for (const key of Object.keys(traceRequests)) delete traceRequests[key];
+    for (const page of Object.values(tracePages.value)) page.loading = false;
+    const ids = [...new Set([...requestedRunIds, ...Object.values(runHistoryDetails.value).map((detail) => detail.id)])];
+    ensureRunDetails(ids, true);
+    if (openTrace) ensureTracePage(openTrace.memberTurnId, openTrace.attempt);
+  }
+
+  function setOpenTrace(memberTurnId: string | null, attempt?: number): void {
+    openTrace = memberTurnId && Number.isSafeInteger(attempt) && attempt! >= 1
+      ? { memberTurnId, attempt: attempt! } : null;
+    if (openTrace) ensureTracePage(openTrace.memberTurnId, openTrace.attempt);
+  }
+
+  /** Mirror newly accepted Group Run metadata into the read model promptly so
+   *  the first bubble appears before the later history RPC lands. Read-only
+   *  projection: never sets activeRun or transcript state. */
+  function mirrorAcceptedRun(
+    detail: { id: string; conversationId: string; topicId: string; requestMessageId?: string; requestId: string; mode: "explicit" | "automatic"; state: ConversationRunStateDto; profileRevision: number; createdAt: string },
+    memberTurns: MemberTurnSummaryDto[],
+  ): void {
+    const scope = historyScopeKey();
+    if (!scope) return;
+    const key = runHistoryKey(scope, detail.id);
+    const previous = runHistoryDetails.value[key];
+    const mergedTurns = new Map<string, MemberTurnSummaryDto>();
+    for (const turn of previous?.memberTurns ?? []) mergedTurns.set(turn.id, turn);
+    for (const turn of memberTurns) {
+      if (turn.runId === detail.id) mergedTurns.set(turn.id, turn);
+    }
+    adoptHistoryDetail(scope, {
+      ...(previous ?? {}),
+      ...detail,
+      memberTurns: [...mergedTurns.values()],
+    } as ConversationRunHistoryDetailDto);
+  }
+
+  /**
+   * Lazy paged trace read for one opened member/attempt. Coalesced by
+   * scope+member+attempt+cursor; strict decode; stale-generation fenced.
+   * Never mutates current/cancel/composer state.
+   */
+  function ensureTracePage(memberTurnId: string, attempt: number, afterSeq?: number): void {
+    const scope = historyScopeKey();
+    const iId = instanceId.value;
+    const cId = activeConversationId.value;
+    const tId = activeTopicId.value;
+    if (!scope || !iId || !cId || !tId || !memberTurnId || !Number.isSafeInteger(attempt) || attempt < 1
+      || (afterSeq !== undefined && (!Number.isSafeInteger(afterSeq) || afterSeq < 0))) return;
+    const detail = Object.values(runHistoryDetails.value).find((entry) =>
+      entry.id && runHistoryKey(scope, entry.id) in runHistoryDetails.value &&
+      entry.memberTurns.some((turn) => turn.id === memberTurnId),
+    );
+    const runId = detail?.id;
+    if (!runId) return;
+    const key = tracePageKey(scope, memberTurnId, attempt);
+    const cursor = afterSeq ?? tracePages.value[key]?.nextSeq ?? 0;
+    const requestKey = `${key}:${cursor}`;
+    if (traceRequests[requestKey] !== undefined) return;
+    if (afterSeq === 0) {
+      for (const pendingKey of Object.keys(traceRequests)) if (pendingKey.startsWith(`${key}:`)) delete traceRequests[pendingKey];
+      const previous = tracePages.value[key];
+      if (previous) tracePages.value[key] = { ...previous, events: [], nextSeq: undefined, hasEarlier: false, firstSeq: undefined };
+    }
+    if (!tracePages.value[key]) {
+      tracePages.value = {
+        ...tracePages.value,
+        [key]: { events: [], nextSeq: undefined, hasMore: true, recordingState: "recording" as const, loading: true, error: null },
+      };
+    } else {
+      tracePages.value = {
+        ...tracePages.value,
+        [key]: { ...tracePages.value[key]!, loading: true, error: null },
+      };
+    }
+    touchTraceCache(key);
+    const generation = runHistoryGeneration;
+    const pending = api
+      .rpc<TracePageWire>(iId, MSG.runsTraceGet, {
+        conversationId: cId, topicId: tId, runId, memberTurnId, attempt,
+        ...(cursor > 0 ? { afterSeq: cursor } : {}),
+        limit: 100,
+      })
+      .then((raw) => {
+        if (generation !== runHistoryGeneration) return;
+        if (traceRequests[requestKey] !== pending || !tracePages.value[key]) return;
+        if (historyScopeKey() !== scope) return;
+        let decoded: TracePageWire;
+        try {
+          decoded = unwrapRpc(raw);
+          // Pages are strictly ordered; a replay may resend the last committed
+          // seq, but a gap between committed seqs is never accepted as history.
+          if (!isRunsTraceGetResult(decoded) || decoded.memberTurnId !== memberTurnId || decoded.attempt !== attempt
+            || decoded.events.length > 100
+            || decoded.events.some((event, index) => index > 0 && event.seq !== decoded.events[index - 1]!.seq + 1)
+            || (decoded.events.length > 0 && decoded.events[0]!.seq !== cursor && decoded.events[0]!.seq !== cursor + 1)) {
+            throw new Error("invalid_trace_response");
+          }
+          adoptTracePage(scope, memberTurnId, attempt, decoded);
+        } catch (err) {
+          failTracePage(key, err);
+        }
+      })
+      .catch((err: unknown) => {
+        if (generation !== runHistoryGeneration || historyScopeKey() !== scope || traceRequests[requestKey] !== pending) return;
+        failTracePage(key, err);
+      })
+      .finally(() => {
+        if (traceRequests[requestKey] === pending) delete traceRequests[requestKey];
+      });
+    traceRequests[requestKey] = pending;
+  }
+
+  function failTracePage(key: string, err: unknown): void {
+    const current = tracePages.value[key];
+    if (!current) return;
+    tracePages.value = { ...tracePages.value, [key]: {
+      ...current, loading: false, recordingState: current.events.length ? "interrupted" : "unavailable",
+      error: err instanceof Error ? err.message : String(err),
+    } };
   }
 
   /** A prompt whose accept outcome is uncertain (request sent, response lost or
@@ -1628,6 +1944,7 @@ export const useGroupsStore = defineStore("groups", () => {
             applyMemberTurns(detail.run.memberTurns);
           }
           resolveUncertainPromptAgainstRun(detail.run);
+          mirrorAcceptedRun(detail.run, detail.run.memberTurns ?? []);
         }
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurnsByMember.value = {};
@@ -1815,6 +2132,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
   async function selectGroup(targetInstanceId: string, groupId: string): Promise<void> {
     liveCompletedMemberTurns.value = null;
+    clearRunHistory();
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -1909,6 +2227,7 @@ export const useGroupsStore = defineStore("groups", () => {
     // store owns ownership, and the draft has no Topic identity.
     const generation = ++currentSelectionGeneration;
     liveCompletedMemberTurns.value = null;
+    clearRunHistory();
     historyRequestSequence += 1;
     discoverySequence += 1;
     retireOlderRequest();
@@ -1945,7 +2264,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
   function clearSelection(): void {
     liveCompletedMemberTurns.value = null;
-    currentSelectionGeneration++;
+    clearRunHistory();
     historyRequestSequence += 1;
     discoverySequence += 1;
     retireOlderRequest();
@@ -2120,6 +2439,7 @@ export const useGroupsStore = defineStore("groups", () => {
         applyMemberTurns(incomingRun.memberTurns);
       }
       resolveUncertainPromptAgainstRun(incomingRun);
+      mirrorAcceptedRun(incomingRun, incomingRun.memberTurns ?? []);
     } catch {
       // Display-only degradation: the list already settled ownership.
     }
@@ -2261,6 +2581,7 @@ export const useGroupsStore = defineStore("groups", () => {
         activeRun.value = mergeRun(activeRun.value, res.run);
         const turns = res.memberTurns ?? (res.memberTurn ? [res.memberTurn] : []);
         applyMemberTurns(turns);
+        mirrorAcceptedRun(res.run, turns);
       }
       const adoptedRun = activeRun.value;
       if (!adoptedRun) {
@@ -2290,6 +2611,7 @@ export const useGroupsStore = defineStore("groups", () => {
               status: "working",
               startedAt: turn.startedAt ? new Date(turn.startedAt).getTime() : now,
               revision: 1,
+              attempt: turn.attempt,
             };
           }
           liveTurnsByMember.value = next;
@@ -2580,6 +2902,7 @@ export const useGroupsStore = defineStore("groups", () => {
   async function reconcileOnReconnect(): Promise<void> {
     liveCompletedMemberTurns.value = null;
     clearHandoffRunDetails();
+    refreshRunDetails();
     const barrierIds: Record<string, true> = {};
     for (const id of Object.keys(groupsLoaded.value)) barrierIds[id] = true;
     for (const id of Object.keys(groupsByInstance.value)) barrierIds[id] = true;
@@ -2679,6 +3002,23 @@ export const useGroupsStore = defineStore("groups", () => {
     return liveTurnsByMember.value[memberTurnId] ?? null;
   }
 
+  function completeRunPartsForMember(memberTurnId: string, attempt: number): TurnPartDto[] | undefined {
+    return runPartsAttempt[memberTurnId] === attempt ? completeRunParts.value[memberTurnId] : undefined;
+  }
+
+  function acceptsTraceCorrelation(corr: NonNullable<LiveTurnSnapshotDto["conversation"]>): boolean {
+    if (!corr.memberTurnId || !corr.runId) return false;
+    const member = memberTurnsById.value[corr.memberTurnId];
+    if (!member) return true;
+    // Explicit attempt/source evidence must agree with the durable member row;
+    // a legacy frame without them belongs to the member's current attempt.
+    if (member.runId !== corr.runId || member.conversationId !== corr.conversationId || member.topicId !== corr.topicId
+      || (corr.botId !== undefined && corr.botId !== member.botId)
+      || (corr.attempt !== undefined && corr.attempt !== member.attempt)
+      || (corr.sourceTurnId !== undefined && corr.sourceTurnId !== member.promptRequestId)) return false;
+    return true;
+  }
+
   function applyEvent(event: WebServerEvent): void {
     useConversationCommandsStore().ingest(event);
     if (event.kind === "instance-status") {
@@ -2703,7 +3043,8 @@ export const useGroupsStore = defineStore("groups", () => {
           (t: LiveTurnSnapshotDto) =>
             t.conversation &&
             t.conversation.conversationId === activeConversationId.value &&
-            t.conversation.topicId === activeTopicId.value,
+            t.conversation.topicId === activeTopicId.value &&
+            acceptsTraceCorrelation(t.conversation),
         );
         if (matchingTurns.length > 0) {
           const next: Record<string, GroupLiveTurn> = {};
@@ -2715,6 +3056,7 @@ export const useGroupsStore = defineStore("groups", () => {
               status: matchingTurn.status,
               startedAt: matchingTurn.startedAt,
               revision: (liveTurnsByMember.value[key]?.revision ?? 0) + 1,
+              attempt: corr?.attempt ?? (corr?.memberTurnId ? memberTurnsById.value[corr.memberTurnId]?.attempt : undefined),
             };
           }
           liveTurnsByMember.value = next;
@@ -2745,6 +3087,11 @@ export const useGroupsStore = defineStore("groups", () => {
                 ...runParts.value,
                 [partsKey]: [...matchingTurn.parts],
               };
+              if (corr?.attempt !== undefined) {
+                runPartsAttempt[partsKey] = corr.attempt;
+              } else if (corr?.memberTurnId && memberTurnsById.value[corr.memberTurnId]) {
+                runPartsAttempt[partsKey] = memberTurnsById.value[corr.memberTurnId]!.attempt;
+              }
               if (runPartsComplete.value[partsKey]) {
                 const { [partsKey]: _dropped, ...rest } = runPartsComplete.value;
                 runPartsComplete.value = rest;
@@ -2984,8 +3331,9 @@ export const useGroupsStore = defineStore("groups", () => {
           (!activeRun.value && isTerminalRunState(run.state))
         ) {
           activeRun.value = mergeRun(activeRun.value, run);
-                resolveUncertainPromptAgainstRun(run);
+          resolveUncertainPromptAgainstRun(run);
           applyMemberTurns([memberTurn]);
+          mirrorAcceptedRun(run, [memberTurn]);
         } else if (!isTerminalRunState(run.state)) {
           const isOwnDraft =
             run.requestId !== "" &&
@@ -3022,6 +3370,7 @@ export const useGroupsStore = defineStore("groups", () => {
               status: "working",
               startedAt: memberTurn.startedAt ? new Date(memberTurn.startedAt).getTime() : Date.now(),
               revision: (liveTurnsByMember.value[key]?.revision ?? 0) + 1,
+              attempt: memberTurn.attempt,
             },
           };
         }
@@ -3045,8 +3394,9 @@ export const useGroupsStore = defineStore("groups", () => {
           liveCompletedMemberTurns.value.ids[memberTurn.id] = true;
         }
         activeRun.value = mergeRun(activeRun.value, run);
-                resolveUncertainPromptAgainstRun(run);
+        resolveUncertainPromptAgainstRun(run);
         applyMemberTurns([memberTurn]);
+        mirrorAcceptedRun(run, [memberTurn]);
         const next = { ...liveTurnsByMember.value };
         delete next[memberTurn.id];
         liveTurnsByMember.value = next;
@@ -3075,6 +3425,7 @@ export const useGroupsStore = defineStore("groups", () => {
         corr.runId === undefined ||
         corr.conversationId !== activeConversationId.value ||
         corr.topicId !== activeTopicId.value ||
+        !acceptsTraceCorrelation(corr) ||
         (activeRun.value && corr.runId !== activeRun.value.id)
       ) {
         return;
@@ -3084,7 +3435,8 @@ export const useGroupsStore = defineStore("groups", () => {
       if (!existing) {
         liveTurnsByMember.value = {
           ...liveTurnsByMember.value,
-          [key]: { parts: [], status: "working", startedAt: Date.now(), revision: 0 },
+          [key]: { parts: [], status: "working", startedAt: Date.now(), revision: 0,
+            attempt: corr.attempt ?? memberTurnsById.value[key]?.attempt },
         };
       }
       const live = liveTurnsByMember.value[key]!;
@@ -3145,6 +3497,7 @@ export const useGroupsStore = defineStore("groups", () => {
             [key]: [...parts],
           };
           runPartsComplete.value = { ...runPartsComplete.value, [key]: true };
+          if (live.attempt !== undefined) runPartsAttempt[key] = live.attempt;
         }
       }
     }
@@ -3186,11 +3539,18 @@ export const useGroupsStore = defineStore("groups", () => {
     liveTurns,
     liveTurnsByMember,
     liveTurnForMember,
+    completeRunPartsForMember,
     planEntries,
+    planByRunId,
     cancellingRunId,
-    cancelUncertaintyRunId,
-    runParts,
-    completeRunParts,
+    runHistoryDetails,
+    runHistoryDetailRevision,
+    tracePages,
+    ensureRunDetails,
+    refreshRunDetails,
+    mirrorAcceptedRun,
+    ensureTracePage,
+    setOpenTrace,
     uncertainPrompt,
     sendPromptOutcomePromise,
     uncertainPromptText,
@@ -3202,6 +3562,9 @@ export const useGroupsStore = defineStore("groups", () => {
     promptError,
     promptErrorDetail,
     cancelError,
+    cancelUncertaintyRunId,
+    runParts,
+    completeRunParts,
     generalError,
     generalErrorCode,
     ownershipUncertain,

@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { isPublicPlanEntriesDto, isPublicToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { ConversationError } from "./conversation-error";
 import type { SqlDriver } from "./sql-driver";
 import type {
@@ -21,6 +22,10 @@ interface EventRow { seq: number; kind: MemberTurnTraceInputEvent["kind"]; paylo
 
 function error(code: string, message: string): never { throw new ConversationError(code, message); }
 function bytes(value: unknown): number { return Buffer.byteLength(JSON.stringify(value), "utf8"); }
+function hasOnlyKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).every(key => keys.includes(key));
+}
 function record(row: TraceRow): MemberTurnTraceRecord {
   return {
     identity: { conversationId: row.conversation_id, topicId: row.topic_id, runId: row.run_id, botId: row.bot_id,
@@ -66,6 +71,15 @@ export class SqliteMemberTurnTraceStore {
     return row;
   }
 
+  private currentMember(identity: MemberTurnTraceIdentity): { state: string } | undefined {
+    return this.sql.get<{ state: string }>(`SELECT m.state FROM member_turns m JOIN runs r ON r.id = m.run_id
+      WHERE m.id = ? AND m.attempt = ? AND m.source_turn_id = ? AND m.bot_id = ?
+      AND m.conversation_id = ? AND m.topic_id = ? AND m.run_id = ?
+      AND r.conversation_id = m.conversation_id AND r.topic_id = m.topic_id`,
+    [identity.memberTurnId, identity.attempt, identity.sourceTurnId, identity.botId,
+      identity.conversationId, identity.topicId, identity.runId]);
+  }
+
   get(query: MemberTurnTraceQuery): MemberTurnTraceRecord | undefined {
     const row = this.row(query);
     return row ? record(row) : undefined;
@@ -87,8 +101,12 @@ export class SqliteMemberTurnTraceStore {
     if (events.length > 512 || bytes(events) > MAX_PAGE_BYTES) error("trace_batch_too_large", "trace batch exceeds the durable writer bound");
     const fingerprint = createHash("sha256").update(JSON.stringify(events)).digest("hex");
     const payloads = events.map((event, index) => {
-      if (typeof event.createdAt !== "string" || !event.createdAt || !event.payload) {
-        error("trace_event_invalid", "trace event is invalid");
+      if (!hasOnlyKeys(event, ["kind", "payload", "createdAt"])
+        || typeof event.createdAt !== "string" || !event.createdAt
+        || !hasOnlyKeys(event.payload, event.kind === "tool" ? ["step"]
+          : event.kind === "plan" ? ["entries"]
+          : event.kind === "terminal" ? ["ok", "cancelled", "errorMessage"] : ["text"])) {
+        error("trace_event_invalid", "trace event requires only public fields");
       }
       if (bytes(event) > MAX_EVENT_BYTES) {
         error("trace_event_too_large", "trace event exceeds the public event bound; recorder must mark the trace interrupted");
@@ -98,18 +116,13 @@ export class SqliteMemberTurnTraceStore {
           if (typeof event.payload.text !== "string") error("trace_event_invalid", "trace text must be a string");
           break;
         case "tool": {
-          const step = event.payload.step;
-          if (!step || typeof step !== "object" || typeof step.toolCallId !== "string" || !step.toolCallId
-            || typeof step.toolName !== "string" || !step.toolName || typeof step.title !== "string"
-            || typeof step.kind !== "string" || typeof step.status !== "string"
-            || ("rawInput" in step) || ("rawOutput" in step)) {
+          if (!isPublicToolStepDto(event.payload.step)) {
             error("trace_event_invalid", "trace tool requires a public normalized step and no raw adapter internals");
           }
           break;
         }
         case "plan":
-          if (!Array.isArray(event.payload.entries)
-            || event.payload.entries.some((entry) => typeof entry?.content !== "string" || typeof entry?.status !== "string")) {
+          if (!isPublicPlanEntriesDto(event.payload.entries)) {
             error("trace_event_invalid", "trace plan requires public entries");
           }
           break;
@@ -126,8 +139,6 @@ export class SqliteMemberTurnTraceStore {
     });
     return this.sql.transaction(() => {
       const existing = this.row(identity);
-      const collision = this.sql.get("SELECT 1 FROM member_turn_traces WHERE member_turn_id = ? AND attempt = ?",
-        [identity.memberTurnId, identity.attempt]);
       const prior = this.sql.get<{ fingerprint: string; first_seq: number; last_seq: number; recording_state: MemberTurnTraceRecordingState }>(
         "SELECT fingerprint, first_seq, last_seq, recording_state FROM member_turn_trace_batches WHERE member_turn_id = ? AND attempt = ? AND batch_id = ?",
         [identity.memberTurnId, identity.attempt, batchId]);
@@ -137,12 +148,7 @@ export class SqliteMemberTurnTraceStore {
         return { reused: true, firstSeq: prior.first_seq, lastSeq: prior.last_seq, recordingState: prior.recording_state };
       }
       if (existing && existing.recording_state !== "recording") error("trace_not_recording", "closed trace cannot accept new events");
-      const member = this.sql.get<{ state: string }>(`SELECT m.state FROM member_turns m JOIN runs r ON r.id = m.run_id
-        WHERE m.id = ? AND m.attempt = ? AND m.source_turn_id = ? AND m.bot_id = ?
-        AND m.conversation_id = ? AND m.topic_id = ? AND m.run_id = ?
-        AND r.conversation_id = m.conversation_id AND r.topic_id = m.topic_id`,
-      [identity.memberTurnId, identity.attempt, identity.sourceTurnId, identity.botId,
-        identity.conversationId, identity.topicId, identity.runId]);
+      const member = this.currentMember(identity);
       if (!member || (!existing && member.state !== "running")) error("trace_identity_mismatch", "trace identity is not the durable physical member execution");
       const now = events[0]?.createdAt ?? new Date().toISOString();
       if (!existing) this.sql.run(`INSERT INTO member_turn_traces
@@ -175,7 +181,8 @@ export class SqliteMemberTurnTraceStore {
   listEvents(query: MemberTurnTraceQuery, options: MemberTurnTracePageOptions = {}): MemberTurnTracePage | undefined {
     const afterSeq = options.afterSeq ?? 0;
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) error("trace_cursor_invalid", "trace cursor must be a nonnegative integer");
-    const limit = Math.min(100, Math.max(1, Math.floor(options.limit ?? 50)));
+    // Public page control cap: consumers may request at most 200 events per page.
+    const limit = Math.min(200, Math.max(1, Math.floor(options.limit ?? 50)));
     const maxBytes = Math.min(MAX_PAGE_BYTES, Math.floor(options.maxBytes ?? DEFAULT_PAGE_BYTES));
     if (!Number.isFinite(limit) || !Number.isFinite(maxBytes) || maxBytes < 1) error("trace_page_invalid", "trace page bounds must be finite positive numbers");
     return this.sql.transaction(() => {
@@ -209,9 +216,22 @@ export class SqliteMemberTurnTraceStore {
   interrupt(identity: MemberTurnTraceIdentity, reason: string, now = new Date().toISOString()): boolean {
     return this.sql.transaction(() => {
       const row = this.row(identity);
-      if (!row || row.recording_state !== "recording") return false;
+      if (!row || row.recording_state !== "recording" || !this.currentMember(identity)) return false;
       this.sql.run(`UPDATE member_turn_traces SET recording_state = 'interrupted', completeness_reason = ?, updated_at = ?, finished_at = ?
         WHERE member_turn_id = ? AND attempt = ?`, [reason, now, now, identity.memberTurnId, identity.attempt]);
+      return true;
+    });
+  }
+
+  /** Durable completeness is never acceptable when identity validation fails mid-stream.
+   *  A recording keyed to (memberTurnId, attempt) whose durable physical member no longer
+   *  matches is permanently unclosable by any genuine terminal event: close it interrupted. */
+  closeUnknownIdentity(identity: MemberTurnTraceIdentity, now = new Date().toISOString()): boolean {
+    return this.sql.transaction(() => {
+      const row = this.row(identity);
+      if (!row || row.recording_state !== "recording" || this.currentMember(identity)) return false;
+      this.sql.run(`UPDATE member_turn_traces SET recording_state = 'interrupted', completeness_reason = 'trace_identity_mismatch', updated_at = ?, finished_at = ?
+        WHERE member_turn_id = ? AND attempt = ?`, [now, now, identity.memberTurnId, identity.attempt]);
       return true;
     });
   }

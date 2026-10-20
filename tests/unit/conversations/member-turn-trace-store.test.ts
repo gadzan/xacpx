@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { createSqlDriver } from "../../../src/conversations/sql-driver";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { ConversationError } from "../../../src/conversations/conversation-error";
+import type { MemberTurnTraceIdentity, MemberTurnTraceInputEvent } from "../../../src/conversations/member-turn-trace";
 const NOW = "2026-10-20T12:00:00.000Z";
 const identity: MemberTurnTraceIdentity = {
   conversationId: "conversation_pr8_explicit", topicId: "topic_pr8_explicit", runId: "run_pr8_explicit",
@@ -87,6 +88,91 @@ test("durable batch replay preserves exact ordered events and latest plan withou
   } finally { store.close(); }
 });
 
+test("fresh empty database migrates trace tables additively and leaves every read empty", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-trace-empty-")), "conversations.sqlite");
+  let store: SqliteConversationStore | undefined;
+  try {
+    store = await SqliteConversationStore.open(path);
+    expect(store.traces.get(identity)).toBeUndefined();
+    expect(store.traces.listAttempts({ conversationId: identity.conversationId, topicId: identity.topicId,
+      runId: identity.runId })).toEqual([]);
+    expect(store.traces.listEvents(identity)).toBeUndefined();
+    expect(store.getRun(identity.runId)).toBeUndefined();
+    expect(store.traces.interrupt(identity, "nothing", NOW)).toBe(false);
+    expect(store.traces.activateConsumer(NOW)).toBe(0);
+    expect(() => store.traces.appendBatch(identity, "orphan", [])).toThrow();
+    store.close();
+    store = await SqliteConversationStore.open(path);
+    expect(store.traces.get(identity)).toBeUndefined();
+    expect(store.traces.listAttempts({ conversationId: identity.conversationId, topicId: identity.topicId,
+      runId: identity.runId })).toEqual([]);
+  } finally {
+    store?.close();
+    rmSync(dirname(path), { recursive: true, force: true });
+  }
+});
+
+test("valid rich public steps and plans persist while unknown keys, nesting or enums never write", async () => {
+  const { sql, store } = await fixture();
+  try {
+    const richStep = {
+      toolCallId: "tool-rich", parentToolCallId: "tool-parent", isSubagent: false, toolName: "edit_file",
+      kind: "edit" as const, title: "src/agent.ts", titleIsPath: true, status: "success" as const,
+      durationMs: 12,
+      detail: { type: "diff" as const, path: "src/agent.ts", oldText: "old", newText: "new", instruction: "swap" },
+    };
+    const richPlan = [
+      { content: "survey", status: "completed" as const, priority: "high" as const },
+      { content: "patch", status: "in_progress" as const, priority: "medium" as const },
+      { content: "verify", status: "pending" as const, priority: "low" as const },
+    ];
+    const rich: MemberTurnTraceInputEvent[] = [
+      { kind: "tool", payload: { step: richStep }, createdAt: NOW },
+      { kind: "plan", payload: { entries: richPlan }, createdAt: NOW },
+    ];
+    expect(store.traces.appendBatch(identity, "rich", rich)).toMatchObject({ firstSeq: 1, lastSeq: 2 });
+    expect(store.traces.listEvents(identity)!.events[0]?.payload).toEqual({ step: richStep });
+    expect(store.traces.listEvents(identity)!.plan).toEqual(richPlan);
+    const baseline = sql.get<{ count: number }>("SELECT COUNT(*) AS count FROM member_turn_trace_events")!.count;
+    const rejected: Array<[string, MemberTurnTraceInputEvent[]]> = [
+      ["unknown event key", [{ ...text, extra: "leaked" } as unknown as MemberTurnTraceInputEvent]],
+      ["unknown payload key", [{ kind: "reasoning", payload: { text: "t", raw: "secret" }, createdAt: NOW } as unknown as MemberTurnTraceInputEvent]],
+      ["nested raw tool key", [{ kind: "tool", payload: { step: { ...richStep, rawInput: { cmd: "secret" } } }, createdAt: NOW } as unknown as MemberTurnTraceInputEvent]],
+      ["invalid tool status", [{ kind: "tool", payload: { step: { ...richStep, status: "bogus" } }, createdAt: NOW } as unknown as MemberTurnTraceInputEvent]],
+      ["invalid tool kind", [{ kind: "tool", payload: { step: { ...richStep, kind: "bogus" } }, createdAt: NOW } as unknown as MemberTurnTraceInputEvent]],
+      ["nested raw plan entry", [{ kind: "plan", payload: { entries: [{ ...richPlan[0]!, raw: "secret" }] }, createdAt: NOW } as unknown as MemberTurnTraceInputEvent]],
+      ["invalid plan status", [{ kind: "plan", payload: { entries: [{ content: "x", status: "bogus" }] }, createdAt: NOW } as unknown as MemberTurnTraceInputEvent]],
+      ["invalid terminal extra", [{ kind: "terminal", payload: { ok: true, raw: "secret" }, createdAt: NOW } as unknown as MemberTurnTraceInputEvent]],
+    ];
+    for (const [label, events] of rejected) {
+      expect(() => store.traces.appendBatch(identity, `reject-${label}-${baseline}`, events), label).toThrow();
+    }
+    expect(sql.get<{ count: number }>("SELECT COUNT(*) AS count FROM member_turn_trace_events")!.count).toBe(baseline);
+    expect(store.traces.get(identity)).toMatchObject({ recordingState: "recording", lastSeq: 2 });
+    expect(store.traces.listAttempts(identity)).toHaveLength(1);
+  } finally { store.close(); }
+});
+
+test("flush revalidation fallback closes stale identities interrupted and never fabricates terminals", async () => {
+  const { sql, store } = await fixture();
+  try {
+    store.traces.appendBatch(identity, "first", [text]);
+    expect(store.traces.closeUnknownIdentity(identity, NOW)).toBe(false);
+    expect(store.traces.closeUnknownIdentity({ ...identity, memberTurnId: "mturn_missing" }, NOW)).toBe(false);
+    sql.run("UPDATE member_turns SET source_turn_id = 'rotated' WHERE id = ?", [identity.memberTurnId]);
+    expect(store.traces.closeUnknownIdentity(identity, "2026-10-20T13:00:00.000Z")).toBe(true);
+    expect(store.traces.get(identity)).toMatchObject({
+      recordingState: "interrupted",
+      completenessReason: "trace_identity_mismatch",
+      finishedAt: "2026-10-20T13:00:00.000Z",
+      lastSeq: 1,
+    });
+    expect(store.traces.closeUnknownIdentity(identity, NOW)).toBe(false);
+    expect(() => store.traces.appendBatch(identity, "late", [text])).toThrow();
+    expect(store.traces.listEvents(identity)?.events).toHaveLength(1);
+  } finally { store.close(); }
+});
+
 test("raw adapter payloads and oversize events are rejected without durable side effects", async () => {
   const { sql, store } = await fixture();
   try {
@@ -150,11 +236,11 @@ test("only an accepted final terminal marker completes a trace, even after membe
 test("paging has exact scope, stable cursors, bounded event counts and UTF-8 response bytes", async () => {
   const { store } = await fixture();
   try {
-    store.traces.appendBatch(identity, "many", Array.from({ length: 120 }, (_, index) => ({
+    store.traces.appendBatch(identity, "many", Array.from({ length: 220 }, (_, index) => ({
       kind: "text" as const, payload: { text: `${index}:界`.repeat(40) }, createdAt: NOW,
     })));
     const capped = store.traces.listEvents(identity, { limit: 10000 })!;
-    expect(capped.events).toHaveLength(100);
+    expect(capped.events).toHaveLength(200);
     expect(capped.hasMore).toBe(true);
     let cursor = 0;
     const sequences: number[] = [];
@@ -166,9 +252,9 @@ test("paging has exact scope, stable cursors, bounded event counts and UTF-8 res
       sequences.push(...page.events.map(event => event.seq));
       cursor = page.nextSeq;
       if (!page.hasMore) break;
-    } while (cursor < 120);
-    expect(sequences).toEqual(Array.from({ length: 120 }, (_, index) => index + 1));
-    expect(store.traces.listEvents(identity, { afterSeq: 120 })?.events).toEqual([]);
+    } while (cursor < 220);
+    expect(sequences).toEqual(Array.from({ length: 220 }, (_, index) => index + 1));
+    expect(store.traces.listEvents(identity, { afterSeq: 220 })?.events).toEqual([]);
     expect(store.traces.listEvents({ ...identity, runId: "foreign" })).toBeUndefined();
     expect(() => store.traces.listEvents(identity, { afterSeq: -1 })).toThrow();
     expect(() => store.traces.listEvents(identity, { maxBytes: 1 })).toThrow();

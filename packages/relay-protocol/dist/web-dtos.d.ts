@@ -1,5 +1,6 @@
 import { type RelayEnvelope } from "./envelope.js";
-import type { AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, InteractionSnapshotDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, InteractionSnapshotDto, PeerMessageHistoryEntry, PlanEntryDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { RunsDetailsBatchResult, RunsTraceGetResult } from "./messages.js";
 import { type DesktopCredential, type DesktopSecurityKind, type InstanceNoticePayload, type TerminalRole } from "./messages.js";
 /** Envelope `type` for every relay→web push. */
 export declare const WEB_EVENT_TYPE = "web.event";
@@ -270,6 +271,11 @@ export type WebServerEvent = {
 /** Wrap a server→web push event in a relay envelope. */
 export declare function webEventEnvelope(event: WebServerEvent): RelayEnvelope;
 export declare function isConversationWorktreeStatus(value: unknown): value is import("./dtos.js").ConversationWorktreeStatusDto;
+export declare function isPublicPlanEntryDto(value: unknown): value is PlanEntryDto;
+export declare function isPublicPlanEntriesDto(value: unknown): value is PlanEntryDto[];
+export declare function isRunsDetailsBatchResult(value: unknown): value is RunsDetailsBatchResult;
+export declare function isPublicToolStepDto(value: unknown): value is ToolStepDto;
+export declare function isRunsTraceGetResult(value: unknown): value is RunsTraceGetResult;
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
  *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */

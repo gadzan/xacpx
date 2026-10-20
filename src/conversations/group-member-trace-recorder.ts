@@ -1,14 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { toolUseEventToStepDto } from "@ganglion/xacpx-relay-protocol";
-import type { PlanEntryDto, ToolStepDto } from "@ganglion/xacpx-relay-protocol";
+import type { PlanEntryDto } from "@ganglion/xacpx-relay-protocol";
 import type { PlanEntry, ToolUseEvent } from "../channels/types";
 import type { ControlEvent, ControlEventBus } from "../control/control-event-bus";
 import type { ConversationTurnCorrelation } from "../control/conversation-control-dtos";
 import { ConversationError } from "./conversation-error";
 import type { ConversationStore } from "./conversation-store";
-import type { MemberTurnTraceInputEvent } from "./member-turn-trace";
+import type { MemberTurnTraceIdentity, MemberTurnTraceInputEvent } from "./member-turn-trace";
 import type { AppState } from "../state/types";
 
-/** Bounded recorder input for one physical Group MemberTurn stream. */
+/** Records only the already-public provider events of observed Group turns. */
 export interface GroupMemberTraceRecorderInput {
   store: ConversationStore;
   state: AppState;
@@ -17,115 +18,97 @@ export interface GroupMemberTraceRecorderInput {
   onError?: (error: unknown) => void;
 }
 
-interface RecorderIdentity {
-  conversationId: string;
-  topicId: string;
-  runId: string;
-  botId: string;
-  memberTurnId: string;
-  attempt: number;
-  sourceTurnId: string;
-}
-
 interface PendingStream {
-  identity: RecorderIdentity;
-  text: string;
-  reasoning: string;
-  plan: PlanEntryDto[] | undefined;
+  identity: MemberTurnTraceIdentity;
+  events: MemberTurnTraceInputEvent[];
+  bytes: number;
 }
 
-const MAX_TEXT_CHUNK = 32 * 1024;
-const MAX_REASONING_CHUNK = 32 * 1024;
-const MAX_PLAN_ENTRIES = 200;
-const MAX_PLAN_CONTENT = 4 * 1024;
+const MAX_EVENT_BYTES = 128 * 1024;
+const MAX_BATCH_BYTES = 256 * 1024;
 const MAX_BATCH_EVENTS = 64;
+const MAX_ACTIVE_STREAMS = 128;
+// Even JSON-escaped control characters occupy at most six bytes per code unit.
+const TEXT_CHUNK_LENGTH = 16 * 1024;
+const FLUSH_INTERVAL_MS = 25;
 
-function asText(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return undefined;
-}
-
-function sanitizePlan(entries: PlanEntry[]): PlanEntryDto[] | undefined {
-  if (!Array.isArray(entries) || entries.length === 0) return undefined;
-  const sanitized: PlanEntryDto[] = [];
-  for (const entry of entries.slice(0, MAX_PLAN_ENTRIES)) {
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as { content?: unknown; status?: unknown; priority?: unknown };
-    const content = asText(record.content)?.slice(0, MAX_PLAN_CONTENT);
-    if (!content || (record.status !== "pending" && record.status !== "in_progress" && record.status !== "completed")) continue;
-    const sanitizedEntry: PlanEntryDto = { content, status: record.status };
-    if (record.priority === "high" || record.priority === "medium" || record.priority === "low") {
-      sanitizedEntry.priority = record.priority;
-    }
-    sanitized.push(sanitizedEntry);
+function publicPlan(entries: PlanEntry[]): PlanEntryDto[] {
+  if (!Array.isArray(entries) || entries.length > 200) {
+    throw new ConversationError("trace_plan_invalid", "trace plan exceeds its public bound");
   }
-  return sanitized.length > 0 ? sanitized : undefined;
+  return entries.map((entry) => {
+    if (!entry || typeof entry.content !== "string" || entry.content.length > 4 * 1024
+      || (entry.status !== "pending" && entry.status !== "in_progress" && entry.status !== "completed")) {
+      throw new ConversationError("trace_plan_invalid", "trace plan cannot be recorded without loss");
+    }
+    const result: PlanEntryDto = { content: entry.content, status: entry.status };
+    if (entry.priority === "high" || entry.priority === "medium" || entry.priority === "low") {
+      result.priority = entry.priority;
+    }
+    return result;
+  });
 }
 
-/** Durable recorder for the already-public Group MemberTurn execution surface. */
 export class GroupMemberTraceRecorder {
   private readonly store: ConversationStore;
   private readonly state: AppState;
-  private readonly events: ControlEventBus;
   private readonly now: () => string;
   private readonly onError?: (error: unknown) => void;
-  private readonly pending = new Map<string, PendingStream>();
-  private readonly batchIds = new Map<string, number>();
+  private readonly streams = new Map<string, PendingStream>();
+  private readonly batchPrefix = randomUUID();
+  private batchNumber = 0;
+  private timer: NodeJS.Timeout | undefined;
   private active = false;
   private activated = false;
+  private acceptingStarts = true;
   private readonly unsubscribe: () => void;
 
   constructor(input: GroupMemberTraceRecorderInput) {
     this.store = input.store;
     this.state = input.state;
-    this.events = input.events;
     this.now = input.now ?? (() => new Date().toISOString());
     this.onError = input.onError;
-    // Subscribe immediately so the recorder precedes channel/transport observers
-    // in ControlEventBus insertion order. The callback stays inert until the
-    // daemon holds its consumer lock, so nothing writes before activation.
-    this.unsubscribe = this.events.subscribe((event) => {
+    this.unsubscribe = input.events.subscribe((event) => {
       if (!this.active) return;
       try {
         this.handle(event);
       } catch (error) {
+        // An unexpected recorder error must never let later events claim completeness.
+        this.acceptingStarts = false;
+        for (const stream of this.streams.values()) this.fail(stream, error);
         this.report(error);
       }
     });
   }
 
-  /** Mark pre-restart recording streams interrupted, then accept live events. */
   activate(): void {
     if (this.activated) return;
     this.activated = true;
     try {
       this.store.traces.activateConsumer(this.now());
+      this.active = true;
     } catch (error) {
       this.report(error);
     }
-    this.active = true;
   }
 
-  /** Flush pending public events, then detach. Unclosed recording headers stay
-   *  recording until the next consumer activation proves a restart; a clean
-   *  shutdown must not rewrite them as interrupted. Dispatcher drain already
-   *  ran before this hook, so pending events belong to complete work. Trace
-   *  recording state still changes only on a committed terminal marker. */
+  /** Called before SQLite closes; commit buffered events before interrupting open turns. */
   dispose(): void {
     this.active = false;
-    const pending = [...this.pending.values()];
-    this.pending.clear();
-    this.batchIds.clear();
+    clearTimeout(this.timer);
+    this.timer = undefined;
     try {
-      for (const stream of pending) {
-        this.flushText(stream.identity, stream, this.now());
+      for (const stream of this.streams.values()) {
+        if (this.flush(stream)) this.fail(stream, new ConversationError("recorder_disposed", "trace ended before its terminal event"));
       }
+    } catch (error) {
+      this.report(error);
     } finally {
+      this.streams.clear();
       try {
         this.unsubscribe();
-      } catch {
-        // Dispose must not throw; shutdown still closes SQLite below.
+      } catch (error) {
+        this.report(error);
       }
     }
   }
@@ -134,36 +117,11 @@ export class GroupMemberTraceRecorder {
     try {
       this.onError?.(error);
     } catch {
-      // Reporting must never throw back into agent execution.
+      // Recorder diagnostics cannot affect the provider turn or shutdown.
     }
   }
 
-  private handle(event: ControlEvent): void {
-    switch (event.type) {
-      case "turn-started":
-        this.handleStart(event.conversation);
-        return;
-      case "turn-output":
-        this.appendText(event.conversation, event.chunk, "text");
-        return;
-      case "turn-thought":
-        this.appendText(event.conversation, event.chunk, "reasoning");
-        return;
-      case "tool-event":
-        this.appendTool(event.conversation, event.event);
-        return;
-      case "plan":
-        this.appendPlan(event.conversation, event.entries);
-        return;
-      case "turn-finished":
-        this.finish(event.conversation, event.ok, event.cancelled, event.errorMessage);
-        return;
-      default:
-        return;
-    }
-  }
-
-  private identity(correlation: ConversationTurnCorrelation | undefined): RecorderIdentity | undefined {
+  private identity(correlation: ConversationTurnCorrelation | undefined): MemberTurnTraceIdentity | undefined {
     if (!correlation || correlation.attempt === undefined || !correlation.sourceTurnId) return undefined;
     if (!Number.isSafeInteger(correlation.attempt) || correlation.attempt < 1) return undefined;
     const conversation = this.state.conversations[correlation.conversationId];
@@ -175,145 +133,173 @@ export class GroupMemberTraceRecorder {
     const member = this.store.getMemberTurn(correlation.memberTurnId);
     if (!member || member.runId !== run.id || member.conversationId !== run.conversationId
       || member.topicId !== run.topicId || member.botId !== correlation.botId
-      || member.attempt !== correlation.attempt || member.sourceTurnId !== correlation.sourceTurnId) {
-      return undefined;
-    }
+      || member.attempt !== correlation.attempt || member.sourceTurnId !== correlation.sourceTurnId) return undefined;
     return {
       conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
       botId: member.botId, memberTurnId: member.id, attempt: member.attempt,
-      sourceTurnId: member.sourceTurnId ?? correlation.sourceTurnId,
+      sourceTurnId: correlation.sourceTurnId,
     };
   }
 
-  private keyFor(identity: Pick<RecorderIdentity, "memberTurnId" | "attempt">): string {
-    return `${identity.memberTurnId}:${identity.attempt}`;
+  private key(identity: MemberTurnTraceIdentity): string {
+    return JSON.stringify([identity.memberTurnId, identity.attempt, identity.sourceTurnId]);
   }
 
-  private nextBatchId(identity: Pick<RecorderIdentity, "memberTurnId" | "attempt">): string {
-    const key = this.keyFor(identity);
-    const next = (this.batchIds.get(key) ?? 0) + 1;
-    this.batchIds.set(key, next);
-    return `${key}:${next}`;
-  }
-
-  private pendingFor(identity: RecorderIdentity): PendingStream {
-    const key = this.keyFor(identity);
-    let stream = this.pending.get(key);
-    if (!stream) {
-      stream = { identity, text: "", reasoning: "", plan: undefined };
-      this.pending.set(key, stream);
-    } else {
-      stream.identity = identity;
-    }
-    return stream;
-  }
-
-  private write(identity: RecorderIdentity, events: MemberTurnTraceInputEvent[]): void {
-    try {
-      this.store.traces.appendBatch(identity, this.nextBatchId(identity), events);
-    } catch (error) {
-      if (error instanceof ConversationError && error.code === "trace_event_too_large") {
-        try {
-          this.store.traces.interrupt(identity, "trace_event_too_large", this.now());
-        } catch {
-          // Fall through to error reporting below.
-        }
-      }
-      this.report(error);
-    }
-  }
-
-  private flushText(identity: RecorderIdentity, stream: PendingStream, createdAt: string): void {
-    const events: MemberTurnTraceInputEvent[] = [];
-    if (stream.text) {
-      const text = stream.text;
-      stream.text = "";
-      for (let offset = 0; offset < text.length; offset += MAX_TEXT_CHUNK) {
-        events.push({ kind: "text", payload: { text: text.slice(offset, offset + MAX_TEXT_CHUNK) }, createdAt });
-        if (events.length >= MAX_BATCH_EVENTS) {
-          this.write(identity, events.splice(0, events.length));
-        }
-      }
-    }
-    if (stream.reasoning) {
-      const reasoning = stream.reasoning;
-      stream.reasoning = "";
-      for (let offset = 0; offset < reasoning.length; offset += MAX_REASONING_CHUNK) {
-        events.push({ kind: "reasoning", payload: { text: reasoning.slice(offset, offset + MAX_REASONING_CHUNK) }, createdAt });
-        if (events.length >= MAX_BATCH_EVENTS) {
-          this.write(identity, events.splice(0, events.length));
-        }
-      }
-    }
-    if (events.length > 0) this.write(identity, events);
-  }
-
-  private handleStart(correlation: ConversationTurnCorrelation | undefined): void {
+  private stream(correlation: ConversationTurnCorrelation | undefined): PendingStream | undefined {
     const identity = this.identity(correlation);
-    if (!identity) return;
+    return identity ? this.streams.get(this.key(identity)) : undefined;
+  }
+
+  private fail(stream: PendingStream, error: unknown): void {
+    stream.events = [];
+    stream.bytes = 0;
+    this.streams.delete(this.key(stream.identity));
     try {
-      this.store.traces.appendBatch(identity, this.nextBatchId(identity), []);
+      const interrupted = this.store.traces.interrupt(stream.identity,
+        error instanceof ConversationError ? error.code : "trace_write_failed", this.now());
+      // If no failure marker landed, a stale physical execution must still lose
+      // completeness without a fake terminal; refuse any further recorder starts.
+      if (!interrupted && !this.store.traces.closeUnknownIdentity(stream.identity, this.now())) {
+        this.acceptingStarts = false;
+      }
+    } catch (failure) {
+      this.acceptingStarts = false;
+      this.report(failure);
+    }
+    if (!(error instanceof ConversationError && error.code === "recorder_disposed")) this.report(error);
+  }
+
+  private write(stream: PendingStream, events: MemberTurnTraceInputEvent[]): boolean {
+    try {
+      if (!this.identity(stream.identity)) {
+        throw new ConversationError("trace_identity_mismatch", "trace execution identity changed before flush");
+      }
+      this.store.traces.appendBatch(stream.identity, `${this.batchPrefix}:${++this.batchNumber}`, events);
+      return true;
     } catch (error) {
-      this.report(error);
+      this.fail(stream, error);
+      return false;
     }
   }
 
-  private appendText(correlation: ConversationTurnCorrelation | undefined, chunk: string, kind: "text" | "reasoning"): void {
-    const identity = this.identity(correlation);
-    const text = asText(chunk);
-    if (!identity || !text) return;
-    const stream = this.pendingFor(identity);
-    if (kind === "text") stream.text += text;
-    else stream.reasoning += text;
-    if (stream.text.length + stream.reasoning.length >= MAX_TEXT_CHUNK) {
-      this.flushText(identity, stream, this.now());
+  private flush(stream: PendingStream): boolean {
+    if (stream.events.length === 0) return true;
+    const events = stream.events;
+    stream.events = [];
+    stream.bytes = 0;
+    return this.write(stream, events);
+  }
+
+  private scheduleFlush(): void {
+    if (this.timer !== undefined || !this.active) return;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      for (const stream of this.streams.values()) this.flush(stream);
+    }, FLUSH_INTERVAL_MS);
+    this.timer.unref?.();
+  }
+
+  private enqueue(stream: PendingStream, event: MemberTurnTraceInputEvent): boolean {
+    try {
+      const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+      if (bytes > MAX_EVENT_BYTES) throw new ConversationError("trace_event_too_large", "trace event exceeds its public bound");
+      if (stream.events.length >= MAX_BATCH_EVENTS || stream.bytes + bytes + stream.events.length + 2 > MAX_BATCH_BYTES) {
+        if (!this.flush(stream)) return false;
+      }
+      stream.events.push(event);
+      stream.bytes += bytes;
+      this.scheduleFlush();
+      return true;
+    } catch (error) {
+      this.fail(stream, error);
+      return false;
     }
   }
 
-  private appendTool(correlation: ConversationTurnCorrelation | undefined, event: ToolUseEvent): void {
+  private start(correlation: ConversationTurnCorrelation | undefined): void {
+    if (!this.acceptingStarts) return;
     const identity = this.identity(correlation);
-    if (!identity) return;
-    let step: ToolStepDto;
-    try {
-      step = toolUseEventToStepDto(event);
-    } catch (error) {
-      this.report(error);
+    if (!identity || this.streams.has(this.key(identity)) || this.store.traces.get(identity)) return;
+    const stream: PendingStream = { identity, events: [], bytes: 0 };
+    if (this.streams.size >= MAX_ACTIVE_STREAMS) {
+      if (this.write(stream, [])) {
+        this.fail(stream, new ConversationError("trace_capacity_exceeded", "trace recorder active stream bound reached"));
+      }
       return;
     }
-    const stream = this.pendingFor(identity);
-    this.flushText(identity, stream, this.now());
-    this.write(identity, [{ kind: "tool", payload: { step }, createdAt: this.now() }]);
+    if (this.write(stream, [])) this.streams.set(this.key(identity), stream);
   }
 
-  private appendPlan(correlation: ConversationTurnCorrelation | undefined, entries: PlanEntry[]): void {
-    const identity = this.identity(correlation);
-    if (!identity) return;
-    const plan = sanitizePlan(entries);
-    if (!plan) return;
-    const stream = this.pendingFor(identity);
-    this.flushText(identity, stream, this.now());
-    stream.plan = plan;
-    this.write(identity, [{ kind: "plan", payload: { entries: plan }, createdAt: this.now() }]);
-  }
-
-  private finish(correlation: ConversationTurnCorrelation | undefined, ok: boolean, cancelled: boolean | undefined, errorMessage: string | undefined): void {
-    const identity = this.identity(correlation);
-    if (!identity) return;
-    const stream = this.pendingFor(identity);
-    this.flushText(identity, stream, this.now());
+  private appendText(stream: PendingStream, text: string, kind: "text" | "reasoning"): void {
+    if (typeof text !== "string") {
+      this.fail(stream, new ConversationError("trace_event_invalid", "trace text must be public text"));
+      return;
+    }
     const createdAt = this.now();
-    // Streamed tool frames flush synchronously before turn-finished already;
-    // writing the accepted terminal marker here keeps the durable reader from
-    // ever observing a complete trace whose final event was not committed.
-    this.write(identity, [{
-      kind: "terminal",
-      payload: {
-        ok,
-        ...(cancelled !== undefined ? { cancelled } : {}),
-        ...(errorMessage !== undefined ? { errorMessage: errorMessage.slice(0, 4000) } : {}),
-      },
-      createdAt,
-    }]);
-    this.pending.delete(this.keyFor(identity));
+    for (let offset = 0; offset < text.length;) {
+      let end = Math.min(offset + TEXT_CHUNK_LENGTH, text.length);
+      const last = text.charCodeAt(end - 1);
+      if (end < text.length && last >= 0xd800 && last <= 0xdbff
+        && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
+      const textChunk = text.slice(offset, end);
+      const previous = stream.events.at(-1);
+      const additionalBytes = Buffer.byteLength(JSON.stringify(textChunk), "utf8") - 2;
+      if (previous?.kind === kind && (previous.kind === "text" || previous.kind === "reasoning")
+        && previous.payload.text.length + textChunk.length <= TEXT_CHUNK_LENGTH
+        && stream.bytes + additionalBytes + stream.events.length + 2 <= MAX_BATCH_BYTES) {
+        previous.payload.text += textChunk;
+        stream.bytes += additionalBytes;
+        offset = end;
+        continue;
+      }
+      if (!this.enqueue(stream, { kind, payload: { text: textChunk }, createdAt })) return;
+      offset = end;
+    }
+  }
+
+  private appendTool(stream: PendingStream, event: ToolUseEvent): void {
+    try {
+      if (this.enqueue(stream, { kind: "tool", payload: { step: toolUseEventToStepDto(event) }, createdAt: this.now() })) {
+        this.flush(stream);
+      }
+    } catch (error) {
+      this.fail(stream, error);
+    }
+  }
+
+  private handle(event: ControlEvent): void {
+    if (event.type === "turn-started") {
+      this.start(event.conversation);
+      return;
+    }
+    if (event.type !== "turn-output" && event.type !== "turn-thought" && event.type !== "tool-event"
+      && event.type !== "plan" && event.type !== "turn-finished") return;
+    const stream = this.stream(event.conversation);
+    if (!stream) return;
+    switch (event.type) {
+      case "turn-output": this.appendText(stream, event.chunk, "text"); return;
+      case "turn-thought": this.appendText(stream, event.chunk, "reasoning"); return;
+      case "tool-event": this.appendTool(stream, event.event); return;
+      case "plan":
+        try {
+          if (this.enqueue(stream, { kind: "plan", payload: { entries: publicPlan(event.entries) }, createdAt: this.now() })) {
+            this.flush(stream);
+          }
+        } catch (error) {
+          this.fail(stream, error);
+        }
+        return;
+      case "turn-finished":
+        if (this.enqueue(stream, {
+          kind: "terminal",
+          payload: {
+            ok: event.ok,
+            ...(event.cancelled !== undefined ? { cancelled: event.cancelled } : {}),
+            ...(event.errorMessage !== undefined ? { errorMessage: event.errorMessage } : {}),
+          },
+          createdAt: this.now(),
+        })) this.flush(stream);
+        this.streams.delete(this.key(stream.identity));
+    }
   }
 }

@@ -1,36 +1,39 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   AlertCircle,
-  CheckCircle2,
-  ChevronDown,
   CircleStop,
-  Clock,
   HelpCircle,
   Loader2,
   Users,
-  X,
 } from "lucide-vue-next";
 import type {
   BotSummaryDto,
   ConversationMessageDto,
+  ConversationRunDto,
   MemberTurnSummaryDto,
+  PlanEntryDto,
   TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
-import { useGroupsStore, type GroupLiveTurn } from "../stores/groups";
+import { useGroupsStore } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
-import StreamMarkdown from "./StreamMarkdown.vue";
-import TurnParts from "./TurnParts.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import GroupHandoffEntry from "./GroupHandoffEntry.vue";
 import CopyButton from "./CopyButton.vue";
+import StreamMarkdown from "./StreamMarkdown.vue";
 import BotAvatar from "./BotAvatar.vue";
-import { botAvatarState } from "../lib/bot-avatar-state";
-import PlanPanel from "./PlanPanel.vue";
-import { fmtTime } from "../lib/format";
+import GroupAgentTurnRow from "./GroupAgentTurnRow.vue";
+import AgentThinkingBubble from "./AgentThinkingBubble.vue";
+import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
+import {
+  projectGroupTranscript,
+  traceEventsToParts,
+  type GroupRunRecord,
+  type GroupTranscriptItem,
+} from "../lib/group-run-presentation";
 
 const props = defineProps<{
   bots: BotSummaryDto[];
@@ -41,12 +44,9 @@ const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
 
-const expandedMembers = ref<Record<string, boolean>>({});
-
 const group = computed(() => groupsStore.currentGroup);
 const topic = computed(() => groupsStore.currentTopic);
 const run = computed(() => groupsStore.activeRun);
-const turns = computed<MemberTurnSummaryDto[]>(() => groupsStore.memberTurns);
 const botById = computed<Record<string, BotSummaryDto>>(() => {
   const out: Record<string, BotSummaryDto> = {};
   for (const b of props.bots) out[b.id] = b;
@@ -69,131 +69,245 @@ function senderName(botId: string | undefined): string {
   return bot.name;
 }
 
-const runningNames = computed(() => turns.value.map((turn) => senderName(turn.botId)).join(", "));
-
-/** For automatic Runs, who the Router dispatched to (the first member of the
- *  current batch) so the card can name the choice before listing its work. */
-const dispatchedName = computed(() => {
-  if (run.value?.mode !== "automatic") return "";
-  const first = turns.value[0];
-  return first ? senderName(first.botId) : "";
+// ---------------------------------------------------------------------------
+// Scoped run records: history read-model first, activeRun identity as the
+// authoritative fallback for the currently executing Run. Old rows keep their
+// original run/member identities — never activeRun.
+// ---------------------------------------------------------------------------
+const runRecords = computed<Record<string, GroupRunRecord>>(() => {
+  const out: Record<string, GroupRunRecord> = {};
+  void groupsStore.runHistoryDetailRevision; // reactivity dependency
+  const details = groupsStore.runHistoryDetails;
+  for (const detail of Object.values(details)) {
+    if (detail.conversationId !== groupsStore.activeConversationId || detail.topicId !== groupsStore.activeTopicId) continue;
+    const scopeKey = `${groupsStore.instanceId}:${detail.conversationId}:${detail.topicId}:${detail.id}`;
+    if (details[scopeKey] !== detail) continue;
+    out[detail.id] = { run: detail, memberTurns: detail.memberTurns ?? [] };
+  }
+  const active = groupsStore.activeRun;
+  if (active) {
+    const activeTurns = groupsStore.memberTurns.filter(
+      (turn) => turn.runId === active.id && turn.conversationId === active.conversationId && turn.topicId === active.topicId,
+    );
+    const existing = out[active.id];
+    const merged = new Map<string, MemberTurnSummaryDto>();
+    for (const turn of existing?.memberTurns ?? []) merged.set(turn.id, turn);
+    for (const turn of activeTurns) merged.set(turn.id, turn);
+    out[active.id] = {
+      run: active,
+      memberTurns: [...merged.values()],
+    };
+  }
+  return out;
 });
 
-function turnStateLabel(state: MemberTurnSummaryDto["state"]): string {
-  switch (state) {
-    case "queued":
-    case "dispatched":
-      return t("bot.run.queued");
-    case "running":
-      return t("bot.run.running");
-    case "completed":
-      return t("group.run.memberCompleted");
-    case "failed":
-      return t("bot.run.failed");
-    case "cancelled":
-      return t("bot.run.cancelled");
-    case "indeterminate":
-      return t("bot.run.indeterminate");
+const items = computed<GroupTranscriptItem[]>(() =>
+  projectGroupTranscript({
+    messages: groupsStore.messages,
+    runs: runRecords.value,
+  }),
+);
+
+/** Every run id visible in the transcript, batch-fetched non-blocking. */
+const visibleRunIds = computed<string[]>(() => {
+  const ids: string[] = [];
+  for (const message of groupsStore.messages) {
+    if (message.runId && !ids.includes(message.runId)) ids.push(message.runId);
   }
+  if (groupsStore.activeRun && !ids.includes(groupsStore.activeRun.id)) {
+    ids.push(groupsStore.activeRun.id);
+  }
+  return ids;
+});
+
+watch(
+  [visibleRunIds, () => groupsStore.instanceId, () => groupsStore.activeConversationId, () => groupsStore.activeTopicId],
+  () => {
+    if (visibleRunIds.value.length) groupsStore.ensureRunDetails(visibleRunIds.value);
+  },
+  { immediate: true },
+);
+const openDetailKey = ref<string | null>(null);
+const detailTriggerEl = ref<HTMLElement | null>(null);
+const detailId = `group-detail-${useId()}`;
+const selectedAttempt = ref<number | undefined>();
+
+interface OpenDetail {
+  itemKey: string;
+  run: ConversationRunDto;
+  memberTurn?: MemberTurnSummaryDto;
+  explanation?: string;
+  identityUncertain?: boolean;
+}
+const openDetail = computed<OpenDetail | null>(() => {
+  if (!openDetailKey.value) return null;
+  for (const item of items.value) {
+    if (item.kind === "message" && item.bubbleAnchor && item.memberTurn && item.run) {
+      const key = `bubble:${item.memberTurn.id}`;
+      if (key === openDetailKey.value) return { itemKey: key, run: item.run.run, memberTurn: item.memberTurn };
+    }
+    if (item.kind === "member-activity" && `bubble:${item.memberTurn.id}` === openDetailKey.value) {
+      const identityUncertain = !!item.explanation && item.explanation !== "missing-request" && item.explanation !== "request-mismatch";
+      return { itemKey: openDetailKey.value, run: item.run.run, memberTurn: item.memberTurn, explanation: item.explanation, identityUncertain };
+    }
+    if (item.kind === "routing" && `routing:${item.run.run.id}` === openDetailKey.value) {
+      const identityUncertain = !!item.explanation && item.explanation !== "missing-request" && item.explanation !== "request-mismatch";
+      return { itemKey: openDetailKey.value, run: item.run.run, memberTurn: undefined, explanation: item.explanation, identityUncertain };
+    }
+  }
+  return null;
+});
+
+watch(openDetail, (detail) => {
+  if (detail === null && openDetailKey.value) closeDetail();
+});
+
+function closeDetail(): void {
+  openDetailKey.value = null;
+  detailTriggerEl.value = null;
+  selectedAttempt.value = undefined;
+  groupsStore.setOpenTrace(null);
 }
 
-function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
-  if (!m.runId) return undefined;
-  // A durable bot message belongs to exactly one MemberTurn: join through
-  // promptRequestId (sourceTurn.turnId) is authoritative when present. A thin
-  // local detail may not know its assignment yet; keep canonical message text
-  // instead of substituting another assignment of the same Bot. Older messages
-  // without source identity can use only an unambiguous member in this scope.
-  const runTurns = groupsStore.memberTurns.filter((turn) => turn.runId === m.runId
-    && turn.conversationId === m.conversationId && turn.topicId === m.topicId);
-  const candidates = m.senderBotId ? runTurns.filter((turn) => turn.botId === m.senderBotId) : [];
-  const owner = m.promptRequestId !== undefined
-    ? runTurns.find((turn) => turn.promptRequestId === m.promptRequestId)
-    : candidates.length === 1 ? candidates[0] : undefined;
-  const parts = owner ? partsForMember(owner) : undefined;
-  return parts?.length ? parts : undefined;
+watch(
+  () => [openDetail.value?.memberTurn?.id ?? null, selectedAttempt.value ?? null, openDetail.value?.identityUncertain === true] as const,
+  ([memberId, attempt, uncertain]) => {
+    groupsStore.setOpenTrace(memberId && !uncertain ? memberId : null, typeof attempt === "number" ? attempt : undefined);
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => groupsStore.setOpenTrace(null));
+
+watch(
+  [() => groupsStore.instanceId, () => groupsStore.activeConversationId, () => groupsStore.activeTopicId],
+  () => { closeDetail(); },
+);
+
+function toggleDetail(key: string, trigger: HTMLElement | null): void {
+  if (openDetailKey.value === key) { closeDetail(); return; }
+  openDetailKey.value = key;
+  detailTriggerEl.value = trigger;
+  selectedAttempt.value = undefined;
+  const detail = openDetail.value;
+  if (detail?.memberTurn) selectedAttempt.value = detail.memberTurn.attempt;
 }
 
-function liveForMember(memberTurnId: string): GroupLiveTurn | null {
-  return groupsStore.liveTurnForMember(memberTurnId);
+function changeAttempt(attempt: number): void {
+  if (!detailAttempts.value.includes(attempt)) return;
+  selectedAttempt.value = attempt;
 }
 
-function avatarStateForMember(turn: MemberTurnSummaryDto) {
-  const active = run.value;
-  const scoped = active?.id === turn.runId && active.conversationId === turn.conversationId && active.topicId === turn.topicId;
-  return botAvatarState({
-    retired: botById.value[turn.botId]?.retired,
-    online: groupsStore.instanceId ? instancesStore.byId(groupsStore.instanceId)?.online : undefined,
-    runState: scoped ? active.state : undefined,
-    memberState: scoped ? turn.state : undefined,
-    liveStatus: scoped ? liveForMember(turn.id)?.status : undefined,
-    waiting: scoped && !!directBotsStore.interactionForMember(groupsStore.instanceId, turn),
-  });
+function loadTrace(afterSeq?: number): void {
+  const detail = openDetail.value;
+  if (!detail?.memberTurn || detail.identityUncertain || selectedAttempt.value === undefined) return;
+  void groupsStore.ensureTracePage(detail.memberTurn.id, selectedAttempt.value, afterSeq);
 }
 
-function avatarActivityKeyForMember(turn: MemberTurnSummaryDto): string {
-  return [
-    groupsStore.instanceId, turn.botId, turn.conversationId, turn.topicId, turn.runId, turn.id,
-  ].join(":");
-}
+function bubbleKeyOf(memberTurnId: string): string { return `bubble:${memberTurnId}`; }
+function routingKeyOf(runId: string): string { return `routing:${runId}`; }
 
-function partsForMember(turn: MemberTurnSummaryDto): TurnPartDto[] | undefined {
-  const parts = groupsStore.completeRunParts[turn.id];
-  if (parts?.length) return parts;
-  if (turn.promptRequestId) {
-    const byPrompt = groupsStore.completeRunParts[turn.promptRequestId];
-    if (byPrompt?.length) return byPrompt;
+const detailPage = computed(() => {
+  const detail = openDetail.value;
+  if (!detail?.memberTurn || detail.identityUncertain || selectedAttempt.value === undefined) return null;
+  const scope = [groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId].join(":");
+  return groupsStore.tracePages[`${scope}:${detail.memberTurn.id}:${selectedAttempt.value}`] ?? null;
+});
+const detailAttempts = computed(() => {
+  const member = openDetail.value?.memberTurn;
+  if (!member) return [];
+  return [...new Set([member.attempt, selectedAttempt.value ?? 0, ...(detailPage.value?.attempts ?? [])])]
+    .filter((attempt) => attempt > 0).sort((a, b) => a - b);
+});
+const detailReplay = computed(() => detailPage.value ? traceEventsToParts(detailPage.value.events) : undefined);
+const detailLive = computed(() => {
+  const detail = openDetail.value;
+  if (!detail?.memberTurn || detail.identityUncertain || selectedAttempt.value !== detail.memberTurn.attempt) return undefined;
+  const live = groupsStore.liveTurnForMember(detail.memberTurn.id);
+  if (live && live.attempt !== undefined && live.attempt !== selectedAttempt.value) return undefined;
+  return live;
+});
+const detailParts = computed<TurnPartDto[] | undefined>(() => {
+  if (detailReplay.value?.parts.length || detailPage.value?.events.length) return detailReplay.value?.parts;
+  return detailLive.value?.parts;
+});
+const detailTraceFailure = computed(() => {
+  const terminal = detailReplay.value?.terminal;
+  if (!terminal || terminal.ok) return undefined;
+  return terminal.errorMessage || t(terminal.cancelled ? "bot.run.cancelled" : "bot.run.failed");
+});
+const detailPlan = computed<PlanEntryDto[] | undefined>(() => {
+  const page = detailPage.value;
+  if (page?.plan?.length) return page.plan;
+  const detail = openDetail.value;
+  if (detail && !detail.identityUncertain && selectedAttempt.value === detail.memberTurn?.attempt
+    && groupsStore.activeRun?.id === detail.run.id) {
+    const entries = groupsStore.planByRunId[detail.run.id];
+    if (entries?.length) return entries;
   }
   return undefined;
+});
+const siblingSummaries = computed<Array<{ name: string; state: string }> | undefined>(() => {
+  const detail = openDetail.value;
+  if (!detail?.memberTurn) return undefined;
+  const record = runRecords.value[detail.run.id];
+  if (!record) return undefined;
+  const out: Array<{ name: string; state: string }> = [];
+  for (const turn of record.memberTurns) {
+    if (turn.id === detail.memberTurn.id) continue;
+    out.push({ name: senderName(turn.botId), state: turn.state });
+  }
+  return out;
+});
+const stopAvailable = computed(() => {
+  const detail = openDetail.value;
+  if (!detail || detail.identityUncertain || !groupsStore.topicReady) return false;
+  if (groupsStore.ownershipUncertain || groupsStore.ownerUnconfirmed) return false;
+  const active = groupsStore.activeRun;
+  return !!active
+    && active.id === detail.run.id
+    && active.conversationId === detail.run.conversationId
+    && active.topicId === detail.run.topicId
+    && active.conversationId === groupsStore.activeConversationId
+    && active.topicId === groupsStore.activeTopicId
+    && groupsStore.isRunActive;
+});
+const stopPending = computed(() => {
+  const detail = openDetail.value;
+  if (!detail) return false;
+  return groupsStore.cancellingRunId === detail.run.id;
+});
+function handleStop(): void {
+  if (stopAvailable.value && !stopPending.value) void groupsStore.cancelCurrentRun();
 }
-
-function traceKeyForMessage(m: ConversationMessageDto): string {
-  return `group:${m.conversationId}:run:${m.runId ?? ""}:member:${m.promptRequestId ?? m.senderBotId ?? ""}`;
+function handleToggle(key: string, event: unknown): void {
+  toggleDetail(key, event instanceof HTMLElement ? event : null);
 }
-
-function toggleMember(memberTurnId: string): void {
-  expandedMembers.value = { ...expandedMembers.value, [memberTurnId]: !expandedMembers.value[memberTurnId] };
-}
-
-function isExpanded(memberTurnId: string): boolean {
-  return expandedMembers.value[memberTurnId] === true;
-}
-
-function handleCancel(): void {
-  void groupsStore.cancelCurrentRun();
-}
-
+const explanationText = (explanation: string): string => {
+  switch (explanation) {
+    case "missing-request": return t("group.detail.requestMissing");
+    case "request-mismatch": return t("group.detail.requestMismatch");
+    case "ambiguous-owner": return t("group.bubble.unresolvedAmbiguous");
+    case "owner-mismatch": return t("group.bubble.unresolvedMismatch");
+    case "missing-run": return t("group.bubble.unresolvedMissingRun");
+    case "no-member": return t("group.bubble.unresolvedNoMember");
+    default: return t("group.bubble.unresolvedMissingRun");
+  }
+};
 const scroller = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
 const THRESHOLD = 64;
-
-/** What the reader was looking at when older history started loading.
- *  Identity-based, not distance-based: a live message appended below the
- *  viewport while the request is pending must not move the reader, and only a
- *  prepend above the anchor may shift `scrollTop`. */
-interface ScrollAnchor {
-  /** The first message at least partly visible when the load started. */
-  messageId: string;
-  /** Its top edge relative to the viewport at capture time. */
-  offsetTop: number;
-}
+interface ScrollAnchor { rowId: string; offsetTop: number; }
 const pendingAnchor = ref<ScrollAnchor | null>(null);
-
 function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
 }
-
 function scrollToBottom(): void {
   const el = scroller.value;
   if (!el) return;
-  // Assigning scrollHeight directly relies on the browser clamping it to
-  // scrollHeight - clientHeight. Be explicit so the intent (and any non-browser
-  // host that does not clamp) still lands exactly at the bottom.
   el.scrollTop = el.scrollHeight - el.clientHeight;
 }
-
 function jumpToMessage(messageId: string): void {
   const el = scroller.value;
   if (!el) return;
@@ -204,105 +318,66 @@ function jumpToMessage(messageId: string): void {
   row.focus({ preventScroll: true });
   el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top;
 }
-
-// History that lands in the store (Topic open, history switch, reconnect) must put
-// the reader at the newest message: the DOM starts at scrollTop 0, which is the
-// OLDEST of the loaded page rather than the end of the transcript.
-watch(
-  () => groupsStore.topicReady,
-  (ready) => {
-    if (ready) void nextTick(() => scrollToBottom());
-  },
-);
-
-// While an older page is loading, any length growth — a live tail append or
-// the eventual prepend — must not move the reader on its own. `handleLoadOlder`
-// owns the single restore authority: it compares the anchored row's element
-// top before and after, so a tail append (which leaves that top untouched) is
-// naturally a no-op while a real prepend produces exactly its inserted shift.
-watch(
-  () => groupsStore.messages.length,
-  () => {
-    if (pendingAnchor.value !== null) {
-      return;
-    }
-    if (atBottom.value) {
-      void nextTick(() => scrollToBottom());
-    }
-  },
-);
-
-// Streaming output mutates parts in place, so follow the live turn revision —
-// and never yank a reader who scrolled up to review something.
-watch(
-  () => {
-    let max = 0;
-    for (const live of Object.values(groupsStore.liveTurnsByMember)) {
-      if (live.revision > max) max = live.revision;
-    }
-    return max;
-  },
-  () => {
-    if (atBottom.value) void nextTick(() => scrollToBottom());
-  },
-);
-
+watch(() => groupsStore.topicReady, (ready) => {
+  if (ready) void nextTick(() => scrollToBottom());
+});
+watch(() => {
+  let signature = "";
+  for (const item of items.value) {
+    signature += item.key[0] === "m" ? "m" : item.key[0] === "a" ? "a" : item.key[0] === "r" ? "r" : "u";
+  }
+  return signature;
+}, (next, prev) => {
+  if (prev === undefined) return;
+  if (next.length === prev.length) return;
+  if (pendingAnchor.value !== null) return;
+  if (atBottom.value) void nextTick(() => scrollToBottom());
+});
+watch(() => {
+  let max = 0;
+  for (const live of Object.values(groupsStore.liveTurnsByMember)) {
+    if (live.revision > max) max = live.revision;
+  }
+  return max;
+}, () => {
+  if (atBottom.value) void nextTick(() => scrollToBottom());
+});
 onMounted(() => {
   void nextTick(() => scrollToBottom());
 });
 
-/** First message at least partly visible in the current viewport. Walks the
- *  rendered rows in transcript order and takes the first whose bottom edge is
- *  below the viewport top. Falls back to the newest message when no row is
- *  measurable (e.g. empty transcript), which keeps `atBottom` callers sane. */
 function captureAnchor(): ScrollAnchor | null {
   const el = scroller.value;
   if (!el) return null;
-  const rows = el.querySelectorAll<HTMLElement>("[data-message-id]");
+  const rows = el.querySelectorAll<HTMLElement>("[data-anchor-id]");
   const viewportTop = el.getBoundingClientRect().top;
   for (const row of rows) {
     const rect = row.getBoundingClientRect();
-    if (rect.bottom > viewportTop) {
-      return { messageId: row.dataset["messageId"] ?? "", offsetTop: rect.top - viewportTop };
-    }
+    if (rect.bottom > viewportTop) return { rowId: row.dataset["anchorId"] ?? "", offsetTop: rect.top - viewportTop };
   }
   const last = groupsStore.messages[groupsStore.messages.length - 1];
-  return last ? { messageId: last.id, offsetTop: el.clientHeight } : null;
+  return last ? { rowId: last.id, offsetTop: el.clientHeight } : null;
 }
-
-/** Put the anchored message back where it was. Only content inserted ABOVE the
- *  anchor (older history) moves its top edge; a tail append below the viewport
- *  leaves it untouched, so the reader is not shoved when live traffic arrives
- *  mid-load. A missing row means the anchored message is gone (deleted or
- *  re-rendered away) — better to hold still than to jump somewhere arbitrary. */
 function restoreAnchor(anchor: ScrollAnchor): void {
   const el = scroller.value;
   if (!el) return;
-  const row = el.querySelector<HTMLElement>(`[data-message-id="${anchor.messageId}"]`);
-  if (!row) {
-    return;
-  }
+  const rows = Array.from(el.querySelectorAll<HTMLElement>("[data-anchor-id]"));
+  const row = rows.find((candidate) => candidate.dataset["anchorId"] === anchor.rowId);
+  if (!row) return;
   const viewportTop = el.getBoundingClientRect().top;
   const shift = row.getBoundingClientRect().top - viewportTop - anchor.offsetTop;
-  // A zero shift is a no-op by construction (the anchored row did not move),
-  // but skipping the write keeps scroll-write logs — and any real browser
-  // that fires scroll events on programmatic sets — quiet.
-  if (shift !== 0) {
-    el.scrollTop += shift;
-  }
+  if (shift !== 0) el.scrollTop += shift;
 }
 async function handleLoadOlder(): Promise<void> {
   const el = scroller.value;
   if (!el || groupsStore.loadingOlder) return;
   pendingAnchor.value = captureAnchor();
-  try {
-    await groupsStore.loadOlder();
-  } finally {
+  try { await groupsStore.loadOlder(); }
+  finally {
     await nextTick();
     const anchor = pendingAnchor.value;
     if (el && anchor !== null) {
       restoreAnchor(anchor);
-      // Offscreen rows replace intrinsic heights after the restored viewport paints.
       await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       if (pendingAnchor.value === anchor) {
         restoreAnchor(anchor);
@@ -316,7 +391,7 @@ async function handleLoadOlder(): Promise<void> {
 <template>
   <div class="relative flex min-h-0 flex-1 flex-col">
   <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
-    <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && turns.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
+    <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && items.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
       <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent">
         <Users :size="22" />
       </div>
@@ -338,236 +413,212 @@ async function handleLoadOlder(): Promise<void> {
     </div>
 
     <div class="mx-auto max-w-3xl space-y-5">
-      <TranscriptRow
-        v-for="m in groupsStore.messages"
-        :key="m.id"
-        :data-message-id="m.id"
-        :row-id="m.id"
-        :own="m.role === 'human'"
-        :driver="m.role === 'bot' && m.senderBotId ? driverForBot(m.senderBotId) : undefined"
-        :speaker="!m.handoff && m.role === 'bot' ? senderName(m.senderBotId) : undefined"
-        :hide-leading-avatar="!!m.handoff"
-      >
-        <template v-if="m.role === 'bot' && !m.handoff" #avatar>
-          <BotAvatar :avatar="m.senderBotId ? botById[m.senderBotId]?.avatar : undefined"
-                     :driver="m.senderBotId ? driverForBot(m.senderBotId) : undefined"
-                     :name="senderName(m.senderBotId)" :size="32" static
-                     :retired="m.senderBotId ? botById[m.senderBotId]?.retired : false" />
-        </template>
-        <GroupHandoffEntry
-          v-if="m.handoff"
-          :message="m"
-          :from-name="senderName(m.senderBotId)"
-          :to-name="senderName(m.handoff.to)"
-          :from-driver="m.senderBotId ? driverForBot(m.senderBotId) : undefined"
-          :to-driver="driverForBot(m.handoff.to)"
-          :from-avatar="m.senderBotId ? botById[m.senderBotId]?.avatar : undefined"
-          :to-avatar="botById[m.handoff.to]?.avatar"
-          @jump="jumpToMessage"
-        />
-        <template v-else-if="m.role === 'human'">
-          <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-sm leading-relaxed text-fg">
-            {{ m.content }}
-          </div>
-          <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
-            <CopyButton :text="m.content" />
-            <span class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
-          </div>
+      <template v-for="item in items" :key="item.key">
+        <!-- Durable message / handoff / system rows -->
+        <template v-if="item.kind === 'message' && !(item.bubbleAnchor && item.memberTurn)">
+          <TranscriptRow
+            v-if="!item.memberTurn"
+            :key="item.key"
+            :row-id="item.message.id"
+            :data-anchor-id="item.message.id"
+            :data-message-id="item.message.id"
+            :own="item.message.role === 'human'"
+            :driver="item.message.role === 'bot' && item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
+            :speaker="!item.message.handoff && item.message.role === 'bot' ? senderName(item.message.senderBotId) : undefined"
+            :hide-leading-avatar="!!item.message.handoff"
+          >
+            <template v-if="item.message.role === 'bot' && !item.message.handoff" #avatar>
+              <BotAvatar :avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
+                         :driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
+                         :name="senderName(item.message.senderBotId)" :size="32" static
+                         :retired="item.message.senderBotId ? botById[item.message.senderBotId]?.retired : false" />
+            </template>
+            <GroupHandoffEntry
+              v-if="item.message.handoff"
+              :message="item.message"
+              :from-name="senderName(item.message.senderBotId)"
+              :to-name="senderName(item.message.handoff.to)"
+              :from-driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
+              :to-driver="driverForBot(item.message.handoff.to)"
+              :from-avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
+              :to-avatar="botById[item.message.handoff.to]?.avatar"
+              @jump="jumpToMessage"
+            />
+            <template v-else-if="item.message.role === 'human'">
+              <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-sm leading-relaxed text-fg">
+                {{ item.message.content }}
+              </div>
+              <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
+                <CopyButton :text="item.message.content" />
+                <span class="font-mono text-xs tabular-nums">{{ item.message.createdAt }}</span>
+              </div>
+            </template>
+
+            <template v-else-if="item.message.role === 'bot'">
+              <div class="w-full text-sm leading-relaxed text-fg">
+                <StreamMarkdown :text="item.message.content" />
+              </div>
+              <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
+                <CopyButton :text="item.message.content" />
+                <span class="font-mono text-xs tabular-nums">{{ item.message.createdAt }}</span>
+              </div>
+            </template>
+
+            <template v-else>
+              <p class="w-full py-1 text-center text-xs italic text-fg-muted">{{ item.message.content }}</p>
+            </template>
+          </TranscriptRow>
+          <!-- Plain bot message that shares its member bubble with an earlier row -->
+          <TranscriptRow
+            v-else
+            :key="item.key"
+            :row-id="item.message.id"
+            :data-anchor-id="item.message.id"
+            :data-message-id="item.message.id"
+            :driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
+            :speaker="senderName(item.message.senderBotId)"
+          >
+            <template #avatar>
+              <BotAvatar :avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
+                         :driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
+                         :name="senderName(item.message.senderBotId)" :size="32" static
+                         :retired="item.message.senderBotId ? botById[item.message.senderBotId]?.retired : false" />
+            </template>
+            <div class="w-full text-sm leading-relaxed text-fg">
+              <StreamMarkdown :text="item.message.content" />
+            </div>
+            <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
+              <CopyButton :text="item.message.content" />
+              <span class="font-mono text-xs tabular-nums">{{ item.message.createdAt }}</span>
+            </div>
+          </TranscriptRow>
         </template>
 
-        <template v-else-if="m.role === 'bot'">
-          <div v-if="partsForMessage(m)" class="w-full">
-            <TurnParts
-              :parts="partsForMessage(m)!"
-              :collapse-trace="true"
-              :trace-key="traceKeyForMessage(m)"
+        <!-- Canonical bubble-anchored reply: bubble above the reply body -->
+        <GroupAgentTurnRow
+          v-else-if="item.kind === 'message' && item.bubbleAnchor && item.memberTurn"
+          :key="item.key"
+          :member-turn="item.memberTurn"
+          :bot="item.memberTurn.botId ? botById[item.memberTurn.botId] : undefined"
+          :driver="item.memberTurn.botId ? driverForBot(item.memberTurn.botId) : undefined"
+          :message="item.message"
+          :name="senderName(item.memberTurn.botId)"
+          :expanded="openDetailKey === bubbleKeyOf(item.memberTurn.id)"
+          :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
+          :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
+          :disabled="item.memberTurn.botId ? botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false : false"
+          @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
+        />
+        <!-- Projection order keeps activity, routing and unresolved rows at their owning request. -->
+        <div v-else-if="item.kind === 'member-activity'"
+          :data-anchor-id="item.requestMessageId"
+          :data-member-turn-id="item.memberTurn.id"
+        >
+          <p v-if="item.explanation" class="mb-1 text-xs text-warning" data-test="group-unresolved-activity">{{ explanationText(item.explanation) }}</p>
+          <GroupAgentTurnRow
+            :member-turn="item.memberTurn"
+            :bot="botById[item.memberTurn.botId]"
+            :driver="driverForBot(item.memberTurn.botId)"
+            :name="senderName(item.memberTurn.botId)"
+            :expanded="openDetailKey === bubbleKeyOf(item.memberTurn.id)"
+            :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
+            :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
+            :disabled="botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false"
+            @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
+          />
+        </div>
+
+        <!-- Neutral routing entry: no invented Bot identity -->
+        <TranscriptRow
+          v-else-if="item.kind === 'routing'"
+          data-test="group-routing-row"
+          :row-id="`routing:${item.run.run.id}`"
+          :data-anchor-id="item.requestMessageId"
+          :data-run-id="item.run.run.id"
+        >
+          <div class="flex items-start gap-2">
+            <AgentThinkingBubble
+              status="routing"
+              :label="$t('group.bubble.routingLabel')"
+              :expanded="openDetailKey === routingKeyOf(item.run.run.id)"
+              :controls="openDetailKey === routingKeyOf(item.run.run.id) ? detailId : undefined"
+              @toggle="handleToggle(routingKeyOf(item.run.run.id), $event)"
             />
+            <div class="min-w-0 flex-1">
+              <p class="text-xs font-medium text-fg-muted">{{ $t("group.bubble.routingTitle") }}</p>
+              <p v-if="item.run.run.routingReason" class="mt-0.5 break-words text-xs text-fg-muted">{{ item.run.run.routingReason }}</p>
+              <p v-if="item.explanation" class="mt-0.5 text-xs text-warning">{{ explanationText(item.explanation) }}</p>
+            </div>
           </div>
-          <div v-else class="w-full text-sm leading-relaxed text-fg">
-            <StreamMarkdown :text="m.content" />
+        </TranscriptRow>
+
+        <!-- Unresolved public reply: labeled, never guessed -->
+        <TranscriptRow
+          v-else-if="item.kind === 'unresolved'"
+          :row-id="item.message.id"
+          :data-anchor-id="item.message.id"
+          :data-message-id="item.message.id"
+          :driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
+          :speaker="senderName(item.message.senderBotId)"
+        >
+          <template #avatar>
+            <BotAvatar :avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
+                       :driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
+                       :name="senderName(item.message.senderBotId)" :size="32" static
+                       :retired="item.message.senderBotId ? botById[item.message.senderBotId]?.retired : false" />
+          </template>
+          <div class="rounded-lg bg-warning/10 px-2.5 py-1.5 text-xs text-warning" data-test="group-unresolved">
+            <HelpCircle :size="12" class="mr-1 inline" />
+            {{ explanationText(item.explanation) }}
+          </div>
+          <div class="w-full text-sm leading-relaxed text-fg">
+            <StreamMarkdown :text="item.message.content" />
           </div>
           <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-            <CopyButton :text="m.content" />
-            <span class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+            <CopyButton :text="item.message.content" />
+            <span class="font-mono text-xs tabular-nums">{{ item.message.createdAt }}</span>
           </div>
-        </template>
-
-        <template v-else>
-          <p class="w-full py-1 text-center text-xs italic text-fg-muted">{{ m.content }}</p>
-        </template>
-      </TranscriptRow>
-
-      <!-- Collaboration Run card: one card per Run aggregating member turns -->
-      <div
-        v-if="run"
-        data-test="group-run-card"
-        :data-run-id="run.id"
-        class="rounded-2xl bg-surface/60 p-3"
-      >
-        <div class="flex items-start justify-between gap-2">
-          <div data-test="group-run-header" class="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-semibold text-fg">
-            <Users :size="13" class="shrink-0 text-accent" />
-            <span data-test="group-run-title" class="shrink-0 whitespace-nowrap">{{ $t("group.run.title") }}</span>
-            <span v-if="runningNames" data-test="group-running-members" class="min-w-0 break-words font-normal text-fg-muted">{{ $t("group.run.runningMembers", { names: runningNames }) }}</span>
-            <span
-              class="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium"
-              :class="{
-                'bg-run/15 text-run': run.state === 'running',
-                'bg-warning/15 text-warning': run.state === 'queued' || run.state === 'waiting-human',
-                'bg-danger/10 text-danger': run.state === 'failed',
-                'bg-fg/10 text-fg-muted': run.state === 'cancelled',
-              }"
-            >
-              {{ run.state }}
-            </span>
-          </div>
-          <button
-            v-if="run.state === 'queued' || run.state === 'running' || run.state === 'waiting-human'"
-            type="button"
-            data-test="group-stop-run-button"
-            class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger"
-            @click="handleCancel"
-          >
-            <CircleStop :size="11" />
-            <span>{{ $t("bot.prompt.stop") }}</span>
-          </button>
-        </div>
-
-        <p
-          v-if="run.maxMemberTurns !== undefined"
-          data-test="group-run-budget"
-          class="mt-2 text-xs text-fg-muted"
-        >
-          {{ $t("group.run.budget", { consumed: run.consumedMemberTurns ?? 0, max: run.maxMemberTurns }) }}
-        </p>
-        <template v-if="run.mode === 'automatic'">
-          <p
-            v-if="dispatchedName"
-            data-test="group-run-dispatched"
-            class="mt-2 text-xs font-medium text-fg"
-          >
-            {{ $t("group.run.dispatchedTo", { name: dispatchedName }) }}
-          </p>
-          <p
-            v-if="run.routingReason"
-            data-test="group-run-routing-reason"
-            class="text-xs leading-relaxed text-fg-muted"
-          >
-            {{ run.routingReason }}
-          </p>
-        </template>
-        <div
-          v-if="run.state === 'waiting-human'"
-          data-test="group-waiting-human"
-          class="mt-2 rounded-lg bg-warning/10 px-2.5 py-2 text-xs leading-relaxed text-fg"
-        >
-          <p v-if="run.waitingQuestion" data-test="group-waiting-question">{{ run.waitingQuestion }}</p>
-          <p class="mt-1 text-fg-muted">{{ $t("group.run.waitingManual") }}</p>
-        </div>
-        <p
-          v-if="topic?.executionTarget?.isolation === 'shared-single-writer'"
-          data-test="group-write-queue"
-          class="mt-2 text-xs text-fg-muted"
-        >
-          {{ $t("group.run.writeQueue") }}
-        </p>
-        <div class="mt-2 space-y-1.5">
-          <div
-            v-for="turn in turns"
-            :key="turn.id"
-            data-test="group-member-row"
-            :data-bot-id="turn.botId"
-            :data-state="turn.state"
-            class="min-w-0 rounded-lg bg-bg/60 px-2.5 py-1.5"
-          >
-            <button
-              type="button"
-              data-test="group-member-toggle"
-              class="flex w-full items-center gap-2 text-left"
-              @click="toggleMember(turn.id)"
-            >
-              <BotAvatar :key="avatarActivityKeyForMember(turn)" :avatar="botById[turn.botId]?.avatar"
-                         :driver="driverForBot(turn.botId)" :name="senderName(turn.botId)" :size="32"
-                         :state="avatarStateForMember(turn)" :activity-key="avatarActivityKeyForMember(turn)"
-                         :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === turn.runId && groupsStore.liveCompletedMemberTurns.ids[turn.id] === true"
-                         :disabled="botById[turn.botId] ? !botById[turn.botId]!.enabled : false" :retired="botById[turn.botId]?.retired" />
-              <span class="min-w-0 flex-1 truncate text-xs font-medium text-fg">{{ senderName(turn.botId) }}</span>
-              <span
-                class="flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
-                :class="{
-                  'bg-run/15 text-run': turn.state === 'running',
-                  'bg-warning/15 text-warning': turn.state === 'queued' || turn.state === 'dispatched',
-                  'bg-fg/10 text-fg-muted': turn.state === 'completed' || turn.state === 'cancelled',
-                  'bg-danger/10 text-danger': turn.state === 'failed',
-                }"
-              >
-                <Loader2 v-if="turn.state === 'running'" :size="10" class="animate-spin" />
-                <Clock v-else-if="turn.state === 'queued' || turn.state === 'dispatched'" :size="10" />
-                <CheckCircle2 v-else-if="turn.state === 'completed'" :size="10" />
-                <AlertCircle v-else-if="turn.state === 'failed'" :size="10" />
-                <HelpCircle v-else-if="turn.state === 'indeterminate'" :size="10" />
-                <span>{{ turnStateLabel(turn.state) }}</span>
-              </span>
-              <ChevronDown :size="12" class="shrink-0 text-fg-muted transition-transform" :class="isExpanded(turn.id) ? 'rotate-180' : ''" />
-            </button>
-            <div v-if="turn.assignmentId || turn.task || turn.dependsOn?.length || turn.blockedReason" data-test="group-member-details" class="mt-1 min-w-0 space-y-0.5 break-words pl-10 text-xs text-fg-muted [overflow-wrap:anywhere]">
-              <p v-if="turn.assignmentId" data-test="group-member-assignment">{{ $t("group.run.assignment") }} {{ turn.assignmentId }}</p>
-              <p v-if="turn.task" data-test="group-member-task">{{ turn.task }}</p>
-              <p v-if="turn.dependsOn?.length" data-test="group-member-depends">{{ $t("group.run.dependsOn") }} {{ turn.dependsOn.join(", ") }}</p>
-              <p v-if="turn.blockedReason" data-test="group-member-blocked" class="text-warning">
-                {{ turn.blockedReason === "human-authority-required" ? $t("group.run.blockedHumanRequired") : $t("group.run.blockedHumanUnknown") }}
-              </p>
-            </div>
-
-            <div v-if="isExpanded(turn.id)" data-test="group-member-activity" class="mt-2">
-              <div v-if="liveForMember(turn.id) && liveForMember(turn.id)!.parts.length > 0" class="rounded-lg bg-surface/50 p-2.5">
-                <TurnParts
-                  :parts="liveForMember(turn.id)!.parts"
-                  :streaming="liveForMember(turn.id)!.status === 'streaming'"
-                />
-              </div>
-              <div v-else-if="partsForMember(turn)?.length" class="rounded-lg bg-surface/40 p-2.5">
-                <TurnParts
-                  :parts="partsForMember(turn)!"
-                  :collapse-trace="true"
-                  :trace-key="`group:${turn.conversationId}:run:${run.id}:member:${turn.id}`"
-                />
-              </div>
-              <div v-else class="flex items-center gap-2 py-1.5 text-xs text-fg-muted">
-                <Loader2 v-if="turn.state === 'running' || turn.state === 'queued' || turn.state === 'dispatched'" :size="12" class="animate-spin text-accent" />
-                <span>{{ turn.task ?? $t("group.run.memberWaiting") }}</span>
-              </div>
-              <div v-if="turn.failureReason" class="mt-1.5 text-xs text-danger">{{ turn.failureReason }}</div>
-            </div>
-          </div>
-        </div>
-
-        <PlanPanel v-if="groupsStore.planEntries.length > 0" :entries="groupsStore.planEntries" class="mt-2 w-full" />
-      </div>
-
-    </div>
-
-    <div v-if="run?.state === 'failed'" class="mt-3 flex items-center gap-2 rounded-2xl bg-danger/10 p-3 text-xs text-danger">
-      <AlertCircle :size="16" class="shrink-0" />
-      <div class="flex-1">
-        <span class="font-semibold">{{ $t("bot.run.failed") }}: </span>
-        <span>{{ run.completionReason || $t("bot.run.unknownError") }}</span>
-      </div>
-    </div>
-    <div v-else-if="run?.state === 'cancelled'" class="mt-3 flex items-center gap-2 rounded-2xl bg-surface p-3 text-xs text-fg-muted">
-      <CircleStop :size="15" class="shrink-0 text-danger" />
-      <span>{{ $t("bot.run.cancelled") }}</span>
-    </div>
-    <div v-else-if="run?.state === 'indeterminate'" class="mt-3 flex items-center gap-2 rounded-2xl bg-warning/10 p-3 text-xs text-warning">
-      <HelpCircle :size="16" class="shrink-0" />
-      <div class="flex-1">
-        <span class="font-semibold">{{ $t("bot.run.indeterminate") }}: </span>
-        <span>{{ $t("bot.run.indeterminateHint") }}</span>
-      </div>
+        </TranscriptRow>
+      </template>
     </div>
 
   </div>
 
-    <TranscriptJumpLatest :visible="!atBottom" @jump="scrollToBottom()" />
+  <!-- Anchored floating detail (single open). Stop stays inside the detail. -->
+  <GroupRunDetailPopover
+    v-if="openDetail"
+    :id="detailId"
+    :scroller-el="scroller"
+    :anchor-el="detailTriggerEl"
+    :run="openDetail.run"
+    :member-turn="openDetail.memberTurn"
+    :member-name="openDetail.memberTurn ? senderName(openDetail.memberTurn.botId) : undefined"
+    :attempt="selectedAttempt"
+    :attempts="detailAttempts"
+    :explanation="openDetail.explanation ? explanationText(openDetail.explanation) : undefined"
+    :parts="detailParts"
+    :sibling-summaries="siblingSummaries"
+    :recording-state="detailPage?.recordingState"
+    :completeness-reason="detailPage?.completenessReason"
+    :plan="detailPlan"
+    :trace-loading="detailPage?.loading"
+    :trace-error="detailPage?.error"
+    :trace-has-more="detailPage?.hasMore"
+    :trace-has-earlier="detailPage?.hasEarlier"
+    :trace-streaming="!!detailLive && !detailPage?.events.length"
+    :trace-failure="detailTraceFailure"
+    :stop-available="stopAvailable"
+    :stop-pending="stopPending"
+    @close="closeDetail"
+    @stop="handleStop"
+    @attempt="changeAttempt"
+    @load-more="loadTrace()"
+    @load-earlier="loadTrace(0)"
+    @retry-trace="loadTrace()"
+  />
+
+  <!-- Terminal run states remain visible without a banner card: the neutral
+       routing entry (or member bubbles) carries them in the popover. -->
+  <TranscriptJumpLatest :visible="!atBottom" @jump="scrollToBottom()" />
 </div>
 </template>

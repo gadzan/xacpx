@@ -1161,19 +1161,39 @@ describe("useGroupsStore", () => {
         state: "completed", createdAt: "now", promptRequestId: "src_b",
       },
     };
+    mockRpc.mockImplementation(async (_instance: string, type: string, payload: { memberTurnId?: string; attempt?: number }) => {
+      if (type === "control.runs.details.batch") return { runs: [{ ...run, memberTurns: Object.values(store.memberTurnsById) }] };
+      if (type === "control.runs.trace.get") return { memberTurnId: payload.memberTurnId, attempt: payload.attempt,
+        recordingState: "unavailable", events: [], hasMore: false };
+      throw new Error(`unexpected ${type}`);
+    });
     const wrapper = mount(GroupTranscript, {
       props: { bots: BOTS },
+      attachTo: document.body,
       global: { plugins: [i18n] },
     });
-    const rows = wrapper.findAll('[data-test="group-member-row"]');
+    // One Agent row per MemberTurn, each with its own bubble trigger; no
+    // aggregate run card remains.
+    const rows = wrapper.findAll('[data-test="agent-turn-row"]');
     expect(rows).toHaveLength(2);
-    await rows[0]!.find('[data-test="group-member-toggle"]').trigger("click");
-    await rows[1]!.find('[data-test="group-member-toggle"]').trigger("click");
-    const activities = wrapper.findAll('[data-test="group-member-activity"]');
-    expect(activities[0]!.text()).toContain("review output");
-    expect(activities[1]!.text()).toContain("test output");
-    expect(activities[0]!.text()).not.toContain("test output");
-    expect(activities[1]!.text()).not.toContain("review output");
+    expect(rows[0]!.attributes("data-member-turn-id")).toBe("turn_a");
+    expect(rows[1]!.attributes("data-member-turn-id")).toBe("turn_b");
+    expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(false);
+    const bubbles = wrapper.findAll('[data-test="agent-thinking-bubble"]');
+    expect(bubbles).toHaveLength(2);
+    await bubbles[0]!.trigger("click");
+    await flushPromises();
+    const detail = document.querySelector('[data-test="group-detail-card"]');
+    expect(detail?.textContent).toContain("review output");
+    expect(detail?.textContent).not.toContain("test output");
+    await bubbles[1]!.trigger("click");
+    // Single-open policy: the last opened detail wins and shows that member's
+    // recorded trace only.
+    expect(wrapper.findComponent({ name: "GroupRunDetailPopover" }).exists()).toBe(true);
+    await flushPromises();
+    expect(document.querySelector('[data-test="group-detail-card"]')?.textContent).toContain("test output");
+    expect(document.querySelector('[data-test="group-detail-card"]')?.textContent).not.toContain("review output");
+    wrapper.unmount();
   });
 
   it("keeps live member traces separate on reconnect state snapshots", async () => {
@@ -1244,44 +1264,85 @@ describe("useGroupsStore", () => {
       };
       seedTrace("first_a", "source_first", "First assignment trace");
       if (includeSecondMember) seedTrace("second_a", "source_second", "Second assignment trace");
-      mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      mockRpc.mockImplementation(async (_instance: string, type: string, payload: { memberTurnId?: string; attempt?: number }) => {
         if (type === "control.conversation.history") return historyWith([{ id: "msg_second", conversationId: run.conversationId,
           topicId: run.topicId, runId: run.id, seq: 1, role: "bot", senderBotId: "bot_a", content: "Canonical second answer",
           ...(promptRequestId ? { promptRequestId } : {}), createdAt: "2026-10-05T00:00:00.000Z" }]);
         if (type === "control.runs.list") return { runs: [run], activeRunId: run.id };
         if (type === "control.runs.get") return { run: { ...run, memberTurns: Object.values(store.memberTurnsById) } };
+        if (type === "control.runs.details.batch") return { runs: [{ ...run, memberTurns: Object.values(store.memberTurnsById) }] };
+        if (type === "control.runs.trace.get") {
+          const text = payload.memberTurnId === "second_a" ? "Second assignment trace" : "First assignment trace";
+          return { memberTurnId: payload.memberTurnId, attempt: payload.attempt, recordingState: "complete",
+            events: [{ seq: 1, kind: "text", payload: { text }, createdAt: "2026-10-05T00:00:01.000Z" }],
+            nextSeq: 1, hasMore: false };
+        }
         throw new Error(`unexpected ${type}`);
       });
       await store.loadHistory("inst_1", run.conversationId, run.topicId);
-      const wrapper = mount(GroupTranscript, { props: { bots: BOTS }, global: { plugins: [i18n] } });
-      return { wrapper, row: wrapper.find('[data-message-id="msg_second"]') };
+      const wrapper = mount(GroupTranscript, { attachTo: document.body, props: { bots: BOTS }, global: { plugins: [i18n] } });
+      await flushPromises();
+      return { wrapper };
     }
 
     it("uses canonical history text when an exact source has no matching local MemberTurn", async () => {
-      const { wrapper, row } = await setup(false, "source_second");
-      expect(row.text()).toContain("Canonical second answer");
-      expect(row.text()).not.toContain("First assignment trace");
+      const { wrapper } = await setup(false, "source_second");
+      const canonical = wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer");
+      expect(canonical).toHaveLength(1);
+      expect(wrapper.find('[data-message-id="msg_second"] [data-test="agent-thinking-bubble"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-unresolved-activity"]').exists()).toBe(true);
+      await wrapper.get('[data-member-turn-id="first_a"] [data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const detail = document.querySelector('[data-test="group-detail-card"]');
+      // Exact-source mismatch is a contradiction: the reply stays canonical and
+      // the unresolved activity row explains the missing join, with no trace.
+      expect(detail?.textContent).toContain("does not match the recorded member turns");
+      expect(detail?.textContent).not.toContain("First assignment trace");
+      expect(detail?.textContent).not.toContain("Canonical second answer");
       wrapper.unmount();
     });
 
     it("does not guess a legacy source among multiple assignments of the same Bot", async () => {
-      const { wrapper, row } = await setup(true);
-      expect(row.text()).toContain("Canonical second answer");
-      expect(row.text()).not.toContain("First assignment trace");
-      expect(row.text()).not.toContain("Second assignment trace");
+      const { wrapper } = await setup(true);
+      expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
+      expect(wrapper.find('[data-message-id="msg_second"] [data-test="agent-thinking-bubble"]').exists()).toBe(false);
+      expect(wrapper.findAll('[data-test="group-unresolved-activity"]')).toHaveLength(2);
+      await wrapper.get('[data-member-turn-id="first_a"] [data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const ambiguous = document.querySelector('[data-test="group-detail-card"]')?.textContent ?? "";
+      // Two same-Bot assignments cannot prove which one owns the legacy reply,
+      // so the candidate carries the ambiguity and no trace is attached.
+      expect(ambiguous).toContain("could not be linked to exactly one member turn");
+      expect(ambiguous).not.toContain("Second assignment trace");
+      expect(ambiguous).not.toContain("First assignment trace");
       wrapper.unmount();
     });
 
     it("joins a repeated Bot's exact source to its own completed trace", async () => {
-      const { wrapper, row } = await setup(true, "source_second");
-      expect(row.text()).toContain("Second assignment trace");
-      expect(row.text()).not.toContain("First assignment trace");
+      const { wrapper } = await setup(true, "source_second");
+      const row = wrapper.get('[data-member-turn-id="second_a"]');
+      expect(row.findAllComponents({ name: "StreamMarkdown" }).map((part: { props: (name: string) => unknown }) => part.props("text") as string)).toEqual(["Canonical second answer"]);
+      expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
+      await row.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const detail = document.querySelector('[data-test="group-detail-card"]');
+      expect(detail?.textContent).toContain("Second assignment trace");
+      expect(detail?.textContent).not.toContain("First assignment trace");
+      expect(detail?.textContent).not.toContain("Canonical second answer");
       wrapper.unmount();
     });
 
     it("keeps unambiguous legacy history trace joins compatible", async () => {
-      const { wrapper, row } = await setup(false);
-      expect(row.text()).toContain("First assignment trace");
+      const { wrapper } = await setup(false);
+      const row = wrapper.get('[data-member-turn-id="first_a"]');
+      expect(row.findAllComponents({ name: "StreamMarkdown" }).map((part: { props: (name: string) => unknown }) => part.props("text") as string)).toEqual(["Canonical second answer"]);
+      expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
+      await row.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const detail = document.querySelector('[data-test="group-detail-card"]');
+      expect(detail?.getAttribute("data-member-turn-id")).toBe("first_a");
+      expect(detail?.textContent).toContain("First assignment trace");
+      expect(detail?.textContent).not.toContain("Canonical second answer");
       wrapper.unmount();
     });
   });
@@ -2687,5 +2748,153 @@ describe("useGroupsStore Group management", () => {
     expect(store.isGroupSelected).toBe(false);
     expect(store.topicsByConversation["inst_1:conversation_g"]).toBeUndefined();
     expect(localStorage.getItem("xrelay.selectedGroup")).toBeNull();
+  });
+});
+
+describe("useGroupsStore durable trace cache", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockRpc.mockReset();
+    localStorage.clear();
+  });
+  const run: ConversationRunDto = { id: "run_trace", conversationId: "conversation_g", topicId: "topic_1",
+    requestMessageId: "msg_1", requestId: "req_trace", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
+  const member: MemberTurnSummaryDto = { id: "turn_a", runId: run.id, conversationId: run.conversationId,
+    topicId: run.topicId, botId: "bot_a", batch: 1, attempt: 2, origin: "recovery", state: "running",
+    promptRequestId: "source_a", createdAt: "now" };
+  const key = "inst_1:conversation_g:topic_1:turn_a:2";
+
+  async function ready(history: ConversationHistoryResponseDto["messages"] = []) {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.conversation.history") return historyWith(history);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      if (type === "control.runs.details.batch") return { runs: [{ ...run, memberTurns: [member] }] };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.loadHistory("inst_1", "conversation_g", "topic_1");
+    store.ensureRunDetails([run.id]);
+    await flushPromises();
+    return store;
+  }
+
+  it("maps an unknown RPC to connectorOutdated without claiming an empty complete trace", async () => {
+    const store = await ready();
+    mockRpc.mockResolvedValueOnce({ error: { code: "unknown-type", message: "unsupported" } });
+    store.ensureTracePage(member.id, member.attempt);
+    await flushPromises();
+    expect(mockRpc).toHaveBeenLastCalledWith("inst_1", "control.runs.trace.get",
+      expect.objectContaining({ runId: run.id, memberTurnId: member.id, attempt: 2, limit: 100 }));
+    expect(store.tracePages[key]).toMatchObject({ recordingState: "unavailable", error: "connectorOutdated", loading: false });
+    expect(store.tracePages[key]?.events).toEqual([]);
+  });
+
+  it("pages from the committed cursor and deduplicates replayed seqs", async () => {
+    const store = await ready();
+    const page = (afterSeq: number, seqs: number[], hasMore: boolean) => ({
+      memberTurnId: member.id, attempt: 2, recordingState: "recording",
+      events: seqs.map((seq) => ({ seq, kind: "text", payload: { text: `e${seq}` }, createdAt: `t${seq}` })),
+      nextSeq: seqs[seqs.length - 1], hasMore,
+    });
+    mockRpc.mockResolvedValueOnce(page(0, [1, 2], true));
+    store.ensureTracePage(member.id, 2);
+    await flushPromises();
+    mockRpc.mockResolvedValueOnce(page(2, [2, 3], false));
+    store.ensureTracePage(member.id, 2);
+    await flushPromises();
+    expect(mockRpc.mock.calls.filter((call) => call[1] === "control.runs.trace.get").map((call) => (call[2] as { afterSeq?: number }).afterSeq))
+      .toEqual([undefined, 2]);
+    expect(store.tracePages[key]?.events.map((event) => event.seq)).toEqual([1, 2, 3]);
+    expect(store.tracePages[key]).toMatchObject({ nextSeq: 3, hasMore: false, recordingState: "recording" });
+  });
+
+  it("rejects a non-contiguous page instead of fabricating complete history", async () => {
+    const store = await ready();
+    mockRpc.mockResolvedValueOnce({ memberTurnId: member.id, attempt: 2, recordingState: "complete",
+      events: [{ seq: 4, kind: "text", payload: { text: "gap" }, createdAt: "t4" }], nextSeq: 4, hasMore: false });
+    store.ensureTracePage(member.id, 2);
+    await flushPromises();
+    expect(store.tracePages[key]).toMatchObject({ events: [], recordingState: "unavailable", error: "invalid_trace_response" });
+  });
+
+  it("marks an evicted head as an earlier window while keeping the server Plan snapshot", async () => {
+    const store = await ready();
+    const events = Array.from({ length: 1000 }, (_, index) => ({ seq: index + 1, kind: "reasoning" as const,
+      payload: { text: `r${index + 1}` }, createdAt: `t${index + 1}` }));
+    store.tracePages[key] = { events, nextSeq: 1000, hasMore: true, recordingState: "recording", loading: false, error: null };
+    mockRpc.mockResolvedValueOnce({ memberTurnId: member.id, attempt: 2, recordingState: "complete",
+      events: [{ seq: 1001, kind: "text", payload: { text: "last" }, createdAt: "t1001" }], nextSeq: 1001, hasMore: false,
+      plan: [{ content: "Ship", status: "completed" }] });
+    store.ensureTracePage(member.id, 2);
+    await flushPromises();
+    const page = store.tracePages[key];
+    expect(page?.events).toHaveLength(1000);
+    expect(page?.firstSeq).toBe(2);
+    expect(page?.plan).toEqual([{ content: "Ship", status: "completed" }]);
+    expect(page?.recordingState).toBe("complete");
+    expect(page?.hasEarlier).toBe(true);
+  });
+
+  it("reconnect refreshes requested details and only the open attempt trace", async () => {
+    const store = await ready();
+    mockRpc.mockResolvedValue({ runs: [{ ...run, memberTurns: [member] }] });
+    store.ensureRunDetails([run.id]);
+    store.setOpenTrace(member.id, 2);
+    await flushPromises();
+    expect(store.tracePages[key]).toBeDefined();
+    mockRpc.mockClear();
+    const traceCalls: Array<{ memberTurnId: string; attempt: number; afterSeq?: number }> = [];
+    mockRpc.mockImplementation(async (_instance: string, type: string, payload: { memberTurnId?: string; attempt?: number; afterSeq?: number }) => {
+      if (type === "control.runs.details.batch") return { runs: [{ ...run, memberTurns: [member] }] };
+      if (type === "control.runs.trace.get") {
+        traceCalls.push({ memberTurnId: payload.memberTurnId!, attempt: payload.attempt!, afterSeq: payload.afterSeq });
+        return { memberTurnId: payload.memberTurnId, attempt: payload.attempt, recordingState: "complete",
+          events: [], hasMore: false, ...(payload.afterSeq ? { nextSeq: payload.afterSeq } : {}) };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    store.refreshRunDetails();
+    await flushPromises();
+    expect(mockRpc.mock.calls.filter((call) => call[1] === "control.runs.details.batch")).toHaveLength(1);
+    expect(traceCalls).toEqual([{ memberTurnId: member.id, attempt: 2, afterSeq: undefined }]);
+    store.setOpenTrace(null);
+    mockRpc.mockClear();
+    store.refreshRunDetails();
+    await flushPromises();
+    expect(mockRpc.mock.calls.filter((call) => call[1] === "control.runs.trace.get")).toHaveLength(0);
+  });
+
+  it("drops live frames whose explicit attempt or source contradicts the durable MemberTurn", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.activeRun = run;
+    store.memberTurnsById = { [member.id]: member };
+    const correlation = (extra: Record<string, unknown>) => ({ conversationId: "conversation_g", topicId: "topic_1",
+      runId: run.id, memberTurnId: member.id, botId: "bot_a", ...extra });
+    const output = (chunk: string, extra: Record<string, unknown>) => store.applyEvent({ kind: "control-event",
+      instanceId: "inst_1", event: { type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "s_a",
+        chunk, conversation: correlation(extra) } } as never);
+    output("stale attempt", { attempt: 1, sourceTurnId: "source_a" });
+    output("wrong source", { attempt: 2, sourceTurnId: "source_other" });
+    expect(store.liveTurnForMember(member.id)).toBeNull();
+    output("current attempt", { attempt: 2, sourceTurnId: "source_a" });
+    expect(store.completeRunPartsForMember(member.id, 2)).toBeUndefined();
+    expect(store.liveTurnForMember(member.id)).toMatchObject({ attempt: 2, parts: [{ type: "text", text: "current attempt" }] });
+  });
+
+  it("clears the scoped cache when the Topic changes", async () => {
+    const store = await ready();
+    mockRpc.mockResolvedValueOnce({ memberTurnId: member.id, attempt: 2, recordingState: "recording", events: [], hasMore: false });
+    store.ensureTracePage(member.id, 2);
+    await flushPromises();
+    expect(store.tracePages[key]).toBeDefined();
+    store.activeTopicId = "topic_2";
+    expect(store.tracePages).toEqual({});
+    expect(store.runHistoryDetails).toEqual({});
   });
 });

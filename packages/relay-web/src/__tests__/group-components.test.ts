@@ -869,42 +869,11 @@ describe("Group Components", () => {
   });
 
   describe("GroupTranscript.vue", () => {
-    it("keeps Run card header and member details readable on narrow viewports", async () => {
+    it("renders one Agent row and bubble per member with exact states", async () => {
       const groups = seedGroupSelection();
-      groups.activeRun = {
-        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
-        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
-        profileRevision: 1, createdAt: "now",
-      };
-      groups.memberTurnsById = {
-        turn_a: {
-          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
-          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
-          state: "running", createdAt: "now",
-          assignmentId: "auto-0-bot_be706cc5-1f9e-4e77-9cb2-a842d2d9687e",
-          task: "群组里如果自动协作关了，那个下拉框里会提示 Automatic collaboration is off.",
-        },
-      };
-      const wrapper = mount(GroupTranscript, {
-        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
-        global: { plugins: [i18n] },
-      });
-      await flushPromises();
-      // Regression: on phones the header flex row squeezed the title / stop
-      // button to min-content, stacking CJK chars one per line.
-      const header = wrapper.get('[data-test="group-run-header"]').classes();
-      expect(header).toEqual(expect.arrayContaining(["min-w-0", "flex-1", "flex-wrap"]));
-      expect(wrapper.get('[data-test="group-run-title"]').classes()).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
-      expect(wrapper.get('[data-test="group-running-members"]').classes()).toEqual(expect.arrayContaining(["min-w-0", "break-words"]));
-      expect(wrapper.get('[data-test="group-stop-run-button"]').classes()).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
-      const details = wrapper.get('[data-test="group-member-details"]');
-      expect(details.classes()).toEqual(expect.arrayContaining(["min-w-0", "break-words"]));
-      expect(details.classes()).not.toContain("break-all");
-      expect(details.text()).toContain("auto-0-bot_be706cc5");
-    });
-
-    it("renders one Run card row per member with exact statuses", async () => {
-      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
       groups.activeRun = {
         id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
@@ -927,73 +896,85 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       await flushPromises();
-      expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="group-run-card"]').attributes("data-run-id")).toBe("run_1");
-      const rows = wrapper.findAll('[data-test="group-member-row"]');
+      // The old aggregate card is gone; one bubble row per MemberTurn remains.
+      expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(false);
+      const rows = wrapper.findAll('[data-test="agent-turn-row"]');
       expect(rows).toHaveLength(2);
-      expect(rows[0]?.attributes("data-bot-id")).toBe("bot_a");
-      expect(rows[0]?.attributes("data-state")).toBe("completed");
-      expect(rows[1]?.attributes("data-bot-id")).toBe("bot_b");
-      expect(rows[1]?.attributes("data-state")).toBe("running");
+      expect(rows[0]!.attributes("data-member-turn-id")).toBe("turn_a");
+      expect(rows[1]!.attributes("data-member-turn-id")).toBe("turn_b");
+      const bubbles = wrapper.findAll('[data-test="agent-thinking-bubble"]');
+      expect(bubbles).toHaveLength(2);
+      expect(bubbles[0]!.classes()).toContain("is-done");
+      expect(bubbles[1]!.classes()).toContain("is-running");
     });
 
-    it("expands member activity on toggle", async () => {
+    it("opens the anchored detail popover from one bubble and stops the exact active run from it", async () => {
       const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
       groups.activeRun = {
-        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        id: "run_stop", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
         profileRevision: 1, createdAt: "now",
       };
       groups.memberTurnsById = {
         turn_a: {
-          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          id: "turn_a", runId: "run_stop", conversationId: "conversation_g", topicId: "topic_1",
           botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
           state: "running", createdAt: "now",
         },
       };
-      groups.liveTurnsByMember = {
-        turn_a: { parts: [{ type: "text", text: "hello" }], status: "streaming", startedAt: Date.now(), revision: 1 },
-      };
+      const spy = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
       const wrapper = mount(GroupTranscript, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
+        attachTo: document.body,
       });
-      expect(wrapper.find('[data-test="group-member-activity"]').exists()).toBe(false);
-      await wrapper.find('[data-test="group-member-toggle"]').trigger("click");
-      expect(wrapper.find('[data-test="group-member-activity"]').exists()).toBe(true);
-    });
-
-    it("names the Jev pick and its reason on an automatic run card", async () => {
-      const groups = seedGroupSelection();
-      groups.activeRun = {
-        id: "run_jev", conversationId: "conversation_g", topicId: "topic_1",
-        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
-        routingState: "done", routingReason: "Jev picked Reviewer for this message (confidence 0.82).",
-        maxMemberTurns: 24, consumedMemberTurns: 1, profileRevision: 1, createdAt: "now",
-      };
-      groups.memberTurnsById = {
-        turn_a: {
-          id: "turn_a", runId: "run_jev", conversationId: "conversation_g", topicId: "topic_1",
-          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "router",
-          state: "running", createdAt: "now",
-        },
-      };
-      const wrapper = mount(GroupTranscript, {
-        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
-        global: { plugins: [i18n] },
-      });
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
       await flushPromises();
-      expect(wrapper.find('[data-test="group-run-dispatched"]').text()).toContain("Reviewer");
-      expect(wrapper.find('[data-test="group-run-routing-reason"]').text()).toBe(
-        "Jev picked Reviewer for this message (confidence 0.82).",
-      );
-      // One pick, one row: no queued siblings from the old fan-out rendering.
-      expect(wrapper.findAll('[data-test="group-member-row"]')).toHaveLength(1);
+      const layer = document.body.querySelector('[data-test="group-detail-layer"]');
+      expect(layer !== null).toBe(true);
+      expect(layer!.textContent ?? "").toContain("Running");
+      (document.body.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
+      await flushPromises();
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
       wrapper.unmount();
     });
 
-    it("shows a waiting run without turning it into running", async () => {
+    it("keeps a neutral routing entry for an automatic run before members exist", async () => {
       const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Plan the release", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_route", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+        routingState: "routing", routingReason: "Jev picked Reviewer for this message (confidence 0.82).",
+        maxMemberTurns: 24, consumedMemberTurns: 0, profileRevision: 1, createdAt: "now",
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+        attachTo: document.body,
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(false);
+      const routing = wrapper.find('[data-test="group-routing-row"]');
+      expect(routing.exists()).toBe(true);
+      expect(routing.text()).toContain("Jev picked Reviewer");
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      expect(document.body.querySelector('[data-test="group-detail-layer"]') !== null).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("shows waiting-human with question and Stop inside the detail, not as a banner", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Which branch?", createdAt: "now" },
+      ];
       groups.activeRun = {
         id: "run_wait", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "waiting-human",
@@ -1011,36 +992,21 @@ describe("Group Components", () => {
       const wrapper = mount(GroupTranscript, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
+        attachTo: document.body,
       });
-      expect(wrapper.find('[data-test="group-run-card"]').text()).toContain("waiting-human");
-      expect(wrapper.find('[data-test="group-waiting-question"]').text()).toBe("Which branch ships?");
-      expect(wrapper.find('[data-test="group-run-budget"]').text()).toContain("1");
-      expect(wrapper.find('[data-test="group-run-budget"]').text()).toContain("24");
-      expect(wrapper.find('[data-test="group-member-assignment"]').text()).toContain("step-1");
-      expect(wrapper.find('[data-test="group-member-task"]').text()).toContain("Review the patch");
-      expect(wrapper.find('[data-test="group-member-depends"]').text()).toContain("step-0");
-      expect(wrapper.find('[data-test="group-member-blocked"]').text()).toContain("permission");
-      expect(wrapper.find('[data-test="group-waiting-human"]').text()).toContain("new run");
-      expect(wrapper.find('[data-test="group-start-step"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(true);
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const html = document.body.innerHTML;
+      expect(html).toContain("Which branch ships?");
+      expect(html).toContain("24");
+      expect(html).toContain("step-1");
+      expect(html).toContain("Review the patch");
+      expect(html).toContain("step-0");
+      expect(html).toContain("permission");
+      expect(html).toContain("new run");
+      expect(document.body.querySelector('[data-test="group-stop-run-button"]') !== null).toBe(true);
       expect(groups.activeRun?.state).toBe("waiting-human");
-    });
-
-    it("stops the exact active run from the card", async () => {
-      const groups = seedGroupSelection();
-      groups.activeRun = {
-        id: "run_stop", conversationId: "conversation_g", topicId: "topic_1",
-        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
-        profileRevision: 1, createdAt: "now",
-      };
-      const spy = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
-      const wrapper = mount(GroupTranscript, {
-        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
-        global: { plugins: [i18n] },
-      });
-      await wrapper.find('[data-test="group-stop-run-button"]').trigger("click");
-      expect(spy).toHaveBeenCalledTimes(1);
-      spy.mockRestore();
+      wrapper.unmount();
     });
   });
 
@@ -1073,7 +1039,7 @@ describe("Group Components", () => {
     const ROW_H = 60;
     function withRowGeometry(scrollerEl: HTMLElement, getScrollTop: () => number): void {
       const rowsOf = (): HTMLElement[] =>
-        Array.from(scrollerEl.querySelectorAll<HTMLElement>("[data-message-id]"));
+        Array.from(scrollerEl.querySelectorAll<HTMLElement>("[data-message-id],[data-anchor-id]"));
       scrollerEl.getBoundingClientRect = () => (
         { top: 100, bottom: 200, left: 0, right: 0, width: 0, height: VIEWPORT, x: 0, y: 100, toJSON: () => ({}) } as DOMRect
       );
@@ -1090,13 +1056,13 @@ describe("Group Components", () => {
       const originalQueryAll = scrollerEl.querySelectorAll.bind(scrollerEl);
       scrollerEl.querySelectorAll = ((selector: string, ...rest: unknown[]) => {
         const found = (originalQueryAll as (...a: unknown[]) => NodeListOf<HTMLElement>)(selector, ...rest);
-        if (selector === "[data-message-id]") found.forEach(patchRow);
+        if (selector.includes("[data-message-id]") || selector.includes("[data-anchor-id]")) found.forEach(patchRow);
         return found;
       }) as typeof scrollerEl.querySelectorAll;
       const originalQueryOne = scrollerEl.querySelector.bind(scrollerEl);
       scrollerEl.querySelector = ((selector: string, ...rest: unknown[]) => {
         const found = (originalQueryOne as (...a: unknown[]) => HTMLElement | null)(selector, ...rest);
-        if (found && selector.startsWith("[data-message-id")) patchRow(found);
+        if (found && (selector.includes("[data-message-id") || selector.includes("[data-anchor-id"))) patchRow(found);
         return found;
       }) as typeof scrollerEl.querySelector;
       // The container itself must never be treated as a row: guard the two

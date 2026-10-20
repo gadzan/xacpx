@@ -210,9 +210,12 @@ test("historical batch details omit private profile fields and preserve Topic ow
   const { control, runtime } = await wire({ autoKick: false });
   try {
     const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
-    const conversationId = createDirectConversationId(bot.id);
-    const topicId = createDirectTopicId(bot.id);
-    const accepted = await control.promptConversation({ conversationId, topicId, requestId: "history", text: "review" });
+    const otherBot = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "Trace team", botIds: [bot.id, otherBot.id] });
+    const topic = await control.createGroupTopic(group.id, "Trace history", { workspace: "backend", isolation: "shared" });
+    const conversationId = group.id;
+    const topicId = topic.id;
+    const accepted = await control.promptConversation({ conversationId, topicId, requestId: "history", text: "review", target: { mode: "members", botIds: [bot.id] } });
     const before = control.listTopicRuns(conversationId, topicId);
     const result = asPublicControl(control).getRunDetailsBatch({ conversationId, topicId, runIds: ["missing", accepted.run.id] });
     expect(result.missingRunIds).toEqual(["missing"]);
@@ -227,7 +230,9 @@ test("historical batch details omit private profile fields and preserve Topic ow
     expect(control.listTopicRuns(conversationId, topicId)).toEqual(before);
     expect(() => control.getRunDetailsBatch({ conversationId, topicId, runIds: [] })).toThrow();
     expect(() => control.getRunDetailsBatch({ conversationId, topicId, runIds: [accepted.run.id, accepted.run.id] })).toThrow();
-    const other = await control.createTopic(conversationId, "Other");
+    const otherSubject = await control.createBot({ name: "Second", agent: "codex", workspace: "backend" });
+    const otherGroup = await control.createGroup({ title: "Other", botIds: [bot.id, otherSubject.id] });
+    const other = await control.createGroupTopic(otherGroup.id, "Other", { workspace: "backend", isolation: "shared" });
     expect(() => control.getRunDetailsBatch({ conversationId, topicId: other.id, runIds: [accepted.run.id] })).toThrow();
     expect(() => control.getRunDetailsBatch({ conversationId, topicId: "topic_peer_secret", runIds: [accepted.run.id] })).toThrow();
   } finally { await runtime.shutdown(); }
@@ -237,9 +242,12 @@ test("legacy trace reads report unavailable and reject foreign member and scope 
   const { control, runtime } = await wire({ autoKick: false });
   try {
     const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
-    const conversationId = createDirectConversationId(bot.id);
-    const topicId = createDirectTopicId(bot.id);
-    const accepted = await control.promptConversation({ conversationId, topicId, requestId: "trace", text: "review" });
+    const otherBot = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "Trace team", botIds: [bot.id, otherBot.id] });
+    const topic = await control.createGroupTopic(group.id, "Trace history", { workspace: "backend", isolation: "shared" });
+    const conversationId = group.id;
+    const topicId = topic.id;
+    const accepted = await control.promptConversation({ conversationId, topicId, requestId: "trace", text: "review", target: { mode: "members", botIds: [bot.id] } });
     const member = control.getRun(accepted.run.id).memberTurns[0]!;
     const input = { conversationId, topicId, runId: accepted.run.id, memberTurnId: member.id, attempt: member.attempt };
     expect(control.getRunTrace(input)).toEqual({
@@ -251,8 +259,15 @@ test("legacy trace reads report unavailable and reject foreign member and scope 
     expect(() => control.getRunTrace({ ...input, limit: 201 })).toThrow();
     expect(() => control.getRunTrace({ ...input, afterSeq: -1 })).toThrow();
     expect(() => control.getRunTrace({ ...input, topicId: "topic_peer_secret" })).toThrow();
-    const other = await control.createTopic(conversationId, "Other");
+    const otherSubject = await control.createBot({ name: "Second", agent: "codex", workspace: "backend" });
+    const otherGroup = await control.createGroup({ title: "Other", botIds: [bot.id, otherSubject.id] });
+    const other = await control.createGroupTopic(otherGroup.id, "Other", { workspace: "backend", isolation: "shared" });
     expect(() => control.getRunTrace({ ...input, topicId: other.id })).toThrow();
+    const direct = await control.promptConversation({ conversationId: createDirectConversationId(bot.id),
+      topicId: createDirectTopicId(bot.id), requestId: "direct-scope", text: "hello" });
+    expect(() => control.getRunDetailsBatch({ conversationId: direct.conversationId, topicId: direct.topicId, runIds: [direct.run.id] })).toThrow();
+    expect(() => control.getRunTrace({ ...input, conversationId: direct.conversationId, topicId: direct.topicId })).toThrow();
+    expect(control.getRun(direct.run.id).id).toBe(direct.run.id);
   } finally { await runtime.shutdown(); }
 });
 

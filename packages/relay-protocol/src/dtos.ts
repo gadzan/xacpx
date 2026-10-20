@@ -584,6 +584,8 @@ export interface ConversationRunTraceDto {
   events: ConversationRunTraceEventDto[];
   nextSeq?: number;
   hasMore: boolean;
+  /** Latest Run-level Plan snapshot; not exclusive to the selected member. */
+  plan?: PlanEntryDto[];
   attempts?: number[];
 }
 

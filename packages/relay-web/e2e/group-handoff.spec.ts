@@ -60,7 +60,7 @@ async function openGroup(page: Page, locale = "en", messages = initial) {
   const nav = page.getByTestId("instance-nav-groups");
   await nav.click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
-  await expect(page.getByTestId("group-run-card")).toHaveAttribute("data-run-id", current.id);
+  await expect(page.getByTestId("group-transcript-scroller")).toBeVisible();
   await expect(page.getByTestId("group-target-button")).toBeEnabled();
   return history;
 }
@@ -91,7 +91,6 @@ for (const locale of ["en", "zh-CN"]) {
     await expect(entry).toContainText(locale === "en" ? "Outcome unknown" : "结果未知");
     await expect(entry).not.toContainText(result.content);
     await expect(entry.locator("img")).toHaveCount(0);
-    await expect(page.getByTestId("group-run-card")).toHaveAttribute("data-run-id", current.id);
     const scroller = page.getByTestId("group-transcript-scroller");
     expect(await scroller.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: info.outputPath(`handoff-${locale}-expanded.png`) });
@@ -153,7 +152,6 @@ test("prepend, duplicate live delivery and reconnect preserve handoff identity a
   await expect.poll(() => hub.sockets.some((socket) => !oldSockets.has(socket) && socket.readyState === 1), { timeout: 20_000 }).toBe(true);
   await reloaded;
   await expect(page.locator('[data-message-id="live_handoff"]')).toHaveCount(1);
-  await expect(page.getByTestId("group-run-card")).toHaveAttribute("data-run-id", current.id);
 });
 
 for (const distance of ["nearby", "distant"] as const) {
