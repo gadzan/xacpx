@@ -1008,6 +1008,121 @@ describe("Group Components", () => {
       expect(groups.activeRun?.state).toBe("waiting-human");
       wrapper.unmount();
     });
+    // Every row must expose exactly one anchor: the unwrapped member activity
+    // row anchors to its MemberTurn id, the bubble reply row to itself via the
+    // exact message id, and only the request row keeps the request anchor.
+    it("keeps every anchor unique with the activity row anchored to its member", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        { id: "reply_2", conversationId: "conversation_g", topicId: "topic_1", seq: 3, role: "bot", senderBotId: "bot_b", runId: "run_1", promptRequestId: "p_1", content: "From Tester", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "human-explicit",
+          state: "completed", promptRequestId: "p_1", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const anchors = wrapper.findAll("[data-anchor-id]").map((row) => row.attributes("data-anchor-id"));
+      expect(anchors).toContain("turn_a");
+      expect(anchors.filter((anchor) => anchor === "msg_1")).toHaveLength(1);
+      expect(new Set(anchors).size).toBe(anchors.length);
+      expect(wrapper.get('[data-anchor-id="turn_b"]').attributes("data-row-id")).toBe("reply_2");
+      expect(wrapper.get('[data-anchor-id="turn_b"]').attributes("data-message-id")).toBe("reply_2");
+      wrapper.unmount();
+    });
+
+    it("anchors the neutral routing row to its own routing key", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Plan the release", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_route", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+        routingState: "routing", maxMemberTurns: 24, consumedMemberTurns: 0, profileRevision: 1, createdAt: "now",
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const routing = wrapper.find('[data-test="group-routing-row"]');
+      expect(routing.attributes("data-anchor-id")).toBe("routing:run_route");
+      expect(routing.attributes("data-row-id")).toBe("routing:run_route");
+      wrapper.unmount();
+    });
+
+    it("jumps the public Handoff entry to the canonical reply bubble row", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        {
+          id: "handoff_2", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+          role: "system", senderBotId: "bot_a", runId: "run_1", createdAt: "now",
+          content: "Public handoff: Reviewer → Tester\nTask: Review patch\nExpected output: Findings",
+          handoff: {
+            senderMemberTurnId: "turn_a", to: "bot_b", assignmentId: "assignment_b",
+            memberTurnId: "turn_b", task: "Review patch", expectedOutput: "Findings",
+          },
+        },
+        { id: "reply_3", conversationId: "conversation_g", topicId: "topic_1", seq: 3, role: "bot", senderBotId: "bot_b", runId: "run_1", promptRequestId: "p_1", content: "Findings report", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", createdAt: "now",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "followup",
+          state: "completed", promptRequestId: "p_1", assignmentId: "assignment_b", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+        attachTo: document.body,
+      });
+      await flushPromises();
+      const scroller = wrapper.get('[data-test="group-transcript-scroller"]').element as HTMLElement;
+      const row = wrapper.get('[data-message-id="reply_3"]');
+      expect(row.attributes("data-anchor-id")).toBe("turn_b");
+      expect(row.attributes("data-row-id")).toBe("reply_3");
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({ top: 10 } as DOMRect);
+      vi.spyOn(row.element as HTMLElement, "getBoundingClientRect").mockReturnValue({ top: 210 } as DOMRect);
+      scroller.scrollTop = 25;
+      await wrapper.get('[data-test="group-handoff-toggle"]').trigger("click");
+      await wrapper.get('[data-test="group-handoff-jump"]').trigger("click");
+      await flushPromises();
+      // The jump scrolls the bubble row to the viewport top and focuses it.
+      expect(scroller.scrollTop).toBe(225);
+      expect(document.activeElement).toBe(row.element);
+      wrapper.unmount();
+    });
+
   });
 
   describe("GroupTranscript.vue scroll behavior", () => {
@@ -1212,6 +1327,63 @@ describe("Group Components", () => {
       // The restore shifts scrollTop by exactly the prepended height, so the
       // anchored message keeps its viewport position.
       expect(el.scrollTop).toBe(780);
+      loadSpy.mockRestore();
+    });
+
+    // The member activity row sits between the request and the oldest plain
+    // rows: the reader parked on it must survive the prepend too, and the
+    // member row is the only anchor carrying the request id's neighbor.
+    it("keeps the member activity row anchored when older history is prepended", async () => {
+      seedGroupSelection();
+      const groups = useGroupsStore();
+      groups.messages = [
+        { id: "msg_request", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "2026-09-01T00:00:00.000Z" },
+      ];
+      groups.newestSeq = 1;
+      groups.oldestSeq = 1;
+      groups.contiguousNewestSeq = 1;
+      groups.hasMoreBefore = true;
+      groups.topicReady = true;
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_request", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const { wrapper, geo } = mountTranscript();
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      // Viewport opens exactly on the activity row: the request row above is
+      // out, so the MemberTurn's own row must be what the anchor locks onto.
+      el.scrollTop = 60;
+      await wrapper.find('[data-test="group-transcript-scroller"]').trigger("scroll");
+      expect(el.querySelector<HTMLElement>('[data-anchor-id="turn_a"]')!.getBoundingClientRect().top).toBe(100);
+      const anchors = Array.from(el.querySelectorAll<HTMLElement>("[data-anchor-id]"))
+        .map((row) => row.getAttribute("data-anchor-id"));
+      expect(anchors).toContain("turn_a");
+      expect(new Set(anchors).size).toBe(anchors.length);
+      const loadSpy = vi.spyOn(useGroupsStore(), "loadOlder").mockImplementation(async () => {
+        const g = useGroupsStore();
+        geo.grow(300);
+        g.messages = [
+          ...Array.from({ length: 5 }, (_, i) => ({
+            id: `msg_old_${i}`, conversationId: "conversation_g", topicId: "topic_1", seq: -4 + i,
+            role: "human" as const, content: "old", createdAt: "2026-08-01T00:00:00.000Z",
+          })),
+          ...g.messages,
+        ];
+      });
+      await wrapper.find('[data-test="group-load-older-button"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      expect(el.scrollTop).toBe(360);
+      expect(el.querySelector<HTMLElement>('[data-anchor-id="turn_a"]')!.getBoundingClientRect().top).toBe(100);
       loadSpy.mockRestore();
     });
 

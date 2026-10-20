@@ -33,6 +33,7 @@ import {
   traceEventsToParts,
   type GroupRunRecord,
   type GroupTranscriptItem,
+  type TraceReplayStatus,
 } from "../lib/group-run-presentation";
 
 const props = defineProps<{
@@ -229,6 +230,11 @@ const detailLive = computed(() => {
 const detailParts = computed<TurnPartDto[] | undefined>(() => {
   if (detailReplay.value?.parts.length || detailPage.value?.events.length) return detailReplay.value?.parts;
   return detailLive.value?.parts;
+});
+
+const detailRecordingState = computed<TraceReplayStatus | undefined>(() => {
+  if (detailPage.value?.recordingState) return detailPage.value.recordingState;
+  return detailLive.value?.status === "streaming" ? "recording" : undefined;
 });
 const detailTraceFailure = computed(() => {
   const terminal = detailReplay.value?.terminal;
@@ -511,7 +517,6 @@ async function handleLoadOlder(): Promise<void> {
         />
         <!-- Projection order keeps activity, routing and unresolved rows at their owning request. -->
         <div v-else-if="item.kind === 'member-activity'"
-          :data-anchor-id="item.requestMessageId"
           :data-member-turn-id="item.memberTurn.id"
         >
           <p v-if="item.explanation" class="mb-1 text-xs text-warning" data-test="group-unresolved-activity">{{ explanationText(item.explanation) }}</p>
@@ -533,7 +538,7 @@ async function handleLoadOlder(): Promise<void> {
           v-else-if="item.kind === 'routing'"
           data-test="group-routing-row"
           :row-id="`routing:${item.run.run.id}`"
-          :data-anchor-id="item.requestMessageId"
+          :data-anchor-id="`routing:${item.run.run.id}`"
           :data-run-id="item.run.run.id"
         >
           <div class="flex items-start gap-2">
@@ -598,7 +603,7 @@ async function handleLoadOlder(): Promise<void> {
     :explanation="openDetail.explanation ? explanationText(openDetail.explanation) : undefined"
     :parts="detailParts"
     :sibling-summaries="siblingSummaries"
-    :recording-state="detailPage?.recordingState"
+    :recording-state="detailRecordingState"
     :completeness-reason="detailPage?.completenessReason"
     :plan="detailPlan"
     :trace-loading="detailPage?.loading"

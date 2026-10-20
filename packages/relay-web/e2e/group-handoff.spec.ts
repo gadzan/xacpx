@@ -52,6 +52,7 @@ async function openGroup(page: Page, locale = "en", messages = initial) {
       }
       case "control.runs.list": result = { runs: [current, historical], activeRunId: current.id, activeRun: current }; break;
       case "control.runs.get": result = { run: payload.runId === historical.id ? historical : current }; break;
+      case "control.runs.details.batch": result = { runs: [historical, current].filter((run) => payload.runIds.includes(run.id)) }; break;
       default: return route.fallback();
     }
     await route.fulfill({ json: { result } });
@@ -189,6 +190,8 @@ for (const distance of ["nearby", "distant"] as const) {
     await page.keyboard.press("Tab");
     await page.screenshot({ path: info.outputPath(`result-${distance}-keyboard.png`) });
     expect(focusedAfterJump).toBe("reply_second");
+    await expect(target.getByTestId("agent-thinking-bubble")).toBeFocused();
+    await page.keyboard.press("Tab");
     await expect(target.getByRole("button", { name: "Copy", exact: true })).toBeFocused();
     await expect(replyText).toBeInViewport({ ratio: 1 });
   });

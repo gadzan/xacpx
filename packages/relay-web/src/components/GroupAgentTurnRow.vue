@@ -83,6 +83,8 @@ defineExpose({ bubbleStatus });
     data-test="agent-turn-row"
     :data-member-turn-id="memberTurn.id"
     :data-run-id="memberTurn.runId"
+    :data-message-id="message?.id"
+    :data-anchor-id="memberTurn.id"
     :driver="driver"
     :speaker="name"
   >

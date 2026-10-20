@@ -119,12 +119,16 @@ function onOutsidePointer(event: PointerEvent): void {
   emit("close");
 }
 
+function closeWithFocus(): void {
+  emit("close");
+  props.anchorEl?.focus({ preventScroll: true });
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (event.key !== "Escape") return;
   event.preventDefault();
   event.stopPropagation();
-  emit("close");
-  props.anchorEl?.focus({ preventScroll: true });
+  closeWithFocus();
 }
 
 watch([() => props.anchorEl, () => props.scrollerEl], observeAnchor, { flush: "post" });
@@ -177,9 +181,10 @@ const style = computed(() => ({
           <span class="text-xs font-semibold text-fg-muted">{{ $t("group.detail.title") }}</span>
           <button
             type="button"
+            data-test="group-detail-close"
             class="grid h-7 w-7 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
             :aria-label="$t('group.detail.close')"
-            @click.stop="emit('close')"
+            @click.stop="closeWithFocus"
           >
             <X :size="14" />
           </button>

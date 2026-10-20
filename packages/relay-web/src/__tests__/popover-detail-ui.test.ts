@@ -203,6 +203,37 @@ describe("GroupThinkingBubbles UI", () => {
     wrapper.unmount();
   });
 
+  it("returns focus to the exact trigger when closed by the X button", async () => {
+    const groups = seedEnvironment();
+    seedLiveRun();
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const wrapper = mountTranscript();
+    await openFirstBubble(wrapper);
+    const trigger = wrapper.get('[data-test="agent-thinking-bubble"]');
+    const focus = vi.spyOn(trigger.element as HTMLElement, "focus");
+    (document.body.querySelector('[data-test="group-detail-close"]') as HTMLElement).click();
+    await flushPromises();
+    expect(card()).toBeNull();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(document.activeElement).toBe(trigger.element);
+    wrapper.unmount();
+  });
+
+  it("closes from an outside pointerdown without moving the reader's focus", async () => {
+    const groups = seedEnvironment();
+    seedLiveRun();
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const wrapper = mountTranscript();
+    await openFirstBubble(wrapper);
+    document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, composed: true }));
+    await flushPromises();
+    expect(card()).toBeNull();
+    // The reader's focus stays untouched: nothing is pulled back to the bubble.
+    expect(document.activeElement).toBe(document.body);
+    expect(wrapper.get('[data-test="agent-thinking-bubble"]').element).not.toBe(document.activeElement);
+    wrapper.unmount();
+  });
+
   it("keeps one open detail and points aria-controls at the newly opened member", async () => {
     const groups = seedEnvironment();
     groups.activeRun = runOf();
@@ -462,6 +493,52 @@ describe("GroupThinkingBubbles UI", () => {
     expect(wrapper.find('[data-test="group-detail-explanation"]').text()).toContain("could not be linked");
     expect(wrapper.find('[data-test="group-trace-status"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("renders exactly one explanation and one duration in the content", () => {
+    const wrapper = mount(GroupRunDetailContent, {
+      props: {
+        run: runOf({ state: "completed", finishedAt: "2026-09-01T00:01:01.000Z" }),
+        explanation: "This reply could not be linked to exactly one member turn, so no process is attached.",
+      },
+    });
+    const el = wrapper.find('[data-test="group-run-detail"]').element as HTMLElement;
+    expect(el.querySelectorAll('[data-test="group-detail-explanation"]')).toHaveLength(1);
+    expect(el.querySelectorAll('[data-test="group-detail-duration"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("labels a live running member as recording while no durable trace page exists", async () => {
+    const groups = seedEnvironment();
+    seedLiveRun();
+    vi.spyOn(groups, "ensureTracePage").mockImplementation(() => {});
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    vi.spyOn(groups, "liveTurnForMember").mockReturnValue({
+      parts: [], status: "streaming", startedAt: 1, revision: 1,
+    } as never);
+    const wrapper = mountTranscript();
+    await openFirstBubble(wrapper);
+    const status = document.body.querySelector('[data-test="group-trace-status"]');
+    expect(status).not.toBeNull();
+    expect(status!.textContent).toContain("Recording now");
+    wrapper.unmount();
+  });
+
+  it("prefers the durable page's state over a live recording label", async () => {
+    const groups = seedEnvironment();
+    seedLiveRun();
+    seedTracePage(1, { recordingState: "unavailable", error: "connector outdated" });
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    vi.spyOn(groups, "liveTurnForMember").mockReturnValue({
+      parts: [], status: "streaming", startedAt: 1, revision: 1,
+    } as never);
+    const wrapper = mountTranscript();
+    await openFirstBubble(wrapper);
+    const status = document.body.querySelector('[data-test="group-trace-status"]')!;
+    expect(status.textContent).toContain("Process was not recorded for this run");
+    expect(status.textContent).toContain("connector outdated");
+    expect(status.textContent).not.toContain("Recording now");
     wrapper.unmount();
   });
 

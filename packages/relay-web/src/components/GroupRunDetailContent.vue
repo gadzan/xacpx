@@ -247,10 +247,6 @@ function selectAttempt(event: Event): void {
         </button>
       </div>
     </div>
-    <p v-if="explanation" data-test="group-detail-explanation" class="text-xs text-warning">{{ explanation }}</p>
-    <p v-if="!memberTurn && duration" data-test="group-detail-duration" class="text-xs text-fg-muted">
-      {{ $t("group.detail.duration", { duration }) }}
-    </p>
 
     <!-- Plan -->
     <PlanPanel v-if="plan && plan.length" :entries="plan" class="w-full" />
