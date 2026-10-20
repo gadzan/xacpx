@@ -176,7 +176,20 @@ async function defaultWaitMs(ms: number): Promise<void> {
 }
 
 async function probeSupervisorDefault(record: RuntimeWorkerFenceRecord): Promise<FenceLiveness> {
-  if (!record.supervisorPid || !record.supervisorCreationDate) return "unknown";
+  // No pid: the host never persisted a supervisor, which (under the GO gate)
+  // means no supervisor was ever authorized to create this generation's Job.
+  if (!record.supervisorPid) return record.jobName ? "gone" : "unknown";
+  if (!record.supervisorCreationDate) {
+    // Pid recorded, birth not yet durable: the supervisor may still be waiting
+    // for GO (it cannot create anything) or may be gone. Only pid absence
+    // proves gone; a live or unreadable pid refuses.
+    try {
+      const result = await probeWindowsProcessIdentity(record.supervisorPid);
+      return result.status === "missing" ? "gone" : result.status === "found" ? "alive" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
   try {
     const result = await probeWindowsProcessIdentity(record.supervisorPid);
     if (result.status === "missing") return "gone";
@@ -239,20 +252,13 @@ export async function dischargeRuntimeWorkerFence(
     }
     if (platform === "win32" && record.jobName) {
       if (record.jobName !== windowsJobNameForGeneration(record.generation)) return "refused";
-      // A claim is written BEFORE the supervisor is spawned, so a claiming
-      // record can legitimately carry the Job name without any supervisor
-      // birth. Requiring that birth here made every crashed claim permanently
-      // unrecoverable (probeSupervisorDefault returns "unknown" without it).
-      // The canonical, generation-bound Job is the containment proof in that
-      // window: the claimant host is already proven gone above, so a live Job
-      // can only belong to a supervisor that outlived it, and kill-on-close
-      // reaps that supervisor's tree. Only "empty"/"absent" passes; anything
-      // else refuses.
-      if (record.supervisorPid && record.supervisorCreationDate) {
-        if (await (deps.probeSupervisor ?? probeSupervisorDefault)(record) !== "gone") return "refused";
-      } else if (record.jobAttested === true) {
-        return "refused";
-      }
+      // A claim predates the supervisor's birth, so the supervisor probe is
+      // the authority: a recorded pid that is still alive refuses (it may
+      // already hold the Job), a missing pid means no supervisor was ever
+      // authorized (the GO gate), and an attested record must always name its
+      // supervisor. Only after that proof may Job containment decide.
+      if (record.jobAttested === true && (!record.supervisorPid || !record.supervisorCreationDate)) return "refused";
+      if (await (deps.probeSupervisor ?? probeSupervisorDefault)(record) !== "gone") return "refused";
       const containment = await (deps.probeJobContainment ?? probeJobContainmentDefault)(record);
       if (containment !== "empty" && containment !== "absent") return "refused";
     }

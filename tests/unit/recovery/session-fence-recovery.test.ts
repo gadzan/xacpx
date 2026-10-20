@@ -65,14 +65,31 @@ test("crashed pre-spawn claim is recoverable from canonical Job containment only
   // Claims are written before the supervisor exists: no supervisor birth and
   // no worker creation date. Gating them on either made the fence permanent.
   const claim = record({ phase: "claiming", jobName, jobAttested: false, creationDate: null, pid: 4242 });
-  const input = { record: claim, expectedGeneration: GENERATION, probe: { worker: "gone" as const, residualsRemaining: null, containment: "absent" as const } };
+  const input = { record: claim, expectedGeneration: GENERATION, probe: { worker: "gone" as const, supervisor: "gone" as const, residualsRemaining: null, containment: "absent" as const } };
   expect(decideSessionFenceRecovery(input)).toEqual({ kind: "recoverable-contained-proof" });
   expect(decideSessionFenceRecovery({ ...input, probe: { ...input.probe, containment: "empty" } }).kind).toBe("recoverable-contained-proof");
   for (const containment of ["active", "unknown"] as const) expect(decideSessionFenceRecovery({ ...input, probe: { ...input.probe, containment } }).kind).toBe("refused");
   for (const worker of ["alive", "unknown"] as const) expect(decideSessionFenceRecovery({ ...input, probe: { ...input.probe, worker } }).kind).toBe("refused");
+  // A supervisor that has been spawned but not yet authorized (birth absent)
+  // may still create its Job: prove it gone before releasing anything.
+  for (const supervisor of ["alive", "unknown"] as const) expect(decideSessionFenceRecovery({ ...input, probe: { ...input.probe, supervisor } }).kind).toBe("refused");
   expect(decideSessionFenceRecovery({ ...input, record: { ...claim, jobName: "wrong-job" } }).kind).toBe("refused");
   // A claim without a Job name has no containment proof: it stays automatic-only.
   expect(decideSessionFenceRecovery({ ...input, record: { ...claim, jobName: undefined } })).toEqual({ kind: "refused", reason: "fence-not-admitted" });
+});
+
+test("owned and terminal fences that never persisted a supervisor birth recover from containment", () => {
+  const jobName = windowsJobNameForGeneration(GENERATION)!;
+  // Crash between the owned fence write and the supervisor birth CAS: no
+  // authorization was sent, so the canonical Job proves the tree is gone.
+  for (const phase of ["owned", "discharged"] as const) {
+    const current = record({ phase, jobName, jobAttested: false, creationDate: null, pid: 5150, supervisorPid: 5151, supervisorCreationDate: undefined });
+    const input = { record: current, expectedGeneration: GENERATION, probe: { worker: "gone" as const, supervisor: "gone" as const, residualsRemaining: null, containment: "absent" as const } };
+    expect(decideSessionFenceRecovery(input)).toEqual({ kind: "recoverable-contained-proof" });
+    expect(decideSessionFenceRecovery({ ...input, probe: { ...input.probe, supervisor: "alive" } }).kind).toBe("refused");
+    expect(decideSessionFenceRecovery({ ...input, probe: { ...input.probe, containment: "active" } }).kind).toBe("refused");
+    expect(decideSessionFenceRecovery({ ...input, probe: { ...input.probe, worker: "unknown" } }).kind).toBe("refused");
+  }
 });
 
 test("stale generation and same-generation phase transition never mutate fence or create backup", async () => {
@@ -103,6 +120,33 @@ test("successful recovery preserves exact backup bytes with separate valid audit
     expect(await readFile(result.backupPath!, "utf8")).toBe(original);
     expect(JSON.parse(await readFile(`${result.backupPath}.audit.json`, "utf8"))).toEqual({ attemptedAt: "2026-10-20T00:00:00.000Z", recoveredAt: "2026-10-20T00:00:00.000Z", outcome: "applied", recovery: "recoverable-terminal-proof", sessionAlias: "backend", generation: GENERATION });
     expect(await new RuntimeWorkerFence(dir).read(snapshot.logicalSessionId)).toEqual({ kind: "absent" });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a pre-go discharged fence from a crashed recovery retires on the next attempt", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "session-recovery-prego-terminal-"));
+  try {
+    // Crash after persisting "discharged" but before retiring the fence: the
+    // record keeps jobName, has no attestation and no supervisor birth.
+    const snapshot = record({
+      phase: "discharged",
+      jobName: windowsJobNameForGeneration(GENERATION)!,
+      jobAttested: false,
+      creationDate: null,
+      pid: 5150,
+      supervisorPid: 5151,
+    });
+    const selected = target(dir, snapshot);
+    await writeFile(selected.fencePath, JSON.stringify(snapshot));
+    const result = await recoverSessionFence({
+      target: selected,
+      configPath: join(dir, "config.json"),
+      expectedGeneration: GENERATION,
+      probe: { worker: "gone", supervisor: "gone", residualsRemaining: null, containment: "absent" },
+    });
+    expect(result.eligibility).toEqual({ kind: "recoverable-contained-proof" });
+    expect(await new RuntimeWorkerFence(dir).read(snapshot.logicalSessionId)).toEqual({ kind: "absent" });
+    expect((await readdir(dir)).some((name) => name.includes(".bak-"))).toBe(true);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

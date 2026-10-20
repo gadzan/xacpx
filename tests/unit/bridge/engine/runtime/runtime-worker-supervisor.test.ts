@@ -10,7 +10,10 @@ import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/r
 import { RuntimeWorkerFence } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 import { probeWindowsProcessIdentity, type WindowsProbeStatus } from "../../../../../src/process/windows-process-tree";
 import { queryJobContainment } from "../../../../../src/process/windows-job-query";
-import { spawnWindowsSupervisor, WINDOWS_SUPERVISOR_HELLO_PREFIX } from "../../../../../src/process/windows-job-supervisor";
+import { spawnWindowsSupervisor, WINDOWS_SUPERVISOR_BOOT_PREFIX, WINDOWS_SUPERVISOR_HELLO_PREFIX } from "../../../../../src/process/windows-job-supervisor";
+
+/** Stable numeric FILETIME-like birth per pid for fake supervisors. */
+const birthFor = (pid: number): string => String(134368643730771264 + pid);
 
 test("durable manager rejects synchronous ensureWorker before spawning or registering a worker", async () => {
   const dir = await mkdtemp(join(tmpdir(), "supervisor-sync-fence-"));
@@ -49,8 +52,18 @@ function capturedSupervisor() {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
+  const go = Promise.withResolvers<void>();
   let business = "";
-  stdin.on("data", (chunk) => { business += chunk.toString(); });
+  let pending = "";
+  stdin.on("data", (chunk) => {
+    pending += chunk.toString();
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line === "GO") go.resolve();
+      else business += `${line}\n`;
+    }
+  });
   const kills: unknown[] = [];
   const child = Object.assign(new EventEmitter(), {
     pid: 41001, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
@@ -64,16 +77,27 @@ function capturedSupervisor() {
       return true;
     },
   });
+  const boot = () => {
+    stderr.write(WINDOWS_SUPERVISOR_BOOT_PREFIX + JSON.stringify({ supervisorPid: child.pid, creationDate: birthFor(child.pid) }) + "\n");
+  };
+  const hello = (jobName: string) => {
+    stderr.write(WINDOWS_SUPERVISOR_HELLO_PREFIX + JSON.stringify({ workerPid: 41002, supervisorPid: child.pid, jobName, inJob: true }) + "\n");
+  };
   return {
     child: child as unknown as ChildProcess, kills,
     business: () => business,
-    hello(jobName: string) {
-      stderr.write(WINDOWS_SUPERVISOR_HELLO_PREFIX + JSON.stringify({ workerPid: 41002, supervisorPid: child.pid, jobName, inJob: true }) + "\n");
+    go,
+    boot,
+    hello,
+    /** Boot immediately; announce the worker only after the host's GO. */
+    auto(jobName: string) {
+      queueMicrotask(boot);
+      void go.promise.then(() => hello(jobName));
     },
   };
 }
 
-for (const barrier of ["supervisor probe", "supervisor hello", "durable supervisor admission", "attestation", "durable worker admission"] as const) {
+for (const barrier of ["supervisor boot", "supervisor probe", "durable supervisor admission", "supervisor hello", "attestation", "durable worker admission"] as const) {
   test(`shutdown cancels pending ${barrier} without late business admission`, async () => {
     const fake = capturedSupervisor();
     const entered = Promise.withResolvers<void>();
@@ -82,12 +106,17 @@ for (const barrier of ["supervisor probe", "supervisor hello", "durable supervis
     const exitStates: string[] = [];
     const client = new RuntimeWorkerClient("unused.mjs", "cancel-admission", undefined, (worker) => { exitStates.push(worker.lifecycle); }, {
       platform: "win32",
-      spawnSupervisorProcess: (request) => { if (barrier !== "supervisor hello") queueMicrotask(() => fake.hello(request.jobName)); return fake.child; },
+      spawnSupervisorProcess: (request) => {
+        if (barrier === "supervisor boot") entered.resolve();
+        else queueMicrotask(() => fake.boot());
+        if (barrier !== "supervisor hello") void fake.go.promise.then(() => fake.hello(request.jobName));
+        return fake.child;
+      },
       probeWindowsIdentity: async (pid) => {
         if (barrier === "supervisor probe" && pid === fake.child.pid) { entered.resolve(); await gate.promise; }
-        return { status: "found", identity: { pid, creationDate: `birth-${pid}` } };
+        return { status: "found", identity: { pid, creationDate: birthFor(pid) } };
       },
-      onSupervisorIdentityVerified: async () => {
+      onSupervisorBoot: async () => {
         if (barrier === "supervisor hello") entered.resolve();
         if (barrier === "durable supervisor admission") { entered.resolve(); await gate.promise; }
       },
@@ -97,7 +126,7 @@ for (const barrier of ["supervisor probe", "supervisor hello", "durable supervis
       },
       querySupervisorAttestation: async (_job, pids) => {
         if (barrier === "attestation") { entered.resolve(); await gate.promise; }
-        return pids.map((pid) => ({ pid, inJob: true, verifiable: true, status: "found" as const, creationDate: `birth-${pid}` }));
+        return pids.map((pid) => ({ pid, inJob: true, verifiable: true, status: "found" as const, creationDate: birthFor(pid) }));
       },
       querySupervisorContainment: async () => "absent",
       supervisorTerminationTimeoutMs: 500,
@@ -133,11 +162,11 @@ test("pending admission shutdown stays failed until Job cleanup is verified", as
   let cleanupVerified = false;
   const client = new RuntimeWorkerClient("unused.mjs", "cleanup-pending", undefined, undefined, {
     platform: "win32",
-    spawnSupervisorProcess: (request) => { queueMicrotask(() => fake.hello(request.jobName)); return fake.child; },
+    spawnSupervisorProcess: (request) => { fake.auto(request.jobName); return fake.child; },
     probeWindowsIdentity: async (pid) => {
       entered.resolve();
       await gate.promise;
-      return { status: "found", identity: { pid, creationDate: `birth-${pid}` } };
+      return { status: "found", identity: { pid, creationDate: birthFor(pid) } };
     },
     querySupervisorContainment: async () => {
       if (!cleanupVerified) throw new Error("Job query unavailable");
@@ -166,10 +195,10 @@ for (const failedPid of [41001, 41002]) {
       const exitStates: string[] = [];
       const client = new RuntimeWorkerClient("unused.mjs", "probe-failure", undefined, (worker) => { exitStates.push(worker.lifecycle); }, {
         platform: "win32",
-        spawnSupervisorProcess: (request) => { queueMicrotask(() => fake.hello(request.jobName)); return fake.child; },
-        probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: `birth-${pid}` } }),
+        spawnSupervisorProcess: (request) => { fake.auto(request.jobName); return fake.child; },
+        probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: birthFor(pid) } }),
         querySupervisorAttestation: async (_job, pids) => pids.map((pid) => pid !== failedPid
-          ? { pid, inJob: true, verifiable: true, status: "found" as const, creationDate: `birth-${pid}` }
+          ? { pid, inJob: true, verifiable: true, status: "found" as const, creationDate: birthFor(pid) }
           : { pid, inJob: false, verifiable: false, status, reason: "native readback failed" }),
         querySupervisorContainment: async () => "empty",
         supervisorTerminationTimeoutMs: 500,
@@ -195,11 +224,11 @@ test("fatal hello cancels admission while the supervisor identity probe is pendi
   const gate = Promise.withResolvers<void>();
   const client = new RuntimeWorkerClient("unused.mjs", "fatal-hello", undefined, undefined, {
     platform: "win32",
-    spawnSupervisorProcess: () => fake.child,
+    spawnSupervisorProcess: (request) => { fake.auto(request.jobName); return fake.child; },
     probeWindowsIdentity: async (pid) => {
       entered.resolve();
       await gate.promise;
-      return { status: "found", identity: { pid, creationDate: `birth-${pid}` } };
+      return { status: "found", identity: { pid, creationDate: birthFor(pid) } };
     },
     querySupervisorContainment: async () => "empty",
     supervisorTerminationTimeoutMs: 500,
@@ -231,7 +260,7 @@ test("manager pending-admission deliberate stops do not consume the crash budget
         spawns++;
         return fake.child;
       },
-      probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: `birth-${pid}` } }),
+      probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: birthFor(pid) } }),
       querySupervisorContainment: async () => "empty",
       supervisorTerminationTimeoutMs: 500,
     },
@@ -253,13 +282,13 @@ for (const replacedPid of [41001, 41002]) {
     let admissionCalls = 0;
     const client = new RuntimeWorkerClient("unused.mjs", "birth-race", undefined, undefined, {
       platform: "win32",
-      spawnSupervisorProcess: (request) => { queueMicrotask(() => fake.hello(request.jobName)); return fake.child; },
-      probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: `birth-${pid}` } }),
+      spawnSupervisorProcess: (request) => { fake.auto(request.jobName); return fake.child; },
+      probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: birthFor(pid) } }),
       // A replaced supervisor birth differs from the pre-hello sample; a
       // replaced worker pid never joined this supervisor's Job.
       querySupervisorAttestation: async (_job, pids) => pids.map((pid) => pid === replacedPid
         ? { pid, inJob: replacedPid !== 41002, verifiable: true, status: "found" as const, creationDate: "replacement" }
-        : { pid, inJob: true, verifiable: true, status: "found" as const, creationDate: `birth-${pid}` }),
+        : { pid, inJob: true, verifiable: true, status: "found" as const, creationDate: birthFor(pid) }),
       querySupervisorContainment: async () => "empty",
       onIdentityVerified: () => { admissionCalls++; },
       supervisorTerminationTimeoutMs: 500,
@@ -285,9 +314,9 @@ test("attested cleanup kills the captured supervisor and waits for empty Job", a
   let historicalKills = 0;
   const client = new RuntimeWorkerClient("unused.mjs", "dead-root", undefined, undefined, {
     platform: "win32",
-    spawnSupervisorProcess: (request) => { queueMicrotask(() => fake.hello(request.jobName)); return fake.child; },
-    probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: `birth-${pid}` } }),
-    querySupervisorAttestation: async (_job, pids) => pids.map((pid) => ({ pid, inJob: true, verifiable: true, status: "found" as const, creationDate: `birth-${pid}` })),
+    spawnSupervisorProcess: (request) => { fake.auto(request.jobName); return fake.child; },
+    probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: birthFor(pid) } }),
+    querySupervisorAttestation: async (_job, pids) => pids.map((pid) => ({ pid, inJob: true, verifiable: true, status: "found" as const, creationDate: birthFor(pid) })),
     querySupervisorContainment: async () => { queried.resolve(); return containment; },
     supervisorTerminationTimeoutMs: 2_000,
     terminateProcessTree: async () => { historicalKills++; throw new Error("historical tree termination must not run"); },
@@ -307,6 +336,32 @@ test("attested cleanup kills the captured supervisor and waits for empty Job", a
     await termination;
     expect(client.lifecycle).toBe("stopped");
   } finally { containment = "empty"; await client.terminate(); }
+}, 5_000);
+
+test("Job creation is never authorized before the supervisor birth is durable", async () => {
+  const fake = capturedSupervisor();
+  let authorized = false;
+  void fake.go.promise.then(() => { authorized = true; });
+  const client = new RuntimeWorkerClient("unused.mjs", "boot-gate", undefined, undefined, {
+    platform: "win32",
+    spawnSupervisorProcess: (request) => { fake.auto(request.jobName); return fake.child; },
+    probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: birthFor(pid) } }),
+    onSupervisorBoot: async () => {
+      // The supervisor must still be waiting for GO while the fence is written.
+      expect(authorized).toBe(false);
+      throw new Error("fence write failed");
+    },
+    querySupervisorContainment: async () => "absent",
+    supervisorTerminationTimeoutMs: 500,
+  });
+  const error = await client.request("ensure", {}).then(() => null, (failure: unknown) => failure);
+  expect(error).toMatchObject({ message: "fence write failed" });
+  const settled = Promise.withResolvers<void>();
+  setImmediate(settled.resolve);
+  await settled.promise;
+  expect(authorized).toBe(false);
+  expect(fake.business()).toBe("");
+  await client.terminate();
 }, 5_000);
 
 const WORKER = String.raw`

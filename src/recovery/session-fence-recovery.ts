@@ -166,29 +166,26 @@ export async function probeSessionFenceTarget(
   } = {},
 ): Promise<SessionFenceProbeResult> {
   const record = target.fenceRecord;
-  // A crashed claim has no worker birth at all: its pid is the claimant host.
-  const claimProbe = record.phase === "claiming" && !record.creationDate;
-  const probeWorker = probes.probeWorker ?? (claimProbe ? probeFencedClaimantDefault : probeFencedWorkerDefault);
+  const probeWorker = probes.probeWorker ?? probeFencedWorkerDefault;
   const worker = await probeWorker(record);
   let residualsRemaining: boolean | null = null;
   let containment: SessionFenceContainment | null = null;
-  const attested = hasCanonicalJobAttestation(target.fenceRecord);
-  // A crashed pre-spawn claim names its canonical generation Job without a
-  // supervisor birth, so containment is its only admissible proof.
-  const claimContainment = target.fenceRecord.phase === "claiming" && target.fenceRecord.jobName !== undefined;
-  const supervisor = attested ? await probeFencedSupervisorDefault(target.fenceRecord) : undefined;
-  if (attested || claimContainment) {
+  // Any Job-bearing record needs both halves of the containment proof: the
+  // supervisor's liveness and the Job itself.
+  const jobEvidence = record.jobName !== undefined;
+  const supervisor = jobEvidence ? await probeFencedSupervisorDefault(record) : undefined;
+  if (jobEvidence) {
     try {
-      containment = await (probes.probeContainment ?? probeJobContainmentDefault)(target.fenceRecord);
+      containment = await (probes.probeContainment ?? probeJobContainmentDefault)(record);
     } catch {
       containment = "unknown";
     }
   }
-  if (target.fenceRecord.phase === "spooled" || (target.fenceRecord.phase === "admitted" && !attested)) {
+  if (record.phase === "spooled" || record.phase === "admitted") {
     try {
       const remaining = probes.residualsRemaining
         ?? defaultResidualsRemainingForRecovery(configPath);
-      residualsRemaining = await remaining(target.fenceRecord.generation);
+      residualsRemaining = await remaining(record.generation);
     } catch {
       residualsRemaining = null;
     }
@@ -218,16 +215,17 @@ async function probeJobContainmentDefault(
   return await queryJobContainment(record.jobName);
 }
 
-function hasCanonicalJobAttestation(record: RuntimeWorkerFenceRecord): boolean {
-  const canonical = windowsJobNameForGeneration(record.generation);
-  return canonical !== null && record.jobName === canonical && record.jobAttested === true;
-}
 
 async function probeFencedSupervisorDefault(record: RuntimeWorkerFenceRecord): Promise<FenceLiveness> {
-  if (!record.supervisorPid || !record.supervisorCreationDate) return "unknown";
+  // No pid: under the supervisor GO gate this generation was never authorized
+  // to create a Job, so nothing can still be waiting to create one.
+  if (!record.supervisorPid) return "gone";
   try {
     const result = await probeWindowsProcessIdentity(record.supervisorPid);
     if (result.status !== "found") return result.status === "missing" ? "gone" : "unknown";
+    // A pid recorded before its birth (the claim persists the pid; the birth
+    // is verified before GO) may still be the process waiting for GO.
+    if (!record.supervisorCreationDate) return "alive";
     return result.identity.creationDate === record.supervisorCreationDate ? "alive" : "gone";
   } catch {
     return "unknown";
@@ -249,58 +247,57 @@ export function decideSessionFenceRecovery(input: {
   if (input.record.generation !== input.expectedGeneration) {
     return { kind: "refused", reason: "generation-mismatch" };
   }
-  if (input.record.jobName && (input.record.phase === "discharged" || input.record.phase === "spooled")) {
-    if (!hasCanonicalJobAttestation(input.record)) return { kind: "refused", reason: "missing-containment-proof" };
-    if (input.probe.worker === "alive" || input.probe.supervisor === "alive" || input.probe.containment === "active") return { kind: "refused", reason: "worker-alive" };
-    if (input.probe.worker !== "gone" || input.probe.supervisor !== "gone" || (input.probe.containment !== "empty" && input.probe.containment !== "absent")) return { kind: "refused", reason: "missing-containment-proof" };
+  const canonical = windowsJobNameForGeneration(input.record.generation);
+  // A Job-bearing record's Job name must be the generation's canonical name:
+  // an arbitrary name could point at someone else's containment.
+  if (input.record.jobName !== undefined && input.record.jobName !== canonical) {
+    return { kind: "refused", reason: "missing-containment-proof" };
+  }
+  // Spooled fences additionally prove their generation's residual namespace
+  // is empty; the Job proof below still applies when the record carries one.
+  if (input.record.phase === "spooled") {
+    if (input.probe.residualsRemaining === null) return { kind: "refused", reason: "residuals-unreadable" };
+    if (input.probe.residualsRemaining) return { kind: "refused", reason: "residuals-pending" };
+  }
+  // Job evidence: the supervisor must be provably gone and the Job empty or
+  // absent. This covers every ownership phase — claiming (no supervisor was
+  // ever authorized under the GO gate when no pid is recorded), owned (the
+  // supervisor may hold the Job without a persisted birth), admitted, and the
+  // terminal phases a crashed recovery can leave behind.
+  if (input.record.jobName !== undefined) {
+    if (input.probe.supervisor === "alive" || input.probe.containment === "active") {
+      return { kind: "refused", reason: "worker-alive" };
+    }
+    if (input.probe.supervisor !== "gone") return { kind: "refused", reason: "missing-containment-proof" };
+    if (input.probe.containment !== "empty" && input.probe.containment !== "absent") {
+      return { kind: "refused", reason: "missing-containment-proof" };
+    }
+    // An admitted, attested fence additionally names a business-capable
+    // worker; its birth must be proven gone too (the Job alone could be empty
+    // while a pre-Job worker still lives only if attestation were wrong, so
+    // keep the explicit worker proof for that phase).
+    if (input.record.phase === "admitted" && input.record.jobAttested === true) {
+      if (input.probe.worker === "alive") return { kind: "refused", reason: "worker-alive" };
+      if (input.probe.worker !== "gone") return { kind: "refused", reason: "worker-unknown" };
+    }
+    // A claiming record's pid is the claimant host and an unauthorized owned
+    // record's pid is its supervisor: the recorded pid must be gone as well.
+    if (input.record.phase !== "admitted" && input.probe.worker !== "gone") {
+      return { kind: "refused", reason: input.probe.worker === "alive" ? "worker-alive" : "worker-unknown" };
+    }
+    return { kind: "recoverable-contained-proof" };
   }
   if (input.record.phase === "discharged" || input.record.phase === "spooled") {
     if (input.probe.worker === "alive") return { kind: "refused", reason: "worker-alive" };
     if (input.probe.worker !== "gone") return { kind: "refused", reason: "worker-unknown" };
-  }
-  if (input.record.phase === "discharged") {
     return { kind: "recoverable-terminal-proof" };
   }
-  if (input.record.phase === "spooled") {
-    if (input.probe.residualsRemaining === null) return { kind: "refused", reason: "residuals-unreadable" };
-    return input.probe.residualsRemaining
-      ? { kind: "refused", reason: "residuals-pending" }
-      : { kind: "recoverable-terminal-proof" };
-  }
   if (input.record.phase !== "admitted") {
-    // A crashed pre-spawn claim carries the canonical generation Job name but
-    // no supervisor birth (the supervisor is spawned after the claim). The Job
-    // can only be empty/absent once the claimant host is gone, so containment
-    // is the proof here; without a Job name a claim stays automatic-only.
-    if (input.record.phase === "claiming" && input.record.jobName) {
-      if (input.record.jobName !== windowsJobNameForGeneration(input.record.generation)) return { kind: "refused", reason: "missing-containment-proof" };
-      // A claiming record's pid is the claimant HOST: it must be gone before
-      // any containment readback can stand in for its mid-spawn window.
-      if (input.probe.worker === "alive") return { kind: "refused", reason: "worker-alive" };
-      if (input.probe.worker !== "gone") return { kind: "refused", reason: "worker-unknown" };
-      if (input.probe.supervisor === "alive" || input.probe.containment === "active") return { kind: "refused", reason: "worker-alive" };
-      if (input.probe.containment === "empty" || input.probe.containment === "absent") {
-        return { kind: "recoverable-contained-proof" };
-      }
-      return { kind: "refused", reason: "missing-containment-proof" };
-    }
     return { kind: "refused", reason: "fence-not-admitted" };
   }
   if (input.probe.worker === "alive") return { kind: "refused", reason: "worker-alive" };
   if (input.probe.worker === "unknown") return { kind: "refused", reason: "worker-unknown" };
   if (!input.record.creationDate) return { kind: "refused", reason: "worker-unproven" };
-  if (hasCanonicalJobAttestation(input.record)) {
-    if (input.probe.supervisor === "alive") return { kind: "refused", reason: "worker-alive" };
-    if (input.probe.supervisor !== "gone") return { kind: "refused", reason: "missing-containment-proof" };
-    if (input.probe.containment === "empty" || input.probe.containment === "absent") {
-      return { kind: "recoverable-contained-proof" };
-    }
-    if (input.probe.containment === "active") return { kind: "refused", reason: "worker-alive" };
-    return { kind: "refused", reason: "missing-containment-proof" };
-  }
-  if (input.record.jobName) {
-    return { kind: "refused", reason: "missing-containment-proof" };
-  }
   if (!input.acceptLegacyOrphanRisk) {
     return { kind: "refused", reason: "missing-legacy-risk-acceptance" };
   }
@@ -393,28 +390,18 @@ async function writeRecoveryAudit(path: string, record: object, replace = false)
   if (replace) await rename(destination, path);
 }
 
-async function probeFencedWorkerDefault(record: RuntimeWorkerFenceRecord): Promise<FenceLiveness> {
-  if (!record.creationDate) return "unknown";
-  try {
-    const res = await probeWindowsProcessIdentity(record.pid!);
-    if (res.status !== "found") return res.status === "missing" ? "gone" : "unknown";
-    return res.identity.creationDate === record.creationDate ? "alive" : "gone";
-  } catch {
-    return "unknown";
-  }
-}
-
 /**
- * Pre-spawn claim liveness. A claim records the claimant HOST pid and no
- * birth, so this can only prove absence (pid missing). A found pid is treated
- * as alive even across reuse — the safe direction, since a reused pid already
- * blocks recovery.
+ * Fenced pid liveness. With a birth the comparison proves replacement; without
+ * one (pre-spawn claims, unauthorized owned records) only absence proves gone
+ * and a found pid — even a reused one — still blocks recovery.
  */
-async function probeFencedClaimantDefault(record: RuntimeWorkerFenceRecord): Promise<FenceLiveness> {
+async function probeFencedWorkerDefault(record: RuntimeWorkerFenceRecord): Promise<FenceLiveness> {
   if (!record.pid || record.pid <= 0) return "unknown";
   try {
     const res = await probeWindowsProcessIdentity(record.pid);
-    return res.status === "missing" ? "gone" : res.status === "found" ? "alive" : "unknown";
+    if (res.status !== "found") return res.status === "missing" ? "gone" : "unknown";
+    if (!record.creationDate) return "alive";
+    return res.identity.creationDate === record.creationDate ? "alive" : "gone";
   } catch {
     return "unknown";
   }

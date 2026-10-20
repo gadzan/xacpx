@@ -108,3 +108,16 @@ test("recover CLI reports a CAS race as refusal, preserves the attempted backup 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("recover refuses on non-Windows with a platform message instead of probing", async () => {
+  const lines: string[] = [];
+  const errors: string[] = [];
+  const code = await runSessionFenceCli(["recover", "backend", "--expected-generation", "gen"], {
+    print: (line) => { lines.push(line); },
+    stderr: (text) => { errors.push(text); },
+    platform: "linux",
+  });
+  expect(code).toBe(1);
+  expect(errors.join("")).toContain("requires Windows");
+  expect(lines).toEqual([]);
+});

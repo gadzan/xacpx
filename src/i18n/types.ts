@@ -966,6 +966,7 @@ export interface CliMessages {
   // session fence recovery
   recoverLockBusy: string;
   recoverLockBusyHint: string;
+  recoverWindowsOnly: string;
 
   // later commands
   laterIdEmpty: string;

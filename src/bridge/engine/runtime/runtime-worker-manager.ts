@@ -531,13 +531,17 @@ export class RuntimeWorkerManager {
             XACPX_WORKER_FENCE_GENERATION: workerGeneration,
             XACPX_WORKER_GENERATION: workerGeneration,
           },
-          onSupervisorIdentityVerified: async (client) => {
-            await this.options.clientDeps?.onSupervisorIdentityVerified?.(client);
+          // The supervisor boots with a verified birth and then waits for GO.
+          // Persist that birth as the owned fence BEFORE GO is sent, so a Job
+          // can never exist for a generation whose fence lacks supervisor
+          // evidence. A failure here aborts admission without GO.
+          onSupervisorBoot: async (client) => {
+            await this.options.clientDeps?.onSupervisorBoot?.(client);
             await this.enqueueFenceWrite(physicalFenceKey, async () => {
               if (client.isDeliberateShutdown || !client.alive) throw new WorkerTeardownPendingError("supervisor stopped before ownership persistence");
               await this.fence()!.compareAndSwap(
                 physicalFenceKey,
-                { generation: workerGeneration, from: ["owned"] },
+                { generation: workerGeneration, from: ["claiming"] },
                 {
                   kind: "runtime-worker-owner",
                   logicalSessionId: physicalFenceKey,
@@ -594,26 +598,32 @@ export class RuntimeWorkerManager {
       this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
       try {
         worker.spawn();
-        await this.enqueueFenceWrite(physicalFenceKey, () =>
-          this.fence()!.compareAndSwap(
-            physicalFenceKey,
-            { generation: workerGeneration, from: ["claiming"] },
-            {
-              kind: "runtime-worker-owner",
-              logicalSessionId: physicalFenceKey,
-              generation: workerGeneration,
-              pid: worker.ref.supervisorPid ?? worker.ref.pid,
-              creationDate: worker.ref.creationDate ?? null,
-              bootstrapVerified: worker.isBootstrapVerified,
-              phase: "owned",
-              startedAt: worker.ref.startedAt,
-              agent: "runtime-worker",
-              ...(worker.ref.jobName ? { jobName: worker.ref.jobName, jobAttested: false } : {}),
-              ...(worker.ref.supervisorPid ? { supervisorPid: worker.ref.supervisorPid } : {}),
-              ...(worker.ref.supervisorCreationDate ? { supervisorCreationDate: worker.ref.supervisorCreationDate } : {}),
-            },
-          ),
-        );
+        // A supervised spawn writes its owned fence from onSupervisorBoot and
+        // only then authorizes Job creation. Await that authorization (not the
+        // full admission) so a caller never receives a client whose ownership
+        // evidence is still pending; the direct-spawn path keeps the
+        // claiming→owned CAS here.
+        if (worker.ref.jobName) {
+          await worker.supervisorBoot;
+        } else {
+          await this.enqueueFenceWrite(physicalFenceKey, () =>
+            this.fence()!.compareAndSwap(
+              physicalFenceKey,
+              { generation: workerGeneration, from: ["claiming"] },
+              {
+                kind: "runtime-worker-owner",
+                logicalSessionId: physicalFenceKey,
+                generation: workerGeneration,
+                pid: worker.ref.pid,
+                creationDate: worker.ref.creationDate ?? null,
+                bootstrapVerified: worker.isBootstrapVerified,
+                phase: "owned",
+                startedAt: worker.ref.startedAt,
+                agent: "runtime-worker",
+              },
+            ),
+          );
+        }
       } catch (spawnError) {
         if (spawnError instanceof StaleFenceGenerationError) {
           // A successor generation owns the fence now: our claim was recycled

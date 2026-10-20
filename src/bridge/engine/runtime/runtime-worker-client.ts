@@ -25,8 +25,10 @@ import {
   type KillOutcome,
 } from "../../../process/windows-process-tree";
 import {
+  parseSupervisorBoot,
   parseSupervisorHello,
   spawnWindowsSupervisor,
+  type WindowsSupervisorBoot,
   type WindowsSupervisorHello,
   type WindowsSupervisorRequest,
 } from "../../../process/windows-job-supervisor";
@@ -94,8 +96,12 @@ export interface RuntimeWorkerClientDeps {
    * rejection fails the worker closed.
    */
   onIdentityVerified?: (client: RuntimeWorkerClient) => void | Promise<void>;
-  /** Persist the supervisor's birth identity before worker admission. */
-  onSupervisorIdentityVerified?: (client: RuntimeWorkerClient) => void | Promise<void>;
+  /**
+   * Persist the supervisor's verified birth into the ownership fence BEFORE
+   * the supervisor is authorized to create its Job. Throwing here aborts
+   * admission without ever granting that authorization.
+   */
+  onSupervisorBoot?: (client: RuntimeWorkerClient) => void | Promise<void>;
   /** Fence discharge seams (tests): verified orphan-tree terminator + POSIX group kill. */
   terminateDescendantsOf?: typeof terminateWindowsDescendantsOf;
   killProcessGroup?: (pgid: number) => void;
@@ -178,6 +184,12 @@ export class RuntimeWorkerClient {
   /** True only when the host deliberately requested cooling, shutdown, or delete. */
   private deliberateShutdown = false;
   private bootstrapPromise?: Promise<void>;
+  /**
+   * Resolves once the supervisor's verified birth is durable and GO was sent.
+   * Callers that must not publish a worker before its containment evidence
+   * exists await this instead of the full admission.
+   */
+  private bootPromise?: Promise<void>;
   private _bootstrapVerified = false;
   private inFlightLeases = 0;
   /**
@@ -206,7 +218,10 @@ export class RuntimeWorkerClient {
   get inFlightCount(): number {
     return Math.max(this.inFlightLeases, this.pending.size);
   }
-
+  /** Supervisor authorization gate; undefined for direct-spawn workers. */
+  get supervisorBoot(): Promise<void> | undefined {
+    return this.bootPromise;
+  }
   get hasInFlight(): boolean {
     return this.inFlightLeases > 0 || this.pending.size > 0 || this.lifecycle === "busy";
   }
@@ -366,9 +381,19 @@ export class RuntimeWorkerClient {
       cancellation.reject(error);
       this.cancelSupervisorHello?.(error);
     };
-    const hello = this.waitForSupervisorHello();
-    void hello.catch(cancellation.reject);
-    const admission = this.admitSupervisedWorker(hello);
+    const handshake = this.waitForSupervisorHandshake();
+    void handshake.boot.catch(cancellation.reject);
+    void handshake.hello.catch(cancellation.reject);
+    // Authorization must complete (verified birth durable, GO sent) before
+    // ensureWorker may hand the client back: a caller that receives a client
+    // must already hold a Job it can explain.
+    const authorization = this.authorizeSupervisor(handshake.boot);
+    this.bootPromise = authorization;
+    authorization.catch(() => {});
+    const admission = (async () => {
+      await authorization;
+      await this.completeSupervisedAdmission(handshake.hello);
+    })();
     this.bootstrapPromise = Promise.race([admission, cancellation.promise]).catch(async (error: unknown) => {
       if (!this.deliberateShutdown) this.lifecycle = "failed";
       try {
@@ -384,67 +409,112 @@ export class RuntimeWorkerClient {
     this.bootstrapPromise.catch(() => {});
   }
 
-  private waitForSupervisorHello(): Promise<WindowsSupervisorHello> {
+  /**
+   * One stderr reader for both startup lines. BOOT carries the supervisor's
+   * self-reported birth; HELLO arrives only after the host authorized Job
+   * creation. Both promises reject on FATAL, exit, or the shared timeout.
+   */
+  private waitForSupervisorHandshake(): { boot: Promise<WindowsSupervisorBoot>; hello: Promise<WindowsSupervisorHello> } {
+    const boot = Promise.withResolvers<WindowsSupervisorBoot>();
     const hello = Promise.withResolvers<WindowsSupervisorHello>();
-    this.cancelSupervisorHello = hello.reject;
-    const timeoutMs = this.deps?.supervisorHelloTimeoutMs ?? 30_000;
-    const timer = setTimeout(() => hello.reject(new WorkerBootstrapError(`supervisor hello timeout after ${timeoutMs}ms`)), timeoutMs);
+    const fail = (error: Error) => {
+      boot.reject(error);
+      hello.reject(error);
+    };
+    this.cancelSupervisorHello = fail;
+    const timeoutMs = this.deps?.supervisorHelloTimeoutMs ?? 60_000;
+    const timer = setTimeout(() => fail(new WorkerBootstrapError(`supervisor handshake timeout after ${timeoutMs}ms`)), timeoutMs);
     timer.unref?.();
     let stderr = "";
-    const onExit = () => hello.reject(new WorkerBootstrapError("supervisor exited before admission"));
-    const onError = (error: Error) => hello.reject(error);
+    let booted = false;
+    const onExit = () => fail(new WorkerBootstrapError("supervisor exited before admission"));
+    const onError = (error: Error) => fail(error);
     this.child!.once("exit", onExit);
     this.child!.once("error", onError);
     this.wireChildStreams((chunk) => {
       stderr += chunk;
       const lines = stderr.split(/\r?\n/);
       stderr = lines.pop() ?? "";
-      for (const line of lines) {
-        const parsed = parseSupervisorHello(line.trim());
-        if (parsed) hello.resolve(parsed);
-        else if (line.startsWith("XACPX_JOB_FATAL ")) hello.reject(new WorkerBootstrapError(line));
+      for (const raw of lines) {
+        const line = raw.trim();
+        const helloLine = parseSupervisorHello(line);
+        if (helloLine) {
+          hello.resolve(helloLine);
+          continue;
+        }
+        if (!booted) {
+          const bootLine = parseSupervisorBoot(line);
+          if (bootLine) {
+            booted = true;
+            boot.resolve(bootLine);
+            continue;
+          }
+        }
+        if (line.startsWith("XACPX_JOB_FATAL ")) fail(new WorkerBootstrapError(line));
       }
     });
-    const settled = hello.promise.finally(() => {
+    void Promise.allSettled([boot.promise, hello.promise]).then(() => {
       clearTimeout(timer);
       this.cancelSupervisorHello = undefined;
-      this.child!.off("exit", onExit);
-      this.child!.off("error", onError);
+      this.child?.off("exit", onExit);
+      this.child?.off("error", onError);
     });
-    settled.catch(() => {});
-    return settled;
+    boot.promise.catch(() => {});
+    hello.promise.catch(() => {});
+    return { boot: boot.promise, hello: hello.promise };
   }
 
-  private async admitSupervisedWorker(helloPromise: Promise<WindowsSupervisorHello>): Promise<void> {
+  /** Authorize Job creation. Sent only after the verified birth is durable. */
+  private sendSupervisorGo(): void {
+    const stdin = this.child?.stdin;
+    if (!stdin || stdin.destroyed || !stdin.writable) {
+      throw new WorkerBootstrapError("supervisor stdin is not writable; refusing to authorize Job creation");
+    }
+    stdin.write("GO\n");
+  }
+
+  /** Verify the supervisor birth, persist it, then authorize Job creation. */
+  private async authorizeSupervisor(bootPromise: Promise<WindowsSupervisorBoot>): Promise<void> {
     const supervisorPid = this.ref.supervisorPid;
     if (!supervisorPid || supervisorPid <= 0) throw new WorkerBootstrapError("supervisor spawn produced no pid");
     const probe = this.deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity;
     const probeReason = (status: { status: string; reason?: string }) => status.reason ? ` (${status.reason})` : "";
-    // The supervisor identity probe and the supervisor hello are independent
-    // observations: each one costs a whole PowerShell spawn (seconds under
-    // load), so overlap the probe with the handshake wait instead of
-    // serializing them. Fail-closed checks and the owned→admitted fence CAS
-    // ordering inside onSupervisorIdentityVerified are unchanged.
-    const supervisorSettled = (async () => {
-      const supervisor = await probe(supervisorPid);
-      this.assertAdmissionOpen();
-      if (supervisor.status !== "found") throw new WorkerBootstrapError(`supervisor identity probe failed for pid ${supervisorPid} (status: ${supervisor.status}${probeReason(supervisor)})`);
-      this.ref.supervisorCreationDate = supervisor.identity.creationDate;
-      await this.deps?.onSupervisorIdentityVerified?.(this);
-      this.assertAdmissionOpen();
-    })().catch((error: unknown) => error);
+    const booted = await bootPromise;
     this.assertAdmissionOpen();
+    if (booted.supervisorPid !== supervisorPid) {
+      throw new WorkerBootstrapError(`supervisor boot pid ${booted.supervisorPid} does not match the spawned pid ${supervisorPid}`);
+    }
+    // The self-reported birth is verified host-side BEFORE the supervisor is
+    // allowed to create anything: the evidence later persisted into the fence
+    // is kernel truth, never an unchecked claim from the child.
+    const supervisor = await probe(supervisorPid);
+    this.assertAdmissionOpen();
+    if (supervisor.status !== "found") throw new WorkerBootstrapError(`supervisor identity probe failed for pid ${supervisorPid} (status: ${supervisor.status}${probeReason(supervisor)})`);
+    if (supervisor.identity.creationDate !== booted.creationDate) {
+      throw new WorkerBootstrapError(
+        `supervisor birth changed between boot (${booted.creationDate}) and verification (${supervisor.identity.creationDate})`,
+      );
+    }
+    this.ref.supervisorCreationDate = supervisor.identity.creationDate;
+    // Durable ownership evidence with the verified birth; only then GO, so a
+    // Job can never exist that the fence cannot explain.
+    await this.deps?.onSupervisorBoot?.(this);
+    this.assertAdmissionOpen();
+    this.sendSupervisorGo();
+  }
+
+  private async completeSupervisedAdmission(helloPromise: Promise<WindowsSupervisorHello>): Promise<void> {
+    const supervisorPid = this.ref.supervisorPid;
+    if (!supervisorPid || supervisorPid <= 0) throw new WorkerBootstrapError("supervisor spawn produced no pid");
     const hello = await helloPromise;
     this.assertAdmissionOpen();
     if (hello.supervisorPid !== supervisorPid || hello.jobName !== this.ref.jobName || !hello.inJob || hello.workerPid === supervisorPid) {
       throw new WorkerBootstrapError("supervisor hello attestation mismatch");
     }
-    const supervisorOutcome = await supervisorSettled;
-    if (supervisorOutcome instanceof Error) throw supervisorOutcome;
     // One attestation readback in the SAME native transaction proves Job
     // membership AND reads both births: no separate worker probe and no
-    // post-membership re-probe. The supervisor birth was sampled before the
-    // hello and is re-read here, so a replaced supervisor still fails closed.
+    // post-membership re-probe. The supervisor birth was verified before GO
+    // and is re-read here, so a replaced supervisor still fails closed.
     const attestation = await (this.deps?.querySupervisorAttestation ?? queryJobAttestation)(
       hello.jobName,
       [hello.workerPid, supervisorPid],
@@ -482,6 +552,7 @@ export class RuntimeWorkerClient {
     this.assertAdmissionOpen();
     this._bootstrapVerified = true;
   }
+
 
   private assertAdmissionOpen(): void {
     if (this.deliberateShutdown || !this.alive || this.lifecycle === "failed" || this.lifecycle === "stopped" || this.lifecycle === "cooling") {

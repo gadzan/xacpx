@@ -3,6 +3,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 /**
  * The supervisor joins a fresh kill-on-close Job before creating the worker.
  * It holds the worker tree's persistent Job handle. A transient query handle can delay kill-on-close until it closes. Supervisor exit closes its handle, and the host waits for an empty or absent Job before releasing ownership.
+ *
+ * Startup is gated: the supervisor first reports its own birth identity and
+ * then waits for a GO line before it may create the Job, join it, or spawn the
+ * worker. The host persists that birth into the ownership fence before it
+ * answers GO, so a crashed host can never leave a claim whose supervisor could
+ * still create a Job that recovery cannot see.
  */
 
 export interface WindowsSupervisorRequest {
@@ -23,6 +29,30 @@ export interface WindowsSupervisorHello {
   supervisorPid: number;
   jobName: string;
   inJob: boolean;
+}
+
+export interface WindowsSupervisorBoot {
+  supervisorPid: number;
+  /** Kernel creation FILETIME, self-reported; the host verifies it before GO. */
+  creationDate: string;
+}
+
+export const WINDOWS_SUPERVISOR_BOOT_PREFIX = "XACPX_JOB_BOOT ";
+
+export function parseSupervisorBoot(line: string): WindowsSupervisorBoot | null {
+  if (!line.startsWith(WINDOWS_SUPERVISOR_BOOT_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(line.slice(WINDOWS_SUPERVISOR_BOOT_PREFIX.length)) as Partial<WindowsSupervisorBoot>;
+    if (
+      typeof parsed.supervisorPid !== "number" || !Number.isSafeInteger(parsed.supervisorPid) || parsed.supervisorPid <= 0
+      || typeof parsed.creationDate !== "string" || !/^\d+$/.test(parsed.creationDate)
+    ) {
+      return null;
+    }
+    return { supervisorPid: parsed.supervisorPid, creationDate: parsed.creationDate };
+  } catch {
+    return null;
+  }
 }
 
 export const WINDOWS_SUPERVISOR_HELLO_PREFIX = "XACPX_JOB_HELLO ";
@@ -50,6 +80,16 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 try {
 $req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:XACPX_SUPERVISOR_REQUEST)) | ConvertFrom-Json
+$bootPid = [int]$PID
+$bootBirth = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc().ToString()
+[Console]::Error.WriteLine('XACPX_JOB_BOOT {"supervisorPid":' + $bootPid + ',"creationDate":"' + $bootBirth + '"}')
+[Console]::Error.Flush()
+# No Job, no worker, and no child process exist before GO. The host persists
+# this birth into the ownership fence first, so recovery can always tell
+# "supervisor already authorized to act" from "still waiting for authorization".
+# EOF (host died) or any other token exits without creating anything.
+$go = [Console]::In.ReadLine()
+if ($go -ne 'GO') { exit 0 }
 Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;

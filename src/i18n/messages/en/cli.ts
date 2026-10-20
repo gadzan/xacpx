@@ -115,4 +115,5 @@ export const cli: CliMessages = {
   // session fence recovery
   recoverLockBusy: "xacpx runtime is active; stop the daemon before recovery.",
   recoverLockBusyHint: "Run `xacpx stop` and retry, or review the active consumer lock.",
+  recoverWindowsOnly: "session recovery requires Windows: it proves ownership through a generation-bound Job and Windows process identity.",
 };

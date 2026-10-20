@@ -115,4 +115,5 @@ export const cli: CliMessages = {
   // session fence recovery
   recoverLockBusy: "xacpx 运行时仍在运行；恢复前请先停止 daemon。",
   recoverLockBusyHint: "先执行 `xacpx stop` 后重试，或检查当前占用运行时的进程。",
+  recoverWindowsOnly: "会话恢复仅支持 Windows：它通过按代命名（generation-bound）的 Job 与 Windows 进程身份来证明归属。",
 };

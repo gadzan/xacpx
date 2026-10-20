@@ -47,6 +47,60 @@ test("a supervisor that may still create its Job keeps the pre-admission fence",
   })).toBe("refused");
 });
 
+test("a live supervisor that has not created its Job yet keeps the fence", async () => {
+  // GO-gate crash window: the supervisor process exists, it was persisted
+  // without a birth, and its Job may appear at any moment. Job "absent" is
+  // NOT proof while that process lives.
+  const current = { ...record("claiming"), bootstrapVerified: false, jobAttested: false, supervisorPid: 7777, supervisorCreationDate: undefined };
+  for (const supervisor of ["alive", "unknown"] as const) {
+    expect(await dischargeRuntimeWorkerFence(current, {
+      platform: "win32", selfDischargeWaitMs: 0,
+      probeClaimant: async () => "gone", probeSupervisor: async () => supervisor,
+      probeJobContainment: async () => "absent",
+      markDischarged: async () => { throw new Error("must not discharge while the supervisor may act"); },
+    })).toBe("refused");
+  }
+});
+
+test("a claim with no supervisor pid cannot have been authorized to create its Job", async () => {
+  const current = {
+    ...record("claiming"), bootstrapVerified: false, jobAttested: false,
+    pid: 4242, supervisorPid: undefined, supervisorCreationDate: undefined,
+  };
+  let marked = 0;
+  // No injected supervisor probe: the default must treat "no pid" as gone,
+  // because the GO gate forbids Job creation before the host records one.
+  expect(await dischargeRuntimeWorkerFence(current, {
+    platform: "win32", selfDischargeWaitMs: 0,
+    probeClaimant: async () => "gone",
+    probeJobContainment: async () => "absent",
+    markDischarged: async () => { marked++; },
+  })).toBe("discharged");
+  expect(marked).toBe(1);
+  expect(await dischargeRuntimeWorkerFence(current, {
+    platform: "win32", selfDischargeWaitMs: 0,
+    probeClaimant: async () => "gone",
+    probeJobContainment: async () => "active",
+  })).toBe("refused");
+});
+
+test("owned and discharged fences without a supervisor birth stay recoverable", async () => {
+  for (const phase of ["owned", "discharged"] as const) {
+    const current = { ...record(phase), bootstrapVerified: false, jobAttested: false, supervisorPid: 7777, supervisorCreationDate: undefined };
+    let marked = 0;
+    expect(await dischargeRuntimeWorkerFence(current, {
+      platform: "win32", selfDischargeWaitMs: 0,
+      probeSupervisor: async () => "gone", probeJobContainment: async () => "absent",
+      markDischarged: async () => { marked++; },
+    })).toBe("discharged");
+    expect(marked).toBe(1);
+    expect(await dischargeRuntimeWorkerFence(current, {
+      platform: "win32", selfDischargeWaitMs: 0,
+      probeSupervisor: async () => "alive", probeJobContainment: async () => "absent",
+    })).toBe("refused");
+  }
+});
+
 test("live attested worker cannot release its fence even if Job lookup reports absent", async () => {
   expect(await dischargeRuntimeWorkerFence(record(), {
     platform: "win32", selfDischargeWaitMs: 0,

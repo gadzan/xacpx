@@ -79,6 +79,7 @@ function renderTarget(target: SessionFenceRecoveryTarget): string[] {
 export async function runSessionFenceCli(args: string[], deps: {
   print: (line: string) => void;
   stderr?: (text: string) => void;
+  platform?: NodeJS.Platform;
 }): Promise<number> {
   const parsed = parseSessionFenceCliArgs(args);
   if (!parsed) {
@@ -116,6 +117,14 @@ export async function runSessionFenceCli(args: string[], deps: {
       deps.print(`spooled residuals pending: ${probe.residualsRemaining}`);
     }
     return 0;
+  }
+  if ((deps.platform ?? process.platform) !== "win32") {
+    // The recovery proof set (Job containment, supervisor birth, Windows
+    // process identity) has no POSIX equivalent here; POSIX runtimes discharge
+    // their own fences through the process-group gate. Refuse rather than run
+    // probes that can only answer "unknown".
+    deps.stderr?.(t().cli.recoverWindowsOnly);
+    return 1;
   }
 
   const recoverInput = parsed.recover!;
