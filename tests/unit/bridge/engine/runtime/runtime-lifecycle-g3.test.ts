@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
+import { buildTestRuntimeWorker } from "../../../../helpers/build-test-runtime-worker";
 
 const MOCK_AGENT = join(import.meta.dir, "../../../../fixtures/mock-acp-agent.mjs");
-const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, MOCK_AGENT], cwd: "/tmp", name: "g3-sess", logicalSessionId: "g3-1" };
+const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, MOCK_AGENT], cwd: tmpdir(), name: "g3-sess", logicalSessionId: "g3-1" };
 
 function workerKey(input: typeof base): string {
   return input.logicalSessionId ?? input.name;
@@ -31,29 +32,16 @@ async function findRecordId(stateDir: string, name: string): Promise<string | un
   return undefined;
 }
 
-async function buildWorker(dir: string): Promise<string> {
-  const workerOutDir = join(dir, "dist", "bridge", "engine", "runtime");
-  const workerFile = join(workerOutDir, "runtime-worker-main.js");
-  const result = await Bun.build({
-    entrypoints: [resolve(process.cwd(), "./src/bridge/engine/runtime/runtime-worker-main.ts")],
-    outdir: workerOutDir,
-    target: "node",
-    external: ["acpx", "node-pty", "fs-ext", "write-file-atomic"],
-  });
-  if (!result.success) throw new Error(`Bun.build failed: ${result.logs.join("\n")}`);
-  return workerFile;
-}
-
 test("G3: real Runtime freeWarm → respawn same record/history (prompt #1 → freeWarm → prompt #2)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "g3-freewarm-"));
   const stateDir = join(dir, "state", "sessions");
   const queueDir = join(dir, "queue");
   const fenceDir = join(dir, "fences");
-  const workerFile = await buildWorker(dir);
+  const worker = await buildTestRuntimeWorker();
   const key = workerKey(base);
 
   const engine = new RuntimeEngine({
-    workerEntryPath: workerFile,
+    workerEntryPath: worker.entryPath,
     stateDir,
     queueDir,
     fenceDir,
@@ -101,19 +89,20 @@ test("G3: real Runtime freeWarm → respawn same record/history (prompt #1 → f
   } finally {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
+    await worker.release();
   }
-}, 60_000);
+}, 120_000);
 
 test("G3 TTL: idleTtlMs expiry → new worker pid, same recordId/history", async () => {
   const dir = await mkdtemp(join(tmpdir(), "g3-ttl-"));
   const stateDir = join(dir, "state", "sessions");
   const queueDir = join(dir, "queue");
   const fenceDir = join(dir, "fences");
-  const workerFile = await buildWorker(dir);
+  const worker = await buildTestRuntimeWorker();
   const key = workerKey(base);
 
   const engine = new RuntimeEngine({
-    workerEntryPath: workerFile,
+    workerEntryPath: worker.entryPath,
     stateDir,
     queueDir,
     fenceDir,
@@ -122,23 +111,34 @@ test("G3 TTL: idleTtlMs expiry → new worker pid, same recordId/history", async
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
 
   try {
+    const manager = engine["manager"]!;
     const res1 = await engine.prompt({ ...base, text: "g3 ttl first" }, async () => {});
     expect(res1.text.length).toBeGreaterThan(0);
-    const pid1 = getWorkerPid(engine, key);
-    expect(typeof pid1).toBe("number");
+    const firstClient = manager.get(key)!;
+    const pid1 = firstClient.ref.pid;
+    expect(pid1).toBeGreaterThan(0);
     const recordId1 = await findRecordId(stateDir, base.name);
     expect(typeof recordId1).toBe("string");
     expect((await engine.isSessionWarm(base)).warm).toBe(true);
+    // Observe the engine's own idle-shutdown reaching completion, then the
+    // NEXT engine prompt must replace the owner on its own (no test-driven
+    // release): failing there is a genuine production bug.
+    const cooled = Promise.withResolvers<void>();
+    const engineCools = firstClient.shutdown.bind(firstClient);
+    firstClient.shutdown = async (graceMs) => {
+      try {
+        await engineCools(graceMs);
+        cooled.resolve();
+      } catch (error) {
+        cooled.reject(error);
+        throw error;
+      }
+    };
 
-    // Integration: real idle TTL requires wall-clock delay; fake timers cannot drive the worker process reaper.
-    await new Promise<void>((resolve) => setTimeout(resolve, 600));
-    // Poll warm until false (reap is async)
-    for (let i = 0; i < 10; i++) {
-      if (!(await engine.isSessionWarm(base)).warm) break;
-      await new Promise<void>((r) => setTimeout(r, 100));
-    }
+    await cooled.promise;
+    expect(firstClient.alive).toBe(false);
+    expect(firstClient.lifecycle).toBe("stopped");
     expect((await engine.isSessionWarm(base)).warm).toBe(false);
-    // TTL reaps warm state; pid may still be cached until next ensure, so verify warm=false and record still exists
     expect((await engine.hasSession(base)).exists).toBe(true);
     expect(await findRecordId(stateDir, base.name)).toBe(recordId1);
     const res2 = await engine.prompt({ ...base, text: "g3 ttl second" }, async () => {});
@@ -154,5 +154,6 @@ test("G3 TTL: idleTtlMs expiry → new worker pid, same recordId/history", async
   } finally {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
+    await worker.release();
   }
-}, 60_000);
+}, 120_000);

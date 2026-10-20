@@ -1,4 +1,5 @@
 # Changelog
+
 ## [relay-protocol 0.6.4-beta.3] - 2026-10-19
 
 ### Added
@@ -45,6 +46,13 @@
 ### Changed
 
 - Compatibility floor raised to `0.24.10-beta.4` with no channel behavior change.
+
+## [Unreleased]
+
+### Fixed
+
+- Hardened offline session ownership-fence recovery: strict `session inspect` / `session recover` arguments, validated config and runtime fence paths, generation and phase guards, and durable exclusive backups with separate JSON audit records. Windows containment recovery requires a canonical generation-bound Job attestation and proven-gone worker and supervisor identities; uncertain residual evidence fails closed. Pre-spawn claims that crashed before a supervisor existed are recovered from the canonical generation Job's containment, since a claim cannot name a supervisor birth. Legacy orphan recovery requires explicit `--accept-legacy-orphan-risk`.
+- Windows runtime workers now inherit a generation-bound kill-on-close Job from a supervisor before worker code starts. Worker replacement and hard deletion require proof that both processes exited and the Job is empty or absent. Process identity probes distinguish an exited process retained by an open handle from a live process.
 
 ## [relay 0.14.12-beta.7] - 2026-10-17
 

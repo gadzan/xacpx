@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
 import {
@@ -23,7 +24,19 @@ import {
   type TerminateProcessTreeResult,
   type KillOutcome,
 } from "../../../process/windows-process-tree";
-
+import {
+  parseSupervisorHello,
+  spawnWindowsSupervisor,
+  type WindowsSupervisorHello,
+  type WindowsSupervisorRequest,
+} from "../../../process/windows-job-supervisor";
+import {
+  queryJobAttestation,
+  queryJobContainment,
+  windowsJobNameForGeneration,
+  type JobAttestation,
+  type WindowsJobContainment,
+} from "../../../process/windows-job-query";
 export interface RuntimeWorkerRef {
   pid: number;
   /** Stable ownership identity (plan §44). */
@@ -32,6 +45,16 @@ export interface RuntimeWorkerRef {
   generation: string;
   /** Windows creation date for verified tree termination (prevent PID reuse). */
   creationDate?: string | null;
+  /**
+   * Windows Job supervisor containment (B2). When the worker runs under a
+   * supervisor, `pid`/`creationDate` name the WORKER (fence, convergence,
+   * terminate consumers are unchanged) while these name the supervisor that
+   * holds the Job handle. Absent on POSIX and legacy direct-spawn records.
+   */
+  jobName?: string;
+  jobAttested?: boolean;
+  supervisorPid?: number;
+  supervisorCreationDate?: string | null;
 }
 
 /**
@@ -71,6 +94,8 @@ export interface RuntimeWorkerClientDeps {
    * rejection fails the worker closed.
    */
   onIdentityVerified?: (client: RuntimeWorkerClient) => void | Promise<void>;
+  /** Persist the supervisor's birth identity before worker admission. */
+  onSupervisorIdentityVerified?: (client: RuntimeWorkerClient) => void | Promise<void>;
   /** Fence discharge seams (tests): verified orphan-tree terminator + POSIX group kill. */
   terminateDescendantsOf?: typeof terminateWindowsDescendantsOf;
   killProcessGroup?: (pgid: number) => void;
@@ -86,6 +111,16 @@ export interface RuntimeWorkerClientDeps {
   spooledResidualsRemaining?: (generationId: string) => Promise<boolean>;
   /** Extra env passed to the worker process (durable-fence phase marking). */
   spawnEnv?: Record<string, string>;
+  /** Override Windows Job containment for injected direct-spawn callers. */
+  windowsJobContainment?: boolean;
+  /** Test seam: replace the PowerShell supervisor spawn. */
+  spawnSupervisorProcess?: (request: WindowsSupervisorRequest, env: Record<string, string | undefined>) => ChildProcess;
+  /** Test seam: host-side Job membership plus birth attestation for admission. */
+  querySupervisorAttestation?: (jobName: string, pids: number[]) => Promise<JobAttestation[] | null>;
+  querySupervisorContainment?: (jobName: string) => Promise<WindowsJobContainment>;
+  supervisorTerminationTimeoutMs?: number;
+  /** Bound on the supervisor hello wait (ms). Defaults to 30_000. */
+  supervisorHelloTimeoutMs?: number;
   /**
    * Host-side permission UI timeout in ms. Defaults to 125_000 (broker owns
    * the 120s business deadline; this watchdog sits just above it). Tests
@@ -158,6 +193,10 @@ export class RuntimeWorkerClient {
   private exitPromise?: Promise<number | null>;
   private resolveExit?: (code: number | null) => void;
   private shutdownAckPromise?: Promise<unknown>;
+  private rejectBootstrap?: (error: Error) => void;
+  private terminationPromise?: Promise<void>;
+  private cancelSupervisorHello?: (error: Error) => void;
+  private supervisorTerminationPromise?: Promise<void>;
   get isBootstrapVerified(): boolean {
     return this._bootstrapVerified;
   }
@@ -179,7 +218,7 @@ export class RuntimeWorkerClient {
   constructor(
     private readonly entryPath: string,
     private readonly logicalSessionId: string,
-    private readonly generation = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    private readonly generation: string = randomUUID(),
     private readonly onExit?: (client: RuntimeWorkerClient, code: number | null) => void,
     private readonly deps?: RuntimeWorkerClientDeps,
   ) {
@@ -194,12 +233,22 @@ export class RuntimeWorkerClient {
       this.child.pid !== undefined
   );
   }
+  get intendedJobName(): string | undefined {
+    const explicitSupervisorSeam = this.deps?.spawnSupervisorProcess !== undefined ? true : this.deps?.windowsJobContainment;
+    const supervised = explicitSupervisorSeam ?? ((this.deps?.platform ?? process.platform) === "win32" && !this.deps?.probeWindowsIdentity);
+    return supervised ? windowsJobNameForGeneration(this.ref.generation) ?? undefined : undefined;
+  }
 
   spawn(): void {
     if (this.child) return;
-    this.exitPromise = new Promise<number | null>((resolve) => {
-      this.resolveExit = resolve;
-    });
+    const exit = Promise.withResolvers<number | null>();
+    this.exitPromise = exit.promise;
+    this.resolveExit = exit.resolve;
+    const isWindows = (this.deps?.platform ?? process.platform) === "win32" || Boolean(this.deps?.probeWindowsIdentity);
+    if (this.intendedJobName || this.deps?.windowsJobContainment === true || this.deps?.spawnSupervisorProcess) {
+      this.spawnSupervised();
+      return;
+    }
     this.child = spawn(process.execPath, [this.entryPath], {
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
@@ -209,7 +258,6 @@ export class RuntimeWorkerClient {
       env: { ...process.env, ...(this.deps?.spawnEnv ?? {}) },
     });
     this.ref.pid = this.child.pid ?? -1;
-    const isWindows = process.platform === "win32" || Boolean(this.deps?.probeWindowsIdentity);
     if (isWindows && this.ref.pid > 0) {
       const probeFn = this.deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity;
       this.bootstrapPromise = probeFn(this.ref.pid).then(async (res) => {
@@ -226,6 +274,7 @@ export class RuntimeWorkerClient {
         }
         // Immutable identity: once captured, never mutated or re-probed
         this.ref.creationDate = res.identity.creationDate;
+        this.assertAdmissionOpen();
         // Round 30 Blocking 2 — durable admission barrier: the verified
         // fence must be ON DISK before bootstrap admissibility. In-memory
         // verification alone races the business RPC that spawns the
@@ -245,13 +294,26 @@ export class RuntimeWorkerClient {
               `${error instanceof Error ? error.message : String(error)}; no business RPC entered, worker terminated`,
           );
         }
+        this.assertAdmissionOpen();
         this._bootstrapVerified = true;
       });
       this.bootstrapPromise.catch(() => {});
     } else {
       this._bootstrapVerified = true;
     }
-    this.child.on("exit", (code) => {
+    this.wireChildStreams();
+  }
+
+  /** Shared exit/protocol/stderr wiring for direct and supervised children. */
+  private wireChildStreams(onStderr?: (chunk: string) => void): void {
+    this.child!.on("error", (error) => {
+      if (!this.deliberateShutdown) this.lifecycle = "failed";
+      this.rejectBootstrap?.(error);
+      for (const pending of this.pending.values()) pending.reject(error);
+      this.pending.clear();
+      this.resolveExit?.(null);
+    });
+    this.child!.on("exit", (code) => {
       const unexpected = !this.deliberateShutdown;
       if (unexpected) {
         this.lifecycle = "failed";
@@ -267,11 +329,164 @@ export class RuntimeWorkerClient {
       this.resolveExit?.(code);
       this.onExit?.(this, code);
     });
-    const rl = createInterface({ input: this.child.stdout!, crlfDelay: Infinity });
+    this.child!.stdin?.on("error", (error) => {
+      this.rejectBootstrap?.(error);
+      for (const pending of this.pending.values()) pending.reject(error);
+      this.pending.clear();
+    });
+    const rl = createInterface({ input: this.child!.stdout!, crlfDelay: Infinity });
     rl.on("line", (line) => this.handleLine(line));
-    this.child.stderr?.on("data", () => {
+    this.child!.stderr?.on("data", (chunk) => {
+      if (onStderr) onStderr(String(chunk));
       /* diagnostics only; protocol lives on stdout */
     });
+  }
+
+  private spawnSupervised(): void {
+    const jobName = this.intendedJobName;
+    if (!jobName) {
+      this.bootstrapPromise = Promise.reject(new WorkerBootstrapError("a UUID generation is required for Windows Job containment"));
+      this.bootstrapPromise.catch(() => {});
+      this.lifecycle = "failed";
+      return;
+    }
+    this.ref.jobName = jobName;
+    this.ref.jobAttested = false;
+    const spawnFn = this.deps?.spawnSupervisorProcess ?? spawnWindowsSupervisor;
+    this.child = spawnFn({
+      jobName,
+      nodePath: process.execPath,
+      entryPath: this.entryPath,
+      cwd: process.cwd(),
+      ...(this.deps?.spawnEnv ? { extraEnv: this.deps.spawnEnv } : {}),
+    }, { ...process.env, ...this.deps?.spawnEnv });
+    this.ref.supervisorPid = this.child.pid;
+    const cancellation = Promise.withResolvers<never>();
+    this.rejectBootstrap = (error) => {
+      cancellation.reject(error);
+      this.cancelSupervisorHello?.(error);
+    };
+    const hello = this.waitForSupervisorHello();
+    void hello.catch(cancellation.reject);
+    const admission = this.admitSupervisedWorker(hello);
+    this.bootstrapPromise = Promise.race([admission, cancellation.promise]).catch(async (error: unknown) => {
+      if (!this.deliberateShutdown) this.lifecycle = "failed";
+      try {
+        await this.terminateSupervisorJob();
+        if (this.deliberateShutdown) this.lifecycle = "stopped";
+      } catch {
+        this.lifecycle = "failed";
+      }
+      throw error instanceof WorkerBootstrapError ? error : new WorkerBootstrapError(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      this.rejectBootstrap = undefined;
+    });
+    this.bootstrapPromise.catch(() => {});
+  }
+
+  private waitForSupervisorHello(): Promise<WindowsSupervisorHello> {
+    const hello = Promise.withResolvers<WindowsSupervisorHello>();
+    this.cancelSupervisorHello = hello.reject;
+    const timeoutMs = this.deps?.supervisorHelloTimeoutMs ?? 30_000;
+    const timer = setTimeout(() => hello.reject(new WorkerBootstrapError(`supervisor hello timeout after ${timeoutMs}ms`)), timeoutMs);
+    timer.unref?.();
+    let stderr = "";
+    const onExit = () => hello.reject(new WorkerBootstrapError("supervisor exited before admission"));
+    const onError = (error: Error) => hello.reject(error);
+    this.child!.once("exit", onExit);
+    this.child!.once("error", onError);
+    this.wireChildStreams((chunk) => {
+      stderr += chunk;
+      const lines = stderr.split(/\r?\n/);
+      stderr = lines.pop() ?? "";
+      for (const line of lines) {
+        const parsed = parseSupervisorHello(line.trim());
+        if (parsed) hello.resolve(parsed);
+        else if (line.startsWith("XACPX_JOB_FATAL ")) hello.reject(new WorkerBootstrapError(line));
+      }
+    });
+    const settled = hello.promise.finally(() => {
+      clearTimeout(timer);
+      this.cancelSupervisorHello = undefined;
+      this.child!.off("exit", onExit);
+      this.child!.off("error", onError);
+    });
+    settled.catch(() => {});
+    return settled;
+  }
+
+  private async admitSupervisedWorker(helloPromise: Promise<WindowsSupervisorHello>): Promise<void> {
+    const supervisorPid = this.ref.supervisorPid;
+    if (!supervisorPid || supervisorPid <= 0) throw new WorkerBootstrapError("supervisor spawn produced no pid");
+    const probe = this.deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity;
+    const probeReason = (status: { status: string; reason?: string }) => status.reason ? ` (${status.reason})` : "";
+    // The supervisor identity probe and the supervisor hello are independent
+    // observations: each one costs a whole PowerShell spawn (seconds under
+    // load), so overlap the probe with the handshake wait instead of
+    // serializing them. Fail-closed checks and the owned→admitted fence CAS
+    // ordering inside onSupervisorIdentityVerified are unchanged.
+    const supervisorSettled = (async () => {
+      const supervisor = await probe(supervisorPid);
+      this.assertAdmissionOpen();
+      if (supervisor.status !== "found") throw new WorkerBootstrapError(`supervisor identity probe failed for pid ${supervisorPid} (status: ${supervisor.status}${probeReason(supervisor)})`);
+      this.ref.supervisorCreationDate = supervisor.identity.creationDate;
+      await this.deps?.onSupervisorIdentityVerified?.(this);
+      this.assertAdmissionOpen();
+    })().catch((error: unknown) => error);
+    this.assertAdmissionOpen();
+    const hello = await helloPromise;
+    this.assertAdmissionOpen();
+    if (hello.supervisorPid !== supervisorPid || hello.jobName !== this.ref.jobName || !hello.inJob || hello.workerPid === supervisorPid) {
+      throw new WorkerBootstrapError("supervisor hello attestation mismatch");
+    }
+    const supervisorOutcome = await supervisorSettled;
+    if (supervisorOutcome instanceof Error) throw supervisorOutcome;
+    // One attestation readback in the SAME native transaction proves Job
+    // membership AND reads both births: no separate worker probe and no
+    // post-membership re-probe. The supervisor birth was sampled before the
+    // hello and is re-read here, so a replaced supervisor still fails closed.
+    const attestation = await (this.deps?.querySupervisorAttestation ?? queryJobAttestation)(
+      hello.jobName,
+      [hello.workerPid, supervisorPid],
+    );
+    this.assertAdmissionOpen();
+    if (!attestation) {
+      throw new WorkerBootstrapError(
+        `host Job attestation readback failed for Job "${hello.jobName}"; refusing admission on unreadable ownership evidence`,
+      );
+    }
+    const unproven = (pid: number): string => {
+      const entry = attestation.find((item) => item.pid === pid);
+      if (!entry) return "no entry in host Job attestation";
+      const detail = entry.reason ? `, ${entry.reason}` : "";
+      if (!entry.verifiable) return `status: ${entry.status}, inJob: ${entry.inJob}, verifiable: false${detail}`;
+      if (entry.status !== "found" || !entry.creationDate) return `status: ${entry.status}${detail}`;
+      if (!entry.inJob) return `not in Job${detail}`;
+      return "";
+    };
+    const workerUnproven = unproven(hello.workerPid);
+    if (workerUnproven) throw new WorkerBootstrapError(`worker admission attestation failed for pid ${hello.workerPid} (${workerUnproven})`);
+    const supervisorUnproven = unproven(supervisorPid);
+    if (supervisorUnproven) throw new WorkerBootstrapError(`supervisor admission attestation failed for pid ${supervisorPid} (${supervisorUnproven})`);
+    const workerBirth = attestation.find((item) => item.pid === hello.workerPid)!.creationDate!;
+    const supervisorBirth = attestation.find((item) => item.pid === supervisorPid)!.creationDate!;
+    if (supervisorBirth !== this.ref.supervisorCreationDate) {
+      throw new WorkerBootstrapError(
+        `worker or supervisor identity changed during Job attestation (supervisor birth was ${this.ref.supervisorCreationDate}, attests ${supervisorBirth})`,
+      );
+    }
+    this.ref.pid = hello.workerPid;
+    this.ref.creationDate = workerBirth;
+    this.ref.jobAttested = true;
+    await this.deps?.onIdentityVerified?.(this);
+    this.assertAdmissionOpen();
+    this._bootstrapVerified = true;
+  }
+
+  private assertAdmissionOpen(): void {
+    if (this.deliberateShutdown || !this.alive || this.lifecycle === "failed" || this.lifecycle === "stopped" || this.lifecycle === "cooling") {
+      throw new WorkerBootstrapError("worker admission cancelled during teardown");
+    }
   }
 
   private handleLine(line: string): void {
@@ -447,17 +662,18 @@ export class RuntimeWorkerClient {
       if (this.bootstrapPromise) {
         await this.bootstrapPromise;
       }
+      this.assertAdmissionOpen();
       const id = `w${this.nextRequestId++}`;
       const payload: RuntimeWorkerRequest = { id, method, ...(params !== undefined ? { params } : {}) };
-      return await new Promise<T>((resolve, reject) => {
-        this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, ...(options?.onEvent ? { onEvent: options.onEvent } : {}) });
-        this.child!.stdin!.write(encodeWorkerMessage(payload), (error) => {
-          if (error) {
-            this.pending.delete(id);
-            reject(error);
-          }
-        });
+      const call = Promise.withResolvers<T>();
+      this.pending.set(id, { resolve: call.resolve as (value: unknown) => void, reject: call.reject, ...(options?.onEvent ? { onEvent: options.onEvent } : {}) });
+      this.child!.stdin!.write(encodeWorkerMessage(payload), (error) => {
+        if (error) {
+          this.pending.delete(id);
+          call.reject(error);
+        }
       });
+      return await call.promise;
     } finally {
       this.inFlightLeases--;
     }
@@ -474,33 +690,35 @@ export class RuntimeWorkerClient {
     }
     const id = `w${this.nextRequestId++}`;
     const payload: RuntimeWorkerRequest = { id, method, ...(params !== undefined ? { params } : {}) };
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
-      this.child!.stdin!.write(encodeWorkerMessage(payload), (error) => {
-        if (error) {
-          this.pending.delete(id);
-          reject(error);
-        }
-      });
+    const call = Promise.withResolvers<T>();
+    this.pending.set(id, { resolve: call.resolve as (value: unknown) => void, reject: call.reject });
+    this.child!.stdin!.write(encodeWorkerMessage(payload), (error) => {
+      if (error) {
+        this.pending.delete(id);
+        call.reject(error);
+      }
     });
+    return call.promise;
   }
   /** Graceful shutdown request, then process tree cleanup after a bounded grace (plan §16, §18). */
   async shutdown(graceMs = 2_000): Promise<void> {
     // Idempotent: a verified-stopped worker already completed tree cleanup.
     if (!this.alive && this.lifecycle === "stopped") return;
-    if (!this.child || this.ref.pid <= 0) return;
+    if (!this.child) return;
     // Deliberate intent is recorded BEFORE any await so a crash race is
     // never misclassified as unexpected (plan §43).
     this.deliberateShutdown = true;
     this.lifecycle = "cooling";
+    this.rejectBootstrap?.(new WorkerBootstrapError("worker admission cancelled by shutdown"));
+    if (!this._bootstrapVerified && this.ref.jobName) {
+      await this.terminate();
+      return;
+    }
     const platform = this.deps?.platform ?? process.platform;
     if (!this.child?.stdin?.writableEnded) {
       this.shutdownAckPromise ??= this.sendControlMessage("shutdown");
       try {
-        await Promise.race([
-          this.shutdownAckPromise,
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("quiesced timeout")), graceMs).unref()),
-        ]);
+        await raceWithTimeout(this.shutdownAckPromise, graceMs, () => new Error("quiesced timeout"));
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         // I4: timeout is only a hard failure when business is still in flight.
@@ -527,25 +745,29 @@ export class RuntimeWorkerClient {
     } else {
       // stdin already closed — treat as quiesced
     }
-    // If on Windows and creationDate was never verified, wait for child exit before terminate
-    // (no business RPC could have entered, but still need clean exit proof).
+    // An unverified Windows worker may exit gracefully without admitting business RPCs.
     if ((platform === "win32" || Boolean(this.deps?.probeWindowsIdentity)) && !this.ref.creationDate && this.exitPromise) {
       try {
-        await Promise.race([
-          this.exitPromise,
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
-        ]);
+        await raceWithTimeout(this.exitPromise, graceMs, () => new Error("grace elapsed"));
       } catch {}
     }
     await this.terminate();
   }
 
   async terminate(): Promise<void> {
+    if (!this.terminationPromise) {
+      this.terminationPromise = this.terminateWorker().finally(() => { this.terminationPromise = undefined; });
+    }
+    await this.terminationPromise;
+  }
+
+  private async terminateWorker(): Promise<void> {
     if (!this.alive && this.lifecycle === "stopped") return;
     if (!this.child) return;
     const wasAliveBeforeTerm = this.alive;
     const isCrashCleanup = !wasAliveBeforeTerm && !this.deliberateShutdown;
     this.deliberateShutdown = true;
+    this.rejectBootstrap?.(new WorkerBootstrapError("worker admission cancelled by termination"));
     if (!isCrashCleanup) {
       this.lifecycle = "cooling";
     }
@@ -553,7 +775,9 @@ export class RuntimeWorkerClient {
     const termFn = this.deps?.terminateProcessTree ?? terminateProcessTree;
 
     try {
-      if (platform === "win32" || this.deps?.probeWindowsIdentity) {
+      if (this.ref.jobName) {
+        await this.terminateSupervisorJob();
+      } else if (platform === "win32" || this.deps?.probeWindowsIdentity) {
         if (!this.ref.creationDate) {
           if (this.alive) {
             // Hard rule (plan §44): Windows terminate MUST NOT fall back to bare PID.
@@ -620,6 +844,30 @@ export class RuntimeWorkerClient {
       await this.exitPromise.catch(() => {});
     }
     this.lifecycle = "stopped";
+  }
+
+  private async terminateSupervisorJob(): Promise<void> {
+    if (this.supervisorTerminationPromise) return await this.supervisorTerminationPromise;
+    this.supervisorTerminationPromise = (async () => {
+      if (!this.child || !this.ref.jobName) throw new Error("supervisor containment identity is unavailable");
+      const timeoutMs = this.deps?.supervisorTerminationTimeoutMs ?? 15_000;
+      if (this.alive) this.child.kill("SIGKILL");
+      if (this.exitPromise) {
+        await raceWithTimeout(this.exitPromise, timeoutMs, () => new Error("supervisor exit could not be confirmed"));
+      }
+      const deadline = Date.now() + timeoutMs;
+      const query = this.deps?.querySupervisorContainment ?? queryJobContainment;
+      while (true) {
+        const containment = await query(this.ref.jobName);
+        if (containment === "absent" || containment === "empty") return;
+        if (Date.now() >= deadline) throw new Error(`supervisor Job cleanup could not be confirmed (${containment})`);
+        const delay = Promise.withResolvers<void>();
+        setTimeout(delay.resolve, 50);
+        await delay.promise;
+      }
+    })();
+    try { await this.supervisorTerminationPromise; }
+    finally { this.supervisorTerminationPromise = undefined; }
   }
 }
 

@@ -6,6 +6,16 @@ import { tmpdir } from "node:os";
 import { RuntimeEngine, findAcpxRecordIdFromDisk } from "../../../../../src/bridge/engine/runtime-engine";
 import { RuntimeWorkerFence } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 import { physicalFenceKeyForSession } from "../../../../../src/bridge/engine/runtime/physical-session-identity";
+import type { RuntimeWorkerClientDeps } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
+
+const fakeWorkerClientDeps: RuntimeWorkerClientDeps = {
+  platform: "win32",
+  probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
+  terminateProcessTree: async (target) => {
+    try { process.kill(typeof target === "number" ? target : target.pid, "SIGKILL"); } catch {}
+    return { rootOutcome: "killed", outcomes: [] };
+  },
+};
 
 const sessionInput = {
   agent: "codex",
@@ -85,7 +95,7 @@ test("full delete lifecycle: ensure → prompt → freeWarm → cooled worker �
     );
     await writeFile(streamFile, '{"seq":1}\n');
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ workerClientDeps: fakeWorkerClientDeps, durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // 1. Ensure + prompt
     const reply = await engine.prompt({ ...sessionInput, text: "hi" });
@@ -128,7 +138,7 @@ test("deleteRecordFilesStrict retries transient failures until the record is con
     await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "retry-rec-5678", name: "locked-session", cwd: sessionInput.cwd }));
     await writeFile(streamFile, '{"seq":1}\n');
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
     // Pre-seed the record id
     engine["recordIds"].set(sessionInput.logicalSessionId, "retry-rec-5678");
     // Perform strict delete: retry loop ensures ALL record and stream files are genuinely gone
@@ -149,7 +159,7 @@ test("G4: deleteSession fails closed if main JSON is deleted but stream artifact
     await withFakeWorker(entry);
     await mkdir(sessionsDir, { recursive: true });
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
     const recordFile = join(sessionsDir, "stubborn-rec-9999.json");
     await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "stubborn-rec-9999", name: "stubborn-session" }));
     engine["recordIds"].set(sessionInput.logicalSessionId, "stubborn-rec-9999");
@@ -178,6 +188,7 @@ test("G4 fail-closed 1: sessions directory ENOENT allows idempotent delete succe
     await withFakeWorker(entry);
 
     const engine = new RuntimeEngine({
+      durableRootDir: join(dir, "durable"),
       workerEntryPath: entry,
       stateDir: nonExistentDir,
       permissionMode: "approve-all",
@@ -201,6 +212,7 @@ test("G4 fail-closed 2: cold lookup unreadable directory (non-ENOENT) fails clos
     await writeFile(fakeSessionsDirAsFile, "not-a-directory");
 
     const engine = new RuntimeEngine({
+      durableRootDir: join(dir, "durable"),
       workerEntryPath: entry,
       stateDir: fakeSessionsDirAsFile,
       permissionMode: "approve-all",
@@ -232,6 +244,7 @@ test("G4 fail-closed 3: unreadable candidate file during cold lookup fails close
     expect(lookup.kind).toBe("failed");
 
     const engine = new RuntimeEngine({
+      durableRootDir: join(dir, "durable"),
       workerEntryPath: entry,
       stateDir: sessionsDir,
       permissionMode: "approve-all",
@@ -253,7 +266,7 @@ test("G4 recovery: partial delete failure retains recordId in memory so second d
     await withFakeWorker(entry);
     await mkdir(sessionsDir, { recursive: true });
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
     const recordFile = join(sessionsDir, "partial-rec-1.json");
     await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "partial-rec-1", name: "partial-session" }));
     engine["recordIds"].set(sessionInput.logicalSessionId, "partial-rec-1");
@@ -299,7 +312,7 @@ test("G4 recovery across restart: tombstone allows cold delete to find recordId 
     const tombstoneFile = join(sessionsDir, ".xacpx-delete-tombstone-tombstone-rec-2.json");
     await writeFile(tombstoneFile, JSON.stringify({ logicalSessionId: sessionInput.logicalSessionId, name: "tombstone-session", cwd: sessionInput.cwd, recordId: "tombstone-rec-2" }));
     // Fresh RuntimeEngine instance (simulating restart: memory cache is empty)
-    const freshEngine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const freshEngine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // deleteSession on the fresh engine finds tombstone-rec-2 via tombstone, removes stream, and cleans tombstone!
     await expect(freshEngine.deleteSession({ ...sessionInput, name: "tombstone-session" })).resolves.toEqual({});
@@ -347,7 +360,7 @@ test("G4 transaction 1: tombstone write failure aborts before sending close to w
     const blockTarget = join(sessionsDir, ".xacpx-delete-tombstone-rec-tomb-fail-1.json");
     await mkdir(blockTarget);
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
     engine["recordIds"].set(sessionInput.logicalSessionId, "rec-tomb-fail-1");
 
     // deleteSession MUST fail closed before touching worker or unlinking files
@@ -408,11 +421,12 @@ test("G4 transaction 2: when worker receives close, tombstone already exists on 
     const origDir = process.env.SESSIONS_DIR;
     process.env.SESSIONS_DIR = sessionsDir;
     try {
-      const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+      const engine = new RuntimeEngine({ workerClientDeps: fakeWorkerClientDeps, durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
       engine["recordIds"].set(sessionInput.logicalSessionId, "rec-order-1");
 
       // Spawn worker
-      const worker = engine["manager"]?.ensureWorker(sessionInput.logicalSessionId);
+      const worker = await engine["manager"]!.acquire(sessionInput.logicalSessionId, physicalFenceKeyForSession({ ...sessionInput, name: "order-session" }));
+      await worker.request("ensure", {});
       expect(worker).toBeDefined();
 
       await engine.deleteSession({ ...sessionInput, name: "order-session" });
@@ -445,7 +459,7 @@ test("G4 transaction 3: artifacts deleted but tombstone removal failure causes d
     const recordFile = join(sessionsDir, "rec-rm-fail-1.json");
     await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-rm-fail-1", name: "tomb-rm-session" }));
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
     engine["recordIds"].set(sessionInput.logicalSessionId, "rec-rm-fail-1");
 
     // Perform delete where removeTombstoneStrict is made to fail by replacing tombstone with directory after write
@@ -481,7 +495,7 @@ test("G4 identity 1: two records with same name and different cwd -> deleting se
     await writeFile(recBFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-b", name: "backend", cwd: "/repo/b" }));
     await writeFile(recBStream, "history for B\n");
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // Cold delete on session B (cwd="/repo/b", name="backend")
     await expect(
@@ -521,7 +535,7 @@ test("G4 identity 2: ambiguous matching records on disk fail closed and delete n
     await writeFile(rec1File, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-ambig-1", name: "dup-session", cwd: "/repo/shared" }));
     await writeFile(rec2File, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-ambig-2", name: "dup-session", cwd: "/repo/shared" }));
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // Cold delete MUST fail closed due to ambiguity
     await expect(
@@ -582,7 +596,7 @@ test("G4 identity 3: restart tombstone recovery matches by immutable logicalSess
     await writeFile(stream2, "stream for session 2\n");
 
     // Fresh engine after restart
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // Cold delete on session-2
     await expect(
@@ -622,7 +636,7 @@ test("G4 identity 4: ambiguous tombstones fail closed and do not delete", async 
     await writeFile(tomb1, JSON.stringify({ name: "legacy-dup", cwd: "/repo/dup", recordId: "rec-dup-1" }));
     await writeFile(tomb2, JSON.stringify({ name: "legacy-dup", cwd: "/repo/dup", recordId: "rec-dup-2" }));
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // Without logicalSessionId, matching returns 2 tombstones -> fail closed!
     await expect(
@@ -659,7 +673,7 @@ test("G4 indeterminate 1: candidate matches name but lacks cwd when criteria has
       JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-missing-cwd", name: "backend" }),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // Criteria specifies cwd="/repo/b". Candidate cannot prove identity -> MUST fail closed!
     await expect(
@@ -696,7 +710,7 @@ test("G4 indeterminate 2: candidate matches name and cwd but lacks agent_command
       JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-missing-agent", name: "backend", cwd: "/repo/b" }),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // Criteria specifies agentCommand="codex" -> candidate cannot prove agent identity -> fail closed!
     await expect(
@@ -740,7 +754,7 @@ test("G4 indeterminate 3: acpxAgent criterion alone participates in match and re
       }),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // Criteria specifies only acpxAgent="codex" (no agentCommand / rawCommand)
     // Deleting session with acpxAgent="codex" must NOT match claude record -> resolves as absent (idempotent success)
@@ -785,7 +799,7 @@ test("G4 indeterminate 4: legacy tombstone with different agentCommand is not cl
       }),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // Deleting codex session (without logicalSessionId) -> agentCommand mismatch -> tombstone is NOT claimed
     await expect(
@@ -816,7 +830,7 @@ test("G4 indeterminate 5: tombstone scan non-ENOENT error causes resolveRecordId
     // Create a regular file at sessionsDir to cause readdir to fail with ENOTDIR (non-ENOENT)
     await writeFile(sessionsDir, "not-a-directory");
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ durableRootDir: join(dir, "durable"), workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
     await expect(
       engine.deleteSession({
         ...sessionInput,
@@ -983,6 +997,7 @@ test("G4 barrier: successor admission refuses while a deleting fence stands, suc
       agent: "runtime-worker",
     });
     const engine = new RuntimeEngine({
+      workerClientDeps: fakeWorkerClientDeps,
       workerEntryPath: entry,
       stateDir: sessionsDir,
       fenceDir,

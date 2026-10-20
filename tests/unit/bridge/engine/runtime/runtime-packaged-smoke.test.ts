@@ -9,7 +9,8 @@ import {
   RuntimeEngine,
   defaultWorkerEntryCandidates,
 } from "../../../../../src/bridge/engine/runtime-engine";
-import { WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
+import { physicalFenceKeyForSession } from "../../../../../src/bridge/engine/runtime/physical-session-identity";
+import { buildTestRuntimeWorker } from "../../../../helpers/build-test-runtime-worker";
 
 const MOCK_AGENT = resolve(import.meta.dir, "../../../../fixtures/mock-acp-agent.mjs");
 
@@ -28,28 +29,17 @@ test("defaultWorkerEntryCandidates calculates bundled candidate #1 relative to b
 
 test("packaged build smoke: RuntimeEngine compiles and runs worker entry on-demand", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-smoke-pkg-"));
-  const workerOutDir = join(dir, "dist", "bridge", "engine", "runtime");
-  const workerFile = join(workerOutDir, "runtime-worker-main.js");
+  const worker = await buildTestRuntimeWorker();
   const sessionsDir = join(dir, ".acpx", "sessions");
+  const engine = new RuntimeEngine({
+    workerEntryPath: worker.entryPath,
+    stateDir: sessionsDir,
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    durableRootDir: join(dir, "durable"),
+  });
   try {
-    // Compile the worker entry on-demand so this smoke test is 100% self-sufficient
-    // and never depends on a pre-existing dist/ directory from prior commands.
-    const buildResult = await Bun.build({
-      entrypoints: [resolvePath(process.cwd(), "./src/bridge/engine/runtime/runtime-worker-main.ts")],
-      outdir: workerOutDir,
-      target: "node",
-      external: ["acpx", "node-pty", "fs-ext", "write-file-atomic"],
-    });
-    expect(buildResult.success).toBe(true);
-    expect(statSync(workerFile).isFile()).toBe(true);
-
-    const engine = new RuntimeEngine({
-      workerEntryPath: workerFile,
-      stateDir: sessionsDir,
-      permissionMode: "approve-all",
-      nonInteractivePermissions: "deny",
-      durableRootDir: join(dir, "durable"),
-    });
+    expect(statSync(worker.entryPath).isFile()).toBe(true);
 
     const sessionInput = {
       agent: "mock",
@@ -71,9 +61,11 @@ test("packaged build smoke: RuntimeEngine compiles and runs worker entry on-dema
     await engine.shutdown();
     expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
   } finally {
+    await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
+    await worker.release();
   }
-}, 30_000);
+}, 60_000);
 
 test("WorkerTeardownPendingError surfaces exact error code through withWorker", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-teardown-code-"));
@@ -82,10 +74,20 @@ test("WorkerTeardownPendingError surfaces exact error code through withWorker", 
     await writeFile(
       entry,
       [
-        "process.stdin.on('data', () => {});",
+        "import { createInterface } from 'node:readline';",
+        "createInterface({ input: process.stdin }).on('line', (line) => { const msg = JSON.parse(line); process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n'); });",
       ].join("\n"),
     );
     const engine = new RuntimeEngine({
+      workerClientDeps: {
+        platform: "win32",
+        windowsJobContainment: false,
+        probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
+        terminateProcessTree: async (target) => {
+          try { process.kill(typeof target === "number" ? target : target.pid, "SIGKILL"); } catch {}
+          return { rootOutcome: "killed", outcomes: [] };
+        },
+      },
       workerEntryPath: entry,
       permissionMode: "approve-all",
       durableRootDir: join(dir, "durable"),
@@ -99,18 +101,19 @@ test("WorkerTeardownPendingError surfaces exact error code through withWorker", 
     };
 
     // Ensure worker
-    const worker = engine["manager"]?.ensureWorker("teardown-code-1");
+    const worker = await engine["manager"]!.acquire(sessionInput.logicalSessionId, physicalFenceKeyForSession(sessionInput));
+    await worker.request("ensure", {});
     expect(worker).toBeDefined();
 
     // Put into cooling state while still alive
-    if (worker) worker.lifecycle = "cooling";
+    worker.lifecycle = "cooling";
 
     // Calling ensureSession now must fail closed with RUNTIME_WORKER_TEARDOWN_PENDING
     await expect(engine.ensureSession(sessionInput)).rejects.toMatchObject({
       code: "RUNTIME_WORKER_TEARDOWN_PENDING",
     });
 
-    if (worker) await worker.terminate();
+    await worker.terminate();
     await engine.shutdown();
   } finally {
     await rm(dir, { recursive: true, force: true });

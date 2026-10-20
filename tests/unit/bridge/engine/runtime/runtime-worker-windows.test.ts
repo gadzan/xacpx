@@ -8,9 +8,19 @@ import {
   RuntimeWorkerClient,
   WorkerBootstrapError,
   WorkerTeardownPendingError,
+  type RuntimeWorkerClientDeps,
 } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
 import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
+
+const fakeWorkerClientDeps: RuntimeWorkerClientDeps = {
+  platform: "win32",
+  probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
+  terminateProcessTree: async (target) => {
+    try { process.kill(typeof target === "number" ? target : target.pid, "SIGKILL"); } catch {}
+    return { rootOutcome: "killed", outcomes: [] };
+  },
+};
 
 async function createEchoWorker(entry: string): Promise<void> {
   await writeFile(
@@ -50,7 +60,7 @@ test("Scenario 1: Windows identity probe is a hard gate — RPCs await probe res
         probeResolved = true;
         return { status: "found", identity: { pid, creationDate: res.identity.creationDate } };
       },
-      terminateProcessTree: async () => ({ rootOutcome: "killed", outcomes: [] }),
+      terminateProcessTree: fakeWorkerClientDeps.terminateProcessTree,
     });
     // Initiate request: should await the identity probe before completing
     const reqPromise = client.request("ensure", {});
@@ -179,6 +189,7 @@ test("Scenario 4: terminate uses immutable creationDate captured at bootstrap (P
       }),
       terminateProcessTree: async (target) => {
         terminatedTarget = target;
+        try { process.kill(typeof target === "number" ? target : target.pid, "SIGKILL"); } catch {}
         return { rootOutcome: "killed", outcomes: [] };
       },
     });
@@ -211,7 +222,7 @@ test("Scenario 4b: Windows termination outcomes matrix — confirmed safe vs unc
         status: "found",
         identity: { pid, creationDate: "2026-08-27T01:00:00.000Z" },
       }),
-      terminateProcessTree: async () => ({ rootOutcome: "killed", outcomes: [] }),
+      terminateProcessTree: fakeWorkerClientDeps.terminateProcessTree,
     });
     await client.request("ensure", {});
     await expect(client.terminate()).resolves.toBeUndefined();
@@ -265,8 +276,8 @@ test("Scenario 5: unexpected exit(0) without deliberate intent is classified as 
       ].join("\n"),
     );
 
-    const manager = new RuntimeWorkerManager({ entryPath: entry, maxRestartsPerWindow: 1, restartWindowMs: 60_000 });
-    const worker = manager.ensureWorker("exit0-session");
+    const manager = new RuntimeWorkerManager({ entryPath: entry, clientDeps: fakeWorkerClientDeps, maxRestartsPerWindow: 1, restartWindowMs: 60_000 });
+    const worker = await manager.acquire("exit0-session");
 
     // Trigger unexpected exit 0
     await expect(worker.request("ensure", {})).rejects.toMatchObject({ code: "RUNTIME_WORKER_CRASHED" });
@@ -274,7 +285,7 @@ test("Scenario 5: unexpected exit(0) without deliberate intent is classified as 
     // Lifecycle marked failed during crash and transitions to stopped after cleanup
     expect(worker.lifecycle).toMatch(/failed|stopped/);
     // Respawn budget or teardown gate must reject
-    expect(() => manager.ensureWorker("exit0-session")).toThrow(/crashed 1 times|refusing duplicate worker spawn|failed/);
+    await expect(manager.acquire("exit0-session")).rejects.toThrow(/crashed 1 times|refusing duplicate worker spawn|failed/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -286,8 +297,8 @@ test("Scenario 6: deliberate freeWarmProcess / cooling exit(0) does NOT consume 
     const entry = join(dir, "worker.mjs");
     await createEchoWorker(entry);
 
-    const manager = new RuntimeWorkerManager({ entryPath: entry, maxRestartsPerWindow: 1, restartWindowMs: 60_000 });
-    const worker = manager.ensureWorker("free-session");
+    const manager = new RuntimeWorkerManager({ entryPath: entry, clientDeps: fakeWorkerClientDeps, maxRestartsPerWindow: 1, restartWindowMs: 60_000 });
+    const worker = await manager.acquire("free-session");
     await worker.request("ensure", {});
 
     // Deliberate terminate (cooling)
@@ -295,7 +306,9 @@ test("Scenario 6: deliberate freeWarmProcess / cooling exit(0) does NOT consume 
     expect(worker.lifecycle).toBe("stopped");
 
     // Budget NOT consumed: respawn succeeds
-    expect(() => manager.ensureWorker("free-session")).not.toThrow();
+    const replacement = await manager.acquire("free-session");
+    await expect(replacement.request("ensure", {})).resolves.toEqual({ ready: true });
+    expect(replacement.ref.pid).not.toBe(worker.ref.pid);
     await manager.shutdownAll();
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -309,6 +322,8 @@ test("Scenario 7: permission rotation termination does NOT consume crash budget"
     await createEchoWorker(entry);
 
     const engine = new RuntimeEngine({
+      workerClientDeps: fakeWorkerClientDeps,
+      durableRootDir: join(dir, "durable"),
       workerEntryPath: entry,
       permissionMode: "approve-all",
       nonInteractivePermissions: "deny",
@@ -352,8 +367,10 @@ test("Ownership invariant: request() during teardown rejects with WorkerTeardown
     const { promise: termPromise, resolve: resolveTerm } = Promise.withResolvers<void>();
 
     const client = new RuntimeWorkerClient(entry, "session-teardown-race", undefined, undefined, {
-      terminateProcessTree: async () => {
+      ...fakeWorkerClientDeps,
+      terminateProcessTree: async (target) => {
         await termPromise;
+        try { process.kill(typeof target === "number" ? target : target.pid, "SIGKILL"); } catch {}
         return { rootOutcome: "killed", outcomes: [] };
       },
     });
@@ -403,7 +420,7 @@ test("Quiescence: Windows bootstrap probe pending causes concurrent permission u
           const res = await probePromise;
           return { status: "found", identity: { pid, creationDate: res.identity.creationDate } };
         },
-        terminateProcessTree: async () => ({ rootOutcome: "killed", outcomes: [] }),
+        terminateProcessTree: fakeWorkerClientDeps.terminateProcessTree,
       },
     });
 
@@ -442,6 +459,7 @@ test("Quiescence: concurrent cancel() during permission transition waits on tran
     await createEchoWorker(entry);
 
     const engine = new RuntimeEngine({
+      workerClientDeps: fakeWorkerClientDeps,
       workerEntryPath: entry,
       permissionMode: "approve-all",
       durableRootDir: join(dir, "durable"),
@@ -487,12 +505,13 @@ test("Quiescence: concurrent cancel() during permission transition waits on tran
 test("Lifecycle: client.shutdown() sends graceful shutdown RPC frame to worker process", async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-shutdown-rpc-"));
   try {
-    let receivedShutdownMethod = false;
+    const shutdownMarker = join(dir, "shutdown-observed");
     const entry = join(dir, "shutdown-worker.mjs");
     await writeFile(
       entry,
       [
         "let buffer='';",
+        "import fs from 'node:fs';",
         "process.stdin.on('data', (d) => {",
         "  buffer += d.toString();",
         "  let idx;",
@@ -501,6 +520,7 @@ test("Lifecycle: client.shutdown() sends graceful shutdown RPC frame to worker p
         "    if (!line) continue;",
         "    try { const msg = JSON.parse(line);",
         "      if (msg.method === 'shutdown') {",
+        `        fs.writeFileSync(${JSON.stringify(shutdownMarker)}, 'shutdown');`,
         "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
         "      } else {",
         "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
@@ -511,21 +531,14 @@ test("Lifecycle: client.shutdown() sends graceful shutdown RPC frame to worker p
       ].join("\n"),
     );
 
-    const client = new RuntimeWorkerClient(entry, "session-shutdown-test");
+    const client = new RuntimeWorkerClient(entry, "session-shutdown-test", undefined, undefined, fakeWorkerClientDeps);
     await client.request("ensure", {});
-
-    // Intercept client.terminate to verify shutdown RPC succeeded before hard termination
-    let hardKillCalled = false;
-    const origTerminate = client["terminate"].bind(client);
-    client["terminate"] = async () => {
-      hardKillCalled = true;
-      return origTerminate();
-    };
 
     // Calling shutdown() must deliver the graceful shutdown message to worker
     await client.shutdown(2_000);
 
     expect(client.lifecycle).toBe("stopped");
+    expect(await readFile(shutdownMarker, "utf8")).toBe("shutdown");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -559,7 +572,7 @@ test("Windows lifecycle: graceful shutdown when creationDate identity probe is s
 
     let terminateTreeCalled = false;
     // Probe is intentionally held pending forever to simulate slow Windows WMI query
-    const pendingForever = new Promise<never>(() => {});
+    const { promise: pendingForever } = Promise.withResolvers<never>();
 
     const client = new RuntimeWorkerClient(
       entry,
@@ -571,7 +584,7 @@ test("Windows lifecycle: graceful shutdown when creationDate identity probe is s
         probeWindowsIdentity: async () => pendingForever,
         terminateProcessTree: async () => {
           terminateTreeCalled = true;
-          return { status: "killed", pid: 99999 };
+          return { rootOutcome: "killed", outcomes: [] };
         },
       },
     );
@@ -615,9 +628,7 @@ test("G10 lifecycle: production shutdown cleans up real OS descendant process tr
         `        fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid), 'utf8');`,
         "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
         "      } else if (msg.method === 'shutdown') {",
-        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
-        "      } else {",
-        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n', () => process.exit(0));",
         "      }",
         "    } catch {}",
         "  }",
@@ -629,6 +640,10 @@ test("G10 lifecycle: production shutdown cleans up real OS descendant process tr
     const client = new RuntimeWorkerClient(entry, "session-g10-real-tree");
     await client.request("ensure", {});
     expect(client.alive).toBe(true);
+    if (process.platform === "win32") {
+      expect(client.ref.jobName).toBeTypeOf("string");
+      expect(client.ref.jobAttested).toBe(true);
+    }
 
     const descendantPid = parseInt(await readFile(pidFile, "utf8"), 10);
     expect(descendantPid).toBeGreaterThan(0);
@@ -641,20 +656,23 @@ test("G10 lifecycle: production shutdown cleans up real OS descendant process tr
     expect(client.lifecycle).toBe("stopped");
     // Verify descendant is dead in OS
     let descendantRunning = true;
-    for (let i = 0; i < 30; i++) {
+    const deathDeadline = Date.now() + 10_000;
+    while (Date.now() < deathDeadline) {
       try {
         process.kill(descendantPid, 0);
-        await new Promise((r) => setTimeout(r, 50));
       } catch {
         descendantRunning = false;
         break;
       }
+      const next = Promise.withResolvers<void>();
+      setImmediate(next.resolve);
+      await next.promise;
     }
     expect(descendantRunning).toBe(false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 60_000);
 test("Windows G10: unexpected root crash with already-exited root outcome fails closed and rejects replacement spawn", async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-crash-descendant-"));
   try {

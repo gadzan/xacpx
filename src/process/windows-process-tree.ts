@@ -143,7 +143,7 @@ export type WindowsWorkerRequest =
   | { action: "token-snapshot"; token: string }
   | { action: "terminate-one-cim"; target: BatchTarget }
   | { action: "terminate-descendants-of"; parentPid: number; epcd?: string };
-export type WindowsProbeStatus = { status: "found"; identity: WindowsProcessIdentity } | { status: "missing" | "unavailable" };
+export type WindowsProbeStatus = { status: "found"; identity: WindowsProcessIdentity } | { status: "missing" | "unavailable"; reason?: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -340,7 +340,7 @@ export async function queryWindowsProcessIdentity(
   try {
     const value = await (options.runWorker ?? runPowerShellWorker)(
       { action: "identity", pid },
-      options.workerDeadlineMs ?? 5_000,
+      options.workerDeadlineMs ?? 15_000,
     );
     if (!value || typeof value !== "object") return null;
     const envelope = value as Record<string, unknown>;
@@ -365,15 +365,18 @@ export async function probeWindowsProcessIdentity(
   pid: number,
   options: WindowsProcessWorkerOptions = {},
 ): Promise<WindowsProbeStatus> {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: "unavailable" };
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: "unavailable", reason: "pid out of range" };
   try {
-    const value = await (options.runWorker ?? runPowerShellWorker)({ action: "identity", pid }, options.workerDeadlineMs ?? 5_000);
-    if (!value || typeof value !== "object") return { status: "unavailable" };
+    // Same budget as queryWindowsProcessIdentity: a burst of concurrent
+    // PowerShell spawns costs ~5s per probe on a loaded host, so the old 5s
+    // budget converted normally-slow probes into "unavailable" timeouts.
+    const value = await (options.runWorker ?? runPowerShellWorker)({ action: "identity", pid }, options.workerDeadlineMs ?? 15_000);
+    if (!value || typeof value !== "object") return { status: "unavailable", reason: "identity worker produced no JSON" };
     const item = value as Record<string, unknown>;
     if (item.status === "missing") return { status: "missing" };
     const identity = await queryWindowsProcessIdentity(pid, { ...options, runWorker: async () => value });
-    return identity ? { status: "found", identity } : { status: "unavailable" };
-  } catch { return { status: "unavailable" }; }
+    return identity ? { status: "found", identity } : { status: "unavailable", reason: "identity worker response did not decode" };
+  } catch (error) { return { status: "unavailable", reason: error instanceof Error ? error.message : String(error) }; }
 }
 
 export async function snapshotWindowsProcessesByToken(
@@ -705,6 +708,7 @@ public static class XacpxNativeProcess {
   public static string Creation(IntPtr h) { FILETIME c,e,k,u; if(!GetProcessTimes(h,out c,out e,out k,out u)) return null; return (((ulong)c.High << 32) | c.Low).ToString(); }
   public static string Image(IntPtr h) { uint n=32768; var b=new StringBuilder((int)n); return QueryFullProcessImageName(h,0,b,ref n) ? b.ToString() : null; }
   public static bool Alive(IntPtr h) { return WaitForSingleObject(h,0)==0x102u; }
+  public static uint State(IntPtr h) { return WaitForSingleObject(h,0); }
   public static bool Kill(IntPtr h) { return TerminateProcess(h,1); }
   public static bool WaitDead(IntPtr h) { return WaitForSingleObject(h,2000)==0u; }
   public static void Close(IntPtr h) { if(h!=IntPtr.Zero) CloseHandle(h); }
@@ -738,9 +742,7 @@ function OpenVerified($node, $cim) {
   if(!$same){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}}
   $image=[XacpxNativeProcess]::Image($h)
   if(!$image){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
-  # A caller-supplied path is handle-derived (root, $cim=$false). A CIM child's
-  # Win32_Process.ExecutablePath is the CREATE-TIME path; Image() resolves the
-  # file object. Under a symlinked shim these differ for the SAME process.
+  # Handle paths resolve symlinks; CIM paths retain the launch alias.
   if(!$cim -and $node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
     [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
   }
@@ -755,6 +757,8 @@ if($request.action -eq 'identity'){
     Write-Output (@{status=$status} | ConvertTo-Json -Compress);exit 0
   }
   try {
+    $state=[XacpxNativeProcess]::State($h)
+    if($state -ne 258){$status=if($state -eq 0){'missing'}else{'unavailable'};Write-Output (@{status=$status}|ConvertTo-Json -Compress);exit 0}
     $creation=[XacpxNativeProcess]::Creation($h);$image=[XacpxNativeProcess]::Image($h)
     if(!$creation -or !$image){Write-Output (@{status='unavailable'} | ConvertTo-Json -Compress);exit 0}
     $commandLine=$null
@@ -763,8 +767,7 @@ if($request.action -eq 'identity'){
       if($cim -and $cim.CreationDate){
         $cimCreation=$cim.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
         $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($creation)-[Numerics.BigInteger]::Parse($cimCreation))
-        # The delta binds the CIM row to the retained handle; image equality is a
-        # weaker proof that also drops commandLine under a shim.
+        # Bind CIM to the retained handle birth.
         if($delta -le 9){
           $commandLine=$cim.CommandLine
         }

@@ -86,7 +86,7 @@ test("identity queries accept only handle-derived canonical fingerprints", async
 
 test("identity probes preserve missing versus unavailable", async () => {
   expect(await probeWindowsProcessIdentity(42, { runWorker: async () => ({ status: "missing" }) })).toEqual({ status: "missing" });
-  expect(await probeWindowsProcessIdentity(42, { runWorker: async () => ({ status: "unavailable" }) })).toEqual({ status: "unavailable" });
+  expect(await probeWindowsProcessIdentity(42, { runWorker: async () => ({ status: "unavailable" }) })).toMatchObject({ status: "unavailable" });
   expect(await probeWindowsProcessIdentity(42, { runWorker: async () => ({
     status: "found",
     identity: { pid: 42, creationDate: "133830000000000000", executablePath: "C:\\node.exe" },
@@ -1065,3 +1065,50 @@ test("descendants decoder rejects a malformed fingerprintSource on a leftover to
   };
   expect(decodeWindowsDescendantsResponse(payload, 4242)).toBeNull();
 });
+
+windowsTest("identity distinguishes a signaled process retained by a native handle from a live process", async () => {
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+$info=New-Object Diagnostics.ProcessStartInfo
+$info.FileName=$env:XACPX_TEST_EXEC
+$info.Arguments='-e "process.stdin.resume()"'
+$info.UseShellExecute=$false
+$info.RedirectStandardInput=$true
+$info.CreateNoWindow=$true
+$child=[Diagnostics.Process]::Start($info)
+$retained=$child.Handle
+try {
+  [Console]::Out.WriteLine($child.Id)
+  [void][Console]::In.ReadLine()
+  $child.Kill()
+  $child.WaitForExit()
+  [Console]::Out.WriteLine('exited')
+  [void][Console]::In.ReadLine()
+} finally {
+  if(-not $child.HasExited){$child.Kill();$child.WaitForExit()}
+  $child.Dispose()
+}
+`;
+  const holder = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+    env: { ...process.env, XACPX_TEST_EXEC: process.execPath }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+  });
+  const ready = Promise.withResolvers<number>();
+  const closed = Promise.withResolvers<void>();
+  holder.stdout.once("data", (chunk) => ready.resolve(Number(String(chunk).trim())));
+  holder.once("error", ready.reject);
+  holder.once("close", () => { closed.resolve(); ready.reject(new Error("process holder exited before readiness")); });
+  try {
+    const pid = await ready.promise;
+    const live = await probeWindowsProcessIdentity(pid);
+    expect(live.status).toBe("found");
+    const exited = Promise.withResolvers<void>();
+    holder.stdout.once("data", () => exited.resolve());
+    holder.stdin.write("\n");
+    await exited.promise;
+    expect(await probeWindowsProcessIdentity(pid)).toEqual({ status: "missing" });
+  } finally {
+    holder.stdin.end("\n");
+    await closed.promise;
+  }
+}, 45_000);
