@@ -1461,6 +1461,76 @@ describe("Group Components", () => {
       expect(geo.content).toBe(1360);
       loadSpy.mockRestore();
     });
+
+    // A canonical reply promotes the member-activity row in place: the row
+    // count is unchanged (activity -> msg:reply) and recovery/history fires no
+    // live revision, so only the item keys can tell the transcript got taller.
+    const canonicalReply = {
+      id: "msg_reply", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+      role: "bot" as const, runId: "run_1", senderBotId: "bot_a", promptRequestId: "src_t1",
+      content: "Shipped", createdAt: "2026-09-01T00:00:01.000Z",
+    };
+    function seedPromotableActivity(): void {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_req", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "2026-09-01T00:00:00.000Z" },
+      ];
+      groups.newestSeq = 1;
+      groups.oldestSeq = 1;
+      groups.contiguousNewestSeq = 1;
+      groups.topicReady = true;
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_req", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          promptRequestId: "src_t1", state: "running", createdAt: "now",
+        },
+      };
+    }
+    function rowIds(el: HTMLElement): string[] {
+      return Array.from(el.querySelectorAll<HTMLElement>("[data-row-id]"))
+        .map((row) => row.getAttribute("data-row-id") ?? "");
+    }
+
+    it("follows the bottom when a member activity is promoted to its canonical reply", async () => {
+      seedPromotableActivity();
+      const { wrapper, geo } = mountTranscript();
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      const groups = useGroupsStore();
+      // The activity row stands in for the reply that has not landed yet.
+      expect(rowIds(el)).toEqual(["msg_req", "turn_a"]);
+      expect(el.scrollTop).toBe(el.scrollHeight - el.clientHeight);
+      // The canonical row is taller than the activity row it replaces.
+      geo.grow(60);
+      groups.messages = [...groups.messages, canonicalReply];
+      await flushPromises();
+      // Same row count: only the item keys (and the height) changed.
+      expect(rowIds(el)).toEqual(["msg_req", "msg_reply"]);
+      expect(el.scrollTop).toBe(el.scrollHeight - el.clientHeight);
+      expect(el.scrollTop).toBe(960);
+    });
+
+    it("keeps a parked reader in place when a member activity is promoted to its canonical reply", async () => {
+      seedPromotableActivity();
+      const { wrapper, geo } = mountTranscript();
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      const groups = useGroupsStore();
+      // Reader scrolls up out of the follow zone.
+      el.scrollTop = 120;
+      await wrapper.find('[data-test="group-transcript-scroller"]').trigger("scroll");
+      geo.grow(60);
+      groups.messages = [...groups.messages, canonicalReply];
+      await flushPromises();
+      expect(rowIds(el)).toEqual(["msg_req", "msg_reply"]);
+      expect(el.scrollTop).toBe(120);
+    });
   });
 
   describe("GroupPane.vue", () => {

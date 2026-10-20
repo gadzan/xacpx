@@ -327,15 +327,16 @@ function jumpToMessage(messageId: string): void {
 watch(() => groupsStore.topicReady, (ready) => {
   if (ready) void nextTick(() => scrollToBottom());
 });
+// Follow on item identity, not item count: a member activity promoted to its
+// canonical reply (recovery/history) keeps the count, swaps the key and grows
+// the row without any live revision. Content-only growth keeps its key and is
+// followed by the live revision watch below.
 watch(() => {
   let signature = "";
-  for (const item of items.value) {
-    signature += item.key[0] === "m" ? "m" : item.key[0] === "a" ? "a" : item.key[0] === "r" ? "r" : "u";
-  }
+  for (const item of items.value) signature += `${item.key}\u0000`;
   return signature;
 }, (next, prev) => {
   if (prev === undefined) return;
-  if (next.length === prev.length) return;
   if (pendingAnchor.value !== null) return;
   if (atBottom.value) void nextTick(() => scrollToBottom());
 });

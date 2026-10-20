@@ -322,9 +322,16 @@ test("history prepend, duplicate live messages and canonical promotion preserve 
   const anchor = page.locator('[data-row-id="reply_turn_first"]');
   const trigger = bubble(page, "turn_first");
   await trigger.scrollIntoViewIfNeeded();
-  await scroller.evaluate((el) => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); });
+  // Let content-visibility replace estimated row heights before sampling the
+  // anchor, as GroupTranscript.handleLoadOlder does after a prepend.
+  const before = await scroller.evaluate(async (el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll"));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const row = document.querySelector('[data-row-id="reply_turn_first"]');
+    return row ? row.getBoundingClientRect().top : Number.NaN;
+  });
   const offset = () => anchor.evaluate((el) => el.getBoundingClientRect().top);
-  const before = await offset();
   await trigger.click();
   await expect(detail(page)).toContainText("RECORDED turn_first chunk 1");
   await expect.poll(offset).toBeCloseTo(before, 0);
