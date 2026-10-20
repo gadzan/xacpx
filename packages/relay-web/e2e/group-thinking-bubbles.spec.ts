@@ -117,7 +117,7 @@ async function openGroup(page: Page, options: { scenario?: Scenario; longHistory
         const remaining = all.filter((event) => event.seq > (payload.afterSeq ?? 0));
         const pageEvents = remaining.slice(0, payload.limit ?? 100);
         result = {
-          memberTurnId: turn!.id, attempt: turn!.attempt, recordingState: turn!.id === liveMember.id ? "recording" : "complete",
+          memberTurnId: turn!.id, attempt: turn!.attempt, recordingState: turn!.id === liveMember.id && current.state === "running" ? "recording" : "complete",
           events: pageEvents, nextSeq: pageEvents.at(-1)?.seq ?? payload.afterSeq ?? 0, hasMore: remaining.length > pageEvents.length,
           attempts: [1], plan: [{ content: "Recorded public plan", status: "completed" }],
         } satisfies ConversationRunTraceDto;
@@ -143,6 +143,8 @@ for (const scenario of ["one", "multi", "same-bot"] as const) {
   test(`${scenario}: durable member bubbles own exact canonical replies and isolated paged traces`, async ({ page }, info) => {
     const fixture = await openGroup(page, { scenario });
     await expect(page.getByTestId("group-run-card")).toHaveCount(0);
+    const anchorIds = await page.locator("[data-anchor-id]").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-anchor-id")));
+    expect(new Set(anchorIds).size).toBe(anchorIds.length);
     expect(fixture.traceRequests).toHaveLength(0);
     for (const turn of fixture.turns) {
       const trigger = bubble(page, turn.id);
@@ -201,6 +203,10 @@ for (const theme of ["light", "dark"] as const) {
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
     await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await trigger.click();
+    await detail(page).getByRole("button", { name: "Close detail", exact: true }).click();
+    await expect(detail(page)).toHaveCount(0);
+    await expect(trigger).toBeFocused();
     await page.keyboard.press("Space");
     await expect(detail(page)).toBeVisible();
     await trigger.click();
@@ -282,6 +288,32 @@ test("reload, topic re-entry and socket reconnect re-read committed member trace
   await expect(detail(page)).toContainText("Durable chunk recorded during disconnect");
   await expect(page.locator('[data-row-id="reply_turn_first"]')).toHaveCount(1);
   await expect(detail(page).getByTestId("group-stop-run-button")).toHaveCount(0);
+});
+
+test("an open process catches up during streaming and shows the sealed tail without reopening", async ({ page, hub }, info) => {
+  const fixture = await openGroup(page, { scenario: "multi" });
+  const trigger = bubble(page, fixture.liveMember.id);
+  await trigger.click();
+  await expect(detail(page)).toContainText("RECORDED turn_live chunk 99");
+  const committed = fixture.events.get(fixture.liveMember.id)!;
+  committed.push({ seq: 102, createdAt, kind: "text", payload: { text: "LIVE COMMITTED UPDATE" } });
+  const conversation = { ...scope, runId: fixture.current.id, memberTurnId: fixture.liveMember.id,
+    botId: fixture.liveMember.botId, attempt: fixture.liveMember.attempt };
+  hub.send({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "group-test", sessionAlias: "test",
+    chunk: "LIVE COMMITTED UPDATE", conversation } });
+  await expect(detail(page)).toContainText("LIVE COMMITTED UPDATE");
+  await expect(detail(page)).toContainText("Read turn_live.ts");
+  committed.push({ seq: 103, createdAt, kind: "text", payload: { text: "SEALED FINAL UPDATE" } },
+    { seq: 104, createdAt, kind: "terminal", payload: { ok: true } });
+  fixture.current.state = "completed";
+  const finished = { ...fixture.liveMember, state: "completed" as const, finishedAt: createdAt };
+  hub.send({ kind: "control-event", instanceId: "i1", event: { type: "member-turn-finished", run: fixture.current, memberTurn: finished } });
+  await expect(detail(page)).toContainText("SEALED FINAL UPDATE");
+  await expect(detail(page)).toContainText("Recorded process (complete)");
+  await expect(detail(page).getByTestId("group-stop-run-button")).toHaveCount(0);
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expectInsideViewport(page);
+  await screenshot(page, info, "open-process-sealed-tail");
 });
 
 test("history prepend, duplicate live messages and canonical promotion preserve the reading anchor", async ({ page, hub }, info) => {

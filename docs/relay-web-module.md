@@ -947,6 +947,15 @@ Bot 名称、名称下方的思考气泡（`AgentThinkingBubble.vue`）和下方
 `prefers-reduced-motion` 下关闭动画；点击区域不小于 44×44 CSS px，带本地化名称、
 `aria-haspopup="dialog"` 和指向浮层的 `aria-controls`。
 
+规范回复行同时保留消息 ID 和唯一滚动锚点。交接入口的“跳到回复”将焦点移到整条回复，
+后续 Tab 先到思考气泡，再到复制按钮。临时成员行与路由行使用各自的合成锚点，
+不复用请求消息的 ID。浮层的关闭按钮和 Escape 将焦点还给原触发按钮，外部点击保留新焦点。
+
+已打开的执行过程沿 Core 已提交游标增量补读。实时帧按 500ms 合并补读请求，
+成员或 provider 结束时立即补读；进行中的 RPC 结束后仍会读取等待中的终态更新。
+缓存最多保留 1000 条事件，较早过程可显式重新加载。重新加载较早事件暂停自动跟随，
+避免运行中的输出把读者再次推向尾部。关闭浮层或切换范围会取消待执行的补读。
+
 ## 阶段范围边界
 
 Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。

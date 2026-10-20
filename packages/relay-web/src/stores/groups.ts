@@ -596,7 +596,15 @@ export const useGroupsStore = defineStore("groups", () => {
   /** Generation fencing for every historical read; bumped on scope change. */
   let runHistoryGeneration = 0;
   const requestedRunIds = new Set<string>();
-  let openTrace: { memberTurnId: string; attempt: number } | null = null;
+  interface OpenTrace {
+    memberTurnId: string;
+    attempt: number;
+    timer?: ReturnType<typeof setTimeout>;
+    pending: boolean;
+    following: boolean;
+    lastFrameAt?: number;
+  }
+  let openTrace: OpenTrace | null = null;
   const traceCacheOrder: string[] = [];
   const MAX_TRACE_ENTRIES = 24;
   const MAX_TRACE_EVENTS = 1000;
@@ -627,7 +635,7 @@ export const useGroupsStore = defineStore("groups", () => {
     runHistoryDetails.value = {};
     tracePages.value = {};
     requestedRunIds.clear();
-    openTrace = null;
+    setOpenTrace(null);
     traceCacheOrder.length = 0;
     for (const key of Object.keys(runDetailRequests)) delete runDetailRequests[key];
     for (const key of Object.keys(traceRequests)) delete traceRequests[key];
@@ -773,6 +781,10 @@ export const useGroupsStore = defineStore("groups", () => {
   function refreshRunDetails(): void {
     const scope = historyScopeKey();
     if (!scope) return;
+    if (openTrace) {
+      clearTimeout(openTrace.timer);
+      openTrace = { ...openTrace, timer: undefined, pending: false };
+    }
     runHistoryGeneration += 1;
     for (const key of Object.keys(runDetailRequests)) delete runDetailRequests[key];
     for (const key of Object.keys(traceRequests)) delete traceRequests[key];
@@ -783,9 +795,41 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   function setOpenTrace(memberTurnId: string | null, attempt?: number): void {
+    clearTimeout(openTrace?.timer);
     openTrace = memberTurnId && Number.isSafeInteger(attempt) && attempt! >= 1
-      ? { memberTurnId, attempt: attempt! } : null;
+      ? { memberTurnId, attempt: attempt!, pending: false, following: true } : null;
     if (openTrace) ensureTracePage(openTrace.memberTurnId, openTrace.attempt);
+  }
+
+  function refreshOpenTrace(memberTurnId: string, attempt: number | undefined, terminal = false): void {
+    const opened = openTrace;
+    if (!opened || !opened.following || opened.memberTurnId !== memberTurnId || opened.attempt !== attempt) return;
+    opened.pending = true;
+    if (!terminal) opened.lastFrameAt = Date.now();
+    if (terminal) {
+      clearTimeout(opened.timer);
+      opened.timer = undefined;
+      flushOpenTrace(opened);
+    } else if (opened.timer === undefined) {
+      // Delay past Core's batched commit without postponing continuous output indefinitely.
+      opened.timer = setTimeout(() => {
+        opened.timer = undefined;
+        flushOpenTrace(opened);
+        if (opened.lastFrameAt !== undefined && Date.now() - opened.lastFrameAt < 25) {
+          refreshOpenTrace(opened.memberTurnId, opened.attempt);
+        }
+      }, 500);
+    }
+  }
+
+  function flushOpenTrace(opened: OpenTrace): void {
+    if (openTrace !== opened || !opened.pending || !opened.following) return;
+    const scope = historyScopeKey();
+    if (!scope) return;
+    const key = tracePageKey(scope, opened.memberTurnId, opened.attempt);
+    if (Object.keys(traceRequests).some((request) => request.startsWith(`${key}:`))) return;
+    opened.pending = false;
+    ensureTracePage(opened.memberTurnId, opened.attempt, undefined, true);
   }
 
   /** Mirror newly accepted Group Run metadata into the read model promptly so
@@ -816,7 +860,7 @@ export const useGroupsStore = defineStore("groups", () => {
    * scope+member+attempt+cursor; strict decode; stale-generation fenced.
    * Never mutates current/cancel/composer state.
    */
-  function ensureTracePage(memberTurnId: string, attempt: number, afterSeq?: number): void {
+  function ensureTracePage(memberTurnId: string, attempt: number, afterSeq?: number, follow = false): void {
     const scope = historyScopeKey();
     const iId = instanceId.value;
     const cId = activeConversationId.value;
@@ -832,6 +876,13 @@ export const useGroupsStore = defineStore("groups", () => {
     const key = tracePageKey(scope, memberTurnId, attempt);
     const cursor = afterSeq ?? tracePages.value[key]?.nextSeq ?? 0;
     const requestKey = `${key}:${cursor}`;
+    const opened = openTrace;
+    if (opened?.memberTurnId === memberTurnId && opened.attempt === attempt && afterSeq === 0) {
+      clearTimeout(opened.timer);
+      opened.timer = undefined;
+      opened.pending = false;
+      opened.following = false;
+    }
     if (traceRequests[requestKey] !== undefined) return;
     if (afterSeq === 0) {
       for (const pendingKey of Object.keys(traceRequests)) if (pendingKey.startsWith(`${key}:`)) delete traceRequests[pendingKey];
@@ -873,6 +924,7 @@ export const useGroupsStore = defineStore("groups", () => {
             throw new Error("invalid_trace_response");
           }
           adoptTracePage(scope, memberTurnId, attempt, decoded);
+          if (follow && openTrace === opened && opened?.following && decoded.hasMore) opened.pending = true;
         } catch (err) {
           failTracePage(key, err);
         }
@@ -883,6 +935,7 @@ export const useGroupsStore = defineStore("groups", () => {
       })
       .finally(() => {
         if (traceRequests[requestKey] === pending) delete traceRequests[requestKey];
+        if (generation === runHistoryGeneration && openTrace === opened && opened?.pending && opened.timer === undefined) flushOpenTrace(opened);
       });
     traceRequests[requestKey] = pending;
   }
@@ -3381,6 +3434,9 @@ export const useGroupsStore = defineStore("groups", () => {
     if (e.type === "member-turn-finished") {
       const { run, memberTurn } = e;
       invalidateHandoffRunDetail(run);
+      if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        refreshOpenTrace(memberTurn.id, memberTurn.attempt, true);
+      }
       const priorMember = memberTurnsById.value[memberTurn.id];
       if (priorMember && memberAttemptOrder(priorMember, memberTurn) < 0) return;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
@@ -3500,6 +3556,7 @@ export const useGroupsStore = defineStore("groups", () => {
           if (live.attempt !== undefined) runPartsAttempt[key] = live.attempt;
         }
       }
+      refreshOpenTrace(key, corr.attempt ?? memberTurnsById.value[key]?.attempt, e.type === "turn-finished");
     }
   }
 

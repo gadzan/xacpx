@@ -2897,4 +2897,158 @@ describe("useGroupsStore durable trace cache", () => {
     expect(store.tracePages).toEqual({});
     expect(store.runHistoryDetails).toEqual({});
   });
+
+  it("queues a terminal refresh behind the in-flight initial read and completes the tail by seq", async () => {
+    const store = await ready();
+    vi.useFakeTimers();
+    try {
+      const first = Promise.withResolvers<unknown>();
+      const requests: Array<Record<string, unknown>> = [];
+      mockRpc.mockImplementation((_instance: string, type: string, payload: Record<string, unknown>) => {
+        if (type === "control.runs.trace.get") {
+          requests.push(payload);
+          if (requests.length === 1) return first.promise;
+          return Promise.resolve({ memberTurnId: member.id, attempt: 2, recordingState: "complete",
+            events: [{ seq: 3, kind: "text", payload: { text: "durable tail" }, createdAt: "t3" }],
+            nextSeq: 3, hasMore: false });
+        }
+        throw new Error(`unexpected ${type}`);
+      });
+
+      store.setOpenTrace(member.id, 2);
+      expect(requests).toEqual([{ conversationId: "conversation_g", topicId: "topic_1", runId: run.id,
+        memberTurnId: member.id, attempt: 2, limit: 100 }]);
+      expect(store.tracePages[key]).toMatchObject({ loading: true, events: [] });
+
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "member-turn-finished", run: { ...run, state: "completed" },
+        memberTurn: { ...member, state: "completed" },
+      } } as never);
+      expect(requests).toHaveLength(1);
+
+      first.resolve({ memberTurnId: member.id, attempt: 2, recordingState: "recording",
+        events: [
+          { seq: 1, kind: "reasoning", payload: { text: "scanning" }, createdAt: "t1" },
+          { seq: 2, kind: "text", payload: { text: "partial answer" }, createdAt: "t2" },
+        ], nextSeq: 2, hasMore: true });
+      await flushPromises();
+
+      expect(requests.map((request) => request.afterSeq)).toEqual([undefined, 2]);
+      expect(store.tracePages[key]).toEqual({
+        events: [
+          { seq: 1, kind: "reasoning", payload: { text: "scanning" }, createdAt: "t1" },
+          { seq: 2, kind: "text", payload: { text: "partial answer" }, createdAt: "t2" },
+          { seq: 3, kind: "text", payload: { text: "durable tail" }, createdAt: "t3" },
+        ],
+        nextSeq: 3,
+        hasMore: false,
+        hasEarlier: false,
+        firstSeq: 1,
+        recordingState: "complete",
+        loading: false,
+        error: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces streamed frames into one 500ms cursor read that commits the text tail", async () => {
+    const store = await ready();
+    const requests: Array<Record<string, unknown>> = [];
+    const firstPage = { memberTurnId: member.id, attempt: 2, recordingState: "recording",
+      events: Array.from({ length: 100 }, (_, index) => ({ seq: index + 1, kind: "reasoning" as const,
+        payload: { text: `step ${index + 1}` }, createdAt: `t${index + 1}` })),
+      nextSeq: 100, hasMore: true };
+    mockRpc.mockImplementation((_instance: string, type: string, payload: Record<string, unknown>) => {
+      if (type === "control.runs.trace.get") {
+        requests.push(payload);
+        if (requests.length === 1) return Promise.resolve(firstPage);
+        return Promise.resolve({ memberTurnId: member.id, attempt: 2, recordingState: "recording",
+          events: [{ seq: 101, kind: "text", payload: { text: "hello world" }, createdAt: "t101" }],
+          nextSeq: 101, hasMore: false });
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    const stream = (chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "s_a", chunk,
+      conversation: { conversationId: "conversation_g", topicId: "topic_1", runId: run.id,
+        memberTurnId: member.id, botId: "bot_a", attempt: 2, sourceTurnId: "source_a" },
+    } } as never);
+
+    store.setOpenTrace(member.id, 2);
+    await flushPromises();
+    expect(requests).toHaveLength(1);
+    expect(store.tracePages[key]?.events).toHaveLength(100);
+
+    vi.useFakeTimers();
+    try {
+      stream("hello");
+      vi.advanceTimersByTime(400);
+      stream(" world");
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([{ type: "text", text: "hello world" }]);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(requests).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+
+      expect(requests.map((request) => request.afterSeq)).toEqual([undefined, 100]);
+      const page = store.tracePages[key]!;
+      expect(page.events.map((event) => event.seq)).toEqual([
+        ...Array.from({ length: 100 }, (_, index) => index + 1), 101,
+      ]);
+      expect(page.events[100]).toEqual({ seq: 101, kind: "text", payload: { text: "hello world" }, createdAt: "t101" });
+      expect(page).toMatchObject({ nextSeq: 101, hasMore: false, recordingState: "recording", loading: false, error: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the scheduled catch-up when the trace closes or its scope leaves", async () => {
+    const store = await ready();
+    const requests: Array<Record<string, unknown>> = [];
+    const opened = { memberTurnId: member.id, attempt: 2, recordingState: "recording",
+      events: [{ seq: 1, kind: "text", payload: { text: "opened" }, createdAt: "t1" }], nextSeq: 1, hasMore: true };
+    mockRpc.mockImplementation((_instance: string, type: string, payload: Record<string, unknown>) => {
+      if (type === "control.runs.trace.get") { requests.push(payload); return Promise.resolve(opened); }
+      throw new Error(`unexpected ${type}`);
+    });
+    const stream = (chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "s_a", chunk,
+      conversation: { conversationId: "conversation_g", topicId: "topic_1", runId: run.id,
+        memberTurnId: member.id, botId: "bot_a", attempt: 2, sourceTurnId: "source_a" },
+    } } as never);
+
+    store.setOpenTrace(member.id, 2);
+    await flushPromises();
+    expect(requests).toHaveLength(1);
+
+    vi.useFakeTimers();
+    try {
+      stream("late");
+      store.setOpenTrace(null);
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+      expect(requests).toHaveLength(1);
+
+      stream("after close");
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+      expect(requests).toHaveLength(1);
+      expect(store.tracePages[key]?.events).toEqual(opened.events);
+
+      store.setOpenTrace(member.id, 2);
+      await flushPromises();
+      expect(requests).toHaveLength(2);
+      stream("during");
+      store.activeTopicId = "topic_2";
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+      expect(requests).toHaveLength(2);
+      expect(store.tracePages).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
