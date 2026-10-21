@@ -89,6 +89,53 @@ npx tsc --noEmit
 bun run build
 ```
 
+### macOS Platform Tests
+
+```bash
+npm run test:macos
+```
+
+The macOS CI job uses this focused suite; Ubuntu continues to run `npm test`,
+including all unit files and relay-web Vitest. The file list is
+`MACOS_TEST_FILES` in `scripts/run-tests-lib.mjs`. Each file runs in its own Bun
+process with the same prebuilds, typecheck, import lint, and timeout as the full
+runner. It then runs `scripts/smoke-terminal-conpty.mjs` under Node, matching the
+daemon's native-addon runtime. The focused suite does not invoke relay-web Vitest.
+
+The selected files exercise host behavior:
+
+| Boundary | Coverage |
+| --- | --- |
+| PTY | Real node-pty shell execution and output under Node; the POSIX marker cannot be satisfied by command echo |
+| File watching | Real config hot reload in `main.test.ts` through the host watcher |
+| File locks | Native `fs-ext` flock, crash release, and concurrent config/terminal registry writes |
+| Process lifecycle | Bootstrap ownership, worker shutdown, stdin EOF, and POSIX process groups |
+| Filesystem identity | Real symlinks, inode aliases, canonical paths, workspace containment, and Git worktrees |
+| SQLite | Native Bun SQLite transactions, independent connections, and reopen durability |
+
+Keep new tests that depend on these host boundaries in the macOS list. Tests that
+only inject a `platform` argument or mock the OS API remain covered by the full
+Linux suite. The macOS job also retains the production build, acpx compatibility
+smoke, Node SQLite contract, and CLI/runtime benchmark.
+
+### Isolated Local CI Verification
+
+Use a temporary worktree or checkout for builds: the runner rebuilds tracked
+`packages/relay-protocol/dist` artifacts. Run child processes with a temporary
+`HOME`, `USERPROFILE`, and `TMPDIR`. Set both `XACPX_CONFIG`/`WEACPX_CONFIG`,
+both `XACPX_STATE`/`WEACPX_STATE`, and both plugin-home variables to paths inside
+that temporary directory; clear inherited launch/IPC overrides first. Redirect
+`OPENCLAW_STATE_DIR` and `CLAWDBOT_STATE_DIR` there as well.
+
+Explicit config/state fixtures alone do not isolate every side effect:
+`buildApp()` initializes an upload store under the process home. Conversely,
+`buildApp()` does not acquire the daemon's runtime-consumer lock, so a running
+operator daemon is not evidence that it caused a test timeout. Use bounded child
+processes and inspect their exit status and complete test summaries before
+attributing failures or comparing timings. `verify-stack` documents the same
+home/state isolation principles; its daemon/hub stack is unnecessary for these
+test-only runs.
+
 ## Rules When Adding New Tests
 
 1. New tests go in `tests/unit/` by default; relay-web Vue/jsdom tests use its documented package exception
