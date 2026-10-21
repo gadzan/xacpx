@@ -1495,6 +1495,24 @@ describe("working quip bubble", () => {
     vi.unstubAllGlobals();
   });
 
+  // Liveness lives in the bubble. The transcript body keeps only its reserved height —
+  // a second spinner there says "working" twice and vanishes the moment text arrives.
+  it("carries the only running indicator: a dot in the bubble, no spinner in the body", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [msg({ direction: "out", text: "earlier reply" })],
+        liveTurn: { parts: [], status: "working", startedAt: 0, slotAfterIndex: 0 },
+      },
+    });
+    const live = wrapper.find('[data-avatar-key="live"]');
+    expect(live.find('[data-test="hud-dot"]').exists()).toBe(true);
+    expect(live.find('[data-test="hud-quip"]').exists()).toBe(true);
+    const slot = wrapper.find('[data-test="live-working"]');
+    expect(slot.exists()).toBe(true);
+    expect(slot.element.children).toHaveLength(0);
+    expect(wrapper.findAll('[data-test="msg-streaming"] .animate-spin')).toHaveLength(0);
+  });
+
   it("keeps exactly one bubble while older rows are still revealing", async () => {
     const rafQueue: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {

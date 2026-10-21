@@ -1566,6 +1566,41 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("cancelRun")).toBeTruthy();
     });
 
+    // The dot, not a colour tint on the label, is what separates the lifecycle states:
+    // "waiting for a human" must stop breathing so it cannot be mistaken for work.
+    it("switches the status chip from a breathing run dot to a still warn dot when waiting for a human", () => {
+      const waitingRun: ConversationRunDto = {
+        id: "run_wait",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "waiting-human",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [],
+          liveTurn: null,
+          activeRun: waitingRun,
+          activeMemberTurn: null,
+          runParts: {},
+          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        },
+        global: { plugins: [i18n] },
+      });
+      const chip = wrapper.find('[data-test="run-status"]');
+      expect(chip.attributes("data-status-state")).toBe("waiting");
+      const dot = chip.find('[data-test="hud-dot"]');
+      expect(dot.classes()).not.toContain("pulse-dot");
+      expect(dot.classes()).toContain("bg-warn");
+      expect(chip.find('[data-test="hud-quip"]').text()).toBe("Waiting for human");
+      // The body never carries a second spinner while the chip already reports liveness.
+      expect(wrapper.find('[data-test="run-empty-slot"]').element.children).toHaveLength(0);
+    });
+
     it("hides the HUD stop button for terminal runs so no second cancel fires", async () => {
       const terminalRun: ConversationRunDto = {
         id: "run_done",

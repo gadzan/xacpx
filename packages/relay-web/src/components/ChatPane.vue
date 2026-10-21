@@ -247,7 +247,11 @@ onUnmounted(() => clearInterval(timer));
   opacity: 0;
   transform: translateY(8px) scale(0.98);
 }
-.composer-layer-move {
-  transition: transform 180ms ease;
-}
+/* Deliberately NO `.composer-layer-move` rule. TransitionGroup's move transition is a
+   FLIP: Vue records each child's rect before the update and writes the delta as an inline
+   `translate(dx,dy)`. This stack lives inside a `v-show` pane, so while the pane is hidden
+   every child measures 0,0 — the first update after the pane is revealed then animates the
+   input from (-paneLeft, -paneTop), i.e. it flies in from the upper left. Dropping the
+   move class makes Vue skip FLIP entirely (hasCSSTransform is false); plan/queue layers
+   keep their enter/leave fade, and reflow repositioning becomes instant. */
 </style>

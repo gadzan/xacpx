@@ -476,6 +476,10 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   垂直排列（输入框在最上层）。视觉重叠用负 `margin-top` + 下层预留的 `padding-bottom`（`--stack-overlap`，
   桌面 16px / 窄屏 12px）实现，内容不被裁切；递进缩进让下层卡片边缘露出。消息列表与底部 stack 分栏，
   气泡不被遮挡。`PlanPanel variant="stack"` 限制最大高度并独立滚动；`TransitionGroup` 负责出现/消失动画。
+  `TransitionGroup` 只负责各层的进入/离开淡入（`composer-layer-enter/leave`），**不定义 `.composer-layer-move`**：
+  move 过渡是 FLIP（Vue 记录更新前后的 `getBoundingClientRect` 并写入内联 `translate(dx,dy)`），而这个 stack 位于
+  `v-show` 面板内，面板隐藏时所有子元素量到 0,0，重新显示后的第一次更新会把输入框从 `(-paneLeft, -paneTop)`
+  补间回原位——表现为“从左上角飞入”。没有 move 类时 Vue 直接跳过 FLIP，增减计划/队列层只是立即重排。
   `PromptInput` 自身结构与样式尽量保持不变，只由外层 stack 包裹。
 - **三个对话面板共用一套组件**：会话（`ChatPane`）、Direct Bot（`DirectBotPane`）、Group（`GroupPane`）
   共用 `TranscriptRow.vue`（消息行：sticky agent 头像、说话人标签、`content-visibility` 虚拟化）、
@@ -718,9 +722,23 @@ export interface LiveTurn {
 - `text` — `whitespace-pre-wrap` 纯文本。
 - `fields` — `<dl>` 键值表格 + 可选输出块（用于 other/think 类型）。
 
+**运行状态胶囊 `RunStatusChip`**（`packages/relay-web/src/components/RunStatusChip.vue`）
+
+所有“有运行在飞”的界面共用一个状态胶囊，避免两套视觉语言：
+
+- props：`state`（`running` / `queued` / `waiting`）、`label`、`elapsed?`、`shimmer?`。
+- 三态**只靠圆点的行为与颜色**区分，不靠给文字染色：`running` 呼吸点（`pulse-dot` + `bg-run-bright`）、
+  `queued` 静止弱化点（`bg-fg-muted/60`）、`waiting` 静止 `bg-warn` 点。静止本身就是“等你动手”的信号，
+  因此等待人工确认时**不再转动**，不会被误读成仍在工作。
+- 耗时用 `border-l` 细线 + `text-fg-muted`（5.4:1）。测试钩子：`run-status`（带 `data-status-state`）、
+  `hud-dot`、`hud-quip`、`hud-elapsed`。
+- 胶囊是**唯一**的运行指示；调用方的正文区不再渲染第二个 spinner，只保留高度占位。
+
 **工作气泡 `WorkingQuip`**（`packages/relay-web/src/components/LiveTurnAvatar.vue` / `WorkingQuip.vue`）
 
 回合进行中，俏皮状态行 `data-test="hud-quip"`（`chat.workingQuips` 池随机抽、每 20s 轮换不连重；池为空回退 `chat.mentionActivity.working`）+ `M:SS` elapsed 计时（`useWorkingQuip`，由 `liveTurn.startedAt` 驱动）以对话气泡形式挂在**实时回合**行的 sticky 头像上（`[data-avatar-key="live"]`，即最新一条 agent 回合），而不是视口内最靠上的头像。
+- 气泡复用 `RunStatusChip`，当前固定为 `running`：会话的 `LiveTurn.status` 只有 `working | streaming`，没有等待/排队态。
+- transcript 正文区的 `data-test="live-working"` 槽位只保留 `h-[22px]` 占位，不再渲染独立的 `Loader2`。
 - 气泡是 `LiveTurnAvatar` 内的子元素，相对 sticky 头像绝对定位于图标头顶（`bottom: calc(100% + 4px)`），随布局原生移动：无滚动监听、无 `getBoundingClientRect`、无跟随延迟。
 - 头像被钉在滚动容器顶部、头顶无空间时，`IntersectionObserver` 观察头顶的哨兵条并切换 `quip-beside` 类，把气泡移到图标右侧；不支持 `IntersectionObserver` 的环境保持默认头顶位置。
 - 全局同一时刻只有一个气泡；无实时回合时不渲染。输入框 busy 时 placeholder 保持静态 `chat.working`。
@@ -741,7 +759,7 @@ export interface LiveTurn {
 - **Live-turn 槽位（跨会话 received card）**：`turn-started` 把 live turn 锚在当时最后一条 transcript
   之后（触发用 received card / prompt），而不是列表底部。回合中途再来的 received card 追加到
   `messages[]`，因此出现在 live 气泡**下面**：`card1 → live turn → card2`。`parts.length === 0`
-  时仍占据该槽（working spinner），避免第二张卡叠在尚未可见的 turn 上。Sent card 仍按
+  时仍占据该槽（`live-working` 只留高度占位，运行指示在头像气泡上），避免第二张卡叠在尚未可见的 turn 上。Sent card 仍按
   `agentMessageId` 接入 `TurnParts`（Gate A）；received card 永不抑制、永不嵌进 turn（Gate B）。
   `turn-finished` 把 `out` 行 **splice 进该槽**（带 `startedAt` 作 HUD 遥测，以及 Hub
   `slotAfterId` 作插入序锚点），而不是 `push` 到末尾。`loadHistory` 对带 `slotAfterId`
@@ -889,6 +907,9 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   - 实时 Run 复用 `TurnParts.vue` 呈现思考过程（reasoning）、工具调用（tool cards）、计划（plan）与流式文本输出；
   - 轮次完成后将流式累积的 trace parts 关联保存在消息卡片上；
   - 支持明确区分与展示 `queued`、`running`、`waiting-human`、`completed`、`failed`、`cancelled`、`indeterminate` 状态。
+  - `queued` / `running` / `waiting-human` 由共享的 `RunStatusChip` 表达（`data-test="run-status"`，`data-status-state`）：
+    `running` 呼吸点、`queued` 静止弱化点、`waiting-human` 静止 `bg-warn` 点；状态文字改用 `bot.run.*` 文案。
+    正文区在无 parts 时只保留 `run-empty-slot` 高度占位，不再追加第二个 `Loader2`——运行指示只由胶囊承担。
 - **输入框（`ConversationPromptInput.vue`）**：
   - 支持输入 prompt 发送，Bot 处于禁用状态时给出明确警告提示；
   - 客户端生成稳定的 `requestId`，发送失败或超时重试时复用原 `requestId` 保持幂等；
