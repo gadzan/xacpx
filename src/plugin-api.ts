@@ -1,4 +1,6 @@
 export { ActiveConsumerLockError } from "./channels/types.js";
+export { acquireFileLock, FileLockBusyError } from "./process/file-lock.js";
+export type { FileLock } from "./process/file-lock.js";
 export { isConversationIngressRejection } from "./conversations/conversation-ingress-rejection.js";
 export type {
   ChannelPluginDefinition,

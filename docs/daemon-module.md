@@ -129,6 +129,9 @@ crash releases ownership without deleting or reclaiming its stable diagnostic JS
 When Bun uses a Node helper to hold the POSIX native flock, the helper ignores process-group
 graceful-stop signals and releases only when the parent closes its control pipe; unexpected
 helper loss terminates the owner fail-closed before another runtime can proceed concurrently.
+The shared lifetime implementation lives in `src/process/file-lock.ts` and is exported
+as `acquireFileLock` through the plugin API for registry ownership. The runtime wrapper
+keeps its existing Windows key, metadata layout, diagnostics, and channel-fence ordering.
 Legacy POSIX channel metadata includes the owner's process-start fingerprint to distinguish
 PID reuse. Every runtime entry, including direct source `main()`, uses this same guarded path.
 The generation is published only after runtime ownership is acquired and before any startup

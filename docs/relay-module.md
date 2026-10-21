@@ -112,6 +112,9 @@ Elicitation 的任务归属从 core 已校验的精确 turn context 传入 `Chan
   文件 mode `0600`。owner identity 在 cleanup-pending / kill 超时后仍保留，供后续 reconcile / lease TTL 回收。
 - **停止语义**：`shutdown` → 进程内 durable reaping 后再 kill（无跨进程 adopt）；`disabled` / `removed` / `logout` → 同样 durable reaping 后再 kill；
   hub disconnect → 只 `detachAllAttachments`。CLI `channel disable|rm` 在 daemon **已停止**时走 one-shot retirement；daemon 仍在跑时推迟到重启，由旧进程 `stop()` 杀会话，避免再起一个看不到 HashMap 的 sidecar。`terminals.lock` 保证 registry 同一时刻只有一个 writer。
+  registry 通过 core 的 `acquireFileLock()` 持有内核锁：POSIX 用稳定文件上的 `flock`，Windows 用相同 registry 路径派生的 named-pipe guard。
+  锁持续到 registry `close()`；进程崩溃后由 OS 释放，不再按 mtime 判断 stale 或删除重建锁。`terminals.lock` 是永久保留的 `0600` 文件，运行期间不可 unlink/rename。
+  升级时若路径仍是旧版的锁**目录**，新 writer 会拒绝启动并打印迁移提示；先停止使用该 registry 的所有 xacpx 进程，再用 `rmdir` 删除空目录后重启。即使 mtime 很旧也不会自动接管旧目录，避免误删仍存活的旧 writer 的锁；新文件也会阻止旧版目录锁 writer 重新获取。
 - **二进制解析**：`resolveRmuxBinaries`（`src/terminal/resolve-rmux-binaries.ts`）。bridge：explicit
   `terminal.bridgeCommand` → platform optional package → PATH。RMUX：explicit `terminal.rmuxCommand` → **bridge 同目录的
   bundled RMUX**（platform package 自包含 `bin/rmux[.exe]` + `libexec/rmux/rmux[.exe]`，版本 `RMUX_VERSION=0.10.0` 与

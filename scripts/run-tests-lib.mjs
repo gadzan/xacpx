@@ -22,7 +22,9 @@ const MACOS_TEST_FILES = [
   "tests/unit/control/workspace-git.test.ts",
   "tests/unit/daemon/runtime-consumer-lock.test.ts",
   "tests/unit/main.test.ts",
+  "tests/unit/packages/channel-relay/terminal-registry-lock-recovery.test.ts",
   "tests/unit/packages/channel-relay/terminal-registry-store.test.ts",
+  "tests/unit/process/file-lock.test.ts",
   "tests/unit/process/ipc-guard.test.ts",
 ];
 

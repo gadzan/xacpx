@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import {
   TerminalRegistryInventoryUncertainError,
   TerminalRegistryLockedError,
   TerminalRegistryRevisionMismatchError,
+  TerminalRegistryNotLoadedError,
   TerminalRegistryStore,
 } from "../../../../packages/channel-relay/src/terminal/terminal-registry-store";
 import type { TerminalRecordV1 } from "../../../../packages/channel-relay/src/terminal/terminal-types";
@@ -459,57 +460,83 @@ test("exclusiveWriter load rejects while another live writer holds terminals.loc
   await waiter.close();
 });
 
-test("exclusiveWriter stale lock is stolen by exactly one of two concurrent loaders", async () => {
-  const { createRequire } = await import("node:module");
-  const require = createRequire(import.meta.url);
-  const properLockfile = require("proper-lockfile") as {
-    lock: (
-      resource: string,
-      options: {
-        lockfilePath: string;
-        retries: number;
-        stale: number;
-        update?: number;
-        realpath: boolean;
-        onCompromised?: (err: Error) => void;
-      },
-    ) => Promise<() => Promise<void>>;
-  };
+test("exclusiveWriter admits only one concurrent loader even when the lock mtime is old", async () => {
   const dir = freshDir();
   const lockPath = join(dir, "terminals.lock");
-  // Simulate a crashed writer: lock dir exists but mtime is older than the
-  // store's 30s stale window. Swallow compromised callbacks so the leaked
-  // holder's update timer cannot fail later tests after we steal/rm the lock.
-  const releaseLeaked = await properLockfile.lock(dir, {
-    lockfilePath: lockPath,
-    retries: 0,
-    stale: 30_000,
-    update: 10_000,
-    realpath: false,
-    onCompromised: () => {},
-  });
+  writeFileSync(lockPath, "");
   const past = new Date(Date.now() - 60_000);
   await utimes(lockPath, past, past);
-
   const a = new TerminalRegistryStore({ dir, exclusiveWriter: true });
   const b = new TerminalRegistryStore({ dir, exclusiveWriter: true });
   try {
     const results = await Promise.allSettled([a.load(), b.load()]);
-    const fulfilled = results.filter((r) => r.status === "fulfilled");
-    const rejected = results.filter((r) => r.status === "rejected");
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    expect(rejected[0]).toMatchObject({ status: "rejected" });
-    if (rejected[0] && rejected[0].status === "rejected") {
-      expect(rejected[0].reason).toBeInstanceOf(TerminalRegistryLockedError);
-    }
+    const winners = results.flatMap((result, index) => result.status === "fulfilled" ? [index] : []);
+    expect(winners).toHaveLength(1);
+    const winner = [a, b][winners[0]!]!;
+    const loser = winner === a ? b : a;
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected", reason: expect.any(TerminalRegistryLockedError) });
+
+    await utimes(lockPath, past, past);
+    await expect(loser.load()).rejects.toBeInstanceOf(TerminalRegistryLockedError);
+    await winner.upsertCreating(baseRecordInput());
+    await winner.close();
+    const recovered = await loser.load();
+    expect(recovered.terminals["term-1"]?.state).toBe("creating");
   } finally {
     await a.close();
     await b.close();
-    try {
-      await releaseLeaked();
-    } catch {
-      // stolen
-    }
+  }
+});
+
+test("a closed exclusive writer cannot mutate a successor's registry", async () => {
+  const dir = freshDir();
+  const first = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  const second = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  try {
+    await first.load();
+    await first.close();
+    await second.load();
+    await second.upsertCreating(baseRecordInput({ terminalId: "successor" }));
+    await expect(first.upsertCreating(baseRecordInput({ terminalId: "stale" }))).rejects.toBeInstanceOf(TerminalRegistryNotLoadedError);
+    expect(second.getSnapshot().terminals.successor?.state).toBe("creating");
+    expect(second.getSnapshot().terminals.stale).toBeUndefined();
+  } finally {
+    await first.close();
+    await second.close();
+  }
+});
+
+test("failed exclusive initialization releases ownership for another loader", async () => {
+  const dir = freshDir();
+  const failure = new Error("registry read failed");
+  const first = new TerminalRegistryStore({
+    dir, exclusiveWriter: true, deps: { readFile: async () => { throw failure; } },
+  });
+  const second = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  try {
+    await expect(first.load()).rejects.toBe(failure);
+    const loaded = await second.load();
+    await second.upsertCreating(baseRecordInput());
+    expect(second.getSnapshot().installationId).toBe(loaded.installationId);
+    expect(second.getSnapshot().terminals["term-1"]?.state).toBe("creating");
+  } finally {
+    await first.close();
+    await second.close();
+  }
+});
+
+test("exclusiveWriter refuses a legacy lock directory even when its mtime is old", async () => {
+  const dir = freshDir();
+  const lockPath = join(dir, "terminals.lock");
+  mkdirSync(lockPath);
+  const past = new Date(Date.now() - 60_000);
+  await utimes(lockPath, past, past);
+  const store = new TerminalRegistryStore({ dir, exclusiveWriter: true });
+  try {
+    await expect(store.load()).rejects.toThrow("legacy terminal registry lock directory");
+    expect(statSync(lockPath).isDirectory()).toBe(true);
+  } finally {
+    await store.close();
   }
 });

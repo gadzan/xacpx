@@ -406,6 +406,9 @@ jobs:
           if (-not (Select-String -Quiet -Path ./dist/cli.js -Pattern 'IPC guard is already held')) { throw 'bundled CLI is missing Windows IPC guard runtime' }
           if (-not (Select-String -Quiet -Path ./dist/cli.js -Pattern 'XACPX_PROCESS_REQUEST')) { throw 'bundled CLI is missing Windows process worker runtime' }
 
+      - name: Terminal registry exclusivity and crash recovery (Windows)
+        run: bun test tests/unit/process/file-lock.test.ts tests/unit/packages/channel-relay/terminal-registry-store.test.ts tests/unit/packages/channel-relay/terminal-registry-lock-recovery.test.ts
+
       # Real ConPTY under the PRODUCTION runtime (Node) — spawns a live shell with a
       # forward-slash cwd and asserts the byte stream round-trips.
       - name: Terminal ConPTY smoke (Node)
