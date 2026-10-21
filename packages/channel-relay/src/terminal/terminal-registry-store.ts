@@ -238,7 +238,15 @@ export class TerminalRegistryStore {
         return await this.loadUnlocked();
       } catch (error) {
         this.state = null;
-        await this.releaseWriterLock();
+        try {
+          await this.releaseWriterLock();
+        } catch (releaseError) {
+          throw new AggregateError(
+            [error, releaseError],
+            "terminal registry load failed and writer lock release also failed",
+            { cause: error },
+          );
+        }
         throw error;
       }
     });
