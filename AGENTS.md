@@ -162,6 +162,14 @@ Use the canonical triage label vocabulary. See `docs/agents/triage-labels.md`.
 
 Use the single-context domain documentation layout. See `docs/agents/domain.md`.
 
+### Release skill
+
+`.qoder/`, `.claude/` and `.agents/` are gitignored, so a skill kept in any of
+them drifts from the others the moment one is edited. The release skill lives at
+[`docs/agents/skills/xacpx-release.md`](docs/agents/skills/xacpx-release.md), and
+each loader path is a symlink to it — edit that file, never a `SKILL.md` under a
+dot directory.
+
 ## Maintaining AGENTS.md
 
 - Only write long-term stable constraints and navigation; volatile implementation details go to `docs/` or Code Wiki.
