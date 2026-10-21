@@ -26,6 +26,9 @@ const props = defineProps<{
   expanded?: boolean;
   /** id of the popover element this trigger controls. */
   controls?: string;
+  /** Durable attempt index; > 1 earns a small numeric badge so a retried
+   *  member is spottable before any failure is visible. */
+  attempt?: number;
 }>();
 
 const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
@@ -35,6 +38,7 @@ const { t } = useI18n();
 function onToggle(event: MouseEvent): void {
   emit("toggle", event.currentTarget instanceof HTMLElement ? event.currentTarget : null);
 }
+
 const stateTitle = computed(() => {
   switch (props.status) {
     case "queued": return t("bot.run.queued");
@@ -75,12 +79,14 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
       <circle class="group-bubble-dot" cx="10.7" cy="20.6" r="0.95" fill="currentColor" />
       <circle class="group-bubble-dot" cx="13.3" cy="22.1" r="0.75" fill="currentColor" />
     </svg>
+    <span v-if="attempt !== undefined && attempt > 1" class="group-bubble-attempt" aria-hidden="true">{{ attempt }}</span>
     <span class="sr-only">{{ stateTitle }}</span>
   </button>
 </template>
 
 <style scoped>
 .group-bubble-trigger {
+  position: relative;
   display: inline-grid;
   place-items: center;
   width: 44px;
@@ -114,4 +120,20 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
 .is-indeterminate { color: rgb(var(--c-warn)); }
 .is-done { color: rgb(var(--c-fg-muted)); }
 .is-expanded { background: rgb(var(--c-accent) / 0.12); color: rgb(var(--c-accent)); }
+/* Retry hint: a small corner digit, not color or animation — an attempt count
+   is data, not a state. The 44px hit target stays untouched. */
+.group-bubble-attempt {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 15px;
+  height: 15px;
+  border-radius: 8px;
+  background: rgb(var(--c-accent) / 0.16);
+  color: rgb(var(--c-accent));
+  font-size: 9px;
+  line-height: 15px;
+  font-weight: 600;
+  text-align: center;
+}
 </style>

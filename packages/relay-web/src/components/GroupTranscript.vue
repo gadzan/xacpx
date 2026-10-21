@@ -304,6 +304,10 @@ const atBottom = ref(true);
 const THRESHOLD = 64;
 interface ScrollAnchor { rowId: string; offsetTop: number; }
 const pendingAnchor = ref<ScrollAnchor | null>(null);
+/** Last read position in the detail's trace, per member and attempt; in-memory
+ *  so reopening the same process resumes where the reader left off, while a
+ *  fresh browser session still starts at the top. */
+const detailScrollMemory = new Map<string, number>();
 function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
@@ -325,7 +329,10 @@ function jumpToMessage(messageId: string): void {
   el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top;
 }
 watch(() => groupsStore.topicReady, (ready) => {
-  if (ready) void nextTick(() => scrollToBottom());
+  // A parked reader keeps their row: run rediscovery (e.g. after Stop) rebuilds
+  // the transcript, but only a reader already at the tail is returned there -
+  // the same rule live appends follow.
+  if (ready && atBottom.value) void nextTick(() => scrollToBottom());
 });
 // Follow on item identity, not item count: a member activity promoted to its
 // canonical reply (recovery/history) keeps the count, swaps the key and grows
@@ -615,6 +622,7 @@ async function handleLoadOlder(): Promise<void> {
     :trace-failure="detailTraceFailure"
     :stop-available="stopAvailable"
     :stop-pending="stopPending"
+    :scroll-memory="detailScrollMemory"
     @close="closeDetail"
     @stop="handleStop"
     @attempt="changeAttempt"

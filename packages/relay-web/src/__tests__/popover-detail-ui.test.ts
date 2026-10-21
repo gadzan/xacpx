@@ -509,6 +509,23 @@ describe("GroupThinkingBubbles UI", () => {
     wrapper.unmount();
   });
 
+  it("confirms a cancelled run at the top of the detail", () => {
+    const wrapper = mount(GroupRunDetailContent, {
+      props: {
+        run: runOf({ state: "cancelled" }),
+        memberTurn: turnOf({ state: "cancelled" }),
+        memberName: "Reviewer",
+        attempt: 1,
+        attempts: [1],
+      },
+    });
+    const detail = wrapper.find('[data-test="group-run-detail"]').element as HTMLElement;
+    const note = detail.querySelector<HTMLElement>('[data-test="group-detail-stopped"]');
+    expect(note?.textContent).toContain("Run stopped");
+    expect(note?.previousElementSibling?.querySelector('[data-test="group-member-task"]')).not.toBeNull();
+    wrapper.unmount();
+  });
+
   it("labels a live running member as recording while no durable trace page exists", async () => {
     const groups = seedEnvironment();
     seedLiveRun();
@@ -551,6 +568,44 @@ describe("GroupThinkingBubbles UI", () => {
     expect(emitted).toBe(wrapper.get('[data-test="agent-thinking-bubble"]').element);
     expect(wrapper.get('[data-test="agent-thinking-bubble"]').attributes("aria-haspopup")).toBe("dialog");
     expect(wrapper.get('[data-test="agent-thinking-bubble"]').attributes("aria-controls")).toBe("group-detail-x");
+    wrapper.unmount();
+  });
+
+  it("AgentThinkingBubble shows the retry count only after the first attempt", () => {
+    const first = mount(AgentThinkingBubble, { props: { status: "running", label: "Open process for Reviewer", attempt: 1 } });
+    expect(first.find(".group-bubble-attempt").exists()).toBe(false);
+    first.unmount();
+    const retried = mount(AgentThinkingBubble, { props: { status: "running", label: "Open process for Reviewer", attempt: 2 } });
+    expect(retried.find(".group-bubble-attempt").text()).toBe("2");
+    retried.unmount();
+  });
+  it("resumes the remembered trace position when the same member reopens", async () => {
+    const groups = seedEnvironment();
+    seedLiveRun();
+    seedTracePage(1, {
+      events: Array.from({ length: 3 }, (_, index) => ({
+        seq: index + 1, createdAt: "now", kind: "text" as const, payload: { text: `recorded chunk ${index + 1}` },
+      })),
+    });
+    const wrapper = mountTranscript();
+    await openFirstBubble(wrapper);
+    const scroller = document.body.querySelector<HTMLElement>(".group-detail-scroll")!;
+    const inherited = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    let remembered = 0;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => remembered,
+      set: (value: number) => { remembered = value; inherited?.set?.call(scroller, value); },
+    });
+    remembered = 120;
+    scroller.dispatchEvent(new Event("scroll"));
+    await flushPromises();
+    // Toggle the same bubble: close, then reopen onto a fresh scroll element.
+    await openFirstBubble(wrapper);
+    expect(card()).toBeNull();
+    await openFirstBubble(wrapper);
+    const reopened = document.body.querySelector<HTMLElement>(".group-detail-scroll")!;
+    expect(reopened.scrollTop).toBe(120);
     wrapper.unmount();
   });
 });

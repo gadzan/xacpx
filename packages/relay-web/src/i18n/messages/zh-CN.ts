@@ -1069,6 +1069,7 @@ export default {
       siblings: "本次运行中的其他成员",
       routingState: "路由状态：{state}",
       stopRun: "停止本次任务",
+      stoppedNote: "本次任务已停止。发送新消息即可开始新一轮任务。",
       recording: {
         complete: "已记录过程（完整）",
         recording: "正在记录",

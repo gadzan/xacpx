@@ -35,6 +35,8 @@ const props = defineProps<{
   stopAvailable?: boolean;
   stopPending?: boolean;
   traceFailure?: string;
+  /** Read position per member/attempt, owned by the transcript. */
+  scrollMemory?: Map<string, number>;
 }>();
 
 const emit = defineEmits<{
@@ -47,6 +49,8 @@ const emit = defineEmits<{
 }>();
 
 const layerEl = ref<HTMLElement | null>(null);
+/** The trace's scrolling container; records and restores the read position. */
+const scrollEl = ref<HTMLElement | null>(null);
 const contentEl = ref<HTMLElement | null>(null);
 /** Fit the viewport before the first frame: a phone must never render the
  *  desktop width and then shrink once placement is measured. */
@@ -94,6 +98,26 @@ function schedulePlacement(): void {
   });
 }
 
+function detailKey(): string {
+  return `${props.memberTurn?.id ?? ""}:${props.attempt ?? ""}`;
+}
+
+/** Reopening a read process resumes its remembered position; content may still
+ *  be growing, so the restore lands on the next frame. Nothing scrolls while
+ *  the reader is inside: only remembered offsets are replayed on the way in. */
+async function restoreScrollMemory(): Promise<void> {
+  const saved = props.scrollMemory?.get(detailKey());
+  await nextTick();
+  const el = scrollEl.value;
+  if (el && saved !== undefined) el.scrollTop = saved;
+}
+
+function memoizeScroll(): void {
+  const el = scrollEl.value;
+  if (el) props.scrollMemory?.set(detailKey(), el.scrollTop);
+}
+
+
 function observeAnchor(): void {
   intersectionObserver?.disconnect();
   resizeObserver?.disconnect();
@@ -134,12 +158,15 @@ function onKeydown(event: KeyboardEvent): void {
 watch([() => props.anchorEl, () => props.scrollerEl], observeAnchor, { flush: "post" });
 watch(() => [props.attempt, props.parts, props.plan, props.traceLoading, props.traceError, props.recordingState],
   () => void nextTick(schedulePlacement), { deep: true, flush: "post" });
+watch(() => [props.memberTurn, props.attempt, props.parts],
+  () => void restoreScrollMemory(), { deep: true, flush: "post" });
 
 onMounted(() => {
   document.addEventListener("pointerdown", onOutsidePointer, true);
   window.addEventListener("keydown", onKeydown, true);
   window.addEventListener("resize", schedulePlacement, { passive: true });
   window.addEventListener("scroll", schedulePlacement, true);
+  void restoreScrollMemory();
   observeAnchor();
 });
 
@@ -203,7 +230,7 @@ const style = computed(() => ({
             <X :size="14" />
           </button>
         </div>
-        <div class="group-detail-scroll px-3 py-2">
+        <div ref="scrollEl" class="group-detail-scroll px-3 py-2" @scroll.passive="memoizeScroll">
           <div ref="contentEl">
             <GroupRunDetailContent
               :run="run"

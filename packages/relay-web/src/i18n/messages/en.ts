@@ -1072,6 +1072,7 @@ export default {
       siblings: "Other members in this run",
       routingState: "Router state: {state}",
       stopRun: "Stop this run",
+      stoppedNote: "Run stopped. Sending a new message starts a fresh run.",
       recording: {
         complete: "Recorded process (complete)",
         recording: "Recording now",

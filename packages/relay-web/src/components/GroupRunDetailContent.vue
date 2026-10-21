@@ -198,6 +198,12 @@ function selectAttempt(event: Event): void {
     </div>
 
     <!-- Waiting-human: question + existing guidance only; no invented resume. -->
+    <!-- Stop feedback stays at the top of the card: the user closed the run
+         deliberately and needs its outcome without scrolling past a trace. -->
+    <p v-if="run.state === 'cancelled'" data-test="group-detail-stopped" class="rounded-lg bg-surface/50 px-2.5 py-2 text-xs leading-relaxed text-fg-muted">
+      {{ $t("group.detail.stoppedNote") }}
+    </p>
+
     <div v-if="run.state === 'waiting-human'" data-test="group-waiting-human"
          class="rounded-lg bg-warning/10 px-2.5 py-2 text-xs leading-relaxed text-fg">
       <p v-if="run.waitingQuestion" data-test="group-waiting-question">{{ run.waitingQuestion }}</p>

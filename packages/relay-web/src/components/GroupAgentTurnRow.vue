@@ -112,6 +112,7 @@ const replyWashed = computed(() => bubbleHovered.value || props.expanded === tru
       :status="bubbleStatus"
       :label="bubbleLabel"
       :expanded="expanded"
+      :attempt="memberTurn.attempt"
       :controls="controls"
       @toggle="emit('toggle', $event)"
       @mouseenter="bubbleHovered = true"

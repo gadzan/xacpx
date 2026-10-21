@@ -178,6 +178,10 @@ for (const scenario of ["one", "multi", "same-bot"] as const) {
     await detail(page).getByTestId("group-stop-run-button").click();
     await expect.poll(() => fixture.cancels).toEqual([fixture.current.id]);
     await expect(detail(page).getByTestId("group-stop-run-button")).toHaveCount(0);
+    // The reader keeps their parked position: the rediscovery triggered by the
+    // terminal run may rebuild the transcript, but only a reader already at the
+    // tail is returned there. The detail confirms the outcome in place.
+    await expect(detail(page).getByTestId("group-detail-stopped")).toBeVisible();
   });
 }
 
