@@ -167,6 +167,19 @@ stops *there*, printing the URLs to re-check and naming the waves it did not
 push. Continuing would push a tag whose workflow installs a package that is not
 on the registry yet, which is the `ETARGET` failure the waves exist to prevent.
 
+Every publish job runs `npm test` before publishing — 488s measured — for a
+commit the Test workflow already covers on its way to main.
+`scripts/ci-test-gate.mjs` skips that duplicate only when the Test run's ubuntu
+`test` job has already succeeded for this exact commit. Red, cancelled, still
+running, missing or unreadable all mean "run it here", which is what the job did
+before the gate existed — so a flaky Test run can cost the eight minutes and can
+never block a release. The gate does not wait for an in-flight run: waiting costs
+a single-package release more than running the suite, and only the later tags of
+a multi-package release can benefit from a skip. The other Test jobs (macOS, E2E,
+windows) are deliberately not consulted: they flake for their own reasons, and
+re-running the ubuntu suite because of them would trade a flake for eight minutes
+without proving anything new.
+
 That stop is resumable by design. Tags are created only when their package is
 about to be pushed, so waves that never started remain in the pending set.
 Re-running `publish --yes` picks up those waves. A **clean tree is the marker for
