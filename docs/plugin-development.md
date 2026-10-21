@@ -612,7 +612,7 @@ When you do not need it: pure HTTP webhooks, or applications with independent bo
 
 Implementation notes:
 
-- Use a file lock (`proper-lockfile` / your own fcntl) for physical mutual exclusion.
+- Use core's `acquireFileLock(path)` from `xacpx/plugin-api` for new lifetime locks. It returns `{ release(): Promise<void> }`; release is idempotent. POSIX uses a stable-file `flock` (the existing Node helper when the owner is Bun), and Windows uses a canonical-path named-pipe guard plus a persistent file. `FileLockBusyError` means a live owner holds it; permission, native-module, and helper failures propagate and must fail startup. Never unlink/rename that file or infer ownership from mtime/PID. A legacy directory at the chosen file path must be cleared only after stopping its old writers.
 - On `acquire` failure, throw an error with metadata (refer to `ActiveWeixinConsumerLockError`), so the daemon can tell the user in the log that "another process holds the lock, pid=xxx".
 - `release` must be idempotent.
 - Core acquires the channel-independent runtime lock first, then **one fence per
@@ -631,6 +631,17 @@ Implementation notes:
 
 Reference implementations: `src/weixin/monitor/consumer-lock.ts` (config-scoped) and
 `createConsumerLock()` in `packages/channel-discord/src/channel.ts` (user-global, per bot token).
+
+`acquireFileLock` is an additive plugin API export shared by the runtime consumer
+lock and terminal registry. Ship consumers together with a core release using
+`scripts/release.mjs`; it updates first-party peer/min-core floors. A previously
+published core does not gain the export from a plugin-only update. Runtime
+ownership keeps its existing `runtime-owner` Windows key and metadata format.
+Under Bun, Windows pipe ownership uses the same lifetime-bound Node helper as
+POSIX flock. This keeps Node/libuv's contention errors and crash-release semantics
+instead of depending on Bun's occupied-pipe `ERR_INVALID_ARG_TYPE` behavior. The
+helper does not load `fs-ext` on Windows, and loss of the helper ends its parent
+before shared state can be mutated without ownership.
 
 ---
 

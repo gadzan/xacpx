@@ -108,7 +108,7 @@ The selected files exercise host behavior:
 | --- | --- |
 | PTY | Real node-pty shell execution and output under Node; the POSIX marker cannot be satisfied by command echo |
 | File watching | Real config hot reload in `main.test.ts` through the host watcher |
-| File locks | Native `fs-ext` flock, crash release, and concurrent config/terminal registry writes |
+| File locks | Native `fs-ext` flock, crash release, registry ownership across processes, and concurrent config/terminal registry writes |
 | Process lifecycle | Bootstrap ownership, worker shutdown, stdin EOF, and POSIX process groups |
 | Filesystem identity | Real symlinks, inode aliases, canonical paths, workspace containment, and Git worktrees |
 | SQLite | Native Bun SQLite transactions, independent connections, and reopen durability |
@@ -117,6 +117,12 @@ Keep new tests that depend on these host boundaries in the macOS list. Tests tha
 only inject a `platform` argument or mock the OS API remain covered by the full
 Linux suite. The macOS job also retains the production build, acpx compatibility
 smoke, Node SQLite contract, and CLI/runtime benchmark.
+
+`tests/unit/packages/channel-relay/terminal-registry-lock-recovery.test.ts` builds a
+Node registry writer under `node_modules/.registry-lock-test-*` and exercises a real
+held lock against a competing Bun loader: a stale mtime must not steal ownership, and
+a SIGKILLed holder must release it. CI additionally runs this file in the dedicated
+Windows job, where ownership uses the named-pipe guard instead of flock.
 
 ### Isolated Local CI Verification
 
