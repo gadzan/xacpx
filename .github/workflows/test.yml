@@ -179,8 +179,8 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Run tests
-        run: npm test
+      - name: Run macOS platform tests
+        run: npm run test:macos
 
       - name: acpx compat smoke (macOS)
         run: bun run test:compat:acpx
