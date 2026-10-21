@@ -3,10 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   AlertCircle,
-  AlertTriangle,
-  CheckCircle2,
   CircleStop,
-  Clock,
   HelpCircle,
   Loader2,
 } from "lucide-vue-next";
@@ -33,6 +30,7 @@ import PlanPanel from "./PlanPanel.vue";
 import ConversationInteractionForm from "./ConversationInteractionForm.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
 
+import RunStatusChip from "./RunStatusChip.vue";
 const props = defineProps<{
   messages: ConversationMessageDto[];
   liveTurn: DirectBotLiveTurn | null;
@@ -88,6 +86,20 @@ const liveElapsedLabel = computed(() => {
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
   return `${Math.floor(s / 3600)}h`;
+});
+
+// Map the Run lifecycle onto the shared chip's three visual states. `waiting-human` is the
+// one state where stillness is the message: the run is blocked on the user, so the dot
+// stops breathing and turns warn instead of pretending to still be working.
+const runChipState = computed<"running" | "queued" | "waiting">(() => {
+  if (props.activeRun?.state === "waiting-human") return "waiting";
+  if (props.activeRun?.state === "queued") return "queued";
+  return "running";
+});
+const runChipLabel = computed(() => {
+  if (props.activeRun?.state === "waiting-human") return t("bot.run.waitingHuman");
+  if (props.activeRun?.state === "queued") return t("bot.run.queued");
+  return t("bot.run.running");
 });
 
 // Resolve agent driver for bot avatar
@@ -301,20 +313,12 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             @dismiss="emit('dismissInteraction')"
           />
 
-          <!-- Turn Live HUD Header -->
+          <!-- Run status: the same chip the session transcript floats on its live avatar,
+               so a Bot run and a session turn read as one system. The chip's dot is the
+               only liveness signal; the body below never adds a spinner of its own. -->
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-xs font-semibold text-fg">{{ bot?.name ?? "Bot" }}</span>
-            <div class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
-                 :class="{
-                   'bg-run/15 text-run': activeRun?.state === 'running',
-                   'bg-warning/15 text-warning': activeRun?.state === 'queued' || activeRun?.state === 'waiting-human',
-                 }">
-              <Loader2 v-if="activeRun?.state === 'running'" :size="11" class="animate-spin" />
-              <Clock v-else-if="activeRun?.state === 'queued'" :size="11" />
-              <AlertCircle v-else-if="activeRun?.state === 'waiting-human'" :size="11" />
-              <span>{{ activeRun?.state === 'queued' ? $t("bot.run.queued") : activeRun?.state === 'running' ? $t("bot.run.running") : activeRun?.state === 'waiting-human' ? $t("bot.run.waitingHuman") : activeRun?.state ?? $t("bot.run.running") }}</span>
-              <span v-if="liveElapsedLabel" class="tabular-nums font-mono opacity-80">· {{ liveElapsedLabel }}</span>
-            </div>
+            <RunStatusChip :state="runChipState" :label="runChipLabel" :elapsed="liveElapsedLabel || undefined" />
 
             <!-- Stop Button: only while the Run is non-terminal; terminal Runs
               keep their banner but must not offer another cancel RPC. -->
@@ -333,17 +337,16 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <!-- Plan Panel if plan emitted -->
           <PlanPanel v-if="planEntries && planEntries.length > 0" :entries="planEntries" class="w-full" />
 
-          <!-- Live Turn Content -->
+          <!-- Live Turn Content. An empty run reserves its slot height only: the status
+               chip above already says "in flight", and a spinner here would be a second,
+               unrelated indicator that disappears the moment text arrives. -->
           <div v-if="liveTurn && liveTurn.parts.length > 0" class="w-full rounded-2xl bg-surface/50 p-3">
             <TurnParts
               :parts="liveTurn.parts"
               :streaming="liveTurn.status === 'streaming'"
             />
           </div>
-          <div v-else class="flex items-center gap-2 py-2 text-xs text-fg-muted">
-            <Loader2 :size="14" class="animate-spin text-accent" />
-            <span>{{ $t("bot.chat.working") }}…</span>
-          </div>
+          <div v-else class="h-[22px]" data-test="run-empty-slot" />
         </div>
       </TranscriptRow>
 
@@ -361,7 +364,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         <span>{{ $t("bot.run.cancelled") }}</span>
       </div>
 
-      <div v-else-if="activeRun?.state === 'indeterminate'" class="flex items-center gap-2 rounded-2xl bg-warning/10 p-3 text-xs text-warning">
+      <div v-else-if="activeRun?.state === 'indeterminate'" class="flex items-center gap-2 rounded-2xl bg-warn/10 p-3 text-xs text-warn">
         <HelpCircle :size="16" class="shrink-0" />
         <div class="flex-1">
           <span class="font-semibold">{{ $t("bot.run.indeterminate") }}: </span>

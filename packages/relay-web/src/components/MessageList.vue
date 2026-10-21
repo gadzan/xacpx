@@ -589,9 +589,9 @@ watch(
             <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
             <div data-test="msg-streaming" class="min-w-0 flex-1">
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-              <div v-else data-test="live-working" class="flex items-center gap-2 py-1 text-fg-muted">
-                <Loader2 :size="14" class="animate-spin motion-reduce:animate-none" />
-              </div>
+              <!-- The bubble on the avatar already carries liveness (status dot), so the
+                   body slot only reserves its height: no second, unrelated spinner. -->
+              <div v-else data-test="live-working" class="h-[22px]" />
             </div>
           </div>
           <!-- AGENT MESSAGE card (sender / receiver collaboration event). A sent card
@@ -679,9 +679,7 @@ watch(
             <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
             <div data-test="msg-streaming" class="min-w-0 flex-1">
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-              <div v-else data-test="live-working" class="flex items-center gap-2 py-1 text-fg-muted">
-                <Loader2 :size="14" class="animate-spin motion-reduce:animate-none" />
-              </div>
+              <div v-else data-test="live-working" class="h-[22px]" />
             </div>
           </div>
         </template>
@@ -692,9 +690,7 @@ watch(
           <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
           <div data-test="msg-streaming" class="min-w-0 flex-1">
             <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-            <div v-else data-test="live-working" class="flex items-center gap-2 py-1 text-fg-muted">
-              <Loader2 :size="14" class="animate-spin motion-reduce:animate-none" />
-            </div>
+            <div v-else data-test="live-working" class="h-[22px]" />
           </div>
         </div>
       </div>
