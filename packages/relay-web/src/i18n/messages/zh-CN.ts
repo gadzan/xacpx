@@ -1074,6 +1074,8 @@ export default {
       close: "关闭详情",
       loading: "正在加载已记录过程…",
       attempt: "第 {attempt} 次尝试",
+      showEarlierSteps: "显示之前的 {count} 个步骤",
+      hideEarlierSteps: "收起之前的步骤",
       siblings: "本次运行中的其他成员",
       routingState: "路由状态：{state}",
       stopRun: "停止本次任务",

@@ -32,12 +32,12 @@ function message(id: string, seq: number, content: string, extra: Partial<Conver
 function bubble(page: Page, memberId: string): Locator {
   return page.locator(`[data-test="agent-turn-row"][data-member-turn-id="${memberId}"]`).getByTestId("agent-thinking-bubble");
 }
-const detail = (page: Page) => page.getByTestId("group-detail-card");
+const detail = (page: Page) => page.locator('[data-test="group-detail-card"], [data-test="group-detail-sheet"]');
 async function screenshot(page: Page, info: TestInfo, name: string) {
   await info.attach(name, { body: await page.screenshot(), contentType: "image/png" });
 }
 async function expectInsideViewport(page: Page) {
-  const card = page.getByTestId("group-detail-card");
+  const card = detail(page);
   await expect(card).toBeVisible();
   await expect.poll(async () => card.evaluate((el) => {
     const r = el.getBoundingClientRect();
@@ -203,7 +203,7 @@ for (const theme of ["light", "dark"] as const) {
     const replyTrigger = bubble(page, "turn_first");
     await expect(replyRow).not.toHaveClass(/is-detail-open/);
     await expect(reply).not.toHaveClass(/turn-reply-wash/);
-    await replyTrigger.hover();
+    if (page.viewportSize()!.width >= 1024) await replyTrigger.hover();
     await expect(replyRow).not.toHaveClass(/is-detail-open/);
     await expect(reply).not.toHaveClass(/turn-reply-wash/);
     // The entry paints its own surface (no separate inner chip), so the
@@ -232,14 +232,17 @@ for (const theme of ["light", "dark"] as const) {
     await expect(trigger).toBeFocused();
     await page.keyboard.press("Space");
     await expect(detail(page)).toBeVisible();
-    await trigger.click();
+    if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
+    else await trigger.click();
     await expect(detail(page)).toHaveCount(0);
     await trigger.click();
+    if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
     await bubble(page, "turn_first").click();
     await expect(detail(page)).toHaveCount(1);
-    await expect(page.getByTestId("group-detail-card")).toContainText("Reviewer");
+    await expect(detail(page)).toContainText("Reviewer");
     // Opening the topic panel must close the detail. Dismiss the panel again
     // (sheet close below lg, pill toggle above) so nothing intercepts taps.
+    if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
     await page.getByTestId("group-topic-pill").click();
     await expect(detail(page)).toHaveCount(0);
     const panelClose = page.getByTestId("sheet-close");
@@ -252,22 +255,19 @@ for (const theme of ["light", "dark"] as const) {
       await trigger.click();
       await expect(detail(page)).toContainText("RECORDED turn_live chunk 1");
       await expectInsideViewport(page);
-      const anchor = await page.locator('[data-test="agent-thinking-bubble"][aria-expanded="true"]').first().evaluate((el) => el.getBoundingClientRect());
-      const r = await page.getByTestId("group-detail-card").evaluate((el) => el.getBoundingClientRect());
-      expect(Math.min(Math.abs(r.top - anchor.bottom), Math.abs(anchor.top - r.bottom))).toBeLessThanOrEqual(24);
-      expect(r.width).toBeLessThanOrEqual(viewport.width);
+      const r = await detail(page).evaluate((el) => el.getBoundingClientRect());
+      expect(r.bottom).toBeCloseTo(viewport.height, 0);
+      expect(r.width).toBe(viewport.width);
+      await expect(detail(page)).toHaveAttribute("aria-modal", "true");
+      expect(await detail(page).evaluate((el) => getComputedStyle(el).borderTopLeftRadius)).toBe("24px");
       await screenshot(page, info, `${theme}-${viewport.width}-anchored-reduced-motion`);
-      if (info.project.name.includes("mobile")) await page.getByTestId("group-topic-pill").tap();
-      else await page.getByTestId("group-topic-pill").click();
+      await detail(page).getByTestId("group-detail-close").click();
       await expect(detail(page)).toHaveCount(0);
-      // Below lg the pill opens a sheet; close it so the next iteration's
-      // bubble is not behind the backdrop.
-      const sheetClose = page.getByTestId("sheet-close");
-      if (await sheetClose.isVisible()) await sheetClose.click();
     }
     await trigger.click();
     await expect(detail(page)).toBeVisible();
     await expectInsideViewport(page);
+    await detail(page).getByTestId("group-detail-close").click();
     if (info.project.name.includes("mobile")) await bubble(page, "turn_first").tap();
     else await bubble(page, "turn_first").click();
     await expect(detail(page)).toHaveAttribute("data-member-turn-id", "turn_first");
@@ -275,6 +275,7 @@ for (const theme of ["light", "dark"] as const) {
 }
 
 async function switchTopic(page: Page, topicId: string) {
+  if (page.viewportSize()!.width < 1024 && await detail(page).isVisible()) await detail(page).getByTestId("group-detail-close").click();
   await page.getByTestId("group-topic-pill").click();
   await page.locator(`[data-test="topic-row"][data-topic-id="${topicId}"]`).getByRole("button").first().click();
   await expect(page.getByTestId("group-topic-pill")).toContainText(topicId === scope.topicId ? "Implementation" : "Other topic");
@@ -366,6 +367,7 @@ test("history prepend, duplicate live messages and canonical promotion preserve 
   await page.keyboard.press("Escape");
   await expect.poll(offset).toBeCloseTo(before, 0);
   await trigger.click();
+  if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
   await page.getByTestId("group-load-older-button").click();
   await expect(page.locator('[data-message-id="older_0"]')).toHaveCount(1);
   await expect.poll(offset).toBeCloseTo(before, 0);

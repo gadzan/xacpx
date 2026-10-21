@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { X, CircleStop } from "lucide-vue-next";
 import { computePopoverPlacement } from "../lib/group-run-presentation";
-import { useI18n } from "vue-i18n";
 import GroupRunDetailContent from "./GroupRunDetailContent.vue";
+import GroupRunDetailHeader from "./GroupRunDetailHeader.vue";
 import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
@@ -19,6 +18,7 @@ const props = defineProps<{
   run: ConversationRunDto;
   memberTurn?: MemberTurnSummaryDto;
   memberName?: string;
+  topicTitle?: string;
   attempt?: number;
   attempts?: number[];
   parts?: TurnPartDto[];
@@ -82,7 +82,10 @@ function updatePlacement(): void {
     return;
   }
   width.value = fitWidth();
-  const height = Math.min((contentEl.value?.scrollHeight ?? 280) + 46, window.innerHeight - 16);
+  const height = Math.min(
+    (layerEl.value?.offsetHeight ?? 280) + (contentEl.value?.scrollHeight ?? 0) - (scrollEl.value?.clientHeight ?? 0),
+    window.innerHeight - 16,
+  );
   placement.value = computePopoverPlacement(
     { top: anchorRect.top, left: anchorRect.left, width: anchorRect.width, height: anchorRect.height },
     { width: window.innerWidth, height: window.innerHeight },
@@ -158,8 +161,8 @@ function onKeydown(event: KeyboardEvent): void {
 watch([() => props.anchorEl, () => props.scrollerEl], observeAnchor, { flush: "post" });
 watch(() => [props.attempt, props.parts, props.plan, props.traceLoading, props.traceError, props.recordingState],
   () => void nextTick(schedulePlacement), { deep: true, flush: "post" });
-watch(() => [props.memberTurn, props.attempt, props.parts],
-  () => void restoreScrollMemory(), { deep: true, flush: "post" });
+watch(() => [props.memberTurn?.id, props.attempt],
+  () => void restoreScrollMemory(), { flush: "post" });
 
 onMounted(() => {
   document.addEventListener("pointerdown", onOutsidePointer, true);
@@ -204,41 +207,14 @@ const style = computed(() => ({
         :style="style"
         :data-placement="placement.placement"
       >
-        <div class="flex shrink-0 items-center justify-between gap-2 border-b border-fg/5 px-3 py-2">
-          <div class="min-w-0">
-            <!-- Who the detail belongs to first, so a reader never has to
-                 guess which member they are looking at. -->
-            <template v-if="memberName">
-              <span class="block truncate text-xs font-semibold text-fg">{{ memberName }}</span>
-              <span class="block truncate text-[11px] text-fg-muted">{{ $t("group.detail.title") }}</span>
-            </template>
-            <span v-else class="block truncate text-xs font-semibold text-fg">{{ $t("group.detail.title") }}</span>
-          </div>
-          <!-- Reachable without scrolling the trace: a stalled Run is stopped
-               from the card's first row, not from underneath recorded output. -->
-          <button
-            v-if="stopAvailable"
-            type="button"
-            data-test="group-stop-run-button"
-            class="flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-xs font-medium text-danger transition-colors hover:bg-danger/10 disabled:opacity-60"
-            :disabled="stopPending === true"
-            :title="$t('group.detail.stopAllMembers')"
-            @click.stop="emit('stop')"
-          >
-            <CircleStop :size="12" />
-            <span>{{ $t("group.detail.stopRun") }}</span>
-          </button>
-          <button
-            type="button"
-            data-test="group-detail-close"
-            class="grid h-7 w-7 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
-            :aria-label="$t('group.detail.close')"
-            @click.stop="closeWithFocus"
-          >
-            <X :size="14" />
-          </button>
-        </div>
-        <div ref="scrollEl" class="group-detail-scroll thin-scroll px-3 py-2" @scroll.passive="memoizeScroll">
+        <GroupRunDetailHeader
+          class="shrink-0 border-b border-fg/5"
+          variant="popover"
+          :run="run" :member-turn="memberTurn" :member-name="memberName" :topic-title="topicTitle"
+          :attempt="attempt" :attempts="attempts" :stop-available="stopAvailable" :stop-pending="stopPending"
+          @close="closeWithFocus" @stop="emit('stop')" @attempt="emit('attempt', $event)"
+        />
+        <div ref="scrollEl" class="group-detail-scroll detail-scroll thin-scroll px-4 py-3" @scroll.passive="memoizeScroll">
           <div ref="contentEl">
             <GroupRunDetailContent
               :run="run"
@@ -260,8 +236,6 @@ const style = computed(() => ({
               :trace-streaming="traceStreaming"
               :stop-available="stopAvailable"
               :stop-pending="stopPending"
-              @stop="emit('stop')"
-              @attempt="emit('attempt', $event)"
               @load-more="emit('loadMore')"
               @load-earlier="emit('loadEarlier')"
               @retry-trace="emit('retryTrace')"
@@ -287,8 +261,8 @@ const style = computed(() => ({
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-radius: 12px;
-  background: rgb(var(--c-surface));
+  border-radius: 16px;
+  background: rgb(var(--c-raised));
   color: rgb(var(--c-fg));
   /* Match Relay's restrained float token so the detail feels part of the
      conversation rather than a modal layered above it. */

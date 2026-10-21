@@ -1077,6 +1077,8 @@ export default {
       close: "Close detail",
       loading: "Loading recorded process…",
       attempt: "Attempt {attempt}",
+      showEarlierSteps: "Show {count} earlier steps",
+      hideEarlierSteps: "Hide earlier steps",
       siblings: "Other members in this run",
       routingState: "Router state: {state}",
       stopRun: "Stop this run",
