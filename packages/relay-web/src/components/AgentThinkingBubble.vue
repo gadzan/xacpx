@@ -92,16 +92,29 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
   width: 44px;
   height: 44px;
   margin: 0;
-  border-radius: 12px;
+  padding: 0;
   color: rgb(var(--c-fg-muted));
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition: color 120ms ease;
 }
-.group-bubble-trigger:hover { background: rgb(var(--c-fg) / 0.06); color: rgb(var(--c-fg)); }
-.group-bubble-trigger:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; }
-.group-bubble-icon { width: 20px; height: 20px; }
+/* Hover/active paint stays on the inner chip: the 44px hit target is fully
+   clickable, but nothing wider than the glyph ever changes color, so a hover
+   on the trigger cannot read as a highlight of the neighbouring reply. */
+.group-bubble-trigger::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 10px;
+  background: transparent;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+.group-bubble-trigger:hover { color: rgb(var(--c-fg)); }
+.group-bubble-trigger:hover::before { background: rgb(var(--c-fg) / 0.05); }
+.group-bubble-trigger:active::before { transform: scale(0.94); }
+.group-bubble-trigger:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; border-radius: 12px; }
+.group-bubble-icon { position: relative; width: 18px; height: 18px; }
 .group-bubble-dot { opacity: 0.9; }
 .is-pulsing .group-bubble-dot { animation: bubble-dot 1.4s ease-in-out infinite; }
 .is-pulsing .group-bubble-dot:nth-of-type(2) { animation-delay: 0.2s; }
@@ -119,20 +132,23 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
 .is-cancelled { color: rgb(var(--c-fg-muted)); }
 .is-indeterminate { color: rgb(var(--c-warn)); }
 .is-done { color: rgb(var(--c-fg-muted)); }
-.is-expanded { background: rgb(var(--c-accent) / 0.12); color: rgb(var(--c-accent)); }
+/* Open state echoes hover: a slightly stronger inner chip, no full-width paint. */
+.is-expanded { color: rgb(var(--c-accent)); }
+.is-expanded::before { background: rgb(var(--c-accent) / 0.1); }
 /* Retry hint: a small corner digit, not color or animation — an attempt count
-   is data, not a state. The 44px hit target stays untouched. */
+   is data, not a state. Sits inside the inner chip's corner so the badge never
+   visually attaches to the neighbouring reply. */
 .group-bubble-attempt {
   position: absolute;
-  top: 1px;
-  right: 1px;
-  min-width: 15px;
-  height: 15px;
-  border-radius: 8px;
+  top: 7px;
+  right: 7px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
   background: rgb(var(--c-accent) / 0.16);
   color: rgb(var(--c-accent));
   font-size: 9px;
-  line-height: 15px;
+  line-height: 14px;
   font-weight: 600;
   text-align: center;
 }

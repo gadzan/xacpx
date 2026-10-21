@@ -204,7 +204,7 @@ const style = computed(() => ({
         :style="style"
         :data-placement="placement.placement"
       >
-        <div class="flex shrink-0 items-center justify-between gap-2 border-b border-fg/10 px-3 py-2">
+        <div class="flex shrink-0 items-center justify-between gap-2 border-b border-fg/5 px-3 py-2">
           <span class="truncate text-xs font-semibold text-fg-muted">{{ $t("group.detail.title") }}</span>
           <!-- Reachable without scrolling the trace: a stalled Run is stopped
                from the card's first row, not from underneath recorded output. -->
@@ -212,7 +212,7 @@ const style = computed(() => ({
             v-if="stopAvailable"
             type="button"
             data-test="group-stop-run-button"
-            class="flex shrink-0 items-center gap-1.5 rounded-sm bg-danger/10 px-2 py-1 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger disabled:opacity-60"
+            class="flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-1 text-xs font-medium text-danger transition-colors hover:bg-danger/10 disabled:opacity-60"
             :disabled="stopPending === true"
             :title="$t('group.detail.stopAllMembers')"
             @click.stop="emit('stop')"
@@ -279,11 +279,23 @@ const style = computed(() => ({
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: 12px;
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.28), 0 2px 8px rgb(0 0 0 / 0.18);
-  border: 1px solid rgb(var(--c-fg) / 0.08);
+  /* One layered, soft shadow reads as a floating sheet; the hard double shadow
+     above looked heavy on both themes. Border barely darker than the surface. */
+  box-shadow:
+    0 4px 12px rgb(0 0 0 / 0.1),
+    0 16px 40px rgb(0 0 0 / 0.16);
+  border: 1px solid rgb(var(--c-fg) / 0.06);
+  animation: detail-in 120ms ease-out;
+}
+@keyframes detail-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .group-detail-card { animation: none; }
 }
 .group-detail-scroll {
   overflow-y: auto;

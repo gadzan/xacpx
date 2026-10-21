@@ -198,6 +198,20 @@ for (const theme of ["light", "dark"] as const) {
     const controls = await trigger.getAttribute("aria-controls");
     expect(controls).toBeTruthy();
     await expect(detail(page)).toHaveAttribute("id", controls!);
+    const replyRow = page.locator('[data-row-id="reply_turn_first"]');
+    const reply = replyRow.locator(".w-full.text-sm.leading-relaxed");
+    const replyTrigger = bubble(page, "turn_first");
+    await expect(replyRow).not.toHaveClass(/is-detail-open/);
+    await expect(reply).not.toHaveClass(/turn-reply-wash/);
+    await replyTrigger.hover();
+    await expect(replyRow).not.toHaveClass(/is-detail-open/);
+    await expect(reply).not.toHaveClass(/turn-reply-wash/);
+    const bubblePaint = await trigger.evaluate((el) => {
+      const before = getComputedStyle(el, "::before");
+      return { inset: before.inset, radius: before.borderRadius };
+    });
+    expect(bubblePaint.inset).toBe("8px");
+    expect(bubblePaint.radius).toBe("10px");
     await expectInsideViewport(page);
     const hitArea = await trigger.boundingBox();
     expect(hitArea!.width).toBeGreaterThanOrEqual(44);
