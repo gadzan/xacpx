@@ -2252,6 +2252,22 @@ export async function buildApp(
         });
       },
     },
+    relayTerminalSettings: {
+      get: async () => {
+        const persisted = await configStore.getRawValue([
+          "channels", { id: "relay" }, "options", "terminal", "enabled",
+        ]);
+        return { enabled: persisted.present && persisted.value === true, restartRequired: true };
+      },
+      update: async (enabled) => {
+        return await configMutationMutex.run(async () => {
+          await configStore.setRawValue([
+            "channels", { id: "relay", createWith: { id: "relay", type: "relay", enabled: false } }, "options", "terminal", "enabled",
+          ], enabled);
+          return { enabled, restartRequired: true };
+        });
+      },
+    },
     jev: {
       get: () => jevSettings.view(),
       update: async (patch) => {

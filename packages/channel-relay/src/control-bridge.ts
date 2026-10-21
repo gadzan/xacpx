@@ -891,6 +891,18 @@ async function dispatchControlRequest(
       if (typeof control.testJevConnection !== "function") return errorPayload("unsupported", "Jev settings require a newer daemon");
       return await control.testJevConnection(input);
     }
+    case MSG.terminalSettingsGet: {
+      const input = parseControlPayload(MSG.terminalSettingsGet, payload);
+      if (!input) return errorPayload("invalid-payload", "expected empty terminal settings payload");
+      if (typeof control.getTerminalSettings !== "function") return errorPayload("unsupported", "Relay terminal settings require a newer daemon");
+      return await control.getTerminalSettings();
+    }
+    case MSG.terminalSettingsUpdate: {
+      const input = parseControlPayload(MSG.terminalSettingsUpdate, payload);
+      if (!input) return errorPayload("invalid-payload", "expected terminal settings enabled boolean");
+      if (typeof control.updateTerminalSettings !== "function") return errorPayload("unsupported", "Relay terminal settings require a newer daemon");
+      return await control.updateTerminalSettings(input.enabled);
+    }
     case MSG.agentsCapabilitiesGet: {
       const input = parseControlPayload(MSG.agentsCapabilitiesGet, payload);
       if (!input) {

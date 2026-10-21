@@ -21,6 +21,7 @@ import {
   type JevSettingsDto,
   type JevTestResult,
   type JevUpdatePayload,
+  type TerminalSettingsDto,
   type NativeSessionDto,
   type PublishedAgentEndpointDto,
   type SessionDto,
@@ -49,6 +50,7 @@ function unwrap<T>(result: T | { error: { code: string; message: string } }): T 
   }
   return result;
 }
+
 
 // A session as the dashboard tracks it: the wire DTO plus web-only fields for an
 // OPTIMISTIC row — one inserted the instant the user hits Create, before the
@@ -196,9 +198,59 @@ export type JevPanelModel =
 
 /** The i18n key the dialog renders when the daemon does not advertise the Jev RPCs. */
 const JEV_UPGRADE_NOTICE = "instance.jevUpgradeNotice";
+export type TerminalSettingsSaveState =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "failed"; message: string };
+
+export type TerminalSettingsModel =
+  | { phase: "loading" }
+  | { phase: "read-only"; notice: string }
+  | { phase: "editable"; settings: TerminalSettingsDto; save: TerminalSettingsSaveState };
+
+const TERMINAL_SETTINGS_UPGRADE_NOTICE = "instance.terminalSettingsUpgradeNotice";
+
 
 export const useInstancesStore = defineStore("instances", () => {
   const agentDirectory = ref<WebAgentDirectoryEndpointDto[]>([]);
+  const terminalSettingsById = ref<Record<string, TerminalSettingsModel>>({});
+
+  function terminalSettingsFor(instanceId: string): TerminalSettingsModel {
+    return terminalSettingsById.value[instanceId] ?? { phase: "loading" };
+  }
+
+  async function loadTerminalSettings(instanceId: string): Promise<void> {
+    if (!terminalSettingsById.value[instanceId]) terminalSettingsById.value[instanceId] = { phase: "loading" };
+    try {
+      const settings = unwrap(await api.rpc<TerminalSettingsDto>(instanceId, "control.terminal.settings.get", {}));
+      terminalSettingsById.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
+    } catch (error) {
+      terminalSettingsById.value[instanceId] = {
+        phase: "read-only",
+        notice: error instanceof Error && error.message.includes("newer connector")
+          ? TERMINAL_SETTINGS_UPGRADE_NOTICE
+          : "instance.terminalSettingsReadFailed",
+      };
+    }
+  }
+
+  async function updateTerminalSettings(instanceId: string, enabled: boolean): Promise<TerminalSettingsDto> {
+    const current = terminalSettingsById.value[instanceId];
+    if (current?.phase !== "editable") throw new Error("Terminal settings are not available.");
+    terminalSettingsById.value[instanceId] = { ...current, save: { kind: "saving" } };
+    try {
+      const settings = unwrap(await api.rpc<TerminalSettingsDto>(instanceId, "control.terminal.settings.update", { enabled }));
+      terminalSettingsById.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
+      return settings;
+    } catch (error) {
+      terminalSettingsById.value[instanceId] = {
+        ...current,
+        save: { kind: "failed", message: error instanceof Error ? error.message : String(error) },
+      };
+      throw error;
+    }
+  }
+ 
 
   async function loadAgentDirectory(): Promise<void> {
     try {
@@ -1363,7 +1415,7 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });
 
 /** The instances store's public shape, named for consumers (tests, helpers). */

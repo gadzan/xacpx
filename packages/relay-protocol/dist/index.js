@@ -171,6 +171,8 @@ var MSG = {
   terminalDetach: "instance.terminal.detach",
   terminalViewerEvent: "instance.terminal.viewer-event",
   terminalResourceExit: "instance.terminal.resource-exit",
+  terminalSettingsGet: "control.terminal.settings.get",
+  terminalSettingsUpdate: "control.terminal.settings.update",
   desktopPrepare: "instance.desktop.prepare",
   desktopCancel: "instance.desktop.cancel",
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
@@ -1610,6 +1612,18 @@ var validateJevTest = (p) => {
     return null;
   return o;
 };
+var validateTerminalSettingsGet = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0)
+    return null;
+  return {};
+};
+var validateTerminalSettingsUpdate = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean")
+    return null;
+  return { enabled: o.enabled };
+};
 var validateAgentsCapabilitiesGet = (p) => {
   const o = fields(p);
   if (!o || !isBoundedStr(o.agent, 128) || !isBoundedStr(o.workspace, 256))
@@ -2214,6 +2228,8 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalTakeControl]: validateTerminalTakeControl,
   [MSG.terminalResync]: validateTerminalResync,
   [MSG.terminalTerminate]: validateTerminalTerminate,
+  [MSG.terminalSettingsGet]: validateTerminalSettingsGet,
+  [MSG.terminalSettingsUpdate]: validateTerminalSettingsUpdate,
   [MSG.desktopPrepare]: validateDesktopPrepare,
   [MSG.upload]: validateUpload,
   [MSG.botsGet]: validateBotsGet,
