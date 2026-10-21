@@ -3,11 +3,11 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, open, type FileHandle } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
-import { acquireIpcGuard, IpcGuardBusyError, type IpcGuard, type IpcGuardKey } from "./ipc-guard";
+import { acquireIpcGuard, buildIpcGuardPipeName, IpcGuardBusyError, type IpcGuard, type IpcGuardKey } from "./ipc-guard";
 
 const require = createRequire(import.meta.url);
 const expectedHelperExits = new WeakSet<ChildProcessWithoutNullStreams>();
-const FLOCK_HELPER_RELEASE_TIMEOUT_MS = 5_000;
+const LOCK_HELPER_RELEASE_TIMEOUT_MS = 5_000;
 
 interface FsExt {
   flock(
@@ -51,18 +51,33 @@ export async function acquireFileLock(
   const platform = options.platform ?? process.platform;
   await mkdir(dirname(lockFilePath), { recursive: true, mode: 0o700 });
   if (platform === "win32") {
+    const key = options.ipcGuardKey ?? {
+      role: "file-lock",
+      configRoot: dirname(lockFilePath),
+      resourceId: basename(lockFilePath).toLowerCase(),
+    };
+    const useHelper = isBunRuntime() && !options.acquireGuard;
+    const pipeName = useHelper ? await buildIpcGuardPipeName(key, { platform }) : undefined;
     let guard: IpcGuard;
     try {
-      guard = await (options.acquireGuard ?? acquireIpcGuard)(
-        options.ipcGuardKey ?? {
-          role: "file-lock",
-          configRoot: dirname(lockFilePath),
-          resourceId: basename(lockFilePath).toLowerCase(),
-        },
-        { platform },
-      );
+      if (useHelper) {
+        const helper = await acquireLockHelper(
+          lockFilePath,
+          options.helperAcquireTimeoutMs,
+          options.helperHandshakeDelayMs,
+          options.onDiagnostic,
+          pipeName,
+        );
+        guard = { release: () => releaseFileLock(options, undefined, helper) };
+        await emitDiagnostic(options.onDiagnostic, "lock_helper_started", {
+          lockFilePath,
+          helperPid: helper.pid,
+        });
+      } else {
+        guard = await (options.acquireGuard ?? acquireIpcGuard)(key, { platform });
+      }
     } catch (error) {
-      if (error instanceof IpcGuardBusyError) {
+      if (error instanceof IpcGuardBusyError || (useHelper && isBusy(error))) {
         throw new FileLockBusyError(lockFilePath, { cause: error });
       }
       throw error;
@@ -97,7 +112,7 @@ export async function acquireFileLock(
       if (isBunRuntime() && !options.loadFsExt) {
         // Bun cannot load the Node ABI addon; Node holds flock for stdin's lifetime.
         await handle.close();
-        posixHelper = await acquireFlockHelper(
+        posixHelper = await acquireLockHelper(
           lockFilePath,
           options.helperAcquireTimeoutMs,
           options.helperHandshakeDelayMs,
@@ -124,7 +139,7 @@ export async function acquireFileLock(
   let releasePromise: Promise<void> | undefined;
   return {
     release() {
-      releasePromise ??= releasePosixLock(options, posixHandle, posixHelper);
+      releasePromise ??= releaseFileLock(options, posixHandle, posixHelper);
       return releasePromise;
     },
   };
@@ -142,7 +157,7 @@ async function emitDiagnostic(
   }
 }
 
-async function releasePosixLock(
+async function releaseFileLock(
   options: AcquireFileLockOptions,
   handle: FileHandle | undefined,
   helper: ChildProcessWithoutNullStreams | undefined,
@@ -152,20 +167,30 @@ async function releasePosixLock(
     if (helper.exitCode !== null || helper.signalCode !== null) return;
     const closePromise = new Promise<void>((resolve, reject) => {
       let settled = false;
+      let timedOut = false;
+      let killWaitTimer: NodeJS.Timeout | undefined;
       const finish = (callback: () => void) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearTimeout(killWaitTimer);
         callback();
       };
       const timer = setTimeout(() => {
+        timedOut = true;
         helper.kill("SIGKILL");
-        finish(() => reject(new Error("runtime lock helper did not release within 5000ms")));
-      }, FLOCK_HELPER_RELEASE_TIMEOUT_MS);
-      helper.once("error", (error) => finish(() => reject(error)));
-      helper.once("close", (code) => finish(() => code === 0
-        ? resolve()
-        : reject(new Error(`runtime lock helper exited with code ${code}`))));
+        killWaitTimer = setTimeout(() => {
+          process.kill(process.pid, "SIGKILL");
+        }, LOCK_HELPER_RELEASE_TIMEOUT_MS);
+      }, LOCK_HELPER_RELEASE_TIMEOUT_MS);
+      helper.once("error", (error) => {
+        if (!timedOut) finish(() => reject(error));
+      });
+      helper.once("close", (code) => finish(() => timedOut
+        ? reject(new Error("runtime lock helper did not release within 5000ms"))
+        : code === 0
+          ? resolve()
+          : reject(new Error(`runtime lock helper exited with code ${code}`))));
     });
     helper.stdin.end();
     await closePromise;
@@ -184,23 +209,19 @@ function isBunRuntime(): boolean {
   return Boolean((globalThis as { Bun?: unknown }).Bun);
 }
 
-const FLOCK_HELPER_SOURCE = String.raw`
+const LOCK_HELPER_SOURCE = String.raw`
 const fs = require("node:fs");
-const fsExt = require(process.argv[1]);
 const path = process.argv[2];
 const handshakeDelayMs = Number(process.argv[3] || 0);
-const fd = fs.openSync(path, "a+", 0o600);
-fsExt.flock(fd, "exnb", (error) => {
-  if (error) {
-    const busy = error.code === "EAGAIN" || error.code === "EWOULDBLOCK";
-    process.stdout.write(busy ? "BUSY\n" : "ERROR:" + Buffer.from(String(error.stack || error)).toString("base64") + "\n");
-    fs.closeSync(fd);
-    process.exitCode = busy ? 2 : 1;
-    return;
-  }
+const pipeName = process.argv[4];
+const reportError = (error, busy) => {
+  process.stdout.write(busy ? "BUSY\n" : "ERROR:" + Buffer.from(String(error.stack || error)).toString("base64") + "\n");
+  process.exitCode = busy ? 2 : 1;
+};
+const acquired = (releaseLock) => {
   // The daemon controller signals the whole POSIX process group during a
   // graceful stop. Once ownership is acquired, only the parent stdin lifetime
-  // may release this helper's flock; group SIGTERM/SIGINT must not unlock it
+  // may release this helper's lock; group SIGTERM/SIGINT must not unlock it
   // before the parent finishes dispose/reap/status cleanup.
   process.on("SIGTERM", () => {});
   process.on("SIGINT", () => {});
@@ -209,27 +230,56 @@ fsExt.flock(fd, "exnb", (error) => {
   const release = () => {
     if (released) return;
     released = true;
-    fsExt.flock(fd, "un", () => {
-      fs.closeSync(fd);
-      process.exit(0);
-    });
+    releaseLock();
   };
   process.stdin.once("end", release);
   process.stdin.once("error", release);
   const reportAcquired = () => process.stdout.write("ACQUIRED\n");
   if (handshakeDelayMs > 0) setTimeout(reportAcquired, handshakeDelayMs);
   else reportAcquired();
-});
+};
+if (pipeName) {
+  const server = require("node:net").createServer();
+  const onError = (error) => {
+    server.close();
+    reportError(error, error.code === "EADDRINUSE" || error.code === "EACCES");
+  };
+  server.once("error", onError);
+  try {
+    server.listen(pipeName, () => {
+      server.removeListener("error", onError);
+      acquired(() => server.close(() => process.exit(0)));
+    });
+  } catch (error) {
+    server.removeListener("error", onError);
+    onError(error);
+  }
+} else {
+  const fsExt = require(process.argv[1]);
+  const fd = fs.openSync(path, "a+", 0o600);
+  fsExt.flock(fd, "exnb", (error) => {
+    if (error) {
+      reportError(error, error.code === "EAGAIN" || error.code === "EWOULDBLOCK");
+      fs.closeSync(fd);
+      return;
+    }
+    acquired(() => fsExt.flock(fd, "un", () => {
+      fs.closeSync(fd);
+      process.exit(0);
+    }));
+  });
+}
 `;
 
-async function acquireFlockHelper(
+async function acquireLockHelper(
   lockFilePath: string,
   timeoutMs = 10_000,
   handshakeDelayMs = 0,
   onDiagnostic?: AcquireFileLockOptions["onDiagnostic"],
+  pipeName?: string,
 ): Promise<ChildProcessWithoutNullStreams> {
-  const fsExtPath = require.resolve("fs-ext");
-  const child = spawn("node", ["-e", FLOCK_HELPER_SOURCE, fsExtPath, lockFilePath, String(handshakeDelayMs)], {
+  const fsExtPath = pipeName ? "" : require.resolve("fs-ext");
+  const child = spawn("node", ["-e", LOCK_HELPER_SOURCE, fsExtPath, lockFilePath, String(handshakeDelayMs), pipeName ?? ""], {
     stdio: ["pipe", "pipe", "pipe"],
   });
   if (child.pid) {
@@ -259,7 +309,7 @@ async function acquireFlockHelper(
     }, timeoutMs);
     const finish = (callback: () => void) => {
       clearTimeout(timer);
-      if (killWaitTimer) clearTimeout(killWaitTimer);
+      clearTimeout(killWaitTimer);
       callback();
     };
     child.stdout.on("data", (chunk) => {

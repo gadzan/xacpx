@@ -637,6 +637,11 @@ lock and terminal registry. Ship consumers together with a core release using
 `scripts/release.mjs`; it updates first-party peer/min-core floors. A previously
 published core does not gain the export from a plugin-only update. Runtime
 ownership keeps its existing `runtime-owner` Windows key and metadata format.
+Under Bun, Windows pipe ownership uses the same lifetime-bound Node helper as
+POSIX flock. This keeps Node/libuv's contention errors and crash-release semantics
+instead of depending on Bun's occupied-pipe `ERR_INVALID_ARG_TYPE` behavior. The
+helper does not load `fs-ext` on Windows, and loss of the helper ends its parent
+before shared state can be mutated without ownership.
 
 ---
 
