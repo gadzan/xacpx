@@ -185,6 +185,34 @@ for (const scenario of ["one", "multi", "same-bot"] as const) {
   });
 }
 
+test("mobile detail opens on Close and keyboard activation only stops an explicitly selected run", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const fixture = await openGroup(page, { scenario: "one" });
+  const trigger = bubble(page, "turn_live");
+  for (const key of ["Enter", "Space"]) {
+    await trigger.focus();
+    await page.keyboard.press(key);
+    const sheet = page.getByTestId("group-detail-sheet");
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByTestId("group-detail-close")).toBeFocused();
+    await expect(sheet.getByTestId("group-stop-run-explanation")).toBeVisible();
+    await expect(sheet.getByTestId("group-stop-run-explanation"))
+      .toHaveText("Stop applies to the whole run: all participating members are cancelled.");
+    await page.keyboard.press(key);
+    await expect(sheet).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    expect(fixture.cancels).toEqual([]);
+  }
+  await trigger.click();
+  const sheet = page.getByTestId("group-detail-sheet");
+  await expect(sheet.getByTestId("group-detail-close")).toBeFocused();
+  const stop = sheet.getByTestId("group-stop-run-button");
+  await stop.focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => fixture.cancels).toEqual([fixture.current.id]);
+  await expect(sheet.getByTestId("group-detail-stopped")).toBeVisible();
+});
+
 for (const theme of ["light", "dark"] as const) {
   test(`${theme}: anchored edge geometry, keyboard, outside pointer and reduced motion`, async ({ page }, info) => {
     await page.emulateMedia({ reducedMotion: "reduce" });

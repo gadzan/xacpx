@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from "vue";
+import { nextTick, ref } from "vue";
 import type { ConversationRunDto, MemberTurnSummaryDto, PlanEntryDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import type { TraceReplayStatus } from "../lib/group-run-presentation";
 import MobileSheet from "./MobileSheet.vue";
 import GroupRunDetailHeader from "./GroupRunDetailHeader.vue";
 import GroupRunDetailContent from "./GroupRunDetailContent.vue";
+import { useDetailScrollMemory } from "../lib/use-detail-scroll-memory";
 
 const props = defineProps<{
   id: string;
@@ -37,23 +38,20 @@ const emit = defineEmits<{
   loadMore: []; loadEarlier: []; retryTrace: [];
 }>();
 const sheet = ref<InstanceType<typeof MobileSheet> | null>(null);
-const detailKey = () => `${props.memberTurn?.id ?? ""}:${props.attempt ?? ""}`;
-async function restoreScroll(): Promise<void> {
-  await nextTick();
-  const body = sheet.value?.body;
-  if (body) body.scrollTop = props.scrollMemory?.get(detailKey()) ?? 0;
-}
+const { remember } = useDetailScrollMemory(
+  () => sheet.value?.body,
+  () => `${props.memberTurn?.id ?? ""}:${props.attempt ?? ""}`,
+  () => props.scrollMemory,
+  () => !props.traceLoading && (props.parts?.length ?? 0) > 0,
+);
 function rememberScroll(event: Event): void {
-  const body = sheet.value?.body;
-  if (body && event.target === body) props.scrollMemory?.set(detailKey(), body.scrollTop);
+  if (event.target === sheet.value?.body) remember();
 }
 function close(): void {
   const trigger = props.anchorEl;
   emit("close");
   void nextTick(() => trigger?.focus({ preventScroll: true }));
 }
-onMounted(restoreScroll);
-watch(() => [props.memberTurn?.id, props.attempt], restoreScroll, { flush: "post" });
 </script>
 
 <template>

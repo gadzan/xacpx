@@ -18,6 +18,7 @@ defineOptions({ inheritAttrs: false });
 // pill, the topic title, the who/when meta row and a Stop action — passes `#header` and
 // `:show-close="false"`; the panel keeps the same frame, backdrop, focus contract and
 // safe-area padding.
+// A custom header can mark a safe initial target with `data-sheet-initial-focus`.
 const props = withDefaults(defineProps<{
   /** Accessible dialog name, including when a custom header is provided. */
   title: string;
@@ -35,7 +36,9 @@ const emit = defineEmits<{ close: [] }>();
 const panel = ref<HTMLElement | null>(null);
 const body = ref<HTMLElement | null>(null);
 defineExpose({ body });
-useModalA11y(panel, () => emit("close"));
+useModalA11y(panel, () => emit("close"), () =>
+  panel.value?.querySelector<HTMLElement>("[data-sheet-initial-focus]") ?? null,
+);
 </script>
 
 <template>

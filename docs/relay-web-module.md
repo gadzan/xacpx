@@ -978,14 +978,20 @@ Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌�
 `GroupRunDetailPopover.vue` 锚定气泡，保留外部点击与锚点滚出关闭，圆角统一为 16px。
 两端共用 `GroupRunDetailHeader.vue`：状态、话题标题、成员/时间/时长、尝试选择与停止按钮；
 任务描述完整放在滚动正文里，避免长任务挤掉关闭操作。切换断点保留当前成员和已选尝试。
+移动详情打开时显式聚焦关闭按钮，不将初始焦点落到 Stop；运行中的面板直接显示停止全部参与
+成员的范围说明，触屏无需悬停。其他 MobileSheet 未声明初始焦点时仍采用原默认规则。
 
 `GroupRunDetailContent.vue` 的过程区统一使用 `GroupTraceTimeline.vue`，复用唯一
 `deriveTurnPresentation` 保持 Markdown、思考、工具与子代理顺序。相邻工具以状态圆圈与虚线
 连接，叙述打断连线；超过 6 个步骤默认保留最近 3 个，可展开已加载的前序内容。
 这与服务端分页独立：记录完整性、错误、加载更多与加载更早事件仍保留。
 工具展开体由 `ToolStepDetail.vue` 与消息流的 `ToolStepCard.vue` 共享。
+子代理时间线圆圈与展开卡片共用 `resolveSubagentStatus`：任一子步骤失败则失败，仍有子步骤
+运行则继续显示运行中，避免父级 success 遮盖子步骤的实际状态。
 历史尝试不显示当前尝试的状态、开始时间与实时计时；未记录的历史结果不作推断。
-双端按成员/尝试记忆正文滚动位置，内容增量不把读者拉回已保存的偏移。
+双端按成员/尝试记忆正文滚动位置。`use-detail-scroll-memory.ts` 在打开或切换尝试时保留目标
+偏移，短加载正文截断 scrollTop 时不覆盖原记录，异步数据就绪或布局增长后再补恢复。
+成功恢复或用户主动 wheel/touch/pointer/滚动键操作后结束恢复阶段，后续流式增量不拉动读者。
 详情滚动条使用独立的 6px `detail-scroll`，触屏隐藏；减少动态效果设置关闭面板入场和状态动画。
 
 `MobileSheet.vue` 支持自定义 `#header`、`height="tall"`、`padded` 与 `showClose`，默认调用

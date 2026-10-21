@@ -10,6 +10,7 @@ import type {
 import GroupTranscript from "../components/GroupTranscript.vue";
 import AgentThinkingBubble from "../components/AgentThinkingBubble.vue";
 import GroupRunDetailContent from "../components/GroupRunDetailContent.vue";
+import MobileSheet from "../components/MobileSheet.vue";
 import { useGroupsStore } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
@@ -340,6 +341,42 @@ describe("GroupThinkingBubbles UI", () => {
     await closeSurface();
     expect(surface()).toBeNull();
     expect(document.activeElement).toBe(trigger);
+    wrapper.unmount();
+  });
+
+  it("keeps first-control focus for sheets without an explicit initial target", async () => {
+    const wrapper = mount(MobileSheet, {
+      props: { title: "Other sheet" },
+      slots: { header: '<button data-test="first-control">First action</button><button>Second action</button>' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+    expect(document.activeElement).toBe(wrapper.get('[data-test="first-control"]').element);
+    wrapper.unmount();
+  });
+
+  it("focuses the mobile close control before Stop and restores focus without cancelling", async () => {
+    setViewportWidth(390);
+    const groups = seedEnvironment();
+    seedLiveRun();
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
+    const wrapper = mountTranscript();
+    const trigger = wrapper.get('[data-test="agent-thinking-bubble"]').element as HTMLButtonElement;
+    trigger.focus();
+    await openFirstBubble(wrapper);
+    const detail = sheet()!;
+    const close = detail.querySelector<HTMLButtonElement>('[data-test="group-detail-close"]')!;
+    expect(detail.querySelector("button")?.getAttribute("data-test")).toBe("group-stop-run-button");
+    expect(document.activeElement).toBe(close);
+    expect(detail.querySelector('[data-test="group-stop-run-explanation"]')?.textContent)
+      .toContain("all participating members are cancelled");
+    expect(cancel).not.toHaveBeenCalled();
+    close.click();
+    await flushPromises();
+    expect(surface()).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(cancel).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 

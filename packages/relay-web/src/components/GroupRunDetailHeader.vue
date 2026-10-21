@@ -110,6 +110,7 @@ const ariaLabel = computed(() =>
         <button
           type="button"
           data-test="group-detail-close"
+          :data-sheet-initial-focus="!dense || undefined"
           class="grid shrink-0 place-items-center rounded-full bg-fg/10 text-fg transition-colors hover:bg-fg/[0.16] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           :class="dense ? 'h-7 w-7' : 'h-11 w-11'"
           :aria-label="$t('group.detail.close')"
@@ -119,6 +120,10 @@ const ariaLabel = computed(() =>
         </button>
       </div>
     </div>
+
+    <p v-if="stopAvailable && !dense" data-test="group-stop-run-explanation" class="mt-3 text-xs text-fg-muted">
+      {{ $t("group.detail.stopAllMembers") }}
+    </p>
 
     <h2
       data-test="group-detail-title"

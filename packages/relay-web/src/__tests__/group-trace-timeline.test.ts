@@ -1,9 +1,21 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import type { TurnPartDto } from "@ganglion/xacpx-relay-protocol";
+import type { ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import GroupTraceTimeline from "../components/GroupTraceTimeline.vue";
 
+function subagentParts(parentStatus: ToolStepDto["status"], childStatus: ToolStepDto["status"]): TurnPartDto[] {
+  return [
+    { type: "tool", step: {
+      toolCallId: "agent-1", toolName: "Task", kind: "think", status: parentStatus,
+      title: "Delegate work", isSubagent: true,
+    } },
+    { type: "tool", step: {
+      toolCallId: "child-1", parentToolCallId: "agent-1", toolName: "Bash", kind: "execute",
+      status: childStatus, title: "Child work",
+    } },
+  ];
+}
 function tool(index: number): TurnPartDto {
   return { type: "tool", step: {
     toolCallId: `step-${index}`, toolName: "read_file", kind: "read", status: "success",
@@ -43,6 +55,26 @@ describe("group process timeline", () => {
     expect(wrapper.get('[data-test="group-trace-step"]').attributes("data-state")).toBe("error");
     await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("permission denied");
+    wrapper.unmount();
+  });
+
+  it("marks the subagent row error when a child fails after the parent reports success", async () => {
+    const wrapper = mount(GroupTraceTimeline, { props: { parts: subagentParts("success", "error") } });
+    expect(wrapper.findAll('[data-test="group-trace-step"]')).toHaveLength(1);
+    expect(wrapper.get('[data-test="group-trace-step"]').attributes("data-state")).toBe("error");
+    await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
+    expect(wrapper.find('[data-test="subagent-error"]').exists()).toBe(true);
+    expect(wrapper.get('[data-test="group-trace-step"]').attributes("data-state")).toBe("error");
+    wrapper.unmount();
+  });
+
+  it("marks the subagent row running while a child still runs after the parent reports success", async () => {
+    const wrapper = mount(GroupTraceTimeline, { props: { parts: subagentParts("success", "running") } });
+    expect(wrapper.findAll('[data-test="group-trace-step"]')).toHaveLength(1);
+    expect(wrapper.get('[data-test="group-trace-step"]').attributes("data-state")).toBe("running");
+    await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
+    expect(wrapper.find('[data-test="subagent-running"]').exists()).toBe(true);
+    expect(wrapper.get('[data-test="group-trace-step"]').attributes("data-state")).toBe("running");
     wrapper.unmount();
   });
 });

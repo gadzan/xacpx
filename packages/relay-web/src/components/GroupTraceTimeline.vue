@@ -16,6 +16,7 @@ import SubagentStepCard from "./SubagentStepCard.vue";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import { KIND_ICON } from "../lib/tool-summary";
 import { formatStepDuration } from "../lib/use-live-elapsed";
+import { resolveSubagentStatus } from "../lib/subagent-status";
 import {
   deriveTurnPresentation,
   tallyTrace,
@@ -96,12 +97,14 @@ function toggle(key: string): void {
 }
 
 function stepState(node: TurnPresentationItem): "success" | "running" | "error" | "pending" {
-  if (node.type === "tool" || node.type === "subagent") {
+  if (node.type === "subagent") return resolveSubagentStatus(node.step, node.children);
+  if (node.type === "tool") {
     const status = node.step.status;
     return status === "success" ? "success" : status === "running" ? "running" : "error";
   }
   return "pending";
 }
+
 
 function stepDuration(node: TurnPresentationItem): string | undefined {
   if (node.type !== "tool" && node.type !== "subagent") return undefined;

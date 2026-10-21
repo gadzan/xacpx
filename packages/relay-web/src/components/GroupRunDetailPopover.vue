@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { computePopoverPlacement } from "../lib/group-run-presentation";
 import GroupRunDetailContent from "./GroupRunDetailContent.vue";
 import GroupRunDetailHeader from "./GroupRunDetailHeader.vue";
+import { useDetailScrollMemory } from "../lib/use-detail-scroll-memory";
 import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
@@ -101,24 +102,12 @@ function schedulePlacement(): void {
   });
 }
 
-function detailKey(): string {
-  return `${props.memberTurn?.id ?? ""}:${props.attempt ?? ""}`;
-}
-
-/** Reopening a read process resumes its remembered position; content may still
- *  be growing, so the restore lands on the next frame. Nothing scrolls while
- *  the reader is inside: only remembered offsets are replayed on the way in. */
-async function restoreScrollMemory(): Promise<void> {
-  const saved = props.scrollMemory?.get(detailKey());
-  await nextTick();
-  const el = scrollEl.value;
-  if (el && saved !== undefined) el.scrollTop = saved;
-}
-
-function memoizeScroll(): void {
-  const el = scrollEl.value;
-  if (el) props.scrollMemory?.set(detailKey(), el.scrollTop);
-}
+const { remember: memoizeScroll } = useDetailScrollMemory(
+  () => scrollEl.value,
+  () => `${props.memberTurn?.id ?? ""}:${props.attempt ?? ""}`,
+  () => props.scrollMemory,
+  () => !props.traceLoading && (props.parts?.length ?? 0) > 0,
+);
 
 
 function observeAnchor(): void {
@@ -161,15 +150,12 @@ function onKeydown(event: KeyboardEvent): void {
 watch([() => props.anchorEl, () => props.scrollerEl], observeAnchor, { flush: "post" });
 watch(() => [props.attempt, props.parts, props.plan, props.traceLoading, props.traceError, props.recordingState],
   () => void nextTick(schedulePlacement), { deep: true, flush: "post" });
-watch(() => [props.memberTurn?.id, props.attempt],
-  () => void restoreScrollMemory(), { flush: "post" });
 
 onMounted(() => {
   document.addEventListener("pointerdown", onOutsidePointer, true);
   window.addEventListener("keydown", onKeydown, true);
   window.addEventListener("resize", schedulePlacement, { passive: true });
   window.addEventListener("scroll", schedulePlacement, true);
-  void restoreScrollMemory();
   observeAnchor();
 });
 
