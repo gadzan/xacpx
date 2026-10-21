@@ -12,6 +12,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -47,7 +48,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Is the suite already green on this commit?
+        id: test-gate
+        # Re-dispatching an old tag checks out a tree from before this script
+        # existed, so the step itself can fail to start. It must never be the
+        # thing that blocks a release: no output means no skip.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node ./scripts/ci-test-gate.mjs
+
       - name: Run tests
+        if: steps.test-gate.outputs.skip != 'true'
         run: npm test
 
       - name: Build channel-yuanbao (and plugin-api types)
