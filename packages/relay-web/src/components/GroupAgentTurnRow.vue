@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type {
   BotSummaryDto,
@@ -76,11 +76,17 @@ const avatarState = computed(() =>
 );
 
 defineExpose({ bubbleStatus });
+
+/** Pointer rests on the bubble, or the detail is open: wash the reply so the
+ *  bubble reads as a handle on the text below it, never as a detached icon. */
+const bubbleHovered = ref(false);
+const replyWashed = computed(() => bubbleHovered.value || props.expanded === true);
 </script>
 <template>
   <TranscriptRow
     :row-id="message?.id ?? memberTurn.id"
     data-test="agent-turn-row"
+    :class="expanded ? 'is-detail-open' : ''"
     :data-member-turn-id="memberTurn.id"
     :data-run-id="memberTurn.runId"
     :data-message-id="message?.id"
@@ -108,9 +114,14 @@ defineExpose({ bubbleStatus });
       :expanded="expanded"
       :controls="controls"
       @toggle="emit('toggle', $event)"
+      @mouseenter="bubbleHovered = true"
+      @mouseleave="bubbleHovered = false"
     />
     <template v-if="message">
-      <div class="w-full text-sm leading-relaxed text-fg">
+      <div
+        class="w-full text-sm leading-relaxed text-fg"
+        :class="replyWashed ? 'turn-reply-wash' : ''"
+      >
         <StreamMarkdown :text="message.content" />
       </div>
       <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
@@ -120,3 +131,13 @@ defineExpose({ bubbleStatus });
     </template>
   </TranscriptRow>
 </template>
+<style scoped>
+/* Expanded row: a quiet left accent so the open detail's owner is findable
+   while scanning a long transcript. Paints on the row root, outside the
+   content-visibility container, so containment cannot clip it. */
+.is-detail-open { box-shadow: inset 2px 0 0 rgb(var(--c-accent)); border-radius: 10px; }
+/* Bubble hover or open detail: a halo behind the reply body ties the trigger
+   to the text it explains. Box-shadow keeps the halo proportional without
+   changing layout mid-scroll. */
+.turn-reply-wash { border-radius: 12px; box-shadow: 0 0 0 10px rgb(var(--c-accent) / 0.05); }
+</style>
