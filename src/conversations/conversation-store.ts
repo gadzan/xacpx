@@ -11,6 +11,7 @@ import type {
   MemberTurnRecord,
   PendingDispatch,
 } from "./conversation-types";
+import type { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 
 /** A completion reason on runnable work is durable cancel intent, not routing work. */
 export function isRunCancelling(run: ConversationRun): boolean {
@@ -389,6 +390,7 @@ export interface ClaimRecoveryScope {
 }
 
 export interface ConversationStore {
+  readonly traces: SqliteMemberTurnTraceStore;
   /** Internal trusted execution input. No public caller supplies its identity. */
   acceptPublicHandoff(input: AcceptPublicHandoffInput): PublicHandoffReceipt;
   getPublicHandoff(sourceTurnId: string, invocationId: string, args: GroupSendInput): PublicHandoffReceipt | undefined;

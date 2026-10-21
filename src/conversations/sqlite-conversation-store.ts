@@ -73,6 +73,7 @@ import type {
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 import { parseGroupSend } from "./group-handoff";
+import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 
 export interface ConversationIdFactory {
   messageId: () => string;
@@ -734,6 +735,7 @@ import { ConversationWorktreeStore } from "./conversation-worktree-store";
 
 export class SqliteConversationStore implements ConversationStore {
   readonly worktrees: import("./conversation-worktree-store").ConversationWorktreeStore;
+  readonly traces: SqliteMemberTurnTraceStore;
   private readonly ids: ConversationIdFactory;
   private readonly beforeAcceptCommit?: () => void;
   private readonly beforeDispatchMigrationCommit?: () => void;
@@ -767,6 +769,7 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.exec("ALTER TABLE messages ADD COLUMN input_metadata_json TEXT");
     }
     this.ensureBindingRevision();
+    this.traces = new SqliteMemberTurnTraceStore(this.sqlite);
   }
 
   private ensureBindingRevision(): void {
@@ -3099,6 +3102,7 @@ export class SqliteConversationStore implements ConversationStore {
       if (!owned) {
         return;
       }
+      this.traces.deleteRows(conversationId, topicId);
       this.sqlite.run(
         `DELETE FROM pending_dispatches
          WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)`,
@@ -3208,6 +3212,7 @@ export class SqliteConversationStore implements ConversationStore {
         [conversationId, topicId],
       );
     }
+    this.traces.deleteRows(conversationId, topicId);
     this.sqlite.run(
       `DELETE FROM pending_dispatches
        WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)`,
@@ -3241,6 +3246,7 @@ export class SqliteConversationStore implements ConversationStore {
 
   deleteConversationRows(conversationId: string): void {
     this.sqlite.transaction(() => {
+      this.traces.deleteRows(conversationId);
       this.sqlite.run("DELETE FROM conversation_bindings WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run(
         "DELETE FROM pending_dispatches WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)",

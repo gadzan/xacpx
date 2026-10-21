@@ -52,6 +52,7 @@ async function openGroup(page: Page, locale = "en", messages = initial) {
       }
       case "control.runs.list": result = { runs: [current, historical], activeRunId: current.id, activeRun: current }; break;
       case "control.runs.get": result = { run: payload.runId === historical.id ? historical : current }; break;
+      case "control.runs.details.batch": result = { runs: [historical, current].filter((run) => payload.runIds.includes(run.id)) }; break;
       default: return route.fallback();
     }
     await route.fulfill({ json: { result } });
@@ -60,7 +61,7 @@ async function openGroup(page: Page, locale = "en", messages = initial) {
   const nav = page.getByTestId("instance-nav-groups");
   await nav.click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
-  await expect(page.getByTestId("group-run-card")).toHaveAttribute("data-run-id", current.id);
+  await expect(page.getByTestId("group-transcript-scroller")).toBeVisible();
   await expect(page.getByTestId("group-target-button")).toBeEnabled();
   return history;
 }
@@ -91,7 +92,6 @@ for (const locale of ["en", "zh-CN"]) {
     await expect(entry).toContainText(locale === "en" ? "Outcome unknown" : "结果未知");
     await expect(entry).not.toContainText(result.content);
     await expect(entry.locator("img")).toHaveCount(0);
-    await expect(page.getByTestId("group-run-card")).toHaveAttribute("data-run-id", current.id);
     const scroller = page.getByTestId("group-transcript-scroller");
     expect(await scroller.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
     await page.screenshot({ path: info.outputPath(`handoff-${locale}-expanded.png`) });
@@ -153,7 +153,6 @@ test("prepend, duplicate live delivery and reconnect preserve handoff identity a
   await expect.poll(() => hub.sockets.some((socket) => !oldSockets.has(socket) && socket.readyState === 1), { timeout: 20_000 }).toBe(true);
   await reloaded;
   await expect(page.locator('[data-message-id="live_handoff"]')).toHaveCount(1);
-  await expect(page.getByTestId("group-run-card")).toHaveAttribute("data-run-id", current.id);
 });
 
 for (const distance of ["nearby", "distant"] as const) {
@@ -191,6 +190,8 @@ for (const distance of ["nearby", "distant"] as const) {
     await page.keyboard.press("Tab");
     await page.screenshot({ path: info.outputPath(`result-${distance}-keyboard.png`) });
     expect(focusedAfterJump).toBe("reply_second");
+    await expect(target.getByTestId("agent-thinking-bubble")).toBeFocused();
+    await page.keyboard.press("Tab");
     await expect(target.getByRole("button", { name: "Copy", exact: true })).toBeFocused();
     await expect(replyText).toBeInViewport({ ratio: 1 });
   });

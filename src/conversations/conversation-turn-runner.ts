@@ -11,6 +11,8 @@ export interface ConversationTurnRunInput {
   botId: string;
   runId: string;
   memberTurnId: string;
+  attempt?: number;
+  sourceTurnId?: string;
   sessionAlias: string;
   logicalSessionId: string;
   /** Private launch capability; never projected onto product events. */
@@ -171,6 +173,8 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
         botId: input.botId,
         runId: input.runId,
         memberTurnId: input.memberTurnId,
+        ...(input.attempt !== undefined ? { attempt: input.attempt } : {}),
+        ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
       },
     });
     void provider.then(

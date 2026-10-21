@@ -37,6 +37,13 @@ for (const limit of [undefined, 1, 2, 64]) {
     const final = h.store.listMemberTurns(accepted.run.id);
     expect(final.map((m) => [m.id, m.batch, m.memberIndex])).toEqual(original.map((m) => [m.id, m.batch, m.memberIndex]));
     expect(h.runner.calls.every((c) => c.executionOrigin === "human")).toBe(true);
+    for (const call of h.runner.calls) {
+      const member = h.store.getMemberTurn(call.memberTurnId)!;
+      expect(call.attempt).toBe(member.attempt);
+      expect(call.sourceTurnId).toBe(member.sourceTurnId);
+      expect(call.sourceTurnId).toBe(call.promptRequestId);
+      expect(call.sourceTurnId).toBeDefined();
+    }
     expect(h.runner.calls[2]!.text).not.toContain("result-0");
     h.store.close();
   });

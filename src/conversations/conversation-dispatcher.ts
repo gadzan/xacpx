@@ -1700,6 +1700,8 @@ export class ConversationDispatcher {
         botId: work.memberTurn.botId,
         runId: work.run.id,
         memberTurnId: started.id,
+        attempt: started.attempt,
+        sourceTurnId: started.sourceTurnId,
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
         text: groupExecution && !rawCommand

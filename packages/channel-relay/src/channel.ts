@@ -879,6 +879,8 @@ export class RelayChannel implements MessageChannelRuntime {
       return {
         conversationId: parsed.conversationId, topicId: parsed.topicId,
         botId: task.botId, runId: task.runId, memberTurnId: task.memberTurnId,
+        ...(task.attempt !== undefined ? { attempt: task.attempt } : {}),
+        ...(task.sourceTurnId !== undefined ? { sourceTurnId: task.sourceTurnId } : {}),
       };
     }
     return {

@@ -869,42 +869,11 @@ describe("Group Components", () => {
   });
 
   describe("GroupTranscript.vue", () => {
-    it("keeps Run card header and member details readable on narrow viewports", async () => {
+    it("renders one Agent row and bubble per member with exact states", async () => {
       const groups = seedGroupSelection();
-      groups.activeRun = {
-        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
-        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
-        profileRevision: 1, createdAt: "now",
-      };
-      groups.memberTurnsById = {
-        turn_a: {
-          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
-          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
-          state: "running", createdAt: "now",
-          assignmentId: "auto-0-bot_be706cc5-1f9e-4e77-9cb2-a842d2d9687e",
-          task: "群组里如果自动协作关了，那个下拉框里会提示 Automatic collaboration is off.",
-        },
-      };
-      const wrapper = mount(GroupTranscript, {
-        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
-        global: { plugins: [i18n] },
-      });
-      await flushPromises();
-      // Regression: on phones the header flex row squeezed the title / stop
-      // button to min-content, stacking CJK chars one per line.
-      const header = wrapper.get('[data-test="group-run-header"]').classes();
-      expect(header).toEqual(expect.arrayContaining(["min-w-0", "flex-1", "flex-wrap"]));
-      expect(wrapper.get('[data-test="group-run-title"]').classes()).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
-      expect(wrapper.get('[data-test="group-running-members"]').classes()).toEqual(expect.arrayContaining(["min-w-0", "break-words"]));
-      expect(wrapper.get('[data-test="group-stop-run-button"]').classes()).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
-      const details = wrapper.get('[data-test="group-member-details"]');
-      expect(details.classes()).toEqual(expect.arrayContaining(["min-w-0", "break-words"]));
-      expect(details.classes()).not.toContain("break-all");
-      expect(details.text()).toContain("auto-0-bot_be706cc5");
-    });
-
-    it("renders one Run card row per member with exact statuses", async () => {
-      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
       groups.activeRun = {
         id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
@@ -927,73 +896,85 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       await flushPromises();
-      expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="group-run-card"]').attributes("data-run-id")).toBe("run_1");
-      const rows = wrapper.findAll('[data-test="group-member-row"]');
+      // The old aggregate card is gone; one bubble row per MemberTurn remains.
+      expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(false);
+      const rows = wrapper.findAll('[data-test="agent-turn-row"]');
       expect(rows).toHaveLength(2);
-      expect(rows[0]?.attributes("data-bot-id")).toBe("bot_a");
-      expect(rows[0]?.attributes("data-state")).toBe("completed");
-      expect(rows[1]?.attributes("data-bot-id")).toBe("bot_b");
-      expect(rows[1]?.attributes("data-state")).toBe("running");
+      expect(rows[0]!.attributes("data-member-turn-id")).toBe("turn_a");
+      expect(rows[1]!.attributes("data-member-turn-id")).toBe("turn_b");
+      const bubbles = wrapper.findAll('[data-test="agent-thinking-bubble"]');
+      expect(bubbles).toHaveLength(2);
+      expect(bubbles[0]!.classes()).toContain("is-done");
+      expect(bubbles[1]!.classes()).toContain("is-running");
     });
 
-    it("expands member activity on toggle", async () => {
+    it("opens the anchored detail popover from one bubble and stops the exact active run from it", async () => {
       const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
       groups.activeRun = {
-        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        id: "run_stop", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
         profileRevision: 1, createdAt: "now",
       };
       groups.memberTurnsById = {
         turn_a: {
-          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          id: "turn_a", runId: "run_stop", conversationId: "conversation_g", topicId: "topic_1",
           botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
           state: "running", createdAt: "now",
         },
       };
-      groups.liveTurnsByMember = {
-        turn_a: { parts: [{ type: "text", text: "hello" }], status: "streaming", startedAt: Date.now(), revision: 1 },
-      };
+      const spy = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
       const wrapper = mount(GroupTranscript, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
+        attachTo: document.body,
       });
-      expect(wrapper.find('[data-test="group-member-activity"]').exists()).toBe(false);
-      await wrapper.find('[data-test="group-member-toggle"]').trigger("click");
-      expect(wrapper.find('[data-test="group-member-activity"]').exists()).toBe(true);
-    });
-
-    it("names the Jev pick and its reason on an automatic run card", async () => {
-      const groups = seedGroupSelection();
-      groups.activeRun = {
-        id: "run_jev", conversationId: "conversation_g", topicId: "topic_1",
-        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
-        routingState: "done", routingReason: "Jev picked Reviewer for this message (confidence 0.82).",
-        maxMemberTurns: 24, consumedMemberTurns: 1, profileRevision: 1, createdAt: "now",
-      };
-      groups.memberTurnsById = {
-        turn_a: {
-          id: "turn_a", runId: "run_jev", conversationId: "conversation_g", topicId: "topic_1",
-          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "router",
-          state: "running", createdAt: "now",
-        },
-      };
-      const wrapper = mount(GroupTranscript, {
-        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
-        global: { plugins: [i18n] },
-      });
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
       await flushPromises();
-      expect(wrapper.find('[data-test="group-run-dispatched"]').text()).toContain("Reviewer");
-      expect(wrapper.find('[data-test="group-run-routing-reason"]').text()).toBe(
-        "Jev picked Reviewer for this message (confidence 0.82).",
-      );
-      // One pick, one row: no queued siblings from the old fan-out rendering.
-      expect(wrapper.findAll('[data-test="group-member-row"]')).toHaveLength(1);
+      const layer = document.body.querySelector('[data-test="group-detail-layer"]');
+      expect(layer !== null).toBe(true);
+      expect(layer!.textContent ?? "").toContain("Running");
+      (document.body.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
+      await flushPromises();
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
       wrapper.unmount();
     });
 
-    it("shows a waiting run without turning it into running", async () => {
+    it("keeps a neutral routing entry for an automatic run before members exist", async () => {
       const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Plan the release", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_route", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+        routingState: "routing", routingReason: "Jev picked Reviewer for this message (confidence 0.82).",
+        maxMemberTurns: 24, consumedMemberTurns: 0, profileRevision: 1, createdAt: "now",
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+        attachTo: document.body,
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(false);
+      const routing = wrapper.find('[data-test="group-routing-row"]');
+      expect(routing.exists()).toBe(true);
+      expect(routing.text()).toContain("Jev picked Reviewer");
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      expect(document.body.querySelector('[data-test="group-detail-layer"]') !== null).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("shows waiting-human with question and Stop inside the detail, not as a banner", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Which branch?", createdAt: "now" },
+      ];
       groups.activeRun = {
         id: "run_wait", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "waiting-human",
@@ -1011,37 +992,137 @@ describe("Group Components", () => {
       const wrapper = mount(GroupTranscript, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
+        attachTo: document.body,
       });
-      expect(wrapper.find('[data-test="group-run-card"]').text()).toContain("waiting-human");
-      expect(wrapper.find('[data-test="group-waiting-question"]').text()).toBe("Which branch ships?");
-      expect(wrapper.find('[data-test="group-run-budget"]').text()).toContain("1");
-      expect(wrapper.find('[data-test="group-run-budget"]').text()).toContain("24");
-      expect(wrapper.find('[data-test="group-member-assignment"]').text()).toContain("step-1");
-      expect(wrapper.find('[data-test="group-member-task"]').text()).toContain("Review the patch");
-      expect(wrapper.find('[data-test="group-member-depends"]').text()).toContain("step-0");
-      expect(wrapper.find('[data-test="group-member-blocked"]').text()).toContain("permission");
-      expect(wrapper.find('[data-test="group-waiting-human"]').text()).toContain("new run");
-      expect(wrapper.find('[data-test="group-start-step"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(true);
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const html = document.body.innerHTML;
+      expect(html).toContain("Which branch ships?");
+      expect(html).toContain("24");
+      expect(html).toContain("step-1");
+      expect(html).toContain("Review the patch");
+      expect(html).toContain("step-0");
+      expect(html).toContain("permission");
+      expect(html).toContain("new run");
+      expect(document.body.querySelector('[data-test="group-stop-run-button"]') !== null).toBe(true);
       expect(groups.activeRun?.state).toBe("waiting-human");
+      wrapper.unmount();
     });
-
-    it("stops the exact active run from the card", async () => {
+    // Every row must expose exactly one anchor: the unwrapped member activity
+    // row anchors to its MemberTurn id, the bubble reply row to itself via the
+    // exact message id, and only the request row keeps the request anchor.
+    it("keeps every anchor unique with the activity row anchored to its member", async () => {
       const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        { id: "reply_2", conversationId: "conversation_g", topicId: "topic_1", seq: 3, role: "bot", senderBotId: "bot_b", runId: "run_1", promptRequestId: "p_1", content: "From Tester", createdAt: "now" },
+      ];
       groups.activeRun = {
-        id: "run_stop", conversationId: "conversation_g", topicId: "topic_1",
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
         profileRevision: 1, createdAt: "now",
       };
-      const spy = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "human-explicit",
+          state: "completed", promptRequestId: "p_1", createdAt: "now",
+        },
+      };
       const wrapper = mount(GroupTranscript, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
-      await wrapper.find('[data-test="group-stop-run-button"]').trigger("click");
-      expect(spy).toHaveBeenCalledTimes(1);
-      spy.mockRestore();
+      await flushPromises();
+      const anchors = wrapper.findAll("[data-anchor-id]").map((row) => row.attributes("data-anchor-id"));
+      expect(anchors).toContain("turn_a");
+      expect(anchors.filter((anchor) => anchor === "msg_1")).toHaveLength(1);
+      expect(new Set(anchors).size).toBe(anchors.length);
+      expect(wrapper.get('[data-anchor-id="turn_b"]').attributes("data-row-id")).toBe("reply_2");
+      expect(wrapper.get('[data-anchor-id="turn_b"]').attributes("data-message-id")).toBe("reply_2");
+      wrapper.unmount();
     });
+
+    it("anchors the neutral routing row to its own routing key", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Plan the release", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_route", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+        routingState: "routing", maxMemberTurns: 24, consumedMemberTurns: 0, profileRevision: 1, createdAt: "now",
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const routing = wrapper.find('[data-test="group-routing-row"]');
+      expect(routing.attributes("data-anchor-id")).toBe("routing:run_route");
+      expect(routing.attributes("data-row-id")).toBe("routing:run_route");
+      wrapper.unmount();
+    });
+
+    it("jumps the public Handoff entry to the canonical reply bubble row", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        {
+          id: "handoff_2", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+          role: "system", senderBotId: "bot_a", runId: "run_1", createdAt: "now",
+          content: "Public handoff: Reviewer → Tester\nTask: Review patch\nExpected output: Findings",
+          handoff: {
+            senderMemberTurnId: "turn_a", to: "bot_b", assignmentId: "assignment_b",
+            memberTurnId: "turn_b", task: "Review patch", expectedOutput: "Findings",
+          },
+        },
+        { id: "reply_3", conversationId: "conversation_g", topicId: "topic_1", seq: 3, role: "bot", senderBotId: "bot_b", runId: "run_1", promptRequestId: "p_1", content: "Findings report", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", createdAt: "now",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "followup",
+          state: "completed", promptRequestId: "p_1", assignmentId: "assignment_b", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+        attachTo: document.body,
+      });
+      await flushPromises();
+      const scroller = wrapper.get('[data-test="group-transcript-scroller"]').element as HTMLElement;
+      const row = wrapper.get('[data-message-id="reply_3"]');
+      expect(row.attributes("data-anchor-id")).toBe("turn_b");
+      expect(row.attributes("data-row-id")).toBe("reply_3");
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({ top: 10 } as DOMRect);
+      vi.spyOn(row.element as HTMLElement, "getBoundingClientRect").mockReturnValue({ top: 210 } as DOMRect);
+      scroller.scrollTop = 25;
+      await wrapper.get('[data-test="group-handoff-toggle"]').trigger("click");
+      await wrapper.get('[data-test="group-handoff-jump"]').trigger("click");
+      await flushPromises();
+      // The jump scrolls the bubble row to the viewport top and focuses it.
+      expect(scroller.scrollTop).toBe(225);
+      expect(document.activeElement).toBe(row.element);
+      wrapper.unmount();
+    });
+
   });
 
   describe("GroupTranscript.vue scroll behavior", () => {
@@ -1073,7 +1154,7 @@ describe("Group Components", () => {
     const ROW_H = 60;
     function withRowGeometry(scrollerEl: HTMLElement, getScrollTop: () => number): void {
       const rowsOf = (): HTMLElement[] =>
-        Array.from(scrollerEl.querySelectorAll<HTMLElement>("[data-message-id]"));
+        Array.from(scrollerEl.querySelectorAll<HTMLElement>("[data-message-id],[data-anchor-id]"));
       scrollerEl.getBoundingClientRect = () => (
         { top: 100, bottom: 200, left: 0, right: 0, width: 0, height: VIEWPORT, x: 0, y: 100, toJSON: () => ({}) } as DOMRect
       );
@@ -1090,13 +1171,13 @@ describe("Group Components", () => {
       const originalQueryAll = scrollerEl.querySelectorAll.bind(scrollerEl);
       scrollerEl.querySelectorAll = ((selector: string, ...rest: unknown[]) => {
         const found = (originalQueryAll as (...a: unknown[]) => NodeListOf<HTMLElement>)(selector, ...rest);
-        if (selector === "[data-message-id]") found.forEach(patchRow);
+        if (selector.includes("[data-message-id]") || selector.includes("[data-anchor-id]")) found.forEach(patchRow);
         return found;
       }) as typeof scrollerEl.querySelectorAll;
       const originalQueryOne = scrollerEl.querySelector.bind(scrollerEl);
       scrollerEl.querySelector = ((selector: string, ...rest: unknown[]) => {
         const found = (originalQueryOne as (...a: unknown[]) => HTMLElement | null)(selector, ...rest);
-        if (found && selector.startsWith("[data-message-id")) patchRow(found);
+        if (found && (selector.includes("[data-message-id") || selector.includes("[data-anchor-id"))) patchRow(found);
         return found;
       }) as typeof scrollerEl.querySelector;
       // The container itself must never be treated as a row: guard the two
@@ -1249,6 +1330,63 @@ describe("Group Components", () => {
       loadSpy.mockRestore();
     });
 
+    // The member activity row sits between the request and the oldest plain
+    // rows: the reader parked on it must survive the prepend too, and the
+    // member row is the only anchor carrying the request id's neighbor.
+    it("keeps the member activity row anchored when older history is prepended", async () => {
+      seedGroupSelection();
+      const groups = useGroupsStore();
+      groups.messages = [
+        { id: "msg_request", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "2026-09-01T00:00:00.000Z" },
+      ];
+      groups.newestSeq = 1;
+      groups.oldestSeq = 1;
+      groups.contiguousNewestSeq = 1;
+      groups.hasMoreBefore = true;
+      groups.topicReady = true;
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_request", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const { wrapper, geo } = mountTranscript();
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      // Viewport opens exactly on the activity row: the request row above is
+      // out, so the MemberTurn's own row must be what the anchor locks onto.
+      el.scrollTop = 60;
+      await wrapper.find('[data-test="group-transcript-scroller"]').trigger("scroll");
+      expect(el.querySelector<HTMLElement>('[data-anchor-id="turn_a"]')!.getBoundingClientRect().top).toBe(100);
+      const anchors = Array.from(el.querySelectorAll<HTMLElement>("[data-anchor-id]"))
+        .map((row) => row.getAttribute("data-anchor-id"));
+      expect(anchors).toContain("turn_a");
+      expect(new Set(anchors).size).toBe(anchors.length);
+      const loadSpy = vi.spyOn(useGroupsStore(), "loadOlder").mockImplementation(async () => {
+        const g = useGroupsStore();
+        geo.grow(300);
+        g.messages = [
+          ...Array.from({ length: 5 }, (_, i) => ({
+            id: `msg_old_${i}`, conversationId: "conversation_g", topicId: "topic_1", seq: -4 + i,
+            role: "human" as const, content: "old", createdAt: "2026-08-01T00:00:00.000Z",
+          })),
+          ...g.messages,
+        ];
+      });
+      await wrapper.find('[data-test="group-load-older-button"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      expect(el.scrollTop).toBe(360);
+      expect(el.querySelector<HTMLElement>('[data-anchor-id="turn_a"]')!.getBoundingClientRect().top).toBe(100);
+      loadSpy.mockRestore();
+    });
+
     // REGRESSION (red-first): a live tail message that lands BEFORE the
     // parked older page returns must not consume the pending anchor.
     //
@@ -1322,6 +1460,76 @@ describe("Group Components", () => {
       expect(writes).toEqual([780]);
       expect(geo.content).toBe(1360);
       loadSpy.mockRestore();
+    });
+
+    // A canonical reply promotes the member-activity row in place: the row
+    // count is unchanged (activity -> msg:reply) and recovery/history fires no
+    // live revision, so only the item keys can tell the transcript got taller.
+    const canonicalReply = {
+      id: "msg_reply", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+      role: "bot" as const, runId: "run_1", senderBotId: "bot_a", promptRequestId: "src_t1",
+      content: "Shipped", createdAt: "2026-09-01T00:00:01.000Z",
+    };
+    function seedPromotableActivity(): void {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_req", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "2026-09-01T00:00:00.000Z" },
+      ];
+      groups.newestSeq = 1;
+      groups.oldestSeq = 1;
+      groups.contiguousNewestSeq = 1;
+      groups.topicReady = true;
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_req", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          promptRequestId: "src_t1", state: "running", createdAt: "now",
+        },
+      };
+    }
+    function rowIds(el: HTMLElement): string[] {
+      return Array.from(el.querySelectorAll<HTMLElement>("[data-row-id]"))
+        .map((row) => row.getAttribute("data-row-id") ?? "");
+    }
+
+    it("follows the bottom when a member activity is promoted to its canonical reply", async () => {
+      seedPromotableActivity();
+      const { wrapper, geo } = mountTranscript();
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      const groups = useGroupsStore();
+      // The activity row stands in for the reply that has not landed yet.
+      expect(rowIds(el)).toEqual(["msg_req", "turn_a"]);
+      expect(el.scrollTop).toBe(el.scrollHeight - el.clientHeight);
+      // The canonical row is taller than the activity row it replaces.
+      geo.grow(60);
+      groups.messages = [...groups.messages, canonicalReply];
+      await flushPromises();
+      // Same row count: only the item keys (and the height) changed.
+      expect(rowIds(el)).toEqual(["msg_req", "msg_reply"]);
+      expect(el.scrollTop).toBe(el.scrollHeight - el.clientHeight);
+      expect(el.scrollTop).toBe(960);
+    });
+
+    it("keeps a parked reader in place when a member activity is promoted to its canonical reply", async () => {
+      seedPromotableActivity();
+      const { wrapper, geo } = mountTranscript();
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      const groups = useGroupsStore();
+      // Reader scrolls up out of the follow zone.
+      el.scrollTop = 120;
+      await wrapper.find('[data-test="group-transcript-scroller"]').trigger("scroll");
+      geo.grow(60);
+      groups.messages = [...groups.messages, canonicalReply];
+      await flushPromises();
+      expect(rowIds(el)).toEqual(["msg_req", "msg_reply"]);
+      expect(el.scrollTop).toBe(120);
     });
   });
 

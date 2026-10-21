@@ -1313,6 +1313,18 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.runsGet}: malformed payload`);
       return { run: control.getRun(input.runId) };
     }
+    case MSG.runsDetailsBatch: {
+      const input = parseControlPayload(MSG.runsDetailsBatch, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsDetailsBatch}: malformed payload`);
+      if (typeof control.getRunDetailsBatch !== "function") return errorPayload("unsupported-rpc", "daemon does not support Run history details");
+      return control.getRunDetailsBatch(input);
+    }
+    case MSG.runsTraceGet: {
+      const input = parseControlPayload(MSG.runsTraceGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsTraceGet}: malformed payload`);
+      if (typeof control.getRunTrace !== "function") return errorPayload("unsupported-rpc", "daemon does not support Run traces");
+      return control.getRunTrace(input);
+    }
     case MSG.conversationWorktree: {
       const input = parseControlPayload(MSG.conversationWorktree, payload);
       if (!input) return errorPayload("invalid-payload", "malformed worktree operation");

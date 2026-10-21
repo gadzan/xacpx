@@ -209,6 +209,34 @@ test("a contradictory task scope is refused before publishing a private form", a
   }
 });
 
+test("elicitation preserves optional physical attempt identity and legacy task correlation", async () => {
+  const task = {
+    conversationId: "conv-1", topicId: "topic-1", botId: "bot-a",
+    runId: "run-a", memberTurnId: "member-a",
+  };
+  for (const identity of [
+    {},
+    { attempt: 1 },
+    { sourceTurnId: "source-a" },
+    { attempt: Number.MAX_SAFE_INTEGER, sourceTurnId: "s".repeat(128) },
+  ]) {
+    const outbound: Array<{ type: string; payload: unknown }> = [];
+    const { channel, options } = makeHarness({
+      sendRequest: (type, payload) => {
+        outbound.push({ type, payload });
+        return new Promise<never>(() => {});
+      },
+    });
+    await startStarted(channel, options);
+    void channel.requestElicitation(coreRequest({ conversation: { ...task, ...identity } }));
+    const payload = outbound.find((frame) => frame.type === MSG.interactionRequest)?.payload;
+    expect(payload).toBeDefined();
+    const parsed = parseControlPayload(MSG.interactionRequest, payload);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.conversation).toEqual({ ...task, ...identity });
+  }
+});
+
 test("the schema title AND description are projected, not just the title", async () => {
   // The wire validator allows "message: """ on purpose — "a schema with a good title
   // needs no prose" — so the schema-level text can be the form's ENTIRE question.

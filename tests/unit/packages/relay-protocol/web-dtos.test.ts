@@ -1,10 +1,11 @@
 // tests/unit/packages/relay-protocol/web-dtos.test.ts
-import { expect, test } from "bun:test";
 import {
   WEB_CLIENT_TYPE,
   WEB_EVENT_TYPE,
   decodeEnvelope,
   encodeEnvelope,
+  isRunsDetailsBatchResult,
+  isRunsTraceGetResult,
   parseWebClientMessage,
   parseWebServerEvent,
   validControlEvent,
@@ -12,6 +13,8 @@ import {
   webClientEnvelope,
   webEventEnvelope,
   type FsEntryDto,
+  type ConversationRunHistoryDetailDto,
+  type RunsTraceGetResult,
   type FsListResult,
   type FsSearchHitDto,
   type FsSearchPayload,
@@ -1131,4 +1134,178 @@ test("rejects malformed values for the new tool-step and tool-detail fields", ()
       event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { ...base, detail: badDetail } },
     })).toBeNull();
   }
+});
+
+const historyMember = {
+  id: "member", runId: "r", conversationId: "c", topicId: "t", botId: "bot", batch: 1,
+  memberIndex: 0, attempt: 2, origin: "retry", state: "failed", effect: "read-only",
+  effectProvenance: "declared-enforced", promptRequestId: "prompt", assignmentId: "assignment",
+  task: "Inspect the public files", expectedOutput: "A report", dependsOn: ["prior-member"],
+  failureReason: "blocked", blockedReason: "human-authority-required", createdAt: "now", startedAt: "now", finishedAt: "later",
+} satisfies ConversationRunHistoryDetailDto["memberTurns"][number];
+
+const historyRun = {
+  id: "r", conversationId: "c", topicId: "t", requestMessageId: "m", requestId: "q",
+  mode: "automatic", state: "waiting-human", profileRevision: 3, activeBatch: 1, maxMemberTurns: 12,
+  consumedMemberTurns: 2, failedBotIds: ["bot"], unavailableBotIds: ["offline"], quarantinedBotIds: ["quarantined"],
+  routingState: "done", routingReason: "Needs human input", waitingQuestion: "Which branch?",
+  completionReason: "waiting-for-human", createdAt: "now", startedAt: "now", finishedAt: "later",
+  memberTurns: [historyMember],
+  profileSnapshot: { revision: 3, capturedAt: "now", presentation: {
+    name: "Removed Bot", role: "Reviewer", avatar: { version: 1, kind: "character", shape: "cercle", color: "bleu",
+      expression: "attentif", motion: "off" },
+  } },
+  worktree: { runId: "r", baseCommitSha: "a".repeat(40), disposition: "pending", revision: 1,
+    resources: [{ id: "worktree", botId: "bot", kind: "member", state: "ready", worktreePath: "/public/path", branchRef: "work" }],
+    preview: { id: "preview", createdAt: "now", members: [{ botId: "bot", worktreeId: "worktree", head: "b".repeat(40),
+      tree: "c".repeat(40), files: ["a.ts"], diff: "+public" }] },
+    integration: { id: "integration", generation: 1, operationSource: "control", requestId: "request", previewId: "preview",
+      state: "preparing", resourceId: "worktree", orderedBotIds: ["bot"], patches: ["d".repeat(40)], nextIndex: 0,
+      candidateCommitSha: "e".repeat(40), expectedParent: "a".repeat(40), conflictFiles: [], createdAt: "now", updatedAt: "now" },
+    orphanWorktreePaths: [],
+  },
+} satisfies ConversationRunHistoryDetailDto;
+
+test("history details accepts complete public run metadata and optional historical snapshots", () => {
+  expect(isRunsDetailsBatchResult({ runs: [historyRun], missingRunIds: ["gone"] })).toBe(true);
+  const { profileSnapshot, ...withoutSnapshot } = historyRun;
+  expect(isRunsDetailsBatchResult({ runs: [withoutSnapshot] })).toBe(true);
+  expect(isRunsDetailsBatchResult({ runs: [{ id: "old", conversationId: "c", topicId: "t", requestMessageId: "m",
+    requestId: "q", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now", memberTurns: [] }] })).toBe(true);
+  expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, profileSnapshot: { ...profileSnapshot,
+    presentation: { name: "Text Bot", avatar: { version: 1, kind: "text", value: "B" } } } }] })).toBe(true);
+  expect(isRunsDetailsBatchResult({ runs: [] })).toBe(true);
+});
+
+test("history details rejects malformed run metadata, duplicate identities and foreign member scope", () => {
+  for (const patch of [
+    { id: "" }, { profileRevision: undefined }, { profileRevision: NaN }, { profileRevision: -1 },
+    { activeBatch: 1.5 }, { maxMemberTurns: "12" }, { consumedMemberTurns: -1 },
+    { failedBotIds: ["bot", "bot"] }, { unavailableBotIds: [7] }, { quarantinedBotIds: [""] },
+    { routingState: "unknown" }, { routingReason: {} }, { state: "unknown" }, { extra: 1 },
+    { worktree: { ...historyRun.worktree, runId: "foreign" } },
+    { memberTurns: [historyMember, historyMember] }, { memberTurns: Array(1001).fill(historyMember) },
+  ]) expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, ...patch }] })).toBe(false);
+  for (const patch of [{ id: "" }, { runId: "foreign" }, { conversationId: "foreign" }, { topicId: "foreign" },
+    { botId: "" }, { attempt: 0 }, { attempt: 1.5 }, { batch: -1 }, { memberIndex: -1 }, { effectProvenance: "forged" }]) {
+    expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, memberTurns: [{ ...historyMember, ...patch }] }] })).toBe(false);
+  }
+  for (const bad of [{}, { runs: [historyRun], extra: 1 }, { runs: [historyRun, historyRun] },
+    { runs: [historyRun, { ...historyRun, id: "other", conversationId: "foreign", memberTurns: [], worktree: undefined }] },
+    { runs: [historyRun, { ...historyRun, id: "other", topicId: "foreign", memberTurns: [], worktree: undefined }] },
+    { runs: [historyRun], missingRunIds: [""] }, { runs: [historyRun], missingRunIds: ["gone", "gone"] },
+    { runs: [historyRun], missingRunIds: ["r"] }, { runs: [], missingRunIds: Array(51).fill("gone") },
+    { runs: Array(51).fill(historyRun) },
+    { runs: [{ ...historyRun, routingReason: "界".repeat(700_000) }] }]) {
+    expect(isRunsDetailsBatchResult(bad)).toBe(false);
+  }
+});
+
+test("history details rejects private and raw fields throughout the presentation DTO", () => {
+  for (const forbidden of ["rawInput", "rawOutput", "behavior", "execution", "instructions", "sourceTurnId", "groupExecutionToken"]) {
+    expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, [forbidden]: "private" }] })).toBe(false);
+    expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, memberTurns: [{ ...historyMember, [forbidden]: "private" }] }] })).toBe(false);
+    expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, profileSnapshot: { ...historyRun.profileSnapshot, [forbidden]: {} } }] })).toBe(false);
+    expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, profileSnapshot: { ...historyRun.profileSnapshot,
+      presentation: { ...historyRun.profileSnapshot.presentation, [forbidden]: {} } } }] })).toBe(false);
+  }
+  for (const snapshot of [null, [], { ...historyRun.profileSnapshot, revision: 0 },
+    { ...historyRun.profileSnapshot, presentation: { name: "bot", avatar: { version: 1, kind: "text", value: "B", rawInput: "private" } } },
+    { ...historyRun.profileSnapshot, presentation: { name: "bot", avatar: "old raw avatar" } }]) {
+    expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, profileSnapshot: snapshot }] })).toBe(false);
+  }
+  const worktree = historyRun.worktree;
+  for (const patch of [{ ownerToken: "private" }, { resources: [{ ...worktree.resources[0], gitDir: "private" }] },
+    { preview: { ...worktree.preview, rawOutput: "private" } },
+    { preview: { ...worktree.preview, members: [{ ...worktree.preview.members[0], rawOutput: "private" }] } },
+    { integration: { ...worktree.integration, groupExecutionToken: "private" } }]) {
+    expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, worktree: { ...worktree, ...patch } }] })).toBe(false);
+  }
+});
+
+const tracePage = {
+  memberTurnId: "member", attempt: 2, recordingState: "complete", completenessReason: "terminal-observed",
+  events: [{ seq: 1, kind: "text", payload: { text: "hi" }, createdAt: "now" }],
+  nextSeq: 1, hasMore: false, attempts: [1, 2], plan: [{ content: "Review", status: "completed", priority: "high" }],
+} satisfies RunsTraceGetResult;
+
+test("trace response supports plans, old optional fields and empty pages at persisted cursors", () => {
+  expect(isRunsTraceGetResult(tracePage)).toBe(true);
+  const { attempts, plan, nextSeq, completenessReason, ...oldPage } = tracePage;
+  expect(isRunsTraceGetResult(oldPage)).toBe(true);
+  for (const nextSeq of [undefined, 0, 12]) {
+    expect(isRunsTraceGetResult({ ...tracePage, events: [], nextSeq })).toBe(true);
+  }
+  expect(isRunsTraceGetResult({ ...tracePage, recordingState: "unavailable", events: [], nextSeq: 0, attempts: [], plan: [] })).toBe(true);
+  expect(isRunsTraceGetResult({ ...tracePage, hasMore: true })).toBe(true);
+  expect(isRunsTraceGetResult({ ...tracePage, events: [{ ...tracePage.events[0], seq: 12 }], nextSeq: 12 })).toBe(true);
+});
+
+test("trace response rejects invalid shape, sequence, attempts, plan and page cursors", () => {
+  for (const bad of [{}, { ...tracePage, kind: "x" }, { ...tracePage, memberTurnId: "" },
+    { ...tracePage, attempt: 0 }, { ...tracePage, attempt: 1.5 }, { ...tracePage, recordingState: "done" },
+    { ...tracePage, completenessReason: 4 }, { ...tracePage, completenessReason: "x".repeat(4001) },
+    { ...tracePage, events: {} }, { ...tracePage, hasMore: "false" }, { ...tracePage, weird: 1 },
+    { ...tracePage, nextSeq: 2 }, { ...tracePage, nextSeq: -1 }, { ...tracePage, nextSeq: 0.5 },
+    { ...tracePage, hasMore: true, nextSeq: undefined }, { ...tracePage, hasMore: true, events: [] },
+    { ...tracePage, attempts: [0] }, { ...tracePage, attempts: ["1"] }, { ...tracePage, attempts: [1, 1] },
+    { ...tracePage, attempts: Array.from({ length: 201 }, (_, i) => i + 1) },
+    { ...tracePage, plan: {} }, { ...tracePage, plan: [{ content: "task", status: "done" }] },
+    { ...tracePage, plan: [{ content: "task", status: "pending", priority: "critical" }] },
+    { ...tracePage, plan: [{ content: "task", status: "pending", rawInput: "private" }] },
+    { ...tracePage, plan: [{ content: "x".repeat(16001), status: "pending" }] },
+    { ...tracePage, plan: Array(201).fill(tracePage.plan[0]) },
+  ]) expect(isRunsTraceGetResult(bad)).toBe(false);
+  for (const events of [
+    [{ ...tracePage.events[0], seq: 0 }], [{ ...tracePage.events[0], seq: 1.5 }],
+    [tracePage.events[0], tracePage.events[0]],
+    [{ ...tracePage.events[0], seq: 2 }, tracePage.events[0]],
+    [{ ...tracePage.events[0], payload: { text: 1 } }],
+    [{ ...tracePage.events[0], sourceTurnId: "private" }],
+    [{ ...tracePage.events[0], createdAt: 0 }], [{ ...tracePage.events[0], kind: "raw" }],
+    [{ ...tracePage.events[0], payload: { text: "hi", rawOutput: "private" } }],
+    Array.from({ length: 101 }, (_, i) => ({ ...tracePage.events[0], seq: i + 1 })),
+  ]) expect(isRunsTraceGetResult({ ...tracePage, events, nextSeq: undefined })).toBe(false);
+});
+
+test("trace response accepts normalized tool details and rejects nested private payloads", () => {
+  const step = { toolCallId: "tool", parentToolCallId: "parent", isSubagent: true, toolName: "Bash", kind: "execute",
+    title: "Run", titleIsPath: false, status: "error", durationMs: 42, startedAt: 123, error: "failed",
+    terminalId: "terminal", agentMessageId: "receipt" };
+  const page = (payload: unknown) => ({ ...tracePage, events: [{ seq: 1, kind: "tool", payload, createdAt: "now" }] });
+  for (const detail of [undefined, { type: "diff", path: "a", oldText: "a", newText: "b", instruction: "Fix" },
+    { type: "read", path: "a", lines: "1-2", preview: "a" },
+    { type: "command", command: "pwd", output: "path", exitCode: 1, truncated: false },
+    { type: "search", query: "a", output: "a.ts", count: 1, truncated: true },
+    { type: "text", text: "Report", output: "Result" },
+    { type: "fields", fields: [{ label: "Key", value: "Value" }], output: "Result" }]) {
+    expect(isRunsTraceGetResult(page({ step: { ...step, detail } }))).toBe(true);
+    if (detail !== undefined) for (const field of ["rawInput", "rawOutput", "privateMetadata"]) {
+      expect(isRunsTraceGetResult(page({ step: { ...step, detail: { ...detail, [field]: "private" } } }))).toBe(false);
+    }
+  }
+  for (const badStep of [{ ...step, rawInput: "private" }, { ...step, toolCallId: 1 },
+    { ...step, error: "x".repeat(4001) }, { ...step, durationMs: Infinity },
+    { ...step, detail: { type: "command", command: "pwd", exitCode: Infinity } },
+    { ...step, detail: { type: "fields", fields: [{ label: "Key", value: "Value", rawOutput: "private" }] } }]) {
+    expect(isRunsTraceGetResult(page({ step: badStep }))).toBe(false);
+  }
+  expect(isRunsTraceGetResult(page({ step, rawInput: "private" }))).toBe(false);
+});
+
+test("trace response validates terminal errors and event plans and limits UTF8 bytes", () => {
+  const page = (kind: string, payload: unknown) => ({ ...tracePage, events: [{ seq: 1, kind, payload, createdAt: "now" }] });
+  expect(isRunsTraceGetResult(page("reasoning", { text: "Visible reasoning" }))).toBe(true);
+  expect(isRunsTraceGetResult(page("plan", { entries: tracePage.plan }))).toBe(true);
+  expect(isRunsTraceGetResult(page("plan", { entries: [] }))).toBe(true);
+  expect(isRunsTraceGetResult(page("terminal", { ok: false, cancelled: true, errorMessage: "Cancelled" }))).toBe(true);
+  for (const payload of [{ ok: "yes" }, { ok: true, cancelled: 1 }, { ok: false, errorMessage: {} },
+    { ok: false, errorMessage: "x".repeat(4001) }, { ok: false, rawOutput: "private" }]) {
+    expect(isRunsTraceGetResult(page("terminal", payload))).toBe(false);
+  }
+  expect(isRunsTraceGetResult(page("plan", { entries: [{ content: "task", status: "completed", rawInput: "private" }] }))).toBe(false);
+  expect(isRunsTraceGetResult(page("text", { text: "界".repeat(44_000) }))).toBe(false);
+  expect(isRunsTraceGetResult({ ...tracePage, plan: undefined, events: Array.from({ length: 5 }, (_, i) => ({
+    seq: i + 1, kind: "text", payload: { text: "界".repeat(36_000) }, createdAt: "now",
+  })), nextSeq: 5 })).toBe(false);
 });

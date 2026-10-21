@@ -1,5 +1,7 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { AgentAddressDto, AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, InteractionRequestDto, InteractionSnapshotDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCommandDto, ControlEventDto, ConversationRunHistoryDetailDto, ConversationTurnCorrelationDto, InteractionRequestDto, InteractionSnapshotDto, MemberTurnSummaryDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PlanEntryDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { RunsDetailsBatchResult, RunsTraceGetResult } from "./messages.js";
+import { isBotAvatarConfig } from "./bot-avatar.js";
 import {
   MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
   MAX_DESKTOP_REQUEST_ID_LENGTH,
@@ -580,7 +582,9 @@ function validConversationCorrelation(value: unknown): boolean {
     && typeof c.topicId === "string"
     && typeof c.botId === "string"
     && typeof c.runId === "string"
-    && typeof c.memberTurnId === "string";
+    && typeof c.memberTurnId === "string"
+    && (c.attempt === undefined || (typeof c.attempt === "number" && Number.isSafeInteger(c.attempt) && c.attempt >= 1))
+    && (c.sourceTurnId === undefined || (typeof c.sourceTurnId === "string" && c.sourceTurnId.length > 0 && c.sourceTurnId.length <= 128));
 }
 
 function validExecutionTarget(value: unknown): boolean {
@@ -664,6 +668,8 @@ function validInteractionRequest(value: unknown): boolean {
     if (!optInteractionProductId(conv.runId)) return false;
     if (!optInteractionProductId(conv.memberTurnId)) return false;
     if (!optInteractionProductId(conv.promptRequestId)) return false;
+    if (conv.attempt !== undefined && (typeof conv.attempt !== "number" || !Number.isSafeInteger(conv.attempt) || conv.attempt < 1)) return false;
+    if (conv.sourceTurnId !== undefined && (typeof conv.sourceTurnId !== "string" || !conv.sourceTurnId || conv.sourceTurnId.length > 128)) return false;
     // No hidden runtime alias may travel as a product routing key.
     for (const item of Object.values(conv)) {
       if (typeof item === "string" && item.startsWith("brt_")) return false;
@@ -749,7 +755,7 @@ function validConversationRun(value: unknown): boolean {
     && (c.quarantinedBotIds === undefined
       || (Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))))
     && typeof c.createdAt === "string"
-    && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && optStr(c.completionReason) && optStr(c.routingReason) && optStr(c.startedAt) && optStr(c.finishedAt)
     && (c.waitingQuestion === undefined || (c.mode === "automatic" && c.state === "waiting-human"
       && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0))
     && (c.activeBatch === undefined || typeof c.activeBatch === "number")
@@ -815,6 +821,159 @@ function validMemberTurnSummary(value: unknown): boolean {
     && (c.blockedReason === undefined
       || c.blockedReason === "human-authority-required"
       || c.blockedReason === "human-authority-unknown");
+}
+
+const historyObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const historyId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 128;
+const historyInt = (value: unknown, min = 0): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= min;
+const historyKeys = (value: Record<string, unknown>, allowed: readonly string[]): boolean =>
+  Object.keys(value).every((key) => allowed.includes(key));
+function historyBytes(value: unknown, max: number): boolean {
+  try { return new TextEncoder().encode(JSON.stringify(value)).byteLength <= max; } catch { return false; }
+}
+export function isPublicPlanEntryDto(value: unknown): value is PlanEntryDto {
+  return historyObject(value) && historyKeys(value, ["content", "priority", "status"])
+    && typeof value.content === "string" && value.content.length <= 16000
+    && (value.priority === undefined || value.priority === "high" || value.priority === "medium" || value.priority === "low")
+    && (value.status === "pending" || value.status === "in_progress" || value.status === "completed");
+}
+
+export function isPublicPlanEntriesDto(value: unknown): value is PlanEntryDto[] {
+  return Array.isArray(value) && value.length <= 200 && value.every(isPublicPlanEntryDto);
+}
+
+const historyRunKeys = [
+  "id", "conversationId", "topicId", "requestMessageId", "requestId", "mode", "state", "completionReason",
+  "profileRevision", "activeBatch", "maxMemberTurns", "consumedMemberTurns", "failedBotIds", "unavailableBotIds",
+  "quarantinedBotIds", "routingState", "routingReason", "waitingQuestion", "createdAt", "startedAt", "finishedAt",
+  "memberTurns", "profileSnapshot", "worktree",
+] as const satisfies readonly (keyof ConversationRunHistoryDetailDto)[];
+const historyMemberKeys = [
+  "id", "runId", "conversationId", "topicId", "botId", "batch", "memberIndex", "attempt", "origin", "state",
+  "effect", "effectProvenance", "promptRequestId", "createdAt", "startedAt", "finishedAt", "assignmentId", "task",
+  "expectedOutput", "dependsOn", "failureReason", "blockedReason",
+] as const satisfies readonly (keyof MemberTurnSummaryDto)[];
+
+function historyWorktree(value: unknown, runId: string): boolean {
+  if (!isConversationWorktreeStatus(value) || !historyObject(value)
+    || !historyKeys(value, ["runId", "baseCommitSha", "disposition", "revision", "resources", "preview", "integration", "orphanWorktreePaths"])
+    || value.runId !== runId) return false;
+  if (!value.resources.every(resource => historyKeys(resource,
+    ["id", "botId", "kind", "state", "worktreePath", "branchRef", "snapshotSha", "lastError"]))) return false;
+  if (value.preview !== undefined && (!historyKeys(value.preview, ["id", "createdAt", "members"])
+    || !value.preview.members.every(member => historyKeys(member, ["botId", "worktreeId", "head", "tree", "files", "diff"])))) return false;
+  return value.integration === undefined || historyKeys(value.integration,
+    ["id", "generation", "operationSource", "requestId", "previewId", "state", "resourceId", "orderedBotIds", "patches",
+      "nextIndex", "candidateCommitSha", "expectedParent", "conflictFiles", "createdAt", "updatedAt", "lastError"]);
+}
+
+export function isRunsDetailsBatchResult(value: unknown): value is RunsDetailsBatchResult {
+  if (!historyObject(value) || !historyKeys(value, ["runs", "missingRunIds"]) || !historyBytes(value, 1024 * 1024)
+    || !Array.isArray(value.runs) || value.runs.length > 50) return false;
+  const ids = new Set<string>();
+  const memberIds = new Set<string>();
+  let conversationId: string | undefined;
+  let topicId: string | undefined;
+  for (const run of value.runs) {
+    if (!historyObject(run) || !historyKeys(run, historyRunKeys) || !validConversationRun(run)
+      || !historyId(run.id) || ids.has(run.id) || !historyId(run.conversationId) || !historyId(run.topicId)
+      || !historyId(run.requestMessageId) || !historyId(run.requestId) || !historyInt(run.profileRevision)
+      || (conversationId !== undefined && run.conversationId !== conversationId)
+      || (topicId !== undefined && run.topicId !== topicId)
+      || ![run.activeBatch, run.maxMemberTurns, run.consumedMemberTurns].every(n => n === undefined || historyInt(n))
+      || ![run.failedBotIds, run.unavailableBotIds, run.quarantinedBotIds].every(list => list === undefined
+        || (Array.isArray(list) && list.every(historyId) && new Set(list).size === list.length))
+      || (run.worktree !== undefined && !historyWorktree(run.worktree, run.id))
+      || !Array.isArray(run.memberTurns) || run.memberTurns.length > 1000) return false;
+    ids.add(run.id);
+    conversationId = run.conversationId;
+    topicId = run.topicId;
+    for (const member of run.memberTurns) {
+      if (!historyObject(member) || !historyKeys(member, historyMemberKeys) || !validMemberTurnSummary(member)
+        || !historyId(member.id) || memberIds.has(member.id) || !historyId(member.botId)
+        || member.runId !== run.id || member.conversationId !== run.conversationId || member.topicId !== run.topicId
+        || !historyInt(member.batch) || !historyInt(member.attempt, 1)) return false;
+      memberIds.add(member.id);
+    }
+    if (run.profileSnapshot !== undefined) {
+      const snapshot = run.profileSnapshot;
+      if (!historyObject(snapshot) || !historyKeys(snapshot, ["revision", "capturedAt", "presentation"])
+        || !historyInt(snapshot.revision, 1) || typeof snapshot.capturedAt !== "string" || !historyObject(snapshot.presentation)
+        || !historyKeys(snapshot.presentation, ["name", "avatar", "role"])
+        || typeof snapshot.presentation.name !== "string" || !optStr(snapshot.presentation.role)
+        || (snapshot.presentation.avatar !== undefined && !isBotAvatarConfig(snapshot.presentation.avatar))) return false;
+    }
+  }
+  if (value.missingRunIds === undefined) return true;
+  return Array.isArray(value.missingRunIds) && value.missingRunIds.length <= 50
+    && value.missingRunIds.every(id => historyId(id) && !ids.has(id))
+    && new Set(value.missingRunIds).size === value.missingRunIds.length;
+}
+
+export function isPublicToolStepDto(value: unknown): value is ToolStepDto {
+  if (!historyObject(value) || !validToolStep(value)
+    || !historyKeys(value, ["toolCallId", "parentToolCallId", "isSubagent", "toolName", "kind", "title", "titleIsPath",
+      "status", "detail", "terminalId", "durationMs", "startedAt", "error", "agentMessageId"])
+    || (typeof value.error === "string" && value.error.length > 4000)) return false;
+  if (value.detail === undefined) return true;
+  const detail = value.detail;
+  if (!historyObject(detail)) return false;
+  switch (detail.type) {
+    case "diff": return historyKeys(detail, ["type", "path", "oldText", "newText", "instruction"]);
+    case "read": return historyKeys(detail, ["type", "path", "lines", "preview"]);
+    case "command": return historyKeys(detail, ["type", "command", "output", "exitCode", "truncated"])
+      && (detail.exitCode === undefined || (typeof detail.exitCode === "number" && Number.isFinite(detail.exitCode)));
+    case "search": return historyKeys(detail, ["type", "query", "output", "count", "truncated"]);
+    case "text": return historyKeys(detail, ["type", "text", "output"]);
+    case "fields": return historyKeys(detail, ["type", "fields", "output"])
+      && Array.isArray(detail.fields) && detail.fields.every(field => historyObject(field) && historyKeys(field, ["label", "value"]));
+    default: return false;
+  }
+}
+
+export function isRunsTraceGetResult(value: unknown): value is RunsTraceGetResult {
+  if (!historyObject(value) || !historyKeys(value, ["memberTurnId", "attempt", "recordingState", "completenessReason", "events", "nextSeq", "hasMore", "plan", "attempts"])
+    || !historyBytes(value, 512 * 1024)) return false;
+  const body = value as {
+    memberTurnId: unknown; attempt: unknown; recordingState: unknown; completenessReason: unknown;
+    events: unknown; nextSeq: unknown; hasMore: unknown; plan: unknown; attempts: unknown;
+  };
+  if (!historyId(body.memberTurnId) || !historyInt(body.attempt, 1)
+    || !["recording", "complete", "interrupted", "unavailable"].includes(body.recordingState as string)
+    || !optStr(body.completenessReason) || (typeof body.completenessReason === "string" && body.completenessReason.length > 4000)
+    || typeof body.hasMore !== "boolean" || (body.nextSeq !== undefined && !historyInt(body.nextSeq))
+    || (body.plan !== undefined && !isPublicPlanEntriesDto(body.plan))
+    || (body.attempts !== undefined && (!Array.isArray(body.attempts) || body.attempts.length > 200
+      || !body.attempts.every(attempt => historyInt(attempt, 1))
+      || new Set(body.attempts).size !== body.attempts.length))) return false;
+  if (!Array.isArray(body.events) || body.events.length > 100) return false;
+  const events = body.events as unknown[];
+  let previous = 0;
+  for (const event of events) {
+    if (!historyObject(event) || !historyKeys(event, ["seq", "kind", "payload", "createdAt"])
+      || !historyInt(event.seq, 1) || (event.seq as number) <= previous || typeof event.createdAt !== "string"
+      || !historyObject(event.payload) || !historyBytes(event, 128 * 1024)) return false;
+    previous = event.seq as number;
+    const payload = event.payload;
+    switch (event.kind) {
+      case "text": case "reasoning":
+        if (!historyKeys(payload, ["text"]) || typeof payload.text !== "string") return false;
+        break;
+      case "tool":
+        if (!historyKeys(payload, ["step"]) || !isPublicToolStepDto(payload.step)) return false;
+        break;
+      case "plan": if (!historyKeys(payload, ["entries"]) || !isPublicPlanEntriesDto(payload.entries)) return false; break;
+      case "terminal":
+        if (!historyKeys(payload, ["ok", "cancelled", "errorMessage"]) || typeof payload.ok !== "boolean"
+          || !optBool(payload.cancelled) || !optStr(payload.errorMessage)
+          || (typeof payload.errorMessage === "string" && payload.errorMessage.length > 4000)) return false;
+        break;
+      default: return false;
+    }
+  }
+  return (events.length === 0 || body.nextSeq === undefined || body.nextSeq === previous)
+    && (!body.hasMore || (events.length > 0 && body.nextSeq !== undefined));
 }
 
 /**

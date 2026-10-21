@@ -105,6 +105,7 @@ export interface ConversationRunServiceOptions {
   /** First fatal lease or background-kick failure. Invoked once, synchronously,
    *  with the original value (`undefined` included). Must not throw. */
   onSchedulingFailure?: (error: unknown) => void;
+  onBeforeStoreClose?: () => void;
 }
 
 export interface ConversationHistoryPage {
@@ -147,6 +148,7 @@ export class ConversationRunService {
   private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly onProductEvent?: ConversationProductEventSink;
   private readonly onSchedulingFailure?: (error: unknown) => void;
+  private readonly onBeforeStoreClose?: () => void;
   private closed = false;
 
   constructor(
@@ -174,6 +176,7 @@ export class ConversationRunService {
     this.releaseOwnedSession = options.releaseOwnedSession;
     this.onProductEvent = options.onProductEvent;
     this.onSchedulingFailure = options.onSchedulingFailure;
+    this.onBeforeStoreClose = options.onBeforeStoreClose;
     this.bots.setConversationWork(this.store);
     this.dispatcher.setFatalSchedulingHandler((error) => {
       this.markConsumerUnavailable();
@@ -228,7 +231,11 @@ export class ConversationRunService {
       shutdownError = error;
     }
     try {
-      this.store.close();
+      try {
+        this.onBeforeStoreClose?.();
+      } finally {
+        this.store.close();
+      }
     } catch (error) {
       if (!shutdownFailed) {
         shutdownFailed = true;

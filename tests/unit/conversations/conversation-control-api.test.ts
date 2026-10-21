@@ -206,6 +206,71 @@ test("Control Topic creation persists and projects optional concurrency without 
   await runtime.shutdown();
 });
 
+test("historical batch details omit private profile fields and preserve Topic ownership", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  try {
+    const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const otherBot = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "Trace team", botIds: [bot.id, otherBot.id] });
+    const topic = await control.createGroupTopic(group.id, "Trace history", { workspace: "backend", isolation: "shared" });
+    const conversationId = group.id;
+    const topicId = topic.id;
+    const accepted = await control.promptConversation({ conversationId, topicId, requestId: "history", text: "review", target: { mode: "members", botIds: [bot.id] } });
+    const before = control.listTopicRuns(conversationId, topicId);
+    const result = asPublicControl(control).getRunDetailsBatch({ conversationId, topicId, runIds: ["missing", accepted.run.id] });
+    expect(result.missingRunIds).toEqual(["missing"]);
+    expect(asPublicControl(control).getRunDetailsBatch({ conversationId, topicId, runIds: [accepted.run.id] })).toEqual({ runs: result.runs });
+    expect(result.runs[0]?.profileSnapshot).toEqual({
+      revision: control.getRun(accepted.run.id).profileSnapshot.revision,
+      capturedAt: control.getRun(accepted.run.id).profileSnapshot.capturedAt,
+      presentation: control.getRun(accepted.run.id).profileSnapshot.presentation,
+    });
+    expect(result.runs[0]?.profileSnapshot).not.toHaveProperty("behavior");
+    expect(result.runs[0]?.profileSnapshot).not.toHaveProperty("execution");
+    expect(control.listTopicRuns(conversationId, topicId)).toEqual(before);
+    expect(() => control.getRunDetailsBatch({ conversationId, topicId, runIds: [] })).toThrow();
+    expect(() => control.getRunDetailsBatch({ conversationId, topicId, runIds: [accepted.run.id, accepted.run.id] })).toThrow();
+    const otherSubject = await control.createBot({ name: "Second", agent: "codex", workspace: "backend" });
+    const otherGroup = await control.createGroup({ title: "Other", botIds: [bot.id, otherSubject.id] });
+    const other = await control.createGroupTopic(otherGroup.id, "Other", { workspace: "backend", isolation: "shared" });
+    expect(() => control.getRunDetailsBatch({ conversationId, topicId: other.id, runIds: [accepted.run.id] })).toThrow();
+    expect(() => control.getRunDetailsBatch({ conversationId, topicId: "topic_peer_secret", runIds: [accepted.run.id] })).toThrow();
+  } finally { await runtime.shutdown(); }
+});
+
+test("legacy trace reads report unavailable and reject foreign member and scope identities", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  try {
+    const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const otherBot = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "Trace team", botIds: [bot.id, otherBot.id] });
+    const topic = await control.createGroupTopic(group.id, "Trace history", { workspace: "backend", isolation: "shared" });
+    const conversationId = group.id;
+    const topicId = topic.id;
+    const accepted = await control.promptConversation({ conversationId, topicId, requestId: "trace", text: "review", target: { mode: "members", botIds: [bot.id] } });
+    const member = control.getRun(accepted.run.id).memberTurns[0]!;
+    const input = { conversationId, topicId, runId: accepted.run.id, memberTurnId: member.id, attempt: member.attempt };
+    expect(control.getRunTrace(input)).toEqual({
+      memberTurnId: member.id, attempt: member.attempt,
+      recordingState: "unavailable", completenessReason: "not-recorded", events: [], hasMore: false,
+    });
+    expect(() => control.getRunTrace({ ...input, memberTurnId: "missing" })).toThrow();
+    expect(() => control.getRunTrace({ ...input, attempt: member.attempt + 1 })).toThrow();
+    expect(() => control.getRunTrace({ ...input, limit: 201 })).toThrow();
+    expect(() => control.getRunTrace({ ...input, afterSeq: -1 })).toThrow();
+    expect(() => control.getRunTrace({ ...input, topicId: "topic_peer_secret" })).toThrow();
+    const otherSubject = await control.createBot({ name: "Second", agent: "codex", workspace: "backend" });
+    const otherGroup = await control.createGroup({ title: "Other", botIds: [bot.id, otherSubject.id] });
+    const other = await control.createGroupTopic(otherGroup.id, "Other", { workspace: "backend", isolation: "shared" });
+    expect(() => control.getRunTrace({ ...input, topicId: other.id })).toThrow();
+    const direct = await control.promptConversation({ conversationId: createDirectConversationId(bot.id),
+      topicId: createDirectTopicId(bot.id), requestId: "direct-scope", text: "hello" });
+    expect(() => control.getRunDetailsBatch({ conversationId: direct.conversationId, topicId: direct.topicId, runIds: [direct.run.id] })).toThrow();
+    expect(() => control.getRunTrace({ ...input, conversationId: direct.conversationId, topicId: direct.topicId })).toThrow();
+    expect(control.getRun(direct.run.id).id).toBe(direct.run.id);
+  } finally { await runtime.shutdown(); }
+});
+
 test("dedicated policy Control operation accepts a durable effective ceiling and preserves ingress authority", async () => {
   const { control, runtime, origins, config } = await wire();
   config.transport.adapterVersions = { claude: "0.78.0" };
@@ -652,12 +717,14 @@ test("turn events carry exact Conversation/Run/MemberTurn join identity", async 
   });
   await waitUntil(() => control.getRun(accepted.run.id).state === "completed");
   const started = seen.find((event) => event.type === "turn-started");
-  expect(started?.type === "turn-started" ? started.conversation : undefined).toEqual({
+  expect(started?.type === "turn-started" ? started.conversation : undefined).toMatchObject({
     conversationId,
     topicId,
     botId: bot.id,
     runId: accepted.run.id,
     memberTurnId: accepted.memberTurn.id,
+    attempt: accepted.memberTurn.attempt,
+    sourceTurnId: control.getRun(accepted.run.id).memberTurns[0]?.promptRequestId,
   });
   expect(started?.type === "turn-started" ? started.promptRequestId : undefined).toBe(
     control.getRun(accepted.run.id).memberTurns[0]?.promptRequestId,

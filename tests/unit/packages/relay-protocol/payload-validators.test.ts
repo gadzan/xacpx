@@ -528,3 +528,37 @@ test("jev-not-configured is a legal router failure code", () => {
     reason: { code: "jev-not-configured", message: "Automatic collaboration needs a Jev API key." },
   })).toMatchObject({ status: "failed", reason: { code: "jev-not-configured" } });
 });
+
+test("scoped runs history requests are bounded, unique, and reject unknown keys", () => {
+  expect(MSG.runsDetailsBatch).toBe("control.runs.details.batch");
+  expect(MSG.runsTraceGet).toBe("control.runs.trace.get");
+  const batch = { conversationId: "c", topicId: "t", runIds: ["r1", "r2"] };
+  expect(parseControlPayload(MSG.runsDetailsBatch, batch)).toEqual(batch);
+  for (const bad of [{}, { ...batch, runIds: [] },
+    { ...batch, runIds: Array.from({ length: 51 }, (_, i) => `r${i}`) },
+    { ...batch, runIds: ["r1", "r1"] }, { ...batch, runIds: [""] },
+    { ...batch, runIds: ["r1"], conversationId: "" }, { ...batch, extra: 1 }]) {
+    expect(parseControlPayload(MSG.runsDetailsBatch, bad)).toBeNull();
+  }
+  const trace = { conversationId: "c", topicId: "t", runId: "r", memberTurnId: "m", attempt: 2 };
+  expect(parseControlPayload(MSG.runsTraceGet, trace)).toEqual(trace);
+  expect(parseControlPayload(MSG.runsTraceGet, { ...trace, afterSeq: 0, limit: 200 })).not.toBeNull();
+  for (const bad of [{}, { ...trace, attempt: 0 }, { ...trace, attempt: 1.5 },
+    { ...trace, attempt: NaN }, { ...trace, attempt: Infinity },
+    { ...trace, limit: 0 }, { ...trace, limit: 201 }, { ...trace, afterSeq: -1 },
+    { ...trace, memberTurnId: "" }, { ...trace, unknown: true }]) {
+    expect(parseControlPayload(MSG.runsTraceGet, bad)).toBeNull();
+  }
+});
+
+test("additive correlation attempt identity accepts legacy shapes and rejects empty ids", () => {
+  const legacy = { conversationId: "c", topicId: "t" };
+  const permission = { title: "allow", availableOutcomes: ["allow_once"] };
+  expect(parseControlPayload(MSG.interactionRequest, { ...legacy, requestId: "r", kind: "permission", expiresAt: 1, permission })).not.toBeNull();
+  expect(parseControlPayload(MSG.interactionRequest,
+    { ...legacy, requestId: "r", kind: "permission", expiresAt: 1, permission, conversation: { ...legacy, attempt: 3, sourceTurnId: "s" } })).not.toBeNull();
+  expect(parseControlPayload(MSG.interactionRequest,
+    { ...legacy, requestId: "r", kind: "permission", expiresAt: 1, permission, conversation: { ...legacy, attempt: 0 } })).toBeNull();
+  expect(parseControlPayload(MSG.interactionRequest,
+    { ...legacy, requestId: "r", kind: "permission", expiresAt: 1, permission, conversation: { ...legacy, sourceTurnId: "" } })).toBeNull();
+});

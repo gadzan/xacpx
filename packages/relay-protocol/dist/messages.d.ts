@@ -1,5 +1,5 @@
 import type { BotAvatarConfig } from "./bot-avatar.js";
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunHistoryDetailDto, ConversationRunTraceDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
 import type { JevSettingsDto, JevTestResult } from "./jev-settings.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
@@ -131,6 +131,8 @@ export declare const MSG: {
     readonly conversationBindingsDelete: "control.conversation.bindings.delete";
     readonly conversationHistory: "control.conversation.history";
     readonly runsGet: "control.runs.get";
+    readonly runsDetailsBatch: "control.runs.details.batch";
+    readonly runsTraceGet: "control.runs.trace.get";
     readonly runsList: "control.runs.list";
     readonly runsCancel: "control.runs.cancel";
     /**
@@ -642,6 +644,25 @@ export interface RunsGetPayload {
 export interface RunsGetResult {
     run: ConversationRunDetailDto;
 }
+export interface RunsDetailsBatchPayload {
+    conversationId: string;
+    topicId: string;
+    runIds: string[];
+}
+export interface RunsDetailsBatchResult {
+    runs: ConversationRunHistoryDetailDto[];
+    missingRunIds?: string[];
+}
+export interface RunsTraceGetPayload {
+    conversationId: string;
+    topicId: string;
+    runId: string;
+    memberTurnId: string;
+    attempt: number;
+    afterSeq?: number;
+    limit?: number;
+}
+export type RunsTraceGetResult = ConversationRunTraceDto;
 export interface RunsListPayload {
     conversationId: string;
     topicId: string;

@@ -291,6 +291,50 @@ test("instances: pairing token, list with online flag, account isolation, rpc st
   })).status).toBe(404);
 });
 
+test("scoped runs history/trace RPCs forward to the instance connector unchanged and preserve payload", async () => {
+  const { app, instances, loginToken, login, rpcCalls } = await makeApp({
+    sendRequest: async (_instanceId, type, payload) => ({ ok: true, type, payload }),
+  });
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+  for (const [type, payload] of [
+    [MSG.runsDetailsBatch, { conversationId: "c", topicId: "t", runIds: ["r_1"] }],
+    [MSG.runsTraceGet, { conversationId: "c", topicId: "t", runId: "r_1", memberTurnId: "m_1", attempt: 1, limit: 25 }],
+  ] as const) {
+    rpcCalls.length = 0;
+    const rpcRes = await app.request(`/api/instances/${redeemed.instanceId}/rpc`, {
+      method: "POST", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ type, payload }),
+    });
+    expect(rpcRes.status).toBe(200);
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0]?.type).toBe(type);
+    expect(rpcCalls[0]?.payload).toEqual(payload);
+    const body = (await rpcRes.json()) as { result?: unknown };
+    expect(body.result).toEqual({ ok: true, type, payload });
+  }
+});
+test("scoped runs trace RPC preserves optional paging when old connector payloads omit it", async () => {
+  const { app, instances, loginToken, login, rpcCalls } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+  const payload = { conversationId: "c", topicId: "t", runId: "r_1", memberTurnId: "m_1", attempt: 1, afterSeq: 7 };
+  const rpcRes = await app.request(`/api/instances/${redeemed.instanceId}/rpc`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.runsTraceGet, payload }),
+  });
+  expect(rpcRes.status).toBe(200);
+  expect(rpcCalls[0]?.payload).toEqual(payload);
+});
+
 test("conversation.prompt Hub-stamps humanIngress from the authenticated account and stays instance-scoped", async () => {
   const { app, instances, loginToken, login, rpcCalls, admin } = await makeApp();
   const { cookie } = await login(loginToken);
