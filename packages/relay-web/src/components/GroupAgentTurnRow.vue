@@ -15,9 +15,10 @@ import { botAvatarState } from "../lib/bot-avatar-state";
 
 /**
  * One MemberTurn's ordinary Bot-like activity/reply row (frozen spec §3.1/3.2):
- * leading configured 32px avatar, Bot name, thought-bubble trigger below the
- * name, and the final public reply Markdown under the bubble. Hidden reasoning
- * and tool text never leak into the copied canonical reply.
+ * leading configured 32px avatar, Bot name, the member's task as one quiet
+ * line, the status entry below the name, and the final public reply Markdown
+ * under the entry. Hidden reasoning and tool text never leak into the copied
+ * canonical reply.
  */
 const props = defineProps<{
   /** Durable MemberTurn owning this row. */
@@ -28,7 +29,7 @@ const props = defineProps<{
   message?: ConversationMessageDto;
   /** Localized bot display name (retirement-aware). */
   name: string;
-  /** Whether this bubble currently owns the open detail popover. */
+  /** Whether this entry currently owns the open detail popover. */
   expanded?: boolean;
   /** id of the popover element this trigger controls. */
   controls?: string;
@@ -63,6 +64,14 @@ const bubbleStatus = computed<BubbleStatus>(() => {
 const bubbleLabel = computed(() =>
   t("group.bubble.openDetail", { name: props.name }),
 );
+
+/** The task is one quiet line: enough to know what this member was asked for,
+ *  never the whole assignment, which stays in the detail. */
+const taskHint = computed(() => {
+  const task = props.memberTurn.task?.trim();
+  if (!task) return undefined;
+  return task.length > 60 ? `${task.slice(0, 60)}…` : task;
+});
 
 const avatarState = computed(() =>
   botAvatarState({
@@ -103,6 +112,9 @@ defineExpose({ bubbleStatus });
         :retired="bot?.retired"
       />
     </template>
+    <p v-if="taskHint" class="w-full text-xs leading-relaxed text-fg-muted" data-test="group-member-task-hint">
+      {{ taskHint }}
+    </p>
     <AgentThinkingBubble
       :status="bubbleStatus"
       :label="bubbleLabel"

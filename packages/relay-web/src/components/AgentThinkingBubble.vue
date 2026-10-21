@@ -3,10 +3,13 @@ import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 
 /**
- * Compact animated thought-bubble trigger (frozen spec §3.1).
- * A small thought outline with three staggered dots; pulses in running/streaming
- * states only, static (still actionable) once finished. The clickable region is
- * >= 44x44 CSS px; reduced-motion turns the pulse off.
+ * Compact status entry for one member turn (frozen spec §3.1).
+ *
+ * The entry reads as "icon + short status", so a reader can tell who is
+ * working and what state they are in without opening anything. The thought
+ * outline pulses in running/streaming states only and stays actionable once
+ * finished. The clickable region is >= 44x44 CSS px; reduced-motion turns the
+ * pulse off.
  */
 export type BubbleStatus =
   | "queued"
@@ -16,13 +19,14 @@ export type BubbleStatus =
   | "failed"
   | "cancelled"
   | "indeterminate"
+  | "waiting"
   | "routing";
 
 const props = defineProps<{
   status: BubbleStatus;
   /** Accessible name; localized by the caller so titles stay in one place. */
   label: string;
-  /** True when this bubble currently owns the open detail popover. */
+  /** True when this entry currently owns the open detail popover. */
   expanded?: boolean;
   /** id of the popover element this trigger controls. */
   controls?: string;
@@ -41,13 +45,14 @@ function onToggle(event: MouseEvent): void {
 
 const stateTitle = computed(() => {
   switch (props.status) {
-    case "queued": return t("bot.run.queued");
-    case "running": return t("bot.run.running");
-    case "streaming": return t("bot.run.running");
-    case "done": return t("group.run.memberCompleted");
-    case "failed": return t("bot.run.failed");
-    case "cancelled": return t("bot.run.cancelled");
-    case "indeterminate": return t("bot.run.indeterminate");
+    case "queued": return t("group.bubble.status.queued");
+    case "running": return t("group.bubble.status.running");
+    case "streaming": return t("group.bubble.status.running");
+    case "done": return t("group.bubble.status.done");
+    case "failed": return t("group.bubble.status.failed");
+    case "cancelled": return t("group.bubble.status.cancelled");
+    case "indeterminate": return t("group.bubble.status.indeterminate");
+    case "waiting": return t("group.bubble.status.waiting");
     case "routing": return t("group.bubble.status.routing");
   }
 });
@@ -61,7 +66,7 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
     data-test="agent-thinking-bubble"
     class="group-bubble-trigger"
     :class="[`is-${status}`, { 'is-pulsing': pulsing, 'is-expanded': expanded }]"
-    :aria-label="label"
+    :aria-label="`${label} — ${stateTitle}`"
     aria-haspopup="dialog"
     :aria-expanded="expanded === true"
     :aria-controls="controls"
@@ -79,42 +84,45 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
       <circle class="group-bubble-dot" cx="10.7" cy="20.6" r="0.95" fill="currentColor" />
       <circle class="group-bubble-dot" cx="13.3" cy="22.1" r="0.75" fill="currentColor" />
     </svg>
+    <span class="group-bubble-status" aria-hidden="true">{{ stateTitle }}</span>
     <span v-if="attempt !== undefined && attempt > 1" class="group-bubble-attempt" aria-hidden="true">{{ attempt }}</span>
-    <span class="sr-only">{{ stateTitle }}</span>
   </button>
 </template>
 
 <style scoped>
 .group-bubble-trigger {
-  position: relative;
-  display: inline-grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 44px;
+  min-height: 44px;
+  max-width: 100%;
   margin: 0;
-  padding: 0;
+  padding: 0 10px;
   color: rgb(var(--c-fg-muted));
   background: transparent;
   border: none;
+  border-radius: 12px;
   cursor: pointer;
-  transition: color 120ms ease;
+  transition: color 160ms ease, background-color 160ms ease;
 }
-/* Hover/active paint stays on the inner chip: the 44px hit target is fully
-   clickable, but nothing wider than the glyph ever changes color, so a hover
-   on the trigger cannot read as a highlight of the neighbouring reply. */
-.group-bubble-trigger::before {
-  content: "";
-  position: absolute;
-  inset: 8px;
-  border-radius: 10px;
-  background: transparent;
-  transition: background-color 120ms ease, transform 120ms ease;
+/* The painted surface is the entry itself, so the visible chip and the hit
+   target never disagree about what is clickable. */
+.group-bubble-trigger:hover { color: rgb(var(--c-fg)); background: rgb(var(--c-fg) / 0.05); }
+.group-bubble-trigger:active { transform: scale(0.98); }
+.group-bubble-trigger:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; }
+.group-bubble-icon { width: 18px; height: 18px; flex: none; }
+.group-bubble-status {
+  display: block;
+  min-width: 0;
+  max-width: 11rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 500;
 }
-.group-bubble-trigger:hover { color: rgb(var(--c-fg)); }
-.group-bubble-trigger:hover::before { background: rgb(var(--c-fg) / 0.05); }
-.group-bubble-trigger:active::before { transform: scale(0.94); }
-.group-bubble-trigger:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; border-radius: 12px; }
-.group-bubble-icon { position: relative; width: 18px; height: 18px; }
 .group-bubble-dot { opacity: 0.9; }
 .is-pulsing .group-bubble-dot { animation: bubble-dot 1.4s ease-in-out infinite; }
 .is-pulsing .group-bubble-dot:nth-of-type(2) { animation-delay: 0.2s; }
@@ -124,32 +132,33 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
   50% { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .group-bubble-trigger { transition: none; }
   .is-pulsing .group-bubble-dot { animation: none; }
 }
-/* Understated state coloration — never color alone (the localized title and
-   detail carry the meaning; the outline shape is identical). */
+/* Understated state coloration — never color alone (the visible status word
+   carries the meaning; the outline shape is identical). */
+.is-running, .is-queued, .is-routing { color: rgb(var(--c-accent)); }
+.is-waiting { color: rgb(var(--c-warn)); }
 .is-failed { color: rgb(var(--c-danger)); }
 .is-cancelled { color: rgb(var(--c-fg-muted)); }
 .is-indeterminate { color: rgb(var(--c-warn)); }
 .is-done { color: rgb(var(--c-fg-muted)); }
-/* Open state echoes hover: a slightly stronger inner chip, no full-width paint. */
-.is-expanded { color: rgb(var(--c-accent)); }
-.is-expanded::before { background: rgb(var(--c-accent) / 0.1); }
-/* Retry hint: a small corner digit, not color or animation — an attempt count
-   is data, not a state. Sits inside the inner chip's corner so the badge never
-   visually attaches to the neighbouring reply. */
+/* Open state echoes hover: a slightly stronger chip, no full-width paint. */
+.is-expanded { color: rgb(var(--c-accent)); background: rgb(var(--c-accent) / 0.1); }
+/* Retry hint: a small digit, not color or animation — an attempt count is
+   data, not a state. It rides next to the status so it can never be read as
+   belonging to the neighbouring reply. */
 .group-bubble-attempt {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  min-width: 14px;
-  height: 14px;
-  border-radius: 7px;
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding-inline: 4px;
+  border-radius: 8px;
   background: rgb(var(--c-accent) / 0.16);
   color: rgb(var(--c-accent));
   font-size: 9px;
-  line-height: 14px;
+  line-height: 1;
   font-weight: 600;
-  text-align: center;
 }
 </style>

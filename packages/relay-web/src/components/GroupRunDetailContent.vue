@@ -14,11 +14,12 @@ import type { TraceReplayStatus } from "../lib/group-run-presentation";
 
 /**
  * Member/Run detail inside the anchored popover (frozen spec §3.4).
- * Everything the old run card showed lives here: member status, assignment and
- * task, attempt, duration, failure/blocked reason, expected output, recorded
- * TurnParts, Run state/reason/budget/routing decision, Plan, worktree/shared
- * workspace note, and the waiting-human question. The Run-level Stop lives in
- * the popover header and targets the whole exact active Run — never one member.
+ *
+ * Reading order is deliberate: who this is and what they were asked for, then
+ * the recorded process, then the run-wide material (plan, routing, workspace,
+ * siblings) behind a disclosure. Everything the old run card showed still
+ * lives here; only the emphasis changed. The Run-level Stop lives in the
+ * popover header and targets the whole exact active Run — never one member.
  */
 const props = defineProps<{
   run: ConversationRunDto;
@@ -139,10 +140,9 @@ function selectAttempt(event: Event): void {
 </script>
 
 <template>
-  <div class="flex flex-col gap-2 text-sm" data-test="group-run-detail">
-    <!-- Member header: identity + attempt + duration + state -->
+  <div class="flex flex-col gap-3 text-sm" data-test="group-run-detail">
+    <!-- Who this is and what they were asked for. -->
     <div v-if="memberTurn" class="min-w-0">
-      <p v-if="memberName" data-test="group-member-name" class="mb-1 font-medium text-fg">{{ memberName }}</p>
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <span
           v-if="!historicalAttempt"
@@ -175,31 +175,30 @@ function selectAttempt(event: Event): void {
           {{ $t("group.detail.duration", { duration }) }}
         </span>
       </div>
+      <p v-if="memberTurn.task" data-test="group-member-task" class="mt-2 break-words text-sm leading-relaxed text-fg">
+        {{ memberTurn.task }}
+      </p>
       <p v-if="memberTurn.assignmentId" data-test="group-member-assignment" class="mt-1 break-words text-xs text-fg-muted">
         {{ $t("group.run.assignment") }} {{ memberTurn.assignmentId }}
       </p>
-      <p v-if="memberTurn.task" data-test="group-member-task" class="break-words text-xs text-fg">
-        {{ memberTurn.task }}
-      </p>
-      <p v-if="memberTurn.expectedOutput" data-test="group-member-expected" class="break-words text-xs text-fg-muted">
+      <p v-if="memberTurn.expectedOutput" data-test="group-member-expected" class="mt-1 break-words text-xs text-fg-muted">
         {{ $t("group.detail.expectedOutput") }} {{ memberTurn.expectedOutput }}
       </p>
-      <p v-if="memberTurn.dependsOn?.length" data-test="group-member-depends" class="break-words text-xs text-fg-muted">
+      <p v-if="memberTurn.dependsOn?.length" data-test="group-member-depends" class="mt-1 break-words text-xs text-fg-muted">
         {{ $t("group.run.dependsOn") }} {{ memberTurn.dependsOn.join(", ") }}
       </p>
-      <p v-if="memberTurn.blockedReason" data-test="group-member-blocked" class="break-words text-xs text-warning">
+      <p v-if="memberTurn.blockedReason" data-test="group-member-blocked" class="mt-1 break-words text-xs text-warning">
         {{ memberTurn.blockedReason === "human-authority-required"
           ? $t("group.run.blockedHumanRequired")
           : $t("group.run.blockedHumanUnknown") }}
       </p>
-      <p v-if="memberTurn.failureReason && !historicalAttempt" data-test="group-member-failure" class="break-words text-xs text-danger">
+      <p v-if="memberTurn.failureReason && !historicalAttempt" data-test="group-member-failure" class="mt-1 break-words text-xs text-danger">
         {{ memberTurn.failureReason }}
       </p>
     </div>
 
-    <!-- Waiting-human: question + existing guidance only; no invented resume. -->
-    <!-- Stop feedback stays at the top of the card: the user closed the run
-         deliberately and needs its outcome without scrolling past a trace. -->
+    <!-- Stop feedback stays at the top: the user closed the run deliberately
+         and needs its outcome without scrolling past a trace. -->
     <p v-if="run.state === 'cancelled'" data-test="group-detail-stopped" class="rounded-lg bg-surface/50 px-2.5 py-2 text-xs leading-relaxed text-fg-muted">
       {{ $t("group.detail.stoppedNote") }}
     </p>
@@ -254,37 +253,44 @@ function selectAttempt(event: Event): void {
       </div>
     </div>
 
-    <!-- Plan -->
+    <!-- Plan: the run's own plan, kept near the process it explains. -->
     <PlanPanel v-if="plan && plan.length" :entries="plan" class="w-full" />
 
-    <!-- Run metadata -->
-    <div class="space-y-1 rounded-lg bg-surface/50 p-2.5 text-xs text-fg-muted" data-test="group-detail-run">
-      <p class="flex items-center gap-1.5 font-medium text-fg">
-        <component :is="stateIcon" v-if="stateIcon" :size="12"
-                   :class="run.state === 'running' ? 'animate-spin motion-reduce:animate-none' : ''" />
-        <span>{{ runStateLabel }}</span>
-        <span v-if="run.completionReason" class="font-normal text-fg-muted">· {{ run.completionReason }}</span>
-      </p>
-      <p v-if="run.mode === 'automatic' && run.routingReason" data-test="group-run-routing-reason" class="break-words">
-        {{ run.routingReason }}
-      </p>
-      <p v-if="run.maxMemberTurns !== undefined" data-test="group-run-budget">
-        {{ $t("group.run.budget", { consumed: run.consumedMemberTurns ?? 0, max: run.maxMemberTurns }) }}
-      </p>
-      <p v-if="run.routingState && run.mode === 'automatic'" class="break-words">
-        {{ $t("group.detail.routingState", { state: run.routingState }) }}
-      </p>
-      <p data-test="group-detail-workspace">{{ $t(run.worktree ? "group.detail.worktree" : "group.detail.sharedWriter") }}</p>
-      <p v-if="siblingSummaries?.length" class="break-words">
-        {{ $t("group.detail.siblings") }}:
-        <template v-for="(sibling, i) in siblingSummaries" :key="i">
-          <span v-if="i > 0"> · </span>
-          <span class="text-fg">{{ sibling.name }}</span>
-          <span> ({{ sibling.state }})</span>
-        </template>
-      </p>
-      <p v-if="completenessReason && !memberTurn" class="break-words italic">{{ completenessReason }}</p>
-    </div>
+    <!-- Run-wide material: secondary by default so it never competes with the
+         member's own process. -->
+    <details class="group-run-metadata text-xs text-fg-muted" data-test="group-detail-run">
+      <summary class="flex cursor-pointer items-center justify-between rounded-md py-1.5 font-medium text-fg-muted outline-none focus-visible:ring-2 focus-visible:ring-accent">
+        <span>{{ $t("group.detail.runInfo") }}</span>
+        <span aria-hidden="true" class="text-fg-muted">+</span>
+      </summary>
+      <div class="mt-1.5 space-y-1 rounded-lg bg-surface/50 p-2.5">
+        <p class="flex items-center gap-1.5 font-medium text-fg">
+          <component :is="stateIcon" v-if="stateIcon" :size="12"
+                     :class="run.state === 'running' ? 'animate-spin motion-reduce:animate-none' : ''" />
+          <span>{{ runStateLabel }}</span>
+          <span v-if="run.completionReason" class="font-normal text-fg-muted">· {{ run.completionReason }}</span>
+        </p>
+        <p v-if="run.mode === 'automatic' && run.routingReason" data-test="group-run-routing-reason" class="break-words">
+          {{ run.routingReason }}
+        </p>
+        <p v-if="run.maxMemberTurns !== undefined" data-test="group-run-budget">
+          {{ $t("group.run.budget", { consumed: run.consumedMemberTurns ?? 0, max: run.maxMemberTurns }) }}
+        </p>
+        <p v-if="run.routingState && run.mode === 'automatic'" class="break-words">
+          {{ $t("group.detail.routingState", { state: run.routingState }) }}
+        </p>
+        <p data-test="group-detail-workspace">{{ $t(run.worktree ? "group.detail.worktree" : "group.detail.sharedWriter") }}</p>
+        <p v-if="siblingSummaries?.length" class="break-words">
+          {{ $t("group.detail.siblings") }}:
+          <template v-for="(sibling, i) in siblingSummaries" :key="i">
+            <span v-if="i > 0"> · </span>
+            <span class="text-fg">{{ sibling.name }}</span>
+            <span> ({{ sibling.state }})</span>
+          </template>
+        </p>
+        <p v-if="completenessReason && !memberTurn" class="break-words italic">{{ completenessReason }}</p>
+      </div>
+    </details>
 
     <!-- Run-level Stop: whole exact active Run, all members. -->
     <p v-if="canStop" data-test="group-stop-explanation" class="text-xs text-fg-muted">

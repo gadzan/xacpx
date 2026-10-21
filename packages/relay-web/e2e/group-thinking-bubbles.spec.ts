@@ -206,12 +206,17 @@ for (const theme of ["light", "dark"] as const) {
     await replyTrigger.hover();
     await expect(replyRow).not.toHaveClass(/is-detail-open/);
     await expect(reply).not.toHaveClass(/turn-reply-wash/);
+    // The entry paints its own surface (no separate inner chip), so the
+    // visible chip and the hit target are the same box.
     const bubblePaint = await trigger.evaluate((el) => {
-      const before = getComputedStyle(el, "::before");
-      return { inset: before.inset, radius: before.borderRadius };
+      const style = getComputedStyle(el);
+      return { radius: style.borderRadius, display: style.display };
     });
-    expect(bubblePaint.inset).toBe("8px");
-    expect(bubblePaint.radius).toBe("10px");
+    expect(bubblePaint.radius).toBe("12px");
+    expect(bubblePaint.display).toBe("inline-flex");
+    // The status word is visible without opening anything: the reader can tell
+    // which state the member is in straight from the transcript.
+    await expect(trigger).toContainText("Working");
     await expectInsideViewport(page);
     const hitArea = await trigger.boundingBox();
     expect(hitArea!.width).toBeGreaterThanOrEqual(44);

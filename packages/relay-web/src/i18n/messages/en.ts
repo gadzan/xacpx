@@ -1057,6 +1057,13 @@ export default {
       routingLabel: "Open routing detail",
       routingTitle: "The Router is choosing members",
       status: {
+        queued: "Queued",
+        running: "Working",
+        done: "Completed",
+        failed: "Failed",
+        cancelled: "Cancelled",
+        indeterminate: "Outcome unknown",
+        waiting: "Needs you",
         routing: "Choosing members",
       },
       unresolvedAmbiguous: "This reply could not be linked to exactly one member turn of the same run, so no process is attached.",
@@ -1065,7 +1072,8 @@ export default {
       unresolvedNoMember: "No member turn of the recorded run matches this reply, so no process is attached.",
     },
     detail: {
-      title: "Process detail",
+      title: "Run process",
+      runInfo: "Run information",
       close: "Close detail",
       loading: "Loading recorded process…",
       attempt: "Attempt {attempt}",

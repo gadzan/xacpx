@@ -549,19 +549,18 @@ async function handleLoadOlder(): Promise<void> {
           :data-anchor-id="`routing:${item.run.run.id}`"
           :data-run-id="item.run.run.id"
         >
-          <div class="flex items-start gap-2">
+          <div class="min-w-0">
+            <p class="text-xs font-medium text-fg-muted">{{ $t("group.bubble.routingTitle") }}</p>
             <AgentThinkingBubble
-              status="routing"
+              :status="item.run.run.state === 'waiting-human' ? 'waiting' : 'routing'"
               :label="$t('group.bubble.routingLabel')"
               :expanded="openDetailKey === routingKeyOf(item.run.run.id)"
               :controls="openDetailKey === routingKeyOf(item.run.run.id) ? detailId : undefined"
               @toggle="handleToggle(routingKeyOf(item.run.run.id), $event)"
             />
-            <div class="min-w-0 flex-1">
-              <p class="text-xs font-medium text-fg-muted">{{ $t("group.bubble.routingTitle") }}</p>
-              <p v-if="item.run.run.routingReason" class="mt-0.5 break-words text-xs text-fg-muted">{{ item.run.run.routingReason }}</p>
-              <p v-if="item.explanation" class="mt-0.5 text-xs text-warning">{{ explanationText(item.explanation) }}</p>
-            </div>
+            <p v-if="item.run.run.waitingQuestion" class="mt-0.5 break-words text-xs text-fg">{{ item.run.run.waitingQuestion }}</p>
+            <p v-if="item.run.run.routingReason" class="mt-0.5 break-words text-xs text-fg-muted">{{ item.run.run.routingReason }}</p>
+            <p v-if="item.explanation" class="mt-0.5 text-xs text-warning">{{ explanationText(item.explanation) }}</p>
           </div>
         </TranscriptRow>
 

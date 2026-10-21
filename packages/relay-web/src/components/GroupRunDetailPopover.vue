@@ -200,12 +200,20 @@ const style = computed(() => ({
         :data-member-turn-id="memberTurn?.id"
         :data-attempt="attempt"
         role="dialog"
-        :aria-label="$t('group.detail.title')"
+        :aria-label="memberName ? `${memberName} · ${$t('group.detail.title')}` : $t('group.detail.title')"
         :style="style"
         :data-placement="placement.placement"
       >
         <div class="flex shrink-0 items-center justify-between gap-2 border-b border-fg/5 px-3 py-2">
-          <span class="truncate text-xs font-semibold text-fg-muted">{{ $t("group.detail.title") }}</span>
+          <div class="min-w-0">
+            <!-- Who the detail belongs to first, so a reader never has to
+                 guess which member they are looking at. -->
+            <template v-if="memberName">
+              <span class="block truncate text-xs font-semibold text-fg">{{ memberName }}</span>
+              <span class="block truncate text-[11px] text-fg-muted">{{ $t("group.detail.title") }}</span>
+            </template>
+            <span v-else class="block truncate text-xs font-semibold text-fg">{{ $t("group.detail.title") }}</span>
+          </div>
           <!-- Reachable without scrolling the trace: a stalled Run is stopped
                from the card's first row, not from underneath recorded output. -->
           <button
@@ -230,7 +238,7 @@ const style = computed(() => ({
             <X :size="14" />
           </button>
         </div>
-        <div ref="scrollEl" class="group-detail-scroll px-3 py-2" @scroll.passive="memoizeScroll">
+        <div ref="scrollEl" class="group-detail-scroll thin-scroll px-3 py-2" @scroll.passive="memoizeScroll">
           <div ref="contentEl">
             <GroupRunDetailContent
               :run="run"
@@ -282,12 +290,10 @@ const style = computed(() => ({
   border-radius: 12px;
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
-  /* One layered, soft shadow reads as a floating sheet; the hard double shadow
-     above looked heavy on both themes. Border barely darker than the surface. */
-  box-shadow:
-    0 4px 12px rgb(0 0 0 / 0.1),
-    0 16px 40px rgb(0 0 0 / 0.16);
-  border: 1px solid rgb(var(--c-fg) / 0.06);
+  /* Match Relay's restrained float token so the detail feels part of the
+     conversation rather than a modal layered above it. */
+  box-shadow: var(--shadow-float);
+  border: 1px solid rgb(var(--c-border));
   animation: detail-in 120ms ease-out;
 }
 @keyframes detail-in {
@@ -301,5 +307,6 @@ const style = computed(() => ({
   overflow-y: auto;
   overflow-wrap: anywhere;
   min-height: 0;
+  scrollbar-gutter: stable;
 }
 </style>
