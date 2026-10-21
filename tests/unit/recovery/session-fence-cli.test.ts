@@ -86,7 +86,7 @@ test("recover CLI reports a CAS race as refusal, preserves the attempted backup 
       return realCompareAndSwap.call(fence, fenceKey, expected, replacement);
     });
     const output: string[] = [];
-    const code = await runSessionFenceCli(["recover", "backend", "--expected-generation", snapshot.generation, "--fence-dir", fenceDir], { print: (line) => output.push(line) });
+    const code = await runSessionFenceCli(["recover", "backend", "--expected-generation", snapshot.generation, "--fence-dir", fenceDir], { print: (line) => output.push(line), platform: "win32" });
     expect(code).toBe(1);
     expect(output[0]).toBe("recovery refused: generation-mismatch");
     expect(output.some((line) => line.startsWith("recovery applied:"))).toBe(false);
@@ -120,4 +120,14 @@ test("recover refuses on non-Windows with a platform message instead of probing"
   expect(code).toBe(1);
   expect(errors.join("")).toContain("requires Windows");
   expect(lines).toEqual([]);
+});
+
+test("recover prints the platform refusal when stderr is not provided", async () => {
+  const output: string[] = [];
+  const code = await runSessionFenceCli(["recover", "backend", "--expected-generation", "gen"], {
+    print: (line) => { output.push(line); },
+    platform: "darwin",
+  });
+  expect(code).toBe(1);
+  expect(output.join("\n")).toContain("requires Windows");
 });

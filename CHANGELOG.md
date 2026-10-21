@@ -6,6 +6,7 @@
 
 - Hardened offline session ownership-fence recovery: strict `session inspect` / `session recover` arguments, validated config and runtime fence paths, generation and phase guards, and durable exclusive backups with separate JSON audit records. Windows containment recovery requires the canonical generation Job to be empty or absent and the supervisor to be provably gone; uncertain evidence fails closed. Recovery is Windows-only. Legacy orphan recovery requires explicit `--accept-legacy-orphan-risk`.
 - Windows runtime workers now inherit a generation-bound kill-on-close Job from a supervisor before worker code starts. The supervisor reports its birth and then waits for an explicit GO before it may create the Job, join it, or spawn the worker; the host persists that kernel-verified birth as the `owned` fence first, so a crash can never leave a Job that recovery cannot attribute. Worker replacement and hard deletion require proof that both processes exited and the Job is empty or absent. Fences without a persisted supervisor birth (claims, and `owned`/`discharged` records from a crash before that write) recover from the canonical generation Job's containment instead of dead-locking. Process identity probes distinguish an exited process retained by an open handle from a live process.
+- `session recover` prints its Windows-only refusal even when the CLI has no stderr callback.
 
 ## [relay-protocol 0.6.4-beta.3] - 2026-10-19
 

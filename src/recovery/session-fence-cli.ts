@@ -123,7 +123,7 @@ export async function runSessionFenceCli(args: string[], deps: {
     // process identity) has no POSIX equivalent here; POSIX runtimes discharge
     // their own fences through the process-group gate. Refuse rather than run
     // probes that can only answer "unknown".
-    deps.stderr?.(t().cli.recoverWindowsOnly);
+    (deps.stderr ?? deps.print)(t().cli.recoverWindowsOnly);
     return 1;
   }
 
