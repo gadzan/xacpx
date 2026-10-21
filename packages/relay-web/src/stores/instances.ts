@@ -238,21 +238,35 @@ export const useInstancesStore = defineStore("instances", () => {
     return terminalSettingsById.value[instanceId] ?? { phase: "loading" };
   }
 
+  // Monotonic revision per instance: every landed terminal-settings response
+  // (read or write) bumps it, so a response issued earlier can tell its answer
+  // is stale when it lands. Single counter, not a queue or state machine:
+  // writes always win, reads land only when nothing newer happened in flight.
+  const terminalSettingsRevById: Record<string, number> = {};
+
   async function loadTerminalSettings(instanceId: string, options?: { force?: boolean }): Promise<void> {
     const current = terminalSettingsById.value[instanceId];
-    // A force re-read (dialog open) refreshes even when a panel is cached, but
-    // never mistakes an in-flight write for settled: `saving` keeps its phase.
-    if (options?.force) {
-      if (!current || current.phase === "read-only" || (current.phase === "editable" && current.save.kind !== "saving")) {
-        terminalSettingsById.value[instanceId] = { phase: "loading" };
-      }
-    } else if (!current) {
+    const saving = current?.phase === "editable" && current.save.kind === "saving";
+    // Background refreshes never interrupt a write: the GET's stale answer would
+    // land as `idle` and re-arm the switch before the UPDATE resolves. An
+    // explicit force (dialog open) still issues the read, but keeps the
+    // `saving` phase so the switch stays disabled; the revision check below
+    // discards its answer if the write lands first.
+    if (saving && !options?.force) return;
+    const issuedRev = terminalSettingsRevById[instanceId] ?? 0;
+    if (!saving) {
       terminalSettingsById.value[instanceId] = { phase: "loading" };
     }
     try {
       const settings = unwrap(await api.rpc<TerminalSettingsDto>(instanceId, "control.terminal.settings.get", {}));
+      // A write or a newer read landed while this GET was in flight: discard
+      // the stale answer instead of regressing the switch.
+      if ((terminalSettingsRevById[instanceId] ?? 0) !== issuedRev) return;
+      terminalSettingsRevById[instanceId] = issuedRev + 1;
       terminalSettingsById.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
     } catch (error) {
+      if ((terminalSettingsRevById[instanceId] ?? 0) !== issuedRev) return;
+      terminalSettingsRevById[instanceId] = issuedRev + 1;
       // Structured wire codes only: an old connector answers `unknown-type`,
       // a new connector paired with an old daemon passes through its typed
       // `unsupported`. Either means this instance cannot manage terminal
@@ -274,9 +288,11 @@ export const useInstancesStore = defineStore("instances", () => {
     terminalSettingsById.value[instanceId] = { ...current, save: { kind: "saving" } };
     try {
       const settings = unwrap(await api.rpc<TerminalSettingsDto>(instanceId, "control.terminal.settings.update", { enabled }));
+      terminalSettingsRevById[instanceId] = (terminalSettingsRevById[instanceId] ?? 0) + 1;
       terminalSettingsById.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
       return settings;
     } catch (error) {
+      terminalSettingsRevById[instanceId] = (terminalSettingsRevById[instanceId] ?? 0) + 1;
       terminalSettingsById.value[instanceId] = {
         ...current,
         save: { kind: "failed", message: error instanceof Error ? error.message : String(error) },

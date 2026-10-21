@@ -118,3 +118,55 @@ test("reopening the dialog re-reads instead of serving the stale cache", async (
   await flushPromises();
   expect(second.get('[data-test="terminal-settings-toggle"]').attributes("aria-checked")).toBe("true");
 });
+
+test("an in-flight write wins over an interleaved refresh", async () => {
+  const calls: Array<{ type: string; payload: unknown }> = [];
+  const getGate = Promise.withResolvers<unknown>();
+  const updateGate = Promise.withResolvers<unknown>();
+  let getCount = 0;
+  vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string, payload: unknown = {}) => {
+    calls.push({ type, payload });
+    if (type === "control.terminal.settings.get") {
+      getCount += 1;
+      // The mount read lands immediately; the refresh below hangs until released.
+      if (getCount === 1) return { enabled: false, restartRequired: true } as never;
+      return (await getGate.promise) as never;
+    }
+    if (type === "control.terminal.settings.update") return (await updateGate.promise) as never;
+    return {} as never;
+  });
+  const store = useInstancesStore();
+  store.instances = [{
+    id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true,
+    agents: [], workspaces: [], agentCatalog: [],
+  }];
+  vi.spyOn(store, "loadFormOptions").mockResolvedValue(undefined as never);
+  const w = mount(ManageInstanceDialog, {
+    props: { instanceId: "i1", instanceName: "pc" },
+    global: { stubs: { WorkspacesManager: true, AgentsManager: true, Teleport: true } },
+  });
+  await flushPromises();
+  expect(getCount).toBe(1);
+
+  // UPDATE starts (switch arms the saving phase)…
+  await w.get('[data-test="terminal-settings-toggle"]').trigger("click");
+  await flushPromises();
+  expect(w.get('[data-test="terminal-settings-toggle"]').attributes("disabled")).toBeDefined();
+
+  // …then a background refresh arrives while saving and must be skipped…
+  await store.loadTerminalSettings("i1");
+  expect(getCount).toBe(1);
+  expect(w.get('[data-test="terminal-settings-toggle"]').attributes("disabled")).toBeDefined();
+
+  // …a forced GET hangs in flight; the write resolves first and wins…
+  const forced = store.loadTerminalSettings("i1", { force: true });
+  expect(getCount).toBe(2);
+  updateGate.resolve({ enabled: true, restartRequired: true });
+  await flushPromises();
+  // …and the stale GET resolving late must not re-arm or regress the switch.
+  getGate.resolve({ enabled: false, restartRequired: true });
+  await forced;
+  await flushPromises();
+  expect(w.get('[data-test="terminal-settings-toggle"]').attributes("aria-checked")).toBe("true");
+  expect(w.get('[data-test="terminal-settings-toggle"]').attributes("disabled")).toBeUndefined();
+});
