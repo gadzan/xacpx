@@ -47,6 +47,10 @@ jobs:
 
       - name: Is the suite already green on this commit?
         id: test-gate
+        # Re-dispatching an old tag checks out a tree from before this script
+        # existed, so the step itself can fail to start. It must never be the
+        # thing that blocks a release: no output means no skip.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node ./scripts/ci-test-gate.mjs

@@ -169,16 +169,25 @@ on the registry yet, which is the `ETARGET` failure the waves exist to prevent.
 
 Every publish job runs `npm test` before publishing — 488s measured — for a
 commit the Test workflow already covers on its way to main.
-`scripts/ci-test-gate.mjs` skips that duplicate only when the Test run's ubuntu
-`test` job has already succeeded for this exact commit. Red, cancelled, still
-running, missing or unreadable all mean "run it here", which is what the job did
-before the gate existed — so a flaky Test run can cost the eight minutes and can
-never block a release. The gate does not wait for an in-flight run: waiting costs
-a single-package release more than running the suite, and only the later tags of
-a multi-package release can benefit from a skip. The other Test jobs (macOS, E2E,
-windows) are deliberately not consulted: they flake for their own reasons, and
-re-running the ubuntu suite because of them would trade a flake for eight minutes
-without proving anything new.
+`scripts/ci-test-gate.mjs` skips that duplicate only when the ubuntu `test` job
+of a **push run on main** has already succeeded for **the commit the job has
+checked out**. Both qualifiers are load-bearing. The commit comes from
+`git rev-parse HEAD`, never `GITHUB_SHA`: a `workflow_dispatch` with `inputs.tag`
+checks that tag out while `GITHUB_SHA` stays on the ref the dispatch started
+from, so reading it would vouch for a commit other than the one being published.
+The run has to be a push on main because a `pull_request` run tests the synthetic
+merge commit. Red, cancelled, still running, missing or unreadable all mean "run
+it here", which is what the job did before the gate existed — so a flaky Test run
+can cost the eight minutes and can never block a release. The step is
+`continue-on-error`, so even a tree too old to contain this script (re-dispatching
+a tag from before it existed) produces no output and simply runs the suite.
+
+The gate does not wait for an in-flight run: waiting costs a single-package
+release more than running the suite, and only the later tags of a multi-package
+release can benefit from a skip. The other Test jobs (macOS, E2E, windows) are
+deliberately not consulted: they flake for their own reasons, and re-running the
+ubuntu suite because of them would trade a flake for eight minutes without
+proving anything new.
 
 That stop is resumable by design. Tags are created only when their package is
 about to be pushed, so waves that never started remain in the pending set.

@@ -45,18 +45,42 @@ function gh(args) {
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
+/**
+ * The commit this job is actually publishing.
+ *
+ * Not `GITHUB_SHA`: a `workflow_dispatch` with `inputs.tag` checks that tag out
+ * — the workflows do `ref: ${{ inputs.tag || github.ref }}` — while GITHUB_SHA
+ * stays on the ref the dispatch was started from, which is main's HEAD. Reading
+ * it would let the gate vouch for a commit other than the one being published,
+ * and that is the single failure this gate must never have. A failure to resolve
+ * answers "run it", like every other unknown.
+ *
+ * @param {(file:string, args:string[], options:object)=>string} [run]
+ * @returns {string}
+ */
+export function resolveHeadSha(run = execFileSync) {
+  try {
+    return run("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
 function findRun(sha) {
+  // The filters belong in the query, not in a `find()` afterwards: `--limit 1`
+  // would leave a single candidate, so a later `?? runs[0]` would accept
+  // whatever it got. A pull_request run cannot vouch for this commit either —
+  // it tests the synthetic merge commit, not the branch head being published.
   const raw = gh([
     "run", "list",
     "--workflow", WORKFLOW,
     "--commit", sha,
+    "--event", "push",
+    "--branch", "main",
     "--limit", "1",
-    "--json", "databaseId,status,conclusion,event",
+    "--json", "databaseId,status,conclusion",
   ]);
-  const runs = JSON.parse(raw || "[]");
-  // The same commit can carry a pull_request run as well as the push run; the
-  // push run is the one that gates main.
-  return runs.find((run) => run.event === "push") ?? runs[0] ?? null;
+  return JSON.parse(raw || "[]")[0] ?? null;
 }
 
 function findJob(runId) {
@@ -71,9 +95,11 @@ function findJob(runId) {
 async function main() {
   let skip = false;
   let reason = "";
-  const sha = process.env.GITHUB_SHA ?? "";
-  if (!sha || !process.env.GITHUB_REPOSITORY) {
-    reason = "no GITHUB_SHA/GITHUB_REPOSITORY, so this is not a CI run";
+  const sha = resolveHeadSha();
+  if (!process.env.GITHUB_REPOSITORY) {
+    reason = "no GITHUB_REPOSITORY, so this is not a CI run";
+  } else if (!sha) {
+    reason = "could not resolve the checked-out commit";
   } else {
     try {
       const run = findRun(sha);
