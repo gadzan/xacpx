@@ -7,6 +7,7 @@ import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, probeProcessGroupDefau
 import { defaultRuntimeDir } from "./worker-eof";
 import { OrphanRegistry } from "../../../transport/orphan-registry";
 import { probeWindowsProcessIdentity } from "../../../process/windows-process-tree";
+import { queryJobContainment } from "../../../process/windows-job-query";
 
 /**
  * Host-side registry of per-session Runtime Workers (plan PR3). One session →
@@ -198,9 +199,9 @@ export class RuntimeWorkerManager {
   }
   /**
    * Asserts that ownership for logical session `logicalWorkerKey` (physical fence `physicalFenceKey`)
-   * is quiescent: worker process is absent or stopped, and durable fence is absent or discharged.
-   * Discharged fences are retired best-effort.
-   * Throws WorkerTeardownPendingError if worker active, fence present non-discharged, or fence unreadable.
+   * is quiescent. Discharged Job fences still require gone worker and supervisor
+   * identities and empty or absent containment before generation-guarded retirement.
+   * Throws WorkerTeardownPendingError while ownership evidence remains unverified.
    */
   async assertOwnershipQuiescent(
     logicalWorkerKey: string,
@@ -236,6 +237,10 @@ export class RuntimeWorkerManager {
         );
       }
       if (read.record.phase === "discharged") {
+        if (read.record.jobName) {
+          await this.dischargeStaleFence(physicalFenceKey);
+          return;
+        }
         try {
           await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey, read.record.generation));
         } catch {
@@ -420,6 +425,7 @@ export class RuntimeWorkerManager {
   }
 
   private ensureWorkerWithStatus(logicalSessionId: string): { worker: RuntimeWorkerClient; created: boolean } {
+    if (this.fence()) throw new WorkerTeardownPendingError("durable worker ownership requires await manager.acquire(); synchronous ensureWorker cannot claim a fence");
     const existing = this.workersByKey.get(logicalSessionId);
     if (existing) {
       if (existing.alive) {
@@ -455,37 +461,9 @@ export class RuntimeWorkerManager {
       (client, code) => this.handleExit(logicalSessionId, client, code),
       {
         ...this.options.clientDeps,
-        spawnEnv: this.fenceDirValue() === undefined
-          ? this.options.clientDeps?.spawnEnv
-          : {
-              ...this.options.clientDeps?.spawnEnv,
-              XACPX_WORKER_FENCE: join(this.fenceDirValue()!, `${encodeURIComponent(logicalSessionId)}.json`),
-              XACPX_WORKER_FENCE_GENERATION: workerGeneration,
-            },
         onIdentityVerified: async (client) => {
           await this.options.clientDeps?.onIdentityVerified?.(client);
-          if (!this.fence()) return;
-          await this.enqueueFenceWrite(logicalSessionId, async () => {
-            await this.fence()!.compareAndSwap(
-              logicalSessionId,
-              { generation: workerGeneration, from: ["owned"] },
-              {
-                kind: "runtime-worker-owner",
-                logicalSessionId,
-                generation: workerGeneration,
-                pid: client.ref.pid,
-                creationDate: client.ref.creationDate ?? null,
-                bootstrapVerified: true,
-                phase: "admitted",
-                startedAt: client.ref.startedAt,
-                agent: "runtime-worker",
-              },
-            );
-            const read = await this.fence()!.read(logicalSessionId);
-            if (read.kind !== "present" || read.record.phase !== "admitted" || read.record.creationDate !== client.ref.creationDate) {
-              throw new Error(`admitted fence read-back failed (${read.kind === "present" ? `phase=${read.record.phase}` : read.kind})`);
-            }
-          });
+          if (client.isDeliberateShutdown || !client.alive) throw new WorkerTeardownPendingError("worker stopped before durable admission");
         },
       },
     );
@@ -553,23 +531,57 @@ export class RuntimeWorkerManager {
             XACPX_WORKER_FENCE_GENERATION: workerGeneration,
             XACPX_WORKER_GENERATION: workerGeneration,
           },
-          onIdentityVerified: async (client) => {
-            await this.options.clientDeps?.onIdentityVerified?.(client);
+          // The supervisor boots with a verified birth and then waits for GO.
+          // Persist that birth as the owned fence BEFORE GO is sent, so a Job
+          // can never exist for a generation whose fence lacks supervisor
+          // evidence. A failure here aborts admission without GO.
+          onSupervisorBoot: async (client) => {
+            await this.options.clientDeps?.onSupervisorBoot?.(client);
             await this.enqueueFenceWrite(physicalFenceKey, async () => {
+              if (client.isDeliberateShutdown || !client.alive) throw new WorkerTeardownPendingError("supervisor stopped before ownership persistence");
               await this.fence()!.compareAndSwap(
                 physicalFenceKey,
-                { generation: workerGeneration, from: ["owned"] },
+                { generation: workerGeneration, from: ["claiming"] },
                 {
                   kind: "runtime-worker-owner",
                   logicalSessionId: physicalFenceKey,
                   generation: workerGeneration,
-                  pid: client.ref.pid,
-                  creationDate: client.ref.creationDate ?? null,
-                  bootstrapVerified: true,
-                  phase: "admitted",
+                  pid: client.ref.supervisorPid,
+                  bootstrapVerified: false,
+                  phase: "owned",
                   startedAt: client.ref.startedAt,
                   agent: "runtime-worker",
+                  jobName: client.ref.jobName,
+                  jobAttested: false,
+                  supervisorPid: client.ref.supervisorPid,
+                  supervisorCreationDate: client.ref.supervisorCreationDate,
                 },
+              );
+            });
+          },
+          onIdentityVerified: async (client) => {
+            await this.options.clientDeps?.onIdentityVerified?.(client);
+            if (client.isDeliberateShutdown || !client.alive) throw new WorkerTeardownPendingError("worker stopped before durable admission");
+            await this.enqueueFenceWrite(physicalFenceKey, async () => {
+              if (client.isDeliberateShutdown || !client.alive) throw new WorkerTeardownPendingError("worker stopped before durable admission");
+              await this.fence()!.compareAndSwap(
+                physicalFenceKey,
+                { generation: workerGeneration, from: ["owned"] },
+              {
+                kind: "runtime-worker-owner",
+                logicalSessionId: physicalFenceKey,
+                generation: workerGeneration,
+                pid: client.ref.pid,
+                creationDate: client.ref.creationDate ?? null,
+                bootstrapVerified: true,
+                phase: "admitted",
+                startedAt: client.ref.startedAt,
+                agent: "runtime-worker",
+                ...(client.ref.jobName ? { jobName: client.ref.jobName } : {}),
+                ...(client.ref.jobAttested === true ? { jobAttested: true as const } : {}),
+                ...(typeof client.ref.supervisorPid === "number" ? { supervisorPid: client.ref.supervisorPid } : {}),
+                ...(typeof client.ref.supervisorCreationDate === "string" ? { supervisorCreationDate: client.ref.supervisorCreationDate } : {}),
+              },
               );
               const read = await this.fence()!.read(physicalFenceKey);
               if (read.kind !== "present" || read.record.phase !== "admitted" || read.record.creationDate !== client.ref.creationDate) {
@@ -581,49 +593,58 @@ export class RuntimeWorkerManager {
       );
       // G2 pre-spawn atomic physical claim: write "claiming" fence with O_EXCL BEFORE spawn.
       // If another Host races and creates fence first, claimOwnedFence throws and spawn() is NEVER called.
-      await this.claimOwnedFence(physicalFenceKey, workerGeneration);
+      await this.claimOwnedFence(physicalFenceKey, workerGeneration, worker.intendedJobName);
+      this.workersByKey.set(logicalWorkerKey, worker);
+      this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
       try {
         worker.spawn();
-        await this.enqueueFenceWrite(physicalFenceKey, () =>
-          this.fence()!.compareAndSwap(
-            physicalFenceKey,
-            { generation: workerGeneration, from: ["claiming"] },
-            {
-              kind: "runtime-worker-owner",
-              logicalSessionId: physicalFenceKey,
-              generation: workerGeneration,
-              pid: worker.ref.pid,
-              creationDate: worker.ref.creationDate ?? null,
-              bootstrapVerified: worker.isBootstrapVerified,
-              phase: "owned",
-              startedAt: worker.ref.startedAt,
-              agent: "runtime-worker",
-            },
-          ),
-        );
+        // A supervised spawn writes its owned fence from onSupervisorBoot and
+        // only then authorizes Job creation. Await that authorization (not the
+        // full admission) so a caller never receives a client whose ownership
+        // evidence is still pending; the direct-spawn path keeps the
+        // claiming→owned CAS here.
+        if (worker.ref.jobName) {
+          await worker.supervisorBoot;
+        } else {
+          await this.enqueueFenceWrite(physicalFenceKey, () =>
+            this.fence()!.compareAndSwap(
+              physicalFenceKey,
+              { generation: workerGeneration, from: ["claiming"] },
+              {
+                kind: "runtime-worker-owner",
+                logicalSessionId: physicalFenceKey,
+                generation: workerGeneration,
+                pid: worker.ref.pid,
+                creationDate: worker.ref.creationDate ?? null,
+                bootstrapVerified: worker.isBootstrapVerified,
+                phase: "owned",
+                startedAt: worker.ref.startedAt,
+                agent: "runtime-worker",
+              },
+            ),
+          );
+        }
       } catch (spawnError) {
         if (spawnError instanceof StaleFenceGenerationError) {
           // A successor generation owns the fence now: our claim was recycled
           // while we were stalled. Our just-spawned worker is an orphan that
           // must die verified — and the fence must NEVER be touched (no
           // retire: it belongs to the successor).
-          if (worker.alive) {
+          if (worker.ref.supervisorPid || worker.ref.pid > 0) {
             try {
               await worker.terminate();
             } catch {
-              this.workersByKey.set(logicalWorkerKey, worker);
-              this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
-            }
-            if (worker.alive || worker.lifecycle !== "stopped") {
-              this.workersByKey.set(logicalWorkerKey, worker);
-              this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
+              // Unverified cleanup keeps the client and its local mapping.
             }
           }
+          if (!worker.alive && worker.lifecycle === "stopped") {
+            this.deleteWorker(logicalWorkerKey, worker);
+          }
           throw new WorkerTeardownPendingError(
-            `runtime worker for session "${logicalWorkerKey}" lost its fence to a successor generation; orphan worker ${worker.alive ? "retained for teardown" : "terminated"}, refusing replacement spawn`,
+            `runtime worker for session "${logicalWorkerKey}" lost its fence to a successor generation; orphan worker ${!worker.alive && worker.lifecycle === "stopped" ? "terminated" : "retained for teardown"}, refusing replacement spawn`,
           );
         }
-        if (worker.alive) {
+        if (worker.ref.supervisorPid || worker.ref.pid > 0) {
           // spawn() succeeded but the owned-fence upgrade failed afterwards.
           // The worker is alive yet untracked: terminate it with verification
           // BEFORE retiring the claim. Retiring first would leave a live,
@@ -743,13 +764,28 @@ export class RuntimeWorkerManager {
         `durable ownership fence for session "${logicalSessionId}" is under hard deletion; refusing admission until the delete completes`,
       );
     }
-    const existing = this.workersByKey.get(logicalSessionId);
     const deps = this.options.clientDeps;
     const outcome = await dischargeRuntimeWorkerFence(record, {
       platform: deps?.platform,
       probeProcessGroup: deps?.probeProcessGroup,
       probeClaimant: this.probeClaimantHost,
       probeWorker: this.probeFencedWorker,
+      probeSupervisor: async (current) => {
+        if (!current.supervisorPid || !current.supervisorCreationDate) return "unknown";
+        try {
+          const identity = await (deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity)(current.supervisorPid);
+          if (identity.status !== "found") return identity.status === "missing" ? "gone" : "unknown";
+          return identity.identity.creationDate === current.supervisorCreationDate ? "alive" : "gone";
+        } catch { return "unknown"; }
+      },
+      probeJobContainment: async (current) => {
+        if (!current.jobName) return "unknown";
+        try {
+          return await (deps?.querySupervisorContainment ?? queryJobContainment)(current.jobName);
+        } catch {
+          return "unknown";
+        }
+      },
       selfDischargeWaitMs: deps?.selfDischargeWaitMs,
       readBack: async () => await fence.read(logicalSessionId),
       markDischarged: async (current, from) => {
@@ -773,23 +809,16 @@ export class RuntimeWorkerManager {
       }),
     });
     if (outcome === "discharged") {
-      await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId, record.generation));
+      await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId, record.generation, record.jobName ? "discharged" : undefined));
       return;
     }
-    // Dead-root recovery is intentionally disabled: historical ParentProcessId
-    // + creationDate cannot prove ownership of a surviving child after the
-    // root died (PID reuse, I1/I2). Without a root-independent proof (Job
-    // Object or descendant-carried generation token), the fence stays
-    // fail-closed. H2 waits for the live worker's terminal phase instead of
-    // guessing the subtree.
     throw new WorkerTeardownPendingError(
       `durable ownership fence for session "${logicalSessionId}" is undischarged ` +
-        `(worker pid ${record.pid}, phase ${record.phase}, started ${record.startedAt}); refusing to spawn a second owner` +
-        ` — automatic Windows dead-root recovery is disabled because historical parent PID does not prove descendant ownership`,
+        `(worker pid ${record.pid}, phase ${record.phase}, started ${record.startedAt}); refusing to spawn a second owner until process containment is proven empty`,
     );
   }
 
-  private async claimOwnedFence(physicalFenceKey: string, workerGeneration: string): Promise<void> {
+  private async claimOwnedFence(physicalFenceKey: string, workerGeneration: string, jobName?: string): Promise<void> {
     const fence = this.fence();
     if (!fence) return;
     // The claim names the claimant host pid: a successor host only recycles
@@ -804,6 +833,7 @@ export class RuntimeWorkerManager {
       phase: "claiming",
       startedAt: new Date().toISOString(),
       agent: "runtime-worker",
+      ...(jobName ? { jobName, jobAttested: false } : {}),
     };
     try {
       await this.enqueueFenceWrite(physicalFenceKey, () => fence.claim(record));
@@ -877,11 +907,6 @@ export class RuntimeWorkerManager {
     const recent = (this.restarts.get(logicalSessionId) ?? []).filter((t) => now - t < windowMs);
     recent.push(now);
     this.restarts.set(logicalSessionId, recent);
-    if (recent.length > (this.options.maxRestartsPerWindow ?? 5)) {
-      throw new Error(
-        `runtime worker for session "${logicalSessionId}" crashed ${recent.length} times in ${windowMs / 1000}s; marking unhealthy`,
-      );
-    }
   }
 }
 

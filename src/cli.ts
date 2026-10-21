@@ -58,6 +58,7 @@ import { withAdapterOperationLock } from "./adapters/adapter-locks";
 import { garbageCollectAdapterReleases } from "./adapters/adapter-gc";
 import { OrphanRegistry } from "./transport/orphan-registry";
 import { killWindowsOrphansWithConfirmation } from "./transport/manual-orphan-kill";
+import { runSessionFenceCli } from "./recovery/session-fence-cli";
 import type { AppConfig } from "./config/types";
 import type { AppState } from "./state/types";
 import { readVersion } from "./version.js";
@@ -277,8 +278,9 @@ interface CliDeps {
   pluginCliDeps?: Partial<PluginCliDeps>;
   updateCliDeps?: Partial<UpdateCliDeps>;
   adapterCliDeps?: Partial<AdapterCliDeps>;
-  orphansKill?: () => Promise<{ attempted: number; killed: number; retained: number }>;
   loadConfiguredPluginsForChannelCli?: () => Promise<void>;
+  orphansKill?: () => Promise<{ attempted: number; killed: number; retained: number }>;
+  sessionFenceCli?: (args: string[], deps: { print: (line: string) => void; stderr?: (text: string) => void }) => Promise<number>;
   isInteractive?: () => boolean;
   promptText?: (message: string) => Promise<string>;
   promptSecret?: (message: string) => Promise<string>;
@@ -366,6 +368,9 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
       }
 
       return await (deps.doctor ?? defaultDoctor)(parsed.options);
+    }
+    case "session": {
+      return await (deps.sessionFenceCli ?? ((subArgs, subDeps) => runSessionFenceCli(subArgs, subDeps)))(args.slice(1), { print, stderr: deps.stderr });
     }
     case "orphans": {
       if (args.length !== 3 || args[1] !== "kill" || args[2] !== "--confirm") {

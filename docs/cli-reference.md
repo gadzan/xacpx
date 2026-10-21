@@ -32,6 +32,8 @@ commands (sent inside WeChat / Feishu / Yuanbao), see [commands.md](./commands.m
 | `xacpx adapter list --installed` | List immutable local adapter releases and identify the active one |
 | `xacpx adapter uninstall <codex\|claude> <release-id>` | Remove one inactive, unreferenced release; refuses on uncertain state or orphan references |
 | `xacpx orphans kill --confirm` | Manually attempt fail-closed cleanup of durable Windows orphan records after operator review |
+| `xacpx session inspect <alias>` | Inspect the physical worker fence, generation, containment, and aliases sharing it |
+| `xacpx session recover <alias> --expected-generation <generation> [--accept-legacy-orphan-risk]` | Recover an offline worker fence after checking ownership evidence |
 | `xacpx workspace list` | List workspaces registered on this machine |
 | `xacpx workspace add [name] [--raw]` | Register the current directory as a workspace; without `name`, uses the current directory name, and names with special characters are normalized automatically |
 | `xacpx workspace rm <name>` | Remove a workspace |
@@ -47,6 +49,22 @@ xacpx ws add
 xacpx ws list
 xacpx ws rm backend
 ```
+
+## `session` recovery CLI
+
+```bash
+xacpx session inspect backend
+xacpx session recover backend --expected-generation <generation-from-inspect>
+xacpx session recover backend --expected-generation <generation-from-inspect> --accept-legacy-orphan-risk
+```
+
+Stop the running foreground or background runtime before recovery. `recover` holds the runtime consumer lock and refuses while another runtime owns it. `inspect` is a point-in-time read. Both commands resolve the alias through the configured session transport and display the physical fence key and any other aliases sharing that fence; recovery affects that shared physical target.
+
+Recovery requires the exact inspected generation and a proven-gone worker identity, including discharged and spooled fences. Spooled fences also require readable residual records with none pending for that generation. Any Windows fence carrying Job evidence requires the canonical generation Job to be empty or absent and the supervisor to be provably gone; an attested admitted fence also requires its worker gone. A supervisor is only authorized to create its Job after the host has persisted its birth, so a claim with no recorded supervisor can never have acted, while a recorded supervisor that is still alive blocks recovery even if the Job is absent. Active or unknown evidence refuses recovery. Recovery is Windows-only: POSIX runtimes discharge their fences through the process-group gate. Claims without a Job name remain automatic-only.
+
+Legacy admitted fences without Job evidence require `--accept-legacy-orphan-risk`, a proven-gone worker identity, and readable residual records with none pending. This explicitly accepts the risk that descendants outlived the recorded worker. The flag does not override live workers, unknown identities, malformed residual evidence, or incomplete Job containment proof.
+
+The commands use the runtime's normal fence directory settings. `--fence-dir <path>` overrides the fence directory; `--durable-dir <path>` selects its `worker-fences` child. Recovery writes an exclusive backup preserving the fence bytes and a separate JSON audit file before changing the fence. The audit records an attempt first and records `applied` only after retirement succeeds. Keep both files for diagnosis.
 
 ## `workspace` CLI
 

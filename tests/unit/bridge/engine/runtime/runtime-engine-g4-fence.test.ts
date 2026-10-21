@@ -1,5 +1,4 @@
 import { expect, test, describe } from "bun:test";
-import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +6,17 @@ import { join } from "node:path";
 import { RuntimeEngine, type EngineSessionInput } from "../../../../../src/bridge/engine/runtime-engine";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
 import { RuntimeWorkerFence, type RuntimeWorkerFenceRecord } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
+import { physicalFenceKeyForSession as computePhysicalFenceKey } from "../../../../../src/bridge/engine/runtime/physical-session-identity";
+import type { RuntimeWorkerClientDeps } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
+
+const fakeWorkerClientDeps: RuntimeWorkerClientDeps = {
+  platform: "win32",
+  probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
+  terminateProcessTree: async (target) => {
+    try { process.kill(typeof target === "number" ? target : target.pid, "SIGKILL"); } catch {}
+    return { rootOutcome: "killed", outcomes: [] };
+  },
+};
 
 async function withFakeWorker(entry: string): Promise<void> {
   await writeFile(
@@ -36,12 +46,6 @@ async function withFakeWorker(entry: string): Promise<void> {
   );
 }
 
-function computePhysicalFenceKey(input: EngineSessionInput): string {
-  const agentId = input.agentCommand ?? input.rawCommand ?? input.acpxAgent ?? input.agent ?? "";
-  const sessionKey = input.name ?? "";
-  const raw = `${sessionKey}\x00${input.cwd ?? ""}\x00${agentId}`;
-  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
-}
 
 describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", () => {
   test("assertOwnershipQuiescent succeeds when worker is absent and fence is absent", async () => {
@@ -51,7 +55,7 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
     try {
       const entry = join(dir, "fake-worker.mjs");
       await withFakeWorker(entry);
-      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: fakeWorkerClientDeps });
       await expect(manager.assertOwnershipQuiescent("logical-1", "physical-1")).resolves.toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -65,8 +69,9 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
     try {
       const entry = join(dir, "fake-worker.mjs");
       await withFakeWorker(entry);
-      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
-      manager.ensureWorker("logical-active");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: fakeWorkerClientDeps });
+      const worker = await manager.acquire("logical-active", "physical-1");
+      await worker.request("ensure", {});
       await expect(manager.assertOwnershipQuiescent("logical-active", "physical-1")).rejects.toThrow(
         WorkerTeardownPendingError,
       );
@@ -83,7 +88,7 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
     try {
       const entry = join(dir, "fake-worker.mjs");
       await withFakeWorker(entry);
-      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: fakeWorkerClientDeps });
       const fence = new RuntimeWorkerFence(fenceDir);
       await fence.write({
         kind: "runtime-worker-owner",
@@ -112,7 +117,7 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
     try {
       const entry = join(dir, "fake-worker.mjs");
       await withFakeWorker(entry);
-      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: fakeWorkerClientDeps });
       await writeFile(join(fenceDir, "physical-corrupt.json"), "invalid json content");
 
       await expect(manager.assertOwnershipQuiescent("logical-1", "physical-corrupt")).rejects.toThrow(
@@ -130,7 +135,7 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
     try {
       const entry = join(dir, "fake-worker.mjs");
       await withFakeWorker(entry);
-      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: fakeWorkerClientDeps });
       const fence = new RuntimeWorkerFence(fenceDir);
       await fence.write({
         kind: "runtime-worker-owner",
@@ -158,9 +163,10 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
     try {
       const entry = join(dir, "fake-worker.mjs");
       await withFakeWorker(entry);
-      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: fakeWorkerClientDeps });
       expect(manager.physicalFenceKeyFor("logical-1")).toBeUndefined();
       const worker = await manager.acquire("logical-1", "phys-key-1");
+      await worker.request("ensure", {});
       expect(manager.physicalFenceKeyFor("logical-1")).toBe("phys-key-1");
       await worker.shutdown();
       await manager.release("logical-1", worker);
@@ -218,6 +224,7 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
 
       // Fresh Host instance with no in-memory worker
       const engine = new RuntimeEngine({
+        workerClientDeps: fakeWorkerClientDeps,
         workerEntryPath: entry,
         stateDir: sessionsDir,
         fenceDir,
@@ -275,6 +282,7 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
       await writeFile(corruptFenceFile, "corrupted { json !!");
 
       const engine = new RuntimeEngine({
+        workerClientDeps: fakeWorkerClientDeps,
         workerEntryPath: entry,
         stateDir: sessionsDir,
         fenceDir,
@@ -339,6 +347,7 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
       });
 
       const engine = new RuntimeEngine({
+        workerClientDeps: fakeWorkerClientDeps,
         workerEntryPath: entry,
         stateDir: sessionsDir,
         fenceDir,
@@ -409,6 +418,7 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
       });
 
       const engine = new RuntimeEngine({
+        workerClientDeps: fakeWorkerClientDeps,
         workerEntryPath: entry,
         stateDir: sessionsDir,
         fenceDir,
@@ -467,6 +477,7 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
       );
 
       const engine = new RuntimeEngine({
+        workerClientDeps: fakeWorkerClientDeps,
         workerEntryPath: entry,
         stateDir: sessionsDir,
         fenceDir,
@@ -539,6 +550,7 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
         );
 
         const engine = new RuntimeEngine({
+          workerClientDeps: fakeWorkerClientDeps,
           workerEntryPath: entry,
           stateDir: sessionsDir,
           fenceDir,
@@ -638,6 +650,7 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
       );
 
       const engine = new RuntimeEngine({
+        workerClientDeps: fakeWorkerClientDeps,
         workerEntryPath: entry,
         stateDir: sessionsDir,
         fenceDir,

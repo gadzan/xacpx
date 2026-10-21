@@ -6,6 +6,7 @@ import { writeFile, readFile } from "node:fs/promises";
 
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "../../../../../src/bridge/engine/runtime/runtime-permission-policy";
+import type { RuntimeWorkerClient } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
 
 const MOCK_AGENT = resolve(import.meta.dir, "../../../../fixtures/mock-acp-agent.mjs");
 
@@ -29,6 +30,9 @@ async function buildWorker(dir: string): Promise<string> {
   if (!result.success) throw new Error(`Bun.build failed: ${result.logs.join("\n")}`);
   return workerFile;
 }
+// Real Windows admission costs two PowerShell spawn-units (supervisor probe
+// and Job attestation, measured 2-5s each under load), so every test that
+// boots a real worker carries a machine-realistic budget.
 
 test("PR9-A E2E: escalate policy with interactive allow → turn succeeds, history preserved", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-perm-interactive-"));
@@ -56,7 +60,7 @@ rl.on("line", (line) => {
   else if (msg.method === "session/new") respond(msg.id, { sessionId: "mock-sess" });
   else if (msg.method === "session/load" || msg.method === "session/resume") respond(msg.id, { sessionId: msg.params?.sessionId ?? "mock-sess" });
   else if (msg.method === "session/prompt") {
-    writeFileSync("${dir}/agent-prompt-msg.json", JSON.stringify(msg));
+    writeFileSync(${JSON.stringify(join(dir, "agent-prompt-msg.json"))}, JSON.stringify(msg));
     activeSid = msg.params?.sessionId ?? "mock-sess";
     activeTurnId = msg.id;
     requestPerm(99, activeSid, {
@@ -115,7 +119,7 @@ rl.on("line", (line) => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 20_000);
+}, 120_000);
 
 test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-perm-fail-"));
@@ -178,7 +182,7 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
     await engineMalformed.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);
 
 test("concurrent cold ensures join one initialization: single AcpRuntime owner, both requests settle", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-ensure-singleflight-"));
@@ -242,7 +246,7 @@ rl.on("line", (line) => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);
 
 test("cold ensure with effort applies the ACP config option exactly once", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-effort-once-"));
@@ -298,7 +302,7 @@ rl.on("line", (line) => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);
 
 test("poisoned init worker is recycled: old PID dies, next request respawns and succeeds", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-poison-recycle-"));
@@ -342,17 +346,14 @@ rl.on("line", (line) => {
     permissionMode: "approve-all",
   });
   try {
-    // Record every worker PID the manager acquires.
-    const manager: { acquire: (key: string, physical: string) => Promise<{ ref: { pid: number } }> } | undefined = (engine as unknown as { manager?: { acquire: (key: string, physical: string) => Promise<{ ref: { pid: number } }> } }).manager;
-    const pids: number[] = [];
-    const origAcquire = manager?.acquire.bind(manager);
-    if (manager && origAcquire) {
-      manager.acquire = async (key: string, physical: string) => {
-        const client = await origAcquire(key, physical);
-        pids.push(client.ref.pid);
-        return client;
-      };
-    }
+    const manager = engine["manager"]!;
+    const clients: RuntimeWorkerClient[] = [];
+    const origAcquire = manager.acquire.bind(manager);
+    manager.acquire = async (key, physical) => {
+      const client = await origAcquire(key, physical);
+      clients.push(client);
+      return client;
+    };
     // First cold ensure: agent init fails → worker poisons itself → Host
     // recycles (terminate + release) → caller sees the stable poisoned code.
     const firstError: { code?: string; message?: string } = await engine.ensureSession(base).then(
@@ -361,23 +362,27 @@ rl.on("line", (line) => {
     );
     expect(firstError.code).toBe("RUNTIME_WORKER_POISONED_INIT");
     expect(firstError.message).toContain("boom-init");
+    const oldPid = clients[0]!.ref.pid;
+    expect(oldPid).toBeGreaterThan(0);
     // Recycled: manager no longer holds a worker, and the poisoned PID is
     // dead — at most one live native owner at any time.
     expect((engine as unknown as { manager?: { get: (key: string) => unknown } }).manager?.get(base.logicalSessionId)).toBeUndefined();
-    const oldAlive = (() => { try { process.kill(pids[0]!, 0); return true; } catch { return false; } })();
+    const oldAlive = (() => { try { process.kill(oldPid, 0); return true; } catch { return false; } })();
     expect(oldAlive).toBe(false);
     // Next request: fresh worker PID, init succeeds, session warm.
     await engine.ensureSession(base);
-    expect(pids.length).toBe(2);
-    expect(pids[1]).not.toBe(pids[0]);
-    const newAlive = (() => { try { process.kill(pids[1]!, 0); return true; } catch { return false; } })();
+    expect(clients.length).toBe(2);
+    const newPid = clients[1]!.ref.pid;
+    expect(newPid).toBeGreaterThan(0);
+    expect(newPid).not.toBe(oldPid);
+    const newAlive = (() => { try { process.kill(newPid, 0); return true; } catch { return false; } })();
     expect(newAlive).toBe(true);
     expect((await engine.isSessionWarm(base)).warm).toBe(true);
   } finally {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);
 
 test("PR9-A generation race: G → G+1 stale response → reject", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-perm-gen-"));
@@ -428,7 +433,7 @@ test("PR9-A generation race: G → G+1 stale response → reject", async () => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);
 
 test("PR9-C E2E: real child worker emits elicitation.request, generation fencing passes, and host resolves decision", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-elicit-interactive-"));
@@ -487,7 +492,7 @@ rl.on("line", (line) => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 20_000);
+}, 120_000);
 test("cancel reaches the live worker turn: agent sees session/cancel and prompt ends cancelled", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-cancel-live-"));
   const stateDir = join(dir, "state", "sessions");
@@ -557,7 +562,7 @@ rl.on("line", (line) => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);
 test("cancel on a warm idle worker reports cancelled:false and sends no session/cancel", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-cancel-idle-"));
   const stateDir = join(dir, "state", "sessions");
@@ -607,7 +612,7 @@ rl.on("line", (line) => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);
 
 test("elicitation cancel decision resolves immediately through the worker dispatch (no 30s hang)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-elicit-cancel-"));
@@ -665,7 +670,7 @@ rl.on("line", (line) => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);
 test("elicitation accept maps to upstream accept/content end to end", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-elicit-submit-"));
   const stateDir = join(dir, "state", "sessions");
@@ -720,4 +725,4 @@ rl.on("line", (line) => {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 120_000);

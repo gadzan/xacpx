@@ -963,6 +963,11 @@ export interface CliMessages {
   adapterUninstalled: (id: string, releaseId: string, alreadyMissing: boolean) => string;
   adapterUninstallProtected: (id: string, releaseId: string, reason: string) => string;
 
+  // session fence recovery
+  recoverLockBusy: string;
+  recoverLockBusyHint: string;
+  recoverWindowsOnly: string;
+
   // later commands
   laterIdEmpty: string;
   laterNotFound: (id: string) => string;

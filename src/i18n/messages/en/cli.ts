@@ -21,7 +21,8 @@ export const cli: CliMessages = {
     "xacpx adapter registry [set <url>|reset] - Manage the ACP adapter npm registry",
     "xacpx workspace list|add [name] [--raw]|rm <name> - Manage local workspaces (alias: ws)",
     "xacpx later|lt list|cancel <id> - Manage local scheduled tasks",
-    "xacpx mcp-stdio [--coordinator-session <session>] [--source-handle <handle>] [--workspace <name>] - Start MCP stdio server",
+    "xacpx mcp-stdio [--coordinator-session <session>] [--source-handle <handle>] [--workspace <name>] - Start MCP stdio service",
+    "xacpx session inspect <alias> | recover <alias> --expected-generation <gen> [--accept-legacy-orphan-risk] - Inspect or recover a stuck runtime session fence",
   ],
 
   // start command
@@ -110,4 +111,9 @@ export const cli: CliMessages = {
   laterNotFound: (id) => `Pending scheduled task #${id} not found.`,
   laterNotFoundHint: "Run xacpx later list to see current pending tasks.",
   laterCancelled: (id) => `Scheduled task #${id} cancelled`,
+
+  // session fence recovery
+  recoverLockBusy: "xacpx runtime is active; stop the daemon before recovery.",
+  recoverLockBusyHint: "Run `xacpx stop` and retry, or review the active consumer lock.",
+  recoverWindowsOnly: "session recovery requires Windows: it proves ownership through a generation-bound Job and Windows process identity.",
 };

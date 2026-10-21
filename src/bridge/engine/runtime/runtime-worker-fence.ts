@@ -4,12 +4,8 @@
  * adapter subtree is fenced by an atomic on-disk record; the record's phase
  * carries the ownership transaction across Host restarts.
  *
- * This function NEVER reconstructs ownership from a dead Windows parent PID.
- * If the owning generation did not publish a terminal phase or
- * generation-bound residual evidence before the root disappeared, the fence
- * remains fail-closed. Automatic dead-root recovery requires a
- * root-independent proof (Job Object or descendant-carried token) and is
- * intentionally disabled in this PR.
+ * Windows recovery uses the generation's named Job containment evidence.
+ * Legacy records without that evidence stay fenced after a dead root.
  *
  * The phase writes are performed ONLY by the fence's owning generation (the
  * worker receives its fence path + generation through spawn env) — a stale
@@ -18,6 +14,8 @@
 import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import * as lockfile from "proper-lockfile";
+import { queryJobContainment, windowsJobNameForGeneration } from "../../../process/windows-job-query";
+import { probeWindowsProcessIdentity } from "../../../process/windows-process-tree";
 /**
  * Per-fence-file cross-process mutex for generation CAS. Two-phase
  * acquisition: a single immediate attempt first, so deterministically
@@ -66,6 +64,15 @@ export interface RuntimeWorkerFenceRecord {
   phase: FencePhase;
   startedAt: string;
   agent: string;
+  /**
+   * Windows-only containment attestation. Absent on legacy fences and every
+   * POSIX record — absence means "no descendant-containment proof", which
+   * recovery may only override explicitly (never infer).
+   */
+  jobName?: string;
+  jobAttested?: boolean;
+  supervisorPid?: number;
+  supervisorCreationDate?: string | null;
 }
 
 export type FenceReadResult =
@@ -130,6 +137,7 @@ export interface FenceDischargeDeps {
    * worker lets the never-admitted fence discharge without convergence.
    */
   probeWorker?: (record: RuntimeWorkerFenceRecord) => FenceLiveness | Promise<FenceLiveness>;
+  probeSupervisor?: (record: RuntimeWorkerFenceRecord) => FenceLiveness | Promise<FenceLiveness>;
   waitMs?: (ms: number) => Promise<void>;
   now?: () => number;
   /** How long a new Host waits for the old worker's own EOF verdict (ms). */
@@ -144,6 +152,8 @@ export interface FenceDischargeDeps {
    * the phase lifts to discharged.
    */
   spooledResidualsRemaining?: (generationId: string) => Promise<boolean>;
+  /** Transient Job query; active or unknown cannot release ownership. */
+  probeJobContainment?: (record: RuntimeWorkerFenceRecord) => Promise<"active" | "empty" | "absent" | "unknown">;
 }
 
 /** Default tri-state liveness: success=alive, ESRCH=gone, anything else=unknown. */
@@ -165,6 +175,35 @@ async function defaultWaitMs(ms: number): Promise<void> {
   await promise;
 }
 
+async function probeSupervisorDefault(record: RuntimeWorkerFenceRecord): Promise<FenceLiveness> {
+  // No pid: the host never persisted a supervisor, which (under the GO gate)
+  // means no supervisor was ever authorized to create this generation's Job.
+  if (!record.supervisorPid) return record.jobName ? "gone" : "unknown";
+  if (!record.supervisorCreationDate) {
+    // Pid recorded, birth not yet durable: the supervisor may still be waiting
+    // for GO (it cannot create anything) or may be gone. Only pid absence
+    // proves gone; a live or unreadable pid refuses.
+    try {
+      const result = await probeWindowsProcessIdentity(record.supervisorPid);
+      return result.status === "missing" ? "gone" : result.status === "found" ? "alive" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+  try {
+    const result = await probeWindowsProcessIdentity(record.supervisorPid);
+    if (result.status === "missing") return "gone";
+    if (result.status !== "found") return "unknown";
+    return result.identity.creationDate === record.supervisorCreationDate ? "alive" : "gone";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function probeJobContainmentDefault(record: RuntimeWorkerFenceRecord): Promise<"active" | "empty" | "absent" | "unknown"> {
+  return record.jobName ? await queryJobContainment(record.jobName) : "unknown";
+}
+
 /**
  * Discharge one fenced worker tree per the phase decision table. Resolves
  * "discharged" only when a terminal proof exists; "refused" means the caller
@@ -175,9 +214,8 @@ async function defaultWaitMs(ms: number): Promise<void> {
  * group kill) nor a Windows root whose in-flight ensure may still spawn the
  * adapter (descendant-set quiescence). The live worker's own EOF gate is the
  * quiescence authority; H2 waits for its terminal phase, and a worker that
- * never settles leaves the fence in place (refuse). Without terminal/generation-bound proof, discharge is refused and
- * the fence is retained. Same-boot dead-root automated recovery requires
- * root-independent ownership proof and is intentionally unsupported here.
+ * never settles leaves the fence in place. A generation-bound Job that is
+ * empty or absent can prove containment after the owning process exits.
  */
 export async function dischargeRuntimeWorkerFence(
   record: RuntimeWorkerFenceRecord,
@@ -211,6 +249,18 @@ export async function dischargeRuntimeWorkerFence(
     if (claimantPid !== undefined && deps.probeClaimant) {
       const state = await deps.probeClaimant(claimantPid);
       if (state !== "gone") return "refused";
+    }
+    if (platform === "win32" && record.jobName) {
+      if (record.jobName !== windowsJobNameForGeneration(record.generation)) return "refused";
+      // A claim predates the supervisor's birth, so the supervisor probe is
+      // the authority: a recorded pid that is still alive refuses (it may
+      // already hold the Job), a missing pid means no supervisor was ever
+      // authorized (the GO gate), and an attested record must always name its
+      // supervisor. Only after that proof may Job containment decide.
+      if (record.jobAttested === true && (!record.supervisorPid || !record.supervisorCreationDate)) return "refused";
+      if (await (deps.probeSupervisor ?? probeSupervisorDefault)(record) !== "gone") return "refused";
+      const containment = await (deps.probeJobContainment ?? probeJobContainmentDefault)(record);
+      if (containment !== "empty" && containment !== "absent") return "refused";
     }
     await deps.markDischarged?.({ ...record, phase: "discharged" }, ["claiming"]);
     return "discharged";
@@ -249,6 +299,27 @@ export async function dischargeRuntimeWorkerFence(
   let current = record;
   const phaseDeadline = now() + waitSelfMs;
   for (;;) {
+    if (current.generation !== record.generation || current.phase === "deleting") return "refused";
+    if (current.jobName) {
+      if (current.jobName !== windowsJobNameForGeneration(current.generation)) return "refused";
+      const workerState = current.jobAttested === true ? await deps.probeWorker?.(current) : "gone";
+      const supervisorState = await (deps.probeSupervisor ?? probeSupervisorDefault)(current);
+      if (workerState === "unknown" || workerState === undefined || supervisorState === "unknown") return "refused";
+      if (workerState === "gone" && supervisorState === "gone") {
+        const containment = await (deps.probeJobContainment ?? probeJobContainmentDefault)(current);
+        if (containment === "empty" || containment === "absent") {
+          await deps.markDischarged?.({ ...current, phase: "discharged" }, [current.phase]);
+          return "discharged";
+        }
+        if (containment === "unknown") return "refused";
+      }
+      if (now() >= phaseDeadline) return "refused";
+      await waitMs(500);
+      const reread = await deps.readBack?.();
+      if (!reread || reread.kind !== "present") return "refused";
+      current = reread.record;
+      continue;
+    }
     if (current.phase === "discharged") return "discharged";
     if (current.phase === "spooled") {
       // Round 32 Blocking 3: the spooled phase is NOT a permanent terminal —
@@ -526,6 +597,8 @@ export class RuntimeWorkerFence {
       if (typeof parsed !== "object" || parsed === null) throw new Error("corrupt fence JSON");
       const rec = parsed as Record<string, unknown>;
       if (rec.generation !== generation || rec.kind !== "runtime-worker-owner") return "stale" as const;
+      if (rec.phase === "deleting") return "stale" as const;
+      if (rec.phase === "discharged" || (rec.phase === "spooled" && phase === "discharging")) return "updated" as const;
       // Crash-window hardening: a pid-less "claiming" record means the host
       // died after spawn() but before the "owned" upgrade durably landed.
       // The owning worker upgrades the claim with its own real pid BEFORE
@@ -557,7 +630,7 @@ export class RuntimeWorkerFence {
    * StaleFenceGenerationError is thrown and the successor's fence is left
    * intact.
    */
-  async retire(logicalSessionId: string, expectedGeneration?: string): Promise<void> {
+  async retire(logicalSessionId: string, expectedGeneration?: string, expectedPhase?: FencePhase): Promise<void> {
     const path = this.pathFor(logicalSessionId);
     // Pre-read gate (no lock, no dir creation): absent (even with the fence
     // dir itself missing) is idempotent success. A G2 claimed between this
@@ -586,6 +659,9 @@ export class RuntimeWorkerFence {
         throw new StaleFenceGenerationError(
           `guarded retire for "${logicalSessionId}" found successor generation "${read.record.generation}", expected "${expectedGeneration}"; refusing unlink`,
         );
+      }
+      if (expectedPhase !== undefined && read.record.phase !== expectedPhase) {
+        throw new StaleFenceGenerationError(`guarded retire for "${logicalSessionId}" found phase "${read.record.phase}", expected "${expectedPhase}"`);
       }
       await this.hooks?.afterValidate?.("retire", logicalSessionId);
       try {
@@ -709,5 +785,16 @@ function parseFenceRecord(parsed: unknown, logicalSessionId: string): FenceReadR
   if (rec.creationDate !== null && rec.creationDate !== undefined && typeof rec.creationDate !== "string") return { kind: "unreadable", reason: "invalid creationDate" };
   if (typeof rec.bootstrapVerified !== "boolean") return { kind: "unreadable", reason: "invalid bootstrapVerified" };
   if (typeof rec.startedAt !== "string" || typeof rec.agent !== "string") return { kind: "unreadable", reason: "invalid metadata" };
+  if (rec.jobName !== undefined && rec.jobName !== windowsJobNameForGeneration(rec.generation as string)) {
+    return { kind: "unreadable", reason: "jobName does not match generation" };
+  }
+  if (rec.jobAttested !== undefined && typeof rec.jobAttested !== "boolean") return { kind: "unreadable", reason: "invalid jobAttested" };
+  if (rec.jobAttested === true && !rec.jobName) return { kind: "unreadable", reason: "attestation without Job" };
+  if (rec.supervisorPid !== undefined && (!Number.isSafeInteger(rec.supervisorPid) || (rec.supervisorPid as number) <= 0)) {
+    return { kind: "unreadable", reason: "invalid supervisorPid" };
+  }
+  if (rec.supervisorCreationDate !== undefined && rec.supervisorCreationDate !== null && typeof rec.supervisorCreationDate !== "string") {
+    return { kind: "unreadable", reason: "invalid supervisorCreationDate" };
+  }
   return { kind: "present", record: parsed as unknown as RuntimeWorkerFenceRecord };
 }

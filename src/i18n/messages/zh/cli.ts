@@ -22,6 +22,7 @@ export const cli: CliMessages = {
     "xacpx workspace list|add [name] [--raw]|rm <name> - 管理本机工作区（别名：ws）",
     "xacpx later|lt list|cancel <id> - 管理本机待执行定时任务",
     "xacpx mcp-stdio [--coordinator-session <session>] [--source-handle <handle>] [--workspace <name>] - 启动 MCP stdio 服务",
+    "xacpx session inspect <alias> | recover <alias> --expected-generation <gen> [--accept-legacy-orphan-risk] - 检查或恢复卡住的 runtime 会话 fence",
   ],
 
   // start command
@@ -110,4 +111,9 @@ export const cli: CliMessages = {
   laterNotFound: (id) => `未找到待执行的定时任务 #${id}。`,
   laterNotFoundHint: "可以用 xacpx later list 查看当前待执行任务。",
   laterCancelled: (id) => `已取消定时任务 #${id}`,
+
+  // session fence recovery
+  recoverLockBusy: "xacpx 运行时仍在运行；恢复前请先停止 daemon。",
+  recoverLockBusyHint: "先执行 `xacpx stop` 后重试，或检查当前占用运行时的进程。",
+  recoverWindowsOnly: "会话恢复仅支持 Windows：它通过按代命名（generation-bound）的 Job 与 Windows 进程身份来证明归属。",
 };

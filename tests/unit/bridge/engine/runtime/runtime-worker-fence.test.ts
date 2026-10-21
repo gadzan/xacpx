@@ -12,6 +12,8 @@ import {
 } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
 import { markRuntimeWorkerFence } from "../../../../../src/bridge/engine/runtime/worker-eof";
+import { OrphanRegistry } from "../../../../../src/transport/orphan-registry";
+import { windowsJobNameForGeneration } from "../../../../../src/process/windows-job-query";
 const KEY = "session-A";
 
 function record(overrides: Partial<RuntimeWorkerFenceRecord> = {}): RuntimeWorkerFenceRecord {
@@ -93,52 +95,35 @@ test("fence retire: unlink failure persists the discharged phase, never bricks (
 test("discharge phase table: discharged terminal proof discharges (round 31 Blocking 3 case A)", async () => {
   // The old worker finished EOF convergence and marked the fence BEFORE
   // exiting — the new Host trusts the durable verdict; no kill, no brick.
-  let killed = 0;
   const outcome = await dischargeRuntimeWorkerFence(
     record({ pid: 4242, phase: "discharged", creationDate: "133800000000000000", bootstrapVerified: true }),
     {
       platform: "win32",
-      terminateDescendants: async () => {
-        killed += 1;
-        return { verified: true, outcomes: [], leftover: [] };
-      },
     },
   );
   expect(outcome).toBe("discharged");
-  expect(killed).toBe(0);
 });
 
 test("discharge phase table: spooled refuses until the reaper converges residuals", async () => {
-  let killed = 0;
   const outcome = await dischargeRuntimeWorkerFence(
     record({ pid: 4242, phase: "spooled", creationDate: "133800000000000000", bootstrapVerified: true }),
     {
       platform: "win32",
-      terminateDescendants: async () => {
-        killed += 1;
-        return { verified: true, outcomes: [], leftover: [] };
-      },
     },
   );
   expect(outcome).toBe("refused");
-  expect(killed).toBe(0);
 });
 
 test("discharge phase table: discharging waits for the worker's own terminal verdict (round 31 Blocking 2)", async () => {
   // H1 crashed while an ensure was in flight; the worker marked "discharging"
   // and H2 must WAIT — the gated kill must not fire while the fence can still
   // reach a terminal phase.
-  const reads = ["discharging", "discharging", "discharged"];
+  const reads = ["discharging", "discharging", "discharged"] as const;
   let readCalls = 0;
-  let killed = 0;
   const outcome = await dischargeRuntimeWorkerFence(
     record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }),
     {
       platform: "win32",
-      terminateDescendants: async () => {
-        killed += 1;
-        return { verified: true, outcomes: [], leftover: [] };
-      },
       readBack: async () => {
         const phase = reads[Math.min(readCalls, reads.length - 1)]!;
         readCalls += 1;
@@ -153,19 +138,13 @@ test("discharge phase table: discharging waits for the worker's own terminal ver
     },
   );
   expect(outcome).toBe("discharged");
-  expect(killed).toBe(0);
 });
 
 test("discharge phase table: discharging that never settles refuses — no kill against an undecided owner", async () => {
-  let killed = 0;
   const outcome = await dischargeRuntimeWorkerFence(
     record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }),
     {
       platform: "win32",
-      terminateDescendants: async () => {
-        killed += 1;
-        return { verified: true, outcomes: [], leftover: [] };
-      },
       readBack: async () => ({ kind: "present", record: record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }) }),
       waitMs: async () => {},
       now: (() => {
@@ -176,22 +155,16 @@ test("discharge phase table: discharging that never settles refuses — no kill 
     },
   );
   expect(outcome).toBe("refused");
-  expect(killed).toBe(0);
 });
 
 test("discharge phase table: admitted + live root past the wait window REFUSES — H2 never kills an un-quiesced worker (round 32 Blocking 2)", async () => {
   // Parent-identity stability is NOT descendant-set quiescence: an ensure
   // blocked before its child spawn could still release after H2's snapshot.
   // The ONLY safe answer for a live root without a terminal phase is refuse.
-  let killed = 0;
   const outcome = await dischargeRuntimeWorkerFence(
     record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }),
     {
       platform: "win32",
-      terminateDescendants: async () => {
-        killed += 1;
-        return { verified: true, outcomes: [], leftover: [] };
-      },
       readBack: async () => ({ kind: "present", record: record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }) }),
       waitMs: async () => {},
       now: (() => {
@@ -202,7 +175,6 @@ test("discharge phase table: admitted + live root past the wait window REFUSES �
     },
   );
   expect(outcome).toBe("refused");
-  expect(killed).toBe(0);
 });
 
 test("dead-root recovery disabled: admitted fence without terminal stays refused (I2) — no historical PID kill", async () => {
@@ -377,33 +349,23 @@ test("fence discharge (POSIX): dead group discharges without a kill", async () =
 });
 
 test("fence discharge (POSIX): unknown liveness refuses immediately — no kill on unverifiable evidence", async () => {
-  let kills = 0;
   const outcome = await dischargeRuntimeWorkerFence(record(), {
     platform: "darwin",
     probeProcessGroup: () => "unknown",
-    killGroup: () => {
-      kills += 1;
-    },
     selfDischargeWaitMs: 0,
   });
   expect(outcome).toBe("refused");
-  expect(kills).toBe(0);
 });
 
 test("fence discharge (POSIX): EPERM on the liveness probe is UNKNOWN — refused, never discharged (round 31 Blocking 4)", async () => {
   // signal 0 failing with EPERM means "cannot verify", which is neither
   // alive nor gone: discharging here would upgrade unreadable ownership
   // evidence into a second-owner spawn.
-  let kills = 0;
   const outcome = await dischargeRuntimeWorkerFence(record(), {
     platform: "darwin",
     probeProcessGroup: () => "unknown",
-    killGroup: () => {
-      kills += 1;
-    },
   });
   expect(outcome).toBe("refused");
-  expect(kills).toBe(0);
 });
 
 test("fence discharge (POSIX): ESRCH is the ONLY proof of a gone group", async () => {
@@ -414,19 +376,12 @@ test("fence discharge (POSIX): ESRCH is the ONLY proof of a gone group", async (
   expect(gone).toBe("discharged");
 });
 
-test("fence discharge (Windows): never-verified worker could not have adapters — discharged", async () => {
-  // Round 30 Blocking 2 makes this a hard invariant: the durable admission
-  // barrier means a never-verified fence cannot have entered a business RPC.
-  let terminated = 0;
+test("fence discharge (Windows): a never-verified legacy worker with proven death discharges", async () => {
   const outcome = await dischargeRuntimeWorkerFence(record({ bootstrapVerified: false, creationDate: null }), {
     platform: "win32",
-    terminateDescendants: async () => {
-      terminated += 1;
-      return { verified: true, outcomes: [], leftover: [] };
-    },
+    probeWorker: async () => "gone",
   });
   expect(outcome).toBe("discharged");
-  expect(terminated).toBe(0);
 });
 
 async function withFakeWorker(entry: string): Promise<void> {
@@ -490,7 +445,7 @@ test("host restart: an undischargeable Windows fence refuses the second owner sp
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-refuse-"));
   const fenceDir = join(dir, "worker-fences");
   const fence = new RuntimeWorkerFence(fenceDir);
-  // In-transaction gate observes a replaced/dead parent → unverified → refused.
+  // Legacy admitted ownership has no independent descendant containment proof.
   await fence.write(record({ pid: 4242, creationDate: "133800000000000000", bootstrapVerified: true }));
   try {
     const entry = join(dir, "fake-worker.mjs");
@@ -501,17 +456,14 @@ test("host restart: an undischargeable Windows fence refuses the second owner sp
       clientDeps: {
         platform: "win32",
         selfDischargeWaitMs: 300,
-        terminateDescendantsOf: async (_pid, options) => {
-          // The recovery path must pass the parent fingerprint AND the
-          // dead-parent recovery flag — the birth-order cutoff contract.
-          expect(options.expectedParentCreationDate).toBe("133800000000000000");
-          expect(options.recoverDeadParent).toBe(true);
-          return { verified: false, outcomes: [], leftover: [] };
-        },
+        probeWindowsIdentity: async () => ({ status: "missing" }),
       },
     });
     await expect(manager.acquire(KEY)).rejects.toThrow(/durable ownership fence/);
     expect(manager.get(KEY)).toBeUndefined();
+    expect(await fence.read(KEY)).toEqual({
+      kind: "present", record: expect.objectContaining({ pid: 4242, bootstrapVerified: true }),
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -808,13 +760,13 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
 
 test("spool handshake full chain: registry residuals keep the fence; reaper cleanup lifts it (round 32 Blocking 3)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-spool-"));
+  const spoolKey = "session-A-spool-full-chain";
   const fenceDir = join(dir, "worker-fences");
   const runtimeDir = join(dir, "runtime");
   try {
     const fence = new RuntimeWorkerFence(fenceDir);
-    await fence.write(record({ pid: 4242, phase: "spooled", creationDate: "133800000000000000", bootstrapVerified: true, generation: "44444444-4444-4444-8444-444444444444" }));
+    await fence.write({ ...record({ pid: 4242, phase: "spooled", creationDate: "133800000000000000", bootstrapVerified: true, generation: "44444444-4444-4444-8444-444444444444" }), logicalSessionId: spoolKey });
     // The worker spooled residuals bound to THIS fence generation.
-    const { OrphanRegistry } = await import("../../../../../src/transport/orphan-registry");
     const registry = new OrphanRegistry(runtimeDir);
     await registry.initialize();
     const residual = (pid: number) => ({
@@ -836,16 +788,27 @@ test("spool handshake full chain: registry residuals keep the fence; reaper clea
       return records === null || records.some(({ record }) => record.generationId === "44444444-4444-4444-8444-444444444444");
     };
     const entry = join(dir, "fake-worker.mjs");
-    await writeFile(entry, "process.stdin.on('data', () => {});");
-    const manager = new RuntimeWorkerManager({
+    await withFakeWorker(entry);
+    const manager: RuntimeWorkerManager = new RuntimeWorkerManager({
       entryPath: entry,
       fenceDir,
-      clientDeps: { platform: "win32", spooledResidualsRemaining: remaining },
+      clientDeps: {
+        platform: "win32",
+        windowsJobContainment: false,
+        probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133800000000000099" } }),
+        terminateProcessTree: async (target) => {
+          const worker = manager.get(spoolKey)!;
+          expect(target).toEqual({ pid: worker.ref.pid, creationDate: "133800000000000099" });
+          worker["child"]!.kill("SIGKILL");
+          return { rootOutcome: "killed", outcomes: [] };
+        },
+        spooledResidualsRemaining: remaining,
+      },
     });
 
     // Residuals pending: the session stays fenced.
-    await expect(manager.acquire(KEY)).rejects.toThrow(/durable ownership fence/);
-    expect(manager.get(KEY)).toBeUndefined();
+    await expect(manager.acquire(spoolKey)).rejects.toThrow(/durable ownership fence/);
+    expect(manager.get(spoolKey)).toBeUndefined();
 
     // The daemon reaper converges BOTH residuals (terminal cleanup simulated
     // by the registry reflecting post-sweep state).
@@ -853,20 +816,25 @@ test("spool handshake full chain: registry residuals keep the fence; reaper clea
     await registry.deleteResidual(`${"11111111-1111-4111-8111-111111111111"}-502.json`);
 
     // The handshake lifts the phase to discharged and retires: respawn works.
-    const w2 = await manager.acquire(KEY);
+    const w2 = await manager.acquire(spoolKey);
+    await expect(w2.request("ensure", {})).resolves.toEqual({});
     expect(w2.ref.pid).toBeGreaterThan(0);
     // The lifted fence was retired and the NEW owner already re-fenced under
     // its own generation.
-    const refenced = await fence.read(KEY);
+    const refenced = await fence.read(spoolKey);
     expect(refenced.kind).toBe("present");
     if (refenced.kind === "present") {
-      expect(refenced.record.phase).toBe("owned");
-      expect(refenced.record.pid).toBe(w2.ref.pid);
+      expect(refenced.record.phase).toBe("admitted");
+      expect(refenced.record.generation).toBe(w2.ref.generation);
+      expect(refenced.record.generation).not.toBe("44444444-4444-4444-8444-444444444444");
+      expect(refenced.record.creationDate).toBe("133800000000000099");
+      expect(refenced.record.supervisorPid).toBeUndefined();
     }
-    w2.lifecycle = "stopped";
-    await manager.release(KEY, w2);
-    expect((await fence.read(KEY)).kind).toBe("absent");
-    await manager.shutdownAll().catch(() => {});
+    await w2.terminate();
+    expect(w2.alive).toBe(false);
+    expect(w2.lifecycle).toBe("stopped");
+    await manager.release(spoolKey, w2);
+    expect((await fence.read(spoolKey)).kind).toBe("absent");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1084,6 +1052,37 @@ test("claiming discharge refuses while the claimant host is still alive", async 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("claiming discharge uses canonical Job containment when no supervisor birth exists", async () => {
+  const generation = "2f0a5c31-91b4-4e0a-9c1d-4f9a3b5c7d21";
+  const jobName = windowsJobNameForGeneration(generation)!;
+  const claim = record({ generation, phase: "claiming", pid: 4242, bootstrapVerified: false, jobName, jobAttested: false });
+  const run = async (containment: "active" | "empty" | "absent" | "unknown", overrides: Partial<typeof claim> = {}) => {
+    let discharged = 0;
+    const outcome = await dischargeRuntimeWorkerFence({ ...claim, ...overrides }, {
+      platform: "win32",
+      probeClaimant: () => "gone",
+      probeJobContainment: async () => containment,
+      selfDischargeWaitMs: 1,
+      waitMs: async () => {},
+      markDischarged: async () => { discharged++; },
+    });
+    return { outcome, discharged };
+  };
+  for (const containment of ["empty", "absent"] as const) expect(await run(containment)).toEqual({ outcome: "discharged", discharged: 1 });
+  for (const containment of ["active", "unknown"] as const) expect(await run(containment)).toEqual({ outcome: "refused", discharged: 0 });
+  expect((await run("empty", { jobName: "wrong-job" })).outcome).toBe("refused");
+  // A live claimant is never time-stolen, even with an absent Job.
+  const live = await dischargeRuntimeWorkerFence(claim, {
+    platform: "win32",
+    probeClaimant: () => "alive",
+    probeJobContainment: async () => "absent",
+    selfDischargeWaitMs: 1,
+    waitMs: async () => {},
+    markDischarged: async () => { throw new Error("must not discharge a live claim"); },
+  });
+  expect(live).toBe("refused");
 });
 test("Windows owned+unverified discharge requires worker-death proof", async () => {
   const rec = record({ bootstrapVerified: false, creationDate: null });
