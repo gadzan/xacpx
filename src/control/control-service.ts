@@ -2429,7 +2429,10 @@ export class ControlService {
 
   async getTerminalSettings(): Promise<TerminalSettingsDto> {
     if (!this.deps.relayTerminalSettings) {
-      throw new ConversationError("unsupported", "Relay terminal settings are unavailable in this embedding");
+      throw new ConversationError(
+        "terminal_settings_unavailable",
+        "the relay terminal settings are not available in this embedding",
+      );
     }
     const settings = await this.deps.relayTerminalSettings.get();
     return { enabled: settings.enabled, restartRequired: true };
@@ -2437,7 +2440,10 @@ export class ControlService {
 
   async updateTerminalSettings(enabled: boolean): Promise<TerminalSettingsDto> {
     if (!this.deps.relayTerminalSettings) {
-      throw new ConversationError("unsupported", "Relay terminal settings are unavailable in this embedding");
+      throw new ConversationError(
+        "terminal_settings_unavailable",
+        "the relay terminal settings are not available in this embedding",
+      );
     }
     const settings = await this.deps.relayTerminalSettings.update(enabled);
     return { enabled: settings.enabled, restartRequired: true };

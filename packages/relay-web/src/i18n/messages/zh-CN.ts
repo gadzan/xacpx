@@ -404,7 +404,7 @@ export default {
     terminalSettingsTitle: "终端",
     terminalSettingsEnable: "启用终端",
     terminalSettingsDisable: "关闭终端",
-    terminalSettingsRestart: "设置已保存；需要重启实例的 Relay channel 后生效。",
+    terminalSettingsRestart: "修改终端设置后，需要重启实例的 Relay channel 才会生效。",
     terminalSettingsUpgradeNotice: "此实例运行的 connector 尚不支持管理终端设置，请升级并重新连接。",
     terminalSettingsReadFailed: "无法读取终端设置。",
     jevTitle: "Jev 路由（TypeSafe）",

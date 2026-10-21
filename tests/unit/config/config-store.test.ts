@@ -560,6 +560,58 @@ test("setRawValue addresses channels[] entries by id and can materialize a synth
 
   await rm(dir, { recursive: true, force: true });
 });
+test("relay terminal enabled path creates a disabled entry without touching other channels", async () => {
+  const PATH = ["channels", { id: "relay", createWith: { id: "relay", type: "relay", enabled: false } }, "options", "terminal", "enabled"];
+  const { dir, path } = await makeConfigFile({
+    transport: { type: "acpx-bridge" },
+    channel: { type: "weixin", ownerIds: ["wx-op"] },
+    channels: [{ id: "weixin", type: "weixin", enabled: true, replyMode: "stream" }],
+    agents: { codex: { driver: "codex" } },
+    workspaces: {},
+  });
+
+  const store = new ConfigStore(path);
+  // A missing relay entry materializes disabled, then flips only the one key.
+  await store.setRawValue(PATH, false);
+  const created = await readRaw(path);
+  expect(created.channels).toEqual([
+    { id: "weixin", type: "weixin", enabled: true, replyMode: "stream" },
+    { id: "relay", type: "relay", enabled: false, options: { terminal: { enabled: false } } },
+  ]);
+
+  await store.setRawValue(PATH, true);
+  const enabled = await readRaw(path);
+  expect(enabled.channels).toEqual([
+    { id: "weixin", type: "weixin", enabled: true, replyMode: "stream" },
+    { id: "relay", type: "relay", enabled: false, options: { terminal: { enabled: true } } },
+  ]);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("relay terminal enabled patch preserves an existing relay channel's other options", async () => {
+  const PATH = ["channels", { id: "relay", createWith: { id: "relay", type: "relay", enabled: false } }, "options", "terminal", "enabled"];
+  const { dir, path } = await makeConfigFile({
+    transport: { type: "acpx-bridge" },
+    channels: [{
+      id: "relay", type: "relay", enabled: true, url: "ws://hub:8787",
+      options: { terminal: { enabled: false, maxSessions: 8 }, pairingToken: "sekret" },
+    }],
+    agents: { codex: { driver: "codex" } },
+    workspaces: {},
+  });
+
+  const store = new ConfigStore(path);
+  await store.setRawValue(PATH, true);
+  const saved = await readRaw(path);
+  expect(saved.channels).toHaveLength(1);
+  expect(saved.channels).toEqual([{
+    id: "relay", type: "relay", enabled: true, url: "ws://hub:8787",
+    options: { terminal: { enabled: true, maxSessions: 8 }, pairingToken: "sekret" },
+  }]);
+
+  await rm(dir, { recursive: true, force: true });
+});
 
 test("writes with 2-space indent, trailing newline, and owner-only permissions", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-config-store-"));

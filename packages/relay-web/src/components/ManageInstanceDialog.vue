@@ -156,7 +156,6 @@ const terminalStatusText = computed(() => {
   if (state.phase === "editable") return state.settings.enabled ? t("instance.autoCollabOn") : t("instance.autoCollabOff");
   return t(state.notice);
 });
-
 async function toggleTerminal(): Promise<void> {
   if (!terminalSettings.value || terminalSaving.value || !instanceOnline.value) return;
   try {
@@ -262,9 +261,11 @@ async function testJev(): Promise<void> {
 
 onMounted(async () => {
   // The router panel carries its own loading phase, so it must not gate the tab body.
+  // A dialog mount means the user explicitly asked for this instance's state,
+  // so force a re-read even when a stale panel is cached from an earlier open.
   void store.loadRouterPanel(props.instanceId);
   void store.loadJevSettings(props.instanceId);
-  void store.loadTerminalSettings(props.instanceId);
+  void store.loadTerminalSettings(props.instanceId, { force: true });
   try {
     await store.loadFormOptions(props.instanceId);
   } catch {

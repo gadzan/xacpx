@@ -44,11 +44,30 @@ function unwrap<T>(result: T | { error: { code: string; message: string } }): T 
     // i.e. it runs an older xacpx core than the features this dashboard expects. Turn
     // the raw "unsupported rpc type: …" into an actionable upgrade hint.
     if (result.error.code === "unknown-type") {
-      throw new Error("This feature needs a newer connector — rebuild and reconnect the relay channel on that instance.");
+      throw Object.assign(
+        new Error("This feature needs a newer connector — rebuild and reconnect the relay channel on that instance."),
+        { rpcCode: result.error.code },
+      );
     }
-    throw new Error(result.error.message || result.error.code);
+    throw Object.assign(new Error(result.error.message || result.error.code), { rpcCode: result.error.code });
   }
   return result;
+}
+
+/**
+ * Read the wire error code for a rejected RPC without matching on copy.
+ * Instance-side RPC failures surface two ways: an `ApiError` from the hub
+ * transport (machine `code`), or the Error from `unwrap` above, which now
+ * carries the wire code on `rpcCode`. Only structured codes count as version
+ * skew — never a substring of human-readable copy.
+ */
+function readRpcErrorCode(error: unknown): string | null {
+  if (error instanceof ApiError) return error.code;
+  if (typeof error === "object" && error !== null && "rpcCode" in error) {
+    const code = (error as { rpcCode?: unknown }).rpcCode;
+    if (typeof code === "string" && code.length > 0) return code;
+  }
+  return null;
 }
 
 
@@ -219,15 +238,30 @@ export const useInstancesStore = defineStore("instances", () => {
     return terminalSettingsById.value[instanceId] ?? { phase: "loading" };
   }
 
-  async function loadTerminalSettings(instanceId: string): Promise<void> {
-    if (!terminalSettingsById.value[instanceId]) terminalSettingsById.value[instanceId] = { phase: "loading" };
+  async function loadTerminalSettings(instanceId: string, options?: { force?: boolean }): Promise<void> {
+    const current = terminalSettingsById.value[instanceId];
+    // A force re-read (dialog open) refreshes even when a panel is cached, but
+    // never mistakes an in-flight write for settled: `saving` keeps its phase.
+    if (options?.force) {
+      if (!current || current.phase === "read-only" || (current.phase === "editable" && current.save.kind !== "saving")) {
+        terminalSettingsById.value[instanceId] = { phase: "loading" };
+      }
+    } else if (!current) {
+      terminalSettingsById.value[instanceId] = { phase: "loading" };
+    }
     try {
       const settings = unwrap(await api.rpc<TerminalSettingsDto>(instanceId, "control.terminal.settings.get", {}));
       terminalSettingsById.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
     } catch (error) {
+      // Structured wire codes only: an old connector answers `unknown-type`,
+      // a new connector paired with an old daemon passes through its typed
+      // `unsupported`. Either means this instance cannot manage terminal
+      // settings, so the upgrade notice renders. Ordinary failures keep their
+      // own copy.
+      const code = readRpcErrorCode(error);
       terminalSettingsById.value[instanceId] = {
         phase: "read-only",
-        notice: error instanceof Error && error.message.includes("newer connector")
+        notice: code === "unknown-type" || code === "unsupported"
           ? TERMINAL_SETTINGS_UPGRADE_NOTICE
           : "instance.terminalSettingsReadFailed",
       };
@@ -1366,6 +1400,7 @@ export const useInstancesStore = defineStore("instances", () => {
         if (event.online) {
           void loadSessions(event.instanceId).catch(() => {});
           refreshLoadedGroupArchivedSessions(event.instanceId);
+          if (terminalSettingsById.value[event.instanceId]) void loadTerminalSettings(event.instanceId, { force: true }).catch(() => {});
         }
       }
     } else if (event.kind === "control-event" && event.event.type === "sessions-changed") {
@@ -1389,6 +1424,7 @@ export const useInstancesStore = defineStore("instances", () => {
       void loadRouterAvailability(event.instanceId).catch(() => {});
       if (routerPanelById.value[event.instanceId]) void loadRouterPanel(event.instanceId).catch(() => {});
       if (jevPanelById.value[event.instanceId]) void loadJevSettings(event.instanceId).catch(() => {});
+      if (terminalSettingsById.value[event.instanceId]) void loadTerminalSettings(event.instanceId, { force: true }).catch(() => {});
     } else if (event.kind === "agent-directory") {
       agentDirectory.value = event.endpoints;
     }

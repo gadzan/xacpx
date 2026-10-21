@@ -407,7 +407,7 @@ export default {
     terminalSettingsTitle: "Terminal",
     terminalSettingsEnable: "Enable terminal",
     terminalSettingsDisable: "Disable terminal",
-    terminalSettingsRestart: "Saved. Restart the instance's Relay channel for this change to take effect.",
+    terminalSettingsRestart: "Restart the instance's Relay channel after changing the terminal setting.",
     terminalSettingsUpgradeNotice: "This instance's connector does not support terminal settings yet. Upgrade it and reconnect.",
     terminalSettingsReadFailed: "Could not read terminal settings.",
     jevTitle: "Jev routing (TypeSafe)",

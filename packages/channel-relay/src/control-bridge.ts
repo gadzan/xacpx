@@ -894,13 +894,13 @@ async function dispatchControlRequest(
     case MSG.terminalSettingsGet: {
       const input = parseControlPayload(MSG.terminalSettingsGet, payload);
       if (!input) return errorPayload("invalid-payload", "expected empty terminal settings payload");
-      if (typeof control.getTerminalSettings !== "function") return errorPayload("unsupported", "Relay terminal settings require a newer daemon");
+      if (typeof control.getTerminalSettings !== "function") return errorPayload("unsupported", "Relay terminal settings are unavailable in this embedding");
       return await control.getTerminalSettings();
     }
     case MSG.terminalSettingsUpdate: {
       const input = parseControlPayload(MSG.terminalSettingsUpdate, payload);
       if (!input) return errorPayload("invalid-payload", "expected terminal settings enabled boolean");
-      if (typeof control.updateTerminalSettings !== "function") return errorPayload("unsupported", "Relay terminal settings require a newer daemon");
+      if (typeof control.updateTerminalSettings !== "function") return errorPayload("unsupported", "Relay terminal settings are unavailable in this embedding");
       return await control.updateTerminalSettings(input.enabled);
     }
     case MSG.agentsCapabilitiesGet: {
