@@ -563,6 +563,10 @@ export async function buildApp(
       );
     }
   }
+  // Lock order is C (configMutationMutex) outer, S (stateMutex) inner.
+  // Workspace deletion must hold both across the usage check and removal.
+  // Session and worker binding paths take only S; never acquire C while holding S.
+  // Reversing the order can deadlock a deletion waiting for S.
   const stateMutex = new AsyncMutex();
   /**
    * Daemon-wide config disk + permission executor serialization domain (see
