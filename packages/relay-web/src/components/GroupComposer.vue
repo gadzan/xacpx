@@ -19,6 +19,7 @@ import BotAvatar from "./BotAvatar.vue";
 import ConversationComposer from "./ConversationComposer.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown } from "../lib/use-dropdown";
+import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -40,7 +41,18 @@ const { t } = useI18n();
 const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
 const commandStore = useConversationCommandsStore();
-const promptText = ref("");
+/** One draft per Group + Topic, persisted through the shared composer-drafts store. */
+const draftKey = computed(() =>
+  groupDraftKey(props.instanceId ?? groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId),
+);
+const promptText = ref(loadDraft(draftKey.value));
+/** The draft a send is waiting on. While its outcome is pending the text belongs
+ *  to the prompt, not to the composer (accepted → transcript, uncertain → Retry),
+ *  so leaving that Topic must not keep a copy that would later resurface. */
+let inFlightDraft: { key: string; text: string } | null = null;
+/** True while a Group/Topic switch swaps the textarea contents: those writes are
+ *  not user edits and must not be persisted under the new key. */
+let swappingDraft = false;
 const targetDd = useDropdown();
 const composer = ref<InstanceType<typeof ConversationComposer> | null>(null);
 const composing = ref(false);
@@ -108,13 +120,31 @@ function clearSentDraft(): void {
   closeMenu();
 }
 
-// A Group/Topic switch drops the draft text, so the derived suppression must
-// drop with it (otherwise the first mention in the next draft is ignored).
-// `pre` is deliberate: `switchTopic()` sets `topicReady=false` at the same time,
-// which disables the textarea, so the user cannot type into it before this runs.
-watch(() => groupsStore.activeTopicId, () => {
-  clearSentDraft();
-});
+// Every edit is persisted under the current Group + Topic, so a draft survives
+// switching away (and a tab reload). Sync, so an edit is always filed under the
+// key it was typed against.
+watch(promptText, (text) => {
+  if (!swappingDraft) saveDraft(draftKey.value, text);
+}, { flush: "sync" });
+
+// A Group/Topic switch swaps in that Group + Topic's own draft. The derived
+// mention suppression and menus reset with the swap (otherwise the first mention
+// in the next draft is ignored). `switchTopic()` sets `topicReady=false` at the
+// same time, which disables the textarea, so the user cannot type in between.
+watch(draftKey, (next, prev) => {
+  swappingDraft = true;
+  try {
+    // The Topic we are leaving has a send in flight: its text is owned by that
+    // prompt, so drop the stored copy instead of restoring it later as a draft.
+    if (prev && inFlightDraft?.key === prev && loadDraft(prev) === inFlightDraft.text) {
+      saveDraft(prev, "");
+    }
+    clearSentDraft();
+    promptText.value = loadDraft(next);
+  } finally {
+    swappingDraft = false;
+  }
+}, { flush: "sync" });
 
 function toggleMenu(): void {
   if (props.disabled) return;
@@ -442,11 +472,14 @@ async function handleSend(): Promise<void> {
   // the draft decision uses the real result: an accepted prompt is in the
   // transcript, an uncertain one is replayable via Retry, but a definitive
   // refusal has neither and must leave the typed text in place.
+  const sent = { key: draftKey.value, text: promptText.value };
+  inFlightDraft = sent;
   emit("send", text);
   if (props.sendOutcome) {
     // Textbook semantics: after a send the text no longer carries a mention, so
     // the derived state must reset or the next draft would inherit suppression.
     const outcome = await props.sendOutcome();
+    if (inFlightDraft === sent) inFlightDraft = null;
     // Only `accepted` and `uncertain` own this draft: their prompt is durably
     // represented (transcript, or replayable via Retry), so the text can go.
     //
@@ -457,11 +490,15 @@ async function handleSend(): Promise<void> {
     //
     // `rejected` keeps the same draft: no durable accept exists, so the typed
     // text is the only remaining copy.
-    if (outcome === "accepted" || outcome === "uncertain") {
+    // Only while still on the Group + Topic it was sent from: after a switch the
+    // textarea holds another Topic's draft (the swap watcher already dropped the
+    // sent copy), and clearing it would erase that draft.
+    if ((outcome === "accepted" || outcome === "uncertain") && draftKey.value === sent.key) {
       clearSentDraft();
     }
     return;
   }
+  inFlightDraft = null;
   clearSentDraft();
 }
 

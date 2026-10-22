@@ -2280,8 +2280,8 @@ export const useGroupsStore = defineStore("groups", () => {
     // A Topic switch is a selection change: any prompt still in flight was sent
     // to the old Topic, and the composer enumerates Topic changes by bumping the
     // selection generation, so a background prompt cannot be credited to this
-    // Topic. The old draft must be discarded here — the composer owns prose, the
-    // store owns ownership, and the draft has no Topic identity.
+    // Topic. The store holds no draft: the composer keeps one per Group + Topic
+    // (composer-drafts `groupDraftKey`) and swaps it on this switch.
     const generation = ++currentSelectionGeneration;
     liveCompletedMemberTurns.value = null;
     clearRunHistory();
