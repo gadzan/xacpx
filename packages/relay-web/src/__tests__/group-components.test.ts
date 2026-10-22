@@ -226,6 +226,117 @@ describe("Group Components", () => {
       expect(wrapper.text()).not.toContain("topicQueueFull");
     });
 
+    describe("drafts are kept per Group + Topic", () => {
+      beforeEach(() => sessionStorage.clear());
+      const TOPICS = [
+        { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active" as const, createdAt: "now", updatedAt: "now" },
+        { id: "topic_2", conversationId: "conversation_g", title: "Post", status: "active" as const, createdAt: "now", updatedAt: "now" },
+      ];
+      function mountComposer(outcome?: () => Promise<GroupSendOutcome>) {
+        const wrapper = mount(GroupComposer, {
+          props: { bots: BOTS, ...(outcome ? { sendOutcome: outcome } : {}) },
+          global: { plugins: [i18n] },
+        });
+        const textarea = () => wrapper.find('[data-test="group-composer-textarea"]');
+        const value = () => (textarea().element as HTMLTextAreaElement).value;
+        return { wrapper, textarea, value };
+      }
+      function seedTwoTopics() {
+        const groups = seedGroupSelection();
+        groups.topicsByConversation["i1:conversation_g"] = TOPICS;
+        return groups;
+      }
+      async function goTo(groups: ReturnType<typeof useGroupsStore>, conversationId: string, topicId: string) {
+        groups.activeConversationId = conversationId;
+        groups.selectedGroupId = conversationId;
+        groups.activeTopicId = topicId;
+        await flushPromises();
+      }
+
+      it("restores topic A's draft after visiting topic B, and B keeps its own", async () => {
+        const groups = seedTwoTopics();
+        const { textarea, value } = mountComposer();
+        await textarea().setValue("draft for A");
+        await goTo(groups, "conversation_g", "topic_2");
+        expect(value()).toBe("");
+        await textarea().setValue("draft for B");
+        await goTo(groups, "conversation_g", "topic_1");
+        expect(value()).toBe("draft for A");
+        await goTo(groups, "conversation_g", "topic_2");
+        expect(value()).toBe("draft for B");
+      });
+
+      it("keeps a separate draft for each Group + Topic when switching Groups", async () => {
+        const groups = seedTwoTopics();
+        const { textarea, value } = mountComposer();
+        await textarea().setValue("group G, topic 1");
+        // Switching Group passes through a topicless moment, then lands on the other Group's Topic.
+        groups.activeTopicId = null;
+        await goTo(groups, "conversation_h", "topic_1");
+        expect(value()).toBe("");
+        await textarea().setValue("group H, topic 1");
+        groups.activeTopicId = null;
+        await goTo(groups, "conversation_g", "topic_1");
+        expect(value()).toBe("group G, topic 1");
+        await goTo(groups, "conversation_h", "topic_1");
+        expect(value()).toBe("group H, topic 1");
+      });
+
+      it("an accepted send clears only that Group + Topic's draft", async () => {
+        const groups = seedTwoTopics();
+        groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+        const { wrapper, textarea, value } = mountComposer(() => Promise.resolve("accepted"));
+        await goTo(groups, "conversation_g", "topic_2");
+        await textarea().setValue("B stays");
+        await goTo(groups, "conversation_g", "topic_1");
+        await textarea().setValue("ship A");
+        await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+        await flushPromises();
+        expect(value()).toBe("");
+        await goTo(groups, "conversation_g", "topic_2");
+        expect(value()).toBe("B stays");
+        await goTo(groups, "conversation_g", "topic_1");
+        expect(value()).toBe("");
+      });
+
+      it("a rejected send keeps the draft for that Topic", async () => {
+        const groups = seedTwoTopics();
+        groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+        const { wrapper, textarea, value } = mountComposer(() => Promise.resolve("rejected"));
+        await textarea().setValue("try again later");
+        await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+        await flushPromises();
+        expect(value()).toBe("try again later");
+        await goTo(groups, "conversation_g", "topic_2");
+        await goTo(groups, "conversation_g", "topic_1");
+        expect(value()).toBe("try again later");
+      });
+
+      it("a draft whose send is still in flight is not resurrected after leaving its Topic", async () => {
+        const groups = seedTwoTopics();
+        groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+        const gate = Promise.withResolvers<GroupSendOutcome>();
+        const { wrapper, textarea, value } = mountComposer(() => gate.promise);
+        await textarea().setValue("sent from A");
+        await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+        await flushPromises();
+        await goTo(groups, "conversation_g", "topic_2");
+        gate.resolve("orphaned");
+        await flushPromises();
+        await goTo(groups, "conversation_g", "topic_1");
+        expect(value()).toBe("");
+      });
+
+      it("restores the current Topic's draft on remount (tab reload)", async () => {
+        seedTwoTopics();
+        const first = mountComposer();
+        await first.textarea().setValue("survives reload");
+        first.wrapper.unmount();
+        const second = mountComposer();
+        expect(second.value()).toBe("survives reload");
+      });
+    });
+
     it("discards the draft when the Topic switches under a pending send", async () => {
       const groups = seedGroupSelection();
       const gate = Promise.withResolvers<GroupSendOutcome>();
