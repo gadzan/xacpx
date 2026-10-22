@@ -1,5 +1,5 @@
 import { setActivePinia, createPinia } from "pinia";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 
@@ -26,7 +26,7 @@ vi.mock("vue-router", () => ({ useRouter: () => ({
 import DashboardView from "../views/DashboardView.vue";
 import { useChatStore } from "../stores/chat";
 import { triggerNotificationClick } from "../lib/local-notification";
-import { pushModal } from "../lib/mobile-back";
+import { navigateBack, pushModal } from "../lib/mobile-back";
 
 const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: true, "router-link": true };
 
@@ -272,6 +272,63 @@ describe("mobile back navigation", () => {
     expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(true);
     expect(tag()).toBeNull();
     vi.unstubAllGlobals();
+  });
+
+  test("a menu item that opens another layer keeps it open (⋯ → delete confirm)", async () => {
+    mountDash();
+    await flushPromises();
+    await selectSession();
+    const removeMenu = pushModal({ id: "menu", close: () => removeMenu() });
+    await flushPromises();
+    expect(tag()).toEqual({ layer: "modal", id: "menu", depth: 2 });
+
+    // askDelete: closeMenu() drops the menu layer, confirm() stacks the dialog, and
+    // the menu's requestClose consumes the menu entry with a history.back().
+    const confirmClosed = vi.fn();
+    await backAndSettle(() => {
+      removeMenu();
+      const removeConfirm = pushModal({ id: "confirm", close: () => { confirmClosed(); removeConfirm(); } });
+      navigateBack();
+    });
+    expect(confirmClosed).not.toHaveBeenCalled();
+    expect(tag()).toEqual({ layer: "modal", id: "confirm", depth: 2 });
+
+    // Cancel pops exactly one layer; the next back returns home.
+    await systemBack();
+    expect(confirmClosed).toHaveBeenCalledOnce();
+    expect(tag()).toEqual({ layer: "pane", id: "chat:i1::demo", depth: 1 });
+    await systemBack();
+    expect(tag()).toBeNull();
+    expect(useChatStore().instanceId).toBeNull();
+  });
+
+  test("growing to desktop with a sheet open reclaims entries in one traversal", async () => {
+    let matches = false;
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    vi.stubGlobal("matchMedia", vi.fn((media: string) => ({
+      get matches() { return matches; },
+      media,
+      addEventListener: (_type: string, cb: (e: { matches: boolean }) => void) => listeners.add(cb),
+      removeEventListener: (_type: string, cb: (e: { matches: boolean }) => void) => listeners.delete(cb),
+    })));
+    onTestFinished(() => { vi.unstubAllGlobals(); });
+    const wrapper = mountDash();
+    await flushPromises();
+    await selectSession();
+    await wrapper.find('[data-test="mobile-more"]').trigger("click");
+    await flushPromises();
+    expect(tag()?.depth).toBe(2);
+
+    const go = vi.spyOn(window.history, "go");
+    await backAndSettle(() => {
+      matches = true;
+      for (const cb of [...listeners]) cb({ matches: true });
+    });
+    await flushPromises();
+    expect(go).toHaveBeenCalledTimes(1);
+    expect(go).toHaveBeenCalledWith(-2);
+    expect(tag()).toBeNull();
+    go.mockRestore();
   });
 
   test("popstate does not remount the dashboard", async () => {

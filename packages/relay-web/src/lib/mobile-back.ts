@@ -107,10 +107,12 @@ function liveLayers(): BackLayer[] {
 /** Mark a programmatic traversal as in flight. A cancelled iOS swipe never produces a
  *  popstate, so a timer releases the flag and ← stays usable. */
 function beginTraversal(): void {
+  if (settleTimer) clearTimeout(settleTimer);
   backInFlight.value = true;
   settleTimer = setTimeout(() => {
     settleTimer = null;
     backInFlight.value = false;
+    scheduleSync();
   }, BACK_SETTLE_MS);
 }
 
@@ -136,7 +138,9 @@ function onPopState(): void {
 /** Reconcile history with the live layer stack. Runs after the flush so mount and
  *  unmount hooks have settled and the modal stack is current. */
 async function sync(): Promise<void> {
-  if (!sources || writing) return;
+  // A traversal is in flight: the history we would read is about to change. The
+  // popstate (or the settle timer) reschedules us once it lands.
+  if (!sources || writing || backInFlight.value) return;
   const desired = desktop ? [] : liveLayers();
   const depth = historyDepth();
   const top = desired[desired.length - 1];
@@ -229,6 +233,8 @@ function scheduleSync(): void {
 /** Pop our whole entry stack in one traversal, closing nothing. Used when the object
  *  being viewed disappears and the caller has already reset the layers. */
 function reclaimEntries(): void {
+  // One traversal at a time; the popstate's sync reclaims whatever is left.
+  if (backInFlight.value) return;
   const n = historyDepth();
   entryStack = [];
   if (n <= 0) return;

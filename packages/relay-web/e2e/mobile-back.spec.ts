@@ -153,6 +153,35 @@ test.describe("mobile back navigation", () => {
     expect(await dashboard.evaluate((el) => el.isConnected)).toBe(true);
   });
 
+  test("a ⋯ menu item that opens another layer keeps it open", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
+    await loginAndShowInstances(page);
+    const homePosition = await page.evaluate(() => history.state.position);
+
+    // ⋯ → Delete: the confirm dialog must survive the menu's own history pop.
+    await page.getByTestId("session-menu").first().click();
+    await page.getByTestId("delete-session").click();
+    const confirm = page.getByTestId("confirm-dialog");
+    await expect(confirm).toBeVisible();
+    await page.waitForTimeout(600);
+    await expect(confirm).toBeVisible();
+    expect((await backTag(page))?.depth).toBe(1);
+
+    // Cancel pops exactly that one layer and lands on the home entry.
+    await page.getByTestId("confirm-cancel").click();
+    await expect(confirm).toHaveCount(0);
+    await expect.poll(() => backTag(page)).toBeNull();
+    expect(await page.evaluate(() => history.state.position)).toBe(homePosition);
+    await expect(page.getByTestId("fab-new-session")).toBeVisible();
+
+    // ⋯ → Rename: the inline input stays and the menu leaves no entry behind.
+    await page.getByTestId("session-menu").first().click();
+    await page.getByTestId("action-rename").click();
+    await expect(page.getByTestId("rename-input")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => history.state.position)).toBe(homePosition);
+    expect(await backTag(page)).toBeNull();
+  });
+
   test("desktop adds no history entries", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "chromium-desktop", "desktop viewport only");
     await loginAndShowInstances(page);
