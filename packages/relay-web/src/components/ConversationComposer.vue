@@ -62,6 +62,10 @@ const emit = defineEmits<{
 const textarea = ref<HTMLTextAreaElement | null>(null);
 
 const hasSendable = computed(() => props.modelValue.trim().length > 0);
+/** Plainly unavailable (e.g. a Group with zero Topics): dim the whole card and
+ *  show not-allowed. A running turn (Stop must stay prominent) or an in-flight
+ *  send (spinner) keeps the card at full strength and only dims the textarea. */
+const surfaceDisabled = computed(() => props.disabled && !props.busy && !props.sending);
 const showStop = computed(() => props.busy && !hasSendable.value);
 
 function reportCaret(): void {
@@ -114,7 +118,10 @@ function onInput(event: Event): void {
        and stack layers above this card baseline to its top border. -->
   <form class="relative px-0" @submit.prevent="emit('send')">
     <div
+      data-test="composer-surface"
       class="relative rounded-2xl bg-surface transition-colors focus-within:ring-2 focus-within:ring-accent"
+      :class="surfaceDisabled ? 'cursor-not-allowed opacity-60' : ''"
+      :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >
       <slot name="menus" />
 
@@ -129,7 +136,8 @@ function onInput(event: Event): void {
         :aria-controls="combobox ? comboboxListId : undefined"
         :aria-expanded="combobox ? comboboxExpanded : undefined"
         :aria-activedescendant="combobox ? comboboxActiveId : undefined"
-        class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+        class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
+        :class="surfaceDisabled ? '' : 'disabled:opacity-50'"
         :disabled="disabled"
         :style="height !== undefined ? { height: height + 'px' } : undefined"
         :placeholder="placeholder || $t('chat.message')"

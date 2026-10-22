@@ -1794,6 +1794,66 @@ describe("Group Components", () => {
       }
     });
 
+    it("renders no topic pill with zero Topics on desktop and mobile, keeping the Create first Topic CTA", async () => {
+      const groups = seedGroupSelection();
+      groups.activeTopicId = null;
+      groups.topicsByConversation["i1:conversation_g"] = [];
+      for (const width of [1280, 390]) {
+        window.innerWidth = width;
+        const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+        await flushPromises();
+        expect(wrapper.findAll('[data-test="group-topic-pill"]')).toHaveLength(0);
+        expect(wrapper.find('[data-test="group-first-topic"]').exists()).toBe(true);
+        expect(wrapper.find('[data-test="group-first-topic-button"]').exists()).toBe(true);
+        expect(wrapper.find('[data-test="group-pane-member-count"]').exists()).toBe(true);
+        wrapper.unmount();
+      }
+    });
+
+    it("zero Topics: composer disabled with a create-topic placeholder, no member selector or hint", async () => {
+      const groups = seedGroupSelection();
+      groups.activeTopicId = null;
+      groups.topicsByConversation["i1:conversation_g"] = [];
+      for (const width of [1280, 390]) {
+        window.innerWidth = width;
+        const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+        await flushPromises();
+        const textarea = wrapper.find('[data-test="group-composer-textarea"]').element as HTMLTextAreaElement;
+        expect(textarea.disabled).toBe(true);
+        expect(textarea.placeholder).toBe(i18n.global.t("group.prompt.createTopicFirst"));
+        // Visibly disabled: the whole composer card is dimmed with a not-allowed cursor.
+        const surface = wrapper.find('[data-test="composer-surface"]');
+        expect(surface.classes()).toEqual(expect.arrayContaining(["opacity-60", "cursor-not-allowed"]));
+        expect(surface.attributes("aria-disabled")).toBe("true");
+        expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(false);
+        expect(wrapper.text()).not.toContain(i18n.global.t("group.target.hint"));
+        // The centre CTA stays the only primary action.
+        expect(wrapper.find('[data-test="group-first-topic-button"]').exists()).toBe(true);
+        wrapper.unmount();
+      }
+    });
+
+    it("with a Topic the member selector and the normal placeholder come back", async () => {
+      seedGroupSelection();
+      window.innerWidth = 1280;
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]').element as HTMLTextAreaElement;
+      expect(textarea.placeholder).toBe(i18n.global.t("group.prompt.placeholder"));
+      expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(true);
+      // Enabled appearance is unchanged: no dimming on the card.
+      const surface = wrapper.find('[data-test="composer-surface"]');
+      expect(surface.classes()).not.toContain("opacity-60");
+      expect(surface.classes()).not.toContain("cursor-not-allowed");
+      wrapper.unmount();
+    });
+
+    it("pluralizes the member count (1 member / 2 members)", () => {
+      i18n.global.locale.value = "en";
+      expect(i18n.global.t("group.header.members", 1)).toBe("1 member");
+      expect(i18n.global.t("group.header.members", 2)).toBe("2 members");
+    });
+
     it("mobile ⋯ sheet opens the group editor and ← emits back", async () => {
       seedGroupSelection();
       window.innerWidth = 500;

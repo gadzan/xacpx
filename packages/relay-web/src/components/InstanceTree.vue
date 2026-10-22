@@ -945,7 +945,7 @@ const rowSwipes = computed(() => {
                       :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg'">
                   {{ g.title }}
                 </span>
-                <span class="truncate text-xs text-fg-muted">{{ $t("group.header.members", { count: g.botIds.length }) }}</span>
+                <span class="truncate text-xs text-fg-muted">{{ $t("group.header.members", g.botIds.length) }}</span>
               </div>
               <span v-if="g.lifecycle === 'deleting'"
                     data-test="group-deleting-badge"

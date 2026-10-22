@@ -59,7 +59,9 @@ const promptText = computed({
 });
 const isRunActive = computed(() => directBotsStore.isRunActive),
   isTopicRecovering = computed(() => !directBotsStore.topicReady),
-  isPromptInFlight = computed(() => directBotsStore.promptInFlight),
+  // A topicless Bot's first send is in flight from the click, while its
+  // Default Topic is still being created.
+  isPromptInFlight = computed(() => directBotsStore.promptInFlight || directBotsStore.firstSendPending),
   isCancelling = computed(() => !!directBotsStore.cancellingRunId),
   bot = computed(() => directBotsStore.currentBot),
   isBotDisabled = computed(() => (bot.value ? !bot.value.enabled : false));

@@ -16,6 +16,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import { api } from "../api/client";
+import { dismissToast, useToasts } from "../lib/use-toasts";
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
@@ -1563,11 +1564,215 @@ describe("Direct Bot Components", () => {
 
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
-      expect((textarea.element as HTMLTextAreaElement).placeholder).toContain("Recovering");
+      expect((textarea.element as HTMLTextAreaElement).placeholder).toBe("Loading history…");
       await textarea.setValue("too early");
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
       expect(wrapper.emitted("send")).toBeUndefined();
     });
+    it("shows the normal placeholder (not Recovering) for a Bot with zero Topics once selection settles", async () => {
+      seedLocalInstance();
+      vi.spyOn(api, "rpc").mockImplementation(async (_inst: string, type: string) => {
+        if (type === "control.bots.list") return { bots: [{ id: "b1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] } as never;
+        if (type === "control.conversations.list") return { conversations: [{ id: "c1", kind: "bot", title: "Bot", botId: "b1", createdAt: "now", updatedAt: "now" }] } as never;
+        if (type === "control.topics.list") return { topics: [] } as never;
+        return {} as never;
+      });
+      const directBots = useDirectBotsStore();
+      await directBots.selectBot("i1", "b1");
+      expect(directBots.topicReady).toBe(true);
+      const wrapper = mount(ConversationPromptInput, {
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find("textarea").element as HTMLTextAreaElement;
+      expect(textarea.placeholder).toBe(i18n.global.t("bot.prompt.placeholder"));
+      expect(textarea.placeholder).not.toBe(i18n.global.t("bot.prompt.recoveringPlaceholder"));
+      // Enabled: the first send creates the Default Topic.
+      expect(textarea.disabled).toBe(false);
+      wrapper.unmount();
+    });
+
+    describe("first message to a topicless Bot", () => {
+      const BOT = { id: "b1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" };
+      const CONV = { id: "c1", kind: "bot", title: "Bot", botId: "b1", createdAt: "now", updatedAt: "now" };
+      const NEW_TOPIC = { id: "t_new", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" };
+      function promptAccepted(payload: { requestId: string; text: string; topicId: string }) {
+        return {
+          reused: false, conversationId: "c1", topicId: payload.topicId, requestId: payload.requestId,
+          message: { id: "m1", conversationId: "c1", topicId: payload.topicId, seq: 1, role: "human", content: payload.text, createdAt: "now" },
+          run: { id: "r1", conversationId: "c1", topicId: payload.topicId, requestMessageId: "m1", requestId: payload.requestId, mode: "explicit", state: "completed", profileRevision: 1, createdAt: "now" },
+          activeRunId: "r1",
+        };
+      }
+      /** Routes the RPCs a Bot page makes; `create` drives control.topics.create. */
+      function routeRpc(opts: { create: () => Promise<unknown>; conversations?: () => unknown[] }) {
+        const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
+        topicsAfterCreate = [];
+        vi.spyOn(api, "rpc").mockImplementation((async (_inst: string, type: string, payload: Record<string, unknown> = {}) => {
+          calls.push({ type, payload });
+          if (type === "control.bots.list") return { bots: [BOT] };
+          if (type === "control.conversations.list") return { conversations: opts.conversations ? opts.conversations() : [CONV] };
+          if (type === "control.topics.list") return { topics: topicsAfterCreate };
+          if (type === "control.topics.create") {
+            const res = await opts.create();
+            topicsAfterCreate = [NEW_TOPIC];
+            return res;
+          }
+          if (type === "control.conversation.history") return { conversationId: "c1", topicId: payload.topicId, messages: [], hasMoreBefore: false, hasMoreAfter: false };
+          if (type === "control.runs.list") return { runs: [] };
+          if (type === "control.conversation.prompt") return promptAccepted(payload as never);
+          return {};
+        }) as never);
+        return calls;
+      }
+      let topicsAfterCreate: unknown[] = [];
+      async function mountTopicless() {
+        seedLocalInstance();
+        window.innerWidth = 1280;
+        const directBots = useDirectBotsStore();
+        await directBots.selectBot("i1", "b1");
+        const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        await flushPromises();
+        const input = wrapper.findComponent(ConversationPromptInput);
+        return { directBots, wrapper, textarea: input.find("textarea"), sendButton: () => input.find('[data-test="send-prompt-button"]') };
+      }
+      // jsdom has no Element.scrollTo; the transcript auto-scrolls once the
+      // first message lands.
+      const hadScrollTo = "scrollTo" in HTMLElement.prototype;
+      beforeEach(() => {
+        if (!hadScrollTo) HTMLElement.prototype.scrollTo = () => {};
+      });
+      afterEach(() => {
+        for (const t of [...useToasts().value]) dismissToast(t.id);
+        if (!hadScrollTo) Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+      });
+
+      it("enables the composer with the normal placeholder when the Bot has zero Topics", async () => {
+        routeRpc({ create: async () => ({ topic: NEW_TOPIC }) });
+        const { directBots, wrapper, textarea } = await mountTopicless();
+        expect(directBots.activeTopicId).toBeNull();
+        const el = textarea.element as HTMLTextAreaElement;
+        expect(el.disabled).toBe(false);
+        expect(el.placeholder).toBe(i18n.global.t("bot.prompt.placeholder"));
+        // Intro and composer tell the same story.
+        expect(wrapper.find('[data-test="bot-empty-hint"]').text()).toBe(i18n.global.t("bot.chat.emptyHint"));
+        wrapper.unmount();
+      });
+
+      it("a disabled Bot's intro says to enable it, matching the disabled composer", async () => {
+        routeRpc({ create: async () => ({ topic: NEW_TOPIC }) });
+        const { directBots, wrapper } = await mountTopicless();
+        directBots.botsByInstance["i1"] = [{ ...BOT, enabled: false }];
+        await flushPromises();
+        const el = wrapper.findComponent(ConversationPromptInput).find("textarea").element as HTMLTextAreaElement;
+        expect(el.disabled).toBe(true);
+        expect(el.placeholder).toBe(i18n.global.t("bot.prompt.botDisabledPlaceholder"));
+        expect(wrapper.find('[data-test="bot-empty-hint"]').text()).toBe(i18n.global.t("bot.chat.emptyHintDisabled"));
+        wrapper.unmount();
+      });
+
+      it("creates a Default Topic via topics.create, activates it and sends the first message into it", async () => {
+        let resolveCreate!: (v: unknown) => void;
+        const calls = routeRpc({ create: () => new Promise((resolve) => { resolveCreate = resolve; }) });
+        const { directBots, wrapper, textarea, sendButton } = await mountTopicless();
+        await textarea.setValue("hello bot");
+        await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
+        await flushPromises();
+        // Sending state starts immediately, before the Topic exists.
+        expect(sendButton().attributes("disabled")).toBeDefined();
+        expect(sendButton().find(".animate-spin").exists()).toBe(true);
+        expect(calls.filter((c) => c.type === "control.conversation.prompt")).toHaveLength(0);
+        // Double-send guard: a second Enter while creating creates no second Topic.
+        await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
+        await sendButton().trigger("click");
+        await flushPromises();
+        expect(calls.filter((c) => c.type === "control.topics.create")).toHaveLength(1);
+        expect(calls.find((c) => c.type === "control.topics.create")?.payload).toEqual({ conversationId: "c1", title: "Default" });
+
+        resolveCreate({ topic: NEW_TOPIC });
+        await flushPromises();
+        expect(directBots.activeTopicId).toBe("t_new");
+        // The new Topic is opened through the normal loadHistory path (history
+        // + durable run discovery reopen topicReady) before the prompt goes out.
+        const order = calls.map((c) => c.type);
+        const created = order.indexOf("control.topics.create");
+        const history = order.indexOf("control.conversation.history", created);
+        const runs = order.indexOf("control.runs.list", created);
+        expect(history).toBeGreaterThan(created);
+        expect(runs).toBeGreaterThan(created);
+        expect(order.indexOf("control.conversation.prompt")).toBeGreaterThan(Math.max(history, runs));
+        expect(directBots.topicReady).toBe(true);
+        const prompts = calls.filter((c) => c.type === "control.conversation.prompt");
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]?.payload).toMatchObject({ conversationId: "c1", topicId: "t_new", text: "hello bot", target: { botId: "b1" } });
+        expect(directBots.messages.map((m) => m.content)).toEqual(["hello bot"]);
+        expect((wrapper.findComponent(ConversationPromptInput).find("textarea").element as HTMLTextAreaElement).value).toBe("");
+        expect(useToasts().value).toHaveLength(0);
+        wrapper.unmount();
+      });
+
+      it("materializes the Direct Conversation through the existing list when none is known yet", async () => {
+        let listed = 0;
+        const calls = routeRpc({
+          create: async () => ({ topic: NEW_TOPIC }),
+          conversations: () => (listed++ === 0 ? [] : [CONV]),
+        });
+        const { directBots, wrapper, textarea } = await mountTopicless();
+        expect(directBots.activeConversationId).toBeNull();
+        await textarea.setValue("first");
+        await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
+        await flushPromises();
+        expect(directBots.activeConversationId).toBe("c1");
+        expect(calls.find((c) => c.type === "control.topics.create")?.payload).toEqual({ conversationId: "c1", title: "Default" });
+        expect(calls.find((c) => c.type === "control.conversation.prompt")?.payload).toMatchObject({ conversationId: "c1", topicId: "t_new", text: "first" });
+        wrapper.unmount();
+      });
+
+      it("on Topic creation failure shows a toast, keeps the draft and sends nothing", async () => {
+        const calls = routeRpc({ create: async () => { throw new Error("topics down"); } });
+        const { directBots, wrapper, textarea, sendButton } = await mountTopicless();
+        await textarea.setValue("keep me");
+        await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
+        await flushPromises();
+        expect(useToasts().value.map((t) => [t.tone, t.key])).toEqual([["error", "bot.prompt.createTopicFailed"]]);
+        expect(calls.filter((c) => c.type === "control.conversation.prompt")).toHaveLength(0);
+        expect(directBots.activeTopicId).toBeNull();
+        const el = wrapper.findComponent(ConversationPromptInput).find("textarea").element as HTMLTextAreaElement;
+        expect(el.value).toBe("keep me");
+        // Composer usable again for a retry.
+        expect(el.disabled).toBe(false);
+        expect(sendButton().attributes("disabled")).toBeUndefined();
+        wrapper.unmount();
+      });
+    });
+
+    it("shows the Recovering placeholder only while a real history load is in flight", async () => {
+      seedLocalInstance();
+      let releaseHistory!: () => void;
+      vi.spyOn(api, "rpc").mockImplementation((_inst: string, type: string) => {
+        if (type === "control.bots.list") return Promise.resolve({ bots: [{ id: "b1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] } as never);
+        if (type === "control.conversations.list") return Promise.resolve({ conversations: [{ id: "c1", kind: "bot", title: "Bot", botId: "b1", defaultTopicId: "t1", createdAt: "now", updatedAt: "now" }] } as never);
+        if (type === "control.topics.list") return Promise.resolve({ topics: [{ id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }] } as never);
+        if (type === "control.conversation.history") return new Promise((resolve) => {
+          releaseHistory = () => resolve({ conversationId: "c1", topicId: "t1", messages: [], hasMoreBefore: false, hasMoreAfter: false } as never);
+        });
+        if (type === "control.runs.list") return Promise.resolve({ runs: [] } as never);
+        return Promise.resolve({} as never);
+      });
+      const directBots = useDirectBotsStore();
+      const selecting = directBots.selectBot("i1", "b1");
+      const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const textarea = () => wrapper.find("textarea").element as HTMLTextAreaElement;
+      expect(textarea().placeholder).toBe(i18n.global.t("bot.prompt.recoveringPlaceholder"));
+      expect(textarea().disabled).toBe(true);
+      releaseHistory();
+      await selecting;
+      await flushPromises();
+      expect(textarea().placeholder).toBe(i18n.global.t("bot.prompt.placeholder"));
+      expect(textarea().disabled).toBe(false);
+      wrapper.unmount();
+    });
+
     it("shows warning when bot is disabled", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
@@ -2039,6 +2244,26 @@ describe("Direct Bot Components", () => {
   });
 
   describe("DirectBotPane.vue", () => {
+    it("desktop header: a role-less (or blank-role) Bot shows exactly one separator between topic and workspace", async () => {
+      seedLocalInstance();
+      const prevWidth = window.innerWidth;
+      window.innerWidth = 1280;
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      for (const role of [undefined, "   ", "Code QA"]) {
+        directBots.botsByInstance["i1"] = [
+          { id: "b1", name: "Bot", agent: "codex", workspace: "repo", ...(role !== undefined ? { role } : {}), enabled: true, updatedAt: "now" },
+        ];
+        const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        await flushPromises();
+        const meta = wrapper.find('[data-test="bot-header-meta"]').text().replace(/\s+/g, "");
+        expect(meta).toBe(role?.trim() ? "Default·CodeQA·repo·codex" : "Default·repo·codex");
+        wrapper.unmount();
+      }
+      window.innerWidth = prevWidth;
+    });
+
     it("renders bot header, topics, and handles topic switching", async () => {
       const instances = useInstancesStore();
       instances.instances = [

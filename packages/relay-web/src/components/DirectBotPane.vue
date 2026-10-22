@@ -43,6 +43,15 @@ const instancesStore = useInstancesStore();
 const { t } = useI18n();
 
 const bot = computed(() => directBotsStore.currentBot);
+// One copy set for the empty Bot page: the intro hint follows the composer's
+// state (enabled -> "send a message", disabled Bot -> enable it first, loading ->
+// no hint while the composer shows the loading placeholder).
+const emptyHint = computed<string | null>(() => {
+  if (bot.value?.retired) return null;
+  if (bot.value && !bot.value.enabled) return t("bot.chat.emptyHintDisabled");
+  if (!directBotsStore.topicReady) return null;
+  return t("bot.chat.emptyHint");
+});
 const instance = computed(() =>
   directBotsStore.instanceId ? instancesStore.byId(directBotsStore.instanceId) : undefined,
 );
@@ -238,7 +247,7 @@ function openRemoval(): void {
             </span>
           </div>
 
-          <div class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
+          <div data-test="bot-header-meta" class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
             <TopicSwitcher
               v-if="!isMobile"
               variant="direct"
@@ -254,8 +263,12 @@ function openRemoval(): void {
               @create="newTopicDialogOpen = true"
             />
             <span aria-hidden="true">·</span>
-            <span v-if="bot?.role" class="truncate font-medium text-fg/80">{{ bot.role }}</span>
-            <span v-if="bot?.role">·</span>
+            <!-- Role segment and its separator render together, and only for a
+                 non-blank role, so a role-less Bot reads "Default · repo · agent". -->
+            <template v-if="bot?.role?.trim()">
+              <span class="truncate font-medium text-fg/80">{{ bot.role }}</span>
+              <span aria-hidden="true">·</span>
+            </template>
             <span class="flex items-center gap-1">
               <Folder :size="10" />
               <span>{{ bot?.workspace }}</span>
@@ -326,6 +339,7 @@ function openRemoval(): void {
     <!-- Message Area -->
     <ConversationMessageList
       :messages="directBotsStore.messages"
+      :empty-hint="emptyHint"
       :live-turn="directBotsStore.liveTurn"
       :active-run="directBotsStore.activeRun"
       :active-member-turn="directBotsStore.activeMemberTurn"
@@ -352,7 +366,7 @@ function openRemoval(): void {
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
-      :disabled="bot?.retired === true || !directBotsStore.activeTopicId || !directBotsStore.topicReady || directBotsStore.currentTopic?.status !== 'active'"
+      :disabled="bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
       :deliver="(text, mentions) => directBotsStore.sendPrompt(text, mentions)"
       @cancel="directBotsStore.cancelCurrentRun"
     />

@@ -31,6 +31,8 @@ const newTopicDialogOpen = ref(false);
 const groupDialogOpen = ref(false);
 const activeSheet = ref<"more" | null>(null);
 function closeSheet(): void { activeSheet.value = null; }
+// Zero Topics: the centre "Create first Topic" CTA is the only Topic entry, so
+// the header pill (which would read "Default") is not mounted on either layout.
 const needsFirstTopic = computed(() =>
   !!groupsStore.activeConversationId
   && groupsStore.topicReady
@@ -158,7 +160,7 @@ const worktreeRunId = computed(() => {
       <div class="flex min-w-0 flex-1 flex-col">
         <span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span>
         <TopicSwitcher
-          v-if="isMobile"
+          v-if="isMobile && !needsFirstTopic"
           :topics="groupsStore.currentTopics"
           :active-topic-id="groupsStore.activeTopicId"
           :preview-topic="previewTopic"
@@ -188,7 +190,7 @@ const worktreeRunId = computed(() => {
         <h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2>
         <div class="flex min-w-0 items-center gap-1.5 text-xs text-fg-muted">
           <TopicSwitcher
-            v-if="!isMobile"
+            v-if="!isMobile && !needsFirstTopic"
             :topics="groupsStore.currentTopics"
             :active-topic-id="groupsStore.activeTopicId"
             :preview-topic="previewTopic"
@@ -200,8 +202,8 @@ const worktreeRunId = computed(() => {
             @select="groupsStore.switchTopic"
             @create="newTopicDialogOpen = true"
           />
-          <span aria-hidden="true">·</span>
-          <span data-test="group-pane-member-count" class="shrink-0 whitespace-nowrap">{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
+          <span v-if="!needsFirstTopic" aria-hidden="true">·</span>
+          <span data-test="group-pane-member-count" class="shrink-0 whitespace-nowrap">{{ $t("group.header.members", group?.botIds.length ?? 0) }}</span>
           <span v-if="group?.lifecycle === 'deleting'"
                 data-test="group-pane-deleting-badge"
                 class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
@@ -263,6 +265,7 @@ const worktreeRunId = computed(() => {
     <GroupComposer
       :bots="memberBots"
       :disabled="!groupsStore.activeTopicId || !groupsStore.topicReady || !isActiveTopic"
+      :needs-first-topic="needsFirstTopic"
       :instance-id="groupsStore.instanceId"
       :send-outcome="sendPromptOutcome"
       @send="handleSend"
