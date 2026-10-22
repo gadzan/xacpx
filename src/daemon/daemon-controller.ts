@@ -78,12 +78,13 @@ export class DaemonController {
   ) {
     this.statusStore = new DaemonStatusStore(paths.statusFile);
     this.startupPollIntervalMs = deps.startupPollIntervalMs ?? 50;
-    // Backstop only: with the orphan sweep decoupled from the ready signal (see
-    // run-console), the daemon writes status.json within a fraction of a second. This
-    // headroom just absorbs unrelated slow-startup costs (plugin load, busy disk) without
-    // masking a genuine hang — a crashed daemon is still detected immediately via the
-    // per-poll isProcessRunning() check, independent of this timeout.
-    this.startupTimeoutMs = deps.startupTimeoutMs ?? 10_000;
+    // Backstop only: the daemon writes status.json after buildApp finishes
+    // (agent overlay provisioning, bridge subprocess spawn + ping handshake,
+    // capability probe). On Windows the bundled CLI cold-load plus the bridge
+    // spawn run serially and routinely take 13-23s, so the default must clear
+    // that with headroom. A crashed daemon is still detected immediately via
+    // the per-poll isProcessRunning() check, independent of this timeout.
+    this.startupTimeoutMs = deps.startupTimeoutMs ?? 60_000;
     this.onboardingStartupTimeoutMs = deps.onboardingStartupTimeoutMs ?? 300_000;
     this.shutdownPollIntervalMs = deps.shutdownPollIntervalMs ?? 50;
     this.shutdownTimeoutMs = deps.shutdownTimeoutMs ?? 5_000;
