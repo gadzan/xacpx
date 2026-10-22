@@ -1,13 +1,60 @@
 # Changelog
 
-## [Unreleased]
+## [relay-protocol 0.6.4-beta.4] - 2026-10-22
+
+### Added
+
+- `control.terminal.settings.get` / `control.terminal.settings.update` messages, `TerminalSettingsDto` and their strict validators, registered in `ControlRpcType` and `CONTROL_PAYLOAD_VALIDATORS` (#452).
+- `control.runs.details.batch` / `control.runs.trace.get` messages for reading durable public run summaries and paged traces (#447).
+
+## [relay 0.14.12-beta.9] - 2026-10-22
+
+### Added
+
+- Group conversations replace the Collaboration Run card with one Bot row and thinking bubble per MemberTurn. Each bubble opens anchored details for that member and attempt; public traces persist in Core SQLite and replay after refresh, Topic switch, reconnect and daemon restart (#447).
+- Manage Instance gains an instance-scoped relay terminal switch that persists the setting and reports that a channel restart is required, and the Jev routing form collapses into a details section (#452).
+- The group process detail opens as a modal bottom sheet below 1024px while the desktop keeps its anchored popover; both share the header, content and step timeline (#454).
 
 ### Fixed
 
-- Terminal registry writers now hold a kernel lock until close, preventing simultaneous stale-lock reclaim from admitting two writers. POSIX reuses core's flock/Bun helper and Windows uses a named-pipe guard; crashes release ownership without stale waits. Legacy `terminals.lock` directories require stopping old writers and removing the empty directory before restart. Added real cross-process contention and crash-recovery coverage on macOS and Windows.
-- Hardened offline session ownership-fence recovery: strict `session inspect` / `session recover` arguments, validated config and runtime fence paths, generation and phase guards, and durable exclusive backups with separate JSON audit records. Windows containment recovery requires the canonical generation Job to be empty or absent and the supervisor to be provably gone; uncertain evidence fails closed. Recovery is Windows-only. Legacy orphan recovery requires explicit `--accept-legacy-orphan-risk`.
-- Windows runtime workers now inherit a generation-bound kill-on-close Job from a supervisor before worker code starts. The supervisor reports its birth and then waits for an explicit GO before it may create the Job, join it, or spawn the worker; the host persists that kernel-verified birth as the `owned` fence first, so a crash can never leave a Job that recovery cannot attribute. Worker replacement and hard deletion require proof that both processes exited and the Job is empty or absent. Fences without a persisted supervisor birth (claims, and `owned`/`discharged` records from a crash before that write) recover from the canonical generation Job's containment instead of dead-locking. Process identity probes distinguish an exited process retained by an open handle from a live process.
-- `session recover` prints its Windows-only refusal even when the CLI has no stderr callback.
+- One run-status chip is shared by the session transcript bubble and the Bot pane run HUD. Waiting runs use a still dot instead of the never-rendered warning pill, and the composer no longer animates in from the upper left when the chat pane is revealed (#450).
+
+## [channel-relay 0.7.8-beta.5] - 2026-10-22
+
+### Added
+
+- The control bridge dispatches the new terminal settings RPCs behind an availability guard, so an older daemon reports `unsupported` instead of failing the call (#452).
+
+### Fixed
+
+- Terminal registry writers now hold a kernel lock until close, preventing simultaneous stale-lock reclaim from admitting two writers. POSIX reuses core's flock/Bun helper and Windows uses a named-pipe guard; crashes release ownership without stale waits. Legacy `terminals.lock` directories require stopping old writers and removing the empty directory before restart. Added real cross-process contention and crash-recovery coverage on macOS and Windows (#455).
+
+## [0.24.10-beta.5] - 2026-10-22
+
+### Added
+
+- New `acquireFileLock` plugin API export provides one lifetime OS lock primitive (stable-file flock on POSIX, named-pipe guard on Windows) shared by runtime ownership and the terminal registry (#455).
+- The control service answers the terminal settings RPC by patching `channels[id=relay].options.terminal.enabled` through ConfigStore under the config mutation mutex; a missing relay dep answers `unsupported` (#452).
+- Durable public run traces back the relay-web thinking bubbles, persisted in Core SQLite and exposed through bounded read-only detail and trace RPCs (#447).
+
+### Fixed
+
+- Hardened offline session ownership-fence recovery: strict `session inspect` / `session recover` arguments, validated config and runtime fence paths, generation and phase guards, and durable exclusive backups with separate JSON audit records. Windows containment recovery requires the canonical generation Job to be empty or absent and the supervisor to be provably gone; uncertain evidence fails closed. Recovery is Windows-only. Legacy orphan recovery requires explicit `--accept-legacy-orphan-risk` (#448).
+- Windows runtime workers now inherit a generation-bound kill-on-close Job from a supervisor before worker code starts. The supervisor reports its birth and then waits for an explicit GO before it may create the Job, join it, or spawn the worker; the host persists that kernel-verified birth as the `owned` fence first, so a crash can never leave a Job that recovery cannot attribute. Worker replacement and hard deletion require proof that both processes exited and the Job is empty or absent. Fences without a persisted supervisor birth (claims, and `owned`/`discharged` records from a crash before that write) recover from the canonical generation Job's containment instead of dead-locking. Process identity probes distinguish an exited process retained by an open handle from a live process (#448).
+- `session recover` prints its Windows-only refusal even when the CLI has no stderr callback (#448).
+- Terminal registry writers hold a kernel lock until close: stable-file flock on POSIX and a named-pipe guard on Windows, with Bun using one lifetime-bound Node helper. Only real contention becomes `TerminalRegistryLockedError`; failed startup releases the claim and a closed writer cannot mutate a successor's registry (#455).
+
+## [channel-feishu 0.8.7-beta.5] - 2026-10-22
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.5` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.5] - 2026-10-22
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.5` with no channel behavior change.
 
 ## [relay-protocol 0.6.4-beta.3] - 2026-10-19
 
