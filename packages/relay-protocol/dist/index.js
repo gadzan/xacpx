@@ -258,7 +258,8 @@ var RELAY_CAPABILITIES = {
   terminalMultiViewV1: "terminal.multi-view.v1",
   desktopRfbV1: "desktop.rfb.v1",
   desktopArdAuthV1: "desktop.ard-auth.v1",
-  interactionElicitationFormV1: "interaction.elicitation.form.v1"
+  interactionElicitationFormV1: "interaction.elicitation.form.v1",
+  botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [

@@ -1321,6 +1321,11 @@ export const RELAY_CAPABILITIES = {
    *  never asks, so an old hub simply produces no interaction rather than a
    *  frame the web cannot interpret. */
   interactionElicitationFormV1: "interaction.elicitation.form.v1",
+  /** `control.bots.create` accepts an omitted `workspace` and allocates a
+   *  dedicated Bot workspace. Advertised only when both the connector's
+   *  validator and the core accept it, so the web keeps requiring a workspace
+   *  for instances whose core predates dedicated Bot workspaces. */
+  botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
   /** This side can carry the relay permission interaction. Reserved: the wire
    *  shape exists so the transport is exercised, but no permission renderer is
    *  implemented yet. Declaring it would advertise a capability that cannot

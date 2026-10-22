@@ -164,6 +164,20 @@ export class RelayElicitationUnavailable extends Error {
   }
 }
 
+/**
+ * True when Bot creation without a `workspace` works end to end on this
+ * instance: the core must say so (older cores require `workspace`) AND the
+ * relay-protocol validator this connector resolved must accept the omission.
+ * Either half missing keeps the capability off, so the web falls back to
+ * requiring a workspace.
+ */
+export function supportsBotDedicatedWorkspace(control: unknown): boolean {
+  const probe = (control as { supportsBotDedicatedWorkspace?: unknown } | null)?.supportsBotDedicatedWorkspace;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parseControlPayload(MSG.botsCreate, { name: "probe", agent: "probe" }) !== null;
+}
+
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
   readonly nativeSessionListFormat = "table" as const;
@@ -273,6 +287,9 @@ export class RelayChannel implements MessageChannelRuntime {
       // the connector cannot deliver.
       RELAY_CAPABILITIES.interactionElicitationFormV1,
     ];
+    if (supportsBotDedicatedWorkspace(control)) {
+      capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
+    }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);
     }

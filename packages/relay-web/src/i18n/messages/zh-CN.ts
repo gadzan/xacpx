@@ -808,7 +808,7 @@ export default {
       nameRequired: "Bot 名称为必填项。",
       agentRequired: "Agent 为必填项。",
       workspaceRequired: "工作区为必填项。",
-      dedicatedWorkspaceNameInvalid: "新建工作区以 Bot 名称命名，名称需至少包含一个字母或数字。请修改 Bot 名称，或选择已有工作区。",
+      dedicatedWorkspaceNameInvalid: "名字里需要有字母或数字，或手动选择一个工作区",
       detailLoading: "Bot 详情仍在加载中，请稍候再保存。",
       detailLoadFailed: "Bot 详情加载失败（{msg}），请重试后再保存。",
     },

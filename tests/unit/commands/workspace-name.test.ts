@@ -43,6 +43,8 @@ test("sanitizeWorkspaceName rejects a name with no letters or digits", () => {
   expect(sanitizeWorkspaceName(".")).toBeNull();
   expect(sanitizeWorkspaceName("..")).toBeNull();
   expect(sanitizeWorkspaceName("！？。")).toBeNull();
+  expect(sanitizeWorkspaceName("🤖")).toBeNull();
+  expect(sanitizeWorkspaceName("🤖🚀")).toBeNull();
 });
 
 test("sanitizeWorkspaceName still derives a name when any letter or digit remains", () => {

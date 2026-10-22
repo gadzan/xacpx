@@ -2513,6 +2513,17 @@ export class ControlService {
     }
   }
 
+  /**
+   * Feature probe for connectors: `createBot` accepts an omitted `workspace`
+   * and allocates a dedicated Bot workspace. Connectors advertise
+   * `RELAY_CAPABILITIES.botsDedicatedWorkspaceV1` only when this exists and
+   * returns true, so a web client never omits `workspace` against an older
+   * core that still requires it.
+   */
+  supportsBotDedicatedWorkspace(): true {
+    return true;
+  }
+
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
       const bot = input.workspace !== undefined
@@ -2530,7 +2541,7 @@ export class ControlService {
     if (base === null) {
       throw new BotError(
         "workspace_name_underivable",
-        `bot name ${JSON.stringify(input.name.trim())} has no letters or digits, so no workspace name can be derived from it; choose an existing workspace or use a name with letters or digits`,
+        "Name needs a letter or number, or pick a workspace.",
         { field: "workspace" },
       );
     }

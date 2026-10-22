@@ -5,6 +5,7 @@ import { afterEach, expect, test } from "bun:test";
 
 import type { AppConfig } from "../../../src/config/types";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
+import { asPublicControl } from "../../../src/control/public-control";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import {
   createConversationRuntime,
@@ -242,9 +243,13 @@ test("an explicit blank workspace is rejected instead of silently auto-created",
 
 test("a Bot name with no letters or digits is rejected before any workspace is allocated", async () => {
   const w = await wire();
-  for (const name of ["!!!", ".", "..", "..."]) {
-    await expect(w.control.createBot({ name, agent: "codex" }))
-      .rejects.toMatchObject({ name: "BotError", code: "workspace_name_underivable", details: { field: "workspace" } });
+  for (const name of ["!!!", "🤖", ".", "..", "..."]) {
+    await expect(w.control.createBot({ name, agent: "codex" })).rejects.toMatchObject({
+      name: "BotError",
+      code: "workspace_name_underivable",
+      message: "Name needs a letter or number, or pick a workspace.",
+      details: { field: "workspace" },
+    });
   }
   expect(existsSync(w.botsHome)).toBe(false);
   expect(Object.keys(w.config.workspaces)).toEqual(["backend"]);
@@ -263,4 +268,18 @@ test("an all-CJK Bot name gets an opaque dedicated workspace", async () => {
   const bot = await w.control.createBot({ name: "代码审查", agent: "codex" });
   expect(bot.workspace).toMatch(/^workspace-[0-9a-f]{8}$/);
   expect(readdirSync(w.botsHome)).toEqual([bot.workspace]);
+});
+
+test("the core advertises dedicated Bot workspaces through the public control facade", async () => {
+  const w = await wire();
+  const publicControl = asPublicControl(w.control) as unknown as { supportsBotDedicatedWorkspace?: () => unknown };
+  expect("supportsBotDedicatedWorkspace" in publicControl).toBe(true);
+  expect(publicControl.supportsBotDedicatedWorkspace?.()).toBe(true);
+});
+
+test("an emoji-only Bot name still works with an explicit workspace", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "🤖", agent: "codex", workspace: "backend" });
+  expect(bot.workspace).toBe("backend");
+  expect(existsSync(w.botsHome)).toBe(false);
 });

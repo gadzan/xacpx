@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle } from "lucide-vue-next";
 import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import { useInstancesStore } from "../stores/instances";
+import { supportsBotDedicatedWorkspace, useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { mergeEffortRefresh } from "../lib/capability-view";
@@ -34,6 +34,11 @@ const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
 
 const isEditing = computed(() => !!props.bot);
+// Creating a Bot without a workspace needs a core that allocates a dedicated
+// one. Older cores (and their connectors) still require `workspace`, so the
+// "New workspace" default is only offered when the instance advertises it;
+// otherwise the form keeps the original pick-a-workspace behaviour.
+const dedicatedWorkspaceSupported = computed(() => !isEditing.value && supportsBotDedicatedWorkspace(inst.value));
 // True once the Bot materialized an actual direct runtime binding/session:
 // agent/workspace are then backend-locked (runtime_identity_locked). A
 // persisted Direct Conversation alone keeps delete fail-closed (bot_in_use)
@@ -130,7 +135,9 @@ async function loadCapabilities(probe = false): Promise<void> {
   if (!agent.value) return;
   // Edit mode fills the workspace from the authoritative detail; stay in the
   // loading state until it arrives instead of claiming a preview is missing.
-  if (isEditing.value && !capabilityWorkspace.value) return;
+  // Without the dedicated-workspace default there is nothing to preview
+  // until a workspace is picked (the original behaviour).
+  if (!dedicatedWorkspaceSupported.value && !capabilityWorkspace.value) return;
   const previewWorkspace = capabilityWorkspace.value;
   let next: AgentCapabilityState;
   if (previewWorkspace) {
@@ -204,10 +211,16 @@ const workspaceGroups = computed<SelectGroup[]>(() => {
   if (isEditing.value && workspace.value && !options.some((option) => option.value === workspace.value)) {
     options.unshift({ value: workspace.value, label: workspace.value });
   }
-  if (!isEditing.value) options.unshift({ value: "", label: t("bot.fields.dedicatedWorkspace") });
+  if (dedicatedWorkspaceSupported.value) options.unshift({ value: "", label: t("bot.fields.dedicatedWorkspace") });
   return [{ options }];
 });
-const capabilityWorkspace = computed(() => workspace.value || (!isEditing.value ? availableWorkspaces.value[0]?.name : undefined));
+const capabilityWorkspace = computed(() => workspace.value || (dedicatedWorkspaceSupported.value ? availableWorkspaces.value[0]?.name : undefined));
+// Same rule as the daemon: a new workspace is named after the Bot, which needs
+// at least one letter or digit (CJK included). Shown live under the name.
+const nameNeedsWorkspaceChars = computed(() => {
+  const trimmed = name.value.trim();
+  return dedicatedWorkspaceSupported.value && !workspace.value && trimmed.length > 0 && !hasWorkspaceNameChars(trimmed);
+});
 // Revision of the authoritative detail that the untouched fields show. A
 // summary never carries instructions, so Save stays gated while this is null.
 // Submitting then could wipe instructions the user never saw.
@@ -293,6 +306,9 @@ onMounted(() => {
     if (!agent.value && availableAgents.value.length > 0) {
       agent.value = availableAgents.value[0]?.name ?? "";
     }
+    if (!dedicatedWorkspaceSupported.value && !workspace.value && availableWorkspaces.value.length > 0) {
+      workspace.value = availableWorkspaces.value[0]?.name ?? "";
+    }
     await loadCapabilities(false);
   })();
 });
@@ -323,16 +339,12 @@ async function submit(): Promise<void> {
     errorMessage.value = t("bot.validation.agentRequired");
     return;
   }
-  if (isEditing.value && !workspace.value) {
+  if (!dedicatedWorkspaceSupported.value && !workspace.value) {
     errorMessage.value = t("bot.validation.workspaceRequired");
     return;
   }
-  // Same rule as the daemon: a new workspace is named after the Bot, which
-  // needs at least one letter or digit (CJK included) to derive a name.
-  if (!isEditing.value && !workspace.value && !hasWorkspaceNameChars(trimmedName)) {
-    errorMessage.value = t("bot.validation.dedicatedWorkspaceNameInvalid");
-    return;
-  }
+  // Create is disabled while this shows; this also covers Enter-to-submit.
+  if (nameNeedsWorkspaceChars.value) return;
   if (isEditing.value && props.bot && !detailHydrated.value) {
     errorMessage.value = t("bot.validation.detailLoading");
     return;
@@ -391,10 +403,21 @@ async function submit(): Promise<void> {
       emit("close");
     }
   } catch (err: unknown) {
-    errorMessage.value = err instanceof Error ? err.message : String(err);
+    errorMessage.value = describeSubmitError(err);
   } finally {
     submitting.value = false;
   }
+}
+
+const SUBMIT_ERROR_KEYS: Record<string, string> = {
+  workspace_name_underivable: "bot.validation.dedicatedWorkspaceNameInvalid",
+};
+
+function describeSubmitError(err: unknown): string {
+  const code = err instanceof Error && "code" in err ? String((err as { code: unknown }).code ?? "") : "";
+  const key = SUBMIT_ERROR_KEYS[code];
+  if (key) return t(key);
+  return err instanceof Error ? err.message : String(err);
 }
 </script>
 
@@ -476,8 +499,14 @@ async function submit(): Promise<void> {
             required
             maxlength="60"
             :placeholder="$t('bot.fields.namePlaceholder')"
+            :aria-invalid="nameNeedsWorkspaceChars ? 'true' : undefined"
+            :aria-describedby="nameNeedsWorkspaceChars ? 'bot-name-error' : undefined"
             class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
+            :class="nameNeedsWorkspaceChars ? 'ring-1 ring-danger' : ''"
           />
+          <p v-if="nameNeedsWorkspaceChars" id="bot-name-error" data-test="bot-name-error" role="alert" class="mt-1 text-xs text-danger">
+            {{ $t("bot.validation.dedicatedWorkspaceNameInvalid") }}
+          </p>
         </div>
 
         <!-- Role / Title -->
@@ -522,7 +551,7 @@ async function submit(): Promise<void> {
           <!-- Workspace -->
           <div>
             <label for="bot-workspace" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.workspace") }} <span v-if="isEditing" class="text-danger">*</span>
+              {{ $t("bot.fields.workspace") }} <span v-if="!dedicatedWorkspaceSupported" class="text-danger">*</span>
             </label>
             <SelectMenu
               id="bot-workspace"
@@ -535,7 +564,7 @@ async function submit(): Promise<void> {
               :groups="workspaceGroups"
               @update:model-value="workspaceDirty = true"
             />
-            <p v-if="!isEditing && !workspace" data-test="bot-dedicated-workspace-hint" class="mt-1 text-xs text-fg-muted">
+            <p v-if="dedicatedWorkspaceSupported && !workspace" data-test="bot-dedicated-workspace-hint" class="mt-1 text-xs text-fg-muted">
               {{ $t("bot.fields.dedicatedWorkspaceHint") }}
             </p>
           </div>
@@ -619,7 +648,7 @@ async function submit(): Promise<void> {
         </button>
         <button
           type="button"
-          :disabled="submitting || !name.trim() || (isEditing && !!props.bot && !detailHydrated)"
+          :disabled="submitting || !name.trim() || nameNeedsWorkspaceChars || (isEditing && !!props.bot && !detailHydrated)"
           class="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
           @click="submit"
         >
