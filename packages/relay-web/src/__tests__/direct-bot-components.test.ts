@@ -252,6 +252,54 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("close")).toBeTruthy();
     });
 
+    it.each([
+      { label: "a symbols-only name is rejected", botName: "!!!", accepted: false },
+      { label: "an all-CJK name is accepted", botName: "代码审查", accepted: true },
+    ])("dedicated workspace: $label", async ({ botName, accepted }) => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
+      const directBots = useDirectBotsStore();
+      const createSpy = vi.spyOn(directBots, "createBot").mockResolvedValue({
+        id: "bot_1",
+        name: botName,
+        agent: "codex",
+        workspace: "workspace-12345678",
+        enabled: true,
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.find("#bot-name").setValue(botName);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      const invalid = i18n.global.t("bot.validation.dedicatedWorkspaceNameInvalid");
+      if (accepted) {
+        expect(createSpy).toHaveBeenCalledWith("i1", expect.objectContaining({ name: botName }));
+        expect(createSpy.mock.calls[0]![1]).not.toHaveProperty("workspace");
+        expect(wrapper.text()).not.toContain(invalid);
+      } else {
+        expect(createSpy).not.toHaveBeenCalled();
+        expect(wrapper.text()).toContain(invalid);
+      }
+    });
+
     it("submits edit bot when bot prop is passed", async () => {
       const instances = useInstancesStore();
       instances.instances = [

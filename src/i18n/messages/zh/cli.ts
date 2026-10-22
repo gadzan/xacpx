@@ -53,6 +53,8 @@ export const cli: CliMessages = {
   workspaceEmpty: "还没有工作区。",
   workspaceListHeader: "工作区列表：",
   workspaceNameEmpty: "工作区名称不能为空。",
+  workspaceNameUnderivable: (input) =>
+    `工作区名称 ${JSON.stringify(input)} 不含字母或数字，无法生成有效名称。请使用含字母或数字的名称，或加 --raw 保留原名。`,
   workspaceNameSanitized: (sourceLabel, original, saved) =>
     `${sourceLabel} ${JSON.stringify(original)} 含有特殊字符，已保存为「${saved}」。如需保留原名请加 --raw。`,
   workspaceSourceLabelDir: "目录名",

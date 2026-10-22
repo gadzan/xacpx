@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle } from "lucide-vue-next";
-import { copyBotAvatar, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
@@ -325,6 +325,12 @@ async function submit(): Promise<void> {
   }
   if (isEditing.value && !workspace.value) {
     errorMessage.value = t("bot.validation.workspaceRequired");
+    return;
+  }
+  // Same rule as the daemon: a new workspace is named after the Bot, which
+  // needs at least one letter or digit (CJK included) to derive a name.
+  if (!isEditing.value && !workspace.value && !hasWorkspaceNameChars(trimmedName)) {
+    errorMessage.value = t("bot.validation.dedicatedWorkspaceNameInvalid");
     return;
   }
   if (isEditing.value && props.bot && !detailHydrated.value) {

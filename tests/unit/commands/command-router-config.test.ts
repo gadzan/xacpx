@@ -521,6 +521,24 @@ test("/ws new sanitizes a name with spaces and reports the rewrite", async () =>
   }
 });
 
+test("/ws new rejects a name with no letters or digits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-workspace-"));
+  try {
+    const config = createConfig();
+    const before = structuredClone(config.workspaces);
+    const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState());
+    const transport = createTransport();
+    const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
+
+    const reply = await router.handle("wx:user", `/ws new "!!!" -d "${dir}"`);
+
+    expect(reply.text).toBe(t().workspace.nameUnderivable("!!!"));
+    expect(config.workspaces).toEqual(before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("/ws new --raw keeps a name with spaces", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-workspace-"));
   try {

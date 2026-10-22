@@ -607,6 +607,23 @@ test("workspace add sanitizes an explicit dirty name", async () => {
   });
 });
 
+test("workspace add rejects a name with no letters or digits", async () => {
+  setLocale("zh");
+  await withTempHome(async (home) => {
+    for (const [args, cwd, input] of [
+      [["workspace", "add", "!!!"], "/repo/a", "!!!"],
+      [["workspace", "add"], "/tmp/!!!", "!!!"],
+    ] as const) {
+      const lines: string[] = [];
+      await expect(runCli([...args], { cwd: () => cwd, print: (line) => lines.push(line) })).resolves.toBe(1);
+      expect(lines).toEqual([t().cli.workspaceNameUnderivable(input)]);
+    }
+    const config = await readConfigJson(home).catch(() => ({ workspaces: {} }));
+    expect(Object.values(config.workspaces ?? {}).map((w: any) => w.cwd)).not.toContain("/tmp/!!!");
+    expect(Object.values(config.workspaces ?? {}).map((w: any) => w.cwd)).not.toContain("/repo/a");
+  });
+});
+
 test("workspace add --raw keeps a literal name with spaces", async () => {
   setLocale("zh");
   await withTempHome(async (home) => {

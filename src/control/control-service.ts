@@ -4,6 +4,7 @@ import { mkdir, readdir, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../commands/workspace-name.js";
 import { resolveBotsHome } from "../bots/bots-home.js";
+import { BotError } from "../bots/bot-error.js";
 import { AsyncMutex } from "../orchestration/async-mutex.js";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
@@ -2524,6 +2525,15 @@ export class ControlService {
   }
 
   private async createBotWithDefaultWorkspace(runtime: ConversationRuntime, input: BotCreateRequestDto) {
+    // Reject before touching the filesystem or the workspace registry.
+    const base = sanitizeWorkspaceName(input.name);
+    if (base === null) {
+      throw new BotError(
+        "workspace_name_underivable",
+        `bot name ${JSON.stringify(input.name.trim())} has no letters or digits, so no workspace name can be derived from it; choose an existing workspace or use a name with letters or digits`,
+        { field: "workspace" },
+      );
+    }
     const create = async (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => {
       const root = this.deps.botsHomeRoot ?? resolveBotsHome();
       await mkdir(root, { recursive: true, mode: 0o700 });
@@ -2531,7 +2541,6 @@ export class ControlService {
       for (const name of [".", "..", "__proto__", "constructor", "prototype"]) taken[name] = true;
       for (const workspace of workspaces.list()) taken[workspace.name] = true;
       for (const name of await readdir(root)) taken[name] = true;
-      const base = sanitizeWorkspaceName(input.name);
       let name: string;
       let dir: string;
       // Exclusive mkdir also reserves the name against external directory creators.

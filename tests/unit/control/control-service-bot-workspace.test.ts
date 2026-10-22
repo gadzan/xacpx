@@ -203,8 +203,6 @@ test("names that sanitize to traversal or prototype keys never escape the bots r
   const w = await wire();
   const created: string[] = [];
   for (const [name, expected] of [
-    [".", ".-2"],
-    ["..", "..-2"],
     ["__proto__", "__proto__-2"],
     ["constructor", "constructor-2"],
     ["prototype", "prototype-2"],
@@ -240,4 +238,29 @@ test("an explicit blank workspace is rejected instead of silently auto-created",
     .rejects.toMatchObject({ code: "workspace_not_registered" });
   expect(existsSync(w.botsHome)).toBe(false);
   expect(Object.keys(w.config.workspaces)).toEqual(["backend"]);
+});
+
+test("a Bot name with no letters or digits is rejected before any workspace is allocated", async () => {
+  const w = await wire();
+  for (const name of ["!!!", ".", "..", "..."]) {
+    await expect(w.control.createBot({ name, agent: "codex" }))
+      .rejects.toMatchObject({ name: "BotError", code: "workspace_name_underivable", details: { field: "workspace" } });
+  }
+  expect(existsSync(w.botsHome)).toBe(false);
+  expect(Object.keys(w.config.workspaces)).toEqual(["backend"]);
+  expect(w.control.listBots()).toEqual([]);
+});
+
+test("a symbols-only Bot name still works with an explicit workspace", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "!!!", agent: "codex", workspace: "backend" });
+  expect(bot.workspace).toBe("backend");
+  expect(existsSync(w.botsHome)).toBe(false);
+});
+
+test("an all-CJK Bot name gets an opaque dedicated workspace", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "代码审查", agent: "codex" });
+  expect(bot.workspace).toMatch(/^workspace-[0-9a-f]{8}$/);
+  expect(readdirSync(w.botsHome)).toEqual([bot.workspace]);
 });

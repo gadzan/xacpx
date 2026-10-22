@@ -14,6 +14,8 @@ export const workspace: WorkspaceMessages = {
   // handleWorkspaceCreate — name sanitization notice
   nameSanitized: (original, saved) =>
     `名称 ${JSON.stringify(original)} 含有特殊字符，已保存为「${saved}」。如需保留原名请加 --raw。`,
+  nameUnderivable: (original) =>
+    `名称 ${JSON.stringify(original)} 不含字母或数字，无法据此生成工作区名称。请使用含字母或数字的名称，或加 --raw 保留原名。`,
 
   // handleWorkspaceCreate — saved confirmation
   saved: (name) => `工作区「${name}」已保存`,

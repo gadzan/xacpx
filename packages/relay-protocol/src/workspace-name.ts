@@ -17,8 +17,19 @@ export function stableHash8(input: string): string {
 }
 
 /**
+ * True when `input` carries at least one Unicode letter or digit, i.e. enough
+ * signal to derive a workspace name from (ASCII slug or opaque hashed name).
+ * Blank and symbols-only inputs are not derivable and must be rejected.
+ * Shared by the CLI, the daemon and the Web dashboard so they agree.
+ */
+export function hasWorkspaceNameChars(input: string): boolean {
+  return /[\p{L}\p{N}]/u.test(input);
+}
+
+/**
  * Opaque workspace name for an input that carries no usable ASCII characters
- * (an all-CJK name, a symbols-only name, …): `<fallback>-<8 hex>`.
+ * (e.g. an all-CJK name): `<fallback>-<8 hex>`. Symbols-only input is not
+ * derivable; check `hasWorkspaceNameChars` first.
  *
  * The 8-hex suffix is a short non-cryptographic hash: stable for the same
  * input, but NOT collision-free. Callers that need uniqueness must allocate a

@@ -1,17 +1,29 @@
-import { workspaceNameFallback } from "@ganglion/xacpx-relay-protocol";
+import { hasWorkspaceNameChars, workspaceNameFallback } from "@ganglion/xacpx-relay-protocol";
 import { sanitizeString } from "../util/sanitize.js";
 import { quoteIfNeeded } from "../util/text.js";
 
 const VALID_WORKSPACE_NAME_RE = /^[a-zA-Z0-9._-]+$/;
 
-export function sanitizeWorkspaceName(input: string, fallback = "workspace"): string {
+/**
+ * Derive a valid workspace name from free-form input.
+ *
+ * - ASCII-bearing input keeps its sanitized ASCII part (`api v2 中文` → `api-v2`).
+ * - Input with other letters/digits (all-CJK, …) gets an opaque hashed name.
+ * - Blank input returns `fallback` (callers keep their own blank semantics).
+ * - Input with no Unicode letter or digit (`!!!`, `...`, `___`) is rejected
+ *   with `null`; callers must surface that as an invalid-name error. The
+ *   Web dashboard applies the same rule (`hasWorkspaceNameChars`).
+ */
+export function sanitizeWorkspaceName(input: string, fallback = "workspace"): string | null {
+  if (input.trim().length === 0) return fallback;
+  // Checked first so ASCII punctuation (`...`, `___`) is rejected too.
+  if (!hasWorkspaceNameChars(input)) return null;
   const sanitized = sanitizeString(input.trim(), {
     allow: /[a-zA-Z0-9._-]/,
     replacement: "-",
     trim: true,
   });
   if (sanitized.length > 0) return sanitized;
-  if (input.trim().length === 0) return fallback;
   return workspaceNameFallback(input, fallback);
 }
 

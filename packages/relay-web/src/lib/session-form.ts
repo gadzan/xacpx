@@ -1,4 +1,4 @@
-import { workspaceNameFallback } from "@ganglion/xacpx-relay-protocol";
+import { hasWorkspaceNameChars, workspaceNameFallback } from "@ganglion/xacpx-relay-protocol";
 
 /** Lowercase, collapse any non [a-z0-9] run to a single dash, trim leading/trailing dashes. */
 export function slugify(input: string): string {
@@ -35,11 +35,6 @@ export function workspaceNameFromPath(path: string): string {
   // Only a segment that still carries usable characters (CJK or other
   // non-ASCII letters/digits) earns an opaque hashed name. A blank or
   // symbols-only segment yields "" so callers can reject it as underivable.
-  if (!hasUsableNameChars(segment)) return "";
+  if (!hasWorkspaceNameChars(segment)) return "";
   return workspaceNameFallback(segment);
-}
-
-/** True when `input` contains at least one Unicode letter or digit. */
-function hasUsableNameChars(input: string): boolean {
-  return /[\p{L}\p{N}]/u.test(input);
 }

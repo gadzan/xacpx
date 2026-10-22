@@ -52,6 +52,7 @@ export async function handleWorkspaceCreate(
     let notice: string | undefined;
     if (!options.raw && !isWorkspaceNameValid(workspaceName)) {
       const base = sanitizeWorkspaceName(workspaceName);
+      if (base === null) return { text: w.nameUnderivable(workspaceName) };
       name = allocateWorkspaceName(base, liveConfig.workspaces);
       notice = w.nameSanitized(workspaceName, name);
     }

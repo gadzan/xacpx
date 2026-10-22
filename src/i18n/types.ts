@@ -202,6 +202,7 @@ export interface NativeSessionMessages {
   agentNotRegistered: (agent: string) => string;
   workspaceNotRegistered: (workspace: string) => string;
   workspacePathNotFound: (cwd: string) => string;
+  workspaceNameUnderivable: (cwd: string) => string;
   noWritableConfig: string;
 
   // renderNativeSessionTableList
@@ -310,6 +311,7 @@ export interface ShortcutMessages {
   workspaceAvailable: (names: string) => string;
   workspaceNone: string;
   workspacePathNotFound: (cwd: string) => string;
+  workspaceNameUnderivable: (cwd: string) => string;
 }
 
 export interface WorkspaceMessages {
@@ -325,6 +327,7 @@ export interface WorkspaceMessages {
 
   // handleWorkspaceCreate — name sanitization notice
   nameSanitized: (original: string, saved: string) => string;
+  nameUnderivable: (original: string) => string;
 
   // handleWorkspaceCreate — saved confirmation
   saved: (name: string) => string;
@@ -915,6 +918,7 @@ export interface CliMessages {
   workspaceEmpty: string;
   workspaceListHeader: string;
   workspaceNameEmpty: string;
+  workspaceNameUnderivable: (input: string) => string;
   workspaceNameSanitized: (sourceLabel: string, original: string, saved: string) => string;
   workspaceSourceLabelDir: string;
   workspaceSourceLabelName: string;
@@ -1350,6 +1354,7 @@ export interface MiscMessages {
 
   // onboarding
   onboardingFirstUsePrompt: (workspaceName: string) => string;
+  onboardingWorkspaceNameUnderivable: (cwd: string) => string;
   onboardingSelectAgent: string;
   onboardingEnterChoice: string;
   onboardingNoValidAgent: string;

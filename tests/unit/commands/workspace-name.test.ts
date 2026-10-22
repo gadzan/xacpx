@@ -33,9 +33,22 @@ test("sanitizeWorkspaceName maps different all-CJK names to different workspace 
   expect(sanitizeWorkspaceName("测试项目")).not.toBe(sanitizeWorkspaceName("项目"));
 });
 
-test("sanitizeWorkspaceName maps a symbols-only name to a valid opaque workspace name", () => {
-  expect(sanitizeWorkspaceName("!!!")).toBe("workspace-2d53a722");
-  expect(isWorkspaceNameValid(sanitizeWorkspaceName("!!!"))).toBe(true);
+test("sanitizeWorkspaceName rejects a name with no letters or digits", () => {
+  expect(sanitizeWorkspaceName("!!!")).toBeNull();
+  expect(sanitizeWorkspaceName("  @@@  ")).toBeNull();
+  expect(sanitizeWorkspaceName("!!!", "fallback")).toBeNull();
+  // ASCII punctuation that would survive sanitization is rejected too.
+  expect(sanitizeWorkspaceName("...")).toBeNull();
+  expect(sanitizeWorkspaceName("___")).toBeNull();
+  expect(sanitizeWorkspaceName(".")).toBeNull();
+  expect(sanitizeWorkspaceName("..")).toBeNull();
+  expect(sanitizeWorkspaceName("！？。")).toBeNull();
+});
+
+test("sanitizeWorkspaceName still derives a name when any letter or digit remains", () => {
+  expect(sanitizeWorkspaceName("!!!a")).toBe("a");
+  expect(sanitizeWorkspaceName("@项目@")).toMatch(/^workspace-[0-9a-f]{8}$/);
+  expect(sanitizeWorkspaceName("１２３")).toMatch(/^workspace-[0-9a-f]{8}$/);
 });
 
 test("sanitizeWorkspaceName ignores surrounding whitespace when hashing opaque names", () => {
