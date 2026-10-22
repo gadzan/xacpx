@@ -13,6 +13,7 @@ import {
   ChevronDown,
   Gauge,
   Paperclip,
+  RefreshCw,
   SlidersHorizontal,
   X,
 } from "lucide-vue-next";
@@ -32,6 +33,8 @@ import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { formatModelLabel } from "../lib/model-label";
+import { isOmpModelRestoreFailure } from "../lib/omp-model-recovery";
+import { pushToast } from "../lib/use-toasts";
 import {
   sessionPresentationName,
   shortestUniqueSuffix,
@@ -101,6 +104,26 @@ function toggleUsage(e: MouseEvent) {
 // Load the session's model for the composer chip whenever the session changes.
 const modelDd = useDropdown();
 const effortDd = useDropdown();
+const modelApplying = ref(false);
+const modelApplyToken = ref(0);
+const sessionDriver = computed(() => {
+  if (!props.instanceId || !props.sessionAlias) return undefined;
+  const row = instancesStore.findSessionRow(props.instanceId, props.sessionAlias);
+  return row?.driver ?? instancesStore.byId(props.instanceId)?.agents.find((agent) => agent.name === row?.agent)?.driver;
+});
+const modelRecovery = computed(() => isOmpModelRestoreFailure(sessionDriver.value, chat.error));
+const modelUnavailable = computed(() => !controls.modelAvailable.length
+  || !!controls.modelError
+  || (!!controls.modelCurrent && !controls.modelAvailable.includes(controls.modelCurrent)));
+async function refreshModels() {
+  const instanceId = props.instanceId;
+  const sessionAlias = props.sessionAlias;
+  if (!instanceId || !sessionAlias) return;
+  const isValid = () => props.instanceId === instanceId && props.sessionAlias === sessionAlias;
+  const loaded = await controls.loadModel(instanceId, sessionAlias, isValid, { refresh: true });
+  if (loaded && isValid() && controls.modelAvailable.length) modelDd.openMenu();
+}
+defineExpose({ refreshModels });
 const modelGroups = computed<DropdownGroup[]>(() => [
   {
     rows: controls.modelAvailable.map((m) => ({
@@ -130,6 +153,8 @@ watch(
     void controls.loadEffort(id ?? null, alias ?? null);
     modelDd.closeMenu();
     effortDd.closeMenu();
+    modelApplyToken.value += 1;
+    modelApplying.value = false;
   },
   { immediate: true },
 );
@@ -138,9 +163,24 @@ async function pickModel(id: string) {
   const instanceId = props.instanceId;
   const sessionAlias = props.sessionAlias;
   if (!instanceId || !sessionAlias) return;
-  await controls.setModel(instanceId, sessionAlias, id);
-  if (props.instanceId === instanceId && props.sessionAlias === sessionAlias) {
-    await controls.loadEffort(instanceId, sessionAlias);
+  const recoveryError = modelRecovery.value ? chat.error : "";
+  const token = ++modelApplyToken.value;
+  modelApplying.value = true;
+  try {
+    const applied = await controls.setModel(instanceId, sessionAlias, id, { optimistic: false });
+    if (token !== modelApplyToken.value) return;
+    if (props.instanceId !== instanceId || props.sessionAlias !== sessionAlias) return;
+    if (applied) {
+      if (recoveryError && chat.error === recoveryError) {
+        chat.error = "";
+        pushToast("success", "chat.modelRecoveryApplied");
+      }
+      await controls.loadEffort(instanceId, sessionAlias);
+    }
+  } finally {
+    // Only the newest apply op may clear the flag: a deferred set that lands
+    // after a session switch must not disable the new session's picker.
+    if (token === modelApplyToken.value) modelApplying.value = false;
   }
 }
 async function pickEffort(effort: string) {
@@ -746,6 +786,8 @@ function onKeydown(e: KeyboardEvent) {
     @drop.prevent="onDrop"
     @dragover.prevent
   >
+    <p v-if="controls.modelError" data-test="model-diagnostic"
+       class="mb-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ $t('chat.modelControlFailed', { detail: controls.modelError }) }}</p>
     <!-- hidden file picker -->
     <input
       ref="fileInput"
@@ -913,7 +955,7 @@ function onKeydown(e: KeyboardEvent) {
             :aria-expanded="modelDd.open"
             class="flex min-w-0 items-center gap-1.5 rounded-sm px-1 py-0.5 text-xs transition-colors disabled:opacity-60"
             :class="modelDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
-            :disabled="!controls.modelAvailable.length"
+            :disabled="!controls.modelAvailable.length || controls.modelLoading || modelApplying"
             @click="modelDd.toggle()"
           >
             <Brain :size="14" class="shrink-0 text-accent" />
@@ -929,6 +971,12 @@ function onKeydown(e: KeyboardEvent) {
                          :dd="modelDd" tone="surface" width="min-w-40" placement="top"
                          :title='$t("chat.model")' test-id="model-menu"
                          :groups="modelGroups" @select="pickModel" />
+          <button v-if="modelUnavailable || modelRecovery" type="button" data-test="model-refresh"
+                  class="flex shrink-0 items-center gap-1 rounded-sm px-1 py-0.5 text-xs text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-60"
+                  :disabled="controls.modelLoading || modelApplying" :title="$t('chat.modelRefresh')" @click="refreshModels">
+            <RefreshCw :size="12" :class="{ 'animate-spin': controls.modelLoading }" />
+            <span>{{ $t('chat.modelRefresh') }}</span>
+          </button>
           <div v-if="controls.effortAvailable.length" class="relative shrink-0">
             <button
               type="button"

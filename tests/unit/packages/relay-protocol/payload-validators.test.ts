@@ -160,6 +160,27 @@ test("session effort RPC payloads require a session alias and effort value", () 
   })).toBeNull();
 });
 
+test("the session model get payload accepts an optional boolean refresh", () => {
+  expect(parseControlPayload(MSG.sessionModelGet, {
+    chatKey: "relay:a1", sessionAlias: "backend",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.sessionModelGet, {
+    chatKey: "relay:a1", sessionAlias: "backend", refresh: true,
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.sessionModelGet, {
+    chatKey: "relay:a1", sessionAlias: "backend", refresh: false,
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.sessionModelGet, {
+    chatKey: "relay:a1", sessionAlias: "backend", refresh: "yes",
+  })).toBeNull();
+  expect(parseControlPayload(MSG.sessionModelGet, {
+    chatKey: "relay:a1", sessionAlias: "backend", refresh: 1,
+  })).toBeNull();
+  expect(parseControlPayload(MSG.sessionModelGet, {
+    chatKey: "relay:a1", sessionAlias: "backend", refresh: true,
+  })).toMatchObject({ refresh: true });
+});
+
 test("Git RPC payloads accept only structured operations", () => {
   expect(parseControlPayload(MSG.gitStatus, { workspace: "project" })).not.toBeNull();
   expect(parseControlPayload(MSG.gitStage, { workspace: "project", paths: ["a.ts"] })).not.toBeNull();

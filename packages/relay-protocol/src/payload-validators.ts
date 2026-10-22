@@ -445,7 +445,9 @@ const validateAgentsCapabilitiesGet: Validator<AgentsCapabilitiesGetPayload> = (
 };
 const validateSessionModelGet: Validator<SessionModelGetPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? (o as unknown as SessionModelGetPayload) : null;
+  if (!o || !isStr(o.chatKey) || !isStr(o.sessionAlias)) return null;
+  if (o.refresh !== undefined && typeof o.refresh !== "boolean") return null;
+  return o as unknown as SessionModelGetPayload;
 };
 const validateSessionModelSet: Validator<SessionModelSetPayload> = (p) => {
   const o = fields(p);

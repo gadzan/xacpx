@@ -1,5 +1,5 @@
 import { expect, test, beforeEach } from "bun:test";
-import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionRemove, handleSessionReset, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
+import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionRemove, handleSessionReset, handleSessionUse, handleModelSet, handleModelShow, handleSessions } from "../../../../src/commands/handlers/session-handler";
 import { setLocale, t } from "../../../../src/i18n";
 import { AcpxQueueOverflowError } from "../../../../src/transport/acpx-queue-overflow";
 import { renderTransportError, tryRecoverMissingSession, queueOverflowTipText } from "../../../../src/commands/handlers/session-recovery-handler";
@@ -1422,4 +1422,71 @@ test("Group execution capability becomes MCP launch identity only on an owned Gr
   await handlePromptWithSession(directContext, session, "bot:direct:topic", "work",
     undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, metadata);
   expect(seen).toBeUndefined();
+});
+
+test("handleModelShow probes fresh OMP catalog and explains stale saved model", async () => {
+  const session = { alias: "weixin:backend", driver: "omp", model: "gpt-5.2[high]" } as ResolvedSession;
+  const options: Array<{ refresh?: boolean } | undefined> = [];
+  const context = {
+    sessions: { getCurrentSession: async (_k: string) => session },
+    interaction: {
+      getModelTransportSession: async (_s: ResolvedSession, opts?: { refresh?: boolean }) => {
+        options.push(opts);
+        return { current: "gpt-5.2[high]", available: ["gpt-5.2[low]"] };
+      },
+    },
+  } as unknown as SessionHandlerContext;
+  const reply = await handleModelShow(context, "weixin:u");
+  expect(options).toEqual([{ refresh: true }]);
+  expect(reply.text).toContain("gpt-5.2[low]");
+  expect(reply.text).toContain("/model");
+});
+
+test("handleModelShow keeps non-OMP behavior unchanged", async () => {
+  const session = { alias: "weixin:backend", driver: "codex", model: "gpt-5.2[high]" } as ResolvedSession;
+  const options: Array<{ refresh?: boolean } | undefined> = [];
+  const context = {
+    sessions: { getCurrentSession: async (_k: string) => session },
+    interaction: {
+      getModelTransportSession: async (_s: ResolvedSession, opts?: { refresh?: boolean }) => {
+        options.push(opts);
+        return { current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] };
+      },
+    },
+  } as unknown as SessionHandlerContext;
+  const reply = await handleModelShow(context, "weixin:u");
+  expect(options).toEqual([undefined]);
+  expect(reply.text).not.toContain("/model");
+});
+
+test("handleModelShow survives an OMP catalog probe failure and still shows the saved model", async () => {
+  const session = { alias: "weixin:backend", driver: "omp", model: "gpt-5.2[high]" } as ResolvedSession;
+  const context = {
+    sessions: { getCurrentSession: async (_k: string) => session },
+    interaction: {
+      getModelTransportSession: async () => {
+        throw new Error("cold probe failed: adapter offline");
+      },
+    },
+  } as unknown as SessionHandlerContext;
+  const reply = await handleModelShow(context, "weixin:u");
+  expect(reply.text).toContain("gpt-5.2[high]");
+  expect(reply.text).toContain("cold probe failed: adapter offline");
+});
+
+test("handleModelSet confirms the switch for an OMP recovery session", async () => {
+  const session = { alias: "weixin:backend", driver: "omp" } as ResolvedSession;
+  let setModel = "";
+  const context = {
+    sessions: {
+      getCurrentSession: async (_k: string) => session,
+      setCurrentSessionModel: async (_k: string, modelId: string) => { setModel = modelId; },
+    },
+    interaction: {
+      setModelTransportSession: async (_s: ResolvedSession, modelId: string) => { setModel = modelId; },
+    },
+  } as unknown as SessionHandlerContext;
+  const reply = await handleModelSet(context, "weixin:u", "gpt-5.2[low]");
+  expect(reply.text).toContain("gpt-5.2[low]");
+  expect(setModel).toBe("gpt-5.2[low]");
 });

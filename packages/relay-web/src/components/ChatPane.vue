@@ -5,6 +5,7 @@ import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import { useComposerStore } from "../stores/composer";
 import { useVirtualKeyboardInset } from "../lib/use-virtual-keyboard";
+import { isOmpModelRestoreFailure, ompRestoreFailure } from "../lib/omp-model-recovery";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
@@ -18,6 +19,7 @@ const chat = useChatStore();
 const instances = useInstancesStore();
 const files = useFilesStore();
 const composer = useComposerStore();
+const promptInput = ref<InstanceType<typeof PromptInput> | null>(null);
 // While the soft keyboard is open it already covers the iOS home indicator, so the
 // composer's safe-area bottom padding is just a gap — drop it then (see the template).
 const keyboardInset = useVirtualKeyboardInset();
@@ -76,6 +78,8 @@ const currentDriver = computed(
     currentSession.value?.driver
     ?? instance.value?.agents.find((a) => a.name === currentSession.value?.agent)?.driver,
 );
+const modelRecovery = computed(() => isOmpModelRestoreFailure(currentDriver.value, chat.error));
+const modelRestore = computed(() => ompRestoreFailure(currentDriver.value, chat.error));
 
 // Booting state: an optimistic session whose create RPC is still cold-starting the agent.
 // The "starting… Ns" elapsed readout reuses the always-on `nowMs` ticker (declared below
@@ -150,7 +154,12 @@ onUnmounted(() => clearInterval(timer));
     <div v-if="chat.error" data-test="chat-error"
          class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger">
       <AlertTriangle :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
-      <p class="min-w-0 flex-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-ui leading-relaxed">{{ chat.error }}</p>
+      <div class="min-w-0 flex-1">
+        <p class="max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-ui leading-relaxed">{{ modelRestore ? $t('chat.modelRestoreFailed', { model: modelRestore.modelId ?? '' }) : chat.error }}</p>
+        <button v-if="modelRecovery" type="button" data-test="model-recovery-refresh"
+                class="mt-1 rounded-sm px-1 py-0.5 text-xs font-medium underline hover:bg-danger/10"
+                @click="promptInput?.refreshModels()">{{ $t('chat.modelRecoveryChoose') }}</button>
+      </div>
       <button type="button" class="-mr-0.5 -mt-0.5 shrink-0 rounded-sm p-1 text-danger/70 transition-colors hover:bg-danger/10 hover:text-danger"
               :title="$t('common.dismissNotice')" @click="chat.error = ''"><X :size="14" /></button>
     </div>
@@ -214,7 +223,7 @@ onUnmounted(() => clearInterval(timer));
                     :class="{ 'stack-layer--pull': showPlan }" />
         <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
              :class="{ 'stack-layer--pull': showPlan || showQueue }">
-          <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+          <PromptInput ref="promptInput" :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                        :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
                        @send="onSend" @cancel="chat.cancel" />
         </div>

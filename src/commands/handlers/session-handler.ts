@@ -628,16 +628,16 @@ export async function handleModelShow(context: SessionHandlerContext, chatKey: s
   }
 
   const s = t().session;
-  // Best-effort live query; fall back to the resolved model if the transport or
-  // acpx can't answer (e.g. session not yet warm).
+  const isOmp = (session.driver ?? session.agent) === "omp";
   let current = session.model;
   let available: string[] = [];
+  let catalogError: string | undefined;
   try {
-    const queried = await context.interaction.getModelTransportSession(session);
+    const queried = await context.interaction.getModelTransportSession(session, isOmp ? { refresh: true } : undefined);
     current = queried.current ?? session.model;
     available = queried.available;
-  } catch {
-    // keep the resolved model; no catalog
+  } catch (error) {
+    if (isOmp) catalogError = error instanceof Error ? error.message : String(error);
   }
 
   const lines = [
@@ -647,6 +647,11 @@ export async function handleModelShow(context: SessionHandlerContext, chatKey: s
   ];
   if (available.length > 0) {
     lines.push(s.modelAvailableLabel(available.join(", ")));
+  }
+  if (isOmp) {
+    if (catalogError) lines.push(s.modelCatalogFailed(catalogError));
+    else if (current && !available.includes(current)) lines.push(s.modelSavedUnavailable);
+    lines.push(s.modelSelectionHint);
   }
   return { text: lines.join("\n") };
 }
@@ -672,7 +677,7 @@ export async function handleModelSet(
     return { text: t().session.modelSetFailed(modelId, error instanceof Error ? error.message : String(error)) };
   }
   await context.sessions.setCurrentSessionModel(chatKey, modelId);
-  return { text: t().session.modelSet(modelId) };
+  return { text: (session.driver ?? session.agent) === "omp" ? t().session.modelRecoverySet(modelId) : t().session.modelSet(modelId) };
 }
 
 export async function handleReplyModeShow(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {

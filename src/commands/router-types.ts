@@ -4,6 +4,7 @@ import type { AppLogger } from "../logging/app-logger";
 import type { OrchestrationService } from "../orchestration/orchestration-service";
 import type { ResolveSessionOptions, SessionService } from "../sessions/session-service";
 import type { AgentCommand, PromptMediaInput, PromptUsage, ReplyQuotaContext, SessionTransport } from "../transport/types";
+import type { SessionModelReadOptions } from "../transport/session-model-catalog";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import type { PerfSpan } from "../perf/perf-tracer";
@@ -176,6 +177,7 @@ export interface SessionInteractionOps {
   setModelTransportSession: (session: import("../transport/types").ResolvedSession, modelId: string) => Promise<void>;
   getModelTransportSession: (
     session: import("../transport/types").ResolvedSession,
+    options?: SessionModelReadOptions,
   ) => Promise<{ current?: string; available: string[] }>;
   cancelTransportSession: (
     session: import("../transport/types").ResolvedSession,

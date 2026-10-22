@@ -131,6 +131,27 @@ test("runtime adapter E404 is actionable when a prompt cold-start fails", () => 
   expect(reply.text).toContain("xacpx adapter registry set https://registry.npmjs.org");
 });
 
+test("renderTransportError renders OMP restore recovery guidance instead of throwing", () => {
+  const reply = renderTransportError(
+    session({ driver: "omp" }),
+    new Error('Could not restore model gpt-5.2[high]: the ACP agent did not advertise it'),
+  );
+  expect(reply.text).toBeDefined();
+  expect(reply.text).toContain("/model");
+});
+
+test("non-OMP restore failures keep the generic rethrow path", () => {
+  expect(() =>
+    renderTransportError(session({ driver: "codex" }), new Error("Could not restore model gpt-5.2")),
+  ).toThrow("Could not restore model gpt-5.2");
+});
+
+test("a generic OMP prompt failure is not misreported as a model restore problem", () => {
+  expect(() =>
+    renderTransportError(session({ driver: "omp" }), new Error("adapter timed out")),
+  ).toThrow("adapter timed out");
+});
+
 test("a non-npm backend 404 is not misreported as an adapter registry failure", () => {
   const error = new Error("model endpoint returned 404 Not Found");
   expect(() => renderSessionCreationError(

@@ -24,6 +24,10 @@ import type {
   SessionTransport,
 } from "../transport/types";
 import type { SessionMessageReceipt } from "../transport/message-injection";
+import {
+  readSessionModelCatalog,
+  type SessionModelReadOptions,
+} from "../transport/session-model-catalog";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry";
 import type {
   CreateScheduledTaskInput,
@@ -900,16 +904,26 @@ export class ControlService {
     );
   }
 
-  /** Read a session's current model and the agent-advertised available ids. */
+  /** Read a session's current model and the agent-advertised available ids.
+   *
+   *  `options.refresh` bypasses the native-session read and cold-probes the
+   *  session's exact launch, so a broken native session still yields a
+   *  verified-fresh catalog. */
   async getSessionModel(
     chatKey: string,
     alias: string,
+    options: SessionModelReadOptions = {},
   ): Promise<{ current?: string; available: string[] }> {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) return { available: [] };
-    if (!this.deps.transport.getSessionModel)
-      return { current: session.model, available: [] };
-    return await this.deps.transport.getSessionModel(session);
+    const probe = this.deps.transport.probeAgentCapabilities?.bind(this.deps.transport);
+    const read = this.deps.transport.getSessionModel?.bind(this.deps.transport);
+    return await readSessionModelCatalog({
+      session,
+      ...(read ? { read: () => read(session) } : {}),
+      ...(probe ? { probe } : {}),
+      ...(options.refresh ? { refresh: true } : {}),
+    });
   }
 
   /** Switch a session's model (acpx validates the id) and persist the override. */

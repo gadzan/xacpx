@@ -30,6 +30,8 @@ import type {
 import { getPromptText, normalizeCommandError } from "../prompt-output";
 import { runAcpxControlCommand } from "../acpx-owner-control-retry";
 import { isModelNotAdvertisedError } from "../model-not-advertised";
+import { modelRestoreFailure, recoverOmpSessionModel } from "../omp-model-recovery";
+import { resolveOmpRecoveryLaunch } from "../omp-recovery-launch";
 import { createStructuredPromptFile } from "../prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../streaming-prompt";
 import { createSerializedCallbackQueue } from "../serialized-callback-queue";
@@ -38,6 +40,8 @@ import {
   createQuotaGatedReplySink,
   createVerbatimReplySink,
 } from "../quota-gated-reply-sink";
+import { assertAcpxQueueOwnerAbsent } from "../acpx-queue-owner-launcher";
+import { nativeCatalogIdentityForLaunch } from "../../sessions/native-session-guard";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../acpx-queue-owner-launcher";
@@ -100,6 +104,9 @@ interface AcpxCliTransportOptions {
     sessionKey: string;
     agentCommand: string;
   }) => QueueOwnerAdapterContext;
+  /** Test seams for the omp native model-restore recovery path. */
+  ompModelRecovery?: { recoverOmpSessionModel: typeof recoverOmpSessionModel };
+  queueOwnerAbsence?: { assertAcpxQueueOwnerAbsent: typeof assertAcpxQueueOwnerAbsent };
 }
 
 interface CommandResult {
@@ -255,6 +262,8 @@ export class AcpxCliTransport implements SessionTransport {
   private readonly queueOwnerTtlSeconds: number | undefined;
   private readonly runCommand: CommandRunner;
   private readonly runPtyCommand: PtyRunner;
+  private readonly ompModelRecovery: AcpxCliTransportOptions["ompModelRecovery"];
+  private readonly queueOwnerAbsence: AcpxCliTransportOptions["queueOwnerAbsence"];
   private readonly queueOwnerLauncher: QueueOwnerLaunchPort;
   private readonly streamingHooks: StreamingPromptHooks;
   private readonly resolveSpawnEnvironment: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
@@ -297,6 +306,8 @@ export class AcpxCliTransport implements SessionTransport {
     this.streamingHooks = streamingHooks;
     this.resolveSpawnEnvironment = options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment;
     this.createAdapterContext = options.createAdapterContext;
+    this.ompModelRecovery = options.ompModelRecovery;
+    this.queueOwnerAbsence = options.queueOwnerAbsence;
   }
 
   // Defense-in-depth for the affinity/transport boundary: a session whose
@@ -447,6 +458,7 @@ export class AcpxCliTransport implements SessionTransport {
     options?: PromptOptions,
   ): Promise<{ text: string }> {
     this.assertCliAffinity(session);
+    this.assertNoActiveRecovery(session);
     await this.syncPersistedSessionEffort(session);
     await this.launchMcpQueueOwnerIfNeeded(session);
     const structuredPrompt = await createStructuredPromptFile(text, options?.media);
@@ -533,6 +545,7 @@ export class AcpxCliTransport implements SessionTransport {
       );
     }
 
+    this.assertNoActiveRecovery(session);
     await this.syncPersistedSessionEffort(session);
     await this.launchMcpQueueOwnerIfNeeded(session);
     await this.run(
@@ -551,6 +564,7 @@ export class AcpxCliTransport implements SessionTransport {
 
   async setMode(session: ResolvedSession, modeId: string): Promise<void> {
     this.assertCliAffinity(session);
+    this.assertNoActiveRecovery(session);
     await this.runControl(this.buildArgs(session, [
       "set-mode",
       "-s",
@@ -562,22 +576,238 @@ export class AcpxCliTransport implements SessionTransport {
     }));
   }
 
-  // acpx's generic config setter: `<agent> set -s <name> model '<id>'`. Build args
-  // with the NEW model so the global --model and the `set model` value agree.
-  // acpx validates the id against the agent's advertised models and applies it to
-  // a live queue owner immediately (or persists it for the next turn when idle).
-  async setModel(session: ResolvedSession, modelId: string): Promise<void> {
-    this.assertCliAffinity(session);
-    await this.runControl(this.buildArgs({ ...session, model: modelId }, [
+  /**
+   * Exclusive native-recovery lease, module-scoped so two transport instances
+   * (logical aliases) that resolve to the same physical OMP session contend
+   * for one recovery. A lease blocks concurrent prompts, injections, and
+   * setters for that physical session instead of queueing them: a queued
+   * prompt admitted mid-recovery would race the native writer, and waiting
+   * would replay work the user never asked to have replayed.
+   */
+  private static readonly recoveries = new Map<string, { nativeId?: string }>();
+  /** Sessions with a setModel call in flight (ordinary setter AND recovery).
+   *  Plain turns (prompt/inject) are NOT serialized here — they only refuse
+   *  while a native helper holds the physical session. */
+  private static readonly setModelLocks = new Set<string>();
+  /** Native ids learned per physical identity, so sibling aliases resolve
+   *  every in-flight native key. A per-identity SET (never a single value):
+   *  one stored id would only exclude the most recently recovered session and
+   *  silently miss a concurrent B/C pair on different native ids. */
+  private static readonly knownNativeIds = new Map<string, Set<string>>();
+
+  private recoveryIdentityKey(session: ResolvedSession): string {
+    return JSON.stringify(nativeCatalogIdentityForLaunch({
+      cwd: session.cwd,
+      ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+      ...(session.acpxAgent ? { acpxAgent: session.acpxAgent } : {}),
+      ...(session.rawCommand ? { rawCommand: session.rawCommand } : {}),
+      ...(session.agentArgv ? { agentArgv: session.agentArgv } : {}),
+    }));
+  }
+
+  private recoverySessionKey(session: ResolvedSession): string {
+    return `${this.recoveryIdentityKey(session)}|session:${session.transportSession}`;
+  }
+
+  private recoveryNativeKey(identity: string, nativeId: string): string {
+    return `${identity}|native:${nativeId}`;
+  }
+
+  /**
+   * Throws while a native model restore holds the physical session. Called by
+   * prompt/injection/set so no turn is admitted into the recovery window.
+   */
+  private assertNoActiveRecovery(session: ResolvedSession): void {
+    const identity = this.recoveryIdentityKey(session);
+    const keys = [this.recoverySessionKey(session)];
+    const inFlightNative = AcpxCliTransport.recoveries.get(keys[0]!)?.nativeId;
+    if (inFlightNative) keys.push(this.recoveryNativeKey(identity, inFlightNative));
+    const known = AcpxCliTransport.knownNativeIds.get(identity);
+    if (known) for (const id of known) keys.push(this.recoveryNativeKey(identity, id));
+    for (const key of keys) {
+      if (AcpxCliTransport.recoveries.has(key)) {
+        throw new Error(
+          `a native model restore is in progress for session "${session.transportSession}"; retry once it finishes`,
+        );
+      }
+    }
+  }
+
+  private buildSetModelArgs(session: ResolvedSession, modelId: string): string[] {
+    return this.buildArgs({ ...session, model: modelId }, [
       "set",
       "-s",
       session.transportSession,
       "model",
       modelId,
-    ]), this.withSpawnEnvironment({ ...session, model: modelId }, {
-      timeoutMs: this.managementCommandTimeoutMs,
-      stage: "set-model",
-    }));
+    ]);
+  }
+
+  // acpx's generic config setter: `<agent> set -s <name> model '<id>'`. Build args
+  // with the NEW model so the global --model and the `set model` value agree.
+  // acpx validates the id against the agent's advertised models and applies it to
+  // a live queue owner immediately (or persists it for the next turn when idle).
+  //
+  // OMP native model-restore recovery (accepted UX): an ordinary set that fails
+  // with the exact `Could not restore model <id>` error on a recognized OMP
+  // launch runs the bounded native helper under an exclusive physical gate,
+  // then retries the ordinary set for acpx-side sync. Retry-forward: a helper
+  // success followed by a setter failure reports the partial sync, and a rerun
+  // of setModel is always safe (the helper is idempotent; no JSONL rollback).
+  async setModel(session: ResolvedSession, modelId: string): Promise<void> {
+    this.assertCliAffinity(session);
+    // Serialize concurrent setModel calls for the same physical session
+    // BEFORE the ordinary setter: without this, two callers both pass the
+    // guard, both run the acpx-side `set` mutation, and only then does the
+    // loser hit the recovery lease — after it already changed acpx state.
+    // This lock covers setModel-vs-setModel only (prompt/inject keep using
+    // assertNoActiveRecovery, so a plain set never blocks a turn).
+    const setLockKey = this.recoverySessionKey(session);
+    if (AcpxCliTransport.setModelLocks.has(setLockKey)) {
+      throw new Error(
+        `a native model restore is already in progress for session "${session.transportSession}"; retry once it finishes`,
+      );
+    }
+    AcpxCliTransport.setModelLocks.add(setLockKey);
+    try {
+      this.assertNoActiveRecovery(session);
+      const deadlineAt = Date.now() + this.managementCommandTimeoutMs;
+      const remainingTimeoutMs = () => {
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0) {
+          throw new CommandTimeoutError(this.managementCommandTimeoutMs, "set model", { stage: "set-model" });
+        }
+        return remaining;
+      };
+      try {
+        await this.runControl(this.buildSetModelArgs(session, modelId), this.withSpawnEnvironment({ ...session, model: modelId }, {
+          timeoutMs: remainingTimeoutMs(),
+          stage: "set-model",
+        }), deadlineAt);
+        return;
+      } catch (error) {
+        const restore = modelRestoreFailure(error);
+        const launch = restore && resolveOmpRecoveryLaunch({
+          agent: session.agent,
+          ...(session.driver ? { driver: session.driver } : {}),
+          ...(session.agentArgv ? { agentArgv: session.agentArgv } : {}),
+          ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+          ...(session.rawCommand ? { rawCommand: session.rawCommand } : {}),
+        });
+        if (!restore || !launch) throw error;
+        await this.recoverNativeModel(session, modelId, restore.modelId, launch, deadlineAt, remainingTimeoutMs);
+      }
+    } finally {
+      AcpxCliTransport.setModelLocks.delete(setLockKey);
+    }
+  }
+
+  /**
+   * One bounded native writer per physical session. Holds an exclusive lease
+   * across the helper AND the acpx-side sync, refuses while any acpx queue
+   * owner lease exists (verified absence only — never kills or unlinks),
+   * resolves the full native session id from the persisted acpx record, and
+   * runs the helper (which persists the model through OMP's own switch_session
+   * RPC). Never replays a prompt and never touches the session JSONL.
+   */
+  private async recoverNativeModel(
+    session: ResolvedSession,
+    modelId: string,
+    restoreModelId: string,
+    launch: { command: string; args: string[] },
+    deadlineAt: number,
+    remainingTimeoutMs: () => number,
+  ): Promise<void> {
+    let record: { acpxRecordId: string; agentSessionId?: string; acpSessionId?: string };
+    const identity = this.recoveryIdentityKey(session);
+    const sessionKey = this.recoverySessionKey(session);
+    // Session-key acquire is synchronous (check+set with no await between), so
+    // two concurrent setModel calls for the same physical session cannot both
+    // pass. Native-key acquire happens after the record read; its check+set is
+    // likewise synchronous. Every path releases via finally, including helper
+    // and sync failures.
+    if (AcpxCliTransport.recoveries.has(sessionKey)) {
+      throw new Error(
+        `a native model restore is already in progress for session "${session.transportSession}"; retry once it finishes`,
+      );
+    }
+    AcpxCliTransport.recoveries.set(sessionKey, {});
+    try {
+      try {
+        record = await this.readSessionRecord(session, remainingTimeoutMs());
+      } catch (error) {
+        throw new Error(
+          `cannot restore model "${restoreModelId}" for session "${session.transportSession}": the acpx session record is unreadable (${error instanceof Error ? error.message : String(error)})`,
+          { cause: error },
+        );
+      }
+      // The native session id is the ACP session id (OMP publishes its own
+      // session id there); the provider id is the fallback.
+      const nativeId = record.acpSessionId ?? record.agentSessionId;
+      if (!nativeId) {
+        throw new Error(
+          `cannot restore model "${restoreModelId}" for session "${session.transportSession}": the acpx session record carries no native session id`,
+        );
+      }
+      const nativeKey = this.recoveryNativeKey(identity, nativeId);
+      // Atomic check+set for the cross-alias native key (no await between).
+      if (AcpxCliTransport.recoveries.has(nativeKey)) {
+        throw new Error(
+          `a native model restore is already in progress for session "${session.transportSession}"; retry once it finishes`,
+        );
+      }
+      AcpxCliTransport.recoveries.set(nativeKey, { nativeId });
+      let known = AcpxCliTransport.knownNativeIds.get(identity);
+      if (!known) {
+        known = new Set();
+        AcpxCliTransport.knownNativeIds.set(identity, known);
+      }
+      known.add(nativeId);
+      try {
+        const assertAbsent = this.queueOwnerAbsence?.assertAcpxQueueOwnerAbsent ?? assertAcpxQueueOwnerAbsent;
+        try {
+          await assertAbsent(record.acpxRecordId);
+        } catch (error) {
+          throw new Error(
+            `cannot restore model "${restoreModelId}" for session "${session.transportSession}": ${error instanceof Error ? error.message : String(error)}; free the queue owner (or let it idle out) and retry the model change`,
+            { cause: error },
+          );
+        }
+        const recover = this.ompModelRecovery?.recoverOmpSessionModel ?? recoverOmpSessionModel;
+        try {
+          await recover({
+            command: launch.command,
+            args: launch.args,
+            cwd: session.cwd,
+            agentSessionId: nativeId,
+            modelId,
+            env: this.effectiveSpawnEnvironment(session),
+            timeoutMs: remainingTimeoutMs(),
+          });
+        } catch (nativeError) {
+          throw new Error(
+            `native model restore for session "${session.transportSession}" (model "${modelId}") did not finish: ${nativeError instanceof Error ? nativeError.message : String(nativeError)}; retry the model change to reconcile the saved selection`,
+            { cause: nativeError },
+          );
+        }
+        // Sync: the ordinary setter under the chosen model (same wire as before).
+        try {
+          await this.runControl(this.buildSetModelArgs(session, modelId), this.withSpawnEnvironment({ ...session, model: modelId }, {
+            timeoutMs: remainingTimeoutMs(),
+            stage: "set-model",
+          }), deadlineAt);
+        } catch (syncError) {
+          throw new Error(
+            `native model "${modelId}" was restored for session "${session.transportSession}" but acpx synchronization failed: ${syncError instanceof Error ? syncError.message : String(syncError)}; retry the model change to re-sync`,
+            { cause: syncError },
+          );
+        }
+      } finally {
+        AcpxCliTransport.recoveries.delete(nativeKey);
+      }
+    } finally {
+      AcpxCliTransport.recoveries.delete(sessionKey);
+    }
   }
 
   // Read the session's current model and the agent-advertised available ids from
@@ -663,6 +893,7 @@ export class AcpxCliTransport implements SessionTransport {
 
   async setSessionEffort(session: ResolvedSession, effort: string): Promise<void> {
     this.assertCliAffinity(session);
+    this.assertNoActiveRecovery(session);
     const record = await this.readSessionEffortRecord(session);
     await this.applyAdvertisedSessionEffort(session, effort, record);
   }
@@ -906,13 +1137,13 @@ export class AcpxCliTransport implements SessionTransport {
     if (prepared?.agentCommand) session.agentCommand = prepared.agentCommand;
   }
 
-  private async readSessionRecord(session: ResolvedSession): Promise<{ acpxRecordId: string; agentSessionId?: string }> {
+  private async readSessionRecord(session: ResolvedSession, timeoutMs = this.managementCommandTimeoutMs): Promise<{ acpxRecordId: string; agentSessionId?: string; acpSessionId?: string }> {
     const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
       "sessions",
       "show",
       session.transportSession,
     ], "json"), this.withSpawnEnvironment(session, {
-      timeoutMs: this.managementCommandTimeoutMs,
+      timeoutMs,
       stage: "read-session-record",
     }));
     if (result.code !== 0) {
@@ -920,8 +1151,22 @@ export class AcpxCliTransport implements SessionTransport {
       throw new Error(detail);
     }
     const record = parseAcpxSessionRecordId(result.stdout);
-    if (record) return record;
-    throw new Error("failed to resolve acpx session record id");
+    if (!record) {
+      throw new Error("failed to resolve acpx session record id");
+    }
+    // The ACP session id is the native id for adapters that expose one (OMP
+    // returns its own session id as the ACP id); the provider id is the
+    // fallback for adapters that only publish a provider-native id.
+    let acpSessionId: string | undefined;
+    try {
+      const parsed = JSON.parse(result.stdout) as { acpSessionId?: unknown };
+      acpSessionId = typeof parsed.acpSessionId === "string" && parsed.acpSessionId.length > 0
+        ? parsed.acpSessionId
+        : undefined;
+    } catch {
+      acpSessionId = undefined;
+    }
+    return { ...record, ...(acpSessionId ? { acpSessionId } : {}) };
   }
 
   private async cleanupOverflowedOwner(session: ResolvedSession): Promise<AcpxQueueCleanupResult> {
@@ -1016,15 +1261,44 @@ export class AcpxCliTransport implements SessionTransport {
   /** `run` for owner-IPC control commands (cancel / sessions close / set-mode /
    *  set), retrying the acpx 0.19.x queue-owner shutdown race. See
    *  runAcpxControlCommand. */
-  private async runControl(args: string[], options?: RunOptions): Promise<string> {
-    const result = await runAcpxControlCommand(() =>
-      this.runCommandWithTimeout(this.runCommand, args, options),
-    );
-    if (result.code !== 0) {
-      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
-      throw new Error(detail);
+  private async runControl(args: string[], options?: RunOptions, deadlineAt?: number): Promise<string> {
+    const abortController = deadlineAt === undefined ? undefined : new AbortController();
+    let deadlineTimer: NodeJS.Timeout | undefined;
+    const run = async () => {
+      const result = await runAcpxControlCommand(() => {
+        if (deadlineAt === undefined) {
+          return this.runCommandWithTimeout(this.runCommand, args, options);
+        }
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0 || abortController!.signal.aborted) {
+          throw managementTimeoutError(args, { ...options, timeoutMs: this.managementCommandTimeoutMs });
+        }
+        return this.runCommandWithTimeout(this.runCommand, args, {
+          ...options,
+          timeoutMs: remaining,
+          signal: abortController!.signal,
+        });
+      });
+      if (result.code !== 0) {
+        const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+        throw new Error(detail);
+      }
+      return result.stdout;
+    };
+    if (deadlineAt === undefined) return run();
+    try {
+      return await Promise.race([
+        run(),
+        new Promise<never>((_, reject) => {
+          deadlineTimer = setTimeout(() => {
+            abortController!.abort();
+            reject(managementTimeoutError(args, { ...options, timeoutMs: this.managementCommandTimeoutMs }));
+          }, Math.max(deadlineAt - Date.now(), 0));
+        }),
+      ]);
+    } finally {
+      clearTimeout(deadlineTimer);
     }
-    return result.stdout;
   }
 
   private async runWithPty(args: string[], options?: RunOptions): Promise<string> {
@@ -1051,7 +1325,12 @@ export class AcpxCliTransport implements SessionTransport {
     let timeoutId: NodeJS.Timeout | undefined;
 
     return await Promise.race([
-      runner(spawnSpec.command, spawnSpec.args, { ...options, signal: abortController.signal }).finally(() => {
+      runner(spawnSpec.command, spawnSpec.args, {
+        ...options,
+        signal: options.signal
+          ? AbortSignal.any([options.signal, abortController.signal])
+          : abortController.signal,
+      }).finally(() => {
         if (timeoutId) clearTimeout(timeoutId);
       }),
       new Promise<CommandResult>((_, reject) => {
@@ -1419,3 +1698,4 @@ function resolveChildEnvironment(
 export const __acpxCliTransportForTests = {
   resolveChildEnvironment,
 };
+

@@ -637,3 +637,184 @@ test("setSessionEffort serializes rapid mutations for the same session", async (
     "persist-effort:internal-backend:high",
   ]);
 });
+
+// A refresh re-probes the session's exact launch instead of reading the
+// (possibly broken) native session; failures throw rather than reporting a
+// stale or unrelated list as verified-fresh.
+const launchSession = {
+  ...session,
+  driver: "codex-acp",
+  settingsPolicy: "isolated" as const,
+  agentCommand: "/usr/local/bin/acpx codex",
+  acpxAgent: "overlay-alias",
+  rawCommand: "codex",
+  agentArgv: ["--resume", "abc"],
+};
+
+function makeRefreshDeps(
+  probe: (input: unknown) => Promise<unknown> | unknown,
+  options: { withProbe?: boolean } = {},
+) {
+  const { deps, calls } = makeDeps();
+  const probeRequests: unknown[] = [];
+  const transport = deps.transport as typeof deps.transport & {
+    probeAgentCapabilities?: (input: unknown) => Promise<unknown>;
+  };
+  transport.getSessionModel = async () => {
+    calls.push("native-read");
+    return { current: "stale-native-model", available: ["stale-native-model"] };
+  };
+  if (options.withProbe !== false) {
+    transport.probeAgentCapabilities = async (input) => {
+      probeRequests.push(input);
+      return await probe(input);
+    };
+  }
+  deps.sessions.getSession = async () => launchSession;
+  return { deps, calls, probeRequests };
+}
+
+test("getSessionModel refresh probes the exact launch and never reads the native session", async () => {
+  const { deps, calls, probeRequests } = makeRefreshDeps(() => ({
+    ok: true,
+    models: [
+      { modelId: "fresh-a", name: "Fresh A" },
+      { modelId: "fresh-b", name: "Fresh B" },
+    ],
+    efforts: [],
+  }));
+  const control = new ControlService(deps as never);
+
+  const r = await control.getSessionModel("relay:acc", "backend", { refresh: true });
+  expect(r).toEqual({
+    current: "gpt-5.2[high]",
+    available: ["fresh-a", "fresh-b"],
+  });
+  expect(probeRequests).toEqual([{
+    agent: "codex",
+    cwd: "/c",
+    driver: "codex-acp",
+    settingsPolicy: "isolated",
+    agentCommand: "/usr/local/bin/acpx codex",
+    acpxAgent: "overlay-alias",
+    rawCommand: "codex",
+    agentArgv: ["--resume", "abc"],
+  }]);
+  expect(calls).toEqual([]);
+});
+
+test("getSessionModel refresh does not leak the session's target model or alias into the probe", async () => {
+  const { deps, probeRequests } = makeRefreshDeps(() => ({
+    ok: true,
+    models: [{ modelId: "fresh-a", name: "Fresh A" }],
+    efforts: [],
+  }));
+  const control = new ControlService(deps as never);
+
+  await control.getSessionModel("relay:acc", "backend", { refresh: true });
+  const serialized = JSON.stringify(probeRequests[0]);
+  expect(serialized).not.toContain("gpt-5.2[high]");
+  expect(serialized).not.toContain("internal-backend");
+});
+
+test("a failed refresh probe throws its diagnostic instead of reporting stale success", async () => {
+  const { deps, calls } = makeRefreshDeps(() => {
+    throw new Error("adapter auth expired");
+  });
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionModel("relay:acc", "backend", { refresh: true }),
+  ).rejects.toThrow(
+    'model catalog refresh failed for agent "codex" session "internal-backend": adapter auth expired',
+  );
+  expect(calls).toEqual([]);
+});
+
+test("an unsuccessful refresh probe reports its failure kind instead of a cached list", async () => {
+  const { deps, calls } = makeRefreshDeps(() => ({
+    ok: false,
+    failure: "unauthenticated",
+    message: "run codex login",
+  }));
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionModel("relay:acc", "backend", { refresh: true }),
+  ).rejects.toThrow(
+    'model catalog refresh failed for agent "codex" session "internal-backend": unauthenticated: run codex login',
+  );
+  expect(calls).toEqual([]);
+});
+
+test("a refresh on a transport without a probe fails loudly, not silently stale", async () => {
+  const { deps, calls } = makeRefreshDeps(
+    () => ({ ok: true, models: [], efforts: [] }),
+    { withProbe: false },
+  );
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionModel("relay:acc", "backend", { refresh: true }),
+  ).rejects.toThrow("model catalog refresh requires a transport that can probe agent capabilities");
+  expect(calls).toEqual([]);
+});
+
+test("a native-session restore failure falls back to the exact-launch probe", async () => {
+  const { deps, calls, probeRequests } = makeRefreshDeps(() => ({
+    ok: true,
+    models: [{ modelId: "fresh-a", name: "Fresh A" }],
+    efforts: [],
+  }));
+  deps.transport.getSessionModel = async () => {
+    calls.push("native-read");
+    throw new Error("Could not restore model provider/openai/gpt-5.2 for session internal-backend");
+  };
+  const control = new ControlService(deps as never);
+
+  const r = await control.getSessionModel("relay:acc", "backend");
+  expect(r).toEqual({ current: "gpt-5.2[high]", available: ["fresh-a"] });
+  expect(calls).toEqual(["native-read"]);
+  expect(probeRequests).toEqual([{
+    agent: "codex",
+    cwd: "/c",
+    driver: "codex-acp",
+    settingsPolicy: "isolated",
+    agentCommand: "/usr/local/bin/acpx codex",
+    acpxAgent: "overlay-alias",
+    rawCommand: "codex",
+    agentArgv: ["--resume", "abc"],
+  }]);
+});
+
+test("an unrelated native-session read error is rethrown unchanged", async () => {
+  const { deps, calls, probeRequests } = makeRefreshDeps(() => ({
+    ok: true,
+    models: [],
+    efforts: [],
+  }));
+  deps.transport.getSessionModel = async () => {
+    calls.push("native-read");
+    throw new Error("acpx binary crashed");
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionModel("relay:acc", "backend"),
+  ).rejects.toThrow("acpx binary crashed");
+  expect(probeRequests).toEqual([]);
+});
+
+test("a restore-failure fallback reports the original error when the probe also fails", async () => {
+  const { deps } = makeRefreshDeps(() => {
+    throw new Error("probe boom");
+  });
+  deps.transport.getSessionModel = async () => {
+    throw new Error("Could not restore model provider/openai/gpt-5.2");
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionModel("relay:acc", "backend"),
+  ).rejects.toThrow("Could not restore model provider/openai/gpt-5.2");
+});

@@ -600,6 +600,14 @@ function shortHash(value: string, length: number): string {
   return createHash("sha256").update(value).digest("hex").slice(0, length);
 }
 
+export async function assertAcpxQueueOwnerAbsent(sessionId: string): Promise<void> {
+  if (!await lockFileGone(queueLockFilePath(sessionId), access)) {
+    throw new Error(
+      `session ${sessionId} still has a queue owner; wait for it to stop before restoring its model`,
+    );
+  }
+}
+
 export interface VerifiedOwnerTerminationDeps {
   lockPath?: string;
   /** Defaults to terminateAcpxQueueOwner (a no-op for unverifiable Windows locks). */

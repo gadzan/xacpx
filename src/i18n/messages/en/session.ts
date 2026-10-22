@@ -61,6 +61,10 @@ export const session: SessionMessages = {
   modelAvailableLabel: (models) => `- available: ${models}`,
   modelSet: (modelId) => `Current session model switched to: ${modelId}`,
   modelSetFailed: (modelId, detail) => `Failed to switch model: ${modelId}\n${detail}`,
+  modelCatalogFailed: (detail) => `Could not fetch the current model list: ${detail}`,
+  modelSelectionHint: "Choose explicitly with /model <id>. This keeps the session history and does not resend any message.",
+  modelSavedUnavailable: "The saved model is not in the current model list. Choose a replacement explicitly.",
+  modelRecoverySet: (modelId) => `Current session model switched to: ${modelId}\nThe original message has not been resent.`,
 
   // handleReplyModeShow / handleReplyModeSet / handleReplyModeReset
   replyModeHeader: "Current reply mode:",
