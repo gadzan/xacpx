@@ -1564,7 +1564,7 @@ describe("Direct Bot Components", () => {
 
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
-      expect((textarea.element as HTMLTextAreaElement).placeholder).toContain("Recovering");
+      expect((textarea.element as HTMLTextAreaElement).placeholder).toBe("Loading history…");
       await textarea.setValue("too early");
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
       expect(wrapper.emitted("send")).toBeUndefined();
@@ -1585,7 +1585,7 @@ describe("Direct Bot Components", () => {
       });
       const textarea = wrapper.find("textarea").element as HTMLTextAreaElement;
       expect(textarea.placeholder).toBe(i18n.global.t("bot.prompt.placeholder"));
-      expect(textarea.placeholder).not.toContain("Recovering");
+      expect(textarea.placeholder).not.toBe(i18n.global.t("bot.prompt.recoveringPlaceholder"));
       // Enabled: the first send creates the Default Topic.
       expect(textarea.disabled).toBe(false);
       wrapper.unmount();
@@ -2244,6 +2244,26 @@ describe("Direct Bot Components", () => {
   });
 
   describe("DirectBotPane.vue", () => {
+    it("desktop header: a role-less (or blank-role) Bot shows exactly one separator between topic and workspace", async () => {
+      seedLocalInstance();
+      const prevWidth = window.innerWidth;
+      window.innerWidth = 1280;
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      for (const role of [undefined, "   ", "Code QA"]) {
+        directBots.botsByInstance["i1"] = [
+          { id: "b1", name: "Bot", agent: "codex", workspace: "repo", ...(role !== undefined ? { role } : {}), enabled: true, updatedAt: "now" },
+        ];
+        const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        await flushPromises();
+        const meta = wrapper.find('[data-test="bot-header-meta"]').text().replace(/\s+/g, "");
+        expect(meta).toBe(role?.trim() ? "Default·CodeQA·repo·codex" : "Default·repo·codex");
+        wrapper.unmount();
+      }
+      window.innerWidth = prevWidth;
+    });
+
     it("renders bot header, topics, and handles topic switching", async () => {
       const instances = useInstancesStore();
       instances.instances = [

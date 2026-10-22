@@ -641,7 +641,7 @@ describe("useDirectBotsStore", () => {
     }
 
     // Regression: selectBot closed the gate up front and only loadHistory could
-    // reopen it, so a Bot without a Topic stayed "Recovering topic…" forever.
+    // reopen it, so a Bot without a Topic stayed on the loading placeholder forever.
     it("reopens the gate after selectBot when the Conversation has zero Topics", async () => {
       rpcFor({
         "control.conversations.list": () => Promise.resolve({ conversations: [CONV] }),

@@ -890,7 +890,7 @@ export default {
       botDisabledWarning: "This bot is disabled. Enable it in Bot Settings to send messages.",
       botDisabledPlaceholder: "Bot is disabled",
       runActivePlaceholder: "Run in progress... (Stop to cancel)",
-      recoveringPlaceholder: "Recovering topic... (loading history)",
+      recoveringPlaceholder: "Loading history…",
     },
     chat: {
       emptyHint: "Send a message to start a conversation with this bot.",

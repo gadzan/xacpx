@@ -1821,6 +1821,10 @@ describe("Group Components", () => {
         const textarea = wrapper.find('[data-test="group-composer-textarea"]').element as HTMLTextAreaElement;
         expect(textarea.disabled).toBe(true);
         expect(textarea.placeholder).toBe(i18n.global.t("group.prompt.createTopicFirst"));
+        // Visibly disabled: the whole composer card is dimmed with a not-allowed cursor.
+        const surface = wrapper.find('[data-test="composer-surface"]');
+        expect(surface.classes()).toEqual(expect.arrayContaining(["opacity-60", "cursor-not-allowed"]));
+        expect(surface.attributes("aria-disabled")).toBe("true");
         expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(false);
         expect(wrapper.text()).not.toContain(i18n.global.t("group.target.hint"));
         // The centre CTA stays the only primary action.
@@ -1837,6 +1841,10 @@ describe("Group Components", () => {
       const textarea = wrapper.find('[data-test="group-composer-textarea"]').element as HTMLTextAreaElement;
       expect(textarea.placeholder).toBe(i18n.global.t("group.prompt.placeholder"));
       expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(true);
+      // Enabled appearance is unchanged: no dimming on the card.
+      const surface = wrapper.find('[data-test="composer-surface"]');
+      expect(surface.classes()).not.toContain("opacity-60");
+      expect(surface.classes()).not.toContain("cursor-not-allowed");
       wrapper.unmount();
     });
 
