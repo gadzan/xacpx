@@ -521,8 +521,10 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 
 - **条目从哪来**：`useMobileBack({ pane, full })`（会话 / Bot / 群组 pane 1 条，全屏层 = 中栏
   文件/diff/终端/实例桌面标签 + 右文件/任务抽屉）+ `pushModal()`（遮罩层：MobileSheet、对话框、
-  ImageLightbox、Mermaid、SubagentTrace、ConfirmDialog、CommandPalette，#434 的 `DropdownPanel`
-  在 `<lg` 也渲染成 MobileSheet，因此自动覆盖）。同类叠同类（sheet→sheet、sheet→dialog、全屏→全屏）
+  ImageLightbox、Mermaid、SubagentTrace、ConfirmDialog、CommandPalette，`DropdownPanel`
+  在 `<lg` 也渲染成 MobileSheet，因此自动覆盖）。群组进程详情 `GroupRunDetailSheet` 也由 MobileSheet
+  登记一条遮罩历史，自定义头部的 × 与遮罩、Esc 共用 `navigateBack()`；安全初始焦点和滚动恢复保持不变。
+  桌面 `GroupRunDetailPopover` 不登记历史。同类叠同类（sheet→sheet、sheet→dialog、全屏→全屏）
   走 `router.replace`，所以「返回」永远先回到首页。桌面小下拉 / ContextMenu / tooltip / 话题切换 /
   首页 tab 切换**不建条目**。新建会话流程：FAB → 实例 sheet（push）→ 新建对话框（replace）→
   创建成功 → pane（replace 成 `pane`），一次返回即回首页。

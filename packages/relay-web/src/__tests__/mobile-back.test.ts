@@ -16,11 +16,17 @@ vi.mock("../api/events", () => ({
   isRetryableTerminalError: () => false,
   TerminalRequestError: class extends Error {},
 }));
-vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// A router stub with the two operations the back stack uses: push adds a history
+// entry, replace overwrites the current one, and both write the state we pass.
+vi.mock("vue-router", () => ({ useRouter: () => ({
+  push: (to: { path?: string; state?: Record<string, unknown> }) => window.history.pushState(to.state ?? {}, "", to.path ?? window.location.pathname),
+  replace: (to: { path?: string; state?: Record<string, unknown> }) => window.history.replaceState(to.state ?? {}, "", to.path ?? window.location.pathname),
+}) }));
 
 import DashboardView from "../views/DashboardView.vue";
 import { useChatStore } from "../stores/chat";
 import { triggerNotificationClick } from "../lib/local-notification";
+import { pushModal } from "../lib/mobile-back";
 
 const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: true, "router-link": true };
 
@@ -98,6 +104,25 @@ describe("mobile back navigation", () => {
     expect(tag()).toBeNull();
     expect(useChatStore().instanceId).toBeNull();
     expect(wrapper.find('[data-test="fab-new-session"]').exists()).toBe(true);
+  });
+
+  test("a pane and sheet opened in one flush each own a history entry", async () => {
+    const wrapper = mountDash();
+    await flushPromises();
+    const chat = useChatStore();
+    chat.instanceId = "i1";
+    chat.sessionAlias = "demo";
+    const closed = vi.fn();
+    const remove = pushModal({ id: "immediate-sheet", close: () => { closed(); remove(); } });
+    await flushPromises();
+    expect(tag()?.depth).toBe(2);
+    await systemBack();
+    expect(closed).toHaveBeenCalledOnce();
+    expect(tag()).toEqual({ layer: "pane", id: "chat:i1::demo", depth: 1 });
+    expect(chat.sessionAlias).toBe("demo");
+    await systemBack();
+    expect(tag()).toBeNull();
+    expect(chat.sessionAlias).toBeNull();
   });
 
   test("opening and closing an overlay N times leaves no dead entry; one back returns home", async () => {
@@ -217,13 +242,17 @@ describe("mobile back navigation", () => {
     await flushPromises();
     expect(tag()?.layer).toBe("modal");
 
-    // Reload semantics: the sheet is gone, the pane selection is restored.
+    // A reload discards the sheet. Await its automatic history reclamation;
+    // issuing another system back here would race that traversal.
+    const reclaimed = Promise.withResolvers<void>();
+    window.addEventListener("popstate", () => reclaimed.resolve(), { once: true });
     wrapper.unmount();
     await flushPromises();
     const fresh = mountDash();
     await flushPromises();
     await selectSession();
-    await systemBack();
+    await reclaimed.promise;
+    await flushPromises();
     expect(tag()).toEqual({ layer: "pane", id: "chat:i1::demo", depth: 1 });
     expect(fresh.find('[data-test="mobile-session-bar"]').exists()).toBe(true);
   });

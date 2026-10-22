@@ -36,6 +36,8 @@ test.describe("mobile back navigation", () => {
     await loginAndShowInstances(page);
     await page.getByTestId("session-row").first().getByTestId("session-name").click();
     await expect(page.getByTestId("mobile-session-bar")).toBeVisible();
+    const dashboard = await page.locator(".h-dvh").first().evaluateHandle((el) => el);
+    const panePosition = await page.evaluate(() => history.state.position);
 
     for (let i = 0; i < 3; i++) {
       await page.getByTestId("mobile-more").click();
@@ -43,6 +45,9 @@ test.describe("mobile back navigation", () => {
       // Close through the sheet's own X: the entry is popped, not left behind.
       await page.getByTestId("sheet-close").click();
       await expect(page.getByTestId("mobile-more-sheet")).toHaveCount(0);
+      expect(await page.evaluate(() => history.state.position)).toBe(panePosition);
+      expect(await page.evaluate(() => history.state.current)).toBe("/");
+      expect(await dashboard.evaluate((el) => el.isConnected)).toBe(true);
     }
     // Only the pane entry remains, so a single system back returns home.
     await page.goBack();
@@ -91,12 +96,17 @@ test.describe("mobile back navigation", () => {
     // The deep-link query is cleared and a home entry sits below the pane entry.
     expect(new URL(page.url()).search).toBe("");
     expect(await backTag(page)).toEqual({ layer: "pane", id: "chat:i1::demo", depth: 1 });
+    const paneState = await page.evaluate(() => ({ back: history.state.back, current: history.state.current, position: history.state.position }));
+    expect(paneState.back).toBe("/");
+    expect(paneState.current).toBe("/");
 
     await page.getByTestId("mobile-back").click();
     await expect(page.getByTestId("mobile-session-bar")).toHaveCount(0);
     await expect(page.getByTestId("fab-new-session")).toBeVisible();
     expect(await backTag(page)).toBeNull();
     expect(new URL(page.url()).search).toBe("");
+    expect(await page.evaluate(() => history.state.current)).toBe("/");
+    expect(await page.evaluate(() => history.state.position)).toBe(paneState.position - 1);
   });
 
   test("a dialog with a bottom sheet on top closes one layer per back", async ({ page }, testInfo) => {
@@ -123,6 +133,24 @@ test.describe("mobile back navigation", () => {
     await expect(dialog).toHaveCount(0);
     await expect(page.getByTestId("fab-new-session")).toBeVisible();
     expect(await backTag(page)).toBeNull();
+  });
+
+  test("external deletion returns home and reports the deleted session", async ({ page, hub }, testInfo) => {
+    test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
+    await loginAndShowInstances(page);
+    await page.getByTestId("session-row").first().getByTestId("session-name").click();
+    await expect(page.getByTestId("mobile-session-bar")).toBeVisible();
+    const dashboard = await page.locator(".h-dvh").first().evaluateHandle((el) => el);
+    await page.route("**/api/instances/i1/rpc", async (route) => {
+      if (route.request().postDataJSON().type !== "control.sessions.list") return route.fallback();
+      await route.fulfill({ json: { result: { sessions: [], hasMore: false, nextOffset: 0 } } });
+    });
+    hub.send({ kind: "control-event", instanceId: "i1", event: { type: "sessions-changed" } });
+    await expect(page.getByTestId("mobile-session-bar")).toHaveCount(0);
+    await expect(page.getByTestId("fab-new-session")).toBeVisible();
+    await expect(page.getByTestId("toast")).toContainText("This session was deleted");
+    await expect.poll(() => backTag(page)).toBeNull();
+    expect(await dashboard.evaluate((el) => el.isConnected)).toBe(true);
   });
 
   test("desktop adds no history entries", async ({ page }, testInfo) => {

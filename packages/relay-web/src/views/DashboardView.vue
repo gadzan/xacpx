@@ -632,7 +632,7 @@ onMounted(async () => {
   const searchParams = typeof window !== "undefined" && window.location ? new URLSearchParams(window.location.search) : null;
   const qInst = searchParams?.get("instanceId");
   const qAlias = searchParams?.get("sessionAlias");
-  adoptHomeEntry(!!(qInst && qAlias));
+  await adoptHomeEntry(!!(qInst && qAlias));
   window.addEventListener("keydown", onGlobalKey);
   if (typeof window.matchMedia === "function") {
     desktopMql = window.matchMedia("(min-width: 1024px)");

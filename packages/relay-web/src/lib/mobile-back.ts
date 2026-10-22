@@ -1,4 +1,5 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { useRouter, type Router } from "vue-router";
 
 /**
  * Mobile back navigation. The browser history stack IS the layer stack: the top bar's
@@ -69,6 +70,8 @@ let desktopMql: MediaQueryList | null = null;
 let degraded = false;
 let settleTimer: ReturnType<typeof setTimeout> | null = null;
 let syncQueued = false;
+let router: Router | undefined;
+let writing = false;
 
 function readTag(): BackTag | null {
   const tag = (window.history.state as { xacpx?: BackTag } | null)?.xacpx;
@@ -79,17 +82,11 @@ function historyDepth(): number {
   return readTag()?.depth ?? 0;
 }
 
-/** Write our tag, keeping every other history.state field (vue-router's own). Returns
- *  false when the browser ignored the write. */
-function writeEntry(replace: boolean, tag: BackTag | null): boolean {
-  const state: Record<string, unknown> = { ...(window.history.state ?? {}) };
-  if (tag) state.xacpx = tag;
-  else delete state.xacpx;
-  try {
-    window.history[replace ? "replaceState" : "pushState"](state, "");
-  } catch {
-    return false;
-  }
+/** Write our tag with the router (vue-router merges its own state fields). The result
+ *  reads back the entry, so a browser that ignored the write fails the check. */
+async function writeEntry(replace: boolean, tag: BackTag | null): Promise<boolean> {
+  if (!router) return false;
+  await router[replace ? "replace" : "push"]({ path: "/", force: true, state: { xacpx: tag ? { ...tag } : null } });
   const after = readTag();
   if (tag) return !!after && after.layer === tag.layer && after.depth === tag.depth;
   return after === null;
@@ -138,8 +135,8 @@ function onPopState(): void {
 
 /** Reconcile history with the live layer stack. Runs after the flush so mount and
  *  unmount hooks have settled and the modal stack is current. */
-function sync(): void {
-  if (!sources) return;
+async function sync(): Promise<void> {
+  if (!sources || writing) return;
   const desired = desktop ? [] : liveLayers();
   const depth = historyDepth();
   const top = desired[desired.length - 1];
@@ -168,8 +165,20 @@ function sync(): void {
       entryStack = desired.slice(0, depth);
       return;
     }
-    if (writeEntry(false, { layer: top.kind, id: top.id, depth: desired.length })) entryStack = desired;
-    else failWrites();
+    writing = true;
+    try {
+      for (let i = depth; i < desired.length; i++) {
+        const layer = desired[i]!;
+        if (!await writeEntry(false, { layer: layer.kind, id: layer.id, depth: i + 1 })) {
+          failWrites();
+          return;
+        }
+        entryStack = desired.slice(0, i + 1);
+      }
+    } finally {
+      writing = false;
+      scheduleSync();
+    }
     return;
   }
   // Same depth, different top: reuse the entry (switching target, sheet → dialog).
@@ -178,8 +187,14 @@ function sync(): void {
       entryStack = desired;
       return;
     }
-    if (writeEntry(true, { layer: top.kind, id: top.id, depth: desired.length })) entryStack = desired;
-    else failWrites();
+    writing = true;
+    try {
+      if (await writeEntry(true, { layer: top.kind, id: top.id, depth: desired.length })) entryStack = desired;
+      else failWrites();
+    } finally {
+      writing = false;
+      scheduleSync();
+    }
     return;
   }
   entryStack = desired;
@@ -236,17 +251,9 @@ function onBreakpoint(): void {
 /** Cold start straight into a pane (notification deep link, new tab, PWA restore):
  *  claim the current entry as our home entry so the pane entry pushed on top of it
  *  makes ← and the Android back key return home instead of leaving the site. */
-export function adoptHomeEntry(stripQuery: boolean): void {
-  if (readTag()) return;
-  const state: Record<string, unknown> = { ...(window.history.state ?? {}) };
-  delete state.xacpx;
-  try {
-    window.history.replaceState(state, "", stripQuery ? window.location.pathname : window.location.href);
-  } catch {
-    failWrites();
-    return;
-  }
-  if (readTag() !== null || (stripQuery && window.location.search !== "")) failWrites();
+export async function adoptHomeEntry(stripQuery: boolean): Promise<void> {
+  if (readTag() || !router || !stripQuery) return;
+  await router.replace({ path: "/", force: true, state: { xacpx: null } });
 }
 
 /** Register a modal layer. Returns the remover; pair it with the overlay's lifetime. */
@@ -273,7 +280,9 @@ export function navigateBack(): void {
     return;
   }
   const live = liveLayers();
-  live[live.length - 1]?.close();
+  const top = live[live.length - 1];
+  top?.close();
+  if (top?.kind === "pane") void router?.replace({ path: "/", force: true, state: { xacpx: null } });
 }
 
 /** Collapse our entries and go home without leaving a dead entry behind. Used when
@@ -284,6 +293,7 @@ export function goHomeReclaiming(): void {
 }
 
 export function useMobileBack(next: BackSources): void {
+  router = useRouter();
   sources = next;
   let stops: Array<() => void> = [];
   onMounted(() => {
@@ -302,6 +312,7 @@ export function useMobileBack(next: BackSources): void {
     window.removeEventListener("popstate", onPopState);
     desktopMql?.removeEventListener("change", onBreakpoint);
     for (const stop of stops) stop();
+    sources = null;
     stops = [];
     resetStack();
   });

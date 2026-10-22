@@ -20,7 +20,12 @@ vi.mock("../api/events", () => ({
     }
   },
 }));
-vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// The back stack writes its history entries through the router, so the stub has to
+// touch the real history: push adds an entry, replace overwrites the current one.
+vi.mock("vue-router", () => ({ useRouter: () => ({
+  push: (to: { path?: string; state?: Record<string, unknown> }) => window.history.pushState(to.state ?? {}, "", to.path ?? window.location.pathname),
+  replace: (to: { path?: string; state?: Record<string, unknown> }) => window.history.replaceState(to.state ?? {}, "", to.path ?? window.location.pathname),
+}) }));
 
 import DashboardView from "../views/DashboardView.vue";
 import ChatPane from "../components/ChatPane.vue";
