@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
+import { groupDraftKey, loadDraft } from "../lib/composer-drafts";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
@@ -325,6 +326,27 @@ describe("Group Components", () => {
         await flushPromises();
         await goTo(groups, "conversation_g", "topic_1");
         expect(value()).toBe("");
+      });
+
+      it("a pending send that resolves after switching Topics does not clear the other Topic's draft", async () => {
+        const groups = seedTwoTopics();
+        groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+        const gate = Promise.withResolvers<GroupSendOutcome>();
+        const { wrapper, textarea, value } = mountComposer(() => gate.promise);
+        // Topic B already has a saved draft.
+        await goTo(groups, "conversation_g", "topic_2");
+        await textarea().setValue("B's own draft");
+        await goTo(groups, "conversation_g", "topic_1");
+        await textarea().setValue("sent from A");
+        await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+        await flushPromises();
+        // Switch to B while A's send is still pending, then the send resolves.
+        await goTo(groups, "conversation_g", "topic_2");
+        expect(value()).toBe("B's own draft");
+        gate.resolve("accepted");
+        await flushPromises();
+        expect(value()).toBe("B's own draft");
+        expect(loadDraft(groupDraftKey("i1", "conversation_g", "topic_2"))).toBe("B's own draft");
       });
 
       it("restores the current Topic's draft on remount (tab reload)", async () => {

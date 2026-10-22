@@ -490,9 +490,10 @@ async function handleSend(): Promise<void> {
     //
     // `rejected` keeps the same draft: no durable accept exists, so the typed
     // text is the only remaining copy.
-    if (outcome === "accepted" || outcome === "uncertain") {
-      // Clears only this Group + Topic's stored draft (the sync watcher files the
-      // empty text under the current key, which is the one that was sent from).
+    // Only while still on the Group + Topic it was sent from: after a switch the
+    // textarea holds another Topic's draft (the swap watcher already dropped the
+    // sent copy), and clearing it would erase that draft.
+    if ((outcome === "accepted" || outcome === "uncertain") && draftKey.value === sent.key) {
       clearSentDraft();
     }
     return;
