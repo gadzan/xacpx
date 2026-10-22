@@ -6,6 +6,7 @@ import type { BotSummaryDto, ConversationRunStateDto, GroupSummaryDto } from "@g
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 import { pushToast } from "../lib/use-toasts";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
@@ -319,7 +320,7 @@ async function confirmDelete(): Promise<void> {
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
   <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-black/50 p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
-       @click.self="emit('close')">
+       @click.self="navigateBack">
     <div ref="dialogEl"
          role="dialog"
          aria-modal="true"
@@ -335,7 +336,7 @@ async function confirmDelete(): Promise<void> {
           type="button"
           :aria-label="$t('common.close')"
           class="grid h-7 w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-          @click="emit('close')"
+          @click="navigateBack"
         >
           <X :size="16" />
         </button>
@@ -576,7 +577,7 @@ async function confirmDelete(): Promise<void> {
           <button
             type="button"
             class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-            @click="emit('close')"
+            @click="navigateBack"
           >
             {{ $t("common.cancel") }}
           </button>

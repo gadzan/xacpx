@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Check, Search } from "lucide-vue-next";
 import MobileSheet from "./MobileSheet.vue";
 import { focusSoon, useIsMobile } from "../lib/use-dropdown";
+import { navigateBack } from "../lib/mobile-back";
 import type { DropdownController, DropdownGroup, DropdownRow } from "../lib/use-dropdown";
 
 // The one dropdown panel (relay-web redesign §F). Desktop: an absolutely
@@ -74,7 +75,15 @@ function isHighlighted(row: DropdownRow): boolean {
 function activate(row: DropdownRow): void {
   if (row.disabled) return;
   emit("select", row.value);
-  if (!row.keepOpen) props.dd.closeMenu();
+  if (!row.keepOpen) requestClose();
+}
+
+/** Below lg the panel is a MobileSheet that owns a history entry, so closing it —
+ *  X, backdrop, Escape, picking a row — pops that entry and the popstate closes the
+ *  dropdown. On desktop the popover closes in place. */
+function requestClose(): void {
+  if (isMobile.value) navigateBack();
+  else props.dd.closeMenu();
 }
 
 // While open, register the navigable rows with the controller and own the

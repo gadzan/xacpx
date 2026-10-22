@@ -11,10 +11,15 @@ const test = base.extend({
   },
 });
 
-/** Desktop: the sidebar is always there. Mobile: ← back to the home list. */
+/** Desktop: the sidebar is always there. Mobile: ← back to the home list. One back
+ *  closes one layer (an open overlay or full-screen tab first), and the button is
+ *  disabled while a back is in flight, so each click waits for the previous one to
+ *  land. The loop ends when the button is gone, i.e. the home list is the content. */
 async function showSidebar(page: import("@playwright/test").Page): Promise<void> {
   const back = page.getByTestId("mobile-back");
-  if (await back.isVisible().catch(() => false)) await back.click();
+  for (let i = 0; i < 4 && (await back.isVisible().catch(() => false)); i++) {
+    await back.click();
+  }
 }
 
 function sessionRow(page: import("@playwright/test").Page, alias: string) {

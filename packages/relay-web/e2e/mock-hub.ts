@@ -163,6 +163,22 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
         json(res, 200, { result: { agents: [{ name: "codex", driver: "codex" }] } });
         return;
       }
+      if (type === "control.workspaces.list") {
+        json(res, 200, { result: { workspaces: [{ name: "repo", cwd: "/w" }] } });
+        return;
+      }
+      if (type === "control.agents.catalog") {
+        json(res, 200, { result: { agents: [] } });
+        return;
+      }
+      if (type === "control.agents.capabilities.get") {
+        json(res, 200, { result: {
+          status: "ready", models: [{ modelId: "e2e-model", name: "E2E model", source: "adapter" }],
+          suggestions: [], efforts: { status: "unavailable" }, effect: { kind: "default" },
+          source: "runtime", fetchedAt: new Date().toISOString(),
+        } });
+        return;
+      }
       json(res, 200, { result: {} });
       return;
     }

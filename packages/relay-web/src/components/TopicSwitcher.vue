@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Archive, Check, ChevronDown, MoreHorizontal, Plus, RotateCcw } from "lucide-vue-next";
 import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
@@ -7,6 +7,7 @@ import ContextMenu, { type ContextMenuItem } from "./ContextMenu.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown } from "../lib/use-dropdown";
 import { useTopicActions } from "../lib/use-topic-actions";
+import { navigateBack, pushModal } from "../lib/mobile-back";
 
 const props = defineProps<{
   topics: TopicSummaryDto[];
@@ -31,6 +32,14 @@ const query = ref("");
 const rowMenu = ref<{ x: number; y: number; topic: TopicSummaryDto } | null>(null);
 
 const active = computed(() => props.topics.find((topic) => topic.id === props.activeTopicId) ?? null);
+
+// The delete/clear confirm stacks on the still-open topic sheet, so it owns its own
+// history entry: one back closes the confirm, the next closes the sheet.
+let unregisterConfirm: (() => void) | null = null;
+watch(confirmKind, (kind) => {
+  unregisterConfirm?.();
+  unregisterConfirm = kind ? pushModal({ id: `topic-confirm:${kind}`, close: closeConfirm }) : null;
+});
 const direct = computed(() => props.variant === "direct");
 const visible = computed(() => {
   const needle = query.value.trim().toLowerCase();
@@ -161,7 +170,7 @@ async function submitRowConfirm(): Promise<void> {
     <ContextMenu v-if="rowMenu" :x="rowMenu.x" :y="rowMenu.y" :items="rowMenuItems"
                  @select="onRowMenuSelect" @close="rowMenu = null" />
 
-    <div v-if="confirmKind" class="fixed inset-0 z-40 flex items-end justify-center bg-black/50 p-4 md:items-center" @click.self="closeConfirm">
+    <div v-if="confirmKind" class="fixed inset-0 z-40 flex items-end justify-center bg-black/50 p-4 md:items-center" @click.self="navigateBack">
       <div role="dialog" aria-modal="true" data-test="topic-confirm" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
         <h3 class="text-sm font-semibold">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearTitle") : $t("bot.topic.confirmDeleteTitle") }}</h3>
         <p class="mt-2 text-xs text-fg-muted">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearBody") : $t("bot.topic.confirmDeleteBody") }}</p>
@@ -172,7 +181,7 @@ async function submitRowConfirm(): Promise<void> {
         </label>
         <p v-if="actionError" class="mt-2 text-xs text-danger">{{ actionError }}</p>
         <div class="mt-4 flex justify-end gap-2">
-          <button type="button" class="rounded-lg px-3 py-1.5 text-xs" @click="closeConfirm">{{ $t("common.cancel") }}</button>
+          <button type="button" class="rounded-lg px-3 py-1.5 text-xs" @click="navigateBack">{{ $t("common.cancel") }}</button>
           <button
             type="button"
             data-test="topic-confirm-submit"

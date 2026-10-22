@@ -13,6 +13,10 @@ export interface SwipeActionsOptions {
   /** Optional PointerEvent.pointerType allow-list. Missing pointerType is allowed
    *  so unit tests and synthetic callers can keep feeding plain coordinate objects. */
   pointerTypes?: string[];
+  /** Ignore gestures that start within this many px of the LEFT screen edge, so the
+   *  iOS Safari back swipe keeps them (a row swipe would otherwise capture the
+   *  pointer and swallow the system gesture). */
+  leftEdgeGuard?: number;
 }
 
 interface SwipePointerEvent {
@@ -75,6 +79,7 @@ export function useSwipeActions(opts: SwipeActionsOptions) {
   // the swipe would silently never fire.
   function pointerdown(e: SwipePointerEvent) {
     if (e.pointerType && opts.pointerTypes && !opts.pointerTypes.includes(e.pointerType)) return;
+    if (opts.leftEdgeGuard !== undefined && e.clientX < opts.leftEdgeGuard) return;
     startX = e.clientX; startY = e.clientY;
     dragging = true; decided = false; horizontal = false;
     capturePointer(e);

@@ -590,6 +590,9 @@ const rowSwipes = computed(() => {
         const reveal = revealPx(s);
         map[key] = useSwipeActions({
           pointerTypes: ["touch", "pen"],
+          // Leave the left 24px to the iOS Safari back swipe: a row that captured the
+          // pointer there would swallow the system gesture.
+          leftEdgeGuard: 24,
           onMove: (dx) => { menuDd.closeMenu(); draggingKey.value = key; dragDx.value = dx; },
           onEnd: (dx) => {
             // Snap open if the row ended past the halfway point, else closed.
