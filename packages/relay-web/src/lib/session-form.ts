@@ -32,6 +32,14 @@ export function workspaceNameFromPath(path: string): string {
   const segment = trimmed.split(/[\\/]/).pop() ?? "";
   const slug = slugify(segment);
   if (slug.length > 0) return slug;
-  if (segment.trim().length === 0) return "";
+  // Only a segment that still carries usable characters (CJK or other
+  // non-ASCII letters/digits) earns an opaque hashed name. A blank or
+  // symbols-only segment yields "" so callers can reject it as underivable.
+  if (!hasUsableNameChars(segment)) return "";
   return workspaceNameFallback(segment);
+}
+
+/** True when `input` contains at least one Unicode letter or digit. */
+function hasUsableNameChars(input: string): boolean {
+  return /[\p{L}\p{N}]/u.test(input);
 }

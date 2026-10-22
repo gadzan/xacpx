@@ -60,4 +60,13 @@ describe("workspaceNameFromPath", () => {
   test("returns an empty name for a path without a segment", () => {
     expect(workspaceNameFromPath("/")).toBe("");
   });
+
+  test("returns an empty name for a symbols-only path segment", () => {
+    expect(workspaceNameFromPath("@@@")).toBe("");
+    expect(workspaceNameFromPath("/tmp/!!! ###")).toBe("");
+  });
+
+  test("derives an opaque name for a CJK segment that also carries symbols", () => {
+    expect(workspaceNameFromPath("/tmp/@项目@")).toMatch(/^workspace-[0-9a-f]{8}$/);
+  });
 });

@@ -105,7 +105,11 @@ for (const kind of ["bot", "group"] as const) {
     if (kind === "bot") {
       await dialog.locator("#bot-name").fill("Review assistant");
       await expect(dialog.locator("#bot-agent")).toHaveAttribute("data-selected", "codex");
-      await expect(dialog.locator("#bot-workspace")).toHaveAttribute("data-selected", "repo");
+      // New Bots default to an auto-created dedicated workspace: the empty value is a
+      // real, labelled option, and the hint explains where it will be created.
+      await expect(dialog.locator("#bot-workspace")).toHaveAttribute("data-selected", "");
+      await expect(dialog.locator("#bot-workspace")).toHaveText("Create dedicated workspace");
+      await expect(dialog.getByTestId("bot-dedicated-workspace-hint")).toBeVisible();
     } else {
       await dialog.getByTestId("group-dialog-title").fill("Release team");
       await dialog.getByTestId("group-dialog-member-bot_0").getByRole("checkbox").check();
