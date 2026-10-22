@@ -10,6 +10,7 @@ import type {
 import GroupTranscript from "../components/GroupTranscript.vue";
 import AgentThinkingBubble from "../components/AgentThinkingBubble.vue";
 import GroupRunDetailContent from "../components/GroupRunDetailContent.vue";
+import MobileSheet from "../components/MobileSheet.vue";
 import { useGroupsStore } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
@@ -109,6 +110,25 @@ async function openFirstBubble(wrapper: VueWrapper): Promise<void> {
 
 function card(): HTMLElement | null {
   return document.body.querySelector<HTMLElement>('[data-test="group-detail-card"]');
+}
+
+function sheet(): HTMLElement | null {
+  return document.body.querySelector<HTMLElement>('[data-test="group-detail-sheet"]');
+}
+
+/** Whichever detail surface is mounted: the mobile sheet or the desktop card. */
+function surface(): HTMLElement | null {
+  return sheet() ?? card();
+}
+
+function setViewportWidth(width: number): void {
+  window.innerWidth = width;
+  window.dispatchEvent(new Event("resize"));
+}
+
+async function closeSurface(): Promise<void> {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await flushPromises();
 }
 
 let intersectionCallback: IntersectionObserverCallback | null = null;
@@ -289,16 +309,91 @@ describe("GroupThinkingBubbles UI", () => {
     wrapper.unmount();
   });
 
-  it("fits a narrow viewport instead of keeping the static 420px width", async () => {
-    window.innerWidth = 360;
+  it("uses a modal sheet below 1024px and preserves the selected attempt on resize", async () => {
+    setViewportWidth(390);
+    const groups = seedEnvironment();
+    seedLiveRun();
+    seedTracePage(1, { attempts: [1, 2], events: [{ seq: 1, createdAt: "now", kind: "text", payload: { text: "First attempt process" } }] });
+    seedTracePage(2, { attempts: [1, 2], events: [{ seq: 1, createdAt: "now", kind: "text", payload: { text: "Second attempt process" } }] });
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const wrapper = mountTranscript();
+    const trigger = wrapper.get('[data-test="agent-thinking-bubble"]').element as HTMLButtonElement;
+    trigger.focus();
+    await openFirstBubble(wrapper);
+    expect(card()).toBeNull();
+    expect(sheet()?.getAttribute("aria-modal")).toBe("true");
+    expect(sheet()?.id).toBe(trigger.getAttribute("aria-controls"));
+    expect(sheet()?.getAttribute("data-member-turn-id")).toBe("turn_a");
+    const select = sheet()!.querySelector<HTMLSelectElement>('[data-test="group-detail-attempt"]')!;
+    select.value = "2";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushPromises();
+    expect(surface()?.textContent).toContain("Second attempt process");
+    expect(surface()?.querySelector('[data-test="group-detail-state"]')).toBeNull();
+    setViewportWidth(1024);
+    await flushPromises();
+    expect(sheet()).toBeNull();
+    expect(card()?.textContent).toContain("Second attempt process");
+    setViewportWidth(1023);
+    await flushPromises();
+    expect(card()).toBeNull();
+    expect(sheet()?.textContent).toContain("Second attempt process");
+    await closeSurface();
+    expect(surface()).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    wrapper.unmount();
+  });
+
+  it("keeps first-control focus for sheets without an explicit initial target", async () => {
+    const wrapper = mount(MobileSheet, {
+      props: { title: "Other sheet" },
+      slots: { header: '<button data-test="first-control">First action</button><button>Second action</button>' },
+      attachTo: document.body,
+    });
+    await flushPromises();
+    expect(document.activeElement).toBe(wrapper.get('[data-test="first-control"]').element);
+    wrapper.unmount();
+  });
+
+  it("focuses the mobile close control before Stop and restores focus without cancelling", async () => {
+    setViewportWidth(390);
     const groups = seedEnvironment();
     seedLiveRun();
     vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
+    const wrapper = mountTranscript();
+    const trigger = wrapper.get('[data-test="agent-thinking-bubble"]').element as HTMLButtonElement;
+    trigger.focus();
+    await openFirstBubble(wrapper);
+    const detail = sheet()!;
+    const close = detail.querySelector<HTMLButtonElement>('[data-test="group-detail-close"]')!;
+    expect(detail.querySelector("button")?.getAttribute("data-test")).toBe("group-stop-run-button");
+    expect(document.activeElement).toBe(close);
+    expect(detail.querySelector('[data-test="group-stop-run-explanation"]')?.textContent)
+      .toContain("all participating members are cancelled");
+    expect(cancel).not.toHaveBeenCalled();
+    close.click();
+    await flushPromises();
+    expect(surface()).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(cancel).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("closes the mobile sheet from its backdrop and keeps Stop scoped to the active run", async () => {
+    setViewportWidth(390);
+    const groups = seedEnvironment();
+    seedLiveRun();
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
     const wrapper = mountTranscript();
     await openFirstBubble(wrapper);
-    const detail = card()!;
-    expect(detail.style.width).toBe("344px");
-    expect(parseFloat(detail.style.width)).toBeLessThanOrEqual(window.innerWidth - 16);
+    (sheet()!.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
+    await flushPromises();
+    expect(cancel).toHaveBeenCalled();
+    (document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement).click();
+    await flushPromises();
+    expect(surface()).toBeNull();
     wrapper.unmount();
   });
 
@@ -318,6 +413,7 @@ describe("GroupThinkingBubbles UI", () => {
     expect(card()!.textContent).toContain("A reviewed patch");
     expect(card()!.textContent).toContain("isolated per-member Git worktree");
     expect(card()!.textContent).not.toContain("Stop this run");
+    expect(card()!.querySelector('[data-test="group-stop-run-button"]')).toBeNull();
     wrapper.unmount();
   });
 
@@ -328,7 +424,8 @@ describe("GroupThinkingBubbles UI", () => {
     const wrapper = mountTranscript();
     await openFirstBubble(wrapper);
     expect(card()!.textContent).toContain("shares the conversation workspace");
-    expect(card()!.textContent).toContain("all participating members are cancelled");
+    expect(card()!.querySelector('[data-test="group-stop-run-button"]')?.getAttribute("title"))
+      .toContain("all participating members are cancelled");
     wrapper.unmount();
   });
 
@@ -522,7 +619,6 @@ describe("GroupThinkingBubbles UI", () => {
     const detail = wrapper.find('[data-test="group-run-detail"]').element as HTMLElement;
     const note = detail.querySelector<HTMLElement>('[data-test="group-detail-stopped"]');
     expect(note?.textContent).toContain("Run stopped");
-    expect(note?.previousElementSibling?.querySelector('[data-test="group-member-task"]')).not.toBeNull();
     wrapper.unmount();
   });
 

@@ -28,6 +28,8 @@ import BotAvatar from "./BotAvatar.vue";
 import GroupAgentTurnRow from "./GroupAgentTurnRow.vue";
 import AgentThinkingBubble from "./AgentThinkingBubble.vue";
 import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
+import GroupRunDetailSheet from "./GroupRunDetailSheet.vue";
+import { useIsMobile } from "../lib/use-dropdown";
 import {
   projectGroupTranscript,
   traceEventsToParts,
@@ -44,6 +46,7 @@ const { t } = useI18n();
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
+const isMobile = useIsMobile();
 
 const group = computed(() => groupsStore.currentGroup);
 const topic = computed(() => groupsStore.currentTopic);
@@ -596,8 +599,8 @@ async function handleLoadOlder(): Promise<void> {
 
   </div>
 
-  <!-- Anchored floating detail (single open). Stop stays inside the detail. -->
-  <GroupRunDetailPopover
+  <!-- One detail state; mobile owns a modal sheet, desktop follows the bubble. -->
+  <component :is="isMobile ? GroupRunDetailSheet : GroupRunDetailPopover"
     v-if="openDetail"
     :id="detailId"
     :scroller-el="scroller"
@@ -605,6 +608,7 @@ async function handleLoadOlder(): Promise<void> {
     :run="openDetail.run"
     :member-turn="openDetail.memberTurn"
     :member-name="openDetail.memberTurn ? senderName(openDetail.memberTurn.botId) : undefined"
+    :topic-title="topic?.title"
     :attempt="selectedAttempt"
     :attempts="detailAttempts"
     :explanation="openDetail.explanation ? explanationText(openDetail.explanation) : undefined"

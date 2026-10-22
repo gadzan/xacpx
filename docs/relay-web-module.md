@@ -440,7 +440,7 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     （`h-[calc(3.25rem+env(safe-area-inset-top))]`）：左按钮 `←` 44px（返回首页列表，`data-test="mobile-back"`）、
     中间头像（会话 = `AgentIcon`，Bot = `BotAvatar` 32）+ 标题（`text-base`）+ 副标题（`text-xs`：
     `实例 · agent · 分支`，缺项跳过，不会出现前导或连续 `·`）、右侧 `⋯` 40px 打开底部弹出菜单
-    （`components/MobileSheet.vue`：`bg-raised rounded-t-2xl shadow-float`，backdrop / Esc 关闭，
+    （`components/MobileSheet.vue`：`bg-raised rounded-t-[24px] shadow-float`，backdrop / Esc 关闭，
     `useModalA11y` 负责焦点进入与归还，条目 ≥48px；`dd-panel` 把面板标成「打开的下拉拥有的浮层」，
     只有下拉 / 行菜单自己的 sheet 才开，见「统一下拉框」）。会话栏由 `DashboardView` 渲染；Bot 栏由
     `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；
@@ -973,6 +973,32 @@ Bot 名称、名称下方的思考气泡（`AgentThinkingBubble.vue`）和下方
 规范回复行同时保留消息 ID 和唯一滚动锚点。交接入口的“跳到回复”将焦点移到整条回复，
 后续 Tab 先到思考气泡，再到复制按钮。临时成员行与路由行使用各自的合成锚点，
 不复用请求消息的 ID。浮层的关闭按钮和 Escape 将焦点还给原触发按钮，外部点击保留新焦点。
+
+详情按 `useIsMobile()` 的 1024px 断点分流：移动端 `GroupRunDetailSheet.vue` 经 Teleport
+打开模态底部面板（24px 顶部圆角、最高 86dvh、底部安全区留白），背板点击、关闭按钮或
+Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌面继续用
+`GroupRunDetailPopover.vue` 锚定气泡，保留外部点击与锚点滚出关闭，圆角统一为 16px。
+两端共用 `GroupRunDetailHeader.vue`：状态、话题标题、成员/时间/时长、尝试选择与停止按钮；
+任务描述完整放在滚动正文里，避免长任务挤掉关闭操作。切换断点保留当前成员和已选尝试。
+移动详情打开时显式聚焦关闭按钮，不将初始焦点落到 Stop；运行中的面板直接显示停止全部参与
+成员的范围说明，触屏无需悬停。其他 MobileSheet 未声明初始焦点时仍采用原默认规则。
+
+`GroupRunDetailContent.vue` 的过程区统一使用 `GroupTraceTimeline.vue`，复用唯一
+`deriveTurnPresentation` 保持 Markdown、思考、工具与子代理顺序。相邻工具以状态圆圈与虚线
+连接，叙述打断连线；超过 6 个步骤默认保留最近 3 个，可展开已加载的前序内容。
+这与服务端分页独立：记录完整性、错误、加载更多与加载更早事件仍保留。
+工具展开体由 `ToolStepDetail.vue` 与消息流的 `ToolStepCard.vue` 共享。
+子代理时间线圆圈与展开卡片共用 `resolveSubagentStatus`：任一子步骤失败则失败，仍有子步骤
+运行则继续显示运行中，避免父级 success 遮盖子步骤的实际状态。
+历史尝试不显示当前尝试的状态、开始时间与实时计时；未记录的历史结果不作推断。
+双端按成员/尝试记忆正文滚动位置。`use-detail-scroll-memory.ts` 在打开或切换尝试时保留目标
+偏移，短加载正文截断 scrollTop 时不覆盖原记录，异步数据就绪或布局增长后再补恢复。
+成功恢复或用户主动 wheel/touch/pointer/滚动键操作后结束恢复阶段，后续流式增量不拉动读者。
+详情滚动条使用独立的 6px `detail-scroll`，触屏隐藏；减少动态效果设置关闭面板入场和状态动画。
+
+`MobileSheet.vue` 支持自定义 `#header`、`height="tall"`、`padded` 与 `showClose`，默认调用
+仍使用标题栏和列表留白。额外属性绑定到 dialog，`body` 暴露给详情保存滚动位置。
+
 
 已打开的执行过程沿 Core 已提交游标增量补读。实时帧按 500ms 合并补读请求，
 成员或 provider 结束时立即补读；进行中的 RPC 结束后仍会读取等待中的终态更新。

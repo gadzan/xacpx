@@ -147,6 +147,19 @@ select:not([data-ring="container"]):focus-visible {
 .thin-scroll::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }
 .thin-scroll::-webkit-scrollbar-track { background: transparent; }
 
+.detail-scroll { scrollbar-gutter: stable; }
+.detail-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.detail-scroll::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 999px; }
+.detail-scroll::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-fg-muted) / 0.48); }
+.detail-scroll::-webkit-scrollbar-track { background: transparent; }
+@supports not selector(::-webkit-scrollbar) {
+  .detail-scroll { scrollbar-width: thin; scrollbar-color: rgb(var(--c-fg-muted) / 0.28) transparent; }
+}
+@media (hover: none) {
+  .detail-scroll { scrollbar-width: none; }
+  .detail-scroll::-webkit-scrollbar { display: none; }
+}
+
 /* Scrollable strip with no visible scrollbar (e.g. the header chip row — swipe on touch). */
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }

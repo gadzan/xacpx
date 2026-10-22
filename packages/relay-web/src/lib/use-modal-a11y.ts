@@ -4,7 +4,8 @@ import { nextTick, onBeforeUnmount, onMounted, type Ref } from "vue";
  *  NewSessionDialog): trap Tab focus inside the dialog, close on Escape, and restore focus
  *  to whatever was focused before the dialog opened. The caller owns the markup contract:
  *  put `ref` on the dialog panel, plus `tabindex="-1" role="dialog" aria-modal="true"`
- *  (and an `aria-labelledby` pointing at the title).
+ *  (and an `aria-labelledby` pointing at the title). An optional initial-focus resolver
+ *  takes precedence over the default first focusable control.
  *
  *  The keydown listener sits on `document`, so a child that must swallow Escape itself
  *  (e.g. an open combobox closing its own popup) simply calls `e.stopPropagation()`.
@@ -14,7 +15,11 @@ import { nextTick, onBeforeUnmount, onMounted, type Ref } from "vue";
  *  closes the parent behind it. Tab trapping stays per-dialog. */
 const stack: Array<() => void> = [];
 
-export function useModalA11y(dialogEl: Ref<HTMLElement | null>, close: () => void): void {
+export function useModalA11y(
+  dialogEl: Ref<HTMLElement | null>,
+  close: () => void,
+  initialFocus?: () => HTMLElement | null,
+): void {
   let previouslyFocused: HTMLElement | null = null;
   const FOCUSABLE =
     'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -48,7 +53,7 @@ export function useModalA11y(dialogEl: Ref<HTMLElement | null>, close: () => voi
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.addEventListener("keydown", onKeydown);
     void nextTick(() => {
-      (focusables()[0] ?? dialogEl.value)?.focus();
+      (initialFocus?.() ?? focusables()[0] ?? dialogEl.value)?.focus();
     });
   });
   onBeforeUnmount(() => {

@@ -3,9 +3,8 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from "lucide-vue-next";
-import ToolDetail from "./ToolDetail.vue";
-import DetailHeadline from "./DetailHeadline.vue";
-import { KIND_ICON, diffStatsOf, isPathTitle, stripTruncationMarks } from "../lib/tool-summary";
+import ToolStepDetail from "./ToolStepDetail.vue";
+import { KIND_ICON, diffStatsOf, isPathTitle } from "../lib/tool-summary";
 import { formatStepDuration, useLiveElapsed } from "../lib/use-live-elapsed";
 
 const props = defineProps<{ step: ToolStepDto; ensureFull?: () => Promise<void> }>();
@@ -81,31 +80,6 @@ const fileExt = computed(() => {
 // Path titles ellipsis at the head (…tail) so the filename stays visible in
 // the one-line preview; the full path remains in the tooltip and the detail.
 const pathTitle = computed(() => isPathTitle(props.step));
-// The text the detail body already prints below (so we don't repeat it in the banner).
-const detailOutput = computed(() => {
-  const d = props.step.detail;
-  if (!d) return "";
-  if (d.type === "command" || d.type === "search" || d.type === "fields") return d.output ?? "";
-  if (d.type === "read") return d.preview ?? "";
-  if (d.type === "text") return d.text ?? "";
-  return "";
-});
-
-// Show the red error banner only when the failure isn't ALREADY visible in the detail
-// body. A failed command echoes its stderr in its output (plus a nonzero exit and a red
-// border), so a banner there just prints the same text twice. The error and the output
-// may be capped by different rules, so strip any truncation marker before comparing.
-const showErrorBanner = computed(() => {
-  if (props.step.status !== "error") return false;
-  const err = props.step.error?.trim();
-  if (!err) return false;
-  // Strip any truncation marker (suffix or prefix) before comparing — the error is
-  // capped and the detail body may be capped differently.
-  const needle = stripTruncationMarks(err);
-  if (!needle) return true;
-  return !detailOutput.value.includes(needle);
-});
-
 // A missing stamp (older connector) falls back to the old "no time shown" behaviour.
 const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()));
 </script>
@@ -141,21 +115,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
       </span>
     </component>
     <div v-if="hasDetail && open" data-test="tool-step-detail" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-1">
-      <DetailHeadline :text="step.title" />
-      <div v-if="hydrating" data-test="tool-step-hydrating" class="flex items-center gap-1.5 py-1 text-fg-muted">
-        <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />
-        <span>{{ $t("tools.loadingDetails") }}</span>
-      </div>
-      <template v-else>
-        <div v-if="showErrorBanner" data-test="tool-step-error"
-             class="mb-1.5 flex items-start gap-1.5 rounded-sm bg-danger/10 px-2 py-1.5 text-danger font-mono text-xs">
-          <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
-          <span class="whitespace-pre-wrap break-words leading-relaxed">{{ step.error }}</span>
-        </div>
-        <p v-else-if="step.terminalId && !detailOutput" data-test="tool-step-terminal-only"
-           class="py-1 text-fg-muted">{{ $t("tools.terminalOutputNotReported") }}</p>
-        <ToolDetail v-if="step.detail" :detail="step.detail" />
-      </template>
+      <ToolStepDetail :step="step" :hydrating="hydrating" />
     </div>
   </div>
 </template>

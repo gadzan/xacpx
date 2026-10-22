@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed } from "vue";
 import { Clock, HelpCircle, AlertCircle, CircleX, Loader2 } from "lucide-vue-next";
 import type {
   ConversationRunDto,
@@ -8,25 +8,15 @@ import type {
   TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { useI18n } from "vue-i18n";
-import TurnParts from "./TurnParts.vue";
+import GroupTraceTimeline from "./GroupTraceTimeline.vue";
+import { useLiveDuration } from "../lib/run-duration";
 import PlanPanel from "./PlanPanel.vue";
 import type { TraceReplayStatus } from "../lib/group-run-presentation";
 
-/**
- * Member/Run detail inside the anchored popover (frozen spec §3.4).
- *
- * Reading order is deliberate: who this is and what they were asked for, then
- * the recorded process, then the run-wide material (plan, routing, workspace,
- * siblings) behind a disclosure. Everything the old run card showed still
- * lives here; only the emphasis changed. The Run-level Stop lives in the
- * popover header and targets the whole exact active Run — never one member.
- */
 const props = defineProps<{
   run: ConversationRunDto;
   memberTurn?: MemberTurnSummaryDto;
-  memberName?: string;
   attempt?: number;
-  attempts?: number[];
   /** Ordered replayed/combined member trace parts (empty = none recorded). */
   parts?: TurnPartDto[];
   /** Other members of the same Run, summarized by name and state only. */
@@ -48,8 +38,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  stop: [];
-  attempt: [attempt: number];
   loadMore: [];
   loadEarlier: [];
   retryTrace: [];
@@ -81,19 +69,6 @@ const stateIcon = computed(() => {
   }
 });
 
-const memberStateLabel = computed(() => {
-  const state = props.memberTurn?.state;
-  if (!state) return undefined;
-  switch (state) {
-    case "queued":
-    case "dispatched": return t("bot.run.queued");
-    case "running": return t("bot.run.running");
-    case "completed": return t("group.run.memberCompleted");
-    case "failed": return t("bot.run.failed");
-    case "cancelled": return t("bot.run.cancelled");
-    case "indeterminate": return t("bot.run.indeterminate");
-  }
-});
 
 const recordingLabel = computed(() => {
   switch (props.recordingState) {
@@ -111,70 +86,16 @@ const canStop = computed(() => props.stopAvailable === true
 
 const selectedAttempt = computed(() => props.attempt ?? props.memberTurn?.attempt);
 const historicalAttempt = computed(() => selectedAttempt.value !== props.memberTurn?.attempt);
-const now = ref(Date.now());
-let durationTimer: ReturnType<typeof setInterval> | undefined;
-onMounted(() => { durationTimer = setInterval(() => { now.value = Date.now(); }, 1000); });
-onBeforeUnmount(() => { if (durationTimer !== undefined) clearInterval(durationTimer); });
+const duration = useLiveDuration(() => props.memberTurn
+  ? undefined
+  : { startedAt: props.run.startedAt, finishedAt: props.run.finishedAt, active: props.run.state === "running" });
 
-/** Live elapsed/finished duration for the current attempt only; historical
- *  attempts keep their recorded outcome without a synthetic live timer. */
-const duration = computed(() => {
-  if (historicalAttempt.value) return undefined;
-  const startedAt = props.memberTurn ? props.memberTurn.startedAt : props.run.startedAt;
-  if (!startedAt) return undefined;
-  const finishedAt = props.memberTurn ? props.memberTurn.finishedAt : props.run.finishedAt;
-  const active = props.memberTurn
-    ? props.memberTurn.state === "running" || props.memberTurn.state === "dispatched"
-    : props.run.state === "running";
-  if (!finishedAt && !active) return undefined;
-  const start = Date.parse(startedAt);
-  const end = finishedAt ? Date.parse(finishedAt) : now.value;
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return undefined;
-  const seconds = Math.floor((end - start) / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-});
-
-function selectAttempt(event: Event): void {
-  if (event.target instanceof HTMLSelectElement) emit("attempt", Number(event.target.value));
-}
 </script>
 
 <template>
   <div class="flex flex-col gap-3 text-sm" data-test="group-run-detail">
     <!-- Who this is and what they were asked for. -->
     <div v-if="memberTurn" class="min-w-0">
-      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        <span
-          v-if="!historicalAttempt"
-          class="rounded-full px-2 py-0.5 font-medium"
-          :class="{
-            'bg-run/15 text-run': memberTurn.state === 'running',
-            'bg-warning/15 text-warning': memberTurn.state === 'queued' || memberTurn.state === 'dispatched',
-            'bg-fg/10 text-fg-muted': memberTurn.state === 'completed' || memberTurn.state === 'cancelled',
-            'bg-danger/10 text-danger': memberTurn.state === 'failed',
-            'bg-warning/10 text-warning': memberTurn.state === 'indeterminate',
-          }"
-        >{{ memberStateLabel }}</span>
-        <label v-if="attempts && attempts.length > 1" class="flex items-center gap-1 text-fg-muted">
-          {{ $t("group.detail.attemptLabel") }}
-          <select
-            data-test="group-detail-attempt"
-            class="rounded-sm bg-surface px-1 py-0.5 text-fg"
-            :value="selectedAttempt"
-            @change="selectAttempt"
-          >
-            <option v-for="availableAttempt in attempts" :key="availableAttempt" :value="availableAttempt">
-              {{ $t("group.detail.attempt", { attempt: availableAttempt }) }}
-            </option>
-          </select>
-        </label>
-        <span v-else data-test="group-detail-attempt-text" class="text-fg-muted">
-          {{ $t("group.detail.attempt", { attempt: selectedAttempt }) }}
-        </span>
-        <span v-if="duration" data-test="group-detail-duration" class="text-fg-muted">
-          {{ $t("group.detail.duration", { duration }) }}
-        </span>
-      </div>
       <p v-if="memberTurn.task" data-test="group-member-task" class="mt-2 break-words text-sm leading-relaxed text-fg">
         {{ memberTurn.task }}
       </p>
@@ -217,7 +138,7 @@ function selectAttempt(event: Event): void {
 
     <!-- Recorded member trace -->
     <div v-if="recordedParts.length" class="min-w-0">
-      <TurnParts :parts="recordedParts" :streaming="traceStreaming === true" />
+      <GroupTraceTimeline :key="`${memberTurn?.id}:${selectedAttempt}`" :parts="recordedParts" :streaming="traceStreaming === true" />
     </div>
 
     <!-- Trace completeness/pagination/failure status: always audible, even
@@ -292,9 +213,5 @@ function selectAttempt(event: Event): void {
       </div>
     </details>
 
-    <!-- Run-level Stop: whole exact active Run, all members. -->
-    <p v-if="canStop" data-test="group-stop-explanation" class="text-xs text-fg-muted">
-      {{ $t("group.detail.stopAllMembers") }}
-    </p>
   </div>
 </template>
