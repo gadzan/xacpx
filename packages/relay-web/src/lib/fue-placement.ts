@@ -1,8 +1,9 @@
 /** Pure placement math for `FueCallout` (borrowed from HAPI's
  *  `computeFueCalloutPlacement`). Kept DOM-free so it is unit-testable without a
- *  layout engine. Places the callout below the anchor by default; flips above when
- *  below would overflow the viewport and there is more room above; clamps the
- *  horizontal position into the viewport with an 8px margin. */
+ *  layout engine. Places the callout on the preferred side of the anchor (below by
+ *  default); flips to the opposite side when the preferred one would overflow the
+ *  viewport and the opposite side has more room; clamps the horizontal position
+ *  into the viewport with an 8px margin. Also used by `Tooltip`. */
 export interface Rect {
   top: number;
   left: number;
@@ -28,16 +29,24 @@ export interface Placement {
 
 const MARGIN = 8;
 
-export function computeCalloutPlacement(anchor: Rect, callout: Size, viewport: Viewport, gap = MARGIN): Placement {
+export function computeCalloutPlacement(
+  anchor: Rect,
+  callout: Size,
+  viewport: Viewport,
+  gap = MARGIN,
+  prefer: "above" | "below" = "below",
+): Placement {
   const belowTop = anchor.top + anchor.height + gap;
   const aboveTop = anchor.top - callout.height - gap;
   const roomBelow = viewport.height - (anchor.top + anchor.height);
   const roomAbove = anchor.top;
 
-  // Flip above only when below overflows AND above has more room.
-  const overflowsBelow = belowTop + callout.height > viewport.height - MARGIN;
-  const flip = overflowsBelow && roomAbove > roomBelow;
-  const placement: "above" | "below" = flip ? "above" : "below";
+  // Flip to the opposite side only when the preferred side overflows AND the
+  // opposite side has more room.
+  const flip = prefer === "below"
+    ? belowTop + callout.height > viewport.height - MARGIN && roomAbove > roomBelow
+    : aboveTop < MARGIN && roomBelow > roomAbove;
+  const placement: "above" | "below" = flip ? (prefer === "below" ? "above" : "below") : prefer;
   const top = placement === "above" ? Math.max(MARGIN, aboveTop) : belowTop;
 
   // Center under the anchor, then clamp horizontally into the viewport.

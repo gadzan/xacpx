@@ -49,6 +49,15 @@ describe("computeCalloutPlacement", () => {
     expect(p.top).toBe(760 - 100 - 8);
   });
 
+  it("honours a preferred above side and flips below only when above overflows", () => {
+    const fits = computeCalloutPlacement({ top: 400, left: 400, width: 40, height: 20 }, callout, vp, 8, "above");
+    expect(fits.placement).toBe("above");
+    expect(fits.top).toBe(400 - 100 - 8);
+    const flipped = computeCalloutPlacement({ top: 40, left: 400, width: 40, height: 20 }, callout, vp, 8, "above");
+    expect(flipped.placement).toBe("below");
+    expect(flipped.top).toBe(40 + 20 + 8);
+  });
+
   it("clamps the horizontal position into the viewport", () => {
     const nearRight = computeCalloutPlacement({ top: 100, left: 980, width: 40, height: 20 }, callout, vp);
     expect(nearRight.left).toBe(vp.width - callout.width - 8); // 736
