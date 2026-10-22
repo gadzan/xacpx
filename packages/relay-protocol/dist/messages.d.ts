@@ -1,4 +1,5 @@
 import type { BotAvatarConfig } from "./bot-avatar.js";
+import type { AgentMention } from "./agent-mentions.js";
 import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunHistoryDetailDto, ConversationRunTraceDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
 import type { JevSettingsDto, JevTestResult } from "./jev-settings.js";
 export declare const MSG: {
@@ -618,11 +619,18 @@ export interface GroupTopicsTeardownPayload {
     topicId: string;
 }
 export interface ConversationPromptPayload {
-    agentMentions?: import("./agent-mentions.js").AgentMention[];
+    agentMentions?: AgentMention[];
     conversationId: string;
     topicId: string;
     requestId: string;
     text: string;
+    /**
+     * Executable upload refs (daemon paths). Empty/absent means text-only;
+     * durable accept persists them verbatim and execution re-derives from the
+     * durable request. Display metadata is projected separately and never
+     * carries filePath.
+     */
+    media?: PromptAttachmentRef[];
     target?: ConversationTargetDto;
 }
 export type ConversationPromptResult = ConversationPromptResponseDto;
