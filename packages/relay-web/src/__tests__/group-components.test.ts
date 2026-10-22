@@ -1794,6 +1794,22 @@ describe("Group Components", () => {
       }
     });
 
+    it("renders no topic pill with zero Topics on desktop and mobile, keeping the Create first Topic CTA", async () => {
+      const groups = seedGroupSelection();
+      groups.activeTopicId = null;
+      groups.topicsByConversation["i1:conversation_g"] = [];
+      for (const width of [1280, 390]) {
+        window.innerWidth = width;
+        const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+        await flushPromises();
+        expect(wrapper.findAll('[data-test="group-topic-pill"]')).toHaveLength(0);
+        expect(wrapper.find('[data-test="group-first-topic"]').exists()).toBe(true);
+        expect(wrapper.find('[data-test="group-first-topic-button"]').exists()).toBe(true);
+        expect(wrapper.find('[data-test="group-pane-member-count"]').exists()).toBe(true);
+        wrapper.unmount();
+      }
+    });
+
     it("mobile ⋯ sheet opens the group editor and ← emits back", async () => {
       seedGroupSelection();
       window.innerWidth = 500;
