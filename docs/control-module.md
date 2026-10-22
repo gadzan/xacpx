@@ -15,6 +15,16 @@
 调用转交给 `TurnQueue.submit`；唯一的提交前协调是等待同一逻辑会话已登记的 model/effort
 配置操作完成，避免紧随配置变更的 prompt 使用旧值。该等待不持有或改变 turn 并发状态。
 
+## 配置锁与状态锁的顺序
+
+`src/main.ts` 创建两把独立的 `AsyncMutex`。C 指 `configMutationMutex`，串行化配置写盘和运行时配置发布。S 指 `stateMutex`，串行化会话与 worker binding 的状态写入。
+
+需要同时持锁时，顺序恒为 C 外、S 内。禁止在持有 S 时获取 C，否则可能与持有 C、等待 S 的删除路径形成死锁。
+
+删除工作区注册的路径必须先获取 C，再获取 S。在持有双锁的同一临界区内完成占用检查、`removeWorkspace`、`publishLiveConfig` 和 `workspaces-changed` 事件发布。检查与删除之间不能释放 S，否则会话可能在检查后绑定到即将删除的工作区。
+
+会话与 worker binding 的绑定路径只持 S，不获取 C。删除路径持有 S 期间，绑定写入等待。绑定先完成时，删除路径的锁内占用检查必须拒绝删除。
+
 ## Bot 头像与交互归属
 
 `BotProfile`、保留资料和公共 DTO 的 `avatar` 使用 relay-protocol 的 `BotAvatarConfig`：`version: 1` 的动态角色（固定形状、颜色、表情与 `motion: auto | off`）或纯文本。创建省略头像保留默认图标；更新省略 / `undefined` 不修改，`null` 清除。新文本写入上限为 512，非法配置返回 `avatar_invalid`；读取迁移不把这一写入上限套在历史数据上。返回值与已接受任务快照拥有独立配置对象。
