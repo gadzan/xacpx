@@ -1568,6 +1568,57 @@ describe("Direct Bot Components", () => {
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
       expect(wrapper.emitted("send")).toBeUndefined();
     });
+    it("shows the normal placeholder (not Recovering) for a Bot with zero Topics once selection settles", async () => {
+      seedLocalInstance();
+      vi.spyOn(api, "rpc").mockImplementation(async (_inst: string, type: string) => {
+        if (type === "control.bots.list") return { bots: [{ id: "b1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] } as never;
+        if (type === "control.conversations.list") return { conversations: [{ id: "c1", kind: "bot", title: "Bot", botId: "b1", createdAt: "now", updatedAt: "now" }] } as never;
+        if (type === "control.topics.list") return { topics: [] } as never;
+        return {} as never;
+      });
+      const directBots = useDirectBotsStore();
+      await directBots.selectBot("i1", "b1");
+      expect(directBots.topicReady).toBe(true);
+      const wrapper = mount(ConversationPromptInput, {
+        props: { disabled: !directBots.activeTopicId },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find("textarea").element as HTMLTextAreaElement;
+      expect(textarea.placeholder).toBe(i18n.global.t("bot.prompt.placeholder"));
+      expect(textarea.placeholder).not.toContain("Recovering");
+      // Still not sendable: there is no Topic to send into.
+      expect(textarea.disabled).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("shows the Recovering placeholder only while a real history load is in flight", async () => {
+      seedLocalInstance();
+      let releaseHistory!: () => void;
+      vi.spyOn(api, "rpc").mockImplementation((_inst: string, type: string) => {
+        if (type === "control.bots.list") return Promise.resolve({ bots: [{ id: "b1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] } as never);
+        if (type === "control.conversations.list") return Promise.resolve({ conversations: [{ id: "c1", kind: "bot", title: "Bot", botId: "b1", defaultTopicId: "t1", createdAt: "now", updatedAt: "now" }] } as never);
+        if (type === "control.topics.list") return Promise.resolve({ topics: [{ id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }] } as never);
+        if (type === "control.conversation.history") return new Promise((resolve) => {
+          releaseHistory = () => resolve({ conversationId: "c1", topicId: "t1", messages: [], hasMoreBefore: false, hasMoreAfter: false } as never);
+        });
+        if (type === "control.runs.list") return Promise.resolve({ runs: [] } as never);
+        return Promise.resolve({} as never);
+      });
+      const directBots = useDirectBotsStore();
+      const selecting = directBots.selectBot("i1", "b1");
+      const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const textarea = () => wrapper.find("textarea").element as HTMLTextAreaElement;
+      expect(textarea().placeholder).toBe(i18n.global.t("bot.prompt.recoveringPlaceholder"));
+      expect(textarea().disabled).toBe(true);
+      releaseHistory();
+      await selecting;
+      await flushPromises();
+      expect(textarea().placeholder).toBe(i18n.global.t("bot.prompt.placeholder"));
+      expect(textarea().disabled).toBe(false);
+      wrapper.unmount();
+    });
+
     it("shows warning when bot is disabled", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";

@@ -630,6 +630,105 @@ describe("useDirectBotsStore", () => {
     });
   });
 
+  describe("topicReady truthfully tracks in-flight recovery", () => {
+    const CONV = { id: "conv_z", kind: "bot", title: "Z", botId: "bot_z", createdAt: "now", updatedAt: "now" };
+    function rpcFor(handlers: Record<string, () => unknown>) {
+      mockRpc.mockImplementation((_inst: string, type: string) => {
+        if (type === "control.bots.list") return Promise.resolve({ bots: [{ id: "bot_z", name: "Z", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] });
+        const h = handlers[type];
+        return h ? h() : Promise.resolve({});
+      });
+    }
+
+    // Regression: selectBot closed the gate up front and only loadHistory could
+    // reopen it, so a Bot without a Topic stayed "Recovering topic…" forever.
+    it("reopens the gate after selectBot when the Conversation has zero Topics", async () => {
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [CONV] }),
+        "control.topics.list": () => Promise.resolve({ topics: [] }),
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.activeConversationId).toBe("conv_z");
+      expect(store.activeTopicId).toBeNull();
+      expect(store.topicReady).toBe(true);
+      expect(mockRpc.mock.calls.some((c) => c[1] === "control.conversation.history")).toBe(false);
+      // Sending still cannot happen without a Topic.
+      expect(await store.sendPrompt("hi")).toBe("rejected");
+      expect(mockRpc.mock.calls.some((c) => c[1] === "control.conversation.prompt")).toBe(false);
+    });
+
+    it("reopens the gate after selectBot when the Bot has no Conversation yet", async () => {
+      rpcFor({ "control.conversations.list": () => Promise.resolve({ conversations: [] }) });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.activeConversationId).toBeNull();
+      expect(store.topicReady).toBe(true);
+    });
+
+    it("does not leave the gate closed when the Conversation listing fails before a Topic is chosen", async () => {
+      rpcFor({ "control.conversations.list": () => Promise.reject(new Error("list down")) });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.generalError).toBe("list down");
+      expect(store.activeTopicId).toBeNull();
+      expect(store.topicReady).toBe(true);
+    });
+
+    it("keeps the gate closed while history/discovery for a real Topic is in flight", async () => {
+      let releaseHistory!: () => void;
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV, defaultTopicId: "top_z" }] }),
+        "control.topics.list": () => Promise.resolve({ topics: [{ id: "top_z", conversationId: "conv_z", title: "T", status: "active", createdAt: "now", updatedAt: "now" }] }),
+        "control.conversation.history": () => new Promise((resolve) => {
+          releaseHistory = () => resolve({ conversationId: "conv_z", topicId: "top_z", messages: [], hasMoreBefore: false, hasMoreAfter: false });
+        }),
+        "control.runs.list": () => Promise.resolve({ runs: [] }),
+      });
+      const store = useDirectBotsStore();
+      const selecting = store.selectBot("inst_1", "bot_z");
+      await flushPromises();
+      expect(store.activeTopicId).toBe("top_z");
+      expect(store.topicReady).toBe(false);
+      expect(await store.sendPrompt("too early")).toBe("rejected");
+      expect(store.promptError).toBe("topicRecovering");
+      releaseHistory();
+      await selecting;
+      expect(store.topicReady).toBe(true);
+    });
+
+    it("a stale topicless selection cannot reopen a newer Bot's in-flight recovery", async () => {
+      let releaseStaleList!: () => void;
+      mockRpc.mockImplementation((_inst: string, type: string, payload?: { botId?: string }) => {
+        if (type === "control.bots.list") return Promise.resolve({ bots: [
+          { id: "bot_a", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] });
+        if (type === "control.conversations.list") {
+          if (payload?.botId === "bot_a") return new Promise((_resolve, reject) => { releaseStaleList = () => reject(new Error("stale list failed")); });
+          return Promise.resolve({ conversations: [{ ...CONV, id: "conv_b", botId: "bot_b", defaultTopicId: "top_b" }] });
+        }
+        if (type === "control.topics.list") return Promise.resolve({ topics: [{ id: "top_b", conversationId: "conv_b", title: "B", status: "active", createdAt: "now", updatedAt: "now" }] });
+        if (type === "control.conversation.history") return new Promise(() => {});
+        return Promise.resolve({});
+      });
+      const store = useDirectBotsStore();
+      const a = store.selectBot("inst_1", "bot_a");
+      await flushPromises(); // A is now parked on its conversations.list
+      void store.selectBot("inst_1", "bot_b");
+      await flushPromises();
+      expect(store.activeTopicId).toBe("top_b");
+      expect(store.topicReady).toBe(false);
+      // A's listing fails late: its catch path must not reopen B's gate or
+      // paint its error over B.
+      releaseStaleList();
+      await a;
+      expect(store.selectedBotId).toBe("bot_b");
+      expect(store.generalError).toBeNull();
+      expect(store.topicReady).toBe(false);
+    });
+  });
+
   describe("History and Pagination", () => {
     it("loads newest-first tail history then recovers the durable active run", async () => {
       const store = useDirectBotsStore();

@@ -2138,14 +2138,40 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const targetTopicId = conv.defaultTopicId ?? topics[0]?.id;
         if (targetTopicId) {
           activeTopicId.value = targetTopicId;
+          // loadHistory owns topicReady from here: it reopens the gate only on
+          // proven discovery.
           await loadHistory(targetInstanceId, conv.id, targetTopicId);
+          return;
         }
       }
+      // No Conversation or no Topic yet: there is nothing to recover, so no
+      // load is in flight. Reopen the gate closed at the top of selectBot
+      // (mirrors the Group store's zero-Topic path); sending stays gated on
+      // activeTopicId, so this cannot admit a prompt without a Topic.
+      settleTopiclessSelection(generation, targetInstanceId, botId);
     } catch (err: unknown) {
       if (generation === currentSelectionGeneration && selectedBotId.value === botId) {
         generalError.value = err instanceof Error ? err.message : String(err);
       }
+      // Conversation/Topic listing failed before any Topic was chosen: no
+      // history load owns the gate, so leaving it closed would read as a
+      // permanent "Recovering topic…". The error banner carries the failure.
+      settleTopiclessSelection(generation, targetInstanceId, botId);
     }
+  }
+
+  /** selectBot resolved without choosing a Topic (none exists, or the listing
+   *  failed): no recovery is in flight, so `topicReady` must not stay false. */
+  function settleTopiclessSelection(generation: number, targetInstanceId: string, botId: string): void {
+    if (
+      generation !== currentSelectionGeneration
+      || instanceId.value !== targetInstanceId
+      || selectedBotId.value !== botId
+      || activeTopicId.value
+    ) {
+      return;
+    }
+    topicReady.value = true;
   }
 
   async function switchTopic(topicId: string): Promise<void> {
