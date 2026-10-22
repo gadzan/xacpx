@@ -42,6 +42,9 @@ const props = defineProps<{
   loadingOlder?: boolean;
   loadingHistory?: boolean;
   bot?: BotDetailDto | BotSummaryDto;
+  /** Intro hint under the empty-state Bot card; the pane derives it from the
+   *  same state as the composer so the two never disagree. `null` hides it. */
+  emptyHint?: string | null;
   instanceId?: string | null;
   avatarState?: BotAvatarState;
   avatarActivityKey?: string;
@@ -235,7 +238,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       <div v-if="bot && 'instructions' in bot && bot.instructions" class="mt-3 max-w-md rounded-2xl bg-surface/60 p-3 text-left text-xs text-fg-muted leading-relaxed">
         {{ bot.instructions }}
       </div>
-      <p class="mt-4 text-xs text-fg-muted">{{ $t("bot.chat.emptyHint") }}</p>
+      <p v-if="emptyHint !== null" data-test="bot-empty-hint" class="mt-4 text-xs text-fg-muted">{{ emptyHint ?? $t("bot.chat.emptyHint") }}</p>
     </div>
 
     <div class="mx-auto max-w-3xl space-y-5">

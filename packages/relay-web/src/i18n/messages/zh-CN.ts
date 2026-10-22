@@ -879,6 +879,7 @@ export default {
       completionready: "没有匹配的建议",
       moreCompletions: "更多建议",
       placeholder: "输入消息…",
+      createTopicFailed: "无法开始对话，消息已保留。",
       send: "发送",
       stop: "停止",
       stopRun: "停止运行",
@@ -890,6 +891,7 @@ export default {
     },
     chat: {
       emptyHint: "发送一条消息开始与该 Bot 对话。",
+      emptyHintDisabled: "启用该 Bot 后即可开始对话。",
       working: "正在运行",
     },
     run: {
@@ -1155,6 +1157,7 @@ export default {
     },
     prompt: {
       placeholder: "给所选成员发消息...（{'@'}名称、{'@'}everyone）",
+      createTopicFirst: "先新建话题再发消息",
     },
     chat: {
       emptyHint: "在上方选择成员，然后发送消息开始一次协作。",

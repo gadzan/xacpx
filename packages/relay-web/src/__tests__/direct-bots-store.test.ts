@@ -653,9 +653,36 @@ describe("useDirectBotsStore", () => {
       expect(store.activeTopicId).toBeNull();
       expect(store.topicReady).toBe(true);
       expect(mockRpc.mock.calls.some((c) => c[1] === "control.conversation.history")).toBe(false);
-      // Sending still cannot happen without a Topic.
+      // The first send auto-creates a Default Topic; when that creation
+      // fails (here: no usable topics.create reply) nothing is prompted.
       expect(await store.sendPrompt("hi")).toBe("rejected");
+      expect(mockRpc.mock.calls.some((c) => c[1] === "control.topics.create")).toBe(true);
       expect(mockRpc.mock.calls.some((c) => c[1] === "control.conversation.prompt")).toBe(false);
+    });
+
+    it("a rapid double send on a topicless Bot creates exactly one Default Topic", async () => {
+      let releaseCreate!: () => void;
+      const TOPIC = { id: "top_new", conversationId: "conv_z", title: "Default", status: "active", createdAt: "now", updatedAt: "now" };
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [CONV] }),
+        "control.topics.list": () => Promise.resolve({ topics: [] }),
+        "control.topics.create": () => new Promise((resolve) => { releaseCreate = () => resolve({ topic: TOPIC }); }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_new", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": () => Promise.resolve({ runs: [] }),
+        "control.conversation.prompt": () => Promise.reject(new Error("offline")),
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      const first = store.sendPrompt("hello");
+      expect(store.firstSendPending).toBe(true);
+      expect(await store.sendPrompt("hello")).toBe("rejected");
+      expect(await store.sendPrompt("hello again")).toBe("rejected");
+      releaseCreate();
+      await first;
+      expect(mockRpc.mock.calls.filter((c) => c[1] === "control.topics.create")).toHaveLength(1);
+      expect(mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt")).toHaveLength(1);
+      expect(store.activeTopicId).toBe("top_new");
+      expect(store.firstSendPending).toBe(false);
     });
 
     it("reopens the gate after selectBot when the Bot has no Conversation yet", async () => {

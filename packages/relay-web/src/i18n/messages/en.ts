@@ -882,6 +882,7 @@ export default {
       completionready: "No matching suggestions",
       moreCompletions: "More suggestions",
       placeholder: "Message…",
+      createTopicFailed: "Couldn't start a conversation. Your message was kept.",
       send: "Send",
       stop: "Stop",
       stopRun: "Stop Run",
@@ -893,6 +894,7 @@ export default {
     },
     chat: {
       emptyHint: "Send a message to start a conversation with this bot.",
+      emptyHintDisabled: "Enable this bot to start a conversation.",
       working: "Working",
     },
     run: {
@@ -971,7 +973,7 @@ export default {
       deleting: "Deleting",
     },
     header: {
-      members: "{count} members",
+      members: "{count} member | {count} members",
     },
     members: {
       disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",
@@ -1158,6 +1160,7 @@ export default {
     },
     prompt: {
       placeholder: "Message the selected members... ({'@'}name, {'@'}everyone)",
+      createTopicFirst: "Create a topic to start chatting",
     },
     chat: {
       emptyHint: "Select members above, then send a message to start a collaboration run.",

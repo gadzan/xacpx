@@ -30,6 +30,10 @@ const props = defineProps<{
    *  Optional: without a provider the draft is dropped, matching the previous
    *  behaviour for standalone use. */
   sendOutcome?: () => Promise<GroupSendOutcome>;
+  /** The Group has zero Topics: the pane's "Create first Topic" CTA is the only
+   *  primary action, so the member target picker and its hint are not mounted
+   *  and the (disabled) composer says why. */
+  needsFirstTopic?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -530,7 +534,7 @@ function handleRetry(): void {
       </button>
     </div>
 
-    <div class="mb-2 flex items-center gap-2">
+    <div v-if="!needsFirstTopic" class="mb-2 flex items-center gap-2">
       <div class="relative">
         <button
           type="button"
@@ -605,7 +609,7 @@ function handleRetry(): void {
       :disabled="disabled || groupsStore.promptInFlight || groupsStore.isRunActive || !groupsStore.topicReady"
       :sending="groupsStore.promptInFlight"
       :send-disabled="!canSend"
-      :placeholder="$t('group.prompt.placeholder')"
+      :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : $t('group.prompt.placeholder')"
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
       stop-test-id="group-stop-run-button"

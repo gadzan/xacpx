@@ -203,7 +203,7 @@ const worktreeRunId = computed(() => {
             @create="newTopicDialogOpen = true"
           />
           <span v-if="!needsFirstTopic" aria-hidden="true">·</span>
-          <span data-test="group-pane-member-count" class="shrink-0 whitespace-nowrap">{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
+          <span data-test="group-pane-member-count" class="shrink-0 whitespace-nowrap">{{ $t("group.header.members", group?.botIds.length ?? 0) }}</span>
           <span v-if="group?.lifecycle === 'deleting'"
                 data-test="group-pane-deleting-badge"
                 class="shrink-0 rounded-sm bg-warn/15 px-1.5 py-px text-xs font-medium text-warn">
@@ -265,6 +265,7 @@ const worktreeRunId = computed(() => {
     <GroupComposer
       :bots="memberBots"
       :disabled="!groupsStore.activeTopicId || !groupsStore.topicReady || !isActiveTopic"
+      :needs-first-topic="needsFirstTopic"
       :instance-id="groupsStore.instanceId"
       :send-outcome="sendPromptOutcome"
       @send="handleSend"

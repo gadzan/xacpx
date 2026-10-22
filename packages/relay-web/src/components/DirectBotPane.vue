@@ -43,6 +43,15 @@ const instancesStore = useInstancesStore();
 const { t } = useI18n();
 
 const bot = computed(() => directBotsStore.currentBot);
+// One copy set for the empty Bot page: the intro hint follows the composer's
+// state (enabled -> "send a message", disabled Bot -> enable it first, loading ->
+// no hint while the composer shows the loading placeholder).
+const emptyHint = computed<string | null>(() => {
+  if (bot.value?.retired) return null;
+  if (bot.value && !bot.value.enabled) return t("bot.chat.emptyHintDisabled");
+  if (!directBotsStore.topicReady) return null;
+  return t("bot.chat.emptyHint");
+});
 const instance = computed(() =>
   directBotsStore.instanceId ? instancesStore.byId(directBotsStore.instanceId) : undefined,
 );
@@ -326,6 +335,7 @@ function openRemoval(): void {
     <!-- Message Area -->
     <ConversationMessageList
       :messages="directBotsStore.messages"
+      :empty-hint="emptyHint"
       :live-turn="directBotsStore.liveTurn"
       :active-run="directBotsStore.activeRun"
       :active-member-turn="directBotsStore.activeMemberTurn"
@@ -352,7 +362,7 @@ function openRemoval(): void {
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
-      :disabled="bot?.retired === true || !directBotsStore.activeTopicId || !directBotsStore.topicReady || directBotsStore.currentTopic?.status !== 'active'"
+      :disabled="bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
       :deliver="(text, mentions) => directBotsStore.sendPrompt(text, mentions)"
       @cancel="directBotsStore.cancelCurrentRun"
     />
