@@ -444,7 +444,8 @@ export interface BotsCreatePayload {
     role?: string;
     instructions?: string;
     agent: string;
-    workspace: string;
+    /** Omit to auto-create a dedicated default workspace under ~/.xacpx/bots/. */
+    workspace?: string;
     model?: string;
     effort?: string;
     enabled?: boolean;

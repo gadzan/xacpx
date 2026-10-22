@@ -550,7 +550,7 @@ const validateBotsGet: Validator<BotsGetPayload> = (p) => {
 };
 const validateBotsCreate: Validator<BotsCreatePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.name) && isStr(o.agent) && isStr(o.workspace)
+  return o && isStr(o.name) && isStr(o.agent) && optStr(o.workspace)
     && (o.avatar === undefined || isBotAvatarWriteConfig(o.avatar)) && optStr(o.role) && optStr(o.instructions)
     && optStr(o.model) && optStr(o.effort) && optBool(o.enabled)
     ? (o as unknown as BotsCreatePayload) : null;

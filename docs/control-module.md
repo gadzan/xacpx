@@ -106,6 +106,8 @@ Phase 10C：Group Topic 可选 `target.isolation: "worktree-per-member"`；
 旧 daemon 无此方法时必须明确 unsupported；无旧接口降级。详见
 [Worktree lifecycle](conversation-runtime.md#managed-worktrees-and-explicit-integration-phase-10c)。
 
+`createBot` 的 `workspace` 可省略：daemon 在用户目录的 `~/.xacpx/bots/` 下创建独立目录并注册为普通工作区，再将注册名保存到 Bot。显式传入时必须是已有工作区名；空字符串不表示自动创建。自动命名复用工作区规范化与冲突后缀规则，中文名完全被过滤时使用稳定的 `workspace-<8hex>`。同名并发创建必须得到不同目录，已有目录不得复用。创建失败仅回滚本次新增的工作区注册与空目录；不递归删除文件。Bot 改名、移除以及 Group Topic 的显式工作区规则保持原有语义。
+
 | 方法 | 说明 |
 |------|------|
 | `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。普通 alias 寻址的 Session 操作（prompt / remove / archive / rename / model / effort / cancel 等）对上述 owner 失败 `hidden_session`；Conversation 执行/释放只走 core-private `ConversationExecutionPort`。 |

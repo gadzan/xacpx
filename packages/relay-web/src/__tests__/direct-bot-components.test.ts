@@ -170,7 +170,11 @@ describe("Direct Bot Components", () => {
       expect(values).toEqual(["reviewer"]);
     });
 
-    it("submits create bot with valid inputs", async () => {
+    it.each([
+      { label: "dedicated workspace by default", workspaces: [{ name: "repo", cwd: "/repo" }], selectedWorkspace: undefined },
+      { label: "dedicated workspace with no registered workspaces", workspaces: [], selectedWorkspace: undefined },
+      { label: "an explicitly selected workspace", workspaces: [{ name: "repo", cwd: "/repo" }], selectedWorkspace: "repo" },
+    ])("submits create bot with $label", async ({ workspaces, selectedWorkspace }) => {
       const instances = useInstancesStore();
       instances.instances = [
         {
@@ -180,7 +184,7 @@ describe("Direct Bot Components", () => {
           lastSeenAt: null,
           sessions: [],
           agents: [{ name: "codex", driver: "codex" }],
-          workspaces: [{ name: "repo", cwd: "/repo" }],
+          workspaces,
           agentCatalog: [],
         } as never,
       ];
@@ -191,7 +195,7 @@ describe("Direct Bot Components", () => {
         id: "bot_1",
         name: "Code Reviewer",
         agent: "codex",
-        workspace: "repo",
+        workspace: selectedWorkspace ?? "code-reviewer",
         instructions: "Look for bugs",
         enabled: true,
         profileRevision: 1,
@@ -210,20 +214,40 @@ describe("Direct Bot Components", () => {
       });
 
       await flushPromises();
+      expect(wrapper.find("#bot-workspace").attributes("data-selected")).toBe("");
+      expect(wrapper.find("#bot-workspace").text()).toContain(i18n.global.t("bot.fields.dedicatedWorkspace"));
+      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').text()).toContain("~/.xacpx/bots/");
+      if (selectedWorkspace) {
+        await wrapper.find("#bot-workspace").trigger("click");
+        await wrapper.find(`[data-value="${selectedWorkspace}"]`).trigger("click");
+        expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
+      }
+      if (workspaces.length > 0) {
+        expect(instances.getAgentCapabilities).toHaveBeenCalledWith("i1", { agent: "codex", workspace: "repo" });
+      } else {
+        expect(instances.getAgentCapabilities).not.toHaveBeenCalled();
+        expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+      }
 
       await wrapper.find("#bot-name").setValue("Code Reviewer");
       await wrapper.find("#bot-instructions").setValue("Look for bugs");
+      await wrapper.find('[data-test="bot-model"]').setValue("custom-model");
+      await wrapper.find('[data-test="model-picker-effort"]').setValue("high");
       await wrapper.find("form").trigger("submit.prevent");
       await flushPromises();
 
       expect(createSpy).toHaveBeenCalledWith("i1", expect.objectContaining({
         name: "Code Reviewer",
         agent: "codex",
-        workspace: "repo",
         avatar: { version: 1, kind: "character", shape: "cercle", color: "bleu", expression: "neutre", motion: "auto" },
         instructions: "Look for bugs",
+        model: "custom-model",
+        effort: "high",
         enabled: true,
       }));
+      const payload = createSpy.mock.calls[0]![1];
+      if (selectedWorkspace) expect(payload.workspace).toBe(selectedWorkspace);
+      else expect(payload).not.toHaveProperty("workspace");
       expect(wrapper.emitted("saved")).toBeTruthy();
       expect(wrapper.emitted("close")).toBeTruthy();
     });
@@ -284,6 +308,10 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       expect((wrapper.findAll("button").find((b) => b.text().includes("Save"))!.element as HTMLButtonElement).disabled).toBe(false);
       expect((wrapper.find("#bot-name").element as HTMLInputElement).value).toBe("Existing Bot");
+      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
+      await wrapper.find("#bot-workspace").trigger("click");
+      expect(wrapper.findAll("[data-value]").map((option) => option.attributes("data-value"))).toEqual(["repo"]);
+      await wrapper.find("#bot-workspace").trigger("click");
 
       await wrapper.find("#bot-name").setValue("Updated Bot");
       await wrapper.find("form").trigger("submit.prevent");

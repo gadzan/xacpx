@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- New Bots default to a dedicated workspace under the daemon user's `~/.xacpx/bots/`, with an option to select an existing workspace. Bot removal preserves workspace files.
+
+### Fixed
+
+- Automatically generated workspace names use a stable hash fallback for Chinese and other names with no usable ASCII characters, across CLI, onboarding, chat commands and the dashboard. Existing workspace registrations and paths are preserved.
+
 ## [relay-protocol 0.6.4-beta.4] - 2026-10-22
 
 ### Added

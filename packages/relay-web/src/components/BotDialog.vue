@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle } from "lucide-vue-next";
-import { copyBotAvatar, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import { copyBotAvatar, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
@@ -127,14 +127,29 @@ function normalizedModel(value: string): string | undefined {
 
 async function loadCapabilities(probe = false): Promise<void> {
   const seq = ++capabilitySeq;
-  if (!agent.value || !workspace.value) return;
-  capability.value = { status: "loading" };
-  const next = await instancesStore.getAgentCapabilities(props.instanceId, {
-    agent: agent.value,
-    workspace: workspace.value,
-    ...(props.bot ? { botId: props.bot.id } : {}),
-    ...(probe ? { probe: true } : {}),
-  });
+  if (!agent.value) return;
+  // Edit mode fills the workspace from the authoritative detail; stay in the
+  // loading state until it arrives instead of claiming a preview is missing.
+  if (isEditing.value && !capabilityWorkspace.value) return;
+  const previewWorkspace = capabilityWorkspace.value;
+  let next: AgentCapabilityState;
+  if (previewWorkspace) {
+    capability.value = { status: "loading" };
+    next = await instancesStore.getAgentCapabilities(props.instanceId, {
+      agent: agent.value,
+      workspace: previewWorkspace,
+      ...(props.bot ? { botId: props.bot.id } : {}),
+      ...(probe ? { probe: true } : {}),
+    });
+  } else {
+    // No registered workspace to probe: the dedicated workspace does not exist
+    // yet, so there is nothing to discover against.
+    next = unsupportedCapability(
+      { code: "probe-unavailable", message: t("bot.fields.workspacePreviewUnavailable") },
+      t("bot.fields.workspacePreviewManual"),
+      { fetchedAt: new Date().toISOString() },
+    );
+  }
   if (seq !== capabilitySeq) return;
   const merged = mergeEffortRefresh(lastSettledCapability, next);
   if (merged.state.status !== "error") lastSettledCapability = merged.state;
@@ -182,9 +197,17 @@ const agentGroups = computed<SelectGroup[]>(() => [
 
 // Available workspaces from instance
 const availableWorkspaces = computed(() => inst.value?.workspaces ?? []);
-const workspaceGroups = computed<SelectGroup[]>(() => [
-  { options: availableWorkspaces.value.map((w) => ({ value: w.name, label: w.name })) },
-]);
+const workspaceGroups = computed<SelectGroup[]>(() => {
+  const options = [...availableWorkspaces.value.map((w) => ({ value: w.name, label: w.name }))];
+  // A Bot may run in a workspace this instance no longer lists (e.g. a
+  // dedicated Bot workspace); the current value must stay visible.
+  if (isEditing.value && workspace.value && !options.some((option) => option.value === workspace.value)) {
+    options.unshift({ value: workspace.value, label: workspace.value });
+  }
+  if (!isEditing.value) options.unshift({ value: "", label: t("bot.fields.dedicatedWorkspace") });
+  return [{ options }];
+});
+const capabilityWorkspace = computed(() => workspace.value || (!isEditing.value ? availableWorkspaces.value[0]?.name : undefined));
 // Revision of the authoritative detail that the untouched fields show. A
 // summary never carries instructions, so Save stays gated while this is null.
 // Submitting then could wipe instructions the user never saw.
@@ -263,20 +286,17 @@ onMounted(() => {
     try {
       await instancesStore.loadFormOptions(props.instanceId);
     } catch {
-      // Ignore options load error; validation surfaces missing agent/workspace.
+      // Ignore options load error; validation surfaces a missing agent.
     }
     if (generation !== dialogGeneration) return;
     syncFromStore();
     if (!agent.value && availableAgents.value.length > 0) {
       agent.value = availableAgents.value[0]?.name ?? "";
     }
-    if (!workspace.value && availableWorkspaces.value.length > 0) {
-      workspace.value = availableWorkspaces.value[0]?.name ?? "";
-    }
     await loadCapabilities(false);
   })();
 });
-watch([agent, workspace, () => props.bot?.id], () => {
+watch([agent, capabilityWorkspace, () => props.bot?.id], () => {
   void loadCapabilities(false);
 });
 
@@ -303,7 +323,7 @@ async function submit(): Promise<void> {
     errorMessage.value = t("bot.validation.agentRequired");
     return;
   }
-  if (!workspace.value) {
+  if (isEditing.value && !workspace.value) {
     errorMessage.value = t("bot.validation.workspaceRequired");
     return;
   }
@@ -353,7 +373,7 @@ async function submit(): Promise<void> {
       const created = await directBotsStore.createBot(props.instanceId, {
         name: trimmedName,
         agent: agent.value,
-        workspace: workspace.value,
+        ...(workspace.value ? { workspace: workspace.value } : {}),
         avatar: copyBotAvatar(avatar.value),
         role: role.value.trim() || undefined,
         instructions: instructions.value.trim() || undefined,
@@ -496,7 +516,7 @@ async function submit(): Promise<void> {
           <!-- Workspace -->
           <div>
             <label for="bot-workspace" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.workspace") }} <span class="text-danger">*</span>
+              {{ $t("bot.fields.workspace") }} <span v-if="isEditing" class="text-danger">*</span>
             </label>
             <SelectMenu
               id="bot-workspace"
@@ -509,6 +529,9 @@ async function submit(): Promise<void> {
               :groups="workspaceGroups"
               @update:model-value="workspaceDirty = true"
             />
+            <p v-if="!isEditing && !workspace" data-test="bot-dedicated-workspace-hint" class="mt-1 text-xs text-fg-muted">
+              {{ $t("bot.fields.dedicatedWorkspaceHint") }}
+            </p>
           </div>
         </div>
 

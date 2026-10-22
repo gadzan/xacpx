@@ -1,3 +1,5 @@
+import { workspaceNameFallback } from "@ganglion/xacpx-relay-protocol";
+
 /** Lowercase, collapse any non [a-z0-9] run to a single dash, trim leading/trailing dashes. */
 export function slugify(input: string): string {
   return input
@@ -8,7 +10,10 @@ export function slugify(input: string): string {
 
 /** Default session alias from a workspace name and an agent name. */
 export function genAlias(workspace: string, agent: string): string {
-  return slugify(`${workspace}-${agent}`);
+  const combined = `${workspace}-${agent}`;
+  const slug = slugify(combined);
+  if (slug.length > 0) return slug;
+  return workspaceNameFallback(combined);
 }
 
 /** `base`, or `base-2`, `base-3`, … — the first not present in `existing`. */
@@ -25,5 +30,8 @@ export function uniqueName(base: string, existing: string[]): string {
 export function workspaceNameFromPath(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, "");
   const segment = trimmed.split(/[\\/]/).pop() ?? "";
-  return slugify(segment);
+  const slug = slugify(segment);
+  if (slug.length > 0) return slug;
+  if (segment.trim().length === 0) return "";
+  return workspaceNameFallback(segment);
 }

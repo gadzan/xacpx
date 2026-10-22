@@ -1713,7 +1713,7 @@ var validateBotsGet = (p) => {
 };
 var validateBotsCreate = (p) => {
   const o = fields(p);
-  return o && isStr(o.name) && isStr(o.agent) && isStr(o.workspace) && (o.avatar === undefined || isBotAvatarWriteConfig(o.avatar)) && optStr(o.role) && optStr(o.instructions) && optStr(o.model) && optStr(o.effort) && optBool(o.enabled) ? o : null;
+  return o && isStr(o.name) && isStr(o.agent) && optStr(o.workspace) && (o.avatar === undefined || isBotAvatarWriteConfig(o.avatar)) && optStr(o.role) && optStr(o.instructions) && optStr(o.model) && optStr(o.effort) && optBool(o.enabled) ? o : null;
 };
 var validateBotsUpdate = (p) => {
   const o = fields(p);
@@ -3054,6 +3054,19 @@ function toolUseEventToStepDto(event) {
     return { ...base, title: fallbackTitle };
   return { ...base, title: fallbackTitle, detail: { type: "fields", fields: fields2, ...out ? { output: cap(out) } : {} } };
 }
+// packages/relay-protocol/src/workspace-name.ts
+function stableHash8(input) {
+  let hash = 2166136261;
+  for (let index = 0;index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+function workspaceNameFallback(input, fallback = "workspace") {
+  const prefix = fallback.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  return `${prefix}-${stableHash8(input.trim())}`;
+}
 export {
   BOT_AVATAR_COLORS,
   BOT_AVATAR_EXPRESSIONS,
@@ -3174,6 +3187,7 @@ export {
   parseWebServerEvent,
   readyCapability,
   sameBotAvatar,
+  stableHash8,
   suggestionModels,
   toolUseEventToStepDto,
   unsupportedCapability,
@@ -3184,5 +3198,6 @@ export {
   validateInteractionResponse,
   validateInteractionWithdraw,
   webClientEnvelope,
-  webEventEnvelope
+  webEventEnvelope,
+  workspaceNameFallback
 };

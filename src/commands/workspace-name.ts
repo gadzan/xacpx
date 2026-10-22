@@ -1,15 +1,18 @@
+import { workspaceNameFallback } from "@ganglion/xacpx-relay-protocol";
 import { sanitizeString } from "../util/sanitize.js";
 import { quoteIfNeeded } from "../util/text.js";
 
 const VALID_WORKSPACE_NAME_RE = /^[a-zA-Z0-9._-]+$/;
 
 export function sanitizeWorkspaceName(input: string, fallback = "workspace"): string {
-  return sanitizeString(input.trim(), {
+  const sanitized = sanitizeString(input.trim(), {
     allow: /[a-zA-Z0-9._-]/,
     replacement: "-",
     trim: true,
-    fallback,
   });
+  if (sanitized.length > 0) return sanitized;
+  if (input.trim().length === 0) return fallback;
+  return workspaceNameFallback(input, fallback);
 }
 
 export function allocateWorkspaceName(base: string, existing: Record<string, unknown>): string {

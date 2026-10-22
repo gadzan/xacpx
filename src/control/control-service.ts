@@ -1,5 +1,10 @@
 import { Buffer } from "node:buffer";
 import {createHash} from "node:crypto";
+import { mkdir, readdir, rmdir } from "node:fs/promises";
+import { join } from "node:path";
+import { allocateWorkspaceName, sanitizeWorkspaceName } from "../commands/workspace-name.js";
+import { resolveBotsHome } from "../bots/bots-home.js";
+import { AsyncMutex } from "../orchestration/async-mutex.js";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
 import { AgentCapabilityService, type CapabilityAdvertisement, type CapabilityCacheStore } from "../agents/capability-discovery";
@@ -295,6 +300,7 @@ export interface ControlServiceDeps {
       description?: string,
     ): Promise<ControlWorkspaceInfo>;
     remove(name: string): Promise<void>;
+    transaction?<T>(fn: (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => Promise<T>): Promise<T>;
   };
   // Automatic-collaboration switch. Persists `conversations.router.enabled`,
   // re-resolves the production router (capability probe included), hot-applies
@@ -329,6 +335,9 @@ export interface ControlServiceDeps {
   filesWriteEnabled: () => boolean;
   /** Test/embedding override; production defaults to ~/.xacpx/worktrees. */
   gitWorktreesRoot?: string;
+  /** Test/embedding override; production defaults to ~/.xacpx/bots. Used to
+   *  host auto-created default Bot workspaces. */
+  botsHomeRoot?: string;
   // Inactivity watchdog threshold in ms for in-flight turns; absent ⇒ disabled. Wired in
   // main.ts from transport.turnIdleTimeoutSeconds. Optional so existing tests need no change.
   turnIdleTimeoutMs?: () => number;
@@ -558,6 +567,7 @@ export class ControlService {
   private readonly workspaceGit: WorkspaceGit;
   private readonly sessionConfigSetTails = new Map<string, Promise<void>>();
   private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
+  private readonly botWorkspaceMutex = new AsyncMutex();
   private conversationRuntime: ConversationRuntime | undefined;
 
   constructor(private readonly deps: ControlServiceDeps) {
@@ -2504,11 +2514,56 @@ export class ControlService {
 
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
-      const bot = await runtime.bots.createBot(input);
+      const bot = input.workspace !== undefined
+        ? await runtime.bots.createBot({ ...input, workspace: input.workspace })
+        : await this.createBotWithDefaultWorkspace(runtime, input);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
       return toBotDetail(bot, runtime.bots.hasRuntime(bot.id));
     });
+  }
+
+  private async createBotWithDefaultWorkspace(runtime: ConversationRuntime, input: BotCreateRequestDto) {
+    const create = async (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => {
+      const root = this.deps.botsHomeRoot ?? resolveBotsHome();
+      await mkdir(root, { recursive: true, mode: 0o700 });
+      const taken: Record<string, true> = Object.create(null);
+      for (const name of [".", "..", "__proto__", "constructor", "prototype"]) taken[name] = true;
+      for (const workspace of workspaces.list()) taken[workspace.name] = true;
+      for (const name of await readdir(root)) taken[name] = true;
+      const base = sanitizeWorkspaceName(input.name);
+      let name: string;
+      let dir: string;
+      // Exclusive mkdir also reserves the name against external directory creators.
+      for (;;) {
+        name = allocateWorkspaceName(base, taken);
+        dir = join(root, name);
+        try {
+          await mkdir(dir, { mode: 0o700 });
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          taken[name] = true;
+        }
+      }
+      let registered = false;
+      try {
+        await workspaces.create(name, dir, `Bot default workspace for ${input.name.trim()}`);
+        registered = true;
+        return await runtime.bots.createBot({ ...input, workspace: name });
+      } catch (error) {
+        const errors: unknown[] = [error];
+        if (registered) {
+          try { await workspaces.remove(name); } catch (cleanupError) { errors.push(cleanupError); }
+        }
+        try { await rmdir(dir); } catch (cleanupError) { errors.push(cleanupError); }
+        if (errors.length > 1) throw new AggregateError(errors, "bot-workspace-rollback-failed", { cause: error });
+        throw error;
+      }
+    };
+    return this.deps.workspaces.transaction
+      ? this.deps.workspaces.transaction(create)
+      : this.botWorkspaceMutex.run(() => create(this.deps.workspaces));
   }
 
   async updateBot(id: string, patch: BotUpdateRequestDto) {

@@ -188,6 +188,8 @@ The durable boundary is the dispatch `authorityEpoch` **bound to** `humanIngress
 
 Each Bot has a monotonic `profileRevision` (PR2 records default to `1` on parse). `updateBot` increments it.
 
+Bot creation through Control may omit `workspace`; the daemon then creates and registers a dedicated directory under `~/.xacpx/bots/` before saving the profile. The stored profile and execution snapshot still contain a registered workspace name. Explicit selection uses the chosen registered workspace. Existing Bots retain their workspace; rename/removal does not move or delete its files. Group members continue to use their Topic's execution target rather than the Bot's default workspace.
+
 At accept, the Run stores `profileRevision` plus a snapshot of:
 
 - presentation: name / avatar / role
