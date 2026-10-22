@@ -1160,7 +1160,7 @@ export default {
       createTopicFirst: "先新建话题再发消息",
     },
     chat: {
-      emptyHint: "在上方选择成员，然后发送消息开始一次协作。",
+      emptyHint: "在下方选择成员，然后发送消息开始一次协作。",
     },
   },
   capability: {

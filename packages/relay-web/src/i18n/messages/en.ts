@@ -1163,7 +1163,7 @@ export default {
       createTopicFirst: "Create a topic to start chatting",
     },
     chat: {
-      emptyHint: "Select members above, then send a message to start a collaboration run.",
+      emptyHint: "Pick members below, then send a message to start a collaboration run.",
     },
   },
   capability: {
