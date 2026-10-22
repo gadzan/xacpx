@@ -31,4 +31,5 @@ export const shortcut: ShortcutMessages = {
   workspaceAvailable: (names) => `当前可用：${names}`,
   workspaceNone: "当前没有已注册的工作区，请先执行 /ws new <名称> -d <路径>",
   workspacePathNotFound: (cwd) => `工作区路径不存在：${cwd}`,
+  workspaceNameUnderivable: (cwd) => `无法从目录 ${cwd} 推导工作区名称：目录名不含字母或数字。请重命名目录，或先添加一个命名工作区。`,
 };

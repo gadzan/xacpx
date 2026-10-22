@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { config, mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import {
+  RELAY_CAPABILITIES,
   needsSetupCapability,
   readyCapability,
   type BotDetailDto,
@@ -170,7 +171,11 @@ describe("Direct Bot Components", () => {
       expect(values).toEqual(["reviewer"]);
     });
 
-    it("submits create bot with valid inputs", async () => {
+    it.each([
+      { label: "dedicated workspace by default", workspaces: [{ name: "repo", cwd: "/repo" }], selectedWorkspace: undefined },
+      { label: "dedicated workspace with no registered workspaces", workspaces: [], selectedWorkspace: undefined },
+      { label: "an explicitly selected workspace", workspaces: [{ name: "repo", cwd: "/repo" }], selectedWorkspace: "repo" },
+    ])("submits create bot with $label", async ({ workspaces, selectedWorkspace }) => {
       const instances = useInstancesStore();
       instances.instances = [
         {
@@ -179,8 +184,9 @@ describe("Direct Bot Components", () => {
           online: true,
           lastSeenAt: null,
           sessions: [],
+          capabilities: [RELAY_CAPABILITIES.botsDedicatedWorkspaceV1],
           agents: [{ name: "codex", driver: "codex" }],
-          workspaces: [{ name: "repo", cwd: "/repo" }],
+          workspaces,
           agentCatalog: [],
         } as never,
       ];
@@ -191,7 +197,7 @@ describe("Direct Bot Components", () => {
         id: "bot_1",
         name: "Code Reviewer",
         agent: "codex",
-        workspace: "repo",
+        workspace: selectedWorkspace ?? "code-reviewer",
         instructions: "Look for bugs",
         enabled: true,
         profileRevision: 1,
@@ -210,22 +216,195 @@ describe("Direct Bot Components", () => {
       });
 
       await flushPromises();
+      expect(wrapper.find("#bot-workspace").attributes("data-selected")).toBe("");
+      expect(wrapper.find("#bot-workspace").text()).toContain(i18n.global.t("bot.fields.dedicatedWorkspace"));
+      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').text()).toContain("~/.xacpx/bots/");
+      if (selectedWorkspace) {
+        await wrapper.find("#bot-workspace").trigger("click");
+        await wrapper.find(`[data-value="${selectedWorkspace}"]`).trigger("click");
+        expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
+      }
+      if (workspaces.length > 0) {
+        expect(instances.getAgentCapabilities).toHaveBeenCalledWith("i1", { agent: "codex", workspace: "repo" });
+      } else {
+        expect(instances.getAgentCapabilities).not.toHaveBeenCalled();
+        expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+      }
 
       await wrapper.find("#bot-name").setValue("Code Reviewer");
       await wrapper.find("#bot-instructions").setValue("Look for bugs");
+      await wrapper.find('[data-test="bot-model"]').setValue("custom-model");
+      await wrapper.find('[data-test="model-picker-effort"]').setValue("high");
       await wrapper.find("form").trigger("submit.prevent");
       await flushPromises();
 
       expect(createSpy).toHaveBeenCalledWith("i1", expect.objectContaining({
         name: "Code Reviewer",
         agent: "codex",
-        workspace: "repo",
         avatar: { version: 1, kind: "character", shape: "cercle", color: "bleu", expression: "neutre", motion: "auto" },
         instructions: "Look for bugs",
+        model: "custom-model",
+        effort: "high",
         enabled: true,
       }));
+      const payload = createSpy.mock.calls[0]![1];
+      if (selectedWorkspace) expect(payload.workspace).toBe(selectedWorkspace);
+      else expect(payload).not.toHaveProperty("workspace");
       expect(wrapper.emitted("saved")).toBeTruthy();
       expect(wrapper.emitted("close")).toBeTruthy();
+    });
+
+    function mountCreateDialog(opts: { dedicated: boolean; createImpl?: () => Promise<never> }) {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+          ...(opts.dedicated ? { capabilities: [RELAY_CAPABILITIES.botsDedicatedWorkspaceV1] } : { capabilities: [] }),
+        } as never,
+      ];
+      vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
+      const directBots = useDirectBotsStore();
+      const createSpy = vi.spyOn(directBots, "createBot");
+      if (opts.createImpl) createSpy.mockImplementation(opts.createImpl);
+      else createSpy.mockImplementation(async (_id, payload) => ({
+        id: "bot_1",
+        name: payload.name,
+        agent: payload.agent,
+        workspace: payload.workspace ?? "workspace-12345678",
+        enabled: true,
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      }));
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      const createButton = () => wrapper.findAll("button").find((b) => b.text() === i18n.global.t("common.create"))!;
+      return { wrapper, instances, createSpy, createButton };
+    }
+
+    it("without the dedicated-workspace capability keeps the original form: first workspace preselected and submitted", async () => {
+      const { wrapper, instances, createSpy, createButton } = mountCreateDialog({ dedicated: false });
+      await flushPromises();
+      const select = wrapper.find("#bot-workspace");
+      expect(select.attributes("data-selected")).toBe("repo");
+      expect(select.text()).toBe("repo");
+      expect(wrapper.find('label[for="bot-workspace"]').text()).toContain("*");
+      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
+      expect(instances.getAgentCapabilities).toHaveBeenCalledWith("i1", { agent: "codex", workspace: "repo" });
+      // The "New workspace" option is not rendered at all.
+      await select.trigger("click");
+      expect(wrapper.find('[data-value=""]').exists()).toBe(false);
+      expect(wrapper.text()).not.toContain(i18n.global.t("bot.fields.dedicatedWorkspace"));
+      expect(wrapper.find('[data-value="repo"]').exists()).toBe(true);
+      await wrapper.find('[data-value="repo"]').trigger("click");
+
+      // A name with no letters is fine here: the workspace is explicit.
+      await wrapper.find("#bot-name").setValue("!!!");
+      await flushPromises();
+      expect(wrapper.find('[data-test="bot-name-error"]').exists()).toBe(false);
+      expect((createButton().element as HTMLButtonElement).disabled).toBe(false);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(createSpy.mock.calls[0]![1]).toMatchObject({ name: "!!!", agent: "codex", workspace: "repo" });
+      expect(wrapper.emitted("saved")).toBeTruthy();
+    });
+
+    it("without the capability and no workspaces, a workspace is still required", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1", name: "Local", online: true, lastSeenAt: null, sessions: [],
+          agents: [{ name: "codex", driver: "codex" }], workspaces: [], agentCatalog: [], capabilities: [],
+        } as never,
+      ];
+      vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
+      const createSpy = vi.spyOn(useDirectBotsStore(), "createBot");
+      const wrapper = mount(BotDialog, { props: { instanceId: "i1", instanceName: "Local" }, global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find("#bot-workspace").attributes("data-selected")).toBe("");
+      expect(instances.getAgentCapabilities).not.toHaveBeenCalled();
+      await wrapper.find("#bot-name").setValue("Reviewer");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(wrapper.text()).toContain(i18n.global.t("bot.validation.workspaceRequired"));
+    });
+
+    it("with the capability defaults to a new dedicated workspace and omits workspace from the payload", async () => {
+      const { wrapper, createSpy } = mountCreateDialog({ dedicated: true });
+      await flushPromises();
+      expect(wrapper.find("#bot-workspace").attributes("data-selected")).toBe("");
+      expect(wrapper.find("#bot-workspace").text()).toBe(i18n.global.t("bot.fields.dedicatedWorkspace"));
+      expect(wrapper.find('label[for="bot-workspace"]').text()).not.toContain("*");
+      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(true);
+      await wrapper.find("#bot-name").setValue("Reviewer");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(createSpy.mock.calls[0]![1]).not.toHaveProperty("workspace");
+    });
+
+    it.each(["!!!", "🤖"])("name %s with New workspace shows a live error under the name and disables Create", async (botName) => {
+      const { wrapper, createSpy, createButton } = mountCreateDialog({ dedicated: true });
+      await flushPromises();
+      const invalid = i18n.global.t("bot.validation.dedicatedWorkspaceNameInvalid");
+      await wrapper.find("#bot-name").setValue(botName);
+      await flushPromises();
+      const error = wrapper.find('[data-test="bot-name-error"]');
+      expect(error.exists()).toBe(true);
+      expect(error.text()).toBe(invalid);
+      // Directly under the name input, not in the form-level error banner.
+      expect(error.element.previousElementSibling?.id).toBe("bot-name");
+      expect(wrapper.find("#bot-name").attributes("aria-invalid")).toBe("true");
+      expect((createButton().element as HTMLButtonElement).disabled).toBe(true);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(createSpy).not.toHaveBeenCalled();
+
+      // Picking an explicit workspace clears the error and enables Create.
+      await wrapper.find("#bot-workspace").trigger("click");
+      await wrapper.find('[data-value="repo"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="bot-name-error"]').exists()).toBe(false);
+      expect((createButton().element as HTMLButtonElement).disabled).toBe(false);
+      await createButton().trigger("click");
+      await flushPromises();
+      expect(createSpy.mock.calls[0]![1]).toMatchObject({ name: botName, workspace: "repo" });
+    });
+
+    it("an all-CJK name with New workspace has no error and submits without workspace", async () => {
+      const { wrapper, createSpy, createButton } = mountCreateDialog({ dedicated: true });
+      await flushPromises();
+      await wrapper.find("#bot-name").setValue("代码审查");
+      await flushPromises();
+      expect(wrapper.find('[data-test="bot-name-error"]').exists()).toBe(false);
+      expect((createButton().element as HTMLButtonElement).disabled).toBe(false);
+      await createButton().trigger("click");
+      await flushPromises();
+      expect(createSpy.mock.calls[0]![1]).toMatchObject({ name: "代码审查" });
+      expect(createSpy.mock.calls[0]![1]).not.toHaveProperty("workspace");
+    });
+
+    it("maps the server workspace_name_underivable error to the same copy", async () => {
+      const serverError = Object.assign(new Error("Name needs a letter or number, or pick a workspace."), {
+        code: "workspace_name_underivable",
+      });
+      const { wrapper, createButton } = mountCreateDialog({ dedicated: true, createImpl: async () => { throw serverError; } });
+      await flushPromises();
+      await wrapper.find("#bot-name").setValue("Reviewer");
+      await createButton().trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).toContain(i18n.global.t("bot.validation.dedicatedWorkspaceNameInvalid"));
+      expect(wrapper.emitted("saved")).toBeFalsy();
     });
 
     it("submits edit bot when bot prop is passed", async () => {
@@ -284,6 +463,10 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       expect((wrapper.findAll("button").find((b) => b.text().includes("Save"))!.element as HTMLButtonElement).disabled).toBe(false);
       expect((wrapper.find("#bot-name").element as HTMLInputElement).value).toBe("Existing Bot");
+      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
+      await wrapper.find("#bot-workspace").trigger("click");
+      expect(wrapper.findAll("[data-value]").map((option) => option.attributes("data-value"))).toEqual(["repo"]);
+      await wrapper.find("#bot-workspace").trigger("click");
 
       await wrapper.find("#bot-name").setValue("Updated Bot");
       await wrapper.find("form").trigger("submit.prevent");

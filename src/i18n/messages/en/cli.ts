@@ -53,6 +53,8 @@ export const cli: CliMessages = {
   workspaceEmpty: "No workspaces yet.",
   workspaceListHeader: "Workspaces:",
   workspaceNameEmpty: "Workspace name cannot be empty.",
+  workspaceNameUnderivable: (input) =>
+    `Workspace name ${JSON.stringify(input)} has no letters or digits, so no valid name can be derived from it. Use a name with letters or digits, or pass --raw to keep it as is.`,
   workspaceNameSanitized: (sourceLabel, original, saved) =>
     `${sourceLabel} ${JSON.stringify(original)} contains special characters and was saved as "${saved}". Add --raw to keep the original name.`,
   workspaceSourceLabelDir: "Directory name",

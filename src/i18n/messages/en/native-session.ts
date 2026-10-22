@@ -28,6 +28,7 @@ export const nativeSession: NativeSessionMessages = {
   agentNotRegistered: (agent) => `Agent "${agent}" is not registered.`,
   workspaceNotRegistered: (workspace) => `Workspace "${workspace}" is not registered.`,
   workspacePathNotFound: (cwd) => `Workspace path does not exist: ${cwd}`,
+  workspaceNameUnderivable: (cwd) => `Cannot derive a workspace name from directory ${cwd}: its name has no letters or digits. Rename the directory or add a named workspace first.`,
   noWritableConfig: "No writable config is loaded. Cannot create a workspace from a path.",
 
   // renderNativeSessionTableList

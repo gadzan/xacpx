@@ -975,7 +975,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     payload: {
       name: string;
       agent: string;
-      workspace: string;
+      workspace?: string;
       avatar?: BotAvatarConfig;
       role?: string;
       instructions?: string;

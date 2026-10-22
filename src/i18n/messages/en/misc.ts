@@ -70,6 +70,8 @@ export const misc: MiscMessages = {
   // onboarding
   onboardingFirstUsePrompt: (workspaceName: string) =>
     `First use detected. Create current directory as workspace "${workspaceName}"? [Y/n] `,
+  onboardingWorkspaceNameUnderivable: (cwd: string) =>
+    `Skipping first-use setup: cannot derive a workspace name from ${cwd} (its name has no letters or digits). Add a workspace manually with "xacpx workspace add <name>".`,
   onboardingSelectAgent: "Select an agent to add and create the initial session:",
   onboardingEnterChoice: "Enter number or name (default 1): ",
   onboardingNoValidAgent: "No valid agent selected, skipping first-time setup.",

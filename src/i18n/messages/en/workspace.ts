@@ -14,6 +14,8 @@ export const workspace: WorkspaceMessages = {
   // handleWorkspaceCreate — name sanitization notice
   nameSanitized: (original, saved) =>
     `Name ${JSON.stringify(original)} contains special characters and has been saved as "${saved}". Add --raw to keep the original name.`,
+  nameUnderivable: (original) =>
+    `Name ${JSON.stringify(original)} has no letters or digits, so no workspace name can be derived from it. Use a name with letters or digits, or add --raw to keep it as is.`,
 
   // handleWorkspaceCreate — saved confirmation
   saved: (name) => `Workspace "${name}" saved.`,

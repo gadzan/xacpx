@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import { unsupportedCapability } from "@ganglion/xacpx-relay-protocol";
+import { RELAY_CAPABILITIES, unsupportedCapability } from "@ganglion/xacpx-relay-protocol";
 import { test, expect, loginAndShowInstances } from "./fixtures";
 
 const bots = Array.from({ length: 20 }, (_, i) => ({
@@ -43,6 +43,37 @@ async function openDialog(page: Page, kind: "bot" | "group"): Promise<Locator> {
   await expect(dialog).toBeVisible();
   return dialog;
 }
+
+test("bot dialog keeps the original workspace default on a core without dedicated workspaces", async ({ page, hub }) => {
+  // An instance whose core predates dedicated Bot workspaces does not advertise
+  // the capability: the form must preselect a workspace and send it.
+  await page.route("**/api/instances", async (route) => {
+    const response = await fetch(`http://127.0.0.1:${hub.port}/api/instances`);
+    const body = await response.json() as { instances: Array<{ capabilities?: string[] }> };
+    for (const instance of body.instances) {
+      instance.capabilities = (instance.capabilities ?? []).filter((cap) => cap !== RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
+    }
+    await route.fulfill({ json: body });
+  });
+  const dialog = await openDialog(page, "bot");
+  await expect(dialog.locator("#bot-workspace")).toHaveAttribute("data-selected", "repo");
+  await expect(dialog.locator("#bot-workspace")).toHaveText("repo");
+  await expect(dialog.getByTestId("bot-dedicated-workspace-hint")).toHaveCount(0);
+  await dialog.locator("#bot-workspace").click();
+  await expect(page.getByText("New workspace", { exact: true })).toHaveCount(0);
+});
+
+test("bot dialog flags a name with no letters or digits while New workspace is selected", async ({ page }) => {
+  const dialog = await openDialog(page, "bot");
+  await expect(dialog.locator("#bot-workspace")).toHaveText("New workspace");
+  await dialog.locator("#bot-name").fill("🤖");
+  await expect(dialog.getByTestId("bot-name-error")).toHaveText("Name needs a letter or number, or pick a workspace.");
+  await expect(dialog.getByRole("button", { name: "Create", exact: true })).toBeDisabled();
+  await dialog.locator("#bot-workspace").click();
+  await page.locator('[data-value="repo"]').click();
+  await expect(dialog.getByTestId("bot-name-error")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Create", exact: true })).toBeEnabled();
+});
 
 async function expectViewportLayout(dialog: Locator): Promise<void> {
   const layout = await dialog.evaluate((panel) => {
@@ -105,7 +136,11 @@ for (const kind of ["bot", "group"] as const) {
     if (kind === "bot") {
       await dialog.locator("#bot-name").fill("Review assistant");
       await expect(dialog.locator("#bot-agent")).toHaveAttribute("data-selected", "codex");
-      await expect(dialog.locator("#bot-workspace")).toHaveAttribute("data-selected", "repo");
+      // New Bots default to an auto-created dedicated workspace: the empty value is a
+      // real, labelled option, and the hint explains where it will be created.
+      await expect(dialog.locator("#bot-workspace")).toHaveAttribute("data-selected", "");
+      await expect(dialog.locator("#bot-workspace")).toHaveText("New workspace");
+      await expect(dialog.getByTestId("bot-dedicated-workspace-hint")).toBeVisible();
     } else {
       await dialog.getByTestId("group-dialog-title").fill("Release team");
       await dialog.getByTestId("group-dialog-member-bot_0").getByRole("checkbox").check();

@@ -28,6 +28,7 @@ export const nativeSession: NativeSessionMessages = {
   agentNotRegistered: (agent) => `Agent「${agent}」未注册。`,
   workspaceNotRegistered: (workspace) => `工作区「${workspace}」未注册。`,
   workspacePathNotFound: (cwd) => `工作区路径不存在：${cwd}`,
+  workspaceNameUnderivable: (cwd) => `无法从目录 ${cwd} 推导工作区名称：目录名不含字母或数字。请重命名目录，或先添加一个命名工作区。`,
   noWritableConfig: "当前没有加载可写入的配置，无法根据路径创建工作区。",
 
   // renderNativeSessionTableList

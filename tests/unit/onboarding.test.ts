@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { AppConfig } from "../../src/config/types";
 import { createEmptyState } from "../../src/state/types";
+import { t } from "../../src/i18n";
 import { isFirstUse, maybeRunFirstUseOnboarding } from "../../src/onboarding";
 
 function config(): AppConfig {
@@ -117,6 +118,35 @@ test("first-use onboarding sanitizes workspace names for session aliases", async
   });
 
   expect(result).toMatchObject({ created: true, workspace: "my-repo", alias: "my-repo:codex" });
+});
+
+test("first-use onboarding is skipped with a notice when the cwd name has no letters or digits", async () => {
+  const cfg = config();
+  const lines: string[] = [];
+  let prompted = false;
+  let saved = false;
+  const result = await maybeRunFirstUseOnboarding({
+    config: cfg,
+    state: createEmptyState(),
+    saveFirstRunConfig: async () => {
+      saved = true;
+    },
+    deps: {
+      cwd: () => "/tmp/!!!",
+      print: (line) => lines.push(line),
+      isInteractive: () => true,
+      promptText: async () => {
+        prompted = true;
+        return "";
+      },
+    },
+  });
+
+  expect(result).toEqual({ created: false });
+  expect(lines).toEqual([t().misc.onboardingWorkspaceNameUnderivable("/tmp/!!!")]);
+  expect(prompted).toBe(false);
+  expect(saved).toBe(false);
+  expect(cfg.workspaces).toEqual({});
 });
 
 test("first-use onboarding records rollback metadata for existing agents", async () => {

@@ -208,10 +208,11 @@ async function resolveShortcutWorkspace(
     };
   }
 
-  const workspaceName = allocateWorkspaceName(
-    sanitizeWorkspaceName(basenameForWorkspacePath(cwd)),
-    context.config?.workspaces ?? {},
-  );
+  const workspaceBase = sanitizeWorkspaceName(basenameForWorkspacePath(cwd));
+  if (workspaceBase === null) {
+    return { error: t().shortcut.workspaceNameUnderivable(cwdInput) };
+  }
+  const workspaceName = allocateWorkspaceName(workspaceBase, context.config?.workspaces ?? {});
   // Whole-snapshot publish joins the shared config mutation domain (see
   // ConfigMutationMutex).
   const configStore = context.configStore;

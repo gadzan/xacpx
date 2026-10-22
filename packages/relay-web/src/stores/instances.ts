@@ -128,6 +128,16 @@ export function supportsRmuxTerminal(instance: {
     && caps.includes(RELAY_CAPABILITIES.terminalMultiViewV1);
 }
 
+/**
+ * True when the instance's core creates a dedicated workspace for a Bot created
+ * without one. Older cores require `workspace` on `control.bots.create`.
+ * Not gated on `online`: it describes the last known core, and an offline
+ * instance fails the RPC either way.
+ */
+export function supportsBotDedicatedWorkspace(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
+}
+
 /** True when the instance is online and advertises the Phase A desktop capability. */
 export function supportsDesktop(instance: {
   online: boolean;
