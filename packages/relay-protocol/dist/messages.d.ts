@@ -88,6 +88,8 @@ export declare const MSG: {
     readonly terminalDetach: "instance.terminal.detach";
     readonly terminalViewerEvent: "instance.terminal.viewer-event";
     readonly terminalResourceExit: "instance.terminal.resource-exit";
+    readonly terminalSettingsGet: "control.terminal.settings.get";
+    readonly terminalSettingsUpdate: "control.terminal.settings.update";
     readonly desktopPrepare: "instance.desktop.prepare";
     readonly desktopCancel: "instance.desktop.cancel";
     readonly instanceAgentEndpointsSync: "instance.agent-endpoints.sync";
@@ -1172,6 +1174,27 @@ export interface TerminalCreatePayload {
 }
 export interface TerminalAttachPayload {
     terminalId: string;
+}
+/** Empty read. The instance returns its relay RMUX terminal settings. */
+export interface TerminalSettingsGetPayload {
+    readonly __empty?: never;
+}
+/**
+ * Flip the relay RMUX terminal switch. The instance persists
+ * `channels[id=relay].options.terminal.enabled` and returns the resulting
+ * settings. The RMUX bootstrap and capability snapshot are created only at
+ * startup, so the answer always carries `restartRequired: true` — the switch
+ * is never a hot toggle.
+ */
+export interface TerminalSettingsUpdatePayload {
+    enabled: boolean;
+}
+/** The `control.terminal.settings.get` / `control.terminal.settings.update` answer. */
+export interface TerminalSettingsDto {
+    enabled: boolean;
+    /** Always true: the relay channel's RMUX bootstrap and capability snapshot are
+     *  created at startup, so a persisted change takes effect only after restart. */
+    restartRequired: true;
 }
 /** Capability strings a connector may advertise during register/auth. */
 export declare const RELAY_CAPABILITIES: {

@@ -16,6 +16,7 @@ import type {
   JevTestResult,
   JevUpdatePayload,
   RouterAvailability,
+  TerminalSettingsDto,
 } from "@ganglion/xacpx-relay-protocol";
 import type {
   AgentSession,
@@ -316,6 +317,10 @@ export interface ControlServiceDeps {
     get(): Promise<JevSettingsDto>;
     update(patch: JevUpdatePayload): Promise<JevSettingsDto>;
     test(payload: JevTestPayload): Promise<JevTestResult>;
+  };
+  relayTerminalSettings?: {
+    get(): Promise<TerminalSettingsDto>;
+    update(enabled: boolean): Promise<TerminalSettingsDto>;
   };
   uploadStore: UploadStore;
   // Interactive terminal PTY manager (web terminal). Optional gate read from live config.
@@ -2420,6 +2425,28 @@ export class ControlService {
       );
     }
     return await this.deps.jev.test(payload);
+  }
+
+  async getTerminalSettings(): Promise<TerminalSettingsDto> {
+    if (!this.deps.relayTerminalSettings) {
+      throw new ConversationError(
+        "terminal_settings_unavailable",
+        "the relay terminal settings are not available in this embedding",
+      );
+    }
+    const settings = await this.deps.relayTerminalSettings.get();
+    return { enabled: settings.enabled, restartRequired: true };
+  }
+
+  async updateTerminalSettings(enabled: boolean): Promise<TerminalSettingsDto> {
+    if (!this.deps.relayTerminalSettings) {
+      throw new ConversationError(
+        "terminal_settings_unavailable",
+        "the relay terminal settings are not available in this embedding",
+      );
+    }
+    const settings = await this.deps.relayTerminalSettings.update(enabled);
+    return { enabled: settings.enabled, restartRequired: true };
   }
 
   /** Adapter model and effort advertisement for a configured agent and workspace. */

@@ -145,6 +145,25 @@ const jevErrorText = computed(() => {
   const state = jevPanel.value;
   return state.phase === "editable" && state.save.kind === "failed" ? state.save.message : "";
 });
+const terminalPanel = computed(() => store.terminalSettingsFor(props.instanceId));
+const terminalSettings = computed(() => terminalPanel.value.phase === "editable" ? terminalPanel.value.settings : null);
+const terminalSaving = computed(() => terminalPanel.value.phase === "editable" && terminalPanel.value.save.kind === "saving");
+const terminalError = computed(() => terminalPanel.value.phase === "editable" && terminalPanel.value.save.kind === "failed"
+  ? terminalPanel.value.save.message : "");
+const terminalStatusText = computed(() => {
+  const state = terminalPanel.value;
+  if (state.phase === "loading") return t("instance.autoCollabChecking");
+  if (state.phase === "editable") return state.settings.enabled ? t("instance.autoCollabOn") : t("instance.autoCollabOff");
+  return t(state.notice);
+});
+async function toggleTerminal(): Promise<void> {
+  if (!terminalSettings.value || terminalSaving.value || !instanceOnline.value) return;
+  try {
+    await store.updateTerminalSettings(props.instanceId, !terminalSettings.value.enabled);
+  } catch {
+    // The store keeps the previous value and exposes the error beside the switch.
+  }
+}
 const jevTestView = computed(() => {
   const state = jevPanel.value;
   if (state.phase !== "editable") return null;
@@ -242,8 +261,11 @@ async function testJev(): Promise<void> {
 
 onMounted(async () => {
   // The router panel carries its own loading phase, so it must not gate the tab body.
+  // A dialog mount means the user explicitly asked for this instance's state,
+  // so force a re-read even when a stale panel is cached from an earlier open.
   void store.loadRouterPanel(props.instanceId);
   void store.loadJevSettings(props.instanceId);
+  void store.loadTerminalSettings(props.instanceId, { force: true });
   try {
     await store.loadFormOptions(props.instanceId);
   } catch {
@@ -326,11 +348,30 @@ onMounted(async () => {
               <p data-test="router-hint" class="text-xs text-fg-muted">{{ routerHint }}</p>
               <p v-if="routerErrorText" data-test="router-error" class="text-xs text-error">{{ routerErrorText }}</p>
             </section>
-            <!-- Jev routing settings: the brain behind automatic collaboration.
-                 Instance-scoped, stored daemon-side, key never displayed. -->
-            <section v-if="jevEditable" data-test="jev-settings" class="space-y-2">
-              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.jevTitle") }}</h3>
-              <p class="text-xs text-fg-muted">{{ $t("instance.jevBody") }}</p>
+            <section data-test="terminal-settings" class="space-y-2">
+              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.terminalSettingsTitle") }}</h3>
+              <div class="flex items-center gap-3">
+                <button v-if="terminalPanel.phase !== 'read-only'" data-test="terminal-settings-toggle" type="button" role="switch"
+                        :aria-checked="terminalSettings?.enabled ?? false"
+                        :aria-label="(terminalSettings?.enabled ?? false) ? $t('instance.terminalSettingsDisable') : $t('instance.terminalSettingsEnable')"
+                        :disabled="terminalPanel.phase !== 'editable' || terminalSaving || !instanceOnline"
+                        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                        :class="terminalSettings?.enabled ? 'bg-accent' : 'bg-surface-2'"
+                        @click="toggleTerminal">
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform"
+                        :class="terminalSettings?.enabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
+                </button>
+                <p data-test="terminal-settings-status" class="text-sm text-fg-muted">
+                  {{ terminalStatusText }}
+                </p>
+              </div>
+              <p v-if="terminalSettings?.restartRequired" data-test="terminal-restart-required" class="text-xs text-warn">{{ $t('instance.terminalSettingsRestart') }}</p>
+              <p v-if="terminalError" data-test="terminal-settings-error" class="text-xs text-error">{{ terminalError }}</p>
+            </section>
+            <details v-if="jevEditable || jevUpgradeNotice" data-test="jev-details" class="rounded-lg border border-border/70 px-3 py-2">
+              <summary class="cursor-pointer text-sm font-semibold text-fg">{{ $t("instance.jevTitle") }}</summary>
+              <p v-if="jevUpgradeNotice" data-test="jev-upgrade-notice" class="mt-2 text-xs text-fg-muted">{{ $t(jevUpgradeNotice) }}</p>
+              <div v-if="jevEditable" data-test="jev-settings" class="mt-2 space-y-2">
               <div class="space-y-1">
                 <label class="block text-xs font-medium text-fg-muted" for="jev-endpoint">{{ $t("instance.jevEndpoint") }}</label>
                 <input id="jev-endpoint" v-model="jevEndpoint" data-test="jev-endpoint" type="url" inputmode="url"
@@ -382,8 +423,8 @@ onMounted(async () => {
               </div>
               <p v-if="jevTestView?.kind === 'failed' && jevTestView.detail" data-test="jev-test-detail" class="break-words font-mono text-xs text-fg-muted">{{ jevTestView.detail }}</p>
               <p v-if="jevErrorText" data-test="jev-error" class="text-xs text-error">{{ jevErrorText }}</p>
-            </section>
-            <p v-else-if="jevUpgradeNotice" data-test="jev-upgrade-notice" class="text-xs text-fg-muted">{{ $t(jevUpgradeNotice) }}</p>
+              </div>
+            </details>
             <section class="space-y-1">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.versionLabel") }}</h3>
               <p class="text-sm text-fg-muted" data-test="instance-version">

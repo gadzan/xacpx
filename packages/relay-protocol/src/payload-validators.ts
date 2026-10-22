@@ -102,6 +102,8 @@ import {
   type TerminalStreamStartPayload,
   type TerminalTakeControlPayload,
   type TerminalTerminatePayload,
+  type TerminalSettingsGetPayload,
+  type TerminalSettingsUpdatePayload,
   type TerminalViewerEventInner,
   type TerminalViewerEventPayload,
   type TopicsArchivePayload,
@@ -416,6 +418,17 @@ const validateJevTest: Validator<JevTestPayload> = (p) => {
   if (!o || isArr(o) || !hasOnlyKeys(o, { apiKey: true })) return null;
   if (o.apiKey !== undefined && (typeof o.apiKey !== "string" || o.apiKey.length > JEV_API_KEY_MAX_LENGTH)) return null;
   return o as unknown as JevTestPayload;
+};
+// --- relay RMUX terminal settings ---
+const validateTerminalSettingsGet: Validator<TerminalSettingsGetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0) return null;
+  return {};
+};
+const validateTerminalSettingsUpdate: Validator<TerminalSettingsUpdatePayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean") return null;
+  return { enabled: o.enabled };
 };
 const validateAgentsCapabilitiesGet: Validator<AgentsCapabilitiesGetPayload> = (p) => {
   const o = fields(p);
@@ -1125,6 +1138,7 @@ export type ControlRpcType =
   | typeof MSG.terminalCreate | typeof MSG.terminalAttach
   | typeof MSG.terminalOpen | typeof MSG.terminalTakeControl
   | typeof MSG.terminalResync | typeof MSG.terminalTerminate
+  | typeof MSG.terminalSettingsGet | typeof MSG.terminalSettingsUpdate
   | typeof MSG.desktopPrepare
   | typeof MSG.upload
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
@@ -1208,6 +1222,8 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalTakeControl]: validateTerminalTakeControl,
   [MSG.terminalResync]: validateTerminalResync,
   [MSG.terminalTerminate]: validateTerminalTerminate,
+  [MSG.terminalSettingsGet]: validateTerminalSettingsGet,
+  [MSG.terminalSettingsUpdate]: validateTerminalSettingsUpdate,
   [MSG.desktopPrepare]: validateDesktopPrepare,
   [MSG.upload]: validateUpload,
   [MSG.botsGet]: validateBotsGet,

@@ -74,3 +74,39 @@ test("write/resize/close delegate to TerminalService", () => {
     (deps.terminal.close as ReturnType<typeof mock>).mock.calls[0],
   ).toEqual(["term-1"]);
 });
+
+test("getTerminalSettings returns the persisted value with restartRequired", async () => {
+  const deps = makeDeps({ enabled: true });
+  const svc = new ControlService({
+    ...deps,
+    relayTerminalSettings: {
+      get: async () => ({ enabled: true, restartRequired: true as const }),
+      update: async (enabled: boolean) => ({ enabled, restartRequired: true as const }),
+    },
+  });
+  expect(await svc.getTerminalSettings()).toEqual({ enabled: true, restartRequired: true });
+});
+
+test("updateTerminalSettings persists the flip and always reports restartRequired", async () => {
+  const seen: boolean[] = [];
+  const deps = makeDeps({ enabled: true });
+  const svc = new ControlService({
+    ...deps,
+    relayTerminalSettings: {
+      get: async () => ({ enabled: false, restartRequired: true as const }),
+      update: async (enabled: boolean) => {
+        seen.push(enabled);
+        return { enabled, restartRequired: true as const };
+      },
+    },
+  });
+  expect(await svc.updateTerminalSettings(true)).toEqual({ enabled: true, restartRequired: true });
+  expect(await svc.updateTerminalSettings(false)).toEqual({ enabled: false, restartRequired: true });
+  expect(seen).toEqual([true, false]);
+});
+
+test("terminal settings fail closed without the wired dep", async () => {
+  const svc = new ControlService(makeDeps({ enabled: true }));
+  await expect(svc.getTerminalSettings()).rejects.toMatchObject({ code: "terminal_settings_unavailable" });
+  await expect(svc.updateTerminalSettings(true)).rejects.toMatchObject({ code: "terminal_settings_unavailable" });
+});
