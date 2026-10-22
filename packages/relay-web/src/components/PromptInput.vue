@@ -600,17 +600,8 @@ function onInput(): void {
 function submit() {
   if (composer.uploading) return;
   const value = text.value.trim();
-  const ready = composer.pending.filter((p) => p.status === "ready");
-  if (!value && ready.length === 0) return;
-  const media: PromptAttachmentRef[] = ready.map((p) => ({
-    id: p.id,
-    filePath: p.filePath as string,
-    fileName: p.filename,
-    mimeType: p.mimeType,
-    kind: p.kind,
-    size: p.size,
-    ...(p.previewUrl ? { previewUrl: p.previewUrl } : {}),
-  }));
+  const { media } = composer.snapshot();
+  if (!value && media.length === 0) return;
 
   const rawText = text.value;
   const mentions: Array<{ range: [number, number]; handle: string }> = [];
@@ -761,6 +752,7 @@ function onKeydown(e: KeyboardEvent) {
       :busy="busy"
       :disabled="false"
       :send-disabled="composer.uploading"
+      :has-attachments="composer.pending.some((entry) => entry.status === 'ready')"
       :placeholder="busy ? $t('chat.working') : $t('chat.message')"
       :height="isDesktop ? composerHeight : undefined"
       send-test-id="composer-send"
@@ -801,11 +793,8 @@ function onKeydown(e: KeyboardEvent) {
             />
             <span class="max-w-[120px] truncate text-fg">{{ p.filename }}</span>
             <span v-if="p.status === 'uploading'" class="text-fg-muted">…</span>
-            <span
-              v-else-if="p.status === 'error'"
-              class="text-danger font-semibold"
-              >!</span
-            >
+            <button v-else-if="p.status === 'error'" type="button" class="text-danger font-semibold"
+              :aria-label="$t('common.retry')" :title="$t('common.retry')" @click="composer.retryAttachment(p.id)">↻</button>
             <button
               type="button"
               :title="$t('chat.attach.remove')"

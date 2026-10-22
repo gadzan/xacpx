@@ -1,4 +1,4 @@
-import { validAgentMentions } from "@ganglion/xacpx-relay-protocol";
+import { validAgentMentions, validPromptAttachments } from "@ganglion/xacpx-relay-protocol";
 import type {
   ControlExecuteCommandInput,
   ControlPromptInput,
@@ -47,6 +47,9 @@ function isTrustedControlMethod(prop: PropertyKey): prop is TrustedControlMethod
 export function sanitizePublicConversationPrompt(
   input: ConversationPromptRequestDto,
 ): ConversationPromptRequestDto {
+  if (input.media !== undefined && !validPromptAttachments(input.media)) {
+    throw new ConversationError("invalid-media", "invalid prompt attachments");
+  }
   if (input.agentMentions !== undefined && !validAgentMentions(input.text, input.agentMentions)) {
     throw new ConversationError("invalid-agent-mentions", "invalid UTF-16 reference ranges");
   }
@@ -94,6 +97,7 @@ export function sanitizePublicConversationPrompt(
     topicId: input.topicId,
     requestId: input.requestId,
     text: input.text,
+    ...(input.media !== undefined ? { media: input.media.map((ref) => ({ ...ref })) } : {}),
     ...(sanitized ? { target: sanitized } : {}),
     ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions.map(m => ({ range: [...m.range] as [number, number], handle: m.handle })) } : {}),
   };

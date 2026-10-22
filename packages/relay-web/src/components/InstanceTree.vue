@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, Bot, Check, ChevronRight, Folder, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
+import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
 import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsDesktop } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
@@ -119,6 +119,9 @@ const enablingBots = ref<Set<string>>(new Set());
 function botsWithEnabled(instanceId: string, enabled: boolean): BotSummaryDto[] {
   return (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.enabled === enabled);
 }
+function isBotSelected(instanceId: string, botId: string): boolean {
+  return directBotsStore.instanceId === instanceId && directBotsStore.selectedBotId === botId;
+}
 // The enabled Bots render in the list; the disabled ones live under the 已禁用
 // group title row below it (collapsed by default). The selected Bot keeps its
 // row while the Disabled list is collapsed, so disabling the open Bot does not
@@ -129,7 +132,7 @@ function enabledBots(instanceId: string): BotSummaryDto[] {
 function shownDisabledBots(instanceId: string): BotSummaryDto[] {
   const disabled = botsWithEnabled(instanceId, false);
   if (disabledBotsOpen.value.has(instanceId)) return disabled;
-  return disabled.filter((b) => directBotsStore.instanceId === instanceId && directBotsStore.selectedBotId === b.id);
+  return disabled.filter((b) => isBotSelected(instanceId, b.id));
 }
 function toggleDisabledBots(instanceId: string): void {
   const next = new Set(disabledBotsOpen.value);
@@ -137,15 +140,37 @@ function toggleDisabledBots(instanceId: string): void {
   else next.add(instanceId);
   disabledBotsOpen.value = next;
 }
-async function enableBot(instanceId: string, bot: BotSummaryDto): Promise<void> {
+// One render list for both sections: enabled rows, then the Disabled title row
+// (present whenever a disabled Bot exists, even while its rows stay hidden), then
+// the disabled rows. Sharing the list is what lets the template keep a single
+// Bot row instead of two near-identical copies.
+type BotListEntry = { kind: "bot"; bot: BotSummaryDto } | { kind: "disabled-toggle" };
+function botListEntries(instanceId: string): BotListEntry[] {
+  const entries: BotListEntry[] = enabledBots(instanceId).map((bot) => ({ kind: "bot", bot }));
+  if (!botsWithEnabled(instanceId, false).length) return entries;
+  entries.push({ kind: "disabled-toggle" });
+  return [...entries, ...shownDisabledBots(instanceId).map((bot): BotListEntry => ({ kind: "bot", bot }))];
+}
+// Enabling and disabling are the same persisted patch (`enabled` on the Bot);
+// only the feedback copy differs. Queued work may start on re-enable, so the
+// success toast says so instead of a bare "saved".
+async function setBotEnabled(instanceId: string, bot: BotSummaryDto, enabled: boolean): Promise<void> {
   const key = `${instanceId}:${bot.id}`;
   if (enablingBots.value.has(key)) return;
   enablingBots.value = new Set(enablingBots.value).add(key);
   try {
-    await directBotsStore.updateBot(instanceId, bot.id, { enabled: true });
-    pushToast("success", "bot.lifecycle.enabled", { name: bot.name });
+    await directBotsStore.updateBot(instanceId, bot.id, { enabled });
+    pushToast(
+      "success",
+      enabled ? "bot.lifecycle.enabled" : "bot.lifecycle.disabled",
+      { name: bot.name },
+    );
   } catch {
-    pushToast("error", "bot.lifecycle.enableFailed", { name: bot.name });
+    pushToast(
+      "error",
+      enabled ? "bot.lifecycle.enableFailed" : "bot.lifecycle.disableFailed",
+      { name: bot.name },
+    );
     void directBotsStore.loadBots(instanceId).catch(() => {});
   } finally {
     const next = new Set(enablingBots.value);
@@ -155,7 +180,65 @@ async function enableBot(instanceId: string, bot: BotSummaryDto): Promise<void> 
 }
 
 function openBotRemoval(instanceId: string, bot: BotSummaryDto): void {
+  if (bot.retired) return; // A removed Bot has nothing left to remove.
   removalFor.value = { instanceId, bot };
+}
+
+// ── Per-Bot ⋯ menu ─────────────────────────────────────────────────────────
+// Its own controller (not the session one): the trigger is always visible on every
+// Bot row, so two menus of different kinds must never share state. Keys are
+// namespaced with `bot:` because Bot ids and session aliases come from different
+// id spaces and a bare `${instanceId}:${id}` key could collide.
+const botMenuDd = useDropdown();
+const botMenuFor = ref<string | null>(null);
+function botMenuKey(instanceId: string, botId: string): string {
+  return `${instanceId}:bot:${botId}`;
+}
+function botMenuOpen(instanceId: string, botId: string): boolean {
+  return botMenuDd.open && botMenuFor.value === botMenuKey(instanceId, botId);
+}
+function toggleBotMenu(instanceId: string, botId: string, el: HTMLElement): void {
+  const key = botMenuKey(instanceId, botId);
+  botMenuDd.trigger = el;
+  if (botMenuDd.open && botMenuFor.value === key) {
+    botMenuDd.closeMenu();
+    return;
+  }
+  botMenuFor.value = key;
+  botMenuDd.openMenu();
+}
+/** Edit / enable-or-disable / remove. A removed Bot can do neither of the last two. */
+function botMenuGroups(instanceId: string, bot: BotSummaryDto): DropdownGroup[] {
+  const pending = enablingBots.value.has(`${instanceId}:${bot.id}`);
+  return [
+    {
+      rows: [
+        { value: "edit", label: t("bot.actions.edit"), icon: Pencil, testId: "bot-menu-edit" },
+        {
+          value: "toggle",
+          label: t(bot.enabled ? "bot.actions.disable" : "bot.actions.enable"),
+          icon: Ban,
+          disabled: pending || bot.retired === true,
+          testId: "bot-menu-toggle",
+        },
+        {
+          value: "delete",
+          label: bot.retired ? t("bot.removal.removed") : t("bot.removal.action"),
+          icon: Trash2,
+          danger: !bot.retired,
+          disabled: bot.retired === true,
+          separatorBefore: true,
+          testId: "bot-menu-delete",
+        },
+      ],
+    },
+  ];
+}
+function onBotMenuSelect(instanceId: string, instanceName: string, bot: BotSummaryDto, value: string): void {
+  botMenuDd.closeMenu();
+  if (value === "edit") botDialogFor.value = { instanceId, instanceName, bot };
+  else if (value === "toggle") void setBotEnabled(instanceId, bot, !bot.enabled);
+  else if (value === "delete") openBotRemoval(instanceId, bot);
 }
 
 // 1Hz clock so working-session elapsed badges tick.
@@ -743,139 +826,70 @@ const rowSwipes = computed(() => {
                class="py-1 pl-2.5 text-xs text-fg-muted">
             {{ $t("bot.list.allDisabled") }}
           </div>
-          <div v-for="b in enabledBots(inst.id)"
-               :key="b.id"
-               data-test="bot-row"
-               class="group relative flex items-center rounded-sm transition-colors"
-               :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-surface-2'">
+          <template v-for="entry in botListEntries(inst.id)" :key="entry.kind === 'bot' ? entry.bot.id : 'disabled-toggle'">
             <button
-              class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
-              @click="onBotTap(inst.id, b.id)"
-            >
-              <span class="relative shrink-0">
-                <BotAvatar :avatar="b.avatar" :driver="driverForAgentName(inst, b.agent)" :name="b.name" :size="24"
-                           :disabled="!b.enabled" :retired="b.retired" :state="inst.online ? 'idle' : 'offline'"
-                           :class="!b.enabled ? 'opacity-50' : ''" />
-              </span>
-              <div class="flex flex-col min-w-0 flex-1">
-                <span v-if="b.retired" data-test="bot-removed" class="truncate text-xs text-fg-muted">{{ $t("bot.removal.removed") }}</span>
-                <span data-test="bot-name" class="min-w-0 truncate text-ui font-medium"
-                      :class="!b.enabled ? 'text-fg-muted' : (directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg')">
-                  {{ b.name }}
-                </span>
-                <span v-if="b.role" class="truncate text-xs text-fg-muted">{{ b.role }}</span>
-              </div>
-              <span class="h-1.5 w-1.5 rounded-full shrink-0"
-                    :class="b.enabled ? 'bg-run' : 'bg-fg-muted'"
-                    :title="b.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')" />
-            </button>
-            <button
-              v-if="!b.enabled"
+              v-if="entry.kind === 'disabled-toggle'"
               type="button"
-              data-test="enable-bot-tree-button"
-              :disabled="enablingBots.has(`${inst.id}:${b.id}`)"
-              class="shrink-0 rounded-sm px-1.5 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
-              @click.stop="void enableBot(inst.id, b)"
+              data-test="bots-disabled-toggle"
+              :aria-expanded="disabledBotsOpen.has(inst.id)"
+              class="bot-disabled-toggle mt-1 flex h-7 w-full items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+              @click="toggleDisabledBots(inst.id)"
             >
-              {{ $t("bot.actions.enable") }}
+              <ChevronRight :size="11" class="shrink-0 transition-transform duration-150" :class="disabledBotsOpen.has(inst.id) ? 'rotate-90' : ''" />
+              <span>{{ $t("bot.list.disabledToggle", { count: botsWithEnabled(inst.id, false).length }) }}</span>
             </button>
-            <div class="flex items-center gap-0.5 pr-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                type="button"
-                data-test="edit-bot-tree-button"
-                :title="$t('bot.actions.edit')"
-                :aria-label="$t('bot.actions.edit')"
-                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg"
-                @click.stop="botDialogFor = { instanceId: inst.id, instanceName: inst.name, bot: b }"
-              >
-                <Pencil :size="11" />
-              </button>
-              <button
-                type="button"
-                data-test="delete-bot-tree-button"
-                :title="b.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
-                :aria-label="$t('bot.removal.action')"
-                :disabled="b.retired === true"
-                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40"
-                @click.stop="openBotRemoval(inst.id, b)"
-              >
-                <Trash2 :size="11" />
-              </button>
-            </div>
-          </div>
-
-          <!-- 已禁用 group title row below the enabled Bots; its rows render under it. -->
-          <button
-            v-if="botsWithEnabled(inst.id, false).length"
-            type="button"
-            data-test="bots-disabled-toggle"
-            :aria-expanded="disabledBotsOpen.has(inst.id)"
-            class="mt-1 flex h-7 w-full items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
-            @click="toggleDisabledBots(inst.id)"
-          >
-            <ChevronRight :size="11" class="shrink-0 transition-transform duration-150" :class="disabledBotsOpen.has(inst.id) ? 'rotate-90' : ''" />
-            <span>{{ $t("bot.list.disabledToggle", { count: botsWithEnabled(inst.id, false).length }) }}</span>
-          </button>
-          <div v-for="b in shownDisabledBots(inst.id)"
-               :key="b.id"
-               data-test="bot-row"
-               class="group relative flex items-center rounded-sm transition-colors"
-               :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-surface-2'">
-            <button
-              class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
-              @click="onBotTap(inst.id, b.id)"
+            <div
+              v-else
+              data-test="bot-row"
+              class="bot-sidebar-row relative flex h-10 items-center rounded-sm transition-colors"
+              :class="isBotSelected(inst.id, entry.bot.id) ? 'bg-accent-soft' : 'hover:bg-surface-2'"
             >
-              <span class="relative shrink-0">
-                <BotAvatar :avatar="b.avatar" :driver="driverForAgentName(inst, b.agent)" :name="b.name" :size="24"
-                           :disabled="!b.enabled" :retired="b.retired" :state="inst.online ? 'idle' : 'offline'"
-                           :class="!b.enabled ? 'opacity-50' : ''" />
-              </span>
-              <div class="flex flex-col min-w-0 flex-1">
-                <span v-if="b.retired" data-test="bot-removed" class="truncate text-xs text-fg-muted">{{ $t("bot.removal.removed") }}</span>
-                <span data-test="bot-name" class="min-w-0 truncate text-ui font-medium"
-                      :class="!b.enabled ? 'text-fg-muted' : (directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg')">
-                  {{ b.name }}
+              <button
+                type="button"
+                class="flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1.5 text-left"
+                @click="onBotTap(inst.id, entry.bot.id)"
+              >
+                <BotAvatar :avatar="entry.bot.avatar" :driver="driverForAgentName(inst, entry.bot.agent)" :name="entry.bot.name" :size="24"
+                           :disabled="!entry.bot.enabled" :retired="entry.bot.retired" :state="inst.online ? 'idle' : 'offline'"
+                           :class="!entry.bot.enabled ? 'opacity-50' : ''" />
+                <span class="flex min-w-0 flex-1 flex-col">
+                  <span v-if="entry.bot.retired" data-test="bot-removed" class="truncate text-xs text-fg-muted">{{ $t("bot.removal.removed") }}</span>
+                  <span data-test="bot-name" class="min-w-0 truncate text-ui font-medium"
+                        :class="!entry.bot.enabled ? 'text-fg-muted' : (isBotSelected(inst.id, entry.bot.id) ? 'font-semibold text-accent' : 'text-fg')">
+                    {{ entry.bot.name }}
+                  </span>
+                  <span v-if="entry.bot.role && !entry.bot.retired" class="truncate text-xs text-fg-muted">{{ entry.bot.role }}</span>
                 </span>
-                <span v-if="b.role" class="truncate text-xs text-fg-muted">{{ b.role }}</span>
-              </div>
-              <span class="h-1.5 w-1.5 rounded-full shrink-0"
-                    :class="b.enabled ? 'bg-run' : 'bg-fg-muted'"
-                    :title="b.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')" />
-            </button>
-            <button
-              v-if="!b.enabled"
-              type="button"
-              data-test="enable-bot-tree-button"
-              :disabled="enablingBots.has(`${inst.id}:${b.id}`)"
-              class="shrink-0 rounded-sm px-1.5 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-50"
-              @click.stop="void enableBot(inst.id, b)"
-            >
-              {{ $t("bot.actions.enable") }}
-            </button>
-            <div class="flex items-center gap-0.5 pr-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                type="button"
-                data-test="edit-bot-tree-button"
-                :title="$t('bot.actions.edit')"
-                :aria-label="$t('bot.actions.edit')"
-                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg"
-                @click.stop="botDialogFor = { instanceId: inst.id, instanceName: inst.name, bot: b }"
-              >
-                <Pencil :size="11" />
+                <span class="h-1.5 w-1.5 shrink-0 rounded-full"
+                      :class="entry.bot.enabled ? 'bg-run' : 'bg-fg-muted'"
+                      :title="entry.bot.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')" />
               </button>
               <button
                 type="button"
-                data-test="delete-bot-tree-button"
-                :title="b.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
-                :aria-label="$t('bot.removal.action')"
-                :disabled="b.retired === true"
-                class="grid h-10 w-10 lg:h-5 lg:w-5 place-items-center rounded-sm text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40"
-                @click.stop="openBotRemoval(inst.id, b)"
+                data-test="bot-menu-button"
+                :aria-label="$t('common.more')"
+                aria-haspopup="menu"
+                :aria-expanded="botMenuOpen(inst.id, entry.bot.id)"
+                class="bot-menu-trigger mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                @click.stop="toggleBotMenu(inst.id, entry.bot.id, $event.currentTarget as HTMLElement)"
               >
-                <Trash2 :size="11" />
+                <span class="grid h-7 w-7 place-items-center rounded-sm transition-colors hover:bg-surface-2 hover:text-fg">
+                  <MoreHorizontal :size="16" />
+                </span>
               </button>
+              <DropdownPanel
+                v-if="botMenuOpen(inst.id, entry.bot.id)"
+                :dd="botMenuDd"
+                :groups="botMenuGroups(inst.id, entry.bot)"
+                tone="raised"
+                placement="bottom-end"
+                role="menu"
+                :title="entry.bot.name"
+                test-id="bot-menu"
+                @select="onBotMenuSelect(inst.id, inst.name, entry.bot, $event)"
+              />
             </div>
-          </div>
+          </template>
 
           <!-- Bots footer: new Bot + manage (the disabled toggle moved above the list). -->
           <div class="flex items-center gap-0.5 pb-px pl-2 pt-1">
@@ -1200,3 +1214,11 @@ const rowSwipes = computed(() => {
     />
   </nav>
 </template>
+
+<style scoped>
+@media (hover: none), (pointer: coarse) {
+  .bot-sidebar-row { height: 44px; }
+  .bot-menu-trigger { width: 44px; height: 44px; margin-right: 0; }
+  .bot-disabled-toggle { min-height: 44px; }
+}
+</style>

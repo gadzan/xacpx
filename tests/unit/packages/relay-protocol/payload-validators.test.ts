@@ -26,6 +26,20 @@ test("policy RPC accepts requests, never trusted proof, and keeps the legacy RPC
   expect(parseControlPayload(MSG.conversationPromptWithPolicy, { ...base, memberPolicies: policies, unrelatedLegacyExtra: true })).not.toBeNull();
 });
 
+for (const operation of [MSG.conversationPrompt, MSG.conversationPromptWithPolicy]) {
+  test(`${operation} accepts attachment-only prompts and enforces existing upload limits`, () => {
+    const ref = { id: "upload", filePath: "/uploads/file", fileName: "file.txt", mimeType: "text/plain", kind: "file", size: 10 * 1024 * 1024 };
+    const input = { conversationId: "c", topicId: "t", requestId: "r", text: "",
+      ...(operation === MSG.conversationPromptWithPolicy ? { memberPolicies: [{ botId: "b", filesystem: "read-write" }] } : {}) };
+    expect(parseControlPayload(operation, { ...input, media: [ref] })).not.toBeNull();
+    expect(parseControlPayload(operation, { ...input, media: Array.from({ length: 5 }, (_, i) => ({ ...ref, id: `upload-${i}` })) })).not.toBeNull();
+    expect(parseControlPayload(operation, { ...input, media: [] })).not.toBeNull();
+    for (const media of [[{ ...ref, size: ref.size + 1 }], Array.from({ length: 6 }, () => ref), [{ ...ref, size: -1 }], [{ ...ref, filePath: "" }], [null], "file"]) {
+      expect(parseControlPayload(operation, { ...input, media })).toBeNull();
+    }
+  });
+}
+
 test("Topic concurrency limits validate on both creation RPCs without changing extra-field handling", () => {
   for (const kind of [MSG.topicsCreate, MSG.groupTopicsCreate]) {
     const base = { conversationId: "c", title: "t", ...(kind === MSG.groupTopicsCreate

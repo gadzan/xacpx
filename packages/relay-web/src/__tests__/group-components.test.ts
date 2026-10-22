@@ -676,9 +676,12 @@ describe("Group Components", () => {
       await textarea.trigger("keydown", { key: "Enter" });
       await flushPromises();
       expect(groups.targetSelection).toEqual({ mode: "everyone" });
-      // The send carries the typed text for the resolved target; the store
-      // assertion above is what pins the routing contract.
+      // Everyone sends confirm through the modal: confirm, then the send
+      // carries the typed text for the resolved target.
+      (document.body.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
+      await flushPromises();
       expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review"]);
+      wrapper.unmount();
     });
 
     it("shows the translated target error on Enter with an empty selection, without clearing the draft or sending", async () => {
@@ -723,6 +726,7 @@ describe("Group Components", () => {
         requestId: "req_uncertain",
         text: "review this",
         target: { mode: "members", botIds: ["bot_a"] },
+        media: [],
       };
       // The banner (and therefore Retry) shows while the failure is reported.
       groups.promptError = "Network timeout";
@@ -1058,7 +1062,7 @@ describe("Group Components", () => {
           state: "running", createdAt: "now",
         },
       };
-      const spy = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
+      const spy = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({ status: "blocked", scope: null, runId: "run_stop", reason: "ownership" });
       const wrapper = mount(GroupTranscript, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
@@ -1070,6 +1074,15 @@ describe("Group Components", () => {
       expect(layer !== null).toBe(true);
       expect(layer!.textContent ?? "").toContain("Running");
       (document.body.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
+      await flushPromises();
+      expect(spy).not.toHaveBeenCalled();
+      expect(document.activeElement?.getAttribute("data-test")).toBe("composer-confirm-cancel");
+      (document.body.querySelector('[data-test="composer-confirm-cancel"]') as HTMLElement).click();
+      await flushPromises();
+      expect(spy).not.toHaveBeenCalled();
+      (document.body.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
+      await flushPromises();
+      (document.body.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
       await flushPromises();
       expect(spy).toHaveBeenCalledTimes(1);
       spy.mockRestore();

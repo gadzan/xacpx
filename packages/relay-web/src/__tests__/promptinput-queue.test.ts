@@ -38,7 +38,9 @@ describe("PromptInput non-blocking composer (message queue)", () => {
   // Review #353 Medium: cancelling an in-flight turn is independent of attachment
   // uploads (and `uploading` is shared composer state — it must never lock Stop).
   it("keeps Stop enabled and cancellable while an attachment is uploading", async () => {
-    useComposerStore().uploading = true;
+    const composer = useComposerStore();
+    composer.bindInstance("i1", "uploading");
+    composer.pending.push({ id: "pending", filename: "a.txt", mimeType: "text/plain", size: 1, kind: "file", status: "uploading" });
     const w = mount(PromptInput, { props: { busy: true } });
     const stop = w.find('[data-test="cancel-turn"]');
     expect(stop.exists()).toBe(true);

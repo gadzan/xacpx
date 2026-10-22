@@ -102,7 +102,7 @@ describe("read-only Group handoff Run history", () => {
     store.ownershipUncertain = true;
     store.promptInFlight = true;
     store.promptError = "promptPendingConfirmation";
-    store.uncertainPrompt = { requestId: "request_live", text: "Keep this draft", target: { mode: "members", botIds: ["bot_a"] } };
+    store.uncertainPrompt = { requestId: "request_live", text: "Keep this draft", target: { mode: "members", botIds: ["bot_a"] }, media: [] };
     const before = JSON.stringify(store.$state);
 
     expect(await store.loadHandoffRunDetail(handoffMessage())).toMatchObject({

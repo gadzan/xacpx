@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 
 import { BotError } from "../../../src/bots/bot-error";
 import type { AppConfig } from "../../../src/config/types";
@@ -125,7 +126,7 @@ async function wire(options?: {
       create: async () => ({ name: "backend", cwd: "/tmp/backend" }),
       remove: async () => {},
     },
-    uploadStore: { save: async () => ({ id: "u", path: "/tmp/u", filename: "f", mimeType: "text/plain", size: 1 }) },
+    uploadStore: { root: join(dir, "uploads"), save: async () => ({ id: "u", path: "/tmp/u", filename: "f", mimeType: "text/plain", size: 1 }) },
     transport: {
       ...(options?.prepareCommands ? {prepareSessionCommands:options.prepareCommands} : {}),
       setModel: async () => {
@@ -289,6 +290,53 @@ test("dedicated policy Control operation accepts a durable effective ceiling and
     expect(typeof publicView.promptConversationWithPolicy).toBe("function");
   } finally { await runtime.shutdown(); }
 });
+
+test("public policy prompts keep attachments through durable accept and execution", async () => {
+  const received: ChatRequest[] = [];
+  const { control, runtime, dir } = await wire({ autoKick: false, chat: async request => { received.push(request); return { text: "reviewed" }; } });
+  try {
+    const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const media: PromptAttachmentRef[] = [{ id: "document", filePath: join(dir, "uploads", "report.txt"), fileName: "report.txt", mimeType: "text/plain", kind: "file", size: 8 }];
+    const input = { conversationId: createDirectConversationId(bot.id), topicId: createDirectTopicId(bot.id), requestId: "policy-media", text: "", media,
+      memberPolicies: [{ botId: bot.id, filesystem: "read-write" as const }] };
+    const accepted = await asPublicControl(control).promptConversationWithPolicy(input);
+    expect(runtime.store.getMessage(accepted.message.id)?.media).toEqual(media);
+    expect(accepted.message.attachments).toEqual([{ id: "document", filename: "report.txt", mimeType: "text/plain", kind: "file", size: 8 }]);
+    await expect(control.promptConversationWithPolicy({ ...input, media: [] })).rejects.toMatchObject({ code: "request_payload_conflict" });
+    await runtime.kick();
+    await waitUntil(() => control.getRun(accepted.run.id).state === "completed");
+    expect(received).toHaveLength(1);
+    expect(received[0]!.media).toMatchObject([{ filePath: media[0]!.filePath, kind: "file", fileName: "report.txt", source: { messageId: "document" } }]);
+    expect((await control.promptConversationWithPolicy(input)).reused).toBe(true);
+  } finally { await runtime.shutdown(); }
+});
+
+for (const groupPrompt of [false, true]) {
+  test(`${groupPrompt ? "Group" : "Direct"} durable accept validates media before writing a request`, async () => {
+    const { control, runtime, dir } = await wire({ autoKick: false });
+    try {
+      const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+      let conversationId = createDirectConversationId(bot.id);
+      let topicId = createDirectTopicId(bot.id);
+      if (groupPrompt) {
+        const other = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+        const group = await control.createGroup({ title: "Media", botIds: [bot.id, other.id] });
+        conversationId = group.id;
+        topicId = (await control.createGroupTopic(group.id, "Uploads", { workspace: "backend", isolation: "shared" })).id;
+      }
+      const ref: PromptAttachmentRef = { id: "upload", filePath: join(dir, "uploads", "file.txt"), fileName: "file.txt", mimeType: "text/plain", kind: "file", size: 10 * 1024 * 1024 };
+      const input = { conversationId, topicId, requestId: "limits", text: "", target: { botId: bot.id } };
+      for (const media of [[{ ...ref, size: ref.size + 1 }], Array.from({ length: 6 }, () => ref), [{ ...ref, filePath: "" }]]) {
+        await expect(runtime.runs.acceptConversationPrompt({ ...input, media })).rejects.toMatchObject({ code: "invalid-media" });
+      }
+      expect(runtime.store.listMessages({ conversationId, topicId, limit: 10 })).toEqual([]);
+      const media = Array.from({ length: 5 }, (_, index) => ({ ...ref, id: `upload-${index}` }));
+      const accepted = await asPublicControl(control).promptConversation({ ...input, media });
+      expect(runtime.store.getMessage(accepted.message.id)?.media).toEqual(media);
+      expect(accepted.message.attachments).toHaveLength(5);
+    } finally { await runtime.shutdown(); }
+  });
+}
 
 test("policy Control rejects unsupported adapter and forged proof before creating a Run", async () => {
   const { control, runtime } = await wire({ autoKick: false });

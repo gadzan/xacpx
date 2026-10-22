@@ -22,14 +22,15 @@ import { useInstancesStore } from "../stores/instances";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import GroupHandoffEntry from "./GroupHandoffEntry.vue";
-import CopyButton from "./CopyButton.vue";
-import StreamMarkdown from "./StreamMarkdown.vue";
+import ConversationBubble from "./ConversationBubble.vue";
+import ConversationMeta from "./ConversationMeta.vue";
 import BotAvatar from "./BotAvatar.vue";
 import GroupAgentTurnRow from "./GroupAgentTurnRow.vue";
 import AgentThinkingBubble from "./AgentThinkingBubble.vue";
 import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
 import GroupRunDetailSheet from "./GroupRunDetailSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
+import { useLiveElapsedClock } from "../lib/use-live-elapsed";
 import {
   projectGroupTranscript,
   traceEventsToParts,
@@ -104,6 +105,45 @@ const runRecords = computed<Record<string, GroupRunRecord>>(() => {
   }
   return out;
 });
+
+const { nowMs: runNowMs } = useLiveElapsedClock(() => groupsStore.isRunActive);
+function isSingleMemberRun(runId: string): boolean {
+  const record = runRecords.value[runId];
+  if (!record?.memberTurns.length) return false;
+  const botId = record.memberTurns[0]?.botId;
+  return !!botId && record.memberTurns.every((turn) => turn.botId === botId);
+}
+function memberElapsed(turn: MemberTurnSummaryDto): string | undefined {
+  const record = runRecords.value[turn.runId];
+  const stamp = turn.startedAt ?? record?.run.startedAt;
+  if (!stamp) return undefined;
+  const startedAt = Date.parse(stamp);
+  const end = turn.finishedAt ?? record?.run.finishedAt;
+  const elapsed = Math.floor(((end ? Date.parse(end) : runNowMs.value) - startedAt) / 1000);
+  if (!Number.isFinite(elapsed)) return undefined;
+  const seconds = Math.max(0, elapsed);
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h`;
+}
+function canStopRun(candidate: ConversationRunDto | undefined): boolean {
+  const active = groupsStore.activeRun;
+  return !!candidate && !!active
+    && groupsStore.topicReady
+    && !groupsStore.ownershipUncertain
+    && !groupsStore.ownerUnconfirmed
+    && active.id === candidate.id
+    && active.conversationId === candidate.conversationId
+    && active.topicId === candidate.topicId
+    && active.conversationId === groupsStore.activeConversationId
+    && active.topicId === groupsStore.activeTopicId
+    && groupsStore.isRunActive;
+}
+function stopMemberRun(runId: string): void {
+  if (canStopRun(runRecords.value[runId]?.run) && groupsStore.cancellingRunId !== runId) {
+    void groupsStore.cancelCurrentRun();
+  }
+}
 
 const items = computed<GroupTranscriptItem[]>(() =>
   projectGroupTranscript({
@@ -208,6 +248,10 @@ function loadTrace(afterSeq?: number): void {
 }
 
 function bubbleKeyOf(memberTurnId: string): string { return `bubble:${memberTurnId}`; }
+
+function partsForMember(memberTurn: MemberTurnSummaryDto): TurnPartDto[] | undefined {
+  return groupsStore.completeRunPartsForMember(memberTurn.id, memberTurn.attempt);
+}
 function routingKeyOf(runId: string): string { return `routing:${runId}`; }
 
 const detailPage = computed(() => {
@@ -269,16 +313,7 @@ const siblingSummaries = computed<Array<{ name: string; state: string }> | undef
 });
 const stopAvailable = computed(() => {
   const detail = openDetail.value;
-  if (!detail || detail.identityUncertain || !groupsStore.topicReady) return false;
-  if (groupsStore.ownershipUncertain || groupsStore.ownerUnconfirmed) return false;
-  const active = groupsStore.activeRun;
-  return !!active
-    && active.id === detail.run.id
-    && active.conversationId === detail.run.conversationId
-    && active.topicId === detail.run.topicId
-    && active.conversationId === groupsStore.activeConversationId
-    && active.topicId === groupsStore.activeTopicId
-    && groupsStore.isRunActive;
+  return !!detail && !detail.identityUncertain && canStopRun(detail.run);
 });
 const stopPending = computed(() => {
   const detail = openDetail.value;
@@ -442,6 +477,7 @@ async function handleLoadOlder(): Promise<void> {
             :own="item.message.role === 'human'"
             :driver="item.message.role === 'bot' && item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
             :speaker="!item.message.handoff && item.message.role === 'bot' ? senderName(item.message.senderBotId) : undefined"
+            :speaker-role="item.message.senderBotId ? botById[item.message.senderBotId]?.role : undefined"
             :hide-leading-avatar="!!item.message.handoff"
           >
             <template v-if="item.message.role === 'bot' && !item.message.handoff" #avatar>
@@ -462,23 +498,13 @@ async function handleLoadOlder(): Promise<void> {
               @jump="jumpToMessage"
             />
             <template v-else-if="item.message.role === 'human'">
-              <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-sm leading-relaxed text-fg">
-                {{ item.message.content }}
-              </div>
-              <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
-                <CopyButton :text="item.message.content" />
-                <span class="font-mono text-xs tabular-nums">{{ item.message.createdAt }}</span>
-              </div>
+              <ConversationBubble :message="item.message" :attachments="item.message.attachments" own />
+              <ConversationMeta :message="item.message" />
             </template>
 
             <template v-else-if="item.message.role === 'bot'">
-              <div class="w-full text-sm leading-relaxed text-fg">
-                <StreamMarkdown :text="item.message.content" />
-              </div>
-              <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-                <CopyButton :text="item.message.content" />
-                <span class="font-mono text-xs tabular-nums">{{ item.message.createdAt }}</span>
-              </div>
+              <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
+              <ConversationMeta :message="item.message" />
             </template>
 
             <template v-else>
@@ -494,6 +520,7 @@ async function handleLoadOlder(): Promise<void> {
             :data-message-id="item.message.id"
             :driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
             :speaker="senderName(item.message.senderBotId)"
+            :speaker-role="item.message.senderBotId ? botById[item.message.senderBotId]?.role : undefined"
           >
             <template #avatar>
               <BotAvatar :avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
@@ -501,13 +528,8 @@ async function handleLoadOlder(): Promise<void> {
                          :name="senderName(item.message.senderBotId)" :size="32" static
                          :retired="item.message.senderBotId ? botById[item.message.senderBotId]?.retired : false" />
             </template>
-            <div class="w-full text-sm leading-relaxed text-fg">
-              <StreamMarkdown :text="item.message.content" />
-            </div>
-            <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-              <CopyButton :text="item.message.content" />
-              <span class="font-mono text-xs tabular-nums">{{ item.message.createdAt }}</span>
-            </div>
+            <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
+            <ConversationMeta :message="item.message" />
           </TranscriptRow>
         </template>
 
@@ -524,6 +546,12 @@ async function handleLoadOlder(): Promise<void> {
           :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
           :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
           :disabled="item.memberTurn.botId ? botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false : false"
+          :single-member="isSingleMemberRun(item.memberTurn.runId)"
+          :run-state="runRecords[item.memberTurn.runId]?.run.state"
+          :elapsed="memberElapsed(item.memberTurn)"
+          :stop-available="canStopRun(runRecords[item.memberTurn.runId]?.run)"
+          :stop-pending="groupsStore.cancellingRunId === item.memberTurn.runId"
+          @stop="stopMemberRun(item.memberTurn.runId)"
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
         />
         <!-- Projection order keeps activity, routing and unresolved rows at their owning request. -->
@@ -540,6 +568,12 @@ async function handleLoadOlder(): Promise<void> {
             :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
             :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
             :disabled="botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false"
+            :single-member="!item.explanation && isSingleMemberRun(item.memberTurn.runId)"
+            :run-state="runRecords[item.memberTurn.runId]?.run.state"
+            :elapsed="memberElapsed(item.memberTurn)"
+            :stop-available="!item.explanation && canStopRun(runRecords[item.memberTurn.runId]?.run)"
+            :stop-pending="groupsStore.cancellingRunId === item.memberTurn.runId"
+            @stop="stopMemberRun(item.memberTurn.runId)"
             @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
           />
         </div>
@@ -575,6 +609,7 @@ async function handleLoadOlder(): Promise<void> {
           :data-message-id="item.message.id"
           :driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
           :speaker="senderName(item.message.senderBotId)"
+          :speaker-role="item.message.senderBotId ? botById[item.message.senderBotId]?.role : undefined"
         >
           <template #avatar>
             <BotAvatar :avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
@@ -586,13 +621,8 @@ async function handleLoadOlder(): Promise<void> {
             <HelpCircle :size="12" class="mr-1 inline" />
             {{ explanationText(item.explanation) }}
           </div>
-          <div class="w-full text-sm leading-relaxed text-fg">
-            <StreamMarkdown :text="item.message.content" />
-          </div>
-          <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-            <CopyButton :text="item.message.content" />
-            <span class="font-mono text-xs tabular-nums">{{ item.message.createdAt }}</span>
-          </div>
+          <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
+          <ConversationMeta :message="item.message" />
         </TranscriptRow>
       </template>
     </div>

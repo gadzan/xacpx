@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
-
+import { computed, reactive, ref } from "vue";
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { downscaleImage, fileToBase64 } from "../lib/image-downscale";
 
@@ -9,6 +9,7 @@ const MAX_BYTES = 10 * 1024 * 1024;
 
 export interface PendingAttachment {
   id: string;
+  uploadId?: string;
   filename: string;
   mimeType: string;
   size: number;
@@ -18,9 +19,13 @@ export interface PendingAttachment {
   status: "uploading" | "ready" | "error";
 }
 
-/** A tiny reactive bridge so non-composer UI (e.g. the command palette) can push
- *  text into a session's composer. The bumping `seq` makes repeated inserts of the
- *  same text still trigger the watcher in PromptInput. */
+interface AttachmentDraft {
+  instanceId: string;
+  epoch: number;
+  pending: PendingAttachment[];
+  rejection: { reason: "too-many" | "too-large"; filename: string } | null;
+}
+
 export const useComposerStore = defineStore("composer", () => {
   const insertRequest = ref<{ key: string; text: string; seq: number } | null>(null);
   let seq = 0;
@@ -28,63 +33,112 @@ export const useComposerStore = defineStore("composer", () => {
     insertRequest.value = { key, text, seq: ++seq };
   }
 
-  const pending = ref<PendingAttachment[]>([]);
-  const uploading = ref(false);
-  const rejection = ref<{ reason: "too-many" | "too-large"; filename: string } | null>(null);
-  let instanceId = "";
+  const drafts = reactive<Record<string, AttachmentDraft>>({});
+  const activeKey = ref("");
+  const files = new Map<string, File>();
   let localSeq = 0;
+  const pending = computed(() => drafts[activeKey.value]?.pending ?? []);
+  const uploading = computed(() => pending.value.some((entry) => entry.status === "uploading"));
+  const rejection = computed(() => drafts[activeKey.value]?.rejection ?? null);
 
-  function bindInstance(id: string): void {
-    instanceId = id;
-  }
-
-  async function addFiles(files: File[]): Promise<void> {
-    // Capture the target instance once at the start: an in-flight batch must keep
-    // uploading to the instance it began with, even if bindInstance() switches the
-    // active instance mid-flight (session/instance switch while files are queued).
-    const targetInstanceId = instanceId;
-    if (!targetInstanceId) return;
-    rejection.value = null;
-    uploading.value = true;
-    for (const file of files) {
-      if (pending.value.length >= MAX_ATTACHMENTS) { rejection.value = { reason: "too-many", filename: file.name }; break; }
-      if (file.size > MAX_BYTES) { rejection.value = { reason: "too-large", filename: file.name }; continue; }
-      const localId = `local-${++localSeq}`;
-      const kind: "image" | "file" = file.type.startsWith("image/") ? "image" : "file";
-      const entry: PendingAttachment = {
-        id: localId,
-        filename: file.name,
-        mimeType: file.type || "application/octet-stream",
-        size: file.size,
-        kind,
-        status: "uploading",
-      };
-      pending.value.push(entry);
-      try {
-        const previewUrl = await downscaleImage(file);
-        if (previewUrl) entry.previewUrl = previewUrl;
-        const content = await fileToBase64(file);
-        const res = await api.upload(targetInstanceId, { filename: file.name, content, mimeType: entry.mimeType });
-        entry.filePath = res.path;
-        entry.id = res.id;
-        entry.size = res.size;
-        entry.status = "ready";
-      } catch {
-        entry.status = "error";
+  function bindInstance(instanceId: string, scopeKey = instanceId): void {
+    if (activeKey.value !== scopeKey) {
+      const previous = drafts[activeKey.value];
+      if (previous) {
+        previous.epoch++;
+        for (const entry of previous.pending) {
+          if (entry.status === "uploading") entry.status = "error";
+        }
       }
     }
-    uploading.value = pending.value.some((p) => p.status === "uploading");
+    if (!drafts[scopeKey]) drafts[scopeKey] = { instanceId, epoch: 0, pending: [], rejection: null };
+    activeKey.value = scopeKey;
   }
 
-  function removeAttachment(id: string): void {
-    pending.value = pending.value.filter((p) => p.id !== id);
-    rejection.value = null;
+  async function uploadEntry(draft: AttachmentDraft, entry: PendingAttachment, file: File): Promise<void> {
+    const epoch = draft.epoch;
+    entry.status = "uploading";
+    try {
+      const preview = await downscaleImage(file);
+      if (epoch !== draft.epoch || !draft.pending.includes(entry)) return;
+      entry.previewUrl = preview;
+      const content = await fileToBase64(file);
+      if (epoch !== draft.epoch || !draft.pending.includes(entry)) return;
+      const result = await api.upload(draft.instanceId, { filename: entry.filename, content, mimeType: entry.mimeType });
+      if (epoch !== draft.epoch || !draft.pending.includes(entry)) return;
+      entry.uploadId = result.id;
+      entry.filePath = result.path;
+      entry.size = result.size;
+      entry.status = "ready";
+    } catch {
+      if (epoch === draft.epoch && draft.pending.includes(entry)) entry.status = "error";
+    }
   }
 
-  function clearAttachments(): void {
-    pending.value = [];
-    rejection.value = null;
+  async function addFiles(incoming: File[], scopeKey = activeKey.value): Promise<void> {
+    const draft = drafts[scopeKey];
+    if (!draft?.instanceId) return;
+    const epoch = draft.epoch;
+    draft.rejection = null;
+    const entries: Array<{ entry: PendingAttachment; file: File }> = [];
+    for (const file of incoming) {
+      if (draft.pending.length >= MAX_ATTACHMENTS) {
+        draft.rejection = { reason: "too-many", filename: file.name };
+        break;
+      }
+      if (file.size > MAX_BYTES) {
+        draft.rejection = { reason: "too-large", filename: file.name };
+        continue;
+      }
+      const id = `local-${++localSeq}`;
+      draft.pending.push({ id, filename: file.name, mimeType: file.type || "application/octet-stream", size: file.size,
+        kind: file.type.startsWith("image/") ? "image" : "file", status: "uploading" });
+      const entry = draft.pending[draft.pending.length - 1]!;
+      files.set(id, file);
+      entries.push({ entry, file });
+    }
+    for (const { entry, file } of entries) {
+      if (epoch !== draft.epoch) break;
+      if (draft.pending.includes(entry)) await uploadEntry(draft, entry, file);
+    }
   }
 
-  return { insertRequest, requestInsert, pending, uploading, rejection, bindInstance, addFiles, removeAttachment, clearAttachments };
+  async function retryAttachment(id: string, scopeKey = activeKey.value): Promise<void> {
+    const draft = drafts[scopeKey];
+    const entry = draft?.pending.find((item) => item.id === id);
+    const file = files.get(id);
+    if (draft && entry?.status === "error" && file) await uploadEntry(draft, entry, file);
+  }
+
+  function removeAttachment(id: string, scopeKey = activeKey.value): void {
+    const draft = drafts[scopeKey];
+    if (!draft) return;
+    draft.pending = draft.pending.filter((entry) => entry.id !== id);
+    draft.rejection = null;
+    files.delete(id);
+  }
+
+  function clearAttachments(scopeKey = activeKey.value): void {
+    const draft = drafts[scopeKey];
+    if (!draft) return;
+    draft.epoch++;
+    for (const entry of draft.pending) files.delete(entry.id);
+    draft.pending = [];
+    draft.rejection = null;
+  }
+
+  function snapshot(scopeKey = activeKey.value): { ids: string[]; media: PromptAttachmentRef[] } {
+    const ready = drafts[scopeKey]?.pending.filter((entry) => entry.status === "ready" && entry.filePath && entry.uploadId) ?? [];
+    return { ids: ready.map((entry) => entry.id), media: ready.map((entry) => ({
+      id: entry.uploadId!, filePath: entry.filePath!, fileName: entry.filename, mimeType: entry.mimeType,
+      kind: entry.kind, size: entry.size, ...(entry.previewUrl ? { previewUrl: entry.previewUrl } : {}),
+    })) };
+  }
+
+  function consume(scopeKey: string, ids: readonly string[]): void {
+    for (const id of ids) removeAttachment(id, scopeKey);
+  }
+
+  return { insertRequest, requestInsert, pending, uploading, rejection, bindInstance, addFiles, retryAttachment,
+    removeAttachment, clearAttachments, snapshot, consume };
 });

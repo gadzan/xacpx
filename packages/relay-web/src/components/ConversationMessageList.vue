@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   AlertCircle,
-  CircleStop,
   HelpCircle,
   Loader2,
 } from "lucide-vue-next";
@@ -23,18 +22,21 @@ import StreamMarkdown from "./StreamMarkdown.vue";
 import TurnParts from "./TurnParts.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
-import CopyButton from "./CopyButton.vue";
+import ConversationBubble from "./ConversationBubble.vue";
+import ConversationMeta from "./ConversationMeta.vue";
 import BotAvatar from "./BotAvatar.vue";
 import { avatarHasOpenInteraction, botAvatarState, type BotAvatarState } from "../lib/bot-avatar-state";
 import PlanPanel from "./PlanPanel.vue";
 import ConversationInteractionForm from "./ConversationInteractionForm.vue";
-import { fmtTime, fmtDateTime } from "../lib/format";
+import { useLiveElapsedClock } from "../lib/use-live-elapsed";
 
 import RunStatusChip from "./RunStatusChip.vue";
 const props = defineProps<{
   messages: ConversationMessageDto[];
   liveTurn: DirectBotLiveTurn | null;
   activeRun: ConversationRunDto | null;
+  stopAvailable?: boolean;
+  cancellingRunId?: string | null;
   activeMemberTurn: MemberTurnSummaryDto | null;
   runParts: Record<string, TurnPartDto[]>;
   planEntries?: PlanEntryDto[];
@@ -73,19 +75,16 @@ const atBottom = ref(true);
 const pendingAnchor = ref<number | null>(null);
 const THRESHOLD = 64;
 
-// Elapsed timer ticker for live turn
-const nowMs = ref(Date.now());
-let timer: ReturnType<typeof setInterval> | null = null;
-onMounted(() => {
-  timer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
-});
-onUnmounted(() => {
-  if (timer) clearInterval(timer);
+const { nowMs } = useLiveElapsedClock(() => {
+  const state = props.activeRun?.state;
+  return state === "queued" || state === "running" || state === "waiting-human" || (!props.activeRun && !!props.liveTurn);
 });
 
 const liveElapsedLabel = computed(() => {
-  if (!props.liveTurn) return "";
-  const s = Math.max(0, Math.floor((nowMs.value - props.liveTurn.startedAt) / 1000));
+  const startedAt = props.liveTurn?.startedAt
+    ?? (props.activeRun?.startedAt ? Date.parse(props.activeRun.startedAt) : undefined);
+  if (startedAt === undefined || !Number.isFinite(startedAt)) return "";
+  const s = Math.max(0, Math.floor((nowMs.value - startedAt) / 1000));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
   return `${Math.floor(s / 3600)}h`;
@@ -250,13 +249,8 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       >
         <!-- Human Message -->
         <TranscriptRow v-if="m.role === 'human'" own :row-id="m.id">
-          <div class="min-w-0 max-w-full rounded-2xl rounded-tr-sm bg-accent-soft px-3.5 py-2 text-sm leading-relaxed text-fg">
-            <StreamMarkdown :text="m.content" />
-          </div>
-          <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
-            <CopyButton :text="m.content" />
-            <span class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
-          </div>
+          <ConversationBubble :message="m" :attachments="m.attachments" own />
+          <ConversationMeta :message="m" />
         </TranscriptRow>
 
         <!-- Bot Message -->
@@ -265,24 +259,14 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <template #avatar>
             <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32" static :retired="bot?.retired" />
           </template>
-          <!-- Rich TurnParts if preserved from live stream -->
-          <div v-if="partsForMessage(m)" class="w-full">
-            <TurnParts
-              :parts="partsForMessage(m)!"
-              :collapse-trace="true"
-              :trace-key="`conv:${m.conversationId}:run:${m.runId}`"
-            />
-          </div>
-
-          <!-- Plain StreamMarkdown fallback -->
-          <div v-else class="w-full text-sm leading-relaxed text-fg">
-            <StreamMarkdown :text="m.content" />
-          </div>
-
-          <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-            <CopyButton :text="m.content" />
-            <span class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
-          </div>
+          <ConversationBubble
+            :message="m"
+            :attachments="m.attachments"
+            :parts="partsForMessage(m)"
+            :collapse-trace="true"
+            :trace-key="`conv:${m.conversationId}:run:${m.runId}`"
+          />
+          <ConversationMeta :message="m" :parts="partsForMessage(m)" />
         </TranscriptRow>
 
         <!-- System Message -->
@@ -324,20 +308,14 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
                only liveness signal; the body below never adds a spinner of its own. -->
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-xs font-semibold text-fg">{{ bot?.name ?? "Bot" }}</span>
-            <RunStatusChip :state="runChipState" :label="runChipLabel" :elapsed="liveElapsedLabel || undefined" />
-
-            <!-- Stop Button: only while the Run is non-terminal; terminal Runs
-              keep their banner but must not offer another cancel RPC. -->
-            <button
-              v-if="activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human')"
-              type="button"
-              data-test="stop-turn-hud-button"
-              class="flex items-center gap-1 rounded-sm bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-on-danger"
-              @click="emit('cancelRun')"
-            >
-              <CircleStop :size="11" />
-              <span>{{ $t("bot.prompt.stop") }}</span>
-            </button>
+            <RunStatusChip
+              :state="runChipState"
+              :label="runChipLabel"
+              :elapsed="liveElapsedLabel || undefined"
+              :stop-available="stopAvailable"
+              :stop-pending="!!activeRun && cancellingRunId === activeRun.id"
+              @stop="stopAvailable && cancellingRunId !== activeRun?.id && emit('cancelRun')"
+            />
           </div>
 
           <!-- Plan Panel if plan emitted -->

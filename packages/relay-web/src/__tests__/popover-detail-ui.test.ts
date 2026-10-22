@@ -360,7 +360,7 @@ describe("GroupThinkingBubbles UI", () => {
     const groups = seedEnvironment();
     seedLiveRun();
     vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
-    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({ status: "blocked", scope: null, runId: null, reason: "ownership" });
     const wrapper = mountTranscript();
     const trigger = wrapper.get('[data-test="agent-thinking-bubble"]').element as HTMLButtonElement;
     trigger.focus();
@@ -385,10 +385,13 @@ describe("GroupThinkingBubbles UI", () => {
     const groups = seedEnvironment();
     seedLiveRun();
     vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
-    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue(undefined);
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({ status: "blocked", scope: null, runId: null, reason: "ownership" });
     const wrapper = mountTranscript();
     await openFirstBubble(wrapper);
     (sheet()!.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
+    await flushPromises();
+    expect(cancel).not.toHaveBeenCalled();
+    (document.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
     await flushPromises();
     expect(cancel).toHaveBeenCalled();
     (document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement).click();

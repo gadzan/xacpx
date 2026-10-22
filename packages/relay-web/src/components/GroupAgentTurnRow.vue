@@ -4,12 +4,15 @@ import { useI18n } from "vue-i18n";
 import type {
   BotSummaryDto,
   ConversationMessageDto,
+  ConversationRunDto,
   MemberTurnSummaryDto,
+  TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import TranscriptRow from "./TranscriptRow.vue";
 import BotAvatar from "./BotAvatar.vue";
-import StreamMarkdown from "./StreamMarkdown.vue";
-import CopyButton from "./CopyButton.vue";
+import ConversationBubble from "./ConversationBubble.vue";
+import ConversationMeta from "./ConversationMeta.vue";
+import type { TurnPresentationPlan } from "../lib/turn-presentation";
 import AgentThinkingBubble, { type BubbleStatus } from "./AgentThinkingBubble.vue";
 import { botAvatarState } from "../lib/bot-avatar-state";
 
@@ -36,13 +39,21 @@ const props = defineProps<{
   /** Observed-completion signal from the live run (existing avatar behavior). */
   observedCompletion?: boolean;
   disabled?: boolean;
+  parts?: TurnPartDto[];
+  presentation?: TurnPresentationPlan;
+  singleMember?: boolean;
+  elapsed?: string;
+  stopAvailable?: boolean;
+  stopPending?: boolean;
+  runState?: ConversationRunDto["state"];
 }>();
 
-const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
+const emit = defineEmits<{ toggle: [element: HTMLElement | null]; stop: [] }>();
 
 const { t } = useI18n();
 
 const bubbleStatus = computed<BubbleStatus>(() => {
+  if (props.singleMember && props.runState === "waiting-human") return "waiting";
   const state = props.memberTurn.state;
   switch (state) {
     case "queued":
@@ -97,6 +108,7 @@ defineExpose({ bubbleStatus });
     :data-anchor-id="memberTurn.id"
     :driver="driver"
     :speaker="name"
+    :speaker-role="bot?.role"
   >
     <template #avatar>
       <BotAvatar
@@ -121,16 +133,23 @@ defineExpose({ bubbleStatus });
       :expanded="expanded"
       :attempt="memberTurn.attempt"
       :controls="controls"
+      :single-member="singleMember"
+      :elapsed="elapsed"
+      :stop-available="stopAvailable"
+      :stop-pending="stopPending"
+      @stop="emit('stop')"
       @toggle="emit('toggle', $event)"
     />
     <template v-if="message">
-      <div class="w-full text-sm leading-relaxed text-fg">
-        <StreamMarkdown :text="message.content" />
-      </div>
-      <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-        <CopyButton :text="message.content" />
-        <span class="font-mono text-xs tabular-nums">{{ message.createdAt }}</span>
-      </div>
+      <ConversationBubble
+        :message="message"
+        :attachments="message.attachments"
+        :parts="parts"
+        :presentation="presentation"
+        :collapse-trace="true"
+        :trace-key="`group:${memberTurn.conversationId}:${memberTurn.runId}:${memberTurn.id}:${memberTurn.attempt}`"
+      />
+      <ConversationMeta :message="message" :parts="parts" :presentation="presentation" />
     </template>
   </TranscriptRow>
 </template>

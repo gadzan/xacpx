@@ -1,3 +1,4 @@
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import {
   validAgentMentions,
   type AgentMention,
@@ -99,10 +100,12 @@ export function parseDirectInputMetadata(
   return structuredClone(raw);
 }
 export function assertDirectReplay(
-  message: { content: string; inputMetadata?: DirectInputMetadata },
+  message: { content: string; inputMetadata?: DirectInputMetadata; media?: PromptAttachmentRef[] },
   text: string,
   mentions?: AgentMention[],
+  media?: PromptAttachmentRef[],
 ): void {
+  assertPromptReplay(message, text, media);
   const prior =
     message.inputMetadata?.mentions?.map(({ range, handle }) => ({
       range,
@@ -116,5 +119,18 @@ export function assertDirectReplay(
       "request_payload_conflict",
       "requestId already names another text/reference snapshot",
     );
+  }
+}
+
+export function assertPromptReplay(
+  message: { content: string; media?: PromptAttachmentRef[] },
+  text: string,
+  media?: PromptAttachmentRef[],
+): void {
+  const identity = (refs: PromptAttachmentRef[] | undefined) => JSON.stringify((refs ?? []).map(
+    (ref) => [ref.id, ref.filePath, ref.fileName, ref.mimeType, ref.kind, ref.size, ref.previewUrl ?? null],
+  ));
+  if (message.content !== text || identity(message.media) !== identity(media)) {
+    throw new ConversationError("request_payload_conflict", "requestId already names another text/attachment snapshot");
   }
 }

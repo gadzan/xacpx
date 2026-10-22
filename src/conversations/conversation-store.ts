@@ -1,3 +1,4 @@
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
 import type {
@@ -70,6 +71,12 @@ export interface AcceptRequestInput {
   requestId: string;
   botId: string;
   content: string;
+  /**
+   * Executable upload refs for the human request. Persisted atomically with
+   * the request message; execution re-derives media from the durable row.
+   * Absent/empty means text-only. Attachment-only prompts carry text "".
+   */
+  media?: PromptAttachmentRef[];
   inputMetadata?: import("./direct-input-metadata").DirectInputMetadata;
   profileSnapshot: BotProfileSnapshot;
   mode?: ConversationRun["mode"];

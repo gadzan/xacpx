@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { CircleStop, X } from "lucide-vue-next";
 import type {
@@ -9,6 +9,7 @@ import type {
 import { fmtTime } from "../lib/format";
 import { memberStateKey, memberStateTone, runStateKey, runStateTone, type StateTone } from "../lib/run-state-label";
 import { useLiveDuration, memberDurationClock } from "../lib/run-duration";
+import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
 
 const props = defineProps<{
   run: ConversationRunDto;
@@ -28,6 +29,13 @@ const props = defineProps<{
 const emit = defineEmits<{ close: []; stop: []; attempt: [attempt: number] }>();
 
 const { t } = useI18n();
+const confirmStop = ref(false);
+watch(() => [props.run.id, props.stopAvailable], () => { confirmStop.value = false; });
+function confirmStopRun(): void {
+  if (!confirmStop.value || !props.stopAvailable || props.stopPending) return;
+  confirmStop.value = false;
+  emit("stop");
+}
 
 const historicalAttempt = computed(() => props.memberTurn && props.attempt !== undefined && props.attempt !== props.memberTurn.attempt);
 const stateKey = computed(() => props.memberTurn ? memberStateKey(props.memberTurn.state) : runStateKey(props.run.state));
@@ -102,7 +110,7 @@ const ariaLabel = computed(() =>
           :class="dense ? 'h-7 px-2 text-xs' : 'min-h-11 px-3 text-sm'"
           :disabled="stopPending === true"
           :title="$t('group.detail.stopAllMembers')"
-          @click.stop="emit('stop')"
+          @click.stop="confirmStop = true"
         >
           <CircleStop :size="dense ? 12 : 14" />
           <span>{{ $t("group.detail.stopRun") }}</span>
@@ -124,6 +132,9 @@ const ariaLabel = computed(() =>
     <p v-if="stopAvailable && !dense" data-test="group-stop-run-explanation" class="mt-3 text-xs text-fg-muted">
       {{ $t("group.detail.stopAllMembers") }}
     </p>
+    <ComposerConfirmDialog v-if="confirmStop" :title="$t('group.detail.stopRun')" :confirm-label="$t('group.detail.stopRun')" :pending="stopPending" @cancel="confirmStop = false" @confirm="confirmStopRun">
+      <p>{{ $t('group.detail.stopAllMembers') }}</p>
+    </ComposerConfirmDialog>
 
     <h2
       data-test="group-detail-title"

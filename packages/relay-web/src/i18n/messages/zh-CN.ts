@@ -1,5 +1,13 @@
 // Simplified-Chinese catalog. Mirror the key shape of en.ts exactly.
 export default {
+  collaboration: {
+    stopRestore: "停止并收回草稿",
+    takeover: "接管发送",
+    takeoverHint: "停止旧 run 并发送新指令",
+    restored: "已停止，草稿已回填输入框。",
+    promptUnavailable: "没有可恢复的提示。",
+    stopUnconfirmed: "停止未确认。",
+  },
   common: {
     cancel: "取消",
     confirm: "确认",
@@ -717,6 +725,7 @@ export default {
     actions: {
       newBot: "新建 Bot",
       edit: "编辑 Bot",
+      disable: "禁用",
       delete: "删除 Bot",
       enable: "启用",
     },
@@ -820,6 +829,8 @@ export default {
       reenableNote: "启用后，禁用期间排队的工作可能立即开始。",
       enabled: "已启用 {name}。禁用期间排队的工作可能立即开始。",
       enableFailed: "未能确认 {name} 已启用。列表刷新后会显示当前状态。",
+      disabled: "已禁用 {name}。新消息已被阻止；正在运行的任务会继续，直到结束或手动停止。",
+      disableFailed: "未能确认 {name} 已禁用。列表刷新后会显示当前状态。",
     },
     removal: {
       action: "移除 Bot",
@@ -971,6 +982,9 @@ export default {
     },
     header: {
       members: "{count} 名成员",
+      routingLead: "路由 → {name}",
+      waitingRouting: "等待路由",
+      aggregate: "运行 {running}/{total} · 排队 {queued} · 受阻 {blocked}",
     },
     members: {
       disabled: "已禁用的成员：{names}。他们仍在群组中，重新启用前不会接收新工作。",
@@ -1043,6 +1057,16 @@ export default {
       noEligible: "该群组暂无可用成员。",
       automatic: "自动协作",
       hint: "{'@'}名称 添加成员 · {'@'}everyone 全选",
+      noRuntime: "无运行环境",
+    },
+    confirmEveryone: {
+      title: "发送给 {count} 人？",
+      send: "确认发送",
+      remaining: "还有 {count} 人",
+    },
+    mentionConfirm: {
+      title: "提及未解析，仍要发送？",
+      body: "部分提及未能解析。确认发送吗？",
     },
     router: {
       checking: "正在检查此实例能否运行自动协作。",

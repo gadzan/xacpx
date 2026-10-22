@@ -2,6 +2,14 @@
 // Values here MUST match the original hardcoded English exactly so existing
 // test assertions on visible text keep passing.
 export default {
+  collaboration: {
+    stopRestore: "Stop & restore draft",
+    takeover: "Take over",
+    takeoverHint: "Stop the old run and send the new instruction",
+    restored: "Stopped. Draft restored to the input.",
+    promptUnavailable: "No recoverable prompt found.",
+    stopUnconfirmed: "Stop not confirmed.",
+  },
   common: {
     cancel: "Cancel",
     confirm: "Confirm",
@@ -720,6 +728,7 @@ export default {
     actions: {
       newBot: "New Bot",
       edit: "Edit Bot",
+      disable: "Disable",
       delete: "Delete Bot",
       enable: "Enable",
     },
@@ -823,6 +832,8 @@ export default {
       reenableNote: "Enabling this Bot may start work that was queued while it was disabled.",
       enabled: "{name} is enabled. Work queued while it was disabled may start now.",
       enableFailed: "Could not confirm that {name} is enabled. The list shows the current state once it refreshes.",
+      disabled: "{name} is disabled. New messages are blocked; an active run continues until it ends or you stop it.",
+      disableFailed: "Could not confirm that {name} is disabled. The list shows the current state once it refreshes.",
     },
     removal: {
       action: "Remove bot",
@@ -974,6 +985,9 @@ export default {
     },
     header: {
       members: "{count} member | {count} members",
+      routingLead: "Routing → {name}",
+      waitingRouting: "Waiting for routing",
+      aggregate: "Running {running}/{total} · Queued {queued} · Blocked {blocked}",
     },
     members: {
       disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",
@@ -1046,6 +1060,16 @@ export default {
       noEligible: "No enabled members in this group.",
       automatic: "Automatic collaboration",
       hint: "{'@'}name adds a member · {'@'}everyone selects all",
+      noRuntime: "No runtime",
+    },
+    confirmEveryone: {
+      title: "Send to {count} people?",
+      send: "Send",
+      remaining: "{count} more",
+    },
+    mentionConfirm: {
+      title: "Send with unresolved mention?",
+      body: "Some mentions could not be resolved. Send anyway?",
     },
     router: {
       checking: "Checking whether this instance can run automatic collaboration.",

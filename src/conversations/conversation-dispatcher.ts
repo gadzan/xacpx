@@ -1745,6 +1745,7 @@ export class ConversationDispatcher {
       // tracked execution nor the marker, and would therefore report an
       // "unknown" outcome that seals the Run and cancels the siblings.
       const runPromise = this.runner.run({
+        ...(request?.media?.length ? { media: request.media } : {}),
         ...(directExecution ? { directExecutionToken: directExecution.token } : {}),
         ...(mentions?.length ? { agentMentions: mentions.map(({range,handle}) => ({range:[range[0]+peerPrefix.length+text.length-userText.length,range[1]+peerPrefix.length+text.length-userText.length] as [number,number],handle})), directMentionContext: mentions } : {}),
         ...(groupExecution ? { groupExecutionToken: groupExecution.token } : {}),

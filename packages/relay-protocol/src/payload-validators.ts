@@ -9,6 +9,7 @@
 // and `parseControlPayload` forces every connector dispatch arm to register its message type.
 import { isBotAvatarWriteConfig } from "./bot-avatar.js";
 import { validAgentMentions } from "./agent-mentions.js";
+import type { PromptAttachmentRef } from "./messages.js";
 import {
   MSG,
   type AgentsCreatePayload,
@@ -687,6 +688,20 @@ const validateGroupTopicsTeardown: Validator<GroupTopicsTeardownPayload> = (p) =
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? (o as unknown as GroupTopicsTeardownPayload) : null;
 };
+const MAX_CONVERSATION_ATTACHMENTS = 5;
+export const MAX_PROMPT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+export function validPromptAttachments(media: unknown): media is PromptAttachmentRef[] {
+  if (!Array.isArray(media) || media.length > MAX_CONVERSATION_ATTACHMENTS) return false;
+  return media.every((entry) => {
+    const ref = fields(entry);
+    return !!ref && isBoundedStr(ref.id, 1024) && isBoundedStr(ref.filePath, 4096)
+      && isBoundedStr(ref.fileName, 1024) && isBoundedStr(ref.mimeType, 256)
+      && isNonNegInt(ref.size) && ref.size <= MAX_PROMPT_ATTACHMENT_BYTES
+      && (ref.kind === "image" || ref.kind === "file")
+      && (ref.previewUrl === undefined || (typeof ref.previewUrl === "string" && ref.previewUrl.length <= 256 * 1024));
+  });
+}
 const isConversationTarget = (v: unknown): boolean => {
   if (!isObj(v)) return false;
   // The variants are a MUTUALLY EXCLUSIVE union: a payload carrying keys from
@@ -718,6 +733,7 @@ const isConversationTarget = (v: unknown): boolean => {
   }
   return v.mode === "everyone" || v.mode === "automatic";
 };
+/** Bounded executable upload ref shape (daemon filePath); execution re-checks sandbox + upload refs. */
 const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
@@ -727,6 +743,7 @@ const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => 
   if (o.target !== undefined && !isConversationTarget(o.target)) {
     return null;
   }
+  if (o.media !== undefined && !validPromptAttachments(o.media)) return null;
   return o as unknown as ConversationPromptPayload;
 };
 const validateConversationBinding: Validator<{ chatKey: string; conversationId: string; topicId?: string }> = (p) => {

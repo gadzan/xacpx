@@ -40,17 +40,12 @@ function onSend(
   void chat.send(text, media, agentMentions);
 }
 
-// Bind the composer to the active instance so file uploads target the right daemon.
-watch(() => chat.instanceId, (id) => { if (id) composer.bindInstance(id); }, { immediate: true });
-
-// Clear staged attachments whenever the active session OR instance changes: `pending`
-// is a single global array, so leftover chips from one target would otherwise attach to
-// the next. Watch both identifiers and drop the staged files on any switch.
 watch(
   () => [chat.instanceId, chat.sessionAlias] as const,
-  ([id, alias], prev) => {
-    if (prev && (id !== prev[0] || alias !== prev[1])) composer.clearAttachments();
+  ([id, alias]) => {
+    if (id && alias) composer.bindInstance(id, JSON.stringify(["session", id, alias]));
   },
+  { immediate: true, flush: "sync" },
 );
 
 // Context for the header chips: the current session's workspace/agent plus the

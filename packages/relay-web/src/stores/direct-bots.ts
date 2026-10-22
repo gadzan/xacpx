@@ -1,10 +1,11 @@
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, toRaw } from "vue";
 import {
   MSG,
   isErrorPayload,
   isBotAvatarConfig,
   type AgentMention,
+  type PromptAttachmentRef,
   type ConversationCompletions,
   type BotDetailDto,
   type BotRemovalPreviewDto,
@@ -38,7 +39,39 @@ import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectComposerStore } from "./direct-composer";
 import { pushToast } from "../lib/use-toasts";
 
-export type DirectBotRunState = ConversationRunStateDto;
+export interface DirectCancelScope {
+  kind: "direct";
+  instanceId: string;
+  conversationId: string;
+  topicId: string;
+  botId: string;
+}
+
+export type CancelOutcome =
+  | { status: "cancelled"; scope: DirectCancelScope; runId: string; run: ConversationRunDetailDto }
+  | { status: "terminal"; scope: DirectCancelScope; runId: string; run: ConversationRunDetailDto }
+  | { status: "blocked"; scope: DirectCancelScope | null; runId: string | null; reason: "no-active-run" | "ownership" | "topic-not-ready" }
+  | { status: "pending"; scope: DirectCancelScope; runId: string }
+  | { status: "stale"; scope: DirectCancelScope; runId: string }
+  | { status: "unconfirmed"; scope: DirectCancelScope; runId: string };
+
+function cancelScopeOf(
+  instanceId: string | null,
+  conversationId: string | null,
+  topicId: string | null,
+  botId: string | null,
+): DirectCancelScope | null {
+  if (!instanceId || !conversationId || !topicId || !botId) return null;
+  return { kind: "direct", instanceId, conversationId, topicId, botId };
+}
+
+function classifyCancelResult(scope: DirectCancelScope, runId: string, run: ConversationRunDetailDto): CancelOutcome {
+  if (run.state === "cancelled") return { status: "cancelled", scope, runId, run };
+  if (isTerminalRunState(run.state)) return { status: "terminal", scope, runId, run };
+  return { status: "unconfirmed", scope, runId };
+}
+
+ export type DirectBotRunState = ConversationRunStateDto;
 
 export interface DirectBotLiveTurn {
   parts: TurnPartDto[];
@@ -1801,6 +1834,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       } else {
         activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       }
+      const mergedCandidate = activeRun.value ?? candidate;
       // A terminal handoff that already applied the WS terminal row must not
       // be regressed: if the handoff named this exact Run and it is terminal
       // locally, converge without re-fetching detail (the detail response is
@@ -1808,13 +1842,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // the member-turn merge below could still clobber fresher turn state).
       if (
         harvestTerminalHandoff &&
-        activeRun.value.id === harvestTerminalHandoff.runId &&
-        isTerminalRunState(activeRun.value.state)
+        mergedCandidate.id === harvestTerminalHandoff.runId &&
+        isTerminalRunState(mergedCandidate.state)
       ) {
         liveTurn.value = null;
         return true;
       }
-      if (isTerminalRunState(activeRun.value.state)) {
+      if (isTerminalRunState(mergedCandidate.state)) {
         liveTurn.value = null;
         return true;
       }
@@ -1998,14 +2032,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     convId: string | null,
     topId: string | null,
     harvestRunId?: string,
-  ): void {
-    if (!targetInstanceId || !convId || !topId) return;
+  ): Promise<void> {
+    if (!targetInstanceId || !convId || !topId) return Promise.resolve();
     const runId = harvestRunId;
     // Capture the discovery generation synchronously: concurrent terminal
     // events for the same Run share one handoff instead of stacking
     // redundant history+discovery round trips.
     const handoffDiscoveryId = ++discoverySequence;
-    void (async () => {
+    return (async () => {
       const generation = currentSelectionGeneration;
       await loadHistory(
         targetInstanceId,
@@ -2259,7 +2293,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     firstSendPending.value = false;
     persistBotSelection(null, null);
   }
-  const promptSnapshots = new Map<string,{requestId:string;text:string;mentions:AgentMention[]}>();
+  const promptSnapshots = new Map<string,{requestId:string;text:string;mentions:AgentMention[];media:PromptAttachmentRef[]}>();
   const acceptedPromptRequests = new Set<string>();
   function recordAcceptedPrompt(instance: string, run: ConversationRunDto): void {
     for (const [key,snapshot] of promptSnapshots) {
@@ -2271,12 +2305,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (acceptedPromptRequests.size>256) acceptedPromptRequests.delete(acceptedPromptRequests.values().next().value!);
     }
   }
-  function preparePromptRequestId(text: string, mentions:AgentMention[] = []): string {
+  function preparePromptRequestId(text: string, mentions:AgentMention[] = [], media:PromptAttachmentRef[] = []): string {
     const key=JSON.stringify([instanceId.value,activeConversationId.value,activeTopicId.value,selectedBotId.value]);
     const previous=promptSnapshots.get(key);
-    const frozen=structuredClone(mentions);
+    const frozen=structuredClone(toRaw(mentions));
+    const frozenMedia = structuredClone(toRaw(media));
     const snapshot=previous && previous.text===text && JSON.stringify(previous.mentions)===JSON.stringify(frozen)
-      ? previous : {requestId:mintRequestId(),text,mentions:frozen};
+      && JSON.stringify(previous.media)===JSON.stringify(frozenMedia)
+      ? previous : {requestId:mintRequestId(),text,mentions:frozen,media:frozenMedia};
     promptSnapshots.set(key,snapshot);
     currentDraftRequestId.value=snapshot.requestId;lastPromptText.value=text;
     return snapshot.requestId;
@@ -2293,7 +2329,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
    * prompt into it. Creation failure surfaces a toast and keeps the draft;
    * nothing is sent.
    */
-  async function sendFirstPrompt(text: string, agentMentions: AgentMention[]): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
+  async function sendFirstPrompt(text: string, agentMentions: AgentMention[], media: PromptAttachmentRef[] = []): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
     if (firstSendPending.value || !topicReady.value) return "rejected";
     const targetInstId = instanceId.value!;
     const targetBotId = selectedBotId.value!;
@@ -2347,19 +2383,20 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       }
       carryDraft();
       if (activeTopicId.value !== topicId) return "orphaned";
-      return await sendPrompt(text, agentMentions);
+      return await sendPrompt(text, agentMentions, media);
     } finally {
       if (stillHere()) carryDraft();
       if (token === firstSendToken) firstSendPending.value = false;
     }
   }
 
-  async function sendPrompt(text: string, agentMentions:AgentMention[] = []): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
+  async function sendPrompt(text: string, agentMentions:AgentMention[] = [], media:PromptAttachmentRef[] = []): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
+    if (promptInFlight.value) return "rejected";
     const trimmed = text;
     if (trimmed.trim() && instanceId.value && selectedBotId.value && !activeTopicId.value) {
-      return sendFirstPrompt(trimmed, agentMentions);
+      return sendFirstPrompt(trimmed, agentMentions, media);
     }
-    if (!trimmed.trim() || !instanceId.value || !selectedBotId.value || !activeConversationId.value || !activeTopicId.value) {
+    if ((!trimmed.trim() && media.length === 0) || !instanceId.value || !selectedBotId.value || !activeConversationId.value || !activeTopicId.value) {
       return "rejected";
     }
 
@@ -2397,8 +2434,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       activeConversationId.value === targetConvId &&
       activeTopicId.value === targetTopicId;
     latestPlanRunId.value = null;
-    const reqId = preparePromptRequestId(trimmed,agentMentions);
-    const frozenMentions=structuredClone(agentMentions);
+    const reqId = preparePromptRequestId(trimmed,agentMentions,media);
+    const frozenMentions=structuredClone(toRaw(agentMentions));
+    const frozenMedia = structuredClone(toRaw(media));
     const snapshotKey=JSON.stringify([targetInstId,targetConvId,targetTopicId,targetBotId]);
     promptInFlight.value = true;
     promptError.value = null;
@@ -2428,6 +2466,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           requestId: reqId,
           text: trimmed,
           ...(frozenMentions.length ? {agentMentions:frozenMentions} : {}),
+          ...(frozenMedia.length ? { media: frozenMedia } : {}),
           target: { botId: targetBotId },
         }),
       );
@@ -3012,22 +3051,34 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     terminalInteractions.value = nextTerminals;
   }
 
-  async function cancelCurrentRun(): Promise<void> {
-    if (!instanceId.value || !activeRun.value) return;
-    // Store-level double-click fence: while a cancel RPC for this Run is in
-    // flight the HUD keeps emitting; a second dispatch would race the first
-    // and the late failure could re-mark uncertainty on a terminal Run.
-    if (cancellingRunId.value === activeRun.value.id) return;
-    // Fail closed if ownership is unconfirmed or topic discovery is in flight:
-    // do NOT issue cancel RPC for an unconfirmed local owner!
-    if (ownershipUncertain.value || !topicReady.value) {
-      void retryDiscovery();
-      return;
+  async function cancelCurrentRun(expected?: { runId?: string }): Promise<CancelOutcome> {
+    const active = activeRun.value;
+    if (!instanceId.value || !active) {
+      return { status: "blocked", scope: null, runId: null, reason: "no-active-run" };
     }
     const targetInstId = instanceId.value;
     const targetConvId = activeConversationId.value;
     const targetTopicId = activeTopicId.value;
-    const runId = activeRun.value.id;
+    const targetBotId = selectedBotId.value;
+    const runId = expected?.runId ?? active.id;
+    const scope = cancelScopeOf(targetInstId, targetConvId, targetTopicId, targetBotId);
+    if (!scope) return { status: "blocked", scope: null, runId, reason: "no-active-run" };
+    if (active.conversationId !== targetConvId || active.topicId !== targetTopicId) {
+      return { status: "stale", scope, runId };
+    }
+    if (expected?.runId && expected.runId !== active.id) {
+      return { status: "stale", scope, runId: expected.runId };
+    }
+    // Store-level double-click fence: while a cancel RPC for this Run is in
+    // flight the HUD keeps emitting; a second dispatch would race the first
+    // and the late failure could re-mark uncertainty on a terminal Run.
+    if (cancellingRunId.value === runId) return { status: "pending", scope, runId };
+    // Fail closed if ownership is unconfirmed or topic discovery is in flight:
+    // do NOT issue cancel RPC for an unconfirmed local owner!
+    if (ownershipUncertain.value || !topicReady.value) {
+      void retryDiscovery();
+      return { status: "blocked", scope, runId, reason: !topicReady.value ? "topic-not-ready" : "ownership" };
+    }
     const generation = currentSelectionGeneration;
     const isCurrent = (): boolean =>
       generation === currentSelectionGeneration &&
@@ -3047,45 +3098,58 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         ),
       );
       if (!isCurrent()) {
-        return;
+        return { status: "stale", scope, runId };
+      }
+      if (res.run.id !== runId || res.run.conversationId !== targetConvId || res.run.topicId !== targetTopicId) {
+        return { status: "unconfirmed", scope, runId };
       }
       // Retirement rule: only hand off when this response retires the
       // locally-tracked nonterminal Run (not when it merely confirms an
       // already-terminal Run).
-      const retiringActiveRun = !isTerminalRunState(activeRun.value.state);
-      activeRun.value = mergeRun(activeRun.value, res.run);
-      if (isTerminalRunState(activeRun.value.state)) {
+      const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
+      const merged = mergeRun(activeRun.value, res.run);
+      activeRun.value = merged;
+      if (isTerminalRunState(merged.state)) {
         liveTurn.value = null;
         resolveCancelUncertainty(runId);
         if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
-          void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
+          await rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, merged.id);
         }
       }
+      return classifyCancelResult(scope, runId, res.run);
     } catch (err: unknown) {
       console.warn("cancelCurrentRun error:", err);
       // Transport failure does NOT mean durable Run is terminal/indeterminate.
       // Keep activeRun active, track uncertainty separately from prompt errors,
-      // and query instance state.
+      // and reconcile against instance state before reporting the outcome.
       if (isCurrent() && activeRun.value && activeRun.value.id === runId) {
         cancelUncertaintyRunId.value = runId;
         cancelError.value = "cancelUnknown";
-        void api
-          .rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, { runId })
-          .then((getRes) => {
-            if (!isCurrent()) return;
-            const run = unwrapRpc(getRes).run;
-            const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
-            activeRun.value = mergeRun(activeRun.value, run);
-            if (isTerminalRunState(activeRun.value.state)) {
-              liveTurn.value = null;
-              resolveCancelUncertainty(runId);
-              if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
-                void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
-              }
+        try {
+          const run = unwrapRpc(
+            await api.rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, { runId }),
+          ).run;
+          if (!isCurrent()) return { status: "stale", scope, runId };
+          if (run.id !== runId || run.conversationId !== targetConvId || run.topicId !== targetTopicId) {
+            return { status: "unconfirmed", scope, runId };
+          }
+          const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
+          const merged = mergeRun(activeRun.value, run);
+          activeRun.value = merged;
+          if (isTerminalRunState(merged.state)) {
+            liveTurn.value = null;
+            resolveCancelUncertainty(runId);
+            if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
+              await rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, merged.id);
             }
-          })
-          .catch(() => {});
+            return classifyCancelResult(scope, runId, run);
+          }
+          return { status: "unconfirmed", scope, runId };
+        } catch {
+          return { status: "unconfirmed", scope, runId };
+        }
       }
+      return { status: "stale", scope, runId };
     } finally {
       if (cancellingRunId.value === runId) {
         cancellingRunId.value = null;
