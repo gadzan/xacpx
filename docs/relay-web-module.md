@@ -1045,6 +1045,30 @@ Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌�
 底部跟随监听投影条目的完整 key。临时活动行被规范回复替换时，即使条目数量不变，
 停留在底部的读者仍会跟随；已向上滚动的读者保持当前位置。加载较早历史期间仍由原锚点恢复逻辑负责定位。
 
+### Group 派发聚合行与展开卡片（PR #469）
+
+项管（leader）同一轮发出的多个派发不再各占一行，而是在 `GroupTranscript.vue` 里聚合成一行
+`GroupDispatchRow.vue`：叠放的 Bot 头像、派发数量和该轮的聚合状态。聚合由纯函数
+`lib/group-dispatch-presentation.ts` 的 `presentGroupDispatch()` 计算，只读地投影已有的
+durable MemberTurn 与消息，不写 activeRun、不触发服务端调度。项管自己被停止时，聚合状态
+仍按各成员已证明的结果计算，另输出 `leaderStopped` 供上层显示停止说明。
+
+点击该行（或聚焦后按 Enter / Space）展开行下方的卡片。卡片为 `bg-surface`、16px 圆角、
+`max-w-[560px]`：先是一段「派发内容」（`group.dispatch.instructions`），正文取该轮第一条
+handoff 的 task，两行截断；标题整轮只出现一次。卡片标题与折叠箭头旋转由 `aria-expanded`
+和 `aria-controls` 暴露。
+
+随后每个被派发的 Bot 一行：头像、名字、状态（复用 `group.handoff.states.*` 的既有措辞）、
+以及一行回复预览。没有回复的成员不显示预览行。
+
+回复预览与跳转都只认精确证据：成员回复必须与该成员 MemberTurn 的 `promptRequestId`
+一致、同 Conversation / Topic / Run、同 Bot，且是 handoff 之后的唯一候选；存在歧义、
+缺证据或回复不在已加载历史中时，该成员不显示预览，其行 disabled、不可点击。
+
+点击有回复的成员行跳转到该回复，复用 `GroupTranscript.vue` 既有的 `jumpToMessage()`：
+给目标消息设置 `tabindex="-1"` 并转移焦点，再定位视口。卡片只是桌面展开形态；
+停止动作、确认框和移动端底部弹层是后续步骤。
+
 ## 阶段范围边界
 
 Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。
