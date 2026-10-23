@@ -36,6 +36,7 @@ import {
   type GroupDispatchPresentation,
 } from "../lib/group-dispatch-presentation";
 import { pushToast } from "../lib/use-toasts";
+import { confirm } from "../lib/use-confirm";
 import {
   projectGroupTranscript,
   traceEventsToParts,
@@ -410,6 +411,27 @@ async function handleStopMember(payload: { runId: string; memberTurnId: string }
     pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
   }
 }
+
+/** Round-level stop: confirm first, then cancel the run through the same path
+ *  as the per-run Stop button. */
+async function handleStopAll(presentation: GroupDispatchPresentation): Promise<void> {
+  const runId = presentation.members[0]?.runId;
+  if (!runId) return;
+  const ok = await confirm({
+    title: t("group.dispatch.stopAllConfirm.title"),
+    message: t("group.dispatch.stopAllConfirm.message", {
+      name: group.value?.title ?? "",
+      n: presentation.members.length,
+    }),
+    confirmLabel: t("group.dispatch.stopAllConfirm.confirm"),
+    tone: "danger",
+  });
+  if (!ok) return;
+  // The round may have ended while the dialog was open: never cancel a run
+  // other than the one the user confirmed.
+  if (groupsStore.activeRun?.id !== runId) return;
+  void groupsStore.cancelCurrentRun();
+}
 function handleToggle(key: string, event: unknown): void {
   toggleDetail(key, event instanceof HTMLElement ? event : null);
 }
@@ -582,6 +604,7 @@ async function handleLoadOlder(): Promise<void> {
                 class="mt-2"
                 @jump="jumpToMessage"
                 @stop-member="handleStopMember"
+                @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
               />
               <p
                 v-if="dispatchRows[item.message.id]?.leaderStopped"
@@ -601,6 +624,7 @@ async function handleLoadOlder(): Promise<void> {
                 class="mt-2"
                 @jump="jumpToMessage"
                 @stop-member="handleStopMember"
+                @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
               />
               <p
                 v-if="dispatchRows[item.message.id]?.leaderStopped"
@@ -613,7 +637,12 @@ async function handleLoadOlder(): Promise<void> {
 
             <template v-else-if="item.message.handoff">
               <template v-if="dispatchRows[item.message.id]">
-                <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" @jump="jumpToMessage" @stop-member="handleStopMember" />
+                <GroupDispatchRow
+                  :presentation="dispatchRows[item.message.id]!"
+                  @jump="jumpToMessage"
+                  @stop-member="handleStopMember"
+                  @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
+                />
                 <p
                   v-if="dispatchRows[item.message.id]!.leaderStopped"
                   data-test="group-dispatch-stopped"
@@ -685,7 +714,12 @@ async function handleLoadOlder(): Promise<void> {
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
         />
           <div v-if="dispatchRows[item.message.id]" class="mx-auto w-full max-w-3xl">
-            <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" @jump="jumpToMessage" @stop-member="handleStopMember" />
+            <GroupDispatchRow
+              :presentation="dispatchRows[item.message.id]!"
+              @jump="jumpToMessage"
+              @stop-member="handleStopMember"
+              @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
+            />
             <p
               v-if="dispatchRows[item.message.id]?.leaderStopped"
               data-test="group-dispatch-stopped"
