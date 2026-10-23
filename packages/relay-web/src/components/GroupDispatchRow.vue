@@ -260,6 +260,9 @@ function stopAll(): void {
 
     <!-- Mobile: the same content as the inline card, as a bottom sheet. The
          stop-all action reuses the transcript's confirmation path verbatim. -->
+    <!-- Teleported: transcript bubbles use content-visibility, which contains
+         fixed descendants, so an inline sheet would scroll with the row. -->
+    <Teleport to="body">
     <MobileSheet
       v-if="isMobile && sheetOpen"
       :id="sheetId"
@@ -299,5 +302,6 @@ function stopAll(): void {
         </button>
       </template>
     </MobileSheet>
+    </Teleport>
   </div>
 </template>

@@ -156,7 +156,7 @@ function row(
         ...(over.messages ? { messages: over.messages } : {}),
       }),
     },
-    global: { plugins: [i18n] },
+    global: { plugins: [i18n], stubs: { teleport: true } },
   });
 }
 
@@ -1223,7 +1223,7 @@ describe("GroupDispatchRow on mobile", () => {
     const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
       status: "blocked", scope: null, runId: "run_1", reason: "ownership",
     });
-    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n], stubs: { teleport: true } } });
     await flushPromises();
 
     await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
