@@ -774,3 +774,120 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 });
+
+/** The mobile branch of the row is width-driven (useIsMobile: < 1024). */
+function setViewportWidth(width: number): void {
+  Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+}
+
+describe("GroupDispatchRow on mobile", () => {
+  const realWidth = window.innerWidth;
+  beforeEach(() => {
+    i18n.global.locale.value = "en";
+    setViewportWidth(375);
+  });
+  afterEach(() => {
+    setViewportWidth(realWidth);
+  });
+
+  it("collapses the row into one non-wrapping bots · status line", () => {
+    const wrapper = row(["running", "running", "queued", "queued"]);
+    const summary = wrapper.get('[data-test="group-dispatch-summary"]');
+    expect(summary.text()).toBe("4 bots · 2 running · 2 queued");
+    expect(summary.classes()).toContain("whitespace-nowrap");
+    // The desktop title/status split is gone.
+    expect(wrapper.find('[data-test="group-dispatch-title"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="group-dispatch-status"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("localizes the mobile summary", () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["running", "running", "completed", "completed"]);
+    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("4 个 Bot · 2 执行中");
+    wrapper.unmount();
+  });
+
+  it("opens a bottom sheet instead of the desktop card", async () => {
+    const wrapper = row([], ["bot_a", "bot_b"], {
+      dispatches: [entry("bot_a", "running", { task: "Review the diff" }), entry("bot_b", "completed", { task: "Review the diff" })],
+    });
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    await trigger.trigger("click");
+
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(false);
+    expect(trigger.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.find('[data-test="group-dispatch-sheet"]').exists()).toBe(true);
+
+    const rows = wrapper.findAll('[data-test="group-dispatch-sheet-row"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.get('[data-test="group-dispatch-sheet-member-name"]').text()).toBe("Reviewer");
+    expect(rows[0]!.get('[data-test="group-dispatch-sheet-member-status"]').text()).toBe("Running");
+    expect(rows[1]!.get('[data-test="group-dispatch-sheet-member-name"]').text()).toBe("Tester");
+    expect(rows[1]!.get('[data-test="group-dispatch-sheet-member-status"]').text()).toBe("Completed");
+    // Touch target: every row is at least 44px tall.
+    for (const sheetRow of rows) expect(sheetRow.classes()).toContain("min-h-11");
+    wrapper.unmount();
+  });
+
+  it("offers stop all in the sheet only while a member is active", async () => {
+    const active = row(["running", "queued"]);
+    await active.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(active.get('[data-test="group-dispatch-sheet-stop-all"]').text()).toBe("Stop all");
+    active.unmount();
+
+    const done = row(["completed", "completed"]);
+    await done.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(done.find('[data-test="group-dispatch-sheet-stop-all"]').exists()).toBe(false);
+    done.unmount();
+  });
+
+  it("runs the desktop stop-all confirmation from the sheet", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+    );
+    groups.groupsByInstance = {
+      instance_1: [{
+        id: "group_1",
+        kind: "group",
+        title: "Release",
+        botIds: ["bot_a", "bot_b", "bot_c"],
+        createdAt: "now",
+        updatedAt: "now",
+      }],
+    };
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
+      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
+    });
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    await wrapper.get('[data-test="group-dispatch-sheet-stop-all"]').trigger("click");
+    await flushPromises();
+
+    expect(useConfirmState().value?.title).toBe("Stop all tasks?");
+    expect(useConfirmState().value?.message).toBe("Release and the 2 dispatched tasks will stop");
+    expect(cancel).not.toHaveBeenCalled();
+
+    settleConfirm(true);
+    await flushPromises();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("keeps the desktop card on desktop", async () => {
+    setViewportWidth(1280);
+    const wrapper = row(["completed", "completed"]);
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="group-dispatch-summary"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="group-dispatch-sheet"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+});
