@@ -23,8 +23,8 @@ export function basenameForPath(input: string): string {
 }
 
 export function isSamePath(left: string, right: string): boolean {
-  const normalizedLeft = normalizePath(left);
-  const normalizedRight = normalizePath(right);
+  const normalizedLeft = stripTrailingSeparators(normalizePath(left));
+  const normalizedRight = stripTrailingSeparators(normalizePath(right));
 
   if (isWindowsLikePath(normalizedLeft) || isWindowsLikePath(normalizedRight)) {
     return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
@@ -39,4 +39,15 @@ export function isWindowsLikePath(input: string): boolean {
 
 function expandHome(input: string): string {
   return input.startsWith("~") ? homedir() + input.slice(1) : input;
+}
+
+/**
+ * Trailing separators are not part of a path's identity: `/tmp/x/` and
+ * `/tmp/x` denote the same directory. Roots (`/`, `C:/`, `C:`) keep their
+ * canonical shape instead of collapsing to an empty string.
+ */
+function stripTrailingSeparators(normalized: string): string {
+  if (ROOT_PATH_RE.test(normalized)) return normalized;
+  const trimmed = normalized.replace(/\/+$/, "");
+  return trimmed === "" ? normalized : trimmed;
 }

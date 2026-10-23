@@ -2125,6 +2125,58 @@ test("resolveWorkerBindingSession fails closed on unknown identity", () => {
   expect(service.listRuntimeQueueRecoverySessions()).toEqual([]);
 });
 
+test("resolveWorkerBindingSession resolves a pathless worker after its workspace is unregistered", () => {
+  const state = createEmptyState();
+  const workerLid = "55555555-5555-4555-8555-555555555555";
+  // Ephemeral/pathless worker: the explicit cwd IS the physical target, so a
+  // workspace removed from config must not truncate restart prime, queue
+  // recovery, or the physical-group scan that all read this catalog.
+  state.orchestration.workerBindings["weacpx:claude:codex:instance"] = {
+    sourceHandle: "weacpx:claude:codex:instance",
+    coordinatorSession: "codex:instance",
+    workspace: "weacpx",
+    cwd: "/repos/weacpx",
+    targetAgent: "claude",
+    logicalSessionId: workerLid,
+    transportEngine: "runtime",
+  };
+  // Same situation WITHOUT a cwd has no derivable physical target: the
+  // binding must stay unresolvable (fail closed), never fall back to another
+  // workspace's directory.
+  state.orchestration.workerBindings["dangling:claude"] = {
+    sourceHandle: "dangling:claude",
+    coordinatorSession: "backend:main",
+    workspace: "gone",
+    targetAgent: "claude",
+    logicalSessionId: "66666666-6666-4666-8666-666666666666",
+    transportEngine: "runtime",
+  };
+  // A whitespace-only cwd is not an explicit target: it must stay
+  // unresolvable for a missing workspace instead of spawning in the process cwd.
+  state.orchestration.workerBindings["blank-cwd:claude"] = {
+    sourceHandle: "blank-cwd:claude",
+    coordinatorSession: "backend:main",
+    workspace: "gone",
+    cwd: "  ",
+    targetAgent: "claude",
+    logicalSessionId: "77777777-7777-4777-8777-777777777777",
+    transportEngine: "runtime",
+  };
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+
+  expect(service.resolveWorkerBindingSession("weacpx:claude:codex:instance")).toMatchObject({
+    workspace: "weacpx",
+    cwd: "/repos/weacpx",
+    logicalSessionId: workerLid,
+    transportEngine: "runtime",
+  });
+  expect(service.resolveWorkerBindingSession("dangling:claude")).toBeNull();
+  expect(service.resolveWorkerBindingSession("blank-cwd:claude")).toBeNull();
+  expect(service.listRuntimeQueueRecoverySessions().map((session) => session.logicalSessionId)).toEqual([
+    workerLid,
+  ]);
+});
+
 test("attach to a sibling physical session inherits the sibling engine, not the config", async () => {
   const config = createConfig();
   const state = createEmptyState();

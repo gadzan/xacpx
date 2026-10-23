@@ -387,8 +387,16 @@ export class SessionService {
    * production dispatch uses (main.ts resolveWorkerRuntimeSession): workspace
    * cwd from config, launch fields from the worker agent resolution, and the
    * binding's own persisted logicalSessionId/transportEngine. Returns null
-   * when the binding cannot be resolved (unknown agent/workspace) or carries
-   * no persisted identity — fail closed, never guess.
+   * when the binding cannot be resolved (unknown agent/workspace without an
+   * explicit cwd) or carries no persisted identity — fail closed, never guess.
+   *
+   * Pathless/ephemeral bindings keep working after their workspace
+   * registration is removed: when `binding.cwd` is present it IS the physical
+   * target (the workspace name is provenance only), so the workspace config
+   * is required only to derive a default cwd. This mirrors
+   * resolveWorkerRuntimeSession's explicit-cwd branch; requiring registration
+   * here would make restart prime, queue recovery, and physical-group scans
+   * silently drop a worker that dispatch can still resolve.
    */
   resolveWorkerBindingSession(workerSession: string): ResolvedSession | null {
     const binding: WorkerBindingRecord | undefined =
@@ -404,7 +412,12 @@ export class SessionService {
       return null;
     }
     const workspaceConfig = this.config.workspaces[binding.workspace];
-    if (!workspaceConfig) {
+    // A blank cwd is not an explicit target (staging treats it the same way).
+    // No usable explicit cwd: the physical target can only come from the
+    // registered workspace. Both missing means nothing resolvable remains.
+    const explicitCwd = binding.cwd !== undefined && binding.cwd.trim().length > 0;
+    const cwd = explicitCwd ? binding.cwd : workspaceConfig?.cwd;
+    if (cwd === undefined) {
       return null;
     }
     const launch = resolveWorkerAgentLaunch(agentConfig, this.config.transport, binding);
@@ -424,7 +437,7 @@ export class SessionService {
       // persists its own cwd (delegate request), which overrides the
       // workspace default. Recovering with the default would acquire/ensure
       // a DIFFERENT physical Runtime session for the same logical journal.
-      cwd: binding.cwd ?? workspaceConfig.cwd,
+      cwd,
       logicalSessionId: binding.logicalSessionId,
       transportEngine: binding.transportEngine,
     };

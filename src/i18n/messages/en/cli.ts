@@ -65,6 +65,14 @@ export const cli: CliMessages = {
   workspaceSaved: (name, cwd) => `Workspace "${name}" saved: ${cwd}`,
   workspaceNotFound: (name) => `Workspace "${name}" not found.`,
   workspaceRemoved: (name) => `Workspace "${name}" removed`,
+  workspaceRemoveDaemonRunning:
+    "Cannot remove a workspace while the xacpx daemon is running (or its state is indeterminate): the daemon keeps its own config snapshot and session bindings, so editing config.json behind it can race a live delegation. Use /workspace rm in the console or the Control API, or run `xacpx stop` first.",
+  workspaceRemoveDaemonStatusFailed: (message) =>
+    `Cannot determine whether the xacpx daemon is running; refusing to edit config.json: ${message}`,
+  workspaceRemoveStillReferenced: (name, references) =>
+    `Cannot remove workspace "${name}": it is still referenced by ${references}. Remove those sessions/bindings first (start the daemon and use /session rm or /workspace rm).`,
+  workspaceRemoveStateReadFailed: (message) =>
+    `Cannot read state.json to check workspace references; refusing to edit config.json: ${message}`,
 
   // agent commands
   agentEmpty: "No agents yet.",

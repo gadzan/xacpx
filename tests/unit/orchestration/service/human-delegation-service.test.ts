@@ -6,10 +6,10 @@ import { RpcDelegationService } from "../../../../src/orchestration/service/rpc-
 import { WorkerSessionManager } from "../../../../src/orchestration/service/worker-session-manager";
 import { createEmptyState, type SessionTransportEngine } from "../../../../src/state/types";
 import { makeGoldenHarness } from "../golden/golden-harness";
-// Construct the service from a bare object literal of exactly its EIGHT ports — never
+// Construct the service from a bare object literal of exactly its NINE ports — never
 // `harness.deps` wholesale — plus the kernel, the WorkerSessionManager, and an
 // RpcDelegationService. This is the isolation-testability deliverable of the split: the
-// service must build without `config`, `ensureWorkerSession`, `wakeCoordinatorSession`,
+// service must build without `ensureWorkerSession`, `wakeCoordinatorSession`,
 // `logger` or any of the other ports, and it must not silently reach for a dep outside its
 // declared HumanDelegationDeps.
 function makeService(ids: string[] = ["task-1", "lid-1"], initialState = createEmptyState(), resolveEngine?: () => SessionTransportEngine, harnessOverrides: { reusableWorkerSession?: string | null } = {}) {
@@ -36,6 +36,7 @@ function makeService(ids: string[] = ["task-1", "lid-1"], initialState = createE
       createAgentEndpointId: harness.deps.createAgentEndpointId,
       loadState: harness.deps.loadState,
       saveState: harness.deps.saveState,
+      config: harness.deps.config,
       dispatchWorkerTask: harness.deps.dispatchWorkerTask,
       resolveWorkerBindingEngine: resolveEngine ?? harness.deps.resolveWorkerBindingEngine,
       releaseWorkerSession: harness.deps.releaseWorkerSession,
@@ -46,7 +47,7 @@ function makeService(ids: string[] = ["task-1", "lid-1"], initialState = createE
   );
   return { harness, humanDelegation };
 }
-test("constructible with only its eight ports and delegates a human request", async () => {
+test("constructible with only its nine ports and delegates a human request", async () => {
   const { harness, humanDelegation } = makeService();
 
   const callsBefore = harness.calls.length;

@@ -3460,6 +3460,70 @@ test("rejects pathless external coordinator delegation without explicit cwd", as
   expect(harness.getState().orchestration.tasks).toEqual({});
 });
 
+test("rejects delegating without cwd to an unregistered workspace before staging a binding", async () => {
+  const harness = makeDeps();
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-1",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "removed-workspace",
+      targetAgent: "codex",
+      task: "do the thing",
+    }),
+  ).rejects.toThrow('workspace "removed-workspace" is not registered');
+
+  // Rejection happens inside the staging mutate: no owner is ensured, nothing
+  // is dispatched, and the dangling binding is never written.
+  expect(harness.ensureCalls).toEqual([]);
+  expect(harness.dispatchCalls).toEqual([]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+  expect(harness.getState().orchestration.tasks).toEqual({});
+});
+
+test("rejects approving a task for an unregistered workspace without a cwd before staging a binding", async () => {
+  const empty = createEmptyState();
+  const harness = makeDeps({
+    initialState: {
+      ...empty,
+      orchestration: {
+        ...empty.orchestration,
+        tasks: {
+          "task-gone-workspace": {
+            taskId: "task-gone-workspace",
+            sourceHandle: "wx:user-1",
+            sourceKind: "human",
+            coordinatorSession: "backend:main",
+            workerSession: "gone:codex:backend:main",
+            workspace: "gone",
+            targetAgent: "codex",
+            task: "review the design",
+            status: "needs_confirmation",
+            summary: "",
+            resultText: "",
+            createdAt: "2026-04-13T10:00:00.000Z",
+            updatedAt: "2026-04-13T10:00:00.000Z",
+          },
+        },
+      },
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-gone-workspace" }),
+  ).rejects.toThrow('workspace "gone" is not registered');
+
+  expect(harness.ensureCalls).toEqual([]);
+  expect(harness.dispatchCalls).toEqual([]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+  expect(harness.getState().orchestration.tasks["task-gone-workspace"]).toMatchObject({
+    status: "needs_confirmation",
+  });
+});
+
 test("registered external coordinator accepts arbitrary explicit cwd over its default workspace cwd", async () => {
   const cwd = normalize("/repo/other-repo");
   const harness = makeDeps({
@@ -9975,6 +10039,27 @@ test("reconcileParallelSlots retires finished slots and drains the queue", async
   expect(harness.dispatchCalls.some((c) => c.taskId === r2.taskId)).toBe(true);
 });
 
+test("reconcileParallelSlots fails an unresolvable queued task and still drains later tasks", async () => {
+  const state = createEmptyState();
+  state.orchestration.tasks["task-gone"] = {
+    ...seedQueuedEphemeralTask("task-gone", "gone:codex:p-1"),
+    workspace: "gone",
+  };
+  state.orchestration.tasks["task-ok"] = seedQueuedEphemeralTask("task-ok", "backend:codex:p-2");
+  const harness = makeDeps({ initialState: state });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(service.reconcileParallelSlots()).resolves.toBeUndefined();
+
+  expect(harness.getState().orchestration.tasks["task-gone"]).toMatchObject({
+    status: "failed",
+    resultText: expect.stringContaining('workspace "gone" is not registered'),
+  });
+  expect(harness.getState().orchestration.workerBindings["gone:codex:p-1"]).toBeUndefined();
+  expect(harness.getState().orchestration.tasks["task-ok"]?.status).toBe("running");
+  expect(harness.dispatchCalls.some((call) => call.taskId === "task-ok")).toBe(true);
+});
+
 test("reconcileParallelSlots retains the binding when release fails and retries", async () => {
   let idCounter = 0;
   let releases = 0;
@@ -10570,7 +10655,14 @@ test("requestDelegateFromRpc succeeds when session has reset-suffixed transport_
   // (sourceHandle) is the stable id "ws:alias". resolveRpcSourceContext must
   // normalize both sides of the find so the delegation does NOT throw
   // "is not a registered coordinator or worker session".
+  //
+  // The persisted session references workspace "ws", so that workspace must
+  // be registered: a cwd-less delegation targets it, and staging now refuses
+  // an unregistered workspace before writing a binding.
+  const config = createConfig();
+  config.workspaces.ws = { cwd: "/tmp/ws" };
   const harness = makeDeps({
+    config,
     createId: () => "task-rpc-reset-fix",
     reusableWorkerSession: "ws:claude:ws:alias",
     initialState: {

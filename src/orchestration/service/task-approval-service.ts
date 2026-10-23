@@ -23,6 +23,7 @@ import type {
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
+  assertWorkerBindingWorkspaceTarget,
   teardownStagedWorkerOwner,
   workerBindingEndpointIdentityFields,
   workerBindingEngineFields,
@@ -37,7 +38,7 @@ import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type TaskApprovalDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask" | "resolveWorkerBindingEngine" | "releaseWorkerSession"
+  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "config" | "dispatchWorkerTask" | "resolveWorkerBindingEngine" | "releaseWorkerSession"
 >;
 export class TaskApprovalService {
   constructor(
@@ -172,6 +173,10 @@ export class TaskApprovalService {
         const previousBinding = state.orchestration.workerBindings[workerSession];
         this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
         this.workerSessions.assertWorkerSessionAvailable(state, workerSession, input.taskId, { allowCurrentReservation: true });
+        assertWorkerBindingWorkspaceTarget(
+          { workspace: currentTask.workspace, ...(currentTask.cwd ? { cwd: currentTask.cwd } : {}) },
+          this.deps.config,
+        );
         const identity = workerBindingIdentityFields(
           previousBinding,
           () => this.deps.resolveWorkerBindingEngine({
@@ -231,6 +236,10 @@ export class TaskApprovalService {
         const previousBinding = state.orchestration.workerBindings[ensuredWorkerSession];
         this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, ensuredWorkerSession);
         this.workerSessions.assertWorkerSessionAvailable(state, ensuredWorkerSession, input.taskId, { allowCurrentReservation: true });
+        assertWorkerBindingWorkspaceTarget(
+          { workspace: task.workspace, ...(task.cwd ? { cwd: task.cwd } : {}) },
+          this.deps.config,
+        );
         task.workerSession = ensuredWorkerSession;
         task.status = "running";
         task.updatedAt = this.deps.now().toISOString();

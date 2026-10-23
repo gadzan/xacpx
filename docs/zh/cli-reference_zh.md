@@ -53,7 +53,7 @@ xacpx ws rm backend
 | `xacpx workspace add` | 把当前目录注册为 workspace，名称默认取当前目录名（自动规范化） |
 | `xacpx workspace add <name>` | 把当前目录注册为指定名称（含特殊字符时自动规范化） |
 | `xacpx workspace add [name] --raw` | 保留原始名称（含空格等），后续命令需要用引号引用 |
-| `xacpx workspace rm <name>` | 删除指定 workspace |
+| `xacpx workspace rm <name>` | 删除指定 workspace（daemon 运行时拒绝执行） |
 
 常见用法：
 
@@ -76,6 +76,8 @@ xacpx ws rm frontend
 ```
 
 注意：`workspace add` 总是注册**当前终端所在目录**。如果不传名称，会用当前目录名作为 workspace 名称。含空格、中文等字符的名称会被自动规范化为 `[a-zA-Z0-9._-]+`（例如目录 `My Project` 会保存为 `My-Project`），重名时追加 `-2`、`-3`。如需保留原始名称，加 `--raw`；之后 `xacpx workspace rm`、`/ws rm`、`--ws <name>` 都需要用引号引用，例如 `xacpx workspace rm "My Project"`。
+
+`workspace rm` 在 xacpx daemon 运行中（或状态不确定时）会拒绝执行。daemon 持有自己的配置快照和会话绑定，而这个终端 CLI 没有可用的 control IPC 删除工作区，直接改 `config.json` 会与进行中的委派竞态。请改用控制台 `/workspace rm` 或 Control API，或先执行 `xacpx stop`。即使 daemon 已停止，如果 `state.json` 仍有 session 或 worker binding 引用该工作区，也会拒绝；请先通过 daemon 移除这些记录。
 
 ## `agent` CLI
 

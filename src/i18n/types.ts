@@ -934,6 +934,10 @@ export interface CliMessages {
   workspaceSaved: (name: string, cwd: string) => string;
   workspaceNotFound: (name: string) => string;
   workspaceRemoved: (name: string) => string;
+  workspaceRemoveDaemonRunning: string;
+  workspaceRemoveDaemonStatusFailed: (message: string) => string;
+  workspaceRemoveStillReferenced: (name: string, references: string) => string;
+  workspaceRemoveStateReadFailed: (message: string) => string;
 
   // agent commands
   agentEmpty: string;
@@ -1320,6 +1324,7 @@ export interface MiscMessages {
   orchestrationSuggestion1: string;
   orchestrationSuggestion2: string;
   orchestrationSuggestion3: string;
+  orchestrationSuggestionMissingWorkspace: string;
 
   // cli/startup-wait-ui
   startupWaitLine: (frame: string, elapsed: number, timeout: number) => string;

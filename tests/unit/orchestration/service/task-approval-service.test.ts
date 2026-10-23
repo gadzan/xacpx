@@ -9,10 +9,10 @@ import type { OrchestrationTaskRecord } from "../../../../src/orchestration/orch
 import { createEmptyState } from "../../../../src/state/types";
 import { makeGoldenHarness } from "../golden/golden-harness";
 
-// Construct the service from a bare object literal of exactly its eight ports — never
+// Construct the service from a bare object literal of exactly its NINE ports — never
 // `harness.deps` wholesale — plus the kernel and its three collaborators. This is the
 // isolation-testability deliverable of the split: the service must build without
-// `config`, `wakeCoordinatorSession`, or the other ports, and it must
+// `wakeCoordinatorSession` or the other ports, and it must
 // not silently reach for a dep outside its declared TaskApprovalDeps.
 function makeService(initialState = createEmptyState()) {
   const harness = makeGoldenHarness({ endpointIds: ["worker-endpoint-1"], initialState });
@@ -27,6 +27,7 @@ function makeService(initialState = createEmptyState()) {
       createAgentEndpointId: harness.deps.createAgentEndpointId,
       loadState: harness.deps.loadState,
       saveState: harness.deps.saveState,
+      config: harness.deps.config,
       dispatchWorkerTask: harness.deps.dispatchWorkerTask,
       resolveWorkerBindingEngine: harness.deps.resolveWorkerBindingEngine,
       releaseWorkerSession: harness.deps.releaseWorkerSession,
@@ -57,7 +58,7 @@ function seedTask(overrides: Partial<OrchestrationTaskRecord> = {}): Orchestrati
     ...overrides,
   };
 }
-test("constructible with only its eight ports and approves a needs_confirmation task", async () => {
+test("constructible with only its nine ports and approves a needs_confirmation task", async () => {
   const initialState = createEmptyState();
   const seeded = seedTask();
   initialState.orchestration.tasks[seeded.taskId] = seeded;
