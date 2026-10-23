@@ -150,7 +150,11 @@ export class GroupHandoffService {
       return { kind: "pending-handoffs", mustEndTurn: true,
         pendingAssignmentIds: unsettled.flatMap((turn) => turn.assignmentId ? [turn.assignmentId] : []) };
     }
+    // Wake turns keep a durable followup_* assignmentId (prompt framing and
+    // request-membership checks rely on it), but they are runtime summaries,
+    // not public assignments: never list or serve them, for any leader.
     const settled = this.options.store.listMemberTurns(sender.runId).filter((turn) => turn.assignmentId !== undefined
+      && turn.followupSenderMemberTurnId === undefined
       && turn.conversationId === sender.conversationId && turn.topicId === sender.topicId
       && ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
     if (assignmentId === undefined) {
