@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { BotSummaryDto, MemberTurnSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type {
+  BotSummaryDto,
+  ConversationMessageDto,
+  MemberTurnSummaryDto,
+} from "@ganglion/xacpx-relay-protocol";
 import {
   GROUP_DISPATCH_AVATAR_LIMIT,
   presentGroupDispatch,
@@ -33,21 +37,64 @@ function turn(botId: string, state: MemberTurnSummaryDto["state"], over: Partial
   };
 }
 
-function entry(
+function handoffMessage(
   botId: string,
-  state: MemberTurnSummaryDto["state"],
-  over: { task?: string; reply?: { id: string; content: string } | null; turn?: Partial<MemberTurnSummaryDto> } = {},
-): GroupDispatchEntry {
+  task: string,
+  seq: number,
+): ConversationMessageDto & { handoff: NonNullable<ConversationMessageDto["handoff"]> } {
   return {
+    id: `handoff_${botId}`,
+    conversationId: "conv_g",
+    topicId: "topic_1",
+    runId: "run_1",
+    seq,
+    role: "system",
+    content: "Public handoff",
+    createdAt: "now",
     handoff: {
       senderMemberTurnId: "turn_leader",
       to: botId,
       assignmentId: `assignment_${botId}`,
       memberTurnId: `turn_${botId}`,
-      task: over.task ?? `Do the ${botId} work`,
+      task,
     },
+  };
+}
+
+function entry(
+  botId: string,
+  state: MemberTurnSummaryDto["state"],
+  over: {
+    task?: string;
+    seq?: number;
+    turn?: Partial<MemberTurnSummaryDto>;
+  } = {},
+): GroupDispatchEntry {
+  const task = over.task ?? `Do the ${botId} work`;
+  return {
+    message: handoffMessage(botId, task, over.seq ?? 1),
     memberTurn: turn(botId, state, over.turn),
-    reply: over.reply ?? null,
+  };
+}
+
+/** The member's own reply, addressed by the member turn's prompt identity. */
+function replyMessage(
+  botId: string,
+  promptRequestId: string,
+  content: string,
+  seq: number,
+): ConversationMessageDto {
+  return {
+    id: `reply_${botId}`,
+    conversationId: "conv_g",
+    topicId: "topic_1",
+    runId: "run_1",
+    seq,
+    role: "bot",
+    senderBotId: botId,
+    promptRequestId,
+    content,
+    createdAt: "now",
   };
 }
 
@@ -70,7 +117,7 @@ describe("presentGroupDispatch", () => {
   it("aggregates one leader round into running rows with the task text once", () => {
     const result = presentGroupDispatch(present({
       dispatches: [
-        entry("bot_a", "running", { task: "Review the diff", reply: { id: "msg_a", content: "Looks good\nsecond line" } }),
+        entry("bot_a", "running", { task: "Review the diff" }),
         entry("bot_b", "queued", { task: "Review the diff" }),
       ],
     }));
@@ -83,11 +130,22 @@ describe("presentGroupDispatch", () => {
     expect(result.counts).toEqual({ running: 1, queued: 1, completed: 0, cancelled: 0, failed: 0, indeterminate: 0 });
     expect(result.summary).toBe("running");
     expect(result.leaderStopped).toBe(false);
-    expect(result.members[0]?.replyPreview).toBe("Looks good");
-    expect(result.members[0]?.replyId).toBe("msg_a");
+    expect(result.members[0]?.replyPreview).toBe("");
+    expect(result.members[0]?.replyId).toBe("");
     expect(result.members[1]?.replyPreview).toBe("");
     expect(result.members[1]?.replyId).toBe("");
     expect(result.capability).toEqual({ canStopMember: true, leaderStopAction: "leader-only", anyActive: true });
+  });
+
+  it("names the round by its first dispatched task", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [
+        entry("bot_a", "completed", { task: "First ask" }),
+        entry("bot_b", "completed", { task: "Second ask" }),
+      ],
+    }));
+
+    expect(result.instructions).toBe("First ask");
   });
 
   it("reports done when every dispatched member completed", () => {
@@ -176,5 +234,44 @@ describe("presentGroupDispatch", () => {
     }));
 
     expect(result.capability.anyActive).toBe(false);
+  });
+
+  it("previews the member reply that its prompt identity proves", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [
+        entry("bot_a", "completed", { seq: 1, turn: { promptRequestId: "prompt_a" } }),
+        entry("bot_b", "queued", { seq: 2, turn: { promptRequestId: "prompt_b" } }),
+      ],
+      messages: [replyMessage("bot_a", "prompt_a", "Looks good\nsecond line", 5)],
+    }));
+
+    expect(result.members[0]?.replyId).toBe("reply_bot_a");
+    expect(result.members[0]?.replyPreview).toBe("Looks good");
+    expect(result.members[1]?.replyId).toBe("");
+    expect(result.members[1]?.replyPreview).toBe("");
+  });
+
+  it("keeps a member without a proven reply unlinked", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed", { seq: 1, turn: { promptRequestId: "prompt_a" } })],
+      // Another bot's answer carries a different prompt identity.
+      messages: [replyMessage("bot_b", "prompt_b", "Not mine", 5)],
+    }));
+
+    expect(result.members[0]?.replyId).toBe("");
+    expect(result.members[0]?.replyPreview).toBe("");
+  });
+
+  it("refuses to link a member whose prompt identity matches two replies", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed", { seq: 1, turn: { promptRequestId: "prompt_a" } })],
+      messages: [
+        replyMessage("bot_a", "prompt_a", "First", 5),
+        { ...replyMessage("bot_a", "prompt_a", "Second", 6), id: "reply_bot_a_2" },
+      ],
+    }));
+
+    expect(result.members[0]?.replyId).toBe("");
+    expect(result.members[0]?.replyPreview).toBe("");
   });
 });

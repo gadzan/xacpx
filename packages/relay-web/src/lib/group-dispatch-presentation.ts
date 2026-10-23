@@ -8,6 +8,9 @@ import type {
 /** One public handoff envelope: the durable identity of a dispatched bot. */
 export type GroupDispatchHandoff = NonNullable<ConversationMessageDto["handoff"]>;
 
+/** The message that carried a handoff envelope. */
+export type GroupDispatchHandoffMessage = ConversationMessageDto & { handoff: GroupDispatchHandoff };
+
 /**
  * The leader (项管) turn that issued every dispatch in one round.
  *
@@ -27,12 +30,10 @@ export interface GroupDispatchLeader {
 
 /** One dispatched bot inside a round. */
 export interface GroupDispatchEntry {
-  /** Public handoff envelope of this dispatch. */
-  handoff: GroupDispatchHandoff;
+  /** The handoff message that dispatched this bot. */
+  message: GroupDispatchHandoffMessage;
   /** Durable member turn that carries the dispatch out. */
   memberTurn: MemberTurnSummaryDto;
-  /** The member's reply, when it already answered. */
-  reply?: { id: string; content: string } | null;
 }
 
 /**
@@ -101,7 +102,7 @@ export interface GroupDispatchCapability {
 }
 
 export interface GroupDispatchPresentation {
-  /** The round's dispatch text. Shown once for the whole row. */
+  /** The round's dispatch text: the task of the round's first handoff. */
   instructions: string;
   members: GroupDispatchMemberPresentation[];
   counts: GroupDispatchCounts;
@@ -122,6 +123,8 @@ export interface GroupDispatchPresentationInput {
   drivers?: Record<string, string>;
   /** The core supports `control.runs.cancelMember`. */
   supportsCancelMember: boolean;
+  /** Every message of the conversation; used to resolve the members' replies. */
+  messages?: ConversationMessageDto[];
 }
 
 /** At most this many avatars are shown; the rest collapse into a counter. */
@@ -149,17 +152,32 @@ function dispatchStatus(state: MemberTurnSummaryDto["state"]): GroupDispatchMemb
   }
 }
 
-/** The round's dispatch text, one line per distinct task, in dispatch order. */
-function dispatchInstructions(entries: GroupDispatchEntry[]): string {
-  const seen = new Set<string>();
-  const parts: string[] = [];
-  for (const entry of entries) {
-    const task = entry.handoff.task.trim();
-    if (!task || seen.has(task)) continue;
-    seen.add(task);
-    parts.push(task);
-  }
-  return parts.join("\n");
+/**
+ * The dispatched member's own reply, matched through the member turn's prompt
+ * identity.
+ *
+ * Identity, never position: a reply belongs to the member only when it
+ * carries that member turn's prompt request id inside the same run, and
+ * exactly one candidate qualifies. Ambiguity yields no reply — a guessed
+ * jump target would move the reader to another bot's answer.
+ */
+function resolveMemberReply(
+  entry: GroupDispatchEntry,
+  messages: ConversationMessageDto[],
+): { id: string; content: string } | null {
+  const promptRequestId = entry.memberTurn.promptRequestId;
+  if (!promptRequestId) return null;
+  const message = entry.message;
+  const matches = messages.filter((candidate) => candidate.role === "bot"
+    && !candidate.handoff
+    && candidate.conversationId === message.conversationId
+    && candidate.topicId === message.topicId
+    && candidate.runId === message.runId
+    && candidate.senderBotId === entry.memberTurn.botId
+    && candidate.promptRequestId === promptRequestId
+    && candidate.seq > message.seq
+    && candidate.content.trim().length > 0);
+  return matches.length === 1 ? { id: matches[0]!.id, content: matches[0]!.content } : null;
 }
 
 /**
@@ -173,13 +191,14 @@ function dispatchInstructions(entries: GroupDispatchEntry[]): string {
 export function presentGroupDispatch(input: GroupDispatchPresentationInput): GroupDispatchPresentation {
   const botById = new Map<string, BotSummaryDto>();
   for (const bot of input.bots ?? []) botById.set(bot.id, bot);
+  const messages = input.messages ?? [];
 
   const members: GroupDispatchMemberPresentation[] = input.dispatches.map((entry) => {
-    const botId = entry.memberTurn.botId || entry.handoff.to;
+    const botId = entry.memberTurn.botId || entry.message.handoff.to;
     const bot = botById.get(botId);
     const status = dispatchStatus(entry.memberTurn.state);
     const active = status === "running" || status === "queued";
-    const reply = entry.reply ?? null;
+    const reply = resolveMemberReply(entry, messages);
     const content = reply
       ? reply.content.split("\n").map((part) => part.trim()).find((part) => part.length > 0) ?? ""
       : "";
@@ -218,7 +237,7 @@ export function presentGroupDispatch(input: GroupDispatchPresentationInput): Gro
   else summary = "mixed";
 
   return {
-    instructions: dispatchInstructions(input.dispatches),
+    instructions: input.dispatches[0]?.message.handoff.task.trim() ?? "",
     members,
     counts,
     summary,
