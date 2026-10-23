@@ -294,7 +294,16 @@ describe("GroupTranscript dispatch aggregation", () => {
     await flushPromises();
     expect(wrapper.findAll('[data-test="group-dispatch-row"]')).toHaveLength(0);
     expect(wrapper.findAll('[data-test="group-handoff"]')).toHaveLength(1);
-    expect(wrapper.get('[data-test="group-handoff-toggle"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="group-handoff-toggle"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("replaces the anchor handoff entry with the row when no leader message is loaded", async () => {
+    seedTranscript([handoffMessage(1), handoffMessage(2)], [memberTurn("turn_a", "bot_a", "completed")]);
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(wrapper.findAll('[data-test="group-dispatch-row"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-test="group-handoff"]')).toHaveLength(0);
     wrapper.unmount();
   });
 

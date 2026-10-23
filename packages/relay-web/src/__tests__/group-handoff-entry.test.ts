@@ -154,7 +154,7 @@ describe("Public Group handoff entries", () => {
     // A whole-envelope substitution from another round: still a conflicting
     // handoff, but it must not collapse this round into a dispatch row, so the
     // single-entry assertions below keep exercising the entry itself.
-    { handoff: { ...handoff(2).handoff, senderMemberTurnId: "turn_other" } },
+    { handoff: { senderMemberTurnId: "turn_other", to: "bot_b", assignmentId: "assignment_2", memberTurnId: "turn_b_2", task: "Review assignment 2", expectedOutput: "Findings 2" } },
   ])("does not substitute a reply with conflicting evidence %j", async (mismatch) => {
     const { wrapper, groups } = render([handoff(), reply(1, mismatch)]);
     await wrapper.get('[data-test="group-handoff-toggle"]').trigger("click");

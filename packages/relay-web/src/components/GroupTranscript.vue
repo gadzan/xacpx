@@ -594,17 +594,16 @@ async function handleLoadOlder(): Promise<void> {
             </template>
 
             <template v-else-if="item.message.handoff">
-              <GroupDispatchRow
-                v-if="dispatchRows[item.message.id]"
-                :presentation="dispatchRows[item.message.id]!"
-              />
-              <p
-                v-if="dispatchRows[item.message.id]?.leaderStopped"
-                data-test="group-dispatch-stopped"
-                class="mt-1 text-xs text-fg-muted"
-              >
-                {{ $t("group.dispatch.stopped") }}
-              </p>
+              <template v-if="dispatchRows[item.message.id]">
+                <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" />
+                <p
+                  v-if="dispatchRows[item.message.id]!.leaderStopped"
+                  data-test="group-dispatch-stopped"
+                  class="mt-1 text-xs text-fg-muted"
+                >
+                  {{ $t("group.dispatch.stopped") }}
+                </p>
+              </template>
               <GroupHandoffEntry
                 v-else
                 :message="item.message"
