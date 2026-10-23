@@ -30,7 +30,6 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   send: [text: string, mentions?: AgentMention[]];
-  cancel: [];
 }>();
 const { t } = useI18n();
 const directBotsStore = useDirectBotsStore(),

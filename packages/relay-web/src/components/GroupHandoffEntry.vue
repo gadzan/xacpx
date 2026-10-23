@@ -149,7 +149,6 @@ watch(
       <span aria-hidden="true" data-handoff-avatar="to" class="-ml-2 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface">
         <BotAvatar :avatar="toAvatar" :driver="toDriver" :name="toName" :size="24" static />
       </span>
-      <span aria-hidden="true" class="ml-2 flex min-w-0 items-center text-left" />
     </button>
     <div
       v-if="expanded && message.handoff"

@@ -1338,8 +1338,9 @@ describe("useDirectBotsStore", () => {
       expect(store.isRunActive).toBe(true);
       expect(store.promptInFlight).toBe(true);
 
-      await store.sendPrompt("Prompt C");
-      expect(store.promptError).toBe("runInProgress");
+      // The in-flight fence rejects a second prompt before the run gate can
+      // even be consulted: nothing is sent and the adopted Run survives.
+      expect(await store.sendPrompt("Prompt C")).toBe("rejected");
       expect(store.activeRun?.id).toBe("run_B");
 
       // The HTTP prompt ultimately fails, but the durable Run B must survive.
@@ -5547,6 +5548,7 @@ describe("useDirectBotsStore", () => {
     it("ignores a second concurrent cancel dispatch while the first is in flight", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
       store.activeConversationId = "conv_1";
       store.activeTopicId = "top_1";
       store.activeRun = {
@@ -5582,6 +5584,7 @@ describe("useDirectBotsStore", () => {
     it("cancels run with exact runId and updates state", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
       store.activeConversationId = "conv_1";
       store.activeTopicId = "top_1";
       store.activeRun = {
@@ -5653,8 +5656,11 @@ describe("useDirectBotsStore", () => {
         return Promise.resolve({});
       });
 
-      // User clicks Cancel, but cancel RPC encounters a network failure
-      await store.cancelCurrentRun();
+      // User clicks Cancel, but cancel RPC encounters a network failure. The
+      // reconciliation runs.get is awaited inside the call, so hold the promise
+      // and resolve it from this test below.
+      const cancelled = store.cancelCurrentRun();
+      await flushPromises();
 
       expect(store.activeRun?.state).toBe("running");
       expect(store.isRunActive).toBe(true);
@@ -5681,6 +5687,7 @@ describe("useDirectBotsStore", () => {
         },
       });
       await runsGetPromise;
+      expect((await cancelled).status).toBe("cancelled");
       await flushPromises();
 
       // Now it cleanly converges to the authoritative cancelled terminal state!
@@ -6061,6 +6068,7 @@ describe("useDirectBotsStore", () => {
     it("restores correlated live turn and activeRun from state snapshot in directBotsStore", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
       store.activeConversationId = "conv_1";
       store.activeTopicId = "top_1";
 
