@@ -420,11 +420,11 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
-  it("words the Chinese member stop action without an inner space", async () => {
+  it("spaces a Latin name in the Chinese member stop action", async () => {
     i18n.global.locale.value = "zh-CN";
     const wrapper = row(["running"], ["bot_a"], { supportsCancelMember: true });
     await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
-    expect(wrapper.get('[data-test="group-dispatch-stop-member"]').attributes("aria-label")).toBe("停止Reviewer");
+    expect(wrapper.get('[data-test="group-dispatch-stop-member"]').attributes("aria-label")).toBe("停止 Reviewer");
     wrapper.unmount();
   });
 
@@ -1055,11 +1055,11 @@ describe("GroupTranscript dispatch aggregation", () => {
     await wrapper.get('[data-test="group-dispatch-stop-all"]').trigger("click");
     await flushPromises();
 
-    expect(useConfirmState().value?.message).toBe("Reviewer和已派发的 2 个任务都会停止");
+    expect(useConfirmState().value?.message).toBe("Reviewer 和已派发的 2 个任务都会停止");
     wrapper.unmount();
   });
 
-  it("names the leader in the Chinese stop pill without an inner space", async () => {
+  it("spaces a Latin leader name in the Chinese stop pill", async () => {
     i18n.global.locale.value = "zh-CN";
     seedTranscript(
       [handoffMessage(1), handoffMessage(2)],
@@ -1072,7 +1072,7 @@ describe("GroupTranscript dispatch aggregation", () => {
     );
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
-    expect(wrapper.get('[data-test="group-dispatch-stop-leader"]').text()).toBe("停止Reviewer");
+    expect(wrapper.get('[data-test="group-dispatch-stop-leader"]').text()).toBe("停止 Reviewer");
     wrapper.unmount();
   });
 

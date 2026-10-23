@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { spaceNameForCjk } from "../lib/cjk-name-spacing";
 import {
   AlertCircle,
   CircleStop,
@@ -49,7 +50,7 @@ const props = defineProps<{
   bots: BotSummaryDto[];
 }>();
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
@@ -459,7 +460,7 @@ async function handleStopAll(presentation: GroupDispatchPresentation): Promise<v
   const ok = await confirm({
     title: t("group.dispatch.stopAllConfirm.title"),
     message: t("group.dispatch.stopAllConfirm.message", {
-      name: presentation.leader.name,
+      name: spaceNameForCjk(presentation.leader.name, locale.value, "after"),
       n: presentation.members.length,
     }),
     confirmLabel: t("group.dispatch.stopAllConfirm.confirm"),
@@ -485,7 +486,7 @@ function showsStoppedNote(presentation: GroupDispatchPresentation | undefined): 
  */
 function leaderStopLabel(presentation: GroupDispatchPresentation): string {
   if (presentation.capability.leaderStopAction === "leader-only") {
-    return t("group.dispatch.stopLeader", { name: presentation.leader.name });
+    return t("group.dispatch.stopLeader", { name: spaceNameForCjk(presentation.leader.name, locale.value, "before") });
   }
   return t("group.dispatch.stopAll");
 }

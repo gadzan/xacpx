@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, useId } from "vue";
 import { useI18n } from "vue-i18n";
+import { spaceNameForCjk } from "../lib/cjk-name-spacing";
 import { ChevronDown, CircleHelp, Loader2, Square } from "lucide-vue-next";
 import BotAvatar from "./BotAvatar.vue";
 import MobileSheet from "./MobileSheet.vue";
@@ -32,7 +33,7 @@ const emit = defineEmits<{
   stopAll: [];
 }>();
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const expanded = ref(false);
 /** Mobile: the row opens a bottom sheet instead of the inline card. */
@@ -51,7 +52,7 @@ const summary = computed(() => props.presentation.summary);
 /** The row's own name for the round: a lone dispatch names its bot, a
  *  fan-out round counts its bots. */
 const titleText = computed(() => total.value === 1
-  ? t("group.dispatch.sentToOne", { name: props.presentation.members[0]?.name ?? "" })
+  ? t("group.dispatch.sentToOne", { name: spaceNameForCjk(props.presentation.members[0]?.name ?? "", locale.value, "before") })
   : t("group.dispatch.sentTo", { n: total.value }));
 /** Whether the row's detail surface — desktop card or mobile sheet — is open. */
 const detailsOpen = computed(() => (isMobile.value ? sheetOpen.value : expanded.value));
@@ -347,7 +348,7 @@ function stopAll(): void {
             type="button"
             data-test="group-dispatch-stop-member"
             :data-bot-id="member.botId"
-            :aria-label="t('group.dispatch.stopMember', { name: member.name })"
+            :aria-label="t('group.dispatch.stopMember', { name: spaceNameForCjk(member.name, locale, 'before') })"
             class="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
             @click.stop="stopMember(member)"
           >
@@ -406,7 +407,7 @@ function stopAll(): void {
             type="button"
             data-test="group-dispatch-sheet-stop-member"
             :data-bot-id="member.botId"
-            :aria-label="t('group.dispatch.stopMember', { name: member.name })"
+            :aria-label="t('group.dispatch.stopMember', { name: spaceNameForCjk(member.name, locale, 'before') })"
             class="grid h-11 w-11 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
             @click.stop="stopMember(member)"
           >

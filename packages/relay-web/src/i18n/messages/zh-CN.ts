@@ -1154,7 +1154,7 @@ export default {
         indeterminate: "结果未知",
       },
       sentTo: "派发给 {n} 个 Bot",
-      sentToOne: "派发给 {name}",
+      sentToOne: "派发给{name}",
       running: "{n} 执行中",
       queued: "{n} 排队中",
       done: "{n} 个已完成",
