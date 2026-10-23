@@ -239,6 +239,7 @@ export class ConversationDispatcher {
    *  `finally` so a throw can never strand the set (and with it the drain). */
   private readonly inFlightExecutions = new Map<string, Promise<void>>();
   private readonly inFlightWork = new Map<string, ClaimedWork>();
+  private readonly preProviderAttempts = new Set<string>();
   private readonly leaseScheduler: LeaseScheduler;
   private leaseTicket: { cancel(): void } | undefined;
   /** Serializes renewal ticks so shutdown can wait for the one in progress. */
@@ -866,6 +867,42 @@ export class ConversationDispatcher {
       if (!this.resourceReservations.has(blocker)) this.resourceConflictHolds.delete(held);
     }
   }
+  /**
+   * True when this member must not execute: it carries durable scoped
+   * cancellation intent, or it already reached a terminal state. The
+   * durable row is the authority — the in-memory claim snapshot can be
+   * stale after an await.
+   */
+  private memberCancellationPending(member: MemberTurnRecord | undefined): boolean {
+    return member === undefined
+      || member.cancellationReason !== undefined
+      || TERMINAL_MEMBER_STATES.includes(member.state);
+  }
+
+  async cancelMemberTurn(runId: string, memberTurnId: string): Promise<void> {
+    const member = this.store.cancelMemberTurn(runId, memberTurnId, this.now().toISOString());
+    const run = this.store.getRun(runId)!;
+    if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+      this.emitRunAndMember(run, member.id);
+      this.maybeRouteAutomatic(run);
+      this.kickInBackground();
+      return;
+    }
+    if (member.sourceTurnId && this.preProviderAttempts.has(member.sourceTurnId)) {
+      this.persistCancelOutcome(runId, member, { outcome: "cancelled" });
+    } else {
+      const result = await this.runner.cancel({
+        conversationId: run.conversationId,
+        topicId: run.topicId,
+        sessionAlias: member.sessionAlias ?? "",
+        queueItemId: member.queueItemId,
+        promptRequestId: member.sourceTurnId ?? "",
+      });
+      this.persistCancelOutcome(runId, member, result);
+    }
+    this.maybeRouteAutomatic(this.store.getRun(runId)!);
+    this.kickInBackground();
+  }
 
   async cancelRun(runId: string): Promise<void> {
     const now = this.now().toISOString();
@@ -1431,6 +1468,8 @@ export class ConversationDispatcher {
 
   private async execute(work: ClaimedWork): Promise<void> {
     await this.hooks?.afterClaim?.(work);
+    const claimedMember = this.store.getMemberTurn(work.memberTurn.id);
+    if (this.memberCancellationPending(claimedMember)) return;
     const current = this.store.getRun(work.run.id);
     if (
       !current
@@ -1451,6 +1490,8 @@ export class ConversationDispatcher {
     let worktreeRef: import("./conversation-worktree-types").ConversationWorktreeRef | undefined;
     try {
       await this.hooks?.beforeRuntimeMaterialize?.(work);
+      const beforeMaterialize = this.store.getMemberTurn(work.memberTurn.id);
+      if (this.memberCancellationPending(beforeMaterialize)) return;
       const materializeFail = this.resolveMaterializeFail();
       if (materializeFail) {
         throw materializeFail;
@@ -1557,6 +1598,11 @@ export class ConversationDispatcher {
         return;
       }
       await this.hooks?.beforeExecutionStart?.(work);
+      // Scoped cancellation may land inside the hook above: the durable
+      // member intent is the authority, so re-read it before any physical
+      // admission work happens.
+      const beforeAdmission = this.store.getMemberTurn(work.memberTurn.id);
+      if (this.memberCancellationPending(beforeAdmission)) return;
       // Cross-Run physical admission (PR C). Re-verified here, immediately
       // before the Provider turn, because materialization above is async: two
       // Runs can both decide a directory looks free and only converge at this
@@ -1645,6 +1691,7 @@ export class ConversationDispatcher {
         }
         throw error;
       }
+      this.preProviderAttempts.add(sourceTurnId);
       await this.hooks?.afterExecutionStart?.(started);
       if (worktreeRef) {
         this.worktrees!.resolveSessionCwd(session);
@@ -1662,7 +1709,7 @@ export class ConversationDispatcher {
       ) {
         return;
       }
-      if (isRunCancelling(latestRun)) {
+      if (isRunCancelling(latestRun) || latestMember.cancellationReason) {
         // This exact attempt has not called runner.run(): durable start is
         // not provider admission. Persist the known pre-provider cancellation
         // instead of abandoning a running member/claimed dispatch that lease
@@ -1691,7 +1738,13 @@ export class ConversationDispatcher {
       const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
         dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
       releaseGroupExecution = groupExecution?.release;
-      const result = await this.runner.run({
+      // The runner registers its tracked execution synchronously inside
+      // `run()`, so the tracked-execution window opens HERE: the pre-provider
+      // marker is deleted only AFTER the call returns the promise. Deleting it
+      // earlier would leave a gap in which a scoped cancel finds neither a
+      // tracked execution nor the marker, and would therefore report an
+      // "unknown" outcome that seals the Run and cancels the siblings.
+      const runPromise = this.runner.run({
         ...(directExecution ? { directExecutionToken: directExecution.token } : {}),
         ...(mentions?.length ? { agentMentions: mentions.map(({range,handle}) => ({range:[range[0]+peerPrefix.length+text.length-userText.length,range[1]+peerPrefix.length+text.length-userText.length] as [number,number],handle})), directMentionContext: mentions } : {}),
         ...(groupExecution ? { groupExecutionToken: groupExecution.token } : {}),
@@ -1721,6 +1774,8 @@ export class ConversationDispatcher {
         })(),
         promptRequestId: sourceTurnId,
       });
+      this.preProviderAttempts.delete(sourceTurnId);
+      const result = await runPromise;
       releaseGroupExecution?.();
       releaseGroupExecution = undefined;
       releaseDirectExecution?.();
@@ -1772,6 +1827,7 @@ export class ConversationDispatcher {
       this.releaseOwnClaim(work);
       this.deferredTopicIds.add(work.run.topicId);
     } finally {
+      if (started?.sourceTurnId) this.preProviderAttempts.delete(started.sourceTurnId);
       releaseDirectExecution?.();
       releaseGroupExecution?.();
       if (worktreeRef) await this.worktrees!.mark(worktreeRef, "awaiting-integration");
@@ -1828,10 +1884,7 @@ export class ConversationDispatcher {
       return;
     }
     const now = this.now().toISOString();
-    // Whole-Run human cancel settlement: every branch carries force-terminal
-    // so an automatic Run can never return to routing after cancel. The
-    // proven member outcome is still preserved (completed/failed message and
-    // state); only the Run-level routing eligibility is sealed.
+    const forceRunTerminalOnSettle = latest !== undefined && isRunCancelling(latest);
     if (result.outcome === "completed") {
       const completed = this.store.completeExecution({
         runId,
@@ -1840,7 +1893,7 @@ export class ConversationDispatcher {
         content: result.text ?? "",
         sourceTurn: { sessionAlias: member.sessionAlias ?? "", turnId: member.sourceTurnId },
         now,
-        forceRunTerminalOnSettle: true,
+        forceRunTerminalOnSettle,
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
       return;
@@ -1852,12 +1905,12 @@ export class ConversationDispatcher {
         now,
         reason: result.error ?? "failed",
         sourceTurnId: member.sourceTurnId,
-        forceRunTerminalOnSettle: true,
+        forceRunTerminalOnSettle,
       });
       this.emitRunAndMember(run, member.id);
       return;
     }
-    const run = this.store.completeCancel(runId, member.id, now, result.outcome === "unknown", true);
+    const run = this.store.completeCancel(runId, member.id, now, result.outcome === "unknown", forceRunTerminalOnSettle, member.sourceTurnId);
     this.emitRunAndMember(run, member.id);
   }
 
@@ -1889,9 +1942,12 @@ export class ConversationDispatcher {
       return;
     }
     if (result.status === "cancelled" || result.unknown) {
-      const unstartedSiblings = !result.unknown ? this.store.listMemberTurns(work.run.id)
-        .filter((member) => !member.startedAt && !TERMINAL_MEMBER_STATES.includes(member.state)) : [];
-      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, true, started.sourceTurnId);
+      const member = this.store.getMemberTurn(started.id);
+      const latestRun = this.store.getRun(work.run.id);
+      const scoped = member?.cancellationReason === "human-cancelled" && latestRun !== undefined && !isRunCancelling(latestRun);
+      const unstartedSiblings = !result.unknown && !scoped ? this.store.listMemberTurns(work.run.id)
+        .filter((sibling) => !sibling.startedAt && !TERMINAL_MEMBER_STATES.includes(sibling.state)) : [];
+      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, !scoped, started.sourceTurnId);
       this.emitRunAndMember(run, started.id);
       for (const sibling of unstartedSiblings) {
         const memberTurn = this.store.getMemberTurn(sibling.id);

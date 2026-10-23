@@ -592,6 +592,45 @@ test("exact run cancel only affects that Run", async () => {
   expect(control.getRun(runA.run.id).state).toBe("cancelled");
 });
 
+test("PublicControlService cancels one member, validates its Run, and preserves stop-all", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  try {
+    const publicControl = asPublicControl(control);
+    const leader = await publicControl.createBot({ name: "Leader", agent: "codex", workspace: "backend" });
+    const worker = await publicControl.createBot({ name: "Worker", agent: "codex", workspace: "backend" });
+    const group = await publicControl.createGroup({ title: "Scoped cancellation", botIds: [leader.id, worker.id] });
+    const topic = await publicControl.createGroupTopic(group.id, "Review", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await publicControl.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "scoped-public", text: "review",
+      target: { mode: "members", botIds: [leader.id, worker.id] },
+    });
+    const other = await publicControl.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "other-public", text: "other",
+      target: { botId: worker.id },
+    });
+    const leaderTurn = accepted.memberTurns!.find((turn) => turn.botId === leader.id)!;
+    const workerTurn = accepted.memberTurns!.find((turn) => turn.botId === worker.id)!;
+    runtime.dispatcher.stop();
+    await expect(publicControl.cancelMemberTurn(other.run.id, leaderTurn.id))
+      .rejects.toMatchObject({ code: "run_member_mismatch" });
+    expect(control.getRun(accepted.run.id).memberTurns.every((turn) => turn.state === "queued")).toBe(true);
+    const detail = await publicControl.cancelMemberTurn(accepted.run.id, leaderTurn.id);
+    expect(detail.id).toBe(accepted.run.id);
+    expect(detail.memberTurns.find((turn) => turn.id === leaderTurn.id)?.state).toBe("cancelled");
+    expect(detail.memberTurns.find((turn) => turn.id === workerTurn.id)?.state).toBe("queued");
+    expect(detail.state).not.toBe("cancelled");
+    expect(runtime.store.getRun(accepted.run.id)?.cancellationReason).toBeUndefined();
+    const stopped = await publicControl.cancelRun(accepted.run.id);
+    expect(stopped.memberTurns.every((turn) => turn.state === "cancelled")).toBe(true);
+    expect(stopped.state).toBe("cancelled");
+    expect(control.getRun(other.run.id).memberTurns[0]?.state).toBe("queued");
+    await expect(publicControl.cancelMemberTurn(accepted.run.id, "missing-member"))
+      .rejects.toMatchObject({ code: "member_turn_not_found" });
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
 test("Direct prompt refuses Group-shaped structured targets instead of silently routing to the owning Bot", async () => {
   const { control } = await wire({ autoKick: false });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
@@ -842,6 +881,7 @@ test("public APIs fail closed after production shutdown", async () => {
     text: "hello",
   })).rejects.toMatchObject({ code: "runtime_closed" });
   await expect(control.cancelRun("run_missing")).rejects.toMatchObject({ code: "runtime_closed" });
+  await expect(control.cancelMemberTurn("run_missing", "member_missing")).rejects.toMatchObject({ code: "runtime_closed" });
   expect(() => control.conversationHistory({
     conversationId: createDirectConversationId(bot.id),
     topicId: createDirectTopicId(bot.id),

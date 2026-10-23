@@ -1390,3 +1390,33 @@ test("Direct launch exposes only truthful one-way messaging tools and preserves 
   }
   expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send", "group_read_result"]);
 });
+
+test("Group handoff tools require ending dispatch turn and preserve explicit result-read refusal", async () => {
+  const calls: unknown[] = [];
+  const receipt = { runId: "run", assignmentId: "assignment", memberTurnId: "member", messageId: "message" };
+  const pending = { kind: "pending-handoffs" as const, mustEndTurn: true as const, pendingAssignmentIds: ["assignment"] };
+  const transport = {
+    ...createMemoryTransport(async () => ({ taskId: "unused", status: "running" })),
+    async groupSend(input: unknown) { calls.push(input); return receipt; },
+    async groupReadResult(input: unknown) { calls.push(input); return pending; },
+  };
+  const registry = buildXacpxMcpToolRegistry({ transport, coordinatorSession: "group-execution:live", sourceHandle: "group-execution:live" });
+  const send = registry.find((tool) => tool.name === "group_send")!;
+  const read = registry.find((tool) => tool.name === "group_read_result")!;
+  for (const tool of [send, read]) {
+    expect(tool.description).toContain("end your turn");
+    expect(tool.description).toContain("all assignments dispatched from this turn settle");
+    expect(tool.description).toContain("wakes you exactly once in a followup turn");
+  }
+  const sent = await send.handler({ to: "bot_b", task: "Collect evidence" }, { invocationId: "call" });
+  expect(sent.structuredContent).toEqual(receipt);
+  expect(JSON.stringify(sent.content)).toContain("end your turn immediately; do not wait, sleep, or poll");
+  const refused = await read.handler({ assignmentId: "older-assignment", offset: 10 });
+  expect(refused.structuredContent).toEqual(pending);
+  expect(JSON.stringify(refused.content)).toContain("Result read refused");
+  expect(JSON.stringify(refused.content)).toContain("End your turn immediately; do not wait, sleep, or poll");
+  expect(calls).toEqual([
+    { executionToken: "group-execution:live", invocationId: "call", args: { to: "bot_b", task: "Collect evidence" } },
+    { executionToken: "group-execution:live", args: { assignmentId: "older-assignment", offset: 10 } },
+  ]);
+});

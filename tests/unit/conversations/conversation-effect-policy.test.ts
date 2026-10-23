@@ -359,13 +359,19 @@ for (const targetIndex of [0, 2]) {
       expect(replay.reused).toBe(true); expect(replay.run.id).toBe(accepted.run.id);
       expect(replay.memberTurns).toHaveLength(3);
       expect(replay.memberTurns.slice(0, 2).map((m) => m.id)).toEqual(accepted.memberTurns.map((m) => m.id));
-      h.runner.finish(1); await until(() => h.runner.calls.length === 3); h.runner.finish(2); await drain;
+      h.runner.finish(1); await until(() => h.runner.calls.length === 3); h.runner.finish(2);
+      // The handoff child settled, so its sender earns ONE wake turn.
+      await until(() => h.runner.calls.length === 4); h.runner.finish(3); await drain;
       const reopened = await harness({ path: h.path, state: parseState(structuredClone(h.state)) });
       try {
         const replayAfterReopen = await accept(reopened, group.id, topic.id, ["read-only", "read-write"]);
         expect(replayAfterReopen.reused).toBe(true);
         expect(replayAfterReopen.run.id).toBe(accepted.run.id);
-        expect(replayAfterReopen.memberTurns.map((m) => m.id)).toEqual(replay.memberTurns.map((m) => m.id));
+        // The replay carries the accepted members plus the leader's ONE wake
+        // turn; the policy replay must not discard any of them.
+        expect(replayAfterReopen.memberTurns.slice(0, replay.memberTurns.length).map((m) => m.id)).toEqual(replay.memberTurns.map((m) => m.id));
+        expect(replayAfterReopen.memberTurns).toHaveLength(replay.memberTurns.length + 1);
+        expect(replayAfterReopen.memberTurns.at(-1)?.origin).toBe("followup");
         expect(reopened.runner.calls).toHaveLength(0);
       } finally { reopened.store.close(); }
     } finally { await h.service.cancelRun(accepted.run.id); await drain; handoffs.close(); h.store.close(); }

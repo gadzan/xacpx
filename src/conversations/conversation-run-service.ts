@@ -1641,6 +1641,12 @@ export class ConversationRunService {
     this.trackReadyAutomaticRuns();
   }
 
+  async cancelMemberTurn(runId: string, memberTurnId: string): Promise<void> {
+    this.assertOpen();
+    await this.dispatcher.cancelMemberTurn(runId, memberTurnId);
+    this.trackReadyAutomaticRuns();
+  }
+
   private async cancelRunAndAbortRouting(runId: string): Promise<void> {
     // cancelRun seals durable state synchronously, then may await a dispatcher
     // wake. Abort the Router before that wake waits on a successor's provider.

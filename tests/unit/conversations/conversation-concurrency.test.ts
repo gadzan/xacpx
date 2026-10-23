@@ -285,7 +285,11 @@ test("public handoff remains pending behind capacity and starts once with orches
   h.runner.finish(0); await until(() => h.runner.calls.length === 2);
   expect(h.runner.calls[1]!.executionOrigin).toBe("orchestration");
   expect(h.runner.calls[1]!.permissionRoute).toBeUndefined();
-  h.runner.finish(1); await drain; expect(h.runner.peak).toBe(1); handoffs.close(); h.store.close();
+  // The handoff target settles, so the leader earns its ONE wake turn.
+  h.runner.finish(1); await until(() => h.runner.calls.length === 3);
+  expect(h.runner.calls[2]!.text).toContain("handoff task");
+  h.runner.finish(2);
+  await drain; expect(h.runner.peak).toBe(1); handoffs.close(); h.store.close();
 });
 
 test("external human Stop cancels the configured Run without starting capacity-waiting members", async () => {

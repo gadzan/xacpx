@@ -1875,6 +1875,32 @@ test("Bot and Conversation RPCs dispatch to Control product IDs", async () => {
   expect(cancels).toEqual(["run_1"]);
 });
 
+test("scoped member cancellation dispatches both product IDs and preserves the Run response", async () => {
+  const cancels: unknown[] = [];
+  const run = { id: "run_1", state: "running", memberTurns: [{ id: "mturn_1", state: "cancelled" }] };
+  const { control } = makeFakeControl({
+    cancelMemberTurn: async (runId: string, memberTurnId: string) => {
+      cancels.push([runId, memberTurnId]);
+      return run;
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.runsCancelMember, { runId: "run_1", memberTurnId: "mturn_1" }))).toEqual({ run });
+  expect(cancels).toEqual([["run_1", "mturn_1"]]);
+  for (const payload of [{ runId: "run_1" }, { runId: "run_1", memberTurnId: "mturn_1", extra: true }]) {
+    expect(await dispatch(bridge, req(MSG.runsCancelMember, payload))).toMatchObject({ error: { code: "invalid-payload" } });
+  }
+  expect(cancels).toHaveLength(1);
+});
+
+test("scoped member cancellation reports unsupported-rpc on older cores", async () => {
+  const { control } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.runsCancelMember, { runId: "run_1", memberTurnId: "mturn_1" }))).toMatchObject({
+    error: { code: "unsupported-rpc" },
+  });
+});
+
 test("conversation history direction and topic runs list dispatch with product IDs", async () => {
   const history: unknown[] = [];
   const { control } = makeFakeControl({

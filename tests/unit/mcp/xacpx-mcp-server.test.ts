@@ -52,6 +52,27 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
   } finally { await client.close(); await server.close(); }
 });
 
+test("Group MCP server instructions require ending the dispatch turn and render the read refusal", async () => {
+  const token = "group-execution:trusted-launch";
+  const transport = createMemoryTransport(async () => { throw new Error("Group cannot delegate"); });
+  transport.groupReadResult = async () => ({ kind: "pending-handoffs" as const, mustEndTurn: true as const, pendingAssignmentIds: ["assignment"] });
+  const server = createXacpxMcpServer({ transport, coordinatorSession: token, sourceHandle: token });
+  const client = new Client({ name: "group-test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(b); await client.connect(a);
+    const instructions = client.getInstructions() ?? "";
+    expect(instructions).toContain("end your turn immediately");
+    expect(instructions).toContain("do not wait, sleep, or poll");
+    expect(instructions).toContain("wakes you exactly once in a followup turn");
+    expect(instructions).toContain("reads are refused");
+    const refused = await client.callTool({ name: "group_read_result", arguments: {} });
+    expect(refused.isError).not.toBe(true);
+    expect(JSON.stringify(refused)).toContain("Result read refused");
+    expect(JSON.stringify(refused)).toContain("mustEndTurn");
+  } finally { await client.close(); await server.close(); }
+});
+
 test("lists 13 MCP tools and hides coordinator/source identity from input schemas", async () => {
   const transport = createMemoryTransport(
     async () => ({ taskId: "task-1", status: "needs_confirmation" }),

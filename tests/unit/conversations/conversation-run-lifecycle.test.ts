@@ -3288,6 +3288,112 @@ test("teardown aborts when physical cancel throws, keeping barrier and runtime",
   first.store.close();
 });
 
+for (const seam of ["afterClaim", "beforeRuntimeMaterialize", "beforeExecutionStart", "afterExecutionStart"] as const) {
+  test(`scoped member cancel during ${seam} admits only the surviving sibling`, async () => {
+    const entered = deferred();
+    const resume = deferred();
+    const first = await createLifecycle({
+      hooks: {
+        [seam]: async (value: { memberTurn?: { botId: string }; botId?: string }) => {
+          if ((value.memberTurn?.botId ?? value.botId) !== BOT_ID) return;
+          entered.resolve();
+          await resume.promise;
+        },
+      },
+    });
+    try {
+      seedTesterBot(first.state);
+      const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+      const topic = await first.service.createGroupTopic(group.id, "Scoped admission", {
+        workspace: "backend", isolation: "shared-single-writer",
+      });
+      const accepted = await first.service.acceptGroupPrompt({
+        conversationId: group.id, topicId: topic.id, requestId: `scoped-${seam}`, text: "review",
+        target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      });
+      const target = accepted.memberTurns.find((turn) => turn.botId === BOT_ID)!;
+      const sibling = accepted.memberTurns.find((turn) => turn.botId === TESTER_ID)!;
+      const drain = first.dispatcher.kick();
+      await entered.promise;
+      await first.service.cancelMemberTurn(accepted.run.id, target.id);
+      expect(first.store.getMemberTurn(target.id)).toMatchObject({ state: "cancelled", cancellationReason: "human-cancelled" });
+      expect(first.store.getMemberTurn(sibling.id)?.state).not.toBe("cancelled");
+      expect(fakeRunner(first.runner).cancelCalls).toEqual([]);
+      resume.resolve();
+      await drain;
+      await first.dispatcher.kick();
+      expect(fakeRunner(first.runner).runs.map((input) => input.memberTurnId)).toEqual([sibling.id]);
+      expect(first.store.getMemberTurn(sibling.id)?.state).toBe("completed");
+      expect(first.store.getRun(accepted.run.id)?.cancellationReason).toBeUndefined();
+    } finally {
+      resume.resolve();
+      await first.dispatcher.shutdown();
+      first.store.close();
+    }
+  });
+}
+
+test("scoped running cancellation keeps intent through provider settlement without cancelling siblings", async () => {
+  const providerStarted = deferred();
+  const first = await createLifecycle({
+    controlChat: async (request) => {
+      providerStarted.resolve();
+      if (request.text.includes("Focus on races.")) {
+        await new Promise<void>((resolve) => request.abortSignal!.addEventListener("abort", () => resolve(), { once: true }));
+      }
+      return { text: "settled" };
+    },
+  });
+  try {
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "Scoped running", {
+      workspace: "backend", isolation: "shared-single-writer",
+    });
+    const accepted = await first.service.acceptGroupPrompt({
+      conversationId: group.id, topicId: topic.id, requestId: "scoped-running", text: "review",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    });
+    const target = accepted.memberTurns.find((turn) => turn.botId === BOT_ID)!;
+    const sibling = accepted.memberTurns.find((turn) => turn.botId === TESTER_ID)!;
+    const drain = first.dispatcher.kick();
+    await providerStarted.promise;
+    await first.service.cancelMemberTurn(accepted.run.id, target.id);
+    await drain;
+    // The provider settled with a proven completion after the scoped cancel:
+    // existing policy keeps that evidence and retains the cancel intent.
+    expect(first.store.getMemberTurn(target.id)).toMatchObject({ state: "completed", cancellationReason: "human-cancelled" });
+    expect(first.store.getMemberTurn(sibling.id)?.state).toBe("completed");
+    expect(first.store.getRun(accepted.run.id)?.cancellationReason).toBeUndefined();
+  } finally {
+    await first.dispatcher.shutdown();
+    first.store.close();
+  }
+});
+
+test("scoped cancel preserves a completed provider result while suppressing run cancellation intent", async () => {
+  const entered = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({ hooks: { beforeResultPersist: async () => { entered.resolve(); await resume.promise; } } });
+  try {
+    const accepted = await first.service.acceptDirectPrompt({ botId: BOT_ID, requestId: "scoped-completion-race", content: "review" });
+    const drain = first.dispatcher.kick();
+    await entered.promise;
+    await first.service.cancelMemberTurn(accepted.run.id, accepted.memberTurn.id);
+    resume.resolve();
+    await drain;
+    expect(first.store.getMemberTurn(accepted.memberTurn.id)).toMatchObject({ state: "completed", cancellationReason: "human-cancelled" });
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+    expect(first.store.getRun(accepted.run.id)?.cancellationReason).toBeUndefined();
+    expect(first.store.listMessages({ conversationId: accepted.run.conversationId, topicId: accepted.run.topicId, limit: 10 })
+      .filter((message) => message.role === "bot").map((message) => message.content)).toEqual(["done"]);
+  } finally {
+    resume.resolve();
+    await first.dispatcher.shutdown();
+    first.store.close();
+  }
+});
+
 test("dispatcher cancelRun cancels every started member exactly", async () => {
   const hangA = deferred();
   const hangB = deferred();

@@ -220,6 +220,7 @@ var MSG = {
   runsTraceGet: "control.runs.trace.get",
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
+  runsCancelMember: "control.runs.cancelMember",
   interactionRequest: "control.interaction.request",
   interactionRespond: "control.interaction.respond",
   interactionWithdraw: "control.interaction.withdraw"
@@ -259,7 +260,8 @@ var RELAY_CAPABILITIES = {
   desktopRfbV1: "desktop.rfb.v1",
   desktopArdAuthV1: "desktop.ard-auth.v1",
   interactionElicitationFormV1: "interaction.elicitation.form.v1",
-  botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1"
+  botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
+  runsCancelMemberV1: "runs.cancel-member.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [
@@ -1942,6 +1944,12 @@ var validateRunsCancel = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? o : null;
 };
+var validateRunsCancelMember = (p) => {
+  const o = fields(p);
+  if (!o || !hasOnlyKeys(o, { runId: true, memberTurnId: true }))
+    return null;
+  return traceProductId(o.runId) && traceProductId(o.memberTurnId) ? o : null;
+};
 var optObj = (v) => v === undefined || isObj(v);
 var isTimestamp = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 var INTERACTION_KINDS = ["permission", "elicitation"];
@@ -2270,6 +2278,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsTraceGet]: validateRunsTraceGet,
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
+  [MSG.runsCancelMember]: validateRunsCancelMember,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
   [MSG.interactionWithdraw]: validateInteractionWithdraw

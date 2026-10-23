@@ -222,6 +222,14 @@ export interface MemberTurnRecord {
    *  evidence: preserved per-member so a sibling's unknown/cancel can never
    *  erase which member failed and why. */
   failureReason?: string;
+  /** User cancellation intent scoped to this member, never its siblings. */
+  cancellationReason?: "human-cancelled";
+  /** Set exactly on the single wake turn the runtime creates for a leader
+   *  member turn whose own public handoffs have all settled. It names the
+   *  leader turn whose assignments this wake summarizes. Absent on every
+   *  other turn — including ordinary orchestration-accepted members, whose
+   *  `followup` origin does NOT identify a handoff wake. */
+  followupSenderMemberTurnId?: string;
   /** Declared side-effect capability for scheduling. Persisted at durable
    *  accept from AcceptMemberInput.effect; absent (pre-effect rows) reads as
    *  `unknown`. PR7 always persists `unknown`: no read-only capability is

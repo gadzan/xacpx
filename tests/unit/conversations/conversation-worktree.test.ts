@@ -530,7 +530,18 @@ test("public handoff to an earlier member reuses its worktree and preserves orch
   expect(h.sessions.getResolvedSessionByInternalAlias(h.runner.calls[2]!.sessionAlias)!.cwd).toBe(cwd);
   expect(await readFile(join(cwd, "previous.txt"), "utf8")).toBe("preserve across member turns");
   expect(h.runner.calls[2]!.executionOrigin).toBe("orchestration");
-  expect(h.store.worktrees.get(a.run.id)!.resources).toHaveLength(2); h.runner.finish(2); await drain; handoffs.close(); h.store.close();
+  expect(h.store.worktrees.get(a.run.id)!.resources).toHaveLength(2); h.runner.finish(2);
+  // Once the sender's turn ended and its handoff settled, exactly one wake
+  // (followup) turn is inserted for the sender; it reuses the sender's worktree.
+  await wait(() => h.runner.calls.length === 4);
+  const wake = h.store.getMemberTurn(h.runner.calls[3]!.memberTurnId)!;
+  expect(h.runner.calls[3]!.botId).toBe(h.runner.calls[sender]!.botId);
+  expect(wake.origin).toBe("followup");
+  expect(wake.followupSenderMemberTurnId).toBe(h.runner.calls[sender]!.memberTurnId);
+  expect(h.sessions.getResolvedSessionByInternalAlias(h.runner.calls[3]!.sessionAlias)!.cwd)
+    .toBe(h.sessions.getResolvedSessionByInternalAlias(h.runner.calls[sender]!.sessionAlias)!.cwd);
+  expect(h.store.worktrees.get(a.run.id)!.resources).toHaveLength(2);
+  h.runner.finish(3); await drain; expect(h.runner.calls).toHaveLength(4); handoffs.close(); h.store.close();
 }, 60_000);
 
 for (const engine of ["cli", "runtime"] as const) {
