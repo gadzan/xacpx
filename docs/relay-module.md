@@ -505,7 +505,8 @@ target, Stop authority or scheduling.
 product IDs of at most 128 characters and returns `{run: ConversationRunDetailDto}`.
 The connector calls `ControlService.cancelMemberTurn` to cancel that MemberTurn;
 it does not set Run cancellation provenance or cancel already-dispatched subtasks.
-Cancelling a leader suppresses its pending followup. `control.runs.cancel` keeps
+Cancelling a leader suppresses its followup, whether that wake is already queued or
+only earned later by its still-unsettled subtasks. `control.runs.cancel` keeps
 its stop-all behavior. Registration advertises `runs.cancel-member.v1` only when
 the connector validator and core method both support scoped cancellation, so the
 web never offers the action on an instance that cannot perform it. A connector
