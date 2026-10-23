@@ -352,9 +352,8 @@ export class ConversationRunService {
       const existing = this.store.getAcceptedRequest(conversationId, topicId, input.requestId);
       if (existing) {
         if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
-        assertAcceptedPolicies(existing, memberPolicies);
         assertDirectReplay(existing.message, input.content, input.agentMentions, input.media);
-        return existing;
+        return assertAcceptedPolicies(existing, memberPolicies);
       }
       if (this.store.hasRetiredPrompt(conversationId, topicId, input.requestId)) {
         throw new ConversationError("request_retired", "request was retired with its topic context");

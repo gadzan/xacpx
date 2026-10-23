@@ -39,16 +39,11 @@ const props = defineProps<{
   /** Observed-completion signal from the live run (existing avatar behavior). */
   observedCompletion?: boolean;
   disabled?: boolean;
-  parts?: TurnPartDto[];
-  presentation?: TurnPresentationPlan;
   singleMember?: boolean;
-  elapsed?: string;
-  stopAvailable?: boolean;
-  stopPending?: boolean;
   runState?: ConversationRunDto["state"];
 }>();
 
-const emit = defineEmits<{ toggle: [element: HTMLElement | null]; stop: [] }>();
+const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
 
 const { t } = useI18n();
 
@@ -133,11 +128,6 @@ defineExpose({ bubbleStatus });
       :expanded="expanded"
       :attempt="memberTurn.attempt"
       :controls="controls"
-      :single-member="singleMember"
-      :elapsed="elapsed"
-      :stop-available="stopAvailable"
-      :stop-pending="stopPending"
-      @stop="emit('stop')"
       @toggle="emit('toggle', $event)"
     />
     <template v-if="message">

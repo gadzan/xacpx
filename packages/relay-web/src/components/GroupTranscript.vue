@@ -30,7 +30,6 @@ import AgentThinkingBubble from "./AgentThinkingBubble.vue";
 import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
 import GroupRunDetailSheet from "./GroupRunDetailSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
-import { useLiveElapsedClock } from "../lib/use-live-elapsed";
 import {
   projectGroupTranscript,
   traceEventsToParts,
@@ -106,26 +105,6 @@ const runRecords = computed<Record<string, GroupRunRecord>>(() => {
   return out;
 });
 
-const { nowMs: runNowMs } = useLiveElapsedClock(() => groupsStore.isRunActive);
-function isSingleMemberRun(runId: string): boolean {
-  const record = runRecords.value[runId];
-  if (!record?.memberTurns.length) return false;
-  const botId = record.memberTurns[0]?.botId;
-  return !!botId && record.memberTurns.every((turn) => turn.botId === botId);
-}
-function memberElapsed(turn: MemberTurnSummaryDto): string | undefined {
-  const record = runRecords.value[turn.runId];
-  const stamp = turn.startedAt ?? record?.run.startedAt;
-  if (!stamp) return undefined;
-  const startedAt = Date.parse(stamp);
-  const end = turn.finishedAt ?? record?.run.finishedAt;
-  const elapsed = Math.floor(((end ? Date.parse(end) : runNowMs.value) - startedAt) / 1000);
-  if (!Number.isFinite(elapsed)) return undefined;
-  const seconds = Math.max(0, elapsed);
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-  return `${Math.floor(seconds / 3600)}h`;
-}
 function canStopRun(candidate: ConversationRunDto | undefined): boolean {
   const active = groupsStore.activeRun;
   return !!candidate && !!active
@@ -138,11 +117,6 @@ function canStopRun(candidate: ConversationRunDto | undefined): boolean {
     && active.conversationId === groupsStore.activeConversationId
     && active.topicId === groupsStore.activeTopicId
     && groupsStore.isRunActive;
-}
-function stopMemberRun(runId: string): void {
-  if (canStopRun(runRecords.value[runId]?.run) && groupsStore.cancellingRunId !== runId) {
-    void groupsStore.cancelCurrentRun();
-  }
 }
 
 const items = computed<GroupTranscriptItem[]>(() =>
@@ -546,12 +520,6 @@ async function handleLoadOlder(): Promise<void> {
           :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
           :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
           :disabled="item.memberTurn.botId ? botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false : false"
-          :single-member="isSingleMemberRun(item.memberTurn.runId)"
-          :run-state="runRecords[item.memberTurn.runId]?.run.state"
-          :elapsed="memberElapsed(item.memberTurn)"
-          :stop-available="canStopRun(runRecords[item.memberTurn.runId]?.run)"
-          :stop-pending="groupsStore.cancellingRunId === item.memberTurn.runId"
-          @stop="stopMemberRun(item.memberTurn.runId)"
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
         />
         <!-- Projection order keeps activity, routing and unresolved rows at their owning request. -->
@@ -568,12 +536,6 @@ async function handleLoadOlder(): Promise<void> {
             :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
             :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
             :disabled="botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false"
-            :single-member="!item.explanation && isSingleMemberRun(item.memberTurn.runId)"
-            :run-state="runRecords[item.memberTurn.runId]?.run.state"
-            :elapsed="memberElapsed(item.memberTurn)"
-            :stop-available="!item.explanation && canStopRun(runRecords[item.memberTurn.runId]?.run)"
-            :stop-pending="groupsStore.cancellingRunId === item.memberTurn.runId"
-            @stop="stopMemberRun(item.memberTurn.runId)"
             @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
           />
         </div>

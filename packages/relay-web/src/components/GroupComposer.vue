@@ -732,7 +732,6 @@ function handleRetry(): void {
             <p class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ $t("group.target.selectMembers") }}</p>
             <button v-for="b in props.bots" :key="b.id"
                     :data-test="`group-target-member-${b.id}`"
-                    :disabled="!b.enabled"
                     :aria-disabled="!!memberUnavailableReason(b)"
                     :title="memberUnavailableReason(b) ?? undefined"
                     class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"

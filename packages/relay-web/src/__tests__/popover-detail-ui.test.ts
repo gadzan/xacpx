@@ -390,9 +390,6 @@ describe("GroupThinkingBubbles UI", () => {
     await openFirstBubble(wrapper);
     (sheet()!.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
     await flushPromises();
-    expect(cancel).not.toHaveBeenCalled();
-    (document.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
-    await flushPromises();
     expect(cancel).toHaveBeenCalled();
     (document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement).click();
     await flushPromises();

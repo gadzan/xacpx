@@ -501,7 +501,7 @@ describe("Group Components", () => {
       await wrapper.find('[data-test="group-target-button"]').trigger("click");
       const off = wrapper.find('[data-test="group-target-member-bot_off"]');
       expect(off.exists()).toBe(true);
-      expect(off.attributes("disabled")).toBeDefined();
+      expect(off.attributes("aria-disabled")).toBe("true");
     });
 
     it("typing @Ann into @Anna never selects Ann first", async () => {
@@ -1074,15 +1074,6 @@ describe("Group Components", () => {
       expect(layer !== null).toBe(true);
       expect(layer!.textContent ?? "").toContain("Running");
       (document.body.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
-      await flushPromises();
-      expect(spy).not.toHaveBeenCalled();
-      expect(document.activeElement?.getAttribute("data-test")).toBe("composer-confirm-cancel");
-      (document.body.querySelector('[data-test="composer-confirm-cancel"]') as HTMLElement).click();
-      await flushPromises();
-      expect(spy).not.toHaveBeenCalled();
-      (document.body.querySelector('[data-test="group-stop-run-button"]') as HTMLElement).click();
-      await flushPromises();
-      (document.body.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
       await flushPromises();
       expect(spy).toHaveBeenCalledTimes(1);
       spy.mockRestore();

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import RunStatusChip from "./RunStatusChip.vue";
 
 /**
  * Compact status entry for one member turn (frozen spec §3.1).
@@ -34,15 +33,10 @@ const props = defineProps<{
   /** Durable attempt index; > 1 earns a small numeric badge so a retried
    *  member is spottable before any failure is visible. */
   attempt?: number;
-  singleMember?: boolean;
-  elapsed?: string;
-  stopAvailable?: boolean;
-  stopPending?: boolean;
 }>();
 
 const emit = defineEmits<{
   toggle: [element: HTMLElement | null];
-  stop: [];
 }>();
 
 const { t } = useI18n();
@@ -66,38 +60,10 @@ const stateTitle = computed(() => {
 });
 
 const pulsing = computed(() => props.status === "running" || props.status === "streaming");
-const showRunPill = computed(() => props.singleMember && (
-  props.status === "running" || props.status === "streaming" || props.status === "queued" || props.status === "waiting"
-));
-const pillState = computed(() => props.status === "waiting" ? "waiting" : props.status === "queued" ? "queued" : "running");
 </script>
 
 <template>
-  <RunStatusChip
-    v-if="showRunPill"
-    :state="pillState"
-    :label="stateTitle"
-    :elapsed="elapsed"
-    :stop-available="stopAvailable"
-    :stop-pending="stopPending"
-    @stop="emit('stop')"
-  >
-    <template #label>
-      <button
-        type="button"
-        data-test="agent-thinking-bubble"
-        class="min-w-0 truncate rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        :aria-label="`${label} — ${stateTitle}`"
-        aria-haspopup="dialog"
-        :aria-expanded="expanded === true"
-        :aria-controls="controls"
-        :title="`${label} — ${stateTitle}`"
-        @click.stop="onToggle"
-      >{{ stateTitle }}</button>
-    </template>
-  </RunStatusChip>
   <button
-    v-else
     type="button"
     data-test="agent-thinking-bubble"
     class="group-bubble-trigger"

@@ -37,8 +37,8 @@ const dateTime = computed(() => {
 }
 .conversation-meta:hover .conversation-operations,
 .conversation-meta:focus-within .conversation-operations,
-:global(.conversation-row:hover) .conversation-operations,
-:global(.conversation-row:focus-within) .conversation-operations {
+:global(.conversation-row:hover .conversation-operations),
+:global(.conversation-row:focus-within .conversation-operations) {
   opacity: 1;
 }
 @media (hover: none) {

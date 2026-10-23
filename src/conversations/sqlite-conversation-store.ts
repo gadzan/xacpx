@@ -1,5 +1,5 @@
 import { parseStoredBotAvatar, validPromptAttachments } from "@ganglion/xacpx-relay-protocol";
-import { assertPromptReplay, parseDirectInputMetadata } from "./direct-input-metadata";
+import { parseDirectInputMetadata } from "./direct-input-metadata";
 import { randomUUID } from "node:crypto";
 import {
   createConversationMessageId,
@@ -851,7 +851,6 @@ export class SqliteConversationStore implements ConversationStore {
     if (input.externalRequest) {
       const replay = this.getExternalRequest(input.externalRequest);
       if (replay) {
-        assertPromptReplay(replay.message, input.content, input.media);
         return replay;
       }
     }
@@ -865,7 +864,6 @@ export class SqliteConversationStore implements ConversationStore {
       if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
       const reused = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
       if (reused) {
-        assertPromptReplay(reused.message, input.content, input.media);
         return { reused: true, ...reused };
       }
     }
@@ -895,13 +893,11 @@ export class SqliteConversationStore implements ConversationStore {
         if (input.externalRequest) {
           const replay = this.getExternalRequest(input.externalRequest);
           if (replay) {
-            assertPromptReplay(replay.message, input.content, input.media);
             return replay;
           }
         }
         const reused = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
         if (reused) {
-          assertPromptReplay(reused.message, input.content, input.media);
           return { reused: true, ...reused };
         }
       }

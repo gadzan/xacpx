@@ -870,7 +870,7 @@ const rowSwipes = computed(() => {
                 :aria-label="$t('common.more')"
                 aria-haspopup="menu"
                 :aria-expanded="botMenuOpen(inst.id, entry.bot.id)"
-                class="bot-menu-trigger mr-1 grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                class="bot-menu-trigger mr-1 grid h-10 w-10 shrink-0 place-items-center rounded-sm text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:h-7 lg:w-7"
                 @click.stop="toggleBotMenu(inst.id, entry.bot.id, $event.currentTarget as HTMLElement)"
               >
                 <span class="grid h-7 w-7 place-items-center rounded-sm transition-colors hover:bg-surface-2 hover:text-fg">
