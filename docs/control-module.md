@@ -163,6 +163,11 @@ Group automatic accept/replay 支持零成员：响应包含 `memberTurns: []`�
 
 Automatic waiting-human Run 的可选 `waitingQuestion` 通过 Run DTO/detail、列表及 `conversation-run-changed` 事件公开，重新连接与数据库重开后仍可读取。Run 结束时不再投影该字段；此 seam 不提供回答或 resume 操作。Automatic admission 不受 explicit/everyone 的 64 成员 target 上限限制，仍由 Router decision 的剩余 MemberTurn budget 约束实际分派。
 
+成员回合 DTO（`MemberTurnSummaryDto`）公开两个可选的成员级事实：只作用于该成员、不影响
+兄弟成员的 `cancellationReason`（目前只有 `"human-cancelled"`），以及汇总唤醒回合所对应的
+发起方成员回合 `followupSenderMemberTurnId`。两者都从 durable 成员行投影，有值才出现；
+成员没有被停止、也不是唤醒回合时两个字段都缺省。
+
 ## 注入方式
 
 `buildApp`（`src/main.ts`）在组装 `AppRuntime` 时构造 `ControlService`，挂在

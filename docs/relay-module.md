@@ -513,6 +513,14 @@ web never offers the action on an instance that cannot perform it. A connector
 that is new enough but runs on an older core answers `unsupported-rpc`; an older
 connector answers `unknown-type`. This additive RPC keeps protocol version 1.
 
+`MemberTurnSummaryDto` exposes two additive optional member-level fields:
+`cancellationReason` (currently only `"human-cancelled"`) carries the scoped
+human-Stop evidence of that one member turn, and `followupSenderMemberTurnId`
+names the leader turn a summary wake was created for. Both are projected from
+the durable member row and are absent when the member was never stopped or is
+not a wake. The wire validator accepts only the known reason and only a string
+sender; older clients ignore both fields.
+
 Authenticated instance Control RPC exposes `control.conversation.bindings.list`
 (`{}` → `{bindings}`), `.set` (`{chatKey, conversationId, topicId?}` → `{binding}`)
 and `.delete` (`{chatKey}` → `{ok:true}`). These are instance-owner management

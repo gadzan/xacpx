@@ -820,7 +820,11 @@ function validMemberTurnSummary(value: unknown): boolean {
     // never a permission upgrade.
     && (c.blockedReason === undefined
       || c.blockedReason === "human-authority-required"
-      || c.blockedReason === "human-authority-unknown");
+      || c.blockedReason === "human-authority-unknown")
+    // Scoped human-Stop evidence: only the known reason is accepted.
+    && (c.cancellationReason === undefined || c.cancellationReason === "human-cancelled")
+    // The wake turn names the leader turn it summarizes.
+    && optStr(c.followupSenderMemberTurnId);
 }
 
 const historyObject = (value: unknown): value is Record<string, unknown> =>
@@ -852,7 +856,8 @@ const historyRunKeys = [
 const historyMemberKeys = [
   "id", "runId", "conversationId", "topicId", "botId", "batch", "memberIndex", "attempt", "origin", "state",
   "effect", "effectProvenance", "promptRequestId", "createdAt", "startedAt", "finishedAt", "assignmentId", "task",
-  "expectedOutput", "dependsOn", "failureReason", "blockedReason",
+  "expectedOutput", "dependsOn", "failureReason", "blockedReason", "cancellationReason",
+  "followupSenderMemberTurnId",
 ] as const satisfies readonly (keyof MemberTurnSummaryDto)[];
 
 function historyWorktree(value: unknown, runId: string): boolean {
