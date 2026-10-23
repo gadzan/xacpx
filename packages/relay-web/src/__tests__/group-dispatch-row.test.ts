@@ -26,7 +26,7 @@ const BOTS: BotSummaryDto[] = [
   { id: "bot_e", name: "Planner", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
 ];
 
-function turn(botId: string, state: MemberTurnSummaryDto["state"]): MemberTurnSummaryDto {
+function turn(botId: string, state: MemberTurnSummaryDto["state"], over: Partial<MemberTurnSummaryDto> = {}): MemberTurnSummaryDto {
   return {
     id: `turn_${botId}`,
     runId: "run_1",
@@ -38,31 +38,75 @@ function turn(botId: string, state: MemberTurnSummaryDto["state"]): MemberTurnSu
     origin: "handoff",
     state,
     createdAt: "now",
+    ...over,
   };
 }
 
-function entry(botId: string, state: MemberTurnSummaryDto["state"]): GroupDispatchEntry {
+function dispatchHandoff(
+  botId: string,
+  task: string,
+  seq: number,
+): ConversationMessageDto & { handoff: NonNullable<ConversationMessageDto["handoff"]> } {
   return {
+    id: `handoff_${botId}`,
+    conversationId: "conversation_g",
+    topicId: "topic_1",
+    runId: "run_1",
+    seq,
+    role: "system",
+    content: "Public handoff",
+    createdAt: "now",
     handoff: {
       senderMemberTurnId: "turn_leader",
       to: botId,
       assignmentId: `assignment_${botId}`,
       memberTurnId: `turn_${botId}`,
-      task: `Review ${botId}`,
+      task,
     },
-    memberTurn: turn(botId, state),
   };
 }
 
-function row(states: MemberTurnSummaryDto["state"][], botIds = ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"]) {
+function entry(
+  botId: string,
+  state: MemberTurnSummaryDto["state"],
+  over: { task?: string; seq?: number; turn?: Partial<MemberTurnSummaryDto> } = {},
+): GroupDispatchEntry {
+  return {
+    message: dispatchHandoff(botId, over.task ?? `Review ${botId}`, over.seq ?? 1),
+    memberTurn: turn(botId, state, over.turn),
+  };
+}
+
+/** A member's own reply, addressed by that member turn's prompt identity. */
+function replyMessage(botId: string, promptRequestId: string, content: string, seq: number): ConversationMessageDto {
+  return {
+    id: `reply_${botId}`,
+    conversationId: "conversation_g",
+    topicId: "topic_1",
+    runId: "run_1",
+    seq,
+    role: "bot",
+    senderBotId: botId,
+    promptRequestId,
+    content,
+    createdAt: "now",
+  };
+}
+
+function row(
+  states: MemberTurnSummaryDto["state"][],
+  botIds = ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"],
+  over: { dispatches?: GroupDispatchEntry[]; messages?: ConversationMessageDto[] } = {},
+) {
   return mount(GroupDispatchRow, {
     props: {
       presentation: presentGroupDispatch({
         leader: { botId: "bot_lead", memberTurnId: "turn_leader", state: "running" },
-        dispatches: states.map((state, index) => entry(botIds[index]!, state)),
+        dispatches: over.dispatches ?? states.map((state, index) => entry(botIds[index]!, state)),
         bots: BOTS,
         drivers: {},
         supportsCancelMember: false,
+        ...(over.messages ? { messages: over.messages } : {}),
       }),
     },
     global: { plugins: [i18n] },
@@ -74,13 +118,102 @@ describe("GroupDispatchRow", () => {
     i18n.global.locale.value = "en";
   });
 
-  it("reports running members with a spinner and no expand behaviour", async () => {
+  it("reports running members with a spinner", async () => {
     const wrapper = row(["running", "running", "queued", "queued"]);
     expect(wrapper.get('[data-test="group-dispatch-title"]').text()).toBe("Sent to 4 bots");
     expect(wrapper.get('[data-test="group-dispatch-status-active"]').text()).toBe("2 running · 2 queued");
     expect(wrapper.find('[data-test="group-dispatch-overflow"]').exists()).toBe(false);
-    await wrapper.trigger("click");
-    expect(wrapper.find('[data-test="group-handoff-details"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("expands and collapses the card when the row is clicked", async () => {
+    const wrapper = row(["completed", "completed"]);
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(false);
+    expect(trigger.attributes("aria-expanded")).toBe("false");
+
+    await trigger.trigger("click");
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(true);
+    expect(trigger.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.get('[data-test="group-dispatch-chevron"]').classes()).toContain("rotate-180");
+
+    await trigger.trigger("click");
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(false);
+    expect(trigger.attributes("aria-expanded")).toBe("false");
+    expect(wrapper.get('[data-test="group-dispatch-chevron"]').classes()).not.toContain("rotate-180");
+    wrapper.unmount();
+  });
+
+  it("opens the card from the keyboard", async () => {
+    const wrapper = row(["completed", "completed"]);
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    await trigger.trigger("keydown", { key: "Enter" });
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(true);
+    await trigger.trigger("keydown", { key: " " });
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("names the dispatch content exactly once", async () => {
+    const wrapper = row(["completed", "completed"]);
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.findAll('[data-test="group-dispatch-instructions-label"]')).toHaveLength(1);
+    expect(wrapper.get('[data-test="group-dispatch-instructions"]').text()).toBe("Review bot_a");
+    expect(wrapper.get('[data-test="group-dispatch-instructions"]').classes()).toContain("line-clamp-2");
+    wrapper.unmount();
+  });
+
+  it("shows one line per dispatched bot with its state and reply preview", async () => {
+    const wrapper = row([], ["bot_a", "bot_b"], {
+      dispatches: [
+        entry("bot_a", "completed", { task: "Review the diff", seq: 1, turn: { promptRequestId: "prompt_a" } }),
+        entry("bot_b", "running", { task: "Review the diff", seq: 2, turn: { promptRequestId: "prompt_b" } }),
+      ],
+      messages: [replyMessage("bot_a", "prompt_a", "Looks good", 5)],
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+
+    const members = wrapper.findAll('[data-test="group-dispatch-member"]');
+    expect(members).toHaveLength(2);
+    expect(members[0]!.get('[data-test="group-dispatch-member-name"]').text()).toBe("Reviewer");
+    expect(members[0]!.get('[data-test="group-dispatch-member-status"]').text()).toBe("Completed");
+    expect(members[0]!.get('[data-test="group-dispatch-member-preview"]').text()).toBe("Looks good");
+    expect(members[1]!.get('[data-test="group-dispatch-member-name"]').text()).toBe("Tester");
+    expect(members[1]!.get('[data-test="group-dispatch-member-status"]').text()).toBe("Running");
+    // No reply yet: no preview line at all.
+    expect(members[1]!.find('[data-test="group-dispatch-member-preview"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("jumps to the reply of a member that answered", async () => {
+    const wrapper = row([], ["bot_a", "bot_b"], {
+      dispatches: [
+        entry("bot_a", "completed", { task: "Review the diff", seq: 1, turn: { promptRequestId: "prompt_a" } }),
+        entry("bot_b", "running", { task: "Review the diff", seq: 2, turn: { promptRequestId: "prompt_b" } }),
+      ],
+      messages: [replyMessage("bot_a", "prompt_a", "Looks good", 5)],
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+
+    const members = wrapper.findAll('[data-test="group-dispatch-member"]');
+    expect(members[0]!.attributes("disabled")).toBeUndefined();
+    expect(members[1]!.attributes("disabled")).toBeDefined();
+
+    await members[0]!.trigger("click");
+    expect(wrapper.emitted("jump")).toEqual([["reply_bot_a"]]);
+    wrapper.unmount();
+  });
+
+  it("keeps a member without a reply inert", async () => {
+    const wrapper = row([], ["bot_a"], {
+      dispatches: [entry("bot_a", "running", { task: "Review the diff" })],
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+
+    const member = wrapper.get('[data-test="group-dispatch-member"]');
+    expect(member.attributes("disabled")).toBeDefined();
+    await member.trigger("click");
+    expect(wrapper.emitted("jump")).toBeUndefined();
     wrapper.unmount();
   });
 
@@ -133,32 +266,36 @@ describe("GroupDispatchRow", () => {
   });
 
   it.each([
-    ["en", "Sent to 2 bots", "2 queued", "Stopped"],
-    ["zh-CN", "派发给 2 个 Bot", "2 等待中", "已停止"],
-  ] as const)("localizes title, status and stopped note in %s", (locale, title, status, stopped) => {
-    i18n.global.locale.value = locale;
-    const wrapper = mount(GroupDispatchRow, {
-      props: {
-        presentation: {
-          ...presentGroupDispatch({
-            leader: { botId: "bot_lead", memberTurnId: "turn_leader", state: "running" },
-            dispatches: [entry("bot_a", "queued"), entry("bot_b", "queued")],
-            bots: BOTS,
-            drivers: {},
-            supportsCancelMember: false,
-          }),
-          leaderStopped: true,
+    ["en", "Sent to 2 bots", "2 queued", "Stopped", "Instructions"],
+    ["zh-CN", "派发给 2 个 Bot", "2 等待中", "已停止", "派发内容"],
+  ] as const)(
+    "localizes title, status, stopped note and dispatch content in %s",
+    (locale, title, status, stopped, instructions) => {
+      i18n.global.locale.value = locale;
+      const wrapper = mount(GroupDispatchRow, {
+        props: {
+          presentation: {
+            ...presentGroupDispatch({
+              leader: { botId: "bot_lead", memberTurnId: "turn_leader", state: "running" },
+              dispatches: [entry("bot_a", "queued"), entry("bot_b", "queued")],
+              bots: BOTS,
+              drivers: {},
+              supportsCancelMember: false,
+            }),
+            leaderStopped: true,
+          },
         },
-      },
-      global: { plugins: [i18n] },
-    });
-    expect(wrapper.get('[data-test="group-dispatch-title"]').text()).toBe(title);
-    expect(wrapper.get('[data-test="group-dispatch-status-active"]').text()).toBe(status);
-    // The stopped note itself lives in GroupTranscript below the leader bubble;
-    // the row only carries the flag — the locale key must still resolve here.
-    expect(i18n.global.t("group.dispatch.stopped")).toBe(stopped);
-    wrapper.unmount();
-  });
+        global: { plugins: [i18n] },
+      });
+      expect(wrapper.get('[data-test="group-dispatch-title"]').text()).toBe(title);
+      expect(wrapper.get('[data-test="group-dispatch-status-active"]').text()).toBe(status);
+      // The stopped note itself lives in GroupTranscript below the leader bubble;
+      // the row only carries the flag — the locale key must still resolve here.
+      expect(i18n.global.t("group.dispatch.stopped")).toBe(stopped);
+      expect(i18n.global.t("group.dispatch.instructions")).toBe(instructions);
+      wrapper.unmount();
+    },
+  );
 });
 
 function handoffMessage(index: number, over: Partial<ConversationMessageDto> = {}): ConversationMessageDto {
@@ -313,6 +450,48 @@ describe("GroupTranscript dispatch aggregation", () => {
     await flushPromises();
     expect(wrapper.findAll('[data-test="group-dispatch-row"]')).toHaveLength(1);
     expect(wrapper.get('[data-test="group-dispatch-stopped"]').text()).toBe("Stopped");
+    wrapper.unmount();
+  });
+
+  it("jumps to a member's reply from the expanded card", async () => {
+    seedTranscript(
+      [
+        handoffMessage(1),
+        handoffMessage(2),
+        {
+          id: "reply_b",
+          conversationId: "group_1",
+          topicId: "topic_1",
+          runId: "run_1",
+          seq: 9,
+          role: "bot",
+          senderBotId: "bot_b",
+          promptRequestId: "prompt_member_1",
+          content: "Tester findings",
+          createdAt: "now",
+        },
+      ],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        { ...memberTurn("turn_member_1", "bot_b", "completed"), promptRequestId: "prompt_member_1" },
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, {
+      props: { bots: profiles },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    const members = wrapper.findAll('[data-test="group-dispatch-member"]');
+    expect(members).toHaveLength(2);
+    expect(members[0]!.attributes("disabled")).toBeUndefined();
+    expect(members[1]!.attributes("disabled")).toBeDefined();
+    await members[0]!.trigger("click");
+    await flushPromises();
+    const reply = wrapper.get('[data-message-id="reply_b"]');
+    expect(document.activeElement).toBe(reply.element);
     wrapper.unmount();
   });
 });
