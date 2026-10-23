@@ -177,7 +177,7 @@ const dispatchGroups = computed(() => {
         ...(leaderTurn?.state === "cancelled" ? { cancellationReason: "human-cancelled" as const } : {}),
       },
       dispatches: handoffs.map((message) => ({
-        handoff: message.handoff!,
+        message: message as ConversationMessageDto & { handoff: NonNullable<ConversationMessageDto["handoff"]> },
         // Missing detail (history not loaded yet) still counts the bot: report
         // it as queued until the run's member turns arrive.
         memberTurn: turnById.get(message.handoff!.memberTurnId) ?? {
@@ -197,6 +197,7 @@ const dispatchGroups = computed(() => {
       drivers,
       // TODO: prove scoped member cancellation before enabling the per-row stop UI.
       supportsCancelMember: false,
+      messages,
     });
     groups.push({
       handoffs,
@@ -566,6 +567,7 @@ async function handleLoadOlder(): Promise<void> {
                 v-if="dispatchRows[item.message.id]"
                 :presentation="dispatchRows[item.message.id]!"
                 class="mt-2"
+                @jump="jumpToMessage"
               />
               <p
                 v-if="dispatchRows[item.message.id]?.leaderStopped"
@@ -583,6 +585,7 @@ async function handleLoadOlder(): Promise<void> {
                 v-if="dispatchRows[item.message.id]"
                 :presentation="dispatchRows[item.message.id]!"
                 class="mt-2"
+                @jump="jumpToMessage"
               />
               <p
                 v-if="dispatchRows[item.message.id]?.leaderStopped"
@@ -595,7 +598,7 @@ async function handleLoadOlder(): Promise<void> {
 
             <template v-else-if="item.message.handoff">
               <template v-if="dispatchRows[item.message.id]">
-                <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" />
+                <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" @jump="jumpToMessage" />
                 <p
                   v-if="dispatchRows[item.message.id]!.leaderStopped"
                   data-test="group-dispatch-stopped"
@@ -667,7 +670,7 @@ async function handleLoadOlder(): Promise<void> {
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
         />
           <div v-if="dispatchRows[item.message.id]" class="mx-auto w-full max-w-3xl">
-            <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" />
+            <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" @jump="jumpToMessage" />
             <p
               v-if="dispatchRows[item.message.id]?.leaderStopped"
               data-test="group-dispatch-stopped"
