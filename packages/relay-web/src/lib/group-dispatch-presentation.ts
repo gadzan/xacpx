@@ -28,6 +28,23 @@ export interface GroupDispatchLeader {
   cancellationReason?: "human-cancelled";
 }
 
+/**
+ * The leader (项管) of a round, as the UI addresses it.
+ *
+ * `active` is the leader's OWN turn: it has not ended yet, so the leader can
+ * still be stopped. It is computed from the leader's durable member turn, never
+ * from the dispatched members.
+ */
+export interface GroupDispatchLeaderPresentation {
+  botId: string;
+  /** Display name of the leader; falls back to its id when the catalog lacks it. */
+  name: string;
+  /** Durable leader member turn; empty when the shape carries none. */
+  memberTurnId: string;
+  /** The leader's own turn has not ended: it can still be stopped. */
+  active: boolean;
+}
+
 /** One dispatched bot inside a round. */
 export interface GroupDispatchEntry {
   /** The handoff message that dispatched this bot. */
@@ -111,6 +128,10 @@ export interface GroupDispatchPresentation {
   leaderStopped: boolean;
   capability: GroupDispatchCapability;
   avatars: { items: GroupDispatchAvatar[]; overflow: number };
+  /** The leader of the round, as the UI addresses it. */
+  leader: GroupDispatchLeaderPresentation;
+  /** Durable run that owns the round; the stop actions need it. */
+  runId: string;
 }
 
 export interface GroupDispatchPresentationInput {
@@ -189,6 +210,12 @@ function resolveMemberReply(
  * only.
  */
 export function presentGroupDispatch(input: GroupDispatchPresentationInput): GroupDispatchPresentation {
+  // The leader's own turn: `active` means it has not ended yet, so the
+  // leader can still be stopped. A queued or dispatched leader has not
+  // finished its turn either — it simply has not started running.
+  const leaderMemberTurnId = input.leader.memberTurnId ?? "";
+  const leaderState = input.leader.state;
+  const leaderActive = leaderState === "queued" || leaderState === "dispatched" || leaderState === "running";
   const botById = new Map<string, BotSummaryDto>();
   for (const bot of input.bots ?? []) botById.set(bot.id, bot);
   const messages = input.messages ?? [];
@@ -244,7 +271,10 @@ export function presentGroupDispatch(input: GroupDispatchPresentationInput): Gro
     leaderStopped: input.leader.cancellationReason === "human-cancelled",
     capability: {
       canStopMember: input.supportsCancelMember,
-      leaderStopAction: input.supportsCancelMember ? "leader-only" : "stop-all",
+      // Scoped leader stop needs BOTH the core capability and the leader's
+      // durable member turn: without that id there is nothing to cancel, so
+      // the round-level stop is the only honest action.
+      leaderStopAction: input.supportsCancelMember && leaderMemberTurnId ? "leader-only" : "stop-all",
       anyActive: members.some((member) => member.status === "running" || member.status === "queued"),
     },
     avatars: {
@@ -256,5 +286,12 @@ export function presentGroupDispatch(input: GroupDispatchPresentationInput): Gro
       })),
       overflow: Math.max(0, members.length - GROUP_DISPATCH_AVATAR_LIMIT),
     },
+    leader: {
+      botId: input.leader.botId,
+      name: botById.get(input.leader.botId)?.name ?? input.leader.botId,
+      memberTurnId: leaderMemberTurnId,
+      active: leaderActive,
+    },
+    runId: input.dispatches[0]?.memberTurn.runId ?? input.dispatches[0]?.message.runId ?? "",
   };
 }
