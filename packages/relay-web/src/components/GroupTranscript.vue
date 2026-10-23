@@ -35,6 +35,7 @@ import {
   presentGroupDispatch,
   type GroupDispatchPresentation,
 } from "../lib/group-dispatch-presentation";
+import { pushToast } from "../lib/use-toasts";
 import {
   projectGroupTranscript,
   traceEventsToParts,
@@ -397,6 +398,18 @@ const stopPending = computed(() => {
 function handleStop(): void {
   if (stopAvailable.value && !stopPending.value) void groupsStore.cancelCurrentRun();
 }
+
+/** Stop one dispatched member of a round. The request carries the durable
+ *  run and member turn, so the leader and the other members keep running. */
+async function handleStopMember(payload: { runId: string; memberTurnId: string }): Promise<void> {
+  const instanceId = groupsStore.instanceId;
+  if (!instanceId) return;
+  try {
+    await groupsStore.cancelMember(instanceId, payload.runId, payload.memberTurnId);
+  } catch (err: unknown) {
+    pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
+  }
+}
 function handleToggle(key: string, event: unknown): void {
   toggleDetail(key, event instanceof HTMLElement ? event : null);
 }
@@ -568,6 +581,7 @@ async function handleLoadOlder(): Promise<void> {
                 :presentation="dispatchRows[item.message.id]!"
                 class="mt-2"
                 @jump="jumpToMessage"
+                @stop-member="handleStopMember"
               />
               <p
                 v-if="dispatchRows[item.message.id]?.leaderStopped"
@@ -586,6 +600,7 @@ async function handleLoadOlder(): Promise<void> {
                 :presentation="dispatchRows[item.message.id]!"
                 class="mt-2"
                 @jump="jumpToMessage"
+                @stop-member="handleStopMember"
               />
               <p
                 v-if="dispatchRows[item.message.id]?.leaderStopped"
@@ -598,7 +613,7 @@ async function handleLoadOlder(): Promise<void> {
 
             <template v-else-if="item.message.handoff">
               <template v-if="dispatchRows[item.message.id]">
-                <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" @jump="jumpToMessage" />
+                <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" @jump="jumpToMessage" @stop-member="handleStopMember" />
                 <p
                   v-if="dispatchRows[item.message.id]!.leaderStopped"
                   data-test="group-dispatch-stopped"
@@ -670,7 +685,7 @@ async function handleLoadOlder(): Promise<void> {
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
         />
           <div v-if="dispatchRows[item.message.id]" class="mx-auto w-full max-w-3xl">
-            <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" @jump="jumpToMessage" />
+            <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" @jump="jumpToMessage" @stop-member="handleStopMember" />
             <p
               v-if="dispatchRows[item.message.id]?.leaderStopped"
               data-test="group-dispatch-stopped"

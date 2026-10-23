@@ -1348,6 +1348,15 @@ export const useGroupsStore = defineStore("groups", () => {
     unwrapRpc(await api.rpc<{ run: ConversationRunDetailDto }>(targetInstanceId, MSG.runsCancel, { runId }));
   }
 
+  /** Scoped stop of one dispatched member: the durable run and member turn
+   *  identify exactly one member turn inside the round, so the leader and the
+   *  other members keep running. */
+  async function cancelMember(targetInstanceId: string, runId: string, memberTurnId: string): Promise<void> {
+    unwrapRpc(
+      await api.rpc<{ run: ConversationRunDetailDto }>(targetInstanceId, MSG.runsCancelMember, { runId, memberTurnId }),
+    );
+  }
+
   /** The single way a wholesale Topic snapshot reaches the cache. Any writer
    *  that authoritatively replaces the list is, by construction, a writer that can
    *  observe a disappearance — so every such writer must advance the deletion
@@ -3722,6 +3731,7 @@ export const useGroupsStore = defineStore("groups", () => {
     deleteGroup,
     findMemberWork,
     cancelRun,
+    cancelMember,
     loadTopics,
     createGroupTopic,
     updateTopic,

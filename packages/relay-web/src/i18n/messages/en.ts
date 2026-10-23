@@ -1179,6 +1179,7 @@ export default {
       failed: "{n} failed",
       instructions: "Instructions",
       stopMember: "Stop {name}",
+      stopMemberFailed: "Could not stop {msg}",
     },
     worktree: {
       title: "Member worktrees", boundary: "Separate working directories, not an OS sandbox. Integration creates a candidate; it does not update main.",

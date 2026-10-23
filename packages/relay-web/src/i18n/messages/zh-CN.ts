@@ -1176,6 +1176,7 @@ export default {
       failed: "{n} 失败",
       instructions: "派发内容",
       stopMember: "停止 {name}",
+      stopMemberFailed: "停止失败：{msg}",
     },
     worktree: {
       title: "成员工作树", boundary: "工作目录相互独立，但不是操作系统沙箱。整合只创建候选分支，不修改 main。",
