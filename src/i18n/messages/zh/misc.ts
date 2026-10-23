@@ -19,6 +19,8 @@ export const misc: MiscMessages = {
   orchestrationSuggestion1: "查看 /tasks --stuck 定位卡住的任务",
   orchestrationSuggestion2: "/task <id> 可看完整时间线定位错误点",
   orchestrationSuggestion3: "必要时用 /task cancel 或 /tasks clean 恢复",
+  orchestrationSuggestionMissingWorkspace:
+    "有会话或 worker binding 引用了已缺失的 workspace：请在 config.json 恢复该 workspace，或移除受影响的会话/binding",
 
   // cli/startup-wait-ui
   startupWaitLine: (frame: string, elapsed: number, timeout: number) =>

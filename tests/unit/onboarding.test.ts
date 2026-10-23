@@ -83,9 +83,34 @@ test("first-use onboarding creates current directory workspace and initial sessi
     alias: "myrepo:codex",
     agent: "codex",
     workspace: "myrepo",
+    workspaceCwd: "/tmp/myrepo",
     rollback: { workspaceExisted: false, agentExisted: false },
   });
   expect(state.sessions["myrepo:codex"]).toBeUndefined();
+});
+
+test("first-use onboarding returns the normalized workspace cwd for rollback", async () => {
+  const cfg = config();
+  const result = await maybeRunFirstUseOnboarding({
+    config: cfg,
+    state: createEmptyState(),
+    saveFirstRunConfig: async () => {},
+    deps: {
+      cwd: () => "/tmp/myrepo",
+      print: () => {},
+      isInteractive: () => true,
+      promptText: async () => "",
+    },
+  });
+
+  expect(result).toMatchObject({
+    created: true,
+    workspace: "myrepo",
+    // Rollback passes this cwd as removeWorkspace's expectedCwd so a
+    // concurrently registered same-name workspace is never deleted.
+    workspaceCwd: "/tmp/myrepo",
+    rollback: { workspaceExisted: false },
+  });
 });
 
 test("first-use onboarding skips non-interactive mode", async () => {

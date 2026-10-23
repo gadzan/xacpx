@@ -19,6 +19,8 @@ export const misc: MiscMessages = {
   orchestrationSuggestion1: "Run /tasks --stuck to locate stuck tasks",
   orchestrationSuggestion2: "/task <id> shows the full timeline to locate errors",
   orchestrationSuggestion3: "Use /task cancel or /tasks clean to recover",
+  orchestrationSuggestionMissingWorkspace:
+    "A session or worker binding references a missing workspace: restore the workspace in config.json or remove the affected sessions/bindings",
 
   // cli/startup-wait-ui
   startupWaitLine: (frame: string, elapsed: number, timeout: number) =>

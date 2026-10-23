@@ -17,6 +17,13 @@ export interface FirstRunOnboardingPlan {
   alias: string;
   agent: string;
   workspace: string;
+  /**
+   * Normalized cwd the onboarding registered for `workspace`. Optional so a
+   * plan decoded from an older daemon-start payload (encoded before this
+   * field existed) still decodes: rollback then falls back to name-only
+   * removal, as it did before.
+   */
+  workspaceCwd?: string;
   rollback: {
     workspaceExisted: boolean;
     agentExisted: boolean;
@@ -98,6 +105,7 @@ export async function maybeRunFirstUseOnboarding(input: {
   return {
     created: true,
     workspace: workspaceName,
+    workspaceCwd: cwd,
     agent: agentName,
     alias,
     rollback: { workspaceExisted, agentExisted },

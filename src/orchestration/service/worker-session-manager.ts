@@ -15,6 +15,7 @@ import type {
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
+  assertWorkerBindingWorkspaceTarget,
   teardownStagedWorkerOwner,
   workerBindingIdentityFields,
   workerBindingLaunchFields,
@@ -425,6 +426,34 @@ export class WorkerSessionManager {
         for (const task of queued) {
           if (!this.canStartParallelTask(state, task.targetAgent)) {
             continue; // this agent is full — try other agents' queued tasks
+          }
+          // A queued task can outlive its workspace registration (an operator
+          // delete or a hand-edited config). Fail this task in place instead of
+          // throwing out of the whole drain: one unresolvable task must not
+          // starve every later queued task in this or future reconciles.
+          try {
+            assertWorkerBindingWorkspaceTarget(
+              { workspace: task.workspace, ...(task.cwd ? { cwd: task.cwd } : {}) },
+              this.deps.config,
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            task.status = "failed";
+            task.updatedAt = this.deps.now().toISOString();
+            task.summary = "Parallel drain failed: target workspace is not registered";
+            task.resultText = message;
+            this.kernel.appendTaskEvent(task, task.updatedAt, "status_changed", {
+              status: "failed",
+              message,
+            });
+            await this.deps.saveState(state);
+            this.kernel.logEvent("orchestration.parallel.target_unresolvable", "queued parallel task failed before drain", {
+              taskId: task.taskId,
+              workerSession: task.workerSession ?? "",
+              workspace: task.workspace,
+              message,
+            });
+            continue;
           }
           task.status = "running";
           task.updatedAt = this.deps.now().toISOString();

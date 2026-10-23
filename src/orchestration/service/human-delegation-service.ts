@@ -28,6 +28,7 @@ import type {
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
+  assertWorkerBindingWorkspaceTarget,
   teardownStagedWorkerOwner,
   workerBindingEndpointIdentityFields,
   workerBindingEngineFields,
@@ -41,7 +42,7 @@ import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type HumanDelegationDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask" | "resolveWorkerBindingEngine" | "releaseWorkerSession"
+  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "config" | "dispatchWorkerTask" | "resolveWorkerBindingEngine" | "releaseWorkerSession"
 >;
 export class HumanDelegationService {
   constructor(
@@ -171,6 +172,10 @@ export class HumanDelegationService {
           const previousBinding = state.orchestration.workerBindings[workerSession];
           this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
           this.workerSessions.assertWorkerSessionAvailable(state, workerSession, undefined, { allowCurrentReservation: true });
+          assertWorkerBindingWorkspaceTarget(
+            { workspace: input.workspace, ...(input.cwd ? { cwd: input.cwd } : {}) },
+            this.deps.config,
+          );
           const identity = workerBindingIdentityFields(
             previousBinding,
             () => this.deps.resolveWorkerBindingEngine({
@@ -259,6 +264,10 @@ export class HumanDelegationService {
           const previousBinding = state.orchestration.workerBindings[ensuredWorkerSession];
           this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, ensuredWorkerSession);
           this.workerSessions.assertWorkerSessionAvailable(state, ensuredWorkerSession, undefined, { allowCurrentReservation: true });
+          assertWorkerBindingWorkspaceTarget(
+            { workspace: input.workspace, ...(input.cwd ? { cwd: input.cwd } : {}) },
+            this.deps.config,
+          );
           state.orchestration.tasks[taskId] = task;
           state.orchestration.workerBindings[ensuredWorkerSession] = {
             sourceHandle: ensuredWorkerSession,

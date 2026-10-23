@@ -705,6 +705,123 @@ test("workspace rm trims the provided name", async () => {
   });
 });
 
+test("workspace rm refuses while the daemon is running and leaves config untouched", async () => {
+  setLocale("zh");
+  await withTempHome(async (home) => {
+    const lines: string[] = [];
+
+    await expect(runCli(["workspace", "add", "api"], { cwd: () => "/repo/api", print: () => {} })).resolves.toBe(0);
+
+    await expect(
+      runCli(["workspace", "rm", "api"], {
+        controller: {
+          getStatus: async () => ({
+            state: "running",
+            pid: process.pid,
+            status: {
+              pid: process.pid,
+              started_at: "2026-03-26T00:00:00.000Z",
+              heartbeat_at: "2026-03-26T00:01:00.000Z",
+              config_path: "/cfg",
+              state_path: "/state",
+              app_log: "/app",
+              stdout_log: "/out",
+              stderr_log: "/err",
+            },
+          }),
+          start: async () => ({ state: "started", pid: process.pid }),
+          stop: async () => ({ state: "stopped", detail: "stopped" }),
+        },
+        print: (line) => lines.push(line),
+      }),
+    ).resolves.toBe(1);
+
+    expect(lines).toEqual([t().cli.workspaceRemoveDaemonRunning]);
+    expect((await readConfigJson(home)).workspaces.api.cwd).toBe(normalizeWorkspacePath("/repo/api"));
+  });
+});
+
+test("workspace rm refuses while the daemon state is indeterminate", async () => {
+  setLocale("zh");
+  await withTempHome(async (home) => {
+    const lines: string[] = [];
+
+    await expect(runCli(["workspace", "add", "api"], { cwd: () => "/repo/api", print: () => {} })).resolves.toBe(0);
+
+    await expect(
+      runCli(["workspace", "rm", "api"], {
+        controller: {
+          getStatus: async () => ({ state: "indeterminate", pid: 4242, reason: "missing-status" }),
+          start: async () => ({ state: "started", pid: 4242 }),
+          stop: async () => ({ state: "stopped", detail: "stopped" }),
+        },
+        print: (line) => lines.push(line),
+      }),
+    ).resolves.toBe(1);
+
+    expect(lines).toEqual([t().cli.workspaceRemoveDaemonRunning]);
+    expect((await readConfigJson(home)).workspaces.api.cwd).toBe(normalizeWorkspacePath("/repo/api"));
+  });
+});
+
+test("workspace rm refuses when daemon status cannot be read", async () => {
+  setLocale("zh");
+  await withTempHome(async (home) => {
+    const lines: string[] = [];
+
+    await expect(runCli(["workspace", "add", "api"], { cwd: () => "/repo/api", print: () => {} })).resolves.toBe(0);
+
+    await expect(
+      runCli(["workspace", "rm", "api"], {
+        controller: {
+          getStatus: async () => { throw new Error("status file is unreadable"); },
+          start: async () => ({ state: "started", pid: 4242 }),
+          stop: async () => ({ state: "stopped", detail: "stopped" }),
+        },
+        print: (line) => lines.push(line),
+      }),
+    ).resolves.toBe(1);
+
+    expect(lines).toEqual([
+      t().cli.workspaceRemoveDaemonStatusFailed("status file is unreadable"),
+    ]);
+    expect((await readConfigJson(home)).workspaces.api.cwd).toBe(normalizeWorkspacePath("/repo/api"));
+  });
+});
+
+test("workspace rm refuses when stopped-daemon state still references the workspace", async () => {
+  setLocale("zh");
+  await withTempHome(async (home) => {
+    const lines: string[] = [];
+
+    await expect(runCli(["workspace", "add", "api"], { cwd: () => "/repo/api", print: () => {} })).resolves.toBe(0);
+    const state = createEmptyState();
+    state.sessions["api-session"] = {
+      alias: "api-session",
+      agent: "codex",
+      workspace: "api",
+      transport_session: "api:api-session",
+      source: "xacpx",
+      created_at: "2026-04-18T09:00:00.000Z",
+      last_used_at: "2026-04-18T09:00:00.000Z",
+    };
+    state.orchestration.workerBindings["api:codex:backend:main"] = {
+      sourceHandle: "api:codex:backend:main",
+      coordinatorSession: "backend:main",
+      workspace: "api",
+      targetAgent: "codex",
+    };
+    await writeStateJson(home, state);
+
+    await expect(runCli(["workspace", "rm", "api"], { print: (line) => lines.push(line) })).resolves.toBe(1);
+
+    expect(lines).toEqual([
+      t().cli.workspaceRemoveStillReferenced("api", "api-session, api:codex:backend:main"),
+    ]);
+    expect((await readConfigJson(home)).workspaces.api.cwd).toBe(normalizeWorkspacePath("/repo/api"));
+  });
+});
+
 test("workspace rm rejects a blank name", async () => {
   setLocale("zh");
   await withTempHome(async () => {

@@ -354,6 +354,7 @@ async function defaultCheckOrchestrationHealth(deps: {
       loadState: async () => inspection.state,
       now: () => new Date(),
       heartbeatThresholdSeconds: config.orchestration.progressHeartbeatSeconds,
+      workspaces: config.workspaces,
     });
     // Determine daemon liveness only when a fix would actually be offered (the
     // inspection found something to quarantine), to avoid a needless status read
