@@ -424,7 +424,7 @@ describe("GroupDispatchRow", () => {
     const wrapper = row(["completed", "completed", "indeterminate"]);
     const status = wrapper.get('[data-test="group-dispatch-status"]').text();
     expect(status).toContain("✓ 2 done");
-    expect(wrapper.get('[data-test="group-dispatch-status-indeterminate"]').text()).toContain("1 unknown");
+    expect(wrapper.get('[data-test="group-dispatch-status-indeterminate"]').text()).toContain("1 outcome unknown");
     // An unknown outcome is never folded into the failure count.
     expect(wrapper.find('[data-test="group-dispatch-status-failed"]').exists()).toBe(false);
     wrapper.unmount();

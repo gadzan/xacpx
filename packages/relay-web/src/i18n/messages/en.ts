@@ -1177,7 +1177,7 @@ export default {
       cancelled: "Cancelled",
       stopped: "Stopped",
       failed: "{n} failed",
-      indeterminate: "{n} unknown",
+      indeterminate: "{n} outcome unknown",
       mobileSummary: "{n} bots · {status}",
       mobileBots: "{n} bots",
       instructions: "Instructions",
