@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, useId } from "vue";
 import { useI18n } from "vue-i18n";
-import { ChevronDown, Loader2, Square } from "lucide-vue-next";
 import BotAvatar from "./BotAvatar.vue";
+import MobileSheet from "./MobileSheet.vue";
+import { useIsMobile } from "../lib/use-dropdown";
 import type { GroupDispatchPresentation } from "../lib/group-dispatch-presentation";
 
 /**
@@ -33,7 +34,12 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const expanded = ref(false);
-const cardId = `group-dispatch-card-${useId().replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+/** Mobile: the row opens a bottom sheet instead of the inline card. */
+const sheetOpen = ref(false);
+const isMobile = useIsMobile();
+const idBase = useId().replace(/[^a-zA-Z0-9_-]/g, "_");
+const cardId = `group-dispatch-card-${idBase}`;
+const sheetId = `group-dispatch-sheet-${idBase}`;
 
 const total = computed(() => props.presentation.members.length);
 const counts = computed(() => props.presentation.counts);
@@ -59,7 +65,34 @@ const hasLeadingStatus = computed(
   () => isRunning.value || isDone.value || isCancelled.value || counts.value.completed > 0 || counts.value.cancelled > 0,
 );
 
+/**
+ * One line, no wrapping: the mobile row trades the desktop title + status
+ * spans for `{n} bots · {status}`, so it fits a single narrow line.
+ */
+const mobileStatusText = computed(() => {
+  const parts: string[] = [];
+  if (isRunning.value) parts.push(activeText.value);
+  else if (isDone.value) parts.push(doneText.value);
+  else if (isCancelled.value) parts.push(cancelledText.value);
+  else {
+    if (counts.value.completed > 0) parts.push(doneText.value);
+    if (counts.value.cancelled > 0) parts.push(mixedCancelledText.value);
+  }
+  if (showFailed.value) parts.push(failedText.value);
+  return parts.join(" · ");
+});
+const mobileSummaryText = computed(() =>
+  mobileStatusText.value
+    ? t("group.dispatch.mobileSummary", { n: total.value, status: mobileStatusText.value })
+    : t("group.dispatch.mobileBots", { n: total.value }),
+);
+
+/** Mobile opens the sheet; desktop toggles the inline card. */
 function toggle(): void {
+  if (isMobile.value) {
+    sheetOpen.value = true;
+    return;
+  }
   expanded.value = !expanded.value;
 }
 
@@ -91,8 +124,9 @@ function stopAll(): void {
     <button
       type="button"
       data-test="group-dispatch-row"
-      :aria-expanded="expanded"
-      :aria-controls="cardId"
+      :aria-expanded="isMobile ? sheetOpen : expanded"
+      :aria-controls="isMobile ? sheetId : cardId"
+      :aria-haspopup="isMobile ? 'dialog' : undefined"
       class="flex min-w-0 items-center gap-2 rounded-lg bg-surface px-2.5 py-2 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       @click="toggle"
       @keydown.enter.prevent="toggle"
@@ -115,10 +149,15 @@ function stopAll(): void {
           +{{ presentation.avatars.overflow }}
         </span>
       </div>
-      <span data-test="group-dispatch-title" class="shrink-0 text-xs font-medium text-fg">
+      <span
+        v-if="isMobile"
+        data-test="group-dispatch-summary"
+        class="min-w-0 flex-1 truncate whitespace-nowrap text-xs font-medium text-fg"
+      >{{ mobileSummaryText }}</span>
+      <span v-else data-test="group-dispatch-title" class="shrink-0 text-xs font-medium text-fg">
         {{ t("group.dispatch.sentTo", { n: total }) }}
       </span>
-      <span data-test="group-dispatch-status" class="flex min-w-0 flex-wrap items-center gap-x-1 text-xs">
+      <span v-if="!isMobile" data-test="group-dispatch-status" class="flex min-w-0 flex-wrap items-center gap-x-1 text-xs">
         <template v-if="isRunning">
           <Loader2 :size="12" class="shrink-0 animate-spin text-accent" aria-hidden="true" />
           <span data-test="group-dispatch-status-active" class="text-accent">{{ activeText }}</span>
@@ -138,6 +177,7 @@ function stopAll(): void {
         <span v-if="showFailed" data-test="group-dispatch-status-failed" class="font-medium text-danger">{{ failedText }}</span>
       </span>
       <ChevronDown
+        v-if="!isMobile"
         :size="14"
         data-test="group-dispatch-chevron"
         class="ml-auto shrink-0 text-fg-muted transition-transform"
@@ -200,5 +240,46 @@ function stopAll(): void {
         </button>
       </div>
     </div>
+
+    <!-- Mobile: the same content as the inline card, as a bottom sheet. The
+         stop-all action reuses the transcript's confirmation path verbatim. -->
+    <MobileSheet
+      v-if="isMobile && sheetOpen"
+      :id="sheetId"
+      height="tall"
+      test-id="group-dispatch-sheet"
+      :title="t('group.dispatch.sentTo', { n: total })"
+      @close="sheetOpen = false"
+    >
+      <p data-test="group-dispatch-sheet-instructions-label" class="px-2 pt-1 text-xs text-fg-muted">
+        {{ t("group.dispatch.instructions") }}
+      </p>
+      <p data-test="group-dispatch-sheet-instructions" class="mt-1 px-2 text-sm text-fg">{{ presentation.instructions }}</p>
+      <ul class="mt-3">
+        <li
+          v-for="member in presentation.members"
+          :key="member.botId"
+          data-test="group-dispatch-sheet-row"
+          :data-bot-id="member.botId"
+          class="flex min-h-11 items-center gap-2 px-2"
+        >
+          <span data-test="group-dispatch-sheet-member-name" class="min-w-0 truncate text-sm font-medium text-fg">{{ member.name }}</span>
+          <span data-test="group-dispatch-sheet-member-status" class="ml-auto shrink-0 text-xs text-fg-muted">
+            {{ memberStatusText(member.status) }}
+          </span>
+        </li>
+      </ul>
+      <template #footer>
+        <button
+          v-if="presentation.capability.anyActive"
+          type="button"
+          data-test="group-dispatch-sheet-stop-all"
+          class="w-full rounded-xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger transition-colors hover:bg-danger/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
+          @click="stopAll"
+        >
+          {{ t("group.dispatch.stopAll") }}
+        </button>
+      </template>
+    </MobileSheet>
   </div>
 </template>

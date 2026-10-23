@@ -61,9 +61,14 @@ useModalA11y(panel, () => emit("close"), {
     </slot>
     <div ref="body" class="thin-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain break-words"
          :class="padded
-           ? 'detail-scroll px-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] pt-1'
-           : 'px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]'">
+           ? ['detail-scroll px-5 pt-1', $slots.footer ? 'pb-2' : 'pb-[calc(1.25rem+env(safe-area-inset-bottom))]']
+           : ['px-2', $slots.footer ? 'pb-2' : 'pb-[calc(0.5rem+env(safe-area-inset-bottom))]']">
       <slot />
+    </div>
+    <!-- Pinned action row (e.g. stop all): outside the scroller, above the
+         safe-area inset so the button is never cut off. -->
+    <div v-if="$slots.footer" class="shrink-0 border-t border-fg/5 px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3">
+      <slot name="footer" />
     </div>
   </div>
 </template>
