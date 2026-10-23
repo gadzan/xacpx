@@ -270,6 +270,30 @@ test("removes a workspace and keeps the rest of the config intact", async () => 
   await rm(dir, { recursive: true, force: true });
 });
 
+test("removing a workspace with an expected cwd leaves a replaced entry intact", async () => {
+  const { dir, path } = await makeConfigFile({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { claude: { driver: "claude" } },
+    workspaces: { backend: { cwd: "/tmp/replacement" } },
+  });
+
+  const store = new ConfigStore(path);
+  await expect(store.removeWorkspace("backend", "/tmp/original"))
+    .rejects.toMatchObject({ reason: "cwd_mismatch", workspace: "backend" });
+  expect((await readRaw(path)).workspaces).toEqual({
+    backend: { cwd: "/tmp/replacement" },
+  });
+
+  // A matching cwd still removes the registration under the same file lock.
+  await store.removeWorkspace("backend", "/tmp/replacement");
+  expect((await readRaw(path)).workspaces).toEqual({});
+
+  // The expected-cwd variant stays idempotent once the entry is gone.
+  await expect(store.removeWorkspace("backend", "/tmp/replacement")).resolves.toBeDefined();
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("updates transport keys without pinning unrelated defaults", async () => {
   const { dir, path } = await makeConfigFile({
     transport: {

@@ -512,6 +512,7 @@ export class CommandRouter {
       configStore: this.configStore,
       logger: this.logger,
       replaceConfig: (updated) => this.replaceConfig(updated),
+      ...(this.controlEvents ? { controlEvents: this.controlEvents } : {}),
       configMutationMutex: this.configMutationMutex,
       ...(this.activeTurns ? { activeTurns: this.activeTurns } : {}),
       ...(this.quota ? { quota: this.quota } : {}),
