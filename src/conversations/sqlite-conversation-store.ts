@@ -4092,22 +4092,28 @@ export class SqliteConversationStore implements ConversationStore {
         // Run budget-exhausted here would report successful work as failed.
         continue;
       }
+      // The wake carries a compact manifest, never member output: untrusted
+      // result text as task text had no length bound, and the leader pages the
+      // exact public result with group_read_result by assignmentId instead.
       const triggers = new Set([run.requestMessageId, ...sender.triggerMessageIds]);
-      const results = assignments.map((turn) => {
-        const result = turn.state === "completed" ? this.getMemberResult(turn) : undefined;
-        if (turn.state === "completed" && !result) {
-          throw new ConversationError("member_result_missing", "handoff followup lost completed public evidence");
-        }
-        if (result) triggers.add(result.id);
-        return { assignmentId: turn.assignmentId, memberTurnId: turn.id, botId: turn.botId, task: turn.task,
-          state: turn.state, ...(result ? { result: result.content } : {}),
-          ...(turn.failureReason ? { failureReason: turn.failureReason } : {}) };
-      });
+      // Each assignment's own public handoff envelope is the dispatch
+      // instruction this leader wrote, so the wake reads it from the frozen
+      // transcript; the assignment RESULTS stay out of the prompt entirely.
+      for (const turn of assignments) {
+        const envelope = this.sqlite.get<{ id: string }>(
+          "SELECT id FROM messages WHERE json_extract(handoff_json, '$.memberTurnId') = ? AND run_id = ?",
+          [turn.id, run.id]);
+        if (envelope) triggers.add(envelope.id);
+      }
+      const results = assignments.map((turn) => ({
+        assignmentId: turn.assignmentId, botId: turn.botId, state: turn.state,
+        ...(turn.failureReason ? { failureReason: turn.failureReason } : {}),
+      }));
       const id = this.ids.memberTurnId();
       const memberIndex = Number(this.sqlite.get<{ n: number }>(
         "SELECT COALESCE(MAX(member_index), -1) + 1 AS n FROM member_turns WHERE run_id = ? AND batch = ?",
         [run.id, run.activeBatch ?? 1])!.n);
-      const task = `All assignments sent by your member turn ${sender.id} have settled. Summarize all results for the user.\n${JSON.stringify(results)}`;
+      const task = `All assignments sent by your member turn ${sender.id} have settled. Read each result with group_read_result using its assignmentId, then summarize all results for the user.\n${JSON.stringify(results)}`;
       this.sqlite.run(`INSERT INTO member_turns (id, run_id, conversation_id, topic_id, bot_id, batch, member_index,
         attempt, origin, state, trigger_message_ids_json, profile_snapshot_json, created_at, task, effect, followup_sender_member_turn_id, assignment_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'followup', 'queued', ?, ?, ?, ?, 'unknown', ?, ?)`,

@@ -522,8 +522,13 @@ test("A to B to A handoffs are serialized and retain distinct exact results", as
     expect(h.calls[2]?.text).toContain("RESULT 1");
     expect(h.calls[2]?.text).not.toContain("RESULT 2");
     expect(members.filter((turn) => turn.origin === "followup").map((turn) => turn.botId)).toEqual([A, B]);
-    expect(h.calls[3]?.text).toContain("RESULT 2");
-    expect(h.calls[4]?.text).toContain("RESULT 3");
+    // A wake turn carries only the assignment manifest — never the member
+    // output as task text — so its prompt names the settled assignmentId and
+    // the leader pages the exact result with group_read_result.
+    expect(h.calls[3]?.text).not.toContain("RESULT 2");
+    expect(h.calls[3]?.text).toContain(members[1]!.assignmentId!);
+    expect(h.calls[4]?.text).not.toContain("RESULT 3");
+    expect(h.calls[4]?.text).toContain(members[2]!.assignmentId!);
   } finally { h.store.close(); }
 });
 
