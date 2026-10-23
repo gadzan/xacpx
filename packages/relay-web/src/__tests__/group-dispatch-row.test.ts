@@ -933,6 +933,155 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 
+  it("puts the stopped note at the bottom of the leader's own message, once", async () => {
+    seedTranscript(
+      [
+        {
+          id: "msg_1",
+          conversationId: "group_1",
+          topicId: "topic_1",
+          runId: "run_1",
+          seq: 1,
+          role: "bot",
+          senderBotId: "bot_a",
+          promptRequestId: "prompt_leader",
+          content: "Dispatching two reviews",
+          createdAt: "now",
+        },
+        handoffMessage(1),
+        handoffMessage(2),
+      ],
+      [
+        {
+          ...memberTurn("turn_a", "bot_a", "cancelled", { cancellationReason: "human-cancelled" }),
+          promptRequestId: "prompt_leader",
+        },
+        memberTurn("turn_member_1", "bot_b", "completed"),
+        memberTurn("turn_member_2", "bot_c", "completed"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    // The stop is named exactly once in the whole transcript.
+    expect(wrapper.findAll('[data-test="group-dispatch-stopped"]')).toHaveLength(1);
+    // It sits on the leader's own row, not on the aggregate dispatch row.
+    const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
+    expect(leaderRow.find('[data-test="group-dispatch-stopped"]').exists()).toBe(true);
+    // The leader's bubble must not also read "cancelled".
+    expect(leaderRow.text()).not.toContain("Cancelled");
+    wrapper.unmount();
+  });
+
+  it("drops the leader's cancelled chip once the stop is named by the note", async () => {
+    seedTranscript(
+      [
+        {
+          id: "msg_1",
+          conversationId: "group_1",
+          topicId: "topic_1",
+          runId: "run_1",
+          seq: 1,
+          role: "bot",
+          senderBotId: "bot_a",
+          promptRequestId: "prompt_leader",
+          content: "Dispatching two reviews",
+          createdAt: "now",
+        },
+        handoffMessage(1),
+        handoffMessage(2),
+      ],
+      [
+        {
+          ...memberTurn("turn_a", "bot_a", "cancelled", { cancellationReason: "human-cancelled" }),
+          promptRequestId: "prompt_leader",
+        },
+        memberTurn("turn_member_1", "bot_b", "completed"),
+        memberTurn("turn_member_2", "bot_c", "completed"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    const leaderBubble = wrapper.get('[data-member-turn-id="turn_a"] [data-test="agent-thinking-bubble"]');
+    expect(leaderBubble.text()).not.toContain("Cancelled");
+    // The accessible name follows the visible entry: it must not announce a
+    // state the row no longer shows.
+    expect(leaderBubble.attributes("aria-label")).not.toContain("Cancelled");
+    wrapper.unmount();
+  });
+
+  it("keeps a member bot's cancelled chip when the leader is stopped", async () => {
+    seedTranscript(
+      [
+        {
+          id: "msg_1",
+          conversationId: "group_1",
+          topicId: "topic_1",
+          runId: "run_1",
+          seq: 1,
+          role: "bot",
+          senderBotId: "bot_a",
+          promptRequestId: "prompt_leader",
+          content: "Dispatching two reviews",
+          createdAt: "now",
+        },
+        handoffMessage(1),
+        handoffMessage(2),
+      ],
+      [
+        {
+          ...memberTurn("turn_a", "bot_a", "cancelled", { cancellationReason: "human-cancelled" }),
+          promptRequestId: "prompt_leader",
+        },
+        memberTurn("turn_member_1", "bot_b", "cancelled"),
+        memberTurn("turn_member_2", "bot_c", "completed"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    // A member's own state is unchanged by the leader's stop.
+    const memberRow = wrapper.get('[data-member-turn-id="turn_member_1"]');
+    expect(memberRow.text()).toContain("Cancelled");
+    wrapper.unmount();
+  });
+
+  it("shows no stopped note and no cancelled leader chip when every member is cancelled", async () => {
+    seedTranscript(
+      [
+        {
+          id: "msg_1",
+          conversationId: "group_1",
+          topicId: "topic_1",
+          runId: "run_1",
+          seq: 1,
+          role: "bot",
+          senderBotId: "bot_a",
+          promptRequestId: "prompt_leader",
+          content: "Dispatching two reviews",
+          createdAt: "now",
+        },
+        handoffMessage(1),
+        handoffMessage(2),
+      ],
+      [
+        {
+          ...memberTurn("turn_a", "bot_a", "cancelled", { cancellationReason: "human-cancelled" }),
+          promptRequestId: "prompt_leader",
+        },
+        memberTurn("turn_member_1", "bot_b", "cancelled"),
+        memberTurn("turn_member_2", "bot_c", "cancelled"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(wrapper.find('[data-test="group-dispatch-stopped"]').exists()).toBe(false);
+    // The round's own aggregate row already names the cancellation, so the
+    // leader's bubble must not name it a second time.
+    expect(wrapper.get('[data-test="group-dispatch-status-cancelled"]').text()).toContain("Cancelled");
+    const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
+    expect(leaderRow.text()).not.toContain("Cancelled");
+    wrapper.unmount();
+  });
+
   it("jumps to a member's reply from the expanded card", async () => {
     seedTranscript(
       [

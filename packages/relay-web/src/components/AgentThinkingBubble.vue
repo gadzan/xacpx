@@ -22,18 +22,26 @@ export type BubbleStatus =
   | "waiting"
   | "routing";
 
-const props = defineProps<{
-  status: BubbleStatus;
-  /** Accessible name; localized by the caller so titles stay in one place. */
-  label: string;
-  /** True when this entry currently owns the open detail popover. */
-  expanded?: boolean;
-  /** id of the popover element this trigger controls. */
-  controls?: string;
-  /** Durable attempt index; > 1 earns a small numeric badge so a retried
-   *  member is spottable before any failure is visible. */
-  attempt?: number;
-}>();
+const props = withDefaults(
+  defineProps<{
+    status: BubbleStatus;
+    /** Accessible name; localized by the caller so titles stay in one place. */
+    label: string;
+    /** True when this entry currently owns the open detail popover. */
+    expanded?: boolean;
+    /** id of the popover element this trigger controls. */
+    controls?: string;
+    /** Durable attempt index; > 1 earns a small numeric badge so a retried
+     *  member is spottable before any failure is visible. */
+    attempt?: number;
+    /** False hides the visible status word. The entry stays (it still opens
+     *  the process), but the state is named once, elsewhere: a stopped
+     *  leader says "stopped" in its own note, so its bubble must not also
+     *  read "cancelled". */
+    showStatus?: boolean;
+  }>(),
+  { showStatus: true },
+);
 
 const emit = defineEmits<{
   toggle: [element: HTMLElement | null];
@@ -58,8 +66,16 @@ const stateTitle = computed(() => {
     case "routing": return t("group.bubble.status.routing");
   }
 });
-
 const pulsing = computed(() => props.status === "running" || props.status === "streaming");
+
+/**
+ * The accessible name follows the visible entry: with the status word
+ * hidden, the state is named once, elsewhere (the stopped note), so the
+ * name must not announce a state the row no longer shows.
+ */
+const accessibleName = computed(() =>
+  props.showStatus ? `${props.label} — ${stateTitle.value}` : props.label,
+);
 </script>
 
 <template>
@@ -68,11 +84,11 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
     data-test="agent-thinking-bubble"
     class="group-bubble-trigger"
     :class="[`is-${status}`, { 'is-pulsing': pulsing, 'is-expanded': expanded }]"
-    :aria-label="`${label} — ${stateTitle}`"
+    :aria-label="accessibleName"
     aria-haspopup="dialog"
     :aria-expanded="expanded === true"
     :aria-controls="controls"
-    :title="`${label} — ${stateTitle}`"
+    :title="accessibleName"
     @click.stop="onToggle"
   >
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" class="group-bubble-icon">
@@ -86,7 +102,7 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
       <circle class="group-bubble-dot" cx="10.7" cy="20.6" r="0.95" fill="currentColor" />
       <circle class="group-bubble-dot" cx="13.3" cy="22.1" r="0.75" fill="currentColor" />
     </svg>
-    <span class="group-bubble-status" aria-hidden="true">{{ stateTitle }}</span>
+    <span v-if="showStatus" class="group-bubble-status" aria-hidden="true">{{ stateTitle }}</span>
     <span v-if="attempt !== undefined && attempt > 1" class="group-bubble-attempt" aria-hidden="true">{{ attempt }}</span>
   </button>
 </template>

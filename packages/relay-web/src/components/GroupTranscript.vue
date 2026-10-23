@@ -162,7 +162,13 @@ const dispatchGroups = computed(() => {
     const driver = driverForBot(bot.id);
     if (driver !== undefined) drivers[bot.id] = driver;
   }
-  const groups: { handoffs: ConversationMessageDto[]; anchorId: string; presentation: GroupDispatchPresentation }[] = [];
+  const groups: {
+    handoffs: ConversationMessageDto[];
+    anchorId: string;
+    /** The leader's own turns: the dispatching turn and its wake turn. */
+    leaderTurns: MemberTurnSummaryDto[];
+    presentation: GroupDispatchPresentation;
+  }[] = [];
   for (const handoffs of byLeader.values()) {
     const anchor = handoffs[0]!;
     const record = anchor.runId ? runRecords.value[anchor.runId] : undefined;
@@ -225,6 +231,7 @@ const dispatchGroups = computed(() => {
     groups.push({
       handoffs,
       anchorId: leaderMessage.length === 1 ? leaderMessage[0]!.id : anchor.id,
+      leaderTurns: [leaderTurn, wakeTurn].filter((turn): turn is MemberTurnSummaryDto => !!turn),
       presentation,
     });
   }
@@ -236,6 +243,58 @@ const dispatchGroups = computed(() => {
 const dispatchRows = computed<Record<string, GroupDispatchPresentation>>(() =>
   Object.fromEntries(dispatchGroups.value.map((group) => [group.anchorId, group.presentation])),
 );
+
+/**
+ * The leader's own bubble must not read "cancelled" once the round's leader
+ * was stopped: that stop is named once, by the note on the leader's row (or
+ * by the aggregate row, when the whole round was cancelled).
+ */
+const hiddenStatusTurnIds = computed<Set<string>>(() => {
+  const ids = new Set<string>();
+  for (const group of dispatchGroups.value) {
+    if (!group.presentation.leaderStopped) continue;
+    for (const turn of group.leaderTurns) {
+      if (turn.state === "cancelled") ids.add(turn.id);
+    }
+  }
+  return ids;
+});
+
+/** True when the leader's turn owns a row of its own in the transcript. */
+function hasLeaderRow(turnId: string): boolean {
+  return items.value.some((item) =>
+    (item.kind === "message" && item.bubbleAnchor && item.memberTurn?.id === turnId) ||
+    (item.kind === "member-activity" && item.memberTurn.id === turnId));
+}
+
+/**
+ * The leader's own row that carries the stopped note: its dispatch turn
+ * first (that is "项管自己那条消息"), then the wake turn it spawned. The
+ * stop is named where the leader is, so the note appears exactly once.
+ */
+const stoppedNoteTurnIds = computed<Set<string>>(() => {
+  const ids = new Set<string>();
+  for (const group of dispatchGroups.value) {
+    if (!showsStoppedNote(group.presentation)) continue;
+    const turn = group.leaderTurns.find((candidate) => hasLeaderRow(candidate.id));
+    if (turn) ids.add(turn.id);
+  }
+  return ids;
+});
+
+/**
+ * Rounds whose leader never rendered a row of its own: their note stays on
+ * the aggregate row, so the stop is still named exactly once.
+ */
+const stoppedNoteAnchors = computed<Set<string>>(() => {
+  const ids = new Set<string>();
+  for (const group of dispatchGroups.value) {
+    if (!showsStoppedNote(group.presentation)) continue;
+    if (group.leaderTurns.some((turn) => stoppedNoteTurnIds.value.has(turn.id))) continue;
+    ids.add(group.anchorId);
+  }
+  return ids;
+});
 
 /**
  * Anchor ids whose leader can still be stopped: the round's run is the live
@@ -686,7 +745,7 @@ async function handleLoadOlder(): Promise<void> {
                 @stop="handleStopLeader(dispatchRows[item.message.id]!)"
               />
               <p
-                v-if="showsStoppedNote(dispatchRows[item.message.id])"
+                v-if="stoppedNoteAnchors.has(item.message.id)"
                 data-test="group-dispatch-stopped"
                 class="mt-1 text-xs text-fg-muted"
               >
@@ -711,7 +770,7 @@ async function handleLoadOlder(): Promise<void> {
                 @stop="handleStopLeader(dispatchRows[item.message.id]!)"
               />
               <p
-                v-if="showsStoppedNote(dispatchRows[item.message.id])"
+                v-if="stoppedNoteAnchors.has(item.message.id)"
                 data-test="group-dispatch-stopped"
                 class="mt-1 text-xs text-fg-muted"
               >
@@ -735,7 +794,7 @@ async function handleLoadOlder(): Promise<void> {
                 @stop="handleStopLeader(dispatchRows[item.message.id]!)"
               />
               <p
-                v-if="showsStoppedNote(dispatchRows[item.message.id])"
+                v-if="stoppedNoteAnchors.has(item.message.id)"
                 data-test="group-dispatch-stopped"
                 class="mt-1 text-xs text-fg-muted"
               >
@@ -790,8 +849,21 @@ async function handleLoadOlder(): Promise<void> {
           :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
           :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
           :disabled="item.memberTurn.botId ? botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false : false"
+          :show-status="!hiddenStatusTurnIds.has(item.memberTurn.id)"
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
-        />
+        >
+            <!-- A stopped leader names its stop at the bottom of its own
+                 message: the note lives where the leader is. -->
+            <template #footer>
+              <p
+                v-if="stoppedNoteTurnIds.has(item.memberTurn.id)"
+                data-test="group-dispatch-stopped"
+                class="mt-1 text-xs text-fg-muted"
+              >
+                {{ $t("group.dispatch.stopped") }}
+              </p>
+            </template>
+          </GroupAgentTurnRow>
           <div v-if="dispatchRows[item.message.id]" class="mx-auto w-full max-w-3xl">
             <GroupDispatchRow
               :presentation="dispatchRows[item.message.id]!"
@@ -805,7 +877,7 @@ async function handleLoadOlder(): Promise<void> {
               @stop="handleStopLeader(dispatchRows[item.message.id]!)"
             />
             <p
-              v-if="showsStoppedNote(dispatchRows[item.message.id])"
+              v-if="stoppedNoteAnchors.has(item.message.id)"
               data-test="group-dispatch-stopped"
               class="mt-1 text-xs text-fg-muted"
             >
@@ -827,8 +899,20 @@ async function handleLoadOlder(): Promise<void> {
             :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
             :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
             :disabled="botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false"
+            :show-status="!hiddenStatusTurnIds.has(item.memberTurn.id)"
             @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
-          />
+          >
+            <!-- A stopped leader names its stop at the bottom of its own row. -->
+            <template #footer>
+              <p
+                v-if="stoppedNoteTurnIds.has(item.memberTurn.id)"
+                data-test="group-dispatch-stopped"
+                class="mt-1 text-xs text-fg-muted"
+              >
+                {{ $t("group.dispatch.stopped") }}
+              </p>
+            </template>
+          </GroupAgentTurnRow>
         </div>
 
         <!-- Neutral routing entry: no invented Bot identity -->
