@@ -2569,11 +2569,18 @@ export class SqliteConversationStore implements ConversationStore {
         "SELECT * FROM member_turns WHERE followup_sender_member_turn_id = ?", [member.id]);
       if (TERMINAL_MEMBER_STATES.includes(member.state)) {
         if (wake && !wake.started_at && !TERMINAL_MEMBER_STATES.includes(wake.state as MemberTurnState)) {
-          this.sqlite.run("UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?", [now, wake.id]);
+          this.sqlite.run("UPDATE member_turns SET state = 'cancelled', cancellation_reason = 'human-cancelled', finished_at = ? WHERE id = ?", [now, wake.id]);
           this.finishDispatchForMemberTurn(wake.id, now);
           this.aggregateRunAfterMemberTerminal(run.id, wake.id, now, "human-cancelled");
         }
-        return member;
+        // A terminal leader whose assignments are still unsettled has not
+        // earned its wake yet, so the row above cannot suppress it. Record the
+        // same scoped intent here: when those assignments settle, the wake is
+        // never inserted for this leader.
+        if (this.listUnsettledPublicHandoffs(member.id).length > 0) {
+          this.sqlite.run("UPDATE member_turns SET cancellation_reason = 'human-cancelled' WHERE id = ?", [member.id]);
+        }
+        return this.requireMemberTurn(member.id);
       }
       this.sqlite.run("UPDATE member_turns SET cancellation_reason = 'human-cancelled' WHERE id = ?", [member.id]);
       if (!member.startedAt) {
@@ -2582,7 +2589,7 @@ export class SqliteConversationStore implements ConversationStore {
         this.aggregateRunAfterMemberTerminal(run.id, member.id, now, "human-cancelled");
       }
       if (wake && !wake.started_at && !TERMINAL_MEMBER_STATES.includes(wake.state as MemberTurnState)) {
-        this.sqlite.run("UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?", [now, wake.id]);
+        this.sqlite.run("UPDATE member_turns SET state = 'cancelled', cancellation_reason = 'human-cancelled', finished_at = ? WHERE id = ?", [now, wake.id]);
         this.finishDispatchForMemberTurn(wake.id, now);
         this.aggregateRunAfterMemberTerminal(run.id, wake.id, now, "human-cancelled");
       }
