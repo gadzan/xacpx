@@ -352,8 +352,9 @@ export class ConversationRunService {
       const existing = this.store.getAcceptedRequest(conversationId, topicId, input.requestId);
       if (existing) {
         if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
+        assertAcceptedPolicies(existing, memberPolicies);
         assertDirectReplay(existing.message, input.content, input.agentMentions, input.media);
-        return assertAcceptedPolicies(existing, memberPolicies);
+        return existing;
       }
       if (this.store.hasRetiredPrompt(conversationId, topicId, input.requestId)) {
         throw new ConversationError("request_retired", "request was retired with its topic context");
@@ -416,6 +417,8 @@ export class ConversationRunService {
     });
     // The store may reuse an acceptance committed during the final await,
     // including its SQLite unique-key fallback. Validate before acknowledgement.
+    // Policies first: a competing durable accept with a different ceiling
+    // must surface effect_policy_conflict, not payload mismatch.
     assertAcceptedPolicies(accepted, memberPolicies);
     assertDirectReplay(accepted.message, input.content, input.agentMentions, input.media);
     if (!accepted.reused) {

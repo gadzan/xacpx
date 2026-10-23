@@ -149,10 +149,7 @@ watch(
       <span aria-hidden="true" data-handoff-avatar="to" class="-ml-2 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface">
         <BotAvatar :avatar="toAvatar" :driver="toDriver" :name="toName" :size="24" static />
       </span>
-      <span class="ml-2 flex min-w-0 flex-col text-left">
-        <span class="truncate text-xs font-medium">{{ fromName }} → {{ toName }}</span>
-        <span v-if="message.handoff?.task" class="max-w-72 truncate text-xs text-fg-muted" :title="message.handoff.task">{{ message.handoff.task }}</span>
-      </span>
+      <span aria-hidden="true" class="ml-2 flex min-w-0 items-center text-left" />
     </button>
     <div
       v-if="expanded && message.handoff"
