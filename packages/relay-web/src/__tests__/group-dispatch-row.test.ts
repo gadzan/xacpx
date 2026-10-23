@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type {
@@ -16,6 +16,9 @@ import {
 } from "../lib/group-dispatch-presentation";
 import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
+import { settleConfirm, useConfirmState } from "../lib/use-confirm";
+
+afterEach(() => settleConfirm(false));
 
 const BOTS: BotSummaryDto[] = [
   { id: "bot_lead", name: "Leader", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
@@ -281,6 +284,37 @@ describe("GroupDispatchRow", () => {
     const wrapper = row(["completed"], ["bot_a"], { supportsCancelMember: true });
     await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
     expect(wrapper.find('[data-test="group-dispatch-stop-member"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("offers stop all only while the round still has active members", async () => {
+    const active = row(["running", "queued"]);
+    await active.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(active.get('[data-test="group-dispatch-stop-all"]').text()).toBe("Stop all");
+    active.unmount();
+
+    const done = row(["completed", "completed"]);
+    await done.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(done.find('[data-test="group-dispatch-stop-all"]').exists()).toBe(false);
+    done.unmount();
+
+    const cancelled = row(["cancelled", "cancelled"]);
+    await cancelled.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(cancelled.find('[data-test="group-dispatch-stop-all"]').exists()).toBe(false);
+    cancelled.unmount();
+  });
+
+  it("asks for a round-level stop without jumping or collapsing the card", async () => {
+    const wrapper = row(["running", "queued"], ["bot_a", "bot_b"]);
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    await trigger.trigger("click");
+
+    await wrapper.get('[data-test="group-dispatch-stop-all"]').trigger("click");
+    expect(wrapper.emitted("stopAll")).toEqual([[]]);
+    expect(wrapper.emitted("jump")).toBeUndefined();
+    expect(wrapper.emitted("stopMember")).toBeUndefined();
+    // Stopping the round never collapses the card underneath the user.
+    expect(trigger.attributes("aria-expanded")).toBe("true");
     wrapper.unmount();
   });
 
@@ -581,6 +615,72 @@ describe("GroupTranscript dispatch aggregation", () => {
     await flushPromises();
 
     expect(cancelMember).toHaveBeenCalledWith("instance_1", "run_1", "turn_member_1");
+    wrapper.unmount();
+  });
+
+  it("stops the whole round through the store after confirmation", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+    );
+    groups.groupsByInstance = {
+      instance_1: [{
+        id: "group_1",
+        kind: "group",
+        title: "Release",
+        botIds: ["bot_a", "bot_b", "bot_c"],
+        createdAt: "now",
+        updatedAt: "now",
+      }],
+    };
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
+      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
+    });
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    await wrapper.get('[data-test="group-dispatch-stop-all"]').trigger("click");
+    await flushPromises();
+
+    expect(useConfirmState().value?.title).toBe("Stop all tasks?");
+    expect(useConfirmState().value?.message).toBe("Release and the 2 dispatched tasks will stop");
+    expect(useConfirmState().value?.confirmLabel).toBe("Stop all");
+    expect(useConfirmState().value?.tone).toBe("danger");
+    expect(cancel).not.toHaveBeenCalled();
+
+    settleConfirm(true);
+    await flushPromises();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("leaves the run alone when the stop-all confirmation is dismissed", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "running"),
+      ],
+    );
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
+      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
+    });
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    await wrapper.get('[data-test="group-dispatch-stop-all"]').trigger("click");
+    await flushPromises();
+    settleConfirm(false);
+    await flushPromises();
+
+    expect(cancel).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 });
