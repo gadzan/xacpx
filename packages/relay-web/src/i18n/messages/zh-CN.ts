@@ -1174,6 +1174,7 @@ export default {
       cancelled: "已取消",
       stopped: "已停止",
       failed: "{n} 失败",
+      instructions: "派发内容",
     },
     worktree: {
       title: "成员工作树", boundary: "工作目录相互独立，但不是操作系统沙箱。整合只创建候选分支，不修改 main。",
