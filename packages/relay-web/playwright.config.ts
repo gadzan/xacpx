@@ -3,6 +3,8 @@ import { defineConfig, devices } from "@playwright/test";
 // Local macOS 13 cannot install Playwright's bundled Chromium. Prefer the
 // system Google Chrome channel; CI (Ubuntu) still uses bundled Chromium.
 const useSystemChrome = process.platform === "darwin";
+const port = Number(process.env.PLAYWRIGHT_PORT ?? 4173);
+const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -14,14 +16,14 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL,
     testIdAttribute: "data-test",
     trace: "retain-on-failure",
     ...(useSystemChrome ? { channel: "chrome" } : {}),
   },
   webServer: {
-    command: "bunx vite --port 4173 --strictPort --host 127.0.0.1",
-    url: "http://127.0.0.1:4173",
+    command: `bunx vite --port ${port} --strictPort --host 127.0.0.1`,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

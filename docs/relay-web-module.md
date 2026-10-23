@@ -447,10 +447,9 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；
     Group 栏由 `GroupPane` 渲染（副标题同样是当前话题，`⋯` 只带编辑群组条目），`DashboardView` 不再渲染
     群组静态标题条，`mobileSingleBar` 也因此把群组选择算进去（全局顶栏在 `<lg` 让位）。
-  - **`←` 返回**（会话 / Bot / 群组页通用，`DashboardView.goHome`）：关闭 sheet、右抽屉与桌面标签，再对 chat、
-    Direct Bot、群组三个 store 都调用 `clearSelection()`（各自顺带清掉持久化的选择，所以刷新后停在首页）；
-    `localStorage["xacpx.lastInstance"]` 保留，FAB 的「最近使用排前」依赖它。左边缘右滑手势已移除；
-    滑动返回暂不做（会和 iOS Safari 自带的返回手势冲突），以后用基于 `history.pushState` 的方案再加。
+  - **`←` 返回**（会话 / Bot / 群组页通用）：不再直接清选择，而是弹掉浏览器历史里我们自己的条目，
+    由 popstate 关掉一层（sheet → 右抽屉/全屏标签 → 首页）。没有自有条目时（冷启动 / 深链 /
+    PWA 恢复）直接 `router.replace` 回首页，绝不离站。完整规则见下文「手机端返回：浏览器历史即层栈」。
   - **未选中任何会话 / Bot / 群组（移动端首页）**：实例树直接作为主内容渲染——复用**同一个**
     `InstanceTree` 实例，左栏在 `<lg` 只在首页显示（全宽），选中后 `max-lg:hidden`（不挂第二份副本，避免本地视图状态分叉）；列表底部 `max-lg:pb-24`，FAB 不会盖住最后一行的 `⋯`；从树上打开的实例桌面也算离开首页，
     中栏占位符 `max-lg:hidden`；右下角 FAB「新建会话」（48px pill，`bg-accent text-on-accent shadow-float
@@ -516,11 +515,47 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 - `ChatPane.vue` 不再自带「选择一个会话」占位：空状态归 `DashboardView` 所有，
   `chat.selectSession` i18n 键随之删除。
 
+## 手机端返回：浏览器历史即层栈（`src/lib/mobile-back.ts`）
+
+`<lg` 下顶栏 `←`、iOS Safari 左缘右滑、安卓返回键/手势共用同一个浏览器历史：一条历史条目 = 界面上一层，
+三者行为完全一致。`popstate` 只关一层，所有关闭路径都走同一个 `navigateBack()`，没有第二套 close 逻辑。
+
+- **条目从哪来**：`useMobileBack({ pane, full })`（会话 / Bot / 群组 pane 1 条，全屏层 = 中栏
+  文件/diff/终端/实例桌面标签 + 右文件/任务抽屉）+ `pushModal()`（遮罩层：MobileSheet、对话框、
+  ImageLightbox、Mermaid、SubagentTrace、ConfirmDialog、CommandPalette，`DropdownPanel`
+  在 `<lg` 也渲染成 MobileSheet，因此自动覆盖）。群组进程详情 `GroupRunDetailSheet` 也由 MobileSheet
+  登记一条遮罩历史，自定义头部的 × 与遮罩、Esc 共用 `navigateBack()`；安全初始焦点和滚动恢复保持不变。
+  桌面 `GroupRunDetailPopover` 不登记历史。同类叠同类（sheet→sheet、sheet→dialog、全屏→全屏）
+  走 `router.replace`，所以「返回」永远先回到首页。桌面小下拉 / ContextMenu / tooltip / 话题切换 /
+  首页 tab 切换**不建条目**。新建会话流程：FAB → 实例 sheet（push）→ 新建对话框（replace）→
+  创建成功 → pane（replace 成 `pane`），一次返回即回首页。
+- **返回顺序**：先关最上层遮罩（与 Esc 栈同序，一次一层）→ 再收全屏层（中栏标签回到「对话」标签，
+  标签仍留在已打开列表；右抽屉收起）→ 再 `goHome()`。在首页时不再拦截，正常离开站点
+  （没有「再按一次退出」）。
+- **`navigateBack()` 是唯一返回入口**（顶栏 `←`、sheet ×、backdrop、Esc、ConfirmDialog 取消、
+  ImageLightbox 关闭都走它）：有自己的条目就 `history.back()`，让 popstate 去关那一层；没有自有条目
+  （冷启动 / 深链 / PWA 恢复，或 Chrome「历史操作干预」跳过了非用户手势写入的条目）时直接
+  `router.replace` 回首页，**绝不离站**。返回飞行中 `backInFlight` 置位、`←` 禁用，连点不会逃逸。
+- **冷启动 / 深链**：顶层不是我们自己的条目时，`adoptHomeEntry()` 先 `router.replace` 回首页再
+  `router.push` 进 pane，vue-router 的 state（`back`/`current`/`position`）保持正确，`←` 与安卓返回键
+  都回首页；深链的 `?instanceId&sessionAlias` 照旧清掉。刷新时 `history.state` 保留，若顶层是遮罩 /
+  全屏条目则静默 `history.go(-n)` 回到 pane 条目。
+- **状态标签**：条目带 `history.state.xacpx = { layer, id, depth }`，popstate 按 `depth` 关到对应层；
+  快速连按返回时每个 popstate 只同步关一层，程序化返回用计数器跟踪，不会出现空条目。
+- **会话被别处删除**（CLI / 其他客户端，reconcile 移除）：自动回首页——`goHomeReclaiming()` 先关层再
+  `history.go(-depth)` 回收条目并忽略这次 popstate，不留死条目，同时 toast「该会话已被删除」
+  （`session.deletedElsewhere`，en / zh-CN）。Bot / 群组的 `clearSelection` 走同一条同步路径，
+  同样不留死条目。
+- **桌面（≥1024px）不建任何条目**；`<lg` → `≥lg`（iPad 旋转）时自动关闭仅移动端的浮层并回收其条目。
+- **不做自定义手势**：只用 iOS Safari 原生左缘右滑，pane↔首页、关层都没有滑动/淡入动画；左缘 24px 内
+  没有可横向滑动的元素（`use-swipe-actions` 在 `clientX < 24` 时不让行滑动接管）。
+
 ## 文件地图
 
 - `src/api/client.ts` —— REST 客户端（登录、`/api/instances`、`/api/instances/:id/rpc` 代理调用、历史）；
 - `src/lib/render-markdown.ts` —— 净化版流式 markdown 渲染（markdown-it + remend + DOMPurify）；
 - `src/lib/use-dropdown.ts` —— 统一下拉框 composable（开关、键盘导航、外部点击/Esc 关闭、焦点归还；keydown 走捕获阶段，Esc 只关下拉不关宿主对话框；桌面面板在 Tab 把焦点移出触发器+面板时关闭）；
+- `src/lib/mobile-back.ts` —— 手机端返回：浏览器历史即层栈（`<lg` 的 `←`/iOS 右滑/安卓返回键共用，见「手机端返回」一节）；
 - `src/components/DropdownPanel.vue`、`SelectMenu.vue`、`Tooltip.vue` —— 统一下拉浮层 / 表单字段下拉 /
   hover 提示（见「统一下拉框」一节）；
 - `src/api/events.ts` —— WS 客户端（`connectEvents` → `/ws`，自动重连）；
@@ -886,7 +921,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - **Bot / Group 管理弹层的移动端布局**：`BotDialog.vue` 与 `GroupDialog.vue` 使用 Teleport 挂到 `body`，避免实例侧栏的 `transform` 把 fixed 遮罩限制在侧栏内。遮罩按动态视口高度和设备安全区留白；标题与操作栏不收缩，仅表单内容滚动。Group 的 fieldset 显式允许收缩，长成员名称和说明不会撑宽窄屏表单。
 
 - **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots | Groups` 模式切换；切到 Bots 时展示 Bot 列表（名称、角色、agent、workspace 与启用状态），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
-- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。agent/workspace 复用实例已有目录与工作区配置。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
+- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。新建时工作区默认选择「新建专属工作区」，由所选实例的 daemon 在 `~/.xacpx/bots/` 下创建并注册，也可选择实例已有工作区；自动选项在请求中省略 `workspace`。没有已注册工作区时仍可创建 Bot。编辑仅选择已注册工作区。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
 - **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatar.vue`）**：Bot 弹层分为基本设置与头像外观；支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，切换标签页不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
 - **头像状态与资源**：侧栏只展示身份，不聚合全局忙碌。Direct 按当前 Conversation / Topic / Run，Group 按精确 MemberTurn 与交互归属展示；完成动作只由已观察到的同任务完成事件授权，恢复快照与重连不回放。历史消息、选项、成员选择器和交接双头像静态渲染；可见动态头像共用一个帧时钟，离屏、隐藏、减少动态效果与卸载释放或暂停相应资源。普通 Session 与 Agent 品牌图标仍使用 `AgentIcon`。
 - **受控移除（`BotRemovalDialog.vue`）**：侧栏、Direct 页面和 Bot 对话框都能打开。先调用 `control.bots.remove.preview`，再由用户确认 `control.bots.remove`。文案说明群组历史保留，私聊历史是单独勾选。两人组成员关系会挡住确认，不会自动删群或踢掉另一名成员。清理失败或结果不确定时用同一个 `requestId` 重试。`lifecycle.operations.get` 可在刷新后查看这次清理。已移除 Bot 在列表和群组记录里显示为 removed bot，composer 不再发送。

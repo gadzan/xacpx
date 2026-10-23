@@ -734,6 +734,10 @@ async function workspaceAdd(
   let name = input;
   if (!deps.raw && !isWorkspaceNameValid(input)) {
     const base = sanitizeWorkspaceName(input);
+    if (base === null) {
+      deps.print(t().cli.workspaceNameUnderivable(input));
+      return 1;
+    }
     name = allocateWorkspaceName(base, config.workspaces);
     const sourceLabel = rawName === undefined ? t().cli.workspaceSourceLabelDir : t().cli.workspaceSourceLabelName;
     deps.print(t().cli.workspaceNameSanitized(sourceLabel, input, name));

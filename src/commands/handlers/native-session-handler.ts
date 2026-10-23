@@ -492,7 +492,11 @@ async function resolveNativeWorkspace(
       return { text: t().nativeSession.noWritableConfig };
     }
 
-    const workspaceName = allocateWorkspaceName(sanitizeWorkspaceName(basenameForWorkspacePath(cwd)), context.config.workspaces);
+    const workspaceBase = sanitizeWorkspaceName(basenameForWorkspacePath(cwd));
+    if (workspaceBase === null) {
+      return { text: t().nativeSession.workspaceNameUnderivable(input.cwd) };
+    }
+    const workspaceName = allocateWorkspaceName(workspaceBase, context.config.workspaces);
     // Whole-snapshot publish joins the shared config mutation domain so it
     // cannot publish an uncommitted permission value (or clobber a
     // concurrent rollback) mid-transaction.

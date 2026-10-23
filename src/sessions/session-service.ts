@@ -1082,6 +1082,17 @@ export class SessionService {
       .map(([workerSession]) => workerSession);
   }
 
+  /**
+   * True when a persisted session or a worker binding still points at
+   * workspace `name`. Call it only inside `withSessionLock` (`stateMutex.run`),
+   * so both reads see one state snapshot. A bare call is for single-threaded
+   * tests only.
+   */
+  isWorkspaceInUse(name: string): boolean {
+    return this.aliasesUsingWorkspace(name).length > 0
+      || this.workerBindingsUsingWorkspace(name).length > 0;
+  }
+
   /** Internal aliases of persisted sessions using agent `name`. */
   aliasesUsingAgent(name: string): string[] {
     return Object.values(this.state.sessions)

@@ -189,18 +189,22 @@ test("mobile detail opens on Close and keyboard activation only stops an explici
   await page.setViewportSize({ width: 390, height: 844 });
   const fixture = await openGroup(page, { scenario: "one" });
   const trigger = bubble(page, "turn_live");
+  const panePosition = await page.evaluate(() => history.state.position);
   for (const key of ["Enter", "Space"]) {
     await trigger.focus();
     await page.keyboard.press(key);
     const sheet = page.getByTestId("group-detail-sheet");
     await expect(sheet).toBeVisible();
     await expect(sheet.getByTestId("group-detail-close")).toBeFocused();
+    await expect.poll(() => page.evaluate(() => history.state.xacpx?.id)).toBe("group-detail-sheet");
+    expect(await page.evaluate(() => history.state.position)).toBe(panePosition + 1);
     await expect(sheet.getByTestId("group-stop-run-explanation")).toBeVisible();
     await expect(sheet.getByTestId("group-stop-run-explanation"))
       .toHaveText("Stop applies to the whole run: all participating members are cancelled.");
     await page.keyboard.press(key);
     await expect(sheet).toHaveCount(0);
     await expect(trigger).toBeFocused();
+    expect(await page.evaluate(() => history.state.position)).toBe(panePosition);
     expect(fixture.cancels).toEqual([]);
   }
   await trigger.click();

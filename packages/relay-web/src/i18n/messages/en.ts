@@ -170,6 +170,7 @@ export default {
     selectWorkspace: "Select a workspace",
     selectNative: "Select a native session",
     close: "Close",
+    deletedElsewhere: "This session was deleted",
     starting: "Starting {agent}…",
     startingHint: "The first start can take 10–40s. This is normal — you can keep browsing while it spins up.",
     startFailed: "Couldn't start the session",
@@ -798,6 +799,10 @@ export default {
       rolePlaceholder: "e.g. Senior code reviewer",
       agent: "Agent",
       workspace: "Workspace",
+      dedicatedWorkspace: "New workspace",
+      dedicatedWorkspaceHint: "Creates a dedicated workspace under ~/.xacpx/bots/ on this daemon instance.",
+      workspacePreviewUnavailable: "Model suggestions will be available after the workspace is created.",
+      workspacePreviewManual: "You can still enter a model and reasoning effort.",
       instructions: "Instructions",
       instructionsPlaceholder: "System prompt instructions for this bot...",
       instructionsLoading: "Loading instructions...",
@@ -812,6 +817,7 @@ export default {
       nameRequired: "Bot name is required.",
       agentRequired: "Agent is required.",
       workspaceRequired: "Workspace is required.",
+      dedicatedWorkspaceNameInvalid: "Name needs a letter or number, or pick a workspace.",
       detailLoading: "Bot details are still loading. Wait a moment before saving.",
       detailLoadFailed: "Could not load Bot details ({msg}). Retry before saving.",
     },
@@ -881,6 +887,7 @@ export default {
       completionready: "No matching suggestions",
       moreCompletions: "More suggestions",
       placeholder: "Message…",
+      createTopicFailed: "Couldn't start a conversation. Your message was kept.",
       send: "Send",
       stop: "Stop",
       stopRun: "Stop Run",
@@ -888,10 +895,11 @@ export default {
       botDisabledWarning: "This bot is disabled. Enable it in Bot Settings to send messages.",
       botDisabledPlaceholder: "Bot is disabled",
       runActivePlaceholder: "Run in progress... (Stop to cancel)",
-      recoveringPlaceholder: "Recovering topic... (loading history)",
+      recoveringPlaceholder: "Loading history…",
     },
     chat: {
       emptyHint: "Send a message to start a conversation with this bot.",
+      emptyHintDisabled: "Enable this bot to start a conversation.",
       working: "Working",
     },
     run: {
@@ -970,7 +978,7 @@ export default {
       deleting: "Deleting",
     },
     header: {
-      members: "{count} members",
+      members: "{count} member | {count} members",
     },
     members: {
       disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",
@@ -1157,9 +1165,10 @@ export default {
     },
     prompt: {
       placeholder: "Message the selected members... ({'@'}name, {'@'}everyone)",
+      createTopicFirst: "Create a topic to start chatting",
     },
     chat: {
-      emptyHint: "Select members above, then send a message to start a collaboration run.",
+      emptyHint: "Pick members below, then send a message to start a collaboration run.",
     },
   },
   capability: {

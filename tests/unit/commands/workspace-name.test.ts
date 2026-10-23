@@ -23,11 +23,55 @@ test("sanitizeWorkspaceName trims leading and trailing dashes", () => {
   expect(sanitizeWorkspaceName("--weird--")).toBe("weird");
 });
 
-test("sanitizeWorkspaceName falls back when everything is stripped", () => {
-  expect(sanitizeWorkspaceName("测试项目")).toBe("workspace");
+test("sanitizeWorkspaceName maps an all-CJK name to a valid opaque workspace name", () => {
+  expect(sanitizeWorkspaceName("测试项目")).toBe("workspace-309d13f6");
+  expect(isWorkspaceNameValid(sanitizeWorkspaceName("测试项目"))).toBe(true);
+});
+
+test("sanitizeWorkspaceName maps different all-CJK names to different workspace names", () => {
+  expect(sanitizeWorkspaceName("项目")).toBe("workspace-695778ee");
+  expect(sanitizeWorkspaceName("测试项目")).not.toBe(sanitizeWorkspaceName("项目"));
+});
+
+test("sanitizeWorkspaceName rejects a name with no letters or digits", () => {
+  expect(sanitizeWorkspaceName("!!!")).toBeNull();
+  expect(sanitizeWorkspaceName("  @@@  ")).toBeNull();
+  expect(sanitizeWorkspaceName("!!!", "fallback")).toBeNull();
+  // ASCII punctuation that would survive sanitization is rejected too.
+  expect(sanitizeWorkspaceName("...")).toBeNull();
+  expect(sanitizeWorkspaceName("___")).toBeNull();
+  expect(sanitizeWorkspaceName(".")).toBeNull();
+  expect(sanitizeWorkspaceName("..")).toBeNull();
+  expect(sanitizeWorkspaceName("！？。")).toBeNull();
+  expect(sanitizeWorkspaceName("🤖")).toBeNull();
+  expect(sanitizeWorkspaceName("🤖🚀")).toBeNull();
+});
+
+test("sanitizeWorkspaceName still derives a name when any letter or digit remains", () => {
+  expect(sanitizeWorkspaceName("!!!a")).toBe("a");
+  expect(sanitizeWorkspaceName("@项目@")).toMatch(/^workspace-[0-9a-f]{8}$/);
+  expect(sanitizeWorkspaceName("１２３")).toMatch(/^workspace-[0-9a-f]{8}$/);
+});
+
+test("sanitizeWorkspaceName ignores surrounding whitespace when hashing opaque names", () => {
+  expect(sanitizeWorkspaceName("  测试项目  ")).toBe("workspace-309d13f6");
+  expect(sanitizeWorkspaceName("\t测试项目\n")).toBe("workspace-309d13f6");
+});
+
+test("sanitizeWorkspaceName keeps the static fallback for blank input", () => {
   expect(sanitizeWorkspaceName("")).toBe("workspace");
   expect(sanitizeWorkspaceName("   ")).toBe("workspace");
-  expect(sanitizeWorkspaceName("中文", "fallback")).toBe("fallback");
+  expect(sanitizeWorkspaceName("", "fallback")).toBe("fallback");
+});
+
+test("sanitizeWorkspaceName uses a sanitized custom fallback for opaque names", () => {
+  expect(sanitizeWorkspaceName("中文", "My Fallback_")).toBe("My-Fallback_-5132b5ad");
+  expect(sanitizeWorkspaceName("中文", "!!!")).toBe("workspace-5132b5ad");
+});
+
+test("sanitizeWorkspaceName keeps the ASCII part of a mixed CJK name", () => {
+  expect(sanitizeWorkspaceName("中文-API_v2.0-项目")).toBe("API_v2.0");
+  expect(sanitizeWorkspaceName("api v2 中文")).toBe("api-v2");
 });
 
 test("sanitizeWorkspaceName ignores custom fallback when input survives sanitization", () => {
@@ -41,6 +85,12 @@ test("allocateWorkspaceName returns base when free, appends suffix when taken", 
   expect(allocateWorkspaceName("backend", { backend: 1, "backend-2": 1 })).toBe(
     "backend-3",
   );
+});
+
+test("allocateWorkspaceName disambiguates two opaque names that share a base", () => {
+  const existing = { "workspace-309d13f6": { cwd: "/tmp/a" } };
+  expect(allocateWorkspaceName("workspace-309d13f6", existing)).toBe("workspace-309d13f6-2");
+  expect(allocateWorkspaceName("workspace-695778ee", existing)).toBe("workspace-695778ee");
 });
 
 test("isWorkspaceNameValid matches the sanitize alphabet", () => {

@@ -7,6 +7,7 @@ import DetailHeadline from "./DetailHeadline.vue";
 import ToolStepCard from "./ToolStepCard.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 import { resolveSubagentStatus } from "../lib/subagent-status";
 import { indexToolSteps, subagentDetailOutput, toolStepDepthWithin } from "../lib/subagent-trace";
 
@@ -32,7 +33,7 @@ useModalA11y(dialog, () => emit("close"));
 <template>
   <Teleport to="body">
     <div class="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6" data-test="subagent-trace-dialog">
-      <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="emit('close')" />
+      <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="navigateBack" />
       <section ref="dialog" role="dialog" aria-modal="true" tabindex="-1"
                aria-labelledby="subagent-trace-title"
                class="relative flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-surface shadow-float">
@@ -60,7 +61,7 @@ useModalA11y(dialog, () => emit("close"));
             </div>
             <button type="button" data-test="subagent-dialog-close" :aria-label="$t('common.dismiss')"
                     class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-fg/5 hover:text-fg"
-                    @click="emit('close')">
+                    @click="navigateBack">
               <X :size="17" />
             </button>
           </div>

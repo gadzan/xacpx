@@ -42,6 +42,9 @@ const props = defineProps<{
   loadingOlder?: boolean;
   loadingHistory?: boolean;
   bot?: BotDetailDto | BotSummaryDto;
+  /** Intro hint under the empty-state Bot card; the pane derives it from the
+   *  same state as the composer so the two never disagree. `null` hides it. */
+  emptyHint?: string | null;
   instanceId?: string | null;
   avatarState?: BotAvatarState;
   avatarActivityKey?: string;
@@ -204,7 +207,10 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
 
 <template>
   <div class="relative flex min-h-0 flex-1 flex-col">
-  <div ref="scroller" data-test="conversation-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
+  <!-- px-4 on mobile (16px): a horizontally scrollable code block inside a message must
+       not start within 24px of the left screen edge, or it competes with the iOS Safari
+       back swipe. 16 + the block's own padding clears that. -->
+  <div ref="scroller" data-test="conversation-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 px-4 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <!-- Load Older Button -->
     <div v-if="hasMoreOlder" class="mb-4 flex justify-center">
       <button
@@ -232,7 +238,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       <div v-if="bot && 'instructions' in bot && bot.instructions" class="mt-3 max-w-md rounded-2xl bg-surface/60 p-3 text-left text-xs text-fg-muted leading-relaxed">
         {{ bot.instructions }}
       </div>
-      <p class="mt-4 text-xs text-fg-muted">{{ $t("bot.chat.emptyHint") }}</p>
+      <p v-if="emptyHint !== null" data-test="bot-empty-hint" class="mt-4 text-xs text-fg-muted">{{ emptyHint ?? $t("bot.chat.emptyHint") }}</p>
     </div>
 
     <div class="mx-auto max-w-3xl space-y-5">

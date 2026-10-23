@@ -5,6 +5,7 @@ import { X, Loader2, AlertTriangle, FolderOpen } from "lucide-vue-next";
 import { needsSetupCapability, type AgentCapabilityState, type NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
 import { fmtDateTime } from "../lib/format";
@@ -307,12 +308,12 @@ async function submit(): Promise<void> {
        otherwise make this fixed overlay resolve against the drawer (narrow,
        off-canvas) instead of the viewport. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="navigateBack">
     <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="new-session-title"
          class="w-full max-w-md rounded-2xl bg-raised shadow-float focus:outline-none" data-test="new-session-dialog">
       <header class="flex items-center justify-between px-5 py-3">
         <h2 id="new-session-title" class="text-sm font-semibold text-fg">{{ $t("session.newSession") }} <span class="font-normal text-fg-muted">· {{ instanceName }}</span></h2>
-        <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")' @click="emit('close')"><X :size="16" /></button>
+        <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")' @click="navigateBack"><X :size="16" /></button>
       </header>
 
       <div class="space-y-4 px-5 py-4">
@@ -417,7 +418,7 @@ async function submit(): Promise<void> {
       </div>
 
       <footer class="flex justify-end gap-2 px-5 py-3">
-        <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
+        <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="navigateBack">{{ $t("common.cancel") }}</button>
         <button data-test="ns-create" :disabled="!canSubmit"
                 class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
                 @click="submit">{{ submitting ? $t("session.creatingButton") : $t("session.create") }}</button>

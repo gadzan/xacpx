@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { CalendarClock, ChevronDown, Plus, X } from "lucide-vue-next";
 import { useTasksStore } from "../stores/tasks";
 import { useChatStore } from "../stores/chat";
 import ScheduledTaskRow from "./ScheduledTaskRow.vue";
+import { navigateBack, pushModal } from "../lib/mobile-back";
 
 const tasks = useTasksStore();
 const chat = useChatStore();
@@ -20,6 +21,14 @@ const visible = computed(() => tasks.scheduled.slice(0, INLINE_LIMIT));
 const overflow = computed(() => Math.max(0, tasks.scheduled.length - INLINE_LIMIT));
 
 const drawerOpen = ref(false);
+
+// The "View all" drawer is a masked overlay, so it owns a history entry while open:
+// the Android back key and the iOS swipe dismiss it instead of leaving the site.
+let unregister: (() => void) | null = null;
+watch(drawerOpen, (open) => {
+  unregister?.();
+  unregister = open ? pushModal({ id: "scheduled-drawer", close: () => { drawerOpen.value = false; } }) : null;
+});
 
 async function create() {
   if (!chat.instanceId || !chat.sessionAlias || !executeAt.value || !message.value) return;
@@ -82,11 +91,11 @@ async function create() {
         enter-from-class="opacity-0"
         leave-active-class="transition-opacity duration-150 ease-in motion-reduce:transition-none"
         leave-to-class="opacity-0">
-        <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-black/50" @click.self="drawerOpen = false" @keydown.esc="drawerOpen = false">
+        <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-black/50" @click.self="navigateBack" @keydown.esc="navigateBack">
           <aside class="flex h-full w-full max-w-md flex-col bg-raised shadow-float" role="dialog" :aria-label="$t('tasks.allScheduled')">
             <header class="flex items-center justify-between px-4 py-3">
               <h2 class="text-sm font-semibold text-fg">{{ $t("tasks.scheduledCount", { count: tasks.scheduled.length }) }}</h2>
-              <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label="$t('tasks.close')" data-test="scheduled-drawer-close" @click="drawerOpen = false"><X :size="16" /></button>
+              <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label="$t('tasks.close')" data-test="scheduled-drawer-close" @click="navigateBack"><X :size="16" /></button>
             </header>
             <ul class="flex-1 space-y-1 overflow-y-auto p-3">
               <ScheduledTaskRow v-for="t in tasks.scheduled" :key="t.id" :task="t" @view="drawerOpen = false" />

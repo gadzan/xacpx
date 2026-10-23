@@ -70,6 +70,8 @@ export const misc: MiscMessages = {
   // onboarding
   onboardingFirstUsePrompt: (workspaceName: string) =>
     `检测到首次使用 xacpx。是否将当前目录创建为工作区「${workspaceName}」？[Y/n] `,
+  onboardingWorkspaceNameUnderivable: (cwd: string) =>
+    `已跳过首次使用引导：无法从 ${cwd} 推导工作区名称（目录名不含字母或数字）。请使用 "xacpx workspace add <名称>" 手动添加工作区。`,
   onboardingSelectAgent: "请选择要添加并创建初始会话的 Agent：",
   onboardingEnterChoice: "输入数字或名称（默认 1）：",
   onboardingNoValidAgent: "未选择有效 Agent，已跳过首次初始化。",

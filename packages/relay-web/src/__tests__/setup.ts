@@ -1,12 +1,29 @@
 // jsdom does not implement IndexedDB; the session tail cache depends on it.
 // `fake-indexeddb/auto` installs indexedDB/IDBKeyRange/etc. as globals.
 import "fake-indexeddb/auto";
-import { config } from "@vue/test-utils";
+import { afterEach, beforeEach, vi } from "vitest";
+import { config, enableAutoUnmount } from "@vue/test-utils";
 import { i18n } from "../i18n";
 
 // Install i18n globally for all component mounts. Default locale is "en", so
 // existing assertions on English text keep passing unchanged.
 config.global.plugins.push(i18n);
+
+// Unmount every wrapper after each test. The mobile back stack (registered modal
+// layers and the history entries they own) is module state, so a component left
+// mounted by one test would leak its layers into the next.
+enableAutoUnmount(afterEach);
+
+// jsdom queues a history traversal as a task and offers no way to cancel it, so a
+// history.back() issued near the end of one test can deliver its popstate during the
+// next. Drain it here — no wrapper is mounted, so the event is a no-op — and start
+// every test from an untagged entry, the same state a cold boot sees. Skipped under
+// fake timers, which never deliver the queued traversal.
+beforeEach(async () => {
+  if (vi.isFakeTimers()) return;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  window.history.replaceState({}, "");
+});
 
 // jsdom 不实现 ResizeObserver / requestAnimationFrame。终端组件依赖二者做 fit 驱动；
 // 装最小 stub 让相关测试确定性（不真正观察，仅提供可构造的 API）。

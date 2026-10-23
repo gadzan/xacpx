@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
@@ -80,7 +81,7 @@ async function handleCreate(): Promise<void> {
 
 <template>
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-       @click.self="emit('close')">
+       @click.self="navigateBack">
     <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="group-topic-title" tabindex="-1" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
       <h3 id="group-topic-title" class="mb-2 text-sm font-semibold">{{ $t("group.topic.createTitle") }}</h3>
       <p class="mb-3 text-xs text-fg-muted">{{ $t("group.topic.createHint") }}</p>
@@ -121,7 +122,7 @@ async function handleCreate(): Promise<void> {
           <button
             type="button"
             class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
-            @click="emit('close')"
+            @click="navigateBack"
           >
             {{ $t("common.cancel") }}
           </button>

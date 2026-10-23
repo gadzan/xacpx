@@ -36,6 +36,7 @@ import {
 import { api } from "../api/client";
 import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectComposerStore } from "./direct-composer";
+import { pushToast } from "../lib/use-toasts";
 
 export type DirectBotRunState = ConversationRunStateDto;
 
@@ -615,6 +616,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const currentDraftRequestId = ref<string | null>(null);
   const lastPromptText = ref<string>("");
   const promptInFlight = ref<boolean>(false);
+  /** First send on a topicless Bot: true from the click until the auto-created
+   *  Topic's prompt settles, so the composer shows its sending state at once
+   *  and a second Enter cannot create a second Topic. */
+  const firstSendPending = ref<boolean>(false);
+  let firstSendToken = 0;
   const promptError = ref<DirectBotPromptErrorCode | string | null>(null);
   const promptErrorDetail = ref<string | null>(null);
   // Cancel-outcome uncertainty is tracked separately from prompt submission errors:
@@ -975,7 +981,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     payload: {
       name: string;
       agent: string;
-      workspace: string;
+      workspace?: string;
       avatar?: BotAvatarConfig;
       role?: string;
       instructions?: string;
@@ -2084,6 +2090,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     instanceId.value = targetInstanceId;
     selectedBotId.value = botId;
     persistBotSelection(targetInstanceId, botId);
+    firstSendToken += 1;
+    firstSendPending.value = false;
 
     // Reset topic, history, live state
     activeConversationId.value = null;
@@ -2138,14 +2146,40 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const targetTopicId = conv.defaultTopicId ?? topics[0]?.id;
         if (targetTopicId) {
           activeTopicId.value = targetTopicId;
+          // loadHistory owns topicReady from here: it reopens the gate only on
+          // proven discovery.
           await loadHistory(targetInstanceId, conv.id, targetTopicId);
+          return;
         }
       }
+      // No Conversation or no Topic yet: there is nothing to recover, so no
+      // load is in flight. Reopen the gate closed at the top of selectBot
+      // (mirrors the Group store's zero-Topic path). The first send then
+      // creates a Default Topic before prompting (sendFirstPrompt).
+      settleTopiclessSelection(generation, targetInstanceId, botId);
     } catch (err: unknown) {
       if (generation === currentSelectionGeneration && selectedBotId.value === botId) {
         generalError.value = err instanceof Error ? err.message : String(err);
       }
+      // Conversation/Topic listing failed before any Topic was chosen: no
+      // history load owns the gate, so leaving it closed would read as a
+      // permanent "Recovering topic…". The error banner carries the failure.
+      settleTopiclessSelection(generation, targetInstanceId, botId);
     }
+  }
+
+  /** selectBot resolved without choosing a Topic (none exists, or the listing
+   *  failed): no recovery is in flight, so `topicReady` must not stay false. */
+  function settleTopiclessSelection(generation: number, targetInstanceId: string, botId: string): void {
+    if (
+      generation !== currentSelectionGeneration
+      || instanceId.value !== targetInstanceId
+      || selectedBotId.value !== botId
+      || activeTopicId.value
+    ) {
+      return;
+    }
+    topicReady.value = true;
   }
 
   async function switchTopic(topicId: string): Promise<void> {
@@ -2221,6 +2255,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     lastPromptText.value = "";
     generalError.value = null;
     generalErrorCode.value = null;
+    firstSendToken += 1;
+    firstSendPending.value = false;
     persistBotSelection(null, null);
   }
   const promptSnapshots = new Map<string,{requestId:string;text:string;mentions:AgentMention[]}>();
@@ -2246,8 +2282,83 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return snapshot.requestId;
   }
 
+  /** Title of the Topic auto-created by the first message to a topicless Bot. */
+  const FIRST_TOPIC_TITLE = "Default";
+
+  /**
+   * First message to a Bot with no Topic (zero Topics, or no Conversation row
+   * yet): materialize the Direct Conversation through the existing list
+   * (the backend synthesizes one per Bot), create a "Default" Topic through
+   * the existing `createTopic` action (which activates it), then send the
+   * prompt into it. Creation failure surfaces a toast and keeps the draft;
+   * nothing is sent.
+   */
+  async function sendFirstPrompt(text: string, agentMentions: AgentMention[]): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
+    if (firstSendPending.value || !topicReady.value) return "rejected";
+    const targetInstId = instanceId.value!;
+    const targetBotId = selectedBotId.value!;
+    const token = ++firstSendToken;
+    const stillHere = (): boolean =>
+      token === firstSendToken && instanceId.value === targetInstId && selectedBotId.value === targetBotId;
+    // The composer draft is keyed by [instance, conversation, topic, bot]:
+    // carry it along as this flow fills in the conversation and topic, so it
+    // is never stranded under a key the composer no longer shows.
+    const draftKey = (): string =>
+      JSON.stringify([instanceId.value, activeConversationId.value, activeTopicId.value, selectedBotId.value]);
+    const drafts = useDirectComposerStore();
+    let heldKey = draftKey();
+    const carryDraft = (): void => {
+      const next = draftKey();
+      if (next === heldKey) return;
+      const draft = drafts.get(heldKey);
+      if (draft.text) {
+        drafts.set(next, draft.text, draft.mentions);
+        drafts.clear(heldKey, draft.text, draft.mentions);
+      }
+      heldKey = next;
+    };
+    firstSendPending.value = true;
+    promptError.value = null;
+    promptErrorDetail.value = null;
+    try {
+      let topicId: string;
+      try {
+        let conversationId = activeConversationId.value;
+        if (!conversationId) {
+          const convs = await loadConversations(targetInstId, { botId: targetBotId });
+          if (!stillHere()) return "orphaned";
+          conversationId = convs[0]?.id ?? null;
+          if (!conversationId) throw new Error("conversation_not_found");
+          activeConversationId.value = conversationId;
+          carryDraft();
+        }
+        const topic = await createTopic(targetInstId, conversationId, FIRST_TOPIC_TITLE);
+        if (!stillHere()) return "orphaned";
+        if (activeTopicId.value !== topic.id) {
+          // createTopic activates the Topic only while its Conversation is
+          // still the active one; anything else means the view moved on.
+          return "orphaned";
+        }
+        topicId = topic.id;
+      } catch {
+        if (!stillHere()) return "orphaned";
+        pushToast("error", "bot.prompt.createTopicFailed");
+        return "rejected";
+      }
+      carryDraft();
+      if (activeTopicId.value !== topicId) return "orphaned";
+      return await sendPrompt(text, agentMentions);
+    } finally {
+      if (stillHere()) carryDraft();
+      if (token === firstSendToken) firstSendPending.value = false;
+    }
+  }
+
   async function sendPrompt(text: string, agentMentions:AgentMention[] = []): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
     const trimmed = text;
+    if (trimmed.trim() && instanceId.value && selectedBotId.value && !activeTopicId.value) {
+      return sendFirstPrompt(trimmed, agentMentions);
+    }
     if (!trimmed.trim() || !instanceId.value || !selectedBotId.value || !activeConversationId.value || !activeTopicId.value) {
       return "rejected";
     }
@@ -3881,6 +3992,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     currentDraftRequestId,
     lastPromptText,
     promptInFlight,
+    firstSendPending,
     promptError,
     promptErrorDetail,
     pendingInteraction,

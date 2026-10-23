@@ -91,7 +91,7 @@ Examples:
 /workspace rm backend
 ```
 
-> Names are normalized to `[a-zA-Z0-9._-]+`: spaces, Chinese characters, and other symbols are replaced with `-`, and on name collisions `-2`, `-3` are appended automatically. To keep the original name with special characters, add `--raw`, e.g.:
+> Names are normalized to `[a-zA-Z0-9._-]+`: spaces, Chinese characters, and other symbols are replaced with `-`. If no usable characters remain, a nonblank name uses a stable `workspace-<8hex>` fallback. On collisions, `-2`, `-3` are appended automatically. This also applies when `/ss -d` or native session creation derives a workspace name from a Chinese directory basename. Existing registrations and the actual directory path are preserved. To keep the original name with special characters, add `--raw`, e.g.:
 >
 > ```text
 > /ws new "My Project" -d /Users/me/projects/my-project --raw

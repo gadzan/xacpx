@@ -211,6 +211,25 @@ describe("NewSessionDialog", () => {
     expect(store.beginSessionCreation).not.toHaveBeenCalled();
   });
 
+  it("New-path mode with an all-CJK path creates a workspace with an opaque hashed name", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    await flushPromises();
+    await wrapper.get('[data-test="ns-ws-mode-path"]').trigger("click");
+    await wrapper.get('[data-test="ns-ws-path"]').setValue("/Users/me/项目/后台服务");
+    await wrapper.get('[data-test="ns-create"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-test="ns-error"]').exists()).toBe(false);
+    expect(store.createWorkspace).toHaveBeenCalledWith("i1", "workspace-60b83561", "/Users/me/项目/后台服务");
+    expect(store.beginSessionCreation).toHaveBeenCalledWith(
+      "i1", "workspace-60b83561-codex", "codex", "workspace-60b83561", undefined, undefined,
+    );
+  });
+
   it("emits the resolved auto-generated alias immediately on create when alias was blank", async () => {
     const { wrapper, store } = mountDialog({
       agents: [{ name: "codex", driver: "codex" }],

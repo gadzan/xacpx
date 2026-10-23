@@ -59,10 +59,12 @@ export async function maybeRunFirstUseOnboarding(input: {
   if (!input.deps.isInteractive()) return { created: false };
 
   const cwd = normalizeWorkspacePath(input.deps.cwd());
-  const workspaceName = allocateWorkspaceName(
-    sanitizeWorkspaceName(basenameForWorkspacePath(cwd)),
-    input.config.workspaces,
-  );
+  const workspaceBase = sanitizeWorkspaceName(basenameForWorkspacePath(cwd));
+  if (workspaceBase === null) {
+    input.deps.print(t().misc.onboardingWorkspaceNameUnderivable(cwd));
+    return { created: false };
+  }
+  const workspaceName = allocateWorkspaceName(workspaceBase, input.config.workspaces);
   const yes = (await input.deps.promptText(t().misc.onboardingFirstUsePrompt(workspaceName))).trim().toLowerCase();
   if (yes === "n" || yes === "no") return { created: false };
 

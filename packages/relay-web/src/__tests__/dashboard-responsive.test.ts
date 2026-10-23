@@ -20,7 +20,12 @@ vi.mock("../api/events", () => ({
     }
   },
 }));
-vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+// The back stack writes its history entries through the router, so the stub has to
+// touch the real history: push adds an entry, replace overwrites the current one.
+vi.mock("vue-router", () => ({ useRouter: () => ({
+  push: (to: { path?: string; state?: Record<string, unknown> }) => window.history.pushState(to.state ?? {}, "", to.path ?? window.location.pathname),
+  replace: (to: { path?: string; state?: Record<string, unknown> }) => window.history.replaceState(to.state ?? {}, "", to.path ?? window.location.pathname),
+}) }));
 
 import DashboardView from "../views/DashboardView.vue";
 import ChatPane from "../components/ChatPane.vue";
@@ -33,6 +38,7 @@ import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { loadPersistedSelection } from "../stores/chat";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
+import { backInFlight } from "../lib/mobile-back";
 
 const stubs = { ChatPane: true, FileViewer: true, TaskPanel: true, TerminalTab: true, "router-link": true };
 
@@ -50,8 +56,32 @@ beforeEach(() => {
   // test don't leak into the next test's store via hydrate().
   sessionStorage.clear();
   localStorage.clear();
+  // Back navigation writes history entries; start every test from an untagged entry so
+  // one test's stack cannot shift another test's back target.
+  window.history.replaceState({}, "");
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ instances: [capableInstance] }), { status: 200 })));
 });
+
+/** Run a back-driven action and await the popstate it produces. jsdom delivers
+ *  history.back()'s popstate on its own task, so a microtask flush alone is not enough;
+ *  awaiting the event itself keeps the test deterministic. */
+async function backAndSettle(action: () => Promise<void> | void): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  window.addEventListener("popstate", () => resolve(), { once: true });
+  await action();
+  await promise;
+  await flushPromises();
+}
+
+/** Await every traversal a close set in motion (one per popped entry). */
+async function settleBacks(): Promise<void> {
+  for (let i = 0; i < 6 && backInFlight.value; i++) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    window.addEventListener("popstate", () => resolve(), { once: true });
+    await promise;
+  }
+  await flushPromises();
+}
 
 function mountDash() {
   return mount(DashboardView, { global: { stubs } });
@@ -117,8 +147,7 @@ test("mobile ← goes back to the home list and clears chat/bot/group selection 
   expect(left.classes()).toContain("max-lg:hidden");
   expect(left.classes().some((c) => c.includes("translate"))).toBe(false);
 
-  await wrapper.find('[data-test="mobile-back"]').trigger("click");
-  await flushPromises();
+  await backAndSettle(() => wrapper.find('[data-test="mobile-back"]').trigger("click"));
   expect(chat.instanceId).toBeNull();
   expect(chat.sessionAlias).toBeNull();
   expect(botClear).toHaveBeenCalled();
@@ -174,9 +203,9 @@ test("file viewer Close removes the tab and returns to chat", async () => {
   expect(wrapper.findComponent(FileViewer).exists()).toBe(true);
   expect(centerTabs.activeFor(key)).toBe("file:a.ts");
 
-  // Close -> the tab is actually removed and active falls back to chat.
-  wrapper.findComponent(FileViewer).vm.$emit("close");
-  await flushPromises();
+  // Close -> the tab is actually removed and active falls back to chat. Closing the
+  // active tab also drops its full-screen layer, so the back stack pops that entry.
+  await backAndSettle(() => wrapper.findComponent(FileViewer).vm.$emit("close"));
   expect(centerTabs.tabsFor(key)).toEqual([]);
   expect(centerTabs.activeFor(key)).toBe("chat");
 });
@@ -207,7 +236,7 @@ test("backdrop click closes the open files/tasks drawer", async () => {
   await flushPromises();
   expect(wrapper.find('[data-drawer="right"]').classes()).toContain("translate-x-0");
 
-  await wrapper.find('[data-test="drawer-backdrop"]').trigger("click");
+  await backAndSettle(() => wrapper.find('[data-test="drawer-backdrop"]').trigger("click"));
   expect(wrapper.find('[data-drawer="right"]').classes()).toContain("translate-x-full");
   expect(wrapper.find('[data-test="drawer-backdrop"]').exists()).toBe(false);
 });
@@ -487,8 +516,8 @@ test("open-tabs sheet switches tabs and closes them through the guarded path", a
   expect(rows[1].classes()).toContain("text-accent");
 
   // Tapping Chat switches back and dismisses the sheet.
-  await rows[0].find("button").trigger("click");
-  await flushPromises();
+  await backAndSettle(() => rows[0].find("button").trigger("click"));
+  await settleBacks();
   expect(centerTabs.activeFor(key)).toBe("chat");
   expect(wrapper.find('[data-test="open-tabs-sheet"]').exists()).toBe(false);
   // ...and does not fall back to the ⋯ sheet.

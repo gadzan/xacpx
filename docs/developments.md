@@ -357,6 +357,7 @@ By default everything is under `~/.xacpx/`:
 | `~/.xacpx/runtime/app.log` | bounded application log (rotated) | `AppLogger` |
 | `~/.xacpx/runtime/orchestration.sock` | Unix socket / `\\.\pipe\xacpx-orchestration-<hash>` | `OrchestrationServer` |
 | `~/.xacpx/plugins/` | Plugin npm home (standalone `package.json` + `node_modules`) | `xacpx plugin add/update` |
+| `~/.xacpx/bots/` | Dedicated default Bot workspace directories; registered in config, retained when a Bot is removed | Bot creation through Control API |
 
 Field details: [docs/config-reference.md](./config-reference.md).
 

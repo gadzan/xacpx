@@ -542,7 +542,7 @@ watch(
 
 <template>
   <div class="relative flex-1 overflow-hidden">
-    <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5"
+    <div ref="scroller" data-test="msg-scroller" class="thin-scroll h-full overflow-y-auto py-4 px-4 lg:py-5 lg:pl-5 lg:pr-5"
          @scroll="onScroll">
       <!-- Initial-history skeleton: top-anchored to match how the real transcript stacks
            top-to-bottom, then swap for the real content the instant rows arrive. -->

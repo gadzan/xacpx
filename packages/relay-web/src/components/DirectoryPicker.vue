@@ -5,6 +5,7 @@ import { X, Folder, Home, ArrowUp, Loader2 } from "lucide-vue-next";
 import { isErrorPayload, type FsBrowseResult } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { navigateBack } from "../lib/mobile-back";
 
 // System-style directory picker that browses the TARGET INSTANCE's filesystem
 // via control.fs.browse (the instance may be a remote machine — that's why the
@@ -121,14 +122,14 @@ function onListKeydown(e: KeyboardEvent): void {
 
 <template>
   <Teleport to="body">
-    <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
+    <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" @click.self="navigateBack">
       <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="dp-title"
            class="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl bg-raised shadow-float focus:outline-none"
            data-test="dp-dialog">
         <header class="flex items-center justify-between px-5 py-3">
           <h2 id="dp-title" class="text-sm font-semibold text-fg">{{ $t("dirPicker.title") }}</h2>
           <button type="button" class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")'
-                  @click="emit('close')"><X :size="16" /></button>
+                  @click="navigateBack"><X :size="16" /></button>
         </header>
 
         <div class="flex items-center gap-1.5 px-5 pt-3">
@@ -177,7 +178,7 @@ function onListKeydown(e: KeyboardEvent): void {
         <p v-if="error" data-test="dp-error" class="mx-5 mt-2 rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger">{{ error }}</p>
 
         <footer class="flex justify-end gap-2 px-5 py-3">
-          <button type="button" class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
+          <button type="button" class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="navigateBack">{{ $t("common.cancel") }}</button>
           <button type="button" data-test="dp-confirm" :disabled="!result || loading"
                   class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
                   @click="choose">{{ $t("dirPicker.chooseCurrent") }}</button>

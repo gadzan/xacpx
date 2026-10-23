@@ -1,4 +1,5 @@
 // tests/unit/packages/relay-protocol/web-dtos.test.ts
+import { expect, test } from "bun:test";
 import {
   WEB_CLIENT_TYPE,
   WEB_EVENT_TYPE,

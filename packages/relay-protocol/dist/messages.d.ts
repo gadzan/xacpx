@@ -444,7 +444,8 @@ export interface BotsCreatePayload {
     role?: string;
     instructions?: string;
     agent: string;
-    workspace: string;
+    /** Omit to auto-create a dedicated default workspace under ~/.xacpx/bots/. */
+    workspace?: string;
     model?: string;
     effort?: string;
     enabled?: boolean;
@@ -1213,6 +1214,11 @@ export declare const RELAY_CAPABILITIES: {
      *  never asks, so an old hub simply produces no interaction rather than a
      *  frame the web cannot interpret. */
     readonly interactionElicitationFormV1: "interaction.elicitation.form.v1";
+    /** `control.bots.create` accepts an omitted `workspace` and allocates a
+     *  dedicated Bot workspace. Advertised only when both the connector's
+     *  validator and the core accept it, so the web keeps requiring a workspace
+     *  for instances whose core predates dedicated Bot workspaces. */
+    readonly botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1";
 };
 /**
  * Grace an interaction RPC gets beyond its own `expiresAt`.

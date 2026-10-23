@@ -583,3 +583,15 @@ test("additive correlation attempt identity accepts legacy shapes and rejects em
   expect(parseControlPayload(MSG.interactionRequest,
     { ...legacy, requestId: "r", kind: "permission", expiresAt: 1, permission, conversation: { ...legacy, sourceTurnId: "" } })).toBeNull();
 });
+
+test("Bot creation accepts an omitted workspace for automatic default and keeps shape-only blank handling", () => {
+  expect(parseControlPayload(MSG.botsCreate, { name: "Reviewer", agent: "codex" })).toEqual({
+    name: "Reviewer", agent: "codex",
+  });
+  for (const workspace of [null, 5, {}, true]) {
+    expect(parseControlPayload(MSG.botsCreate, { name: "Reviewer", agent: "codex", workspace })).toBeNull();
+  }
+  // Shape-only per repo convention; the server rejects blank with the existing
+  // workspace_not_registered failure instead of silent automatic creation.
+  expect(parseControlPayload(MSG.botsCreate, { name: "Reviewer", agent: "codex", workspace: "" })).not.toBeNull();
+});

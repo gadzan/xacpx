@@ -31,4 +31,5 @@ export const shortcut: ShortcutMessages = {
   workspaceAvailable: (names) => `Available: ${names}`,
   workspaceNone: "No workspaces are registered yet. Run /ws new <name> -d <path> first.",
   workspacePathNotFound: (cwd) => `Workspace path does not exist: ${cwd}`,
+  workspaceNameUnderivable: (cwd) => `Cannot derive a workspace name from directory ${cwd}: its name has no letters or digits. Rename the directory or add a named workspace first.`,
 };

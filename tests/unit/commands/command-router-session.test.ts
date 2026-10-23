@@ -673,6 +673,27 @@ test("shortcut auto-registers a workspace with a sanitized name when cwd has spa
   await rm(root, { recursive: true, force: true });
 });
 
+test("shortcut rejects a cwd whose directory name has no letters or digits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weacpx-shortcut-"));
+  const dir = join(root, "!!!");
+  await mkdir(dir);
+  const config = createConfig();
+  const before = structuredClone(config.workspaces);
+  const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
+
+  try {
+    const reply = await router.handle("wx:user", `/ss codex -d "${dir}"`);
+
+    expect(reply.text).toBe(t().shortcut.workspaceNameUnderivable(dir));
+    expect(config.workspaces).toEqual(before);
+    expect(await sessions.listSessions("wx:user")).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("shortcut creation still selects the session when agent command refresh fails", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-shortcut-"));
   const config = createConfig();
@@ -1568,6 +1589,24 @@ test("/ssn renders a direct cwd next page command for explicit cwd lists", async
     expect(reply.text).toContain(`更多：/ssn codex -d ${normalizeWorkspacePath(dir)} --cursor cursor-2`);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("/ssn rejects a cwd whose directory name has no letters or digits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weacpx-native-"));
+  const dir = join(root, "!!!");
+  await mkdir(dir);
+  const { router, transport, config } = buildRouter();
+  const before = structuredClone(config.workspaces);
+
+  try {
+    const reply = await router.handle("wx:user", `/ssn codex -d "${dir}"`);
+
+    expect(reply.text).toBe(t().nativeSession.workspaceNameUnderivable(dir));
+    expect(config.workspaces).toEqual(before);
+    expect(transport.listAgentSessions).not.toHaveBeenCalled();
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -3056,3 +3056,28 @@ describe("useGroupsStore durable trace cache", () => {
     }
   });
 });
+
+describe("zero-Topic Groups never auto-create a Topic (Bot-only first-send behaviour)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockRpc.mockReset();
+    mockRpc.mockResolvedValue({});
+  });
+
+  it("a send with no active Topic is refused without creating a Topic or prompting", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "group_1";
+    store.activeConversationId = "group_1";
+    store.activeTopicId = null;
+    store.topicReady = true;
+    store.topicsByConversation["inst_1:group_1"] = [];
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    expect(await store.sendPrompt("hello")).toBe("rejected");
+    expect(await store.sendPrompt("hello again")).toBe("rejected");
+    const types = mockRpc.mock.calls.map((c) => c[1] as string);
+    expect(types.filter((t) => t.includes("topics.create"))).toEqual([]);
+    expect(types).not.toContain("control.conversation.prompt");
+    expect(store.activeTopicId).toBeNull();
+  });
+});

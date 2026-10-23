@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { coreHomeDir } from "./runtime/core-home";
 import { coreEnv } from "./runtime/core-env";
+import { resolveBotsHome } from "./bots/bots-home";
 
 import { CommandRouter } from "./commands/command-router";
 import type { ConfigMutationMutex } from "./commands/router-types";
@@ -563,6 +564,10 @@ export async function buildApp(
       );
     }
   }
+  // Lock order is C (configMutationMutex) outer, S (stateMutex) inner.
+  // Workspace deletion must hold both across the usage check and removal.
+  // Session and worker binding paths take only S; never acquire C while holding S.
+  // Reversing the order can deadlock a deletion waiting for S.
   const stateMutex = new AsyncMutex();
   /**
    * Daemon-wide config disk + permission executor serialization domain (see
@@ -2066,6 +2071,7 @@ export async function buildApp(
     unarchiveSession: (internalAlias) => router.unarchiveSession(internalAlias),
     activeTurns,
     ...(sessionWarmth ? { sessionWarmth } : {}),
+    botsHomeRoot: resolveBotsHome(),
     scheduled: scheduledService,
     orchestration,
     events: controlEvents,
@@ -2165,6 +2171,20 @@ export async function buildApp(
           controlEvents.emit({ type: "workspaces-changed" });
         });
       },
+      transaction: (fn) => configMutationMutex.run(() => fn({
+        list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace })),
+        create: async (name, cwd, description) => {
+          const updated = await configStore.upsertWorkspace(name, cwd, description);
+          publishLiveConfig(updated);
+          controlEvents.emit({ type: "workspaces-changed" });
+          return { name, cwd, ...(description ? { description } : {}) };
+        },
+        remove: async (name) => {
+          const updated = await configStore.removeWorkspace(name);
+          publishLiveConfig(updated);
+          controlEvents.emit({ type: "workspaces-changed" });
+        },
+      })),
     },
     conversationRouter: {
       // The persisted section, read off the live config the store mutations

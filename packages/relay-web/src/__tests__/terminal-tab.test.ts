@@ -1,13 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
-import { mount, flushPromises, enableAutoUnmount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { TerminalRequestError } from "../api/events";
 import { initialRecoveryState } from "../lib/terminal-recovery";
 import type { TerminalAttachmentView } from "../stores/terminal";
 
-// The viewport controller keeps settling timers alive after mount; unmount
-// every wrapper so they are disposed before the next test's mock assertions.
-enableAutoUnmount(afterEach);
+// Wrappers are unmounted after every test by the shared setup (setup.ts), which also
+// keeps the module-level back stack from leaking between tests.
 
 const adapter = {
   ready: vi.fn(async () => {}),

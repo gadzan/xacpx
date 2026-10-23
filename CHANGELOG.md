@@ -2,10 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- New Bots default to a dedicated workspace under the daemon user's `~/.xacpx/bots/`, with an option to select an existing workspace. Bot removal preserves workspace files.
+
 ### Fixed
 
 - OMP model restore recovery: an exact native `Could not restore model <id>` failure retries the normal set first and only then runs a bounded native helper that re-persists the requested model through OMP's own `switch_session` (same native session id/file, no JSONL edit, no prompt sent) before syncing through the normal acpx setter; partial syncs report retry-forward. Bare `/model` (and the Dashboard recovery action) refreshes choices via `control.session.model.get { refresh: true }`, a cold probe of the session's exact launch with the saved selection as `current`. Chat `/model <id>` keeps history and never resends; Dashboard success states the original message was not resent. A busy queue owner refuses the repair (never kills queued work); generic auth/catalog errors are not treated as removed models and no automatic mapping is applied.
 - OMP restore review hardening: the runtime native-session cache is validated against the current acpx record id on every use (a delete/recreate reusing an alias can never resolve a stale native id), is invalidated at every session teardown and after each recovery, and unreadable records fail closed instead of reporting absence. CLI recovery tracks every learned native id per physical identity (a single stored id no longer misses concurrent cross-alias recoveries) and serializes concurrent `setModel` calls for the same session before the ordinary setter so the loser cannot mutate acpx state first. The fallback-notice exclusion (`Could not restore model X. Using Y`, a successful substitute switch) is per-candidate on both backend and Dashboard matchers, so an unrelated excerpt line can never suppress a real failure. Queued-turn restore failures retain their message as the queue-suspend reason instead of dropping it silently.
+- Automatically generated workspace names use a stable hash fallback for Chinese and other names with no usable ASCII characters, across CLI, onboarding, chat commands and the dashboard. Existing workspace registrations and paths are preserved.
 
 ## [relay-protocol 0.6.4-beta.4] - 2026-10-22
 
