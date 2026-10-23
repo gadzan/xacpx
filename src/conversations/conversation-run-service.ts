@@ -464,7 +464,7 @@ export class ConversationRunService {
     if (alreadyAccepted) {
       if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
       assertAcceptedPolicies(alreadyAccepted, memberPolicies);
-      assertPromptReplay(alreadyAccepted.message, input.text, input.media);
+      if (alreadyAccepted.run.mode !== "automatic") assertPromptReplay(alreadyAccepted.message, input.text, input.media);
       return alreadyAccepted;
     }
     if (this.store.hasRetiredPrompt(input.conversationId, input.topicId, input.requestId)) {
