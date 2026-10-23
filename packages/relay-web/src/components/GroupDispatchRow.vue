@@ -58,6 +58,9 @@ const activeText = computed(() => {
   return queuedText.value;
 });
 const doneText = computed(() => t("group.dispatch.done", { n: counts.value.completed }));
+/** A round that is not entirely done words its done count compactly, so it
+ *  never reads like the all-done headline. */
+const donePartialText = computed(() => t("group.dispatch.donePartial", { n: counts.value.completed }));
 const cancelledText = computed(() => t("group.dispatch.cancelled"));
 const mixedCancelledText = computed(() => `${counts.value.cancelled} ${cancelledText.value}`);
 const failedText = computed(() => t("group.dispatch.failed", { n: counts.value.failed }));
@@ -78,7 +81,7 @@ const mobileStatusText = computed(() => {
   else if (isDone.value) parts.push(doneText.value);
   else if (isCancelled.value) parts.push(cancelledText.value);
   else {
-    if (counts.value.completed > 0) parts.push(doneText.value);
+    if (counts.value.completed > 0) parts.push(donePartialText.value);
     if (counts.value.cancelled > 0) parts.push(mixedCancelledText.value);
   }
   if (showFailed.value) parts.push(failedText.value);
@@ -180,7 +183,7 @@ function stopAll(): void {
           <span data-test="group-dispatch-status-cancelled" class="text-fg-muted">⊘ {{ cancelledText }}</span>
         </template>
         <template v-else>
-          <span v-if="counts.completed > 0" data-test="group-dispatch-status-done" class="text-fg">✓ {{ doneText }}</span>
+          <span v-if="counts.completed > 0" data-test="group-dispatch-status-done" class="text-fg">✓ {{ donePartialText }}</span>
           <span v-if="counts.completed > 0 && counts.cancelled > 0" aria-hidden="true" class="text-fg-muted">·</span>
           <span v-if="counts.cancelled > 0" data-test="group-dispatch-status-cancelled" class="text-fg-muted">{{ mixedCancelledText }}</span>
         </template>

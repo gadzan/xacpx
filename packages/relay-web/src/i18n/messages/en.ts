@@ -1174,6 +1174,7 @@ export default {
       running: "{n} running",
       queued: "{n} queued",
       done: "{n} done",
+      donePartial: "{n} done",
       cancelled: "Cancelled",
       stopped: "Stopped",
       failed: "{n} failed",

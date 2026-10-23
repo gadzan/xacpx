@@ -438,6 +438,17 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
+  it("words a mixed Chinese round with the compact done count", () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["completed", "completed", "cancelled", "cancelled"]);
+    const status = wrapper.get('[data-test="group-dispatch-status"]').text();
+    expect(status).toContain("✓ 2 已完成");
+    expect(status).toContain("2 已取消");
+    // The all-done headline is reserved for a round that is entirely done.
+    expect(status).not.toContain("个已完成");
+    wrapper.unmount();
+  });
+
   it("appends the failure count in danger colour", () => {
     const wrapper = row(["completed", "completed", "failed"]);
     const status = wrapper.get('[data-test="group-dispatch-status"]').text();
@@ -490,7 +501,7 @@ describe("GroupDispatchRow", () => {
 
   it.each([
     ["en", "Sent to 2 bots", "2 queued", "Stopped", "Instructions"],
-    ["zh-CN", "派发给 2 个 Bot", "2 等待中", "已停止", "派发内容"],
+    ["zh-CN", "派发给 2 个 Bot", "2 排队中", "已停止", "派发内容"],
   ] as const)(
     "localizes title, status, stopped note and dispatch content in %s",
     (locale, title, status, stopped, instructions) => {
@@ -1110,10 +1121,17 @@ describe("GroupDispatchRow on mobile", () => {
     wrapper.unmount();
   });
 
+  it("words a mixed Chinese mobile summary with the compact done count", () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["completed", "completed", "cancelled", "cancelled"]);
+    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("4 个 Bot · 2 已完成 · 2 已取消");
+    wrapper.unmount();
+  });
+
   it("reports members whose outcome is unknown in the mobile summary", () => {
     i18n.global.locale.value = "zh-CN";
     const wrapper = row(["completed", "completed", "indeterminate"]);
-    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("3 个 Bot · 2 个已完成 · 1 个结果未知");
+    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("3 个 Bot · 2 已完成 · 1 个结果未知");
     wrapper.unmount();
   });
 

@@ -1169,8 +1169,9 @@ export default {
     dispatch: {
       sentTo: "派发给 {n} 个 Bot",
       running: "{n} 执行中",
-      queued: "{n} 等待中",
+      queued: "{n} 排队中",
       done: "{n} 个已完成",
+      donePartial: "{n} 已完成",
       cancelled: "已取消",
       stopped: "已停止",
       failed: "{n} 失败",
