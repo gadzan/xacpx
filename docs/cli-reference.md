@@ -76,7 +76,7 @@ The commands use the runtime's normal fence directory settings. `--fence-dir <pa
 | `xacpx workspace add` | Register the current directory as a workspace, defaulting the name to the current directory name (normalized automatically) |
 | `xacpx workspace add <name>` | Register the current directory under a specific name (normalized if it contains special characters) |
 | `xacpx workspace add [name] --raw` | Keep the original name (including spaces, etc.); later commands must quote it |
-| `xacpx workspace rm <name>` | Remove a specific workspace |
+| `xacpx workspace rm <name>` | Remove a specific workspace (refused while the daemon is running) |
 
 Common usage:
 
@@ -101,6 +101,8 @@ Once registered, you can use it directly in WeChat:
 Note: `workspace add` always registers the **directory the terminal is currently in**. Without a name, it uses the current directory name as the workspace name. Names containing spaces, Chinese characters, etc. are normalized automatically to `[a-zA-Z0-9._-]+` (for example, the directory `My Project` is saved as `My-Project`), with `-2`, `-3` appended on collisions. To keep the original name, add `--raw`; afterwards `xacpx workspace rm`, `/ws rm`, and `--ws <name>` all need quoting, for example `xacpx workspace rm "My Project"`.
 
 If a nonblank name loses all characters during normalization (for example, `测试项目`), its generated name is `workspace-<8hex>`, derived consistently from the trimmed original input. Different names can still collide, so the existing numeric suffix allocation also applies. Registered workspace names and directory paths are not renamed.
+
+`workspace rm` refuses to run while the xacpx daemon is running (or its state is indeterminate). The daemon keeps its own config snapshot and session bindings, and this terminal CLI has no control-IPC route to remove a workspace, so writing `config.json` behind it can race a live delegation. Use `/workspace rm` in the console or the Control API, or run `xacpx stop` first. Even with the daemon stopped, it refuses if `state.json` still contains sessions or worker bindings that reference the workspace; remove those through the daemon first.
 
 ## `agent` CLI
 

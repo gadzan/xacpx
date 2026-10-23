@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { AppState, SessionTransportEngine } from "../state/types";
 
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
-import type { AgentConfig, TransportConfig } from "../config/types";
+import type { AgentConfig, AppConfig, TransportConfig } from "../config/types";
 import type { WorkerBindingRecord } from "./orchestration-types";
 import type { ResolvedSession } from "../transport/types";
 import { releaseWorkerRetirement, tryClaimWorkerRetirement } from "./worker-binding-retirement";
@@ -89,6 +89,40 @@ export function workerBindingIdentityFields(
     logicalSessionId: previousBinding?.logicalSessionId ?? createLid(),
     transportEngine: previousBinding?.transportEngine ?? resolveEngine(),
   };
+}
+
+/**
+ * Reject a worker binding whose physical target cannot be resolved.
+ *
+ * A pathless worker (explicit `cwd`, or an ephemeral delegation) carries its
+ * physical target in the binding itself: the workspace name is provenance
+ * only, and `resolveWorkerBindingSession` recovers from `binding.cwd`, so an
+ * unregistered workspace name is allowed. A worker WITHOUT an explicit cwd
+ * derives its target from `config.workspaces[name].cwd`; staging such a
+ * binding after that workspace was removed writes a record that no restart,
+ * queue recovery, or physical-group scan can ever resolve. Call this inside
+ * the staging mutate, before the binding is written and before the engine is
+ * resolved, so rejection leaves no durable trace.
+ *
+ * The `cwd` passed here MUST be the cwd this staging writes to the binding
+ * (`input.cwd` / `task.cwd`), never `previousBinding.cwd`: a binding rebuilt
+ * without cwd cannot inherit an old path's exemption.
+ */
+export function assertWorkerBindingWorkspaceTarget(
+  input: { workspace: string; cwd?: string },
+  config: Pick<AppConfig, "workspaces">,
+): void {
+  // The staging sites only persist a cwd when it is truthy, so a blank value
+  // is not an explicit target and must not unlock an unregistered workspace.
+  if (input.cwd !== undefined && input.cwd.trim().length > 0) {
+    return;
+  }
+  if (config.workspaces[input.workspace]) {
+    return;
+  }
+  throw new Error(
+    `workspace "${input.workspace}" is not registered; pass an explicit cwd or register the workspace (xacpx workspace add ${input.workspace}) before delegating`,
+  );
 }
 
 /** A staged binding shell's durable identity, captured at stage time. */

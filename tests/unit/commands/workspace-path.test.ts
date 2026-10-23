@@ -56,3 +56,32 @@ test("falls back to full path for root paths with empty basename", () => {
   expect(basenameForWorkspacePath("C:/")).toBe("C:/");
   expect(basenameForWorkspacePath("/")).toBe("/");
 });
+
+test("treats POSIX paths with a trailing slash as equal", () => {
+  expect(sameWorkspacePath("/tmp/x/", "/tmp/x")).toBe(true);
+  expect(sameWorkspacePath("/tmp/x", "/tmp/x/")).toBe(true);
+});
+
+test("treats Windows drive paths with a trailing separator and different casing as equal", () => {
+  expect(sameWorkspacePath("C:/Work/", "c:\\work")).toBe(true);
+  expect(sameWorkspacePath("c:\\work", "C:/Work/")).toBe(true);
+});
+
+test("keeps root paths equal while tolerating trailing separator variants", () => {
+  expect(sameWorkspacePath("/", "/")).toBe(true);
+  expect(sameWorkspacePath("/", "//")).toBe(true);
+  expect(sameWorkspacePath("C:/", "c:\\")).toBe(true);
+  expect(sameWorkspacePath("C:", "C:")).toBe(true);
+});
+
+test("different paths stay different after trailing separator normalization", () => {
+  expect(sameWorkspacePath("/tmp/x/", "/tmp/y")).toBe(false);
+  expect(sameWorkspacePath("/", "/tmp")).toBe(false);
+  expect(sameWorkspacePath("C:/Work/", "C:/Workshop")).toBe(false);
+  expect(sameWorkspacePath("C:/", "C:/Work")).toBe(false);
+});
+
+test("treats tilde paths and expanded paths with a trailing separator as equal", () => {
+  expect(sameWorkspacePath("~", normalizeWorkspacePath(homedir()) + "/")).toBe(true);
+  expect(sameWorkspacePath("~/", normalizeWorkspacePath(homedir()))).toBe(true);
+});

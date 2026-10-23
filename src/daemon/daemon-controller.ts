@@ -55,7 +55,7 @@ interface DaemonControllerDeps {
   probePosixIdentity?: typeof probePosixProcessIdentity;
 }
 
-type DaemonState =
+export type DaemonState =
   | { state: "stopped"; stale?: boolean }
   | { state: "running"; pid: number; status: DaemonStatus }
   | { state: "indeterminate"; pid: number; reason: "missing-pid" | "missing-status" | "pid-mismatch" }

@@ -65,6 +65,14 @@ export const cli: CliMessages = {
   workspaceSaved: (name, cwd) => `工作区「${name}」已保存：${cwd}`,
   workspaceNotFound: (name) => `没有找到工作区「${name}」。`,
   workspaceRemoved: (name) => `工作区「${name}」已删除`,
+  workspaceRemoveDaemonRunning:
+    "daemon 运行中（或状态不确定）时无法删除工作区：daemon 持有自己的配置快照和会话绑定，直接修改 config.json 会与进行中的委派竞态。请在控制台使用 /workspace rm 或调用 Control API，或先执行 `xacpx stop`。",
+  workspaceRemoveDaemonStatusFailed: (message) =>
+    `无法确认 xacpx daemon 是否在运行，已拒绝修改 config.json：${message}`,
+  workspaceRemoveStillReferenced: (name, references) =>
+    `无法删除工作区「${name}」：仍被 ${references} 引用。请先移除这些 session/binding（启动 daemon 后使用 /session rm 或 /workspace rm）。`,
+  workspaceRemoveStateReadFailed: (message) =>
+    `无法读取 state.json 检查工作区引用，已拒绝修改 config.json：${message}`,
 
   // agent commands
   agentEmpty: "还没有 Agent。",

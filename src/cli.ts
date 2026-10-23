@@ -18,7 +18,7 @@ import {
   resolveRuntimeConsumerLockPath,
   resolveRuntimeDirFromConfigPath,
 } from "./daemon/daemon-files";
-import type { DaemonController } from "./daemon/daemon-controller";
+import type { DaemonController, DaemonState } from "./daemon/daemon-controller";
 import { DaemonRuntime } from "./daemon/daemon-runtime";
 import type { DaemonStatus } from "./daemon/daemon-status";
 import { createRuntimeConsumerLock } from "./daemon/runtime-consumer-lock";
@@ -386,6 +386,8 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
       const result = await handleWorkspaceCli(args.slice(1), {
         print,
         cwd: deps.cwd ?? (() => process.cwd()),
+        // Resolve lazily so list/add never construct a daemon controller.
+        getDaemonStatus: () => (deps.controller ?? createDefaultController(deps)).getStatus(),
       });
       if (result === null) {
         for (const line of t().cli.helpLines) {
@@ -656,6 +658,7 @@ async function runOnboardingBeforeStart(input: {
         alias: result.alias,
         agent: result.agent,
         workspace: result.workspace,
+        workspaceCwd: result.workspaceCwd,
         rollback: result.rollback,
       }
     : null;
@@ -666,6 +669,7 @@ async function handleWorkspaceCli(
   deps: {
     print: (line: string) => void;
     cwd: () => string;
+    getDaemonStatus: () => Promise<DaemonState>;
   },
 ): Promise<number | null> {
   const subcommand = args[0];
@@ -690,7 +694,7 @@ async function handleWorkspaceCli(
     }
     case "rm":
       if (args.length !== 2 || !args[1]) return null;
-      return await workspaceRemove(args[1], deps.print);
+      return await workspaceRemove(args[1], deps.print, deps.getDaemonStatus);
     default:
       return null;
   }
@@ -760,10 +764,31 @@ async function workspaceAdd(
   return 0;
 }
 
-async function workspaceRemove(rawName: string, print: (line: string) => void): Promise<number> {
+async function workspaceRemove(
+  rawName: string,
+  print: (line: string) => void,
+  getDaemonStatus: () => Promise<DaemonState>,
+): Promise<number> {
   const name = rawName.trim();
   if (name.length === 0) {
     print(t().cli.workspaceNameEmpty);
+    return 1;
+  }
+
+  // A live daemon keeps its own config snapshot and worker bindings, and this
+  // CLI has no control-IPC route to remove a workspace. Editing config.json
+  // behind it would race an in-flight delegation/session bind (the daemon only
+  // learns about the removal from its config watcher, long after the write).
+  // Refuse while running or indeterminate: fail closed, write nothing.
+  let daemon: DaemonState;
+  try {
+    daemon = await getDaemonStatus();
+  } catch (error) {
+    print(t().cli.workspaceRemoveDaemonStatusFailed(error instanceof Error ? error.message : String(error)));
+    return 1;
+  }
+  if (daemon.state !== "stopped") {
+    print(t().cli.workspaceRemoveDaemonRunning);
     return 1;
   }
 
@@ -771,6 +796,30 @@ async function workspaceRemove(rawName: string, print: (line: string) => void): 
   const config = await store.load();
   if (!config.workspaces[name]) {
     print(t().cli.workspaceNotFound(name));
+    return 1;
+  }
+
+  // The daemon is stopped, so nothing can bind concurrently, but a stale
+  // state.json can still reference this workspace. Refuse rather than make
+  // those rows unresolvable on the next start.
+  const runtimePaths = (await import("./main")).resolveRuntimePaths();
+  let inspection;
+  try {
+    inspection = await new StateStore(runtimePaths.statePath).inspect();
+  } catch (error) {
+    print(t().cli.workspaceRemoveStateReadFailed(error instanceof Error ? error.message : String(error)));
+    return 1;
+  }
+  const references = [
+    ...Object.entries(inspection.state.sessions)
+      .filter(([, session]) => session.workspace === name)
+      .map(([alias]) => alias),
+    ...Object.entries(inspection.state.orchestration.workerBindings)
+      .filter(([, binding]) => binding.workspace === name)
+      .map(([workerSession]) => workerSession),
+  ];
+  if (references.length > 0) {
+    print(t().cli.workspaceRemoveStillReferenced(name, references.join(", ")));
     return 1;
   }
 
@@ -1162,7 +1211,13 @@ async function rollbackFirstRunConfig(
 ): Promise<void> {
   try {
     if (!plan.rollback.workspaceExisted) {
-      await runtime.configStore.removeWorkspace(plan.workspace);
+      // `workspaceExisted` only reflects the snapshot taken before the write.
+      // The expected cwd is the concurrency guard: if another process
+      // registered a different directory under the same name in the
+      // meantime, removeWorkspace refuses instead of deleting their entry.
+      // Plans decoded from older payloads carry no cwd and fall back to
+      // name-only removal.
+      await runtime.configStore.removeWorkspace(plan.workspace, plan.workspaceCwd);
     }
     if (!plan.rollback.agentExisted) {
       await runtime.configStore.removeAgent(plan.agent);
@@ -1470,6 +1525,9 @@ function decodeFirstRunOnboarding(raw: string | undefined): FirstRunOnboardingPl
         alias: parsed.alias,
         agent: parsed.agent,
         workspace: parsed.workspace,
+        // Older payloads predate workspaceCwd; omitting it keeps rollback on
+        // the legacy name-only removal path instead of failing to decode.
+        ...(typeof parsed.workspaceCwd === "string" ? { workspaceCwd: parsed.workspaceCwd } : {}),
         rollback: {
           workspaceExisted: rollback.workspaceExisted === true,
           agentExisted: rollback.agentExisted === true,

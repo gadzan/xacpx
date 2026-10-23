@@ -23,7 +23,7 @@
 
 删除工作区注册的路径必须先获取 C，再获取 S。在持有双锁的同一临界区内完成占用检查、`removeWorkspace`、`publishLiveConfig` 和 `workspaces-changed` 事件发布。检查与删除之间不能释放 S，否则会话可能在检查后绑定到即将删除的工作区。
 
-会话与 worker binding 的绑定路径只持 S，不获取 C。删除路径持有 S 期间，绑定写入等待。绑定先完成时，删除路径的锁内占用检查必须拒绝删除。占用检查也覆盖已存在的 worker binding，但 worker binding staging 对 pathless/ephemeral 的显式 `cwd` 保留既有回落语义：注册缺失时仍可能写入无法解析的 binding，本节的原子保证只覆盖逻辑会话绑定和既有 binding 的占用检查。聊天命令 `/workspace rm` 与 Control API 删除使用同一 C→S 顺序。进程外 `xacpx workspace rm` 只写配置文件，daemon 经 config watcher 重载，无法与 S 串行；运行中删除已被会话引用的工作区仍应优先走 Control API 或 `/workspace rm`。
+会话与 worker binding 的绑定路径只持 S，不获取 C。删除路径持有 S 期间，绑定写入等待。绑定先完成时，删除路径的锁内占用检查必须拒绝删除。占用检查也覆盖已存在的 worker binding。worker binding staging 在 S 内校验目标：pathless/ephemeral 绑定的显式 `cwd` 即物理目标，注册缺失仍可写入（`resolveWorkerBindingSession` 以 `binding.cwd` 恢复）；无 `cwd` 时 workspace 必须已注册，否则在写入 binding 前拒绝，避免删除后留下无法解析、重启恢复和队列扫描都看不到的悬空记录。聊天命令 `/workspace rm` 与 Control API 删除使用同一 C→S 顺序。进程外 `xacpx workspace rm` 只写配置文件，daemon 经 config watcher 重载，无法与 S 串行，因此 daemon 运行中（或状态不确定时）CLI 直接拒绝；此时请用 Control API 或 `/workspace rm`，或先 `xacpx stop`。手工编辑 `config.json` 同样无法与 S 串行；若 daemon 运行期间已经删除了被引用的工作区，`xacpx doctor` 的 orchestration 检查会列出缺失 workspace 的 session / 无 cwd worker binding，提示恢复注册或移除受影响记录。
 
 ## Bot 头像与交互归属
 

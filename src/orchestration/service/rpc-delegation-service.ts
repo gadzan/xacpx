@@ -25,6 +25,7 @@ import type {
 import { sameCoordinatorSession, stableCoordinatorSession } from "../coordinator-identity";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
+  assertWorkerBindingWorkspaceTarget,
   teardownStagedWorkerOwner,
   workerBindingEndpointIdentityFields,
   workerBindingGuardFields,
@@ -219,6 +220,13 @@ export class RpcDelegationService {
             previousBinding = state.orchestration.workerBindings[workerSessionName];
             this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSessionName);
             this.workerSessions.assertWorkerSessionAvailable(state, workerSessionName, undefined, { allowCurrentReservation: true });
+            assertWorkerBindingWorkspaceTarget(
+              {
+                workspace: preflight.targetLocation.workspace,
+                ...(preflight.targetLocation.cwd ? { cwd: preflight.targetLocation.cwd } : {}),
+              },
+              this.deps.config,
+            );
             // First binding MUST already carry LID + physical-group engine
             // BEFORE the detached startup chain can ensure an owner: a crash
             // between this save and the async identity top-up would otherwise
