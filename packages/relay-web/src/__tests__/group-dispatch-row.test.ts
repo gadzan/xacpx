@@ -1311,6 +1311,46 @@ describe("GroupDispatchRow on mobile", () => {
     for (const sheetRow of rows) expect(sheetRow.classes()).toContain("min-h-11");
     wrapper.unmount();
   });
+  it("shows each member's avatar in the sheet row", async () => {
+    const wrapper = row([], ["bot_a", "bot_b"], {
+      dispatches: [entry("bot_a", "running", { task: "Review the diff" }), entry("bot_b", "completed", { task: "Review the diff" })],
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    const rows = wrapper.findAll('[data-test="group-dispatch-sheet-row"]');
+    expect(rows).toHaveLength(2);
+    for (const sheetRow of rows) {
+      expect(sheetRow.find('[data-test="group-dispatch-sheet-member-avatar"] [data-test="bot-avatar"]').exists()).toBe(true);
+    }
+    wrapper.unmount();
+  });
+
+  it("stops one member from the sheet with the desktop stop logic", async () => {
+    const wrapper = row([], ["bot_a", "bot_b", "bot_c"], {
+      dispatches: [
+        entry("bot_a", "running", { task: "Review the diff", seq: 1, turn: { id: "turn_a", runId: "run_9" } }),
+        entry("bot_b", "queued", { task: "Review the diff", seq: 2, turn: { id: "turn_b", runId: "run_9" } }),
+        entry("bot_c", "completed", { task: "Review the diff", seq: 3, turn: { id: "turn_c", runId: "run_9" } }),
+      ],
+      supportsCancelMember: true,
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    const stops = wrapper.findAll('[data-test="group-dispatch-sheet-stop-member"]');
+    expect(stops).toHaveLength(2);
+    expect(stops.map((stop) => stop.attributes("data-bot-id"))).toEqual(["bot_a", "bot_b"]);
+    expect(stops[0]!.attributes("aria-label")).toBe("Stop Reviewer");
+    expect(stops[0]!.get("svg").classes()).toContain("fill-current");
+    await stops[0]!.trigger("click");
+    expect(wrapper.emitted("stopMember")).toEqual([[{ runId: "run_9", memberTurnId: "turn_a" }]]);
+    expect(wrapper.emitted("jump")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("offers no sheet member stop when the core cannot cancel a single member", async () => {
+    const wrapper = row(["running", "queued"], ["bot_a", "bot_b"], { supportsCancelMember: false });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.find('[data-test="group-dispatch-sheet-stop-member"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
 
   it("renders one sheet row per dispatch when the same bot is dispatched twice", async () => {
     const wrapper = row([], ["bot_a"], {

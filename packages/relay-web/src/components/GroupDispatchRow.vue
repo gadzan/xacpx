@@ -327,10 +327,25 @@ function stopAll(): void {
           :data-member-turn-id="member.memberTurnId"
           class="flex min-h-11 items-center gap-2 px-2"
         >
-          <span data-test="group-dispatch-sheet-member-name" class="min-w-0 truncate text-sm font-medium text-fg">{{ member.name }}</span>
-          <span data-test="group-dispatch-sheet-member-status" class="ml-auto shrink-0 text-xs text-fg-muted">
+          <span data-test="group-dispatch-sheet-member-avatar" class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2" aria-hidden="true">
+            <BotAvatar :avatar="member.avatar" :driver="member.driver" :name="member.name" :size="24" static />
+          </span>
+          <span data-test="group-dispatch-sheet-member-name" class="min-w-0 flex-1 truncate text-sm font-medium text-fg">{{ member.name }}</span>
+          <span data-test="group-dispatch-sheet-member-status" class="shrink-0 text-xs text-fg-muted">
             {{ memberStatusText(member.status) }}
           </span>
+          <!-- Scoped stop: the same member-only action as the desktop card row. -->
+          <button
+            v-if="member.canStop"
+            type="button"
+            data-test="group-dispatch-sheet-stop-member"
+            :data-bot-id="member.botId"
+            :aria-label="t('group.dispatch.stopMember', { name: member.name })"
+            class="grid h-11 w-11 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
+            @click.stop="stopMember(member)"
+          >
+            <Square :size="14" class="fill-current" aria-hidden="true" />
+          </button>
         </li>
       </ul>
       <template #footer>
