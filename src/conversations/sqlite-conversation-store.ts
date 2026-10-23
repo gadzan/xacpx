@@ -4156,7 +4156,12 @@ export class SqliteConversationStore implements ConversationStore {
     if (TERMINAL_RUN_STATES.includes(run.state)) {
       return run;
     }
-    if (!forceRunTerminal && !this.listMemberTurns(runId).some((turn) => turn.state === "indeterminate")) {
+    // Wake derivation is per leader: enqueueSettledHandoffFollowups skips a
+    // leader whose OWN assignment is indeterminate. A Run-level gate here
+    // would also suppress every unrelated leader's wake in the same Run. A
+    // wake inserted just before an unknown seal is inert durable state — the
+    // claim fence only serves queued/running Runs, so it is never executed.
+    if (!forceRunTerminal) {
       this.enqueueSettledHandoffFollowups(run, now);
     }
     const members = this.listMemberTurns(runId);
