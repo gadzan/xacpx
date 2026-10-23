@@ -99,6 +99,20 @@ const mobileStatusText = computed(() => {
   if (showIndeterminate.value) parts.push(indeterminateShortText.value);
   return parts.join(" · ");
 });
+const mobileCountText = computed(() => (total.value === 1
+  ? titleText.value
+  : t("group.dispatch.mobileBots", { n: total.value })));
+const mobileHasStatus = computed(() => mobileStatusText.value !== "");
+/** Running reads accent, done reads the project success token, failures read
+ *  danger — the same emphasis tokens the desktop status spans wear. */
+const mobileStatusClass = computed(() => {
+  if (isRunning.value) return "text-accent";
+  if (isDone.value) return "text-run";
+  if (showFailed.value) return "text-danger";
+  if (isCancelled.value) return "text-fg-muted";
+  if (counts.value.completed > 0) return "text-fg";
+  return "text-fg-muted";
+});
 const mobileSummaryText = computed(() => {
   // A lone dispatch keeps the round's own name; only a fan-out round is
   // counted, because the count is what tells the bots apart.
@@ -180,8 +194,21 @@ function stopAll(): void {
       <span
         v-if="isMobile"
         data-test="group-dispatch-summary"
-        class="min-w-0 flex-1 truncate whitespace-nowrap text-xs font-medium text-fg"
-      >{{ mobileSummaryText }}</span>
+        class="flex min-w-0 flex-1 items-center gap-1 truncate whitespace-nowrap text-xs font-medium"
+      >
+        <span data-test="group-dispatch-summary-count" class="truncate text-fg">{{ mobileCountText }}</span>
+        <template v-if="mobileHasStatus">
+          <span aria-hidden="true" class="shrink-0 text-fg-muted"> · </span>
+          <Loader2
+            v-if="isRunning"
+            :size="12"
+            data-test="group-dispatch-summary-spinner"
+            class="shrink-0 animate-spin text-accent"
+            aria-hidden="true"
+          />
+          <span data-test="group-dispatch-summary-status" class="truncate" :class="mobileStatusClass">{{ mobileStatusText }}</span>
+        </template>
+      </span>
       <span v-else data-test="group-dispatch-title" class="shrink-0 text-xs font-medium text-fg">
         {{ titleText }}
       </span>
@@ -210,11 +237,10 @@ function stopAll(): void {
         </span>
       </span>
       <ChevronDown
-        v-if="!isMobile"
         :size="14"
         data-test="group-dispatch-chevron"
         class="ml-auto shrink-0 text-fg-muted transition-transform"
-        :class="expanded ? 'rotate-180' : ''"
+        :class="(isMobile ? sheetOpen : expanded) ? 'rotate-180' : ''"
         aria-hidden="true"
       />
     </button>

@@ -1227,6 +1227,27 @@ describe("GroupDispatchRow on mobile", () => {
     expect(wrapper.find('[data-test="group-dispatch-status"]').exists()).toBe(false);
     wrapper.unmount();
   });
+  it("shows the expand chevron and a running spinner with desktop emphasis on mobile", () => {
+    const wrapper = row(["running", "running", "queued", "queued"]);
+    const chevron = wrapper.get('[data-test="group-dispatch-chevron"]');
+    expect(chevron.classes()).not.toContain("rotate-180");
+    const spinner = wrapper.get('[data-test="group-dispatch-summary-spinner"]');
+    expect(spinner.classes()).toContain("animate-spin");
+    expect(spinner.classes()).toContain("text-accent");
+    expect(wrapper.get('[data-test="group-dispatch-summary-status"]').classes()).toContain("text-accent");
+    wrapper.unmount();
+  });
+
+  it("reads the mobile status with the desktop emphasis tokens", () => {
+    const done = row(["completed", "completed"]);
+    expect(done.get('[data-test="group-dispatch-summary-status"]').classes()).toContain("text-run");
+    expect(done.find('[data-test="group-dispatch-summary-spinner"]').exists()).toBe(false);
+    done.unmount();
+
+    const failed = row(["completed", "failed"]);
+    expect(failed.get('[data-test="group-dispatch-summary-status"]').classes()).toContain("text-danger");
+    failed.unmount();
+  });
 
   it("localizes the mobile summary", () => {
     i18n.global.locale.value = "zh-CN";
