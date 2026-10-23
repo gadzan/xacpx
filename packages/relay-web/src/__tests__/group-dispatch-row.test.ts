@@ -420,6 +420,16 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
+  it("reports members whose outcome is unknown", () => {
+    const wrapper = row(["completed", "completed", "indeterminate"]);
+    const status = wrapper.get('[data-test="group-dispatch-status"]').text();
+    expect(status).toContain("✓ 2 done");
+    expect(wrapper.get('[data-test="group-dispatch-status-indeterminate"]').text()).toContain("1 unknown");
+    // An unknown outcome is never folded into the failure count.
+    expect(wrapper.find('[data-test="group-dispatch-status-failed"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("collapses avatars past the limit into an overflow count", () => {
     const wrapper = row(
       ["completed", "completed", "completed", "completed", "completed"],
@@ -492,7 +502,12 @@ function handoffMessage(index: number, over: Partial<ConversationMessageDto> = {
   };
 }
 
-function memberTurn(id: string, botId: string, state: MemberTurnSummaryDto["state"]): MemberTurnSummaryDto {
+function memberTurn(
+  id: string,
+  botId: string,
+  state: MemberTurnSummaryDto["state"],
+  over: Partial<MemberTurnSummaryDto> = {},
+): MemberTurnSummaryDto {
   return {
     id,
     conversationId: "group_1",
@@ -504,6 +519,7 @@ function memberTurn(id: string, botId: string, state: MemberTurnSummaryDto["stat
     origin: id === "turn_a" ? "human-explicit" : "handoff",
     state,
     createdAt: "now",
+    ...over,
   };
 }
 
@@ -621,11 +637,52 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 
-  it("marks the leader message stopped when the leader turn was cancelled", async () => {
-    seedTranscript([handoffMessage(1), handoffMessage(2)], [memberTurn("turn_a", "bot_a", "cancelled")]);
+  it("marks the leader message stopped when the leader turn carries the stop reason", async () => {
+    seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [memberTurn("turn_a", "bot_a", "completed", { cancellationReason: "human-cancelled" })],
+    );
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
     expect(wrapper.findAll('[data-test="group-dispatch-row"]')).toHaveLength(1);
+    expect(wrapper.get('[data-test="group-dispatch-stopped"]').text()).toBe("Stopped");
+    wrapper.unmount();
+  });
+
+  it("shows a stopped leader with a completed aggregate row in Chinese", async () => {
+    i18n.global.locale.value = "zh-CN";
+    seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed", { cancellationReason: "human-cancelled" }),
+        memberTurn("turn_member_1", "bot_b", "completed"),
+        memberTurn("turn_member_2", "bot_c", "completed"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(wrapper.get('[data-test="group-dispatch-stopped"]').text()).toBe("已停止");
+    expect(wrapper.get('[data-test="group-dispatch-status-done"]').text()).toBe("✓ 2 个已完成");
+    wrapper.unmount();
+  });
+
+  it("marks the leader message stopped when its wake turn carries the stop reason", async () => {
+    seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "completed"),
+        memberTurn("turn_member_2", "bot_c", "completed"),
+        {
+          ...memberTurn("turn_wake", "bot_a", "cancelled"),
+          origin: "followup",
+          followupSenderMemberTurnId: "turn_a",
+          cancellationReason: "human-cancelled",
+        },
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
     expect(wrapper.get('[data-test="group-dispatch-stopped"]').text()).toBe("Stopped");
     wrapper.unmount();
   });
@@ -776,14 +833,94 @@ describe("GroupTranscript dispatch aggregation", () => {
     const pill = wrapper.get('[data-test="group-dispatch-stop-leader"]');
     expect(pill.text()).toContain("Stop Reviewer");
 
-    // The leader's turn ends: there is nothing left to cancel, so the pill goes.
+    // The leader's turn ends, but its dispatch has not settled yet: the wake
+    // row does not exist yet, so there is still work to stop.
     groups.memberTurnsById = {
       ...groups.memberTurnsById,
       turn_a: { ...groups.memberTurnsById.turn_a!, state: "completed" },
     };
     await flushPromises();
 
+    expect(wrapper.find('[data-test="group-dispatch-stop-leader"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("offers the leader pill while the leader's wake is still live", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "completed"),
+        memberTurn("turn_member_2", "bot_c", "completed"),
+        { ...memberTurn("turn_wake", "bot_a", "running"), origin: "followup", followupSenderMemberTurnId: "turn_a" },
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="group-dispatch-stop-leader"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("drops the leader pill once the leader's wake settled", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "completed"),
+        memberTurn("turn_member_2", "bot_c", "completed"),
+        { ...memberTurn("turn_wake", "bot_a", "completed"), origin: "followup", followupSenderMemberTurnId: "turn_a" },
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
     expect(wrapper.find('[data-test="group-dispatch-stop-leader"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("stops a finished leader through its own turn while its dispatch is still running", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const cancelMember = vi.spyOn(groups, "cancelMember").mockResolvedValue(undefined);
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    await wrapper.get('[data-test="group-dispatch-stop-leader"]').trigger("click");
+    await flushPromises();
+
+    expect(cancelMember).toHaveBeenCalledWith("instance_1", "run_1", "turn_a");
+    wrapper.unmount();
+  });
+
+  it("stops the live wake turn instead of the finished leader", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "completed"),
+        memberTurn("turn_member_2", "bot_c", "completed"),
+        { ...memberTurn("turn_wake", "bot_a", "running"), origin: "followup", followupSenderMemberTurnId: "turn_a" },
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const cancelMember = vi.spyOn(groups, "cancelMember").mockResolvedValue(undefined);
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    await wrapper.get('[data-test="group-dispatch-stop-leader"]').trigger("click");
+    await flushPromises();
+
+    expect(cancelMember).toHaveBeenCalledWith("instance_1", "run_1", "turn_wake");
     wrapper.unmount();
   });
 
@@ -875,6 +1012,13 @@ describe("GroupDispatchRow on mobile", () => {
     i18n.global.locale.value = "zh-CN";
     const wrapper = row(["running", "running", "completed", "completed"]);
     expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("4 个 Bot · 2 执行中");
+    wrapper.unmount();
+  });
+
+  it("reports members whose outcome is unknown in the mobile summary", () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["completed", "completed", "indeterminate"]);
+    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("3 个 Bot · 2 个已完成 · 1 个结果未知");
     wrapper.unmount();
   });
 

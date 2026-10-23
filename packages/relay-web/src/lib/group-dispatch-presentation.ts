@@ -26,14 +26,22 @@ export interface GroupDispatchLeader {
   state?: MemberTurnSummaryDto["state"];
   /** Set when the user stopped the leader itself. */
   cancellationReason?: "human-cancelled";
+  /**
+   * The wake turn the runtime creates for this leader once its own handoffs
+   * settle. Absent when the wake has not been inserted yet: the dispatch is
+   * still unsettled.
+   */
+  wake?: MemberTurnSummaryDto;
 }
 
 /**
  * The leader (项管) of a round, as the UI addresses it.
  *
- * `active` is the leader's OWN turn: it has not ended yet, so the leader can
- * still be stopped. It is computed from the leader's durable member turn, never
- * from the dispatched members.
+ * `canStop` is the honest stop question, not "is the leader's own turn
+ * still running": a leader ends its turn right after dispatching, so the
+ * live work is its wake turn. The leader stays stoppable while its wake
+ * has not settled — including the window where the dispatch has not
+ * settled yet and the wake row does not exist yet.
  */
 export interface GroupDispatchLeaderPresentation {
   botId: string;
@@ -41,8 +49,13 @@ export interface GroupDispatchLeaderPresentation {
   name: string;
   /** Durable leader member turn; empty when the shape carries none. */
   memberTurnId: string;
-  /** The leader's own turn has not ended: it can still be stopped. */
-  active: boolean;
+  /** The leader (or its wake) can still be stopped. */
+  canStop: boolean;
+  /**
+   * Durable member turn the stop action cancels: the wake turn while it is
+   * queued or running, otherwise the leader's own turn.
+   */
+  stopMemberTurnId: string;
 }
 
 /** One dispatched bot inside a round. */
@@ -157,6 +170,17 @@ export const GROUP_DISPATCH_AVATAR_LIMIT = 4;
 /** Longest reply preview kept for one member row. */
 const REPLY_PREVIEW_MAX = 120;
 
+/** Durable member states that end a member turn for good. */
+const TERMINAL_MEMBER_STATES: Record<MemberTurnSummaryDto["state"], boolean> = {
+  queued: false,
+  dispatched: false,
+  running: false,
+  completed: true,
+  failed: true,
+  cancelled: true,
+  indeterminate: true,
+};
+
 /** Project a durable member state onto the aggregate row's status. */
 function dispatchStatus(state: MemberTurnSummaryDto["state"]): GroupDispatchMemberStatus {
   switch (state) {
@@ -213,12 +237,27 @@ function resolveMemberReply(
  * only.
  */
 export function presentGroupDispatch(input: GroupDispatchPresentationInput): GroupDispatchPresentation {
-  // The leader's own turn: `active` means it has not ended yet, so the
-  // leader can still be stopped. A queued or dispatched leader has not
-  // finished its turn either — it simply has not started running.
+  // The leader's own turn: `active` means it has not ended yet. A queued or
+  // dispatched leader has not finished its turn either — it simply has not
+  // started running.
   const leaderMemberTurnId = input.leader.memberTurnId ?? "";
   const leaderState = input.leader.state;
   const leaderActive = leaderState === "queued" || leaderState === "dispatched" || leaderState === "running";
+  const leaderCancellationReason = input.leader.cancellationReason;
+  // The wake turn the runtime creates for a leader whose own handoffs have
+  // all settled. It may not exist yet: the dispatch is still unsettled, and
+  // the wake row is inserted only afterwards.
+  const wake = input.leader.wake;
+  const wakeStatus = wake ? dispatchStatus(wake.state) : undefined;
+  // A wake that is queued (or merely dispatched) or running is live work.
+  const wakeLive = wakeStatus === "queued" || wakeStatus === "running";
+  const wakeSettled = wake !== undefined && TERMINAL_MEMBER_STATES[wake.state] === true;
+  // The leader can be stopped while its own turn runs, or — once that turn
+  // ended — while its wake has not settled and the leader itself was never
+  // stopped. A missing wake row is unsettled work, not a finished round.
+  const leaderCanStop = leaderActive || (leaderCancellationReason === undefined && !wakeSettled);
+  // Stop the live wake when there is one; otherwise stop the leader's own turn.
+  const leaderStopMemberTurnId = wakeLive && wake ? wake.id : leaderMemberTurnId;
   const botById = new Map<string, BotSummaryDto>();
   for (const bot of input.bots ?? []) botById.set(bot.id, bot);
   const messages = input.messages ?? [];
@@ -271,13 +310,15 @@ export function presentGroupDispatch(input: GroupDispatchPresentationInput): Gro
     members,
     counts,
     summary,
-    leaderStopped: input.leader.cancellationReason === "human-cancelled",
+    // Stop evidence on EITHER side: the leader's own turn or its wake.
+    leaderStopped: leaderCancellationReason !== undefined || wake?.cancellationReason !== undefined,
     capability: {
       canStopMember: input.supportsCancelMember,
-      // Scoped leader stop needs BOTH the core capability and the leader's
-      // durable member turn: without that id there is nothing to cancel, so
-      // the round-level stop is the only honest action.
-      leaderStopAction: input.supportsCancelMember && leaderMemberTurnId ? "leader-only" : "stop-all",
+      // Scoped leader stop needs BOTH the core capability and a durable
+      // member turn to cancel (the wake while it lives, the leader
+      // otherwise): without that id there is nothing to cancel, so the
+      // round-level stop is the only honest action.
+      leaderStopAction: input.supportsCancelMember && leaderStopMemberTurnId ? "leader-only" : "stop-all",
       anyActive: members.some((member) => member.status === "running" || member.status === "queued"),
     },
     avatars: {
@@ -294,7 +335,8 @@ export function presentGroupDispatch(input: GroupDispatchPresentationInput): Gro
       botId: input.leader.botId,
       name: botById.get(input.leader.botId)?.name ?? input.leader.botId,
       memberTurnId: leaderMemberTurnId,
-      active: leaderActive,
+      canStop: leaderCanStop,
+      stopMemberTurnId: leaderStopMemberTurnId,
     },
     runId: input.dispatches[0]?.memberTurn.runId ?? input.dispatches[0]?.message.runId ?? "",
   };

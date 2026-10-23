@@ -179,6 +179,12 @@ const dispatchGroups = computed(() => {
         && message.promptRequestId === leaderTurn.promptRequestId
         && message.content.trim().length > 0)
       : [];
+    // The wake turn the runtime creates for this leader once its own handoffs
+    // settle. It may be absent: the dispatch has not settled yet, so the
+    // wake row does not exist yet either.
+    const wakeTurn = (record?.memberTurns ?? []).find(
+      (turn) => turn.followupSenderMemberTurnId === anchor.handoff!.senderMemberTurnId,
+    );
     const presentation = presentGroupDispatch({
       leader: {
         botId: anchor.senderBotId ?? "",
@@ -186,9 +192,12 @@ const dispatchGroups = computed(() => {
         // The leader's OWN durable state: it decides whether the leader can
         // still be stopped, never the aggregate row's outcome.
         ...(leaderTurn ? { state: leaderTurn.state } : {}),
-        // Durable stop evidence: the leader turn itself was cancelled while its
-        // members kept (or finished) their own proven outcomes.
-        ...(leaderTurn?.state === "cancelled" ? { cancellationReason: "human-cancelled" as const } : {}),
+        // Durable stop evidence: the leader turn itself was stopped by the
+        // human while its members kept (or finished) their own proven
+        // outcomes. The core reports this on the DTO; its own state may still
+        // read `completed`.
+        ...(leaderTurn?.cancellationReason ? { cancellationReason: leaderTurn.cancellationReason } : {}),
+        ...(wakeTurn ? { wake: wakeTurn } : {}),
       },
       dispatches: handoffs.map((message) => ({
         message: message as ConversationMessageDto & { handoff: NonNullable<ConversationMessageDto["handoff"]> },
@@ -231,8 +240,9 @@ const dispatchRows = computed<Record<string, GroupDispatchPresentation>>(() =>
 
 /**
  * Anchor ids whose leader can still be stopped: the round's run is the live
- * one and the leader's OWN turn has not ended. A finished leader turn has
- * nothing left to cancel, so the pill disappears with it.
+ * one and the leader (or the wake turn that replaces it) still has work
+ * left. A leader whose wake already settled has nothing left to cancel, so
+ * the pill disappears with it.
  */
 const leaderStopAnchorIds = computed<Set<string>>(() => {
   const ids = new Set<string>();
@@ -240,7 +250,7 @@ const leaderStopAnchorIds = computed<Set<string>>(() => {
   // A terminal run has nothing left to cancel: the pill would offer a no-op.
   if (!active || !groupsStore.isRunActive) return ids;
   for (const group of dispatchGroups.value) {
-    if (!group.presentation.leader.active) continue;
+    if (!group.presentation.leader.canStop) continue;
     if (group.presentation.runId !== active.id) continue;
     ids.add(group.anchorId);
   }
@@ -478,12 +488,14 @@ function leaderStopLabel(presentation: GroupDispatchPresentation): string {
 /**
  * Stop the leader (项管): on a core with scoped cancellation this cancels the
  * leader's own member turn and nothing else — no confirmation, because the
- * dispatched members keep running. An older core cannot scope the cancel, so
- * the pill runs the confirmed round-level stop instead.
+ * dispatched members keep running. A leader that already ended its turn is
+ * stopped through its wake turn while that one is still live. An older core
+ * cannot scope the cancel, so the pill runs the confirmed round-level stop
+ * instead.
  */
 function handleStopLeader(presentation: GroupDispatchPresentation): void {
-  if (presentation.capability.leaderStopAction === "leader-only" && presentation.leader.memberTurnId) {
-    void handleStopMember({ runId: presentation.runId, memberTurnId: presentation.leader.memberTurnId });
+  if (presentation.capability.leaderStopAction === "leader-only" && presentation.leader.stopMemberTurnId) {
+    void handleStopMember({ runId: presentation.runId, memberTurnId: presentation.leader.stopMemberTurnId });
     return;
   }
   void handleStopAll(presentation);

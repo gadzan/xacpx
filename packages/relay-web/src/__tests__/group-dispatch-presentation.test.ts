@@ -278,4 +278,103 @@ describe("presentGroupDispatch", () => {
     expect(result.members[0]?.replyId).toBe("");
     expect(result.members[0]?.replyPreview).toBe("");
   });
+
+  it("stops the leader's own turn while the leader has not ended it", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({ state: "running" }),
+      dispatches: [entry("bot_a", "running")],
+    }));
+
+    expect(result.leader.canStop).toBe(true);
+    expect(result.leader.stopMemberTurnId).toBe("turn_leader");
+  });
+
+  it("keeps a finished leader stoppable while its wake has not settled", () => {
+    const result = presentGroupDispatch(present({
+      // The leader ended its turn right after dispatching; no wake row exists
+      // yet, so the dispatch has not settled either.
+      leader: leader({ state: "completed" }),
+      dispatches: [entry("bot_a", "running"), entry("bot_b", "queued")],
+    }));
+
+    expect(result.leader.canStop).toBe(true);
+    // No live wake: the leader's own turn is the only cancelable target.
+    expect(result.leader.stopMemberTurnId).toBe("turn_leader");
+  });
+
+  it("stops the live wake turn instead of the finished leader", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({
+        state: "completed",
+        wake: turn("bot_lead", "running", { id: "turn_wake", origin: "followup", followupSenderMemberTurnId: "turn_leader" }),
+      }),
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "completed")],
+    }));
+
+    expect(result.leader.canStop).toBe(true);
+    expect(result.leader.stopMemberTurnId).toBe("turn_wake");
+  });
+
+  it("stops a queued wake turn", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({
+        state: "completed",
+        wake: turn("bot_lead", "queued", { id: "turn_wake", origin: "followup", followupSenderMemberTurnId: "turn_leader" }),
+      }),
+      dispatches: [entry("bot_a", "completed")],
+    }));
+
+    expect(result.leader.canStop).toBe(true);
+    expect(result.leader.stopMemberTurnId).toBe("turn_wake");
+  });
+
+  it("reports the leader as stopped when its wake was stopped", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({
+        state: "completed",
+        wake: turn("bot_lead", "cancelled", {
+          id: "turn_wake",
+          origin: "followup",
+          followupSenderMemberTurnId: "turn_leader",
+          cancellationReason: "human-cancelled",
+        }),
+      }),
+      dispatches: [entry("bot_a", "completed")],
+    }));
+
+    expect(result.leaderStopped).toBe(true);
+    expect(result.leader.canStop).toBe(false);
+  });
+
+  it("drops the leader stop once the wake settled", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({
+        state: "completed",
+        wake: turn("bot_lead", "completed", { id: "turn_wake", origin: "followup", followupSenderMemberTurnId: "turn_leader" }),
+      }),
+      dispatches: [entry("bot_a", "completed")],
+    }));
+
+    expect(result.leader.canStop).toBe(false);
+    expect(result.leaderStopped).toBe(false);
+  });
+
+  it("never offers a stop for a leader that was itself stopped", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({ state: "completed", cancellationReason: "human-cancelled" }),
+      dispatches: [entry("bot_a", "running")],
+    }));
+
+    expect(result.leader.canStop).toBe(false);
+    expect(result.leaderStopped).toBe(true);
+  });
+
+  it("counts members whose outcome is unknown", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "indeterminate")],
+    }));
+
+    expect(result.counts.indeterminate).toBe(1);
+    expect(result.members[1]?.status).toBe("indeterminate");
+  });
 });

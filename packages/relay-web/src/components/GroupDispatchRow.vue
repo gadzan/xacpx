@@ -62,6 +62,8 @@ const cancelledText = computed(() => t("group.dispatch.cancelled"));
 const mixedCancelledText = computed(() => `${counts.value.cancelled} ${cancelledText.value}`);
 const failedText = computed(() => t("group.dispatch.failed", { n: counts.value.failed }));
 const showFailed = computed(() => counts.value.failed > 0);
+const indeterminateText = computed(() => t("group.dispatch.indeterminate", { n: counts.value.indeterminate }));
+const showIndeterminate = computed(() => counts.value.indeterminate > 0);
 const hasLeadingStatus = computed(
   () => isRunning.value || isDone.value || isCancelled.value || counts.value.completed > 0 || counts.value.cancelled > 0,
 );
@@ -80,6 +82,9 @@ const mobileStatusText = computed(() => {
     if (counts.value.cancelled > 0) parts.push(mixedCancelledText.value);
   }
   if (showFailed.value) parts.push(failedText.value);
+  // An unknown outcome is never folded into "done" or "failed": it is
+  // reported on its own so the reader sees the gap.
+  if (showIndeterminate.value) parts.push(indeterminateText.value);
   return parts.join(" · ");
 });
 const mobileSummaryText = computed(() =>
@@ -181,6 +186,8 @@ function stopAll(): void {
         </template>
         <span v-if="showFailed && hasLeadingStatus" aria-hidden="true" class="text-fg-muted">·</span>
         <span v-if="showFailed" data-test="group-dispatch-status-failed" class="font-medium text-danger">{{ failedText }}</span>
+        <span v-if="showIndeterminate && (hasLeadingStatus || showFailed)" aria-hidden="true" class="text-fg-muted">·</span>
+        <span v-if="showIndeterminate" data-test="group-dispatch-status-indeterminate" class="font-medium text-warning">{{ indeterminateText }}</span>
       </span>
       <ChevronDown
         v-if="!isMobile"
