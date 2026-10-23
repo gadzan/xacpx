@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
-import { isVNode, type VNode } from "vue";
+import { isVNode, nextTick, type VNode } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import {
   RELAY_CAPABILITIES,
@@ -143,6 +143,9 @@ function row(
     dispatches?: GroupDispatchEntry[];
     messages?: ConversationMessageDto[];
     supportsCancelMember?: boolean;
+    /** Attach to document.body: focus() only moves document.activeElement for
+     *  nodes in the real DOM. */
+    attachTo?: boolean;
   } = {},
 ) {
   return mount(GroupDispatchRow, {
@@ -157,6 +160,7 @@ function row(
       }),
     },
     global: { plugins: [i18n], stubs: { teleport: true } },
+    ...(over.attachTo ? { attachTo: document.body } : {}),
   });
 }
 
@@ -207,6 +211,74 @@ describe("GroupDispatchRow", () => {
     await trigger.trigger("keydown", { key: " " });
     expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(false);
     wrapper.unmount();
+  });
+  it("labels the capsule with the round, its status and the disclosure action", async () => {
+    const wrapper = row(["completed", "completed"]);
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    // The label replaces the row's visible text, so the status stays in it.
+    expect(trigger.attributes("aria-label")).toBe("Sent to 2 bots · 2 done · Show dispatch details");
+    await trigger.trigger("click");
+    expect(trigger.attributes("aria-label")).toBe("Sent to 2 bots · 2 done · Hide dispatch details");
+    await trigger.trigger("keydown", { key: "Escape" });
+    expect(trigger.attributes("aria-label")).toBe("Sent to 2 bots · 2 done · Show dispatch details");
+    wrapper.unmount();
+  });
+
+  it("localizes the capsule label", async () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["completed", "completed"]);
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    expect(trigger.attributes("aria-label")).toBe("派发给 2 个 Bot · 2 个已完成 · 展开派发详情");
+    await trigger.trigger("click");
+    expect(trigger.attributes("aria-label")).toBe("派发给 2 个 Bot · 2 个已完成 · 收起派发详情");
+    wrapper.unmount();
+  });
+
+  it("collapses the card on Escape pressed on the capsule", async () => {
+    const wrapper = row(["completed", "completed"]);
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    await trigger.trigger("click");
+    await trigger.trigger("keydown", { key: "Escape" });
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(false);
+    expect(trigger.attributes("aria-expanded")).toBe("false");
+    wrapper.unmount();
+  });
+
+  it("collapses the card on Escape from inside it and returns focus to the capsule", async () => {
+    // A member with a reply is the only enabled control in the card, so focus
+    // can actually sit inside the card the way a click or a Tab leaves it.
+    const wrapper = row([], ["bot_a", "bot_b"], {
+      dispatches: [
+        entry("bot_a", "completed", { task: "Review the diff", seq: 1, turn: { promptRequestId: "prompt_a" } }),
+        entry("bot_b", "completed", { task: "Review the diff", seq: 2, turn: { promptRequestId: "prompt_b" } }),
+      ],
+      messages: [replyMessage("bot_a", "prompt_a", "Looks good", 5)],
+      attachTo: true,
+    });
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    await trigger.trigger("click");
+    const member = wrapper.get('[data-test="group-dispatch-member"]');
+    (member.element as HTMLElement).focus();
+    expect(document.activeElement).toBe(member.element);
+
+    await member.trigger("keydown", { key: "Escape" });
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(false);
+    expect(trigger.attributes("aria-expanded")).toBe("false");
+    // Focus lands on the capsule, not on the body: the row stays the tab stop.
+    expect(document.activeElement).toBe(trigger.element);
+    wrapper.unmount();
+  });
+
+  it("keeps the card open on an Escape the row does not own", async () => {
+    const wrapper = row(["completed", "completed"], ["bot_a", "bot_b"], { attachTo: true });
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+    await trigger.trigger("click");
+    // The stop-all confirmation is a teleported overlay: it owns its Escape, and
+    // the card underneath the user must survive it.
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await nextTick();
+    expect(wrapper.find('[data-test="group-dispatch-card"]').exists()).toBe(true);
+    expect(trigger.attributes("aria-expanded")).toBe("true");
   });
 
   it("names the dispatch content exactly once", async () => {

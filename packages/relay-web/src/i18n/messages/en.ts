@@ -1170,6 +1170,8 @@ export default {
       mobileSummary: "{n} bots · {status}",
       mobileBots: "{n} bots",
       instructions: "Instructions",
+      showDetails: "Show dispatch details",
+      hideDetails: "Hide dispatch details",
       stopMember: "Stop {name}",
       stopMemberFailed: "Could not stop {msg}",
       stopLeader: "Stop {name}",

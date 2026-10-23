@@ -37,6 +37,8 @@ const { t } = useI18n();
 const expanded = ref(false);
 /** Mobile: the row opens a bottom sheet instead of the inline card. */
 const sheetOpen = ref(false);
+/** The capsule itself, so Escape can hand focus back to it. */
+const capsule = ref<HTMLButtonElement | null>(null);
 const isMobile = useIsMobile();
 const idBase = useId().replace(/[^a-zA-Z0-9_-]/g, "_");
 const cardId = `group-dispatch-card-${idBase}`;
@@ -51,6 +53,8 @@ const summary = computed(() => props.presentation.summary);
 const titleText = computed(() => total.value === 1
   ? t("group.dispatch.sentToOne", { name: props.presentation.members[0]?.name ?? "" })
   : t("group.dispatch.sentTo", { n: total.value }));
+/** Whether the row's detail surface — desktop card or mobile sheet — is open. */
+const detailsOpen = computed(() => (isMobile.value ? sheetOpen.value : expanded.value));
 const isRunning = computed(() => summary.value === "running");
 const isDone = computed(() => summary.value === "done");
 const isCancelled = computed(() => summary.value === "cancelled");
@@ -124,6 +128,45 @@ const mobileSummaryText = computed(() => {
     : t("group.dispatch.mobileBots", { n: total.value });
 });
 
+/**
+ * The desktop row's status words, without the decorative ✓/⊘ glyphs: the
+ * capsule's aria-label replaces its visible text for a screen reader, so the
+ * status has to survive in the label.
+ */
+const desktopStatusText = computed(() => {
+  const parts: string[] = [];
+  if (isRunning.value) parts.push(activeText.value);
+  else if (isDone.value) parts.push(doneText.value);
+  else if (isCancelled.value) parts.push(cancelledText.value);
+  else {
+    if (counts.value.completed > 0) parts.push(donePartialText.value);
+    if (counts.value.cancelled > 0) parts.push(mixedCancelledText.value);
+  }
+  if (showFailed.value) parts.push(failedText.value);
+  if (showIndeterminate.value) parts.push(indeterminateText.value);
+  return parts.join(" · ");
+});
+
+/**
+ * The row's own words as a screen reader reads them: the round, then the
+ * round's status. The capsule's aria-label replaces its visible text, so
+ * both parts have to survive in the label.
+ */
+const rowText = computed(() => {
+  const status = isMobile.value ? mobileStatusText.value : desktopStatusText.value;
+  return status ? `${titleText.value} · ${status}` : titleText.value;
+});
+
+/**
+ * The capsule's accessible name: the round the row already shows, plus the
+ * disclosure action it has no visible room for. `aria-expanded` carries the
+ * state; this carries what activating the capsule does.
+ */
+const capsuleLabel = computed(() => {
+  const action = detailsOpen.value ? t("group.dispatch.hideDetails") : t("group.dispatch.showDetails");
+  return `${rowText.value} · ${action}`;
+});
+
 /** Mobile opens the sheet; desktop toggles the inline card. */
 function toggle(): void {
   if (isMobile.value) {
@@ -131,6 +174,22 @@ function toggle(): void {
     return;
   }
   expanded.value = !expanded.value;
+}
+
+/**
+ * Escape collapses the desktop card and returns focus to the capsule, wherever
+ * inside the card focus had moved to. The handler sits on the row's own subtree
+ * (capsule + card), so an overlay the card opens — the stop-all confirmation —
+ * keeps ownership of its own Escape.
+ *
+ * Mobile is left alone: the bottom sheet owns Escape through the shared modal
+ * stack, which skips a keydown that was already default-prevented.
+ */
+function onEscapeKeydown(e: KeyboardEvent): void {
+  if (isMobile.value) return;
+  e.preventDefault();
+  capsule.value?.focus();
+  expanded.value = false;
 }
 
 /** A member's own state, worded like the rest of the group transcript. */
@@ -165,14 +224,17 @@ function stopAll(): void {
   <div class="min-w-0">
     <button
       type="button"
+      ref="capsule"
       data-test="group-dispatch-row"
       :aria-expanded="isMobile ? sheetOpen : expanded"
+      :aria-label="capsuleLabel"
       :aria-controls="isMobile ? sheetId : cardId"
       :aria-haspopup="isMobile ? 'dialog' : undefined"
       class="flex min-w-0 items-center gap-2 rounded-lg bg-surface px-2.5 py-2 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       @click="toggle"
       @keydown.enter.prevent="toggle"
       @keydown.space.prevent="toggle"
+      @keydown.esc="onEscapeKeydown"
     >
       <div data-test="group-dispatch-avatars" class="flex shrink-0 items-center" aria-hidden="true">
         <span
@@ -253,6 +315,7 @@ function stopAll(): void {
       :id="cardId"
       data-test="group-dispatch-card"
       class="mt-2 max-w-[560px] rounded-xl bg-surface p-3 text-xs"
+      @keydown.esc="onEscapeKeydown"
     >
       <p data-test="group-dispatch-instructions-label" class="text-fg-muted">{{ t("group.dispatch.instructions") }}</p>
       <p data-test="group-dispatch-instructions" class="mt-1 line-clamp-2 text-fg">{{ presentation.instructions }}</p>

@@ -214,16 +214,29 @@ test("the dispatch details open from the keyboard and stay within the viewport w
     await expect(row).toHaveAttribute("aria-expanded", "false");
     await expect(row).toBeFocused();
   } else {
-    await page.keyboard.press("Space");
+    // Desktop: Escape collapses the card and hands focus back to the capsule,
+    // wherever inside the card focus had moved to.
+    await page.getByTestId("group-dispatch-member").first().focus();
+    await page.keyboard.press("Escape");
     await expect(view.surface).toHaveCount(0);
     await expect(row).toHaveAttribute("aria-expanded", "false");
+    await expect(row).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(view.surface).toBeVisible();
+    await expect(row).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press("Escape");
+    await expect(view.surface).toHaveCount(0);
+    await expect(row).toHaveAttribute("aria-expanded", "false");
+    await expect(row).toBeFocused();
   }
 });
 
 test("the dispatch content is localized", async ({ page, isMobile }) => {
   await openGroup(page, "zh-CN");
-  await page.getByTestId("group-dispatch-row").click();
   const view = details(page, isMobile);
+  await expect(page.getByTestId("group-dispatch-row")).toHaveAccessibleName("派发给 2 个 Bot · 1 执行中 · 展开派发详情");
+  await page.getByTestId("group-dispatch-row").click();
+  await expect(page.getByTestId("group-dispatch-row")).toHaveAccessibleName("派发给 2 个 Bot · 1 执行中 · 收起派发详情");
   await expect(view.label).toHaveText("派发内容");
   await expect(view.members.nth(0).getByTestId(view.status)).toHaveText("已完成");
   await expect(view.members.nth(1).getByTestId(view.status)).toHaveText("执行中");

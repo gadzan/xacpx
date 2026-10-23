@@ -1167,6 +1167,8 @@ export default {
       mobileSummary: "{n} 个 Bot · {status}",
       mobileBots: "{n} 个 Bot",
       instructions: "派发内容",
+      showDetails: "展开派发详情",
+      hideDetails: "收起派发详情",
       stopMember: "停止{name}",
       stopMemberFailed: "停止失败：{msg}",
       stopLeader: "停止{name}",
