@@ -245,11 +245,14 @@ function stopAll(): void {
       />
     </button>
 
+    <!-- Aggregate card: the 12px dialog radius token (tailwind default
+         rounded-xl; only sm/lg/2xl are overridden in tailwind.config.js),
+         not the 16px rounded-2xl card token. -->
     <div
       v-if="expanded"
       :id="cardId"
       data-test="group-dispatch-card"
-      class="mt-2 max-w-[560px] rounded-2xl bg-surface p-3 text-xs"
+      class="mt-2 max-w-[560px] rounded-xl bg-surface p-3 text-xs"
     >
       <p data-test="group-dispatch-instructions-label" class="text-fg-muted">{{ t("group.dispatch.instructions") }}</p>
       <p data-test="group-dispatch-instructions" class="mt-1 line-clamp-2 text-fg">{{ presentation.instructions }}</p>

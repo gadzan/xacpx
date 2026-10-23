@@ -190,6 +190,14 @@ describe("GroupDispatchRow", () => {
     expect(wrapper.get('[data-test="group-dispatch-chevron"]').classes()).not.toContain("rotate-180");
     wrapper.unmount();
   });
+  it("renders the aggregate card with the 12px dialog radius token", async () => {
+    const wrapper = row(["completed", "completed"]);
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    const card = wrapper.get('[data-test="group-dispatch-card"]');
+    expect(card.classes()).toContain("rounded-xl");
+    expect(card.classes()).not.toContain("rounded-2xl");
+    wrapper.unmount();
+  });
 
   it("opens the card from the keyboard", async () => {
     const wrapper = row(["completed", "completed"]);
