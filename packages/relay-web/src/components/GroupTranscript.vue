@@ -598,6 +598,13 @@ async function handleLoadOlder(): Promise<void> {
                 v-if="dispatchRows[item.message.id]"
                 :presentation="dispatchRows[item.message.id]!"
               />
+              <p
+                v-if="dispatchRows[item.message.id]?.leaderStopped"
+                data-test="group-dispatch-stopped"
+                class="mt-1 text-xs text-fg-muted"
+              >
+                {{ $t("group.dispatch.stopped") }}
+              </p>
               <GroupHandoffEntry
                 v-else
                 :message="item.message"
@@ -644,9 +651,10 @@ async function handleLoadOlder(): Promise<void> {
           </TranscriptRow>
         </template>
 
-        <!-- Canonical bubble-anchored reply: bubble above the reply body -->
-        <GroupAgentTurnRow
-          v-else-if="item.kind === 'message' && item.bubbleAnchor && item.memberTurn"
+        <!-- Canonical bubble-anchored reply: bubble above the reply body.
+             A leader's own reply can own the aggregate row: it renders below. -->
+        <template v-else-if="item.kind === 'message' && item.bubbleAnchor && item.memberTurn">
+          <GroupAgentTurnRow
           :key="item.key"
           :member-turn="item.memberTurn"
           :bot="item.memberTurn.botId ? botById[item.memberTurn.botId] : undefined"
@@ -659,6 +667,17 @@ async function handleLoadOlder(): Promise<void> {
           :disabled="item.memberTurn.botId ? botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false : false"
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
         />
+          <div v-if="dispatchRows[item.message.id]" class="mx-auto w-full max-w-3xl">
+            <GroupDispatchRow :presentation="dispatchRows[item.message.id]!" />
+            <p
+              v-if="dispatchRows[item.message.id]?.leaderStopped"
+              data-test="group-dispatch-stopped"
+              class="mt-1 text-xs text-fg-muted"
+            >
+              {{ $t("group.dispatch.stopped") }}
+            </p>
+          </div>
+        </template>
         <!-- Projection order keeps activity, routing and unresolved rows at their owning request. -->
         <div v-else-if="item.kind === 'member-activity'"
           :data-member-turn-id="item.memberTurn.id"
