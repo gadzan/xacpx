@@ -21,7 +21,6 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { supportsRunsCancelMember, useInstancesStore } from "../stores/instances";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
-import GroupHandoffEntry from "./GroupHandoffEntry.vue";
 import GroupDispatchRow from "./GroupDispatchRow.vue";
 import GroupDispatchLeaderStop from "./GroupDispatchLeaderStop.vue";
 import ConversationBubble from "./ConversationBubble.vue";
@@ -144,8 +143,8 @@ const supportsCancelMember = computed(() => {
 });
 
 /** Handoff groups of one leader round: same conversation, topic, run and
- *  issuing leader turn (`senderMemberTurnId`). Only rounds with more than one
- *  handoff aggregate — a lone dispatch keeps its expandable handoff entry. */
+ *  issuing leader turn (`senderMemberTurnId`). Every round aggregates —
+ *  a lone dispatch renders the same aggregate row as a fan-out round. */
 const dispatchGroups = computed(() => {
   const messages = [...groupsStore.messages].sort((a, b) => a.seq - b.seq);
   const byLeader = new Map<string, ConversationMessageDto[]>();
@@ -164,7 +163,6 @@ const dispatchGroups = computed(() => {
   }
   const groups: { handoffs: ConversationMessageDto[]; anchorId: string; presentation: GroupDispatchPresentation }[] = [];
   for (const handoffs of byLeader.values()) {
-    if (handoffs.length < 2) continue;
     const anchor = handoffs[0]!;
     const record = anchor.runId ? runRecords.value[anchor.runId] : undefined;
     const turnById = new Map((record?.memberTurns ?? []).map((turn) => [turn.id, turn]));
@@ -721,37 +719,27 @@ async function handleLoadOlder(): Promise<void> {
             </template>
 
             <template v-else-if="item.message.handoff">
-              <template v-if="dispatchRows[item.message.id]">
-                <GroupDispatchRow
-                  :presentation="dispatchRows[item.message.id]!"
-                  @jump="jumpToMessage"
-                  @stop-member="handleStopMember"
-                  @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
-                />
-                <GroupDispatchLeaderStop
-                  v-if="leaderStopAnchorIds.has(item.message.id)"
-                  :label="leaderStopLabel(dispatchRows[item.message.id]!)"
-                  @stop="handleStopLeader(dispatchRows[item.message.id]!)"
-                />
-                <p
-                  v-if="showsStoppedNote(dispatchRows[item.message.id])"
-                  data-test="group-dispatch-stopped"
-                  class="mt-1 text-xs text-fg-muted"
-                >
-                  {{ $t("group.dispatch.stopped") }}
-                </p>
-              </template>
-              <GroupHandoffEntry
-                v-else
-                :message="item.message"
-                :from-name="senderName(item.message.senderBotId)"
-                :to-name="senderName(item.message.handoff.to)"
-                :from-driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
-                :to-driver="driverForBot(item.message.handoff.to)"
-                :from-avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
-                :to-avatar="botById[item.message.handoff.to]?.avatar"
+              <!-- Every handoff belongs to exactly one round, so the row is
+                   always there: the round renders in place of its anchor
+                   handoff, and every other handoff of the round collapses. -->
+              <GroupDispatchRow
+                :presentation="dispatchRows[item.message.id]!"
                 @jump="jumpToMessage"
+                @stop-member="handleStopMember"
+                @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
               />
+              <GroupDispatchLeaderStop
+                v-if="leaderStopAnchorIds.has(item.message.id)"
+                :label="leaderStopLabel(dispatchRows[item.message.id]!)"
+                @stop="handleStopLeader(dispatchRows[item.message.id]!)"
+              />
+              <p
+                v-if="showsStoppedNote(dispatchRows[item.message.id])"
+                data-test="group-dispatch-stopped"
+                class="mt-1 text-xs text-fg-muted"
+              >
+                {{ $t("group.dispatch.stopped") }}
+              </p>
             </template>
 
             <template v-else-if="item.message.role === 'system'">

@@ -46,6 +46,11 @@ const total = computed(() => props.presentation.members.length);
 const counts = computed(() => props.presentation.counts);
 const summary = computed(() => props.presentation.summary);
 
+/** The row's own name for the round: a lone dispatch names its bot, a
+ *  fan-out round counts its bots. */
+const titleText = computed(() => total.value === 1
+  ? t("group.dispatch.sentToOne", { name: props.presentation.members[0]?.name ?? "" })
+  : t("group.dispatch.sentTo", { n: total.value }));
 const isRunning = computed(() => summary.value === "running");
 const isDone = computed(() => summary.value === "done");
 const isCancelled = computed(() => summary.value === "cancelled");
@@ -90,11 +95,16 @@ const mobileStatusText = computed(() => {
   if (showIndeterminate.value) parts.push(indeterminateText.value);
   return parts.join(" · ");
 });
-const mobileSummaryText = computed(() =>
-  mobileStatusText.value
+const mobileSummaryText = computed(() => {
+  // A lone dispatch keeps the round's own name; only a fan-out round is
+  // counted, because the count is what tells the bots apart.
+  if (total.value === 1) {
+    return mobileStatusText.value ? `${titleText.value} · ${mobileStatusText.value}` : titleText.value;
+  }
+  return mobileStatusText.value
     ? t("group.dispatch.mobileSummary", { n: total.value, status: mobileStatusText.value })
-    : t("group.dispatch.mobileBots", { n: total.value }),
-);
+    : t("group.dispatch.mobileBots", { n: total.value });
+});
 
 /** Mobile opens the sheet; desktop toggles the inline card. */
 function toggle(): void {
@@ -107,7 +117,7 @@ function toggle(): void {
 
 /** A member's own state, worded like the rest of the group transcript. */
 function memberStatusText(status: GroupDispatchPresentation["members"][number]["status"]): string {
-  return t(`group.handoff.states.${status}`);
+  return t(`group.dispatch.states.${status}`);
 }
 
 /**
@@ -169,7 +179,7 @@ function stopAll(): void {
         class="min-w-0 flex-1 truncate whitespace-nowrap text-xs font-medium text-fg"
       >{{ mobileSummaryText }}</span>
       <span v-else data-test="group-dispatch-title" class="shrink-0 text-xs font-medium text-fg">
-        {{ t("group.dispatch.sentTo", { n: total }) }}
+        {{ titleText }}
       </span>
       <span v-if="!isMobile" data-test="group-dispatch-status" class="flex min-w-0 flex-wrap items-center gap-x-1 text-xs">
         <template v-if="isRunning">
@@ -268,7 +278,7 @@ function stopAll(): void {
       :id="sheetId"
       height="tall"
       test-id="group-dispatch-sheet"
-      :title="t('group.dispatch.sentTo', { n: total })"
+      :title="titleText"
       @close="sheetOpen = false"
     >
       <p data-test="group-dispatch-sheet-instructions-label" class="px-2 pt-1 text-xs text-fg-muted">

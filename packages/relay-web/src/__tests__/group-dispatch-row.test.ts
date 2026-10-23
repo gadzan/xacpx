@@ -307,6 +307,32 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
+  it("names the lone dispatched bot instead of counting it", () => {
+    const wrapper = row(["running"], ["bot_a"]);
+    expect(wrapper.get('[data-test="group-dispatch-title"]').text()).toBe("Sent to Reviewer");
+    // The status count and the stop action are the same as for a fan-out round.
+    expect(wrapper.get('[data-test="group-dispatch-status-active"]').text()).toBe("1 running");
+    wrapper.unmount();
+  });
+
+  it("names the lone dispatched bot in Chinese", () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["queued"], ["bot_b"]);
+    expect(wrapper.get('[data-test="group-dispatch-title"]').text()).toBe("派发给 Tester");
+    wrapper.unmount();
+  });
+
+  it("keeps the lone dispatch's stop and card identical to a fan-out round", async () => {
+    const wrapper = row(["running"], ["bot_a"], { supportsCancelMember: true });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    const members = wrapper.findAll('[data-test="group-dispatch-member"]');
+    expect(members).toHaveLength(1);
+    expect(members[0]!.get('[data-test="group-dispatch-member-name"]').text()).toBe("Reviewer");
+    expect(members[0]!.get('[data-test="group-dispatch-member-status"]').text()).toBe("Running");
+    expect(wrapper.findAll('[data-test="group-dispatch-stop-member"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   it("draws the member stop action as a filled square", async () => {
     const wrapper = row(["running"], ["bot_a"], { supportsCancelMember: true });
     await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
@@ -670,13 +696,55 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 
-  it("keeps a lone handoff as its own expandable entry", async () => {
-    seedTranscript([handoffMessage(1)], [memberTurn("turn_a", "bot_a", "completed")]);
+  it("aggregates a lone dispatch into the same row as a fan-out round", async () => {
+    seedTranscript(
+      [handoffMessage(1)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+      ],
+    );
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
-    expect(wrapper.findAll('[data-test="group-dispatch-row"]')).toHaveLength(0);
-    expect(wrapper.findAll('[data-test="group-handoff"]')).toHaveLength(1);
-    expect(wrapper.find('[data-test="group-handoff-toggle"]').exists()).toBe(true);
+    const rows = wrapper.findAll('[data-test="group-dispatch-row"]');
+    expect(rows).toHaveLength(1);
+    // The lone dispatch names its bot instead of counting it.
+    expect(rows[0]!.get('[data-test="group-dispatch-title"]').text()).toBe("Sent to Tester");
+    expect(rows[0]!.text()).toContain("1 running");
+    // The old per-handoff entry is gone: the row is the only entry point.
+    expect(wrapper.find('[data-test="group-handoff"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("collapses a lone dispatch into the leader's own row", async () => {
+    seedTranscript(
+      [
+        {
+          id: "msg_1",
+          conversationId: "group_1",
+          topicId: "topic_1",
+          runId: "run_1",
+          seq: 1,
+          role: "bot",
+          senderBotId: "bot_a",
+          promptRequestId: "prompt_leader",
+          content: "Dispatching one review",
+          createdAt: "now",
+        },
+        handoffMessage(1),
+      ],
+      [
+        { ...memberTurn("turn_a", "bot_a", "running"), promptRequestId: "prompt_leader" },
+        memberTurn("turn_member_1", "bot_b", "queued"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(wrapper.findAll('[data-test="group-dispatch-row"]')).toHaveLength(1);
+    // The handoff itself collapses: the round renders below the leader bubble.
+    expect(wrapper.find('[data-message-id="handoff_1"]').exists()).toBe(false);
+    const leaderRow = wrapper.get('[data-message-id="msg_1"]');
+    expect(leaderRow.element.parentElement?.textContent ?? "").toContain("Sent to Tester");
     wrapper.unmount();
   });
 
@@ -1135,6 +1203,19 @@ describe("GroupDispatchRow on mobile", () => {
     i18n.global.locale.value = "zh-CN";
     const wrapper = row(["running", "running", "completed", "completed"]);
     expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("4 个 Bot · 2 执行中");
+    wrapper.unmount();
+  });
+
+  it("names the lone dispatched bot in the mobile summary", () => {
+    const wrapper = row(["running"], ["bot_a"]);
+    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("Sent to Reviewer · 1 running");
+    wrapper.unmount();
+  });
+
+  it("names the lone dispatched bot in the Chinese mobile summary", () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["running"], ["bot_a"]);
+    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("派发给 Reviewer · 1 执行中");
     wrapper.unmount();
   });
 

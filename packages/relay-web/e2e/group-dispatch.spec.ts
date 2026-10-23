@@ -328,6 +328,56 @@ async function openRound(page: Page, locale = "en", messages = roundInitial) {
   return roundHistory;
 }
 
+
+// A round with exactly one dispatched member: the same aggregate row, with
+// the lone bot named instead of counted.
+const soloScope = { conversationId: "group_solo", topicId: "topic_solo", createdAt };
+const soloBots = [{ id: "tester", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: createdAt }];
+const soloGroup = { id: soloScope.conversationId, kind: "group", title: "Solo team", botIds: soloBots.map((bot) => bot.id), leadBotId: "tester", createdAt, updatedAt: createdAt };
+const soloTopic = { id: soloScope.topicId, conversationId: soloScope.conversationId, title: "Solo", status: "active", createdAt, updatedAt: createdAt };
+const soloRun: ConversationRunDetailDto = {
+  ...soloScope, id: "run_solo", requestMessageId: "request_solo", requestId: "solo", mode: "explicit", state: "running", profileRevision: 1,
+  memberTurns: [
+    { ...soloScope, id: "turn_solo_lead", runId: "run_solo", botId: "tester", batch: 0, attempt: 1, origin: "human-explicit", state: "running", promptRequestId: "prompt_solo_lead" },
+    { ...soloScope, id: "turn_solo_member", runId: "run_solo", botId: "tester", batch: 1, attempt: 1, origin: "handoff", state: "running" },
+  ],
+};
+const soloHandoff: ConversationMessageDto = {
+  ...soloScope, id: "handoff_solo", seq: 2, runId: soloRun.id, role: "system", senderBotId: "tester", content: "",
+  handoff: {
+    senderMemberTurnId: "turn_solo_lead", to: "tester", assignmentId: "assignment_solo",
+    memberTurnId: "turn_solo_member", task: "Review the solo diff",
+  },
+};
+
+async function openSoloRound(page: Page, locale = "en") {
+  // No leader reply is loaded, so the round anchors at its own handoff.
+  const history: ConversationMessageDto[] = [soloHandoff];
+  await page.addInitScript((value) => localStorage.setItem("relay-locale", value), locale);
+  await page.route("**/api/instances/i1/rpc", async (route) => {
+    const { type, payload } = route.request().postDataJSON();
+    let result: unknown;
+    switch (type) {
+      case "control.bots.list": result = { bots: soloBots }; break;
+      case "control.groups.list": result = { groups: [soloGroup] }; break;
+      case "control.groups.get": result = { group: { ...soloGroup, topics: [soloTopic] } }; break;
+      case "control.topics.list": result = { topics: [soloTopic] }; break;
+      case "control.conversation.history": {
+        result = { ...soloScope, messages: history, oldestSeq: 2, newestSeq: 2, hasMoreBefore: false, hasMoreAfter: false };
+        break;
+      }
+      case "control.runs.list": result = { runs: [soloRun], activeRunId: soloRun.id, activeRun: soloRun }; break;
+      case "control.runs.get": result = { run: soloRun }; break;
+      case "control.runs.details.batch": result = { runs: payload.runIds.includes(soloRun.id) ? [soloRun] : [] }; break;
+      default: return route.fallback();
+    }
+    await route.fulfill({ json: { result } });
+  });
+  await loginAndShowInstances(page);
+  await page.getByTestId("instance-nav-groups").click();
+  await page.getByTestId("group-row").first().getByRole("button").first().click();
+  await expect(page.getByTestId("group-transcript-scroller")).toBeVisible();
+}
 for (const locale of ["en", "zh-CN"]) {
   test(`a handoff round stays compact and associates only exact results in ${locale}`, async ({ page, isMobile }, info) => {
     await openRound(page, locale);
@@ -426,6 +476,34 @@ for (const locale of ["en", "zh-CN"]) {
     await page.locator('[data-message-id="handoff_first"]').getByTestId("group-dispatch-row").click();
     await expect(page.locator('[data-test="group-dispatch-member"][data-member-turn-id="turn_second"]').getByTestId("group-dispatch-member-preview"))
       .toHaveText("SECOND ASSIGNMENT RESULT");
+  });
+}
+
+for (const locale of ["en", "zh-CN"]) {
+  test(`a lone dispatch renders the same aggregate row in ${locale}`, async ({ page, isMobile }) => {
+    await openSoloRound(page, locale);
+    const anchor = page.locator('[data-message-id="handoff_solo"]');
+    const row = anchor.getByTestId("group-dispatch-row");
+    const view = details(page, isMobile);
+    // The old per-handoff entry is gone: the round has exactly one row.
+    await expect(row).toHaveCount(1);
+    await expect(page.getByTestId("group-handoff")).toHaveCount(0);
+    // A lone dispatch names its bot instead of counting it.
+    const title = locale === "en" ? "Sent to Tester" : "派发给 Tester";
+    const active = locale === "en" ? "1 running" : "1 执行中";
+    if (isMobile) {
+      await expect(row.getByTestId("group-dispatch-summary")).toContainText(title);
+      await expect(row.getByTestId("group-dispatch-summary")).toContainText(active);
+    } else {
+      await expect(row.getByTestId("group-dispatch-title")).toHaveText(title);
+      await expect(row.getByTestId("group-dispatch-status-active")).toHaveText(active);
+    }
+    await row.click();
+    // The card holds exactly one member row.
+    await expect(view.members).toHaveCount(1);
+    await expect(view.members.nth(0).getByTestId(view.name)).toHaveText("Tester");
+    await expect(view.members.nth(0).getByTestId(view.status)).toHaveText(locale === "en" ? "Running" : "执行中");
+    await expect(view.members.nth(0)).toHaveAttribute("data-member-turn-id", "turn_solo_member");
   });
 }
 

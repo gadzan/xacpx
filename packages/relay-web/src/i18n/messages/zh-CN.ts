@@ -1143,19 +1143,7 @@ export default {
       requestMissing: "此活动的对应请求不在已加载的转录范围内，因此无法证明归属。",
       requestMismatch: "该成员回合记录的请求与范围内的人工消息不一致，因此未合并显示。",
     },
-    handoff: {
-      label: "通信：{from} 发给 {to}",
-      from: "发送方",
-      to: "接收方",
-      task: "任务",
-      expected: "期望结果",
-      result: "结果",
-      state: "状态",
-      collapse: "收起通信详情",
-      jump: "跳转到回复",
-      loading: "正在加载通信详情...",
-      detailsUnavailable: "详情不可用",
-      resultUnavailable: "结果不可用",
+    dispatch: {
       states: {
         queued: "排队中",
         dispatched: "已派发",
@@ -1165,9 +1153,8 @@ export default {
         cancelled: "已取消",
         indeterminate: "结果未知",
       },
-    },
-    dispatch: {
       sentTo: "派发给 {n} 个 Bot",
+      sentToOne: "派发给 {name}",
       running: "{n} 执行中",
       queued: "{n} 排队中",
       done: "{n} 个已完成",

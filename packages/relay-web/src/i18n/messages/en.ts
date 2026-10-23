@@ -1146,19 +1146,7 @@ export default {
       requestMissing: "The owning request for this activity is not in the loaded transcript, so ownership is not provable from this window.",
       requestMismatch: "This member turn's recorded request does not match any in-range human message, so it is shown without a merge.",
     },
-    handoff: {
-      label: "Communication: {from} to {to}",
-      from: "From",
-      to: "To",
-      task: "Task",
-      expected: "Expected",
-      result: "Result",
-      state: "State",
-      collapse: "Collapse communication",
-      jump: "Go to reply",
-      loading: "Loading communication details...",
-      detailsUnavailable: "Details not available",
-      resultUnavailable: "Result not available",
+    dispatch: {
       states: {
         queued: "Queued",
         dispatched: "Dispatched",
@@ -1168,9 +1156,8 @@ export default {
         cancelled: "Cancelled",
         indeterminate: "Outcome unknown",
       },
-    },
-    dispatch: {
       sentTo: "Sent to {n} bots",
+      sentToOne: "Sent to {name}",
       running: "{n} running",
       queued: "{n} queued",
       done: "{n} done",

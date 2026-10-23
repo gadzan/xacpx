@@ -979,18 +979,6 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 自动协作每轮按已有结果选择下一步行动和合适成员，支持分析、执行、验证、修正和结束；无需用户描述人员安排。简单问答可以直接完成，产出类任务需要验证最新结果。已有结果后的路由不确定或无进展会显示 waiting-human；预算耗尽仍是失败。公开指派卡的任务与 routingReason 展示当前行动，后续行动沿用同一 Run，不要求所有成员都发言。详见[通用协作策略](conversation-runtime.md#bundled-adaptive-collaboration)。
 
-### Group 公开交接入口（PR #411）
-
-`GroupTranscript.vue` 在公开 `group_send` 消息的原始位置渲染 `GroupHandoffEntry.vue`。默认只显示两个重叠的 24px Bot 身份头像（未配置时回退 Agent 图标），重叠 8px，按钮触控高度 44px；双头像始终静态。不会额外显示行头像或说话人文本。Enter、Space 或点击展开详情，Escape 或收起按钮关闭并恢复焦点。名称与头像使用当前 Bot 资料，已移除或不可用的 Bot 保留资料或现有名称 / ID 回退。
-
-详情包含发送方、接收方、任务、可选期望输出和目标 MemberTurn 的实际状态。`indeterminate` 显示为结果未知。任务和结果预览通过 Vue 文本插值渲染。结果最多预览 240 个 UTF-16 单位，并可跳到已有的原始回复。
-
-结果跳转给目标消息设置 `tabindex="-1"` 并转移焦点，再定位视口。后续 Tab 从目标消息内的操作继续，不返回交接面板。只有被跳转到的消息获得程序化焦点能力，不增加消息行的常规 Tab 停靠点。
-
-结果关联必须满足 `handoff.memberTurnId`、Conversation、Topic、Run、Bot 和非冲突 assignment 身份，再通过 MemberTurn 的 `promptRequestId` 找到唯一的后续 Bot 回复。没有精确证据、存在歧义或结果不在已加载历史中时，显示结果不可用，不按同 Bot 或消息位置猜测。
-
-`groups.loadHandoffRunDetail()` 按需查询历史 `runs.get`。只读缓存按实例、Conversation、Topic、Run 隔离，最多保留 20 个详情，同 Run 的并发请求合并。切换选择、相关事件、重连或删除使缓存失效，并丢弃迟到响应。`handoffDetailRevision` 通知已展开组件重新读取。此路径不更新 active Run、composer、取消状态、计划或历史游标。普通 `agent_send` 和私聊消息不会复制到 Group。
-
 ### Group Agent 思考气泡（PR #447）
 
 多 Agent 群组话题不再渲染底部的 Collaboration Run 卡片。每个真实 MemberTurn 在
@@ -1047,11 +1035,16 @@ Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌�
 
 ### Group 派发聚合行与展开卡片（PR #469）
 
-项管（leader）同一轮发出的多个派发不再各占一行，而是在 `GroupTranscript.vue` 里聚合成一行
+项管（leader）同一轮发出的派发不再各占一行，而是在 `GroupTranscript.vue` 里聚合成一行
 `GroupDispatchRow.vue`：叠放的 Bot 头像、派发数量和该轮的聚合状态。聚合由纯函数
 `lib/group-dispatch-presentation.ts` 的 `presentGroupDispatch()` 计算，只读地投影已有的
 durable MemberTurn 与消息，不写 activeRun、不触发服务端调度。项管自己被停止时，聚合状态
 仍按各成员已证明的结果计算，另输出 `leaderStopped` 供上层显示停止说明。
+
+一轮只有一个成员时同样走聚合行，不再有单独的单条派发条目：折叠行标题按成员数分两种
+措辞，多个成员写「派发给 N 个 Bot」/`Sent to N bots`，单个成员直接点名
+「派发给 {name}」/`Sent to {name}`（`group.dispatch.sentToOne`）。状态计数与 ■ 停止按钮
+和多条时完全一致，展开卡片里也只有那一个成员行。
 
 聚合状态的中文措辞按摘要区分：进行中把 queued 读作「排队中」；整轮全部完成才写
 「✓ N 个已完成」；只有部分完成（还有取消、失败或结果未知）时写紧凑的「✓ N 已完成」，
@@ -1062,7 +1055,7 @@ durable MemberTurn 与消息，不写 activeRun、不触发服务端调度。项
 handoff 的 task，两行截断；标题整轮只出现一次。卡片标题与折叠箭头旋转由 `aria-expanded`
 和 `aria-controls` 暴露。
 
-随后每个被派发的 Bot 一行：头像、名字、状态（复用 `group.handoff.states.*` 的既有措辞）、
+随后每个被派发的 Bot 一行：头像、名字、状态（复用 `group.dispatch.states.*` 的既有措辞）、
 以及一行回复预览。没有回复的成员不显示预览行。
 
 行的身份是 MemberTurn，不是 Bot：同一个 Bot 在一轮里被派发两次时是两个成员行，两行
