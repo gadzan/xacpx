@@ -132,6 +132,8 @@ import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
+import { WorkspaceRemovalRefusedError } from "./control/workspace-removal";
+import { sameWorkspacePath } from "./commands/workspace-path";
 import { listAgentCatalog } from "./config/agent-catalog";
 import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
@@ -2040,6 +2042,42 @@ export async function buildApp(
       return patch;
     }
   };
+  // Workspace deletion shared by the direct remove and the transaction remove.
+  // Runs under C (configMutationMutex, held by both callers) and takes S
+  // (stateMutex) itself, so the occupancy check and the removal share one
+  // S section: sessions bind to a workspace name holding only S, and no other
+  // holder may bind between the check and the delete. Disk IO (configStore)
+  // runs inside S; this path serves operator deletes and Bot rollback only, so
+  // the brief state stall is acceptable.
+  const removeWorkspaceUnderStateLock = async (name: string, expectedCwd?: string): Promise<void> => {
+    await stateMutex.run(async () => {
+      if (sessions.isWorkspaceInUse(name)) {
+        const users = [
+          ...sessions.aliasesUsingWorkspace(name),
+          ...sessions.workerBindingsUsingWorkspace(name),
+        ];
+        throw new WorkspaceRemovalRefusedError(
+          "in_use",
+          name,
+          `workspace "${name}" is still used by sessions: ${users.join(", ")}; remove those sessions first`,
+        );
+      }
+      if (expectedCwd !== undefined) {
+        const registered = config.workspaces[name];
+        if (!registered || !sameWorkspacePath(registered.cwd, expectedCwd)) {
+          throw new WorkspaceRemovalRefusedError(
+            "cwd_mismatch",
+            name,
+            `workspace "${name}" no longer points at the expected directory; leaving it alone`,
+          );
+        }
+      }
+      const updated = await configStore.removeWorkspace(name);
+      publishLiveConfig(updated);
+      controlEvents.emit({ type: "workspaces-changed" });
+    });
+  };
+
   const control = new ControlService({
     logger,
     agent,
@@ -2155,21 +2193,8 @@ export async function buildApp(
           return { name, cwd, ...(description ? { description } : {}) };
         });
       },
-      remove: async (name) => {
-        const users = [
-          ...sessions.aliasesUsingWorkspace(name),
-          ...sessions.workerBindingsUsingWorkspace(name),
-        ];
-        if (users.length > 0) {
-          throw new Error(
-            `workspace "${name}" is still used by sessions: ${users.join(", ")}; remove those sessions first`,
-          );
-        }
-        await configMutationMutex.run(async () => {
-          const updated = await configStore.removeWorkspace(name);
-          publishLiveConfig(updated);
-          controlEvents.emit({ type: "workspaces-changed" });
-        });
+      remove: async (name, expectedCwd) => {
+        await configMutationMutex.run(() => removeWorkspaceUnderStateLock(name, expectedCwd));
       },
       transaction: (fn) => configMutationMutex.run(() => fn({
         list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace })),
@@ -2179,10 +2204,8 @@ export async function buildApp(
           controlEvents.emit({ type: "workspaces-changed" });
           return { name, cwd, ...(description ? { description } : {}) };
         },
-        remove: async (name) => {
-          const updated = await configStore.removeWorkspace(name);
-          publishLiveConfig(updated);
-          controlEvents.emit({ type: "workspaces-changed" });
+        remove: async (name, expectedCwd) => {
+          await removeWorkspaceUnderStateLock(name, expectedCwd);
         },
       })),
     },

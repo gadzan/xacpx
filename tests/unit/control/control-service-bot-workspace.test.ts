@@ -12,6 +12,7 @@ import {
   createProductionOwnedSessionRelease,
 } from "../../../src/conversations/conversation-composition";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
+import { WorkspaceRemovalRefusedError } from "../../../src/control/workspace-removal";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { ChatRequest } from "../../../src/weixin/agent/interface";
@@ -60,6 +61,8 @@ async function wire(options?: {
   transaction?: boolean;
   createWorkspace?: () => Promise<never>;
   failPersist?: boolean;
+  takeoverCwd?: string;
+  removeWorkspace?: (name: string) => Promise<never>;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-bot-ws-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -77,12 +80,13 @@ async function wire(options?: {
   const registry = {
     list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace })),
     create: options?.createWorkspace ?? (async (name: string, cwd: string, description?: string) => {
-      config.workspaces[name] = { cwd, ...(description ? { description } : {}) };
-      return { name, cwd, ...(description ? { description } : {}) };
+      const registered = options?.takeoverCwd ?? cwd;
+      config.workspaces[name] = { cwd: registered, ...(description ? { description } : {}) };
+      return { name, cwd: registered, ...(description ? { description } : {}) };
     }),
-    remove: async (name: string) => {
+    remove: options?.removeWorkspace ?? (async (name: string) => {
       delete config.workspaces[name];
-    },
+    }),
   };
   const configMutex = new AsyncMutex();
   const control = new ControlService({
@@ -185,6 +189,34 @@ test("a rejected Bot identity also rolls back its allocated workspace", async ()
     .rejects.toMatchObject({ code: "agent_not_registered" });
   expect(readdirSync(w.botsHome)).toEqual([]);
   expect(Object.keys(w.config.workspaces)).toEqual(["backend"]);
+});
+
+test("a Bot rolled back while its workspace is occupied keeps the registration and directory", async () => {
+  const w = await wire({
+    removeWorkspace: async () => {
+      throw new WorkspaceRemovalRefusedError(
+        "in_use",
+        "Reviewer",
+        'workspace "Reviewer" is still used by sessions: squatter; remove those sessions first',
+      );
+    },
+  });
+  const failure = await w.control.createBot({ name: "Reviewer", agent: "unregistered" }).catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: "agent_not_registered" });
+  expect(readdirSync(w.botsHome)).toEqual(["Reviewer"]);
+  expect(w.config.workspaces["Reviewer"]).toMatchObject({
+    cwd: join(w.botsHome, "Reviewer"),
+    description: "Bot default workspace for Reviewer",
+  });
+  expect(w.control.listBots()).toEqual([]);
+});
+test("a Bot rolled back over a taken-over registration keeps that registration", async () => {
+  const foreign = "/tmp/foreign-owner";
+  const w = await wire({ takeoverCwd: foreign });
+  await expect(w.control.createBot({ name: "Reviewer", agent: "unregistered" }))
+    .rejects.toMatchObject({ code: "agent_not_registered" });
+  expect(w.config.workspaces["Reviewer"]).toEqual({ cwd: foreign, description: "Bot default workspace for Reviewer" });
+  expect(readdirSync(w.botsHome)).toEqual([]);
 });
 
 test("a failed workspace registration removes the directory it just created", async () => {
