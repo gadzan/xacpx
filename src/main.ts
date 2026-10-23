@@ -132,7 +132,7 @@ import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
-import { WorkspaceRemovalRefusedError } from "./control/workspace-removal";
+import { WorkspaceRemovalRefusedError } from "./config/workspace-removal";
 import { sameWorkspacePath } from "./commands/workspace-path";
 import { listAgentCatalog } from "./config/agent-catalog";
 import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
@@ -2072,7 +2072,7 @@ export async function buildApp(
           );
         }
       }
-      const updated = await configStore.removeWorkspace(name);
+      const updated = await configStore.removeWorkspace(name, expectedCwd);
       publishLiveConfig(updated);
       controlEvents.emit({ type: "workspaces-changed" });
     });

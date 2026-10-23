@@ -3,9 +3,11 @@
  * (`src/main.ts`) and the Bot auto-workspace rollback
  * (`src/control/control-service.ts`).
  *
- * `main.ts` throws this when the registry entry cannot be deleted. The
- * rollback distinguishes `in_use` (keep registration and directory, surface
- * the original Bot error) from any other failure (existing rollback).
+ * `main.ts` throws this when the registry entry cannot be deleted, and
+ * `ConfigStore.removeWorkspace(name, expectedCwd)` throws it when the on-disk
+ * entry no longer points at the expected directory. The rollback distinguishes
+ * `in_use` (keep registration and directory, surface the original Bot error)
+ * from any other failure (existing rollback).
  */
 export type WorkspaceRemovalRefusal = "in_use" | "cwd_mismatch";
 

@@ -1,4 +1,5 @@
 import { expect, mock, test, beforeEach, afterAll } from "bun:test";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join, normalize } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -3223,6 +3224,103 @@ test("control agent/workspace remove refuses while persisted sessions reference 
   } finally {
     await app.dispose();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("control workspace remove rechecks occupancy under the state lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-remove-lock-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  }));
+  const app = await buildApp({ configPath, statePath });
+  try {
+    let releaseLock!: () => void;
+    const lockGate = new Promise<void>((resolve) => { releaseLock = resolve; });
+    let lockEntered!: () => void;
+    const lockHeld = new Promise<void>((resolve) => { lockEntered = resolve; });
+    const holding = app.sessions.withSessionLock(async () => {
+      lockEntered();
+      await lockGate;
+    });
+    await lockHeld;
+
+    // The facade pre-check sees no session while this binding is queued on S.
+    // The delete itself must take S, then see the binding and refuse.
+    const created = app.sessions.createSession("late", "codex", "backend");
+    let removalSettled = false;
+    const removal = app.control.removeWorkspace("backend")
+      .finally(() => { removalSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(removalSettled).toBe(false);
+
+    releaseLock();
+    await holding;
+    expect(await created).not.toBeNull();
+    await expect(removal).rejects.toThrow(/still used by sessions: late/);
+    expect(app.control.listWorkspaces().map((workspace) => workspace.name)).toContain("backend");
+    await app.sessions.removeSession("late");
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Bot rollback keeps an auto workspace already bound by a persisted session", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-bot-rollback-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  const now = new Date().toISOString();
+  const previousHome = process.env.HOME;
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  }));
+  await writeFile(statePath, JSON.stringify({
+    chat_contexts: {},
+    sessions: {
+      squatter: {
+        alias: "squatter",
+        agent: "codex",
+        workspace: "Reviewer",
+        transport_session: "Reviewer:squatter",
+        source: "xacpx",
+        created_at: now,
+        last_used_at: now,
+      },
+    },
+    tasks: {},
+    orchestration: { groups: {}, tasks: {}, workers: {}, workerBindings: {}, externalCoordinators: {} },
+  }));
+  let app: Awaited<ReturnType<typeof buildApp>> | undefined;
+  try {
+    // buildApp captures botsHomeRoot from HOME; restore immediately so the
+    // global env override cannot leak into concurrently running test files.
+    try {
+      process.env.HOME = dir;
+      app = await buildApp({ configPath, statePath });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+    const failure = await app.control.createBot({ name: "Reviewer", agent: "unregistered" })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "agent_not_registered" });
+    expect(app.control.listBots()).toEqual([]);
+    // in_use rollback: the registration and directory the queued session
+    // resolves against survive; the original Bot error is not wrapped.
+    expect(app.control.listWorkspaces().map((workspace) => workspace.name)).toContain("Reviewer");
+    expect(existsSync(join(dir, ".xacpx", "bots", "Reviewer"))).toBe(true);
+  } finally {
+    try {
+      await app?.dispose();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 

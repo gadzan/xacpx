@@ -12,7 +12,7 @@ import {
   createProductionOwnedSessionRelease,
 } from "../../../src/conversations/conversation-composition";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
-import { WorkspaceRemovalRefusedError } from "../../../src/control/workspace-removal";
+import { WorkspaceRemovalRefusedError } from "../../../src/config/workspace-removal";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { ChatRequest } from "../../../src/weixin/agent/interface";
@@ -210,6 +210,23 @@ test("a Bot rolled back while its workspace is occupied keeps the registration a
   });
   expect(w.control.listBots()).toEqual([]);
 });
+test("a Bot rolled back over a replaced cwd keeps the registration and directory", async () => {
+  const w = await wire({
+    removeWorkspace: async () => {
+      throw new WorkspaceRemovalRefusedError(
+        "cwd_mismatch",
+        "Reviewer",
+        'workspace "Reviewer" no longer points at the expected directory; leaving it alone',
+      );
+    },
+  });
+  const failure = await w.control.createBot({ name: "Reviewer", agent: "unregistered" }).catch((error: unknown) => error);
+  expect(failure).toMatchObject({ code: "agent_not_registered" });
+  expect(w.config.workspaces["Reviewer"]).toMatchObject({ cwd: join(w.botsHome, "Reviewer") });
+  expect(readdirSync(w.botsHome)).toEqual(["Reviewer"]);
+  expect(w.control.listBots()).toEqual([]);
+});
+
 test("a Bot rolled back over a taken-over registration keeps that registration", async () => {
   const foreign = "/tmp/foreign-owner";
   const w = await wire({ takeoverCwd: foreign });

@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 
 import { withPrivateFileLock } from "../util/private-file.js";
+import { isSamePath } from "../util/path.js";
 
 import { loadConfig, parseConfig } from "./load-config";
+import { WorkspaceRemovalRefusedError } from "./workspace-removal.js";
 import type { AdapterVersionOverrides } from "../adapters/adapter-catalog";
 import type {
   AgentConfig,
@@ -73,9 +75,30 @@ export class ConfigStore {
     });
   }
 
-  async removeWorkspace(name: string): Promise<AppConfig> {
+  async removeWorkspace(name: string, expectedCwd?: string): Promise<AppConfig> {
     assertSafeConfigKey(name);
     return await this.patchRaw((raw) => {
+      if (expectedCwd !== undefined) {
+        // Compare against the raw entry read under the file lock, not the
+        // daemon's in-memory config: an out-of-band CLI edit may have replaced
+        // the same-name entry since the caller's last snapshot. Deleting by
+        // name after a stale check would remove someone else's registration.
+        // A missing entry is already removed, so the operation stays
+        // idempotent; only a present entry that points elsewhere refuses.
+        const workspaces = raw.workspaces;
+        const hasEntry = isPlainRecord(workspaces) && Object.hasOwn(workspaces, name);
+        if (hasEntry) {
+          const entry = workspaces[name];
+          const cwd = isPlainRecord(entry) && typeof entry.cwd === "string" ? entry.cwd : undefined;
+          if (cwd === undefined || !isSamePath(cwd, expectedCwd)) {
+            throw new WorkspaceRemovalRefusedError(
+              "cwd_mismatch",
+              name,
+              `workspace "${name}" no longer points at the expected directory; leaving it alone`,
+            );
+          }
+        }
+      }
       deleteRecordEntry(raw, "workspaces", name);
     });
   }

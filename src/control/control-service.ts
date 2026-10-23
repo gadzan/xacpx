@@ -3,7 +3,7 @@ import {createHash} from "node:crypto";
 import { mkdir, readdir, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../commands/workspace-name.js";
-import { isWorkspaceRemovalRefused } from "./workspace-removal.js";
+import { isWorkspaceRemovalRefused } from "../config/workspace-removal.js";
 import { sameWorkspacePath } from "../commands/workspace-path.js";
 import { resolveBotsHome } from "../bots/bots-home.js";
 import { BotError } from "../bots/bot-error.js";
@@ -315,7 +315,7 @@ export interface ControlServiceDeps {
      * The production wiring (main.ts, direct and transaction remove) refuses
      * deletion with a `WorkspaceRemovalRefusedError`: `in_use` when a session
      * or worker binding references the workspace, `cwd_mismatch` when the
-     * live entry no longer points at `expectedCwd`.
+     * live or on-disk entry no longer points at `expectedCwd`.
      */
     remove(name: string, expectedCwd?: string): Promise<void>;
     transaction?<T>(fn: (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => Promise<T>): Promise<T>;
@@ -2609,25 +2609,24 @@ export class ControlService {
             try {
               await workspaces.remove(name, dir);
             } catch (cleanupError) {
-              if (isWorkspaceRemovalRefused(cleanupError) && cleanupError.reason === "in_use") {
-                // A session or worker binding landed on the new workspace
-                // between creation and rollback. Keep the registration and the
-                // directory so the holder keeps resolving, and surface the
+              if (isWorkspaceRemovalRefused(cleanupError)) {
+                // `in_use`: a session or worker binding landed on the new
+                // workspace between creation and rollback. `cwd_mismatch`: an
+                // out-of-band config edit replaced the entry, so we cannot
+                // prove the directory is still ours. Keep both and surface the
                 // original Bot failure unwrapped.
                 throw error;
               }
-              // `cwd_mismatch` cannot fire here: `ours` just rechecked. Any
-              // other removal failure keeps the existing behavior below.
               const errors: unknown[] = [error, cleanupError];
               try { await rmdir(dir); } catch (rmdirError) { errors.push(rmdirError); }
               throw new AggregateError(errors, "bot-workspace-rollback-failed", { cause: error });
             }
           }
         }
-        // Non-transaction fallback (`botWorkspaceMutex`) is best-effort for
-        // tests and embeddings only: production always runs the C-held
-        // transaction above, where the registry check shares the caller's
-        // critical section.
+        // Best-effort cleanup outside the registry transaction: production
+        // runs the C-held transaction above, while tests/embeddings may use
+        // `botWorkspaceMutex`. rmdir does not recurse, so only the empty
+        // directory this attempt created can be removed.
         const errors: unknown[] = [error];
         try { await rmdir(dir); } catch (cleanupError) { errors.push(cleanupError); }
         if (errors.length > 1) throw new AggregateError(errors, "bot-workspace-rollback-failed", { cause: error });
