@@ -1178,9 +1178,9 @@ export default {
       mobileSummary: "{n} 个 Bot · {status}",
       mobileBots: "{n} 个 Bot",
       instructions: "派发内容",
-      stopMember: "停止 {name}",
+      stopMember: "停止{name}",
       stopMemberFailed: "停止失败：{msg}",
-      stopLeader: "停止 {name}",
+      stopLeader: "停止{name}",
       stopAll: "全部停止",
       stopAllConfirm: {
         title: "停止全部任务？",

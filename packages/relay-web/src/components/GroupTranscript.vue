@@ -461,7 +461,7 @@ async function handleStopAll(presentation: GroupDispatchPresentation): Promise<v
   const ok = await confirm({
     title: t("group.dispatch.stopAllConfirm.title"),
     message: t("group.dispatch.stopAllConfirm.message", {
-      name: group.value?.title ?? "",
+      name: presentation.leader.name,
       n: presentation.members.length,
     }),
     confirmLabel: t("group.dispatch.stopAllConfirm.confirm"),

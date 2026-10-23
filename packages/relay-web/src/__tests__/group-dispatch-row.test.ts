@@ -314,6 +314,14 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
+  it("words the Chinese member stop action without an inner space", async () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["running"], ["bot_a"], { supportsCancelMember: true });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.get('[data-test="group-dispatch-stop-member"]').attributes("aria-label")).toBe("停止Reviewer");
+    wrapper.unmount();
+  });
+
   it("offers a stop button only for members that can be stopped", async () => {
     const wrapper = row([], ["bot_a", "bot_b", "bot_c"], {
       dispatches: [
@@ -814,7 +822,7 @@ describe("GroupTranscript dispatch aggregation", () => {
     await flushPromises();
 
     expect(useConfirmState().value?.title).toBe("Stop all tasks?");
-    expect(useConfirmState().value?.message).toBe("Release and the 2 dispatched tasks will stop");
+    expect(useConfirmState().value?.message).toBe("Reviewer and the 2 dispatched tasks will stop");
     expect(useConfirmState().value?.confirmLabel).toBe("Stop all");
     expect(useConfirmState().value?.tone).toBe("danger");
     expect(cancel).not.toHaveBeenCalled();
@@ -822,6 +830,44 @@ describe("GroupTranscript dispatch aggregation", () => {
     settleConfirm(true);
     await flushPromises();
     expect(cancel).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("names the leader in the Chinese stop-all confirmation", async () => {
+    i18n.global.locale.value = "zh-CN";
+    seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    await wrapper.get('[data-test="group-dispatch-stop-all"]').trigger("click");
+    await flushPromises();
+
+    expect(useConfirmState().value?.message).toBe("Reviewer和已派发的 2 个任务都会停止");
+    wrapper.unmount();
+  });
+
+  it("names the leader in the Chinese stop pill without an inner space", async () => {
+    i18n.global.locale.value = "zh-CN";
+    seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "running"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(wrapper.get('[data-test="group-dispatch-stop-leader"]').text()).toBe("停止Reviewer");
     wrapper.unmount();
   });
 
@@ -1150,7 +1196,7 @@ describe("GroupDispatchRow on mobile", () => {
     await flushPromises();
 
     expect(useConfirmState().value?.title).toBe("Stop all tasks?");
-    expect(useConfirmState().value?.message).toBe("Release and the 2 dispatched tasks will stop");
+    expect(useConfirmState().value?.message).toBe("Reviewer and the 2 dispatched tasks will stop");
     expect(cancel).not.toHaveBeenCalled();
 
     settleConfirm(true);
