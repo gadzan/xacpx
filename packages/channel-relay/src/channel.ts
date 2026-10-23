@@ -178,6 +178,18 @@ export function supportsBotDedicatedWorkspace(control: unknown): boolean {
   return parseControlPayload(MSG.botsCreate, { name: "probe", agent: "probe" }) !== null;
 }
 
+/**
+ * True when this instance can cancel ONE member turn of a Run: the core must
+ * expose `cancelMemberTurn` AND the relay-protocol validator this connector
+ * resolved must accept the scoped payload. Either half missing keeps the
+ * capability off, so the web never offers an action the instance cannot
+ * perform.
+ */
+export function supportsRunsCancelMember(control: unknown): boolean {
+  if (typeof (control as { cancelMemberTurn?: unknown } | null)?.cancelMemberTurn !== "function") return false;
+  return parseControlPayload(MSG.runsCancelMember, { runId: "probe", memberTurnId: "probe" }) !== null;
+}
+
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
   readonly nativeSessionListFormat = "table" as const;
@@ -289,6 +301,9 @@ export class RelayChannel implements MessageChannelRuntime {
     ];
     if (supportsBotDedicatedWorkspace(control)) {
       capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
+    }
+    if (supportsRunsCancelMember(control)) {
+      capabilities.push(RELAY_CAPABILITIES.runsCancelMemberV1);
     }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);

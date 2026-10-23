@@ -14,10 +14,17 @@ import {
 import { parseControlPayload } from "../../../../packages/relay-protocol/src/payload-validators";
 import type { AgentCatalogEntryDto } from "../../../../packages/relay-protocol/src/dtos";
 
+/**
+ * Wire names are lowercase dotted strings. The scoped MemberTurn cancel arm is
+ * the one exception: its wire name is fixed by the protocol design.
+ */
+const NON_LOWERCASE_MESSAGE_TYPES: readonly string[] = ["control.runs.cancelMember"];
+
 test("message type constants are namespaced and unique", () => {
   const values = Object.values(MSG);
   expect(new Set(values).size).toBe(values.length);
   for (const value of values) {
+    if (NON_LOWERCASE_MESSAGE_TYPES.includes(value)) continue;
     expect(value).toMatch(/^(instance|control)\.[a-z][a-z0-9.-]*$/);
   }
 });
@@ -42,6 +49,7 @@ test("new control message types exist with the control. prefix", () => {
   expect(MSG.botsList).toBe("control.bots.list");
   expect(MSG.conversationPrompt).toBe("control.conversation.prompt");
   expect(MSG.runsCancel).toBe("control.runs.cancel");
+  expect(MSG.runsCancelMember).toBe("control.runs.cancelMember");
 });
 
 test("recoverable terminal message types use the instance.terminal namespace", () => {

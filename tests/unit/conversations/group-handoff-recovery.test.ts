@@ -88,6 +88,13 @@ async function harness(options: { onRun?: (input: ConversationTurnRunInput) => P
 
 type Harness = Awaited<ReturnType<typeof harness>>;
 
+/** The wake turn the runtime creates for a settled leader is identified by
+ *  `followupSenderMemberTurnId`, NOT by origin: orchestration-accepted
+ *  members share the `followup` origin without being a wake. */
+function isOriginalSender(input: ConversationTurnRunInput, h: Harness): boolean {
+  return input.botId === A && h.store.getMemberTurn(input.memberTurnId)?.followupSenderMemberTurnId === undefined;
+}
+
 test("live members page exact public results without cross-Run or stale-token access", async () => {
   let h!: Harness, foreignAssignment = "", reads = 0;
   let finalToken = "";
@@ -181,7 +188,7 @@ test("public handoff and explicit siblings share the existing single-writer sche
   h = await harness({ onRun: async (input) => {
     active++; peak = Math.max(peak, active);
     try {
-      if (input.botId === A) await h.send(input);
+      if (isOriginalSender(input, h)) await h.send(input);
       await Promise.resolve();
       return { status: "completed", text: `public ${input.botId}` };
     } finally { active--; }
@@ -190,7 +197,7 @@ test("public handoff and explicit siblings share the existing single-writer sche
     const accepted = await h.service.acceptGroupPrompt({ conversationId: h.group.id, topicId: h.topic.id,
       requestId: "siblings", text: "public request", target: { mode: "members", botIds: [A, C] } });
     await h.dispatcher.kick();
-    expect(h.calls.map((call) => call.botId)).toEqual([A, C, B]); expect(peak).toBe(1);
+    expect(h.calls.map((call) => call.botId)).toEqual([A, C, B, A]); expect(peak).toBe(1);
     expect(h.store.getRun(accepted.run.id)?.state).toBe("completed");
     const target = h.store.listMemberTurns(accepted.run.id)[2]!;
     expect(target.origin).toBe("handoff"); expect(target.effect ?? "unknown").toBe("unknown");
@@ -226,7 +233,7 @@ async function scenario(body: (input: ConversationTurnRunInput, h: Harness) => P
   let h!: Harness;
   let failure: { error: unknown } | undefined;
   h = await harness({ beforeCommitGates, onRun: async (input) => {
-    if (input.botId === A) {
+    if (isOriginalSender(input, h)) {
       try { await body(input, h); } catch (error) { failure = { error }; throw error; }
     }
     return { status: "completed", text: `public result ${input.memberTurnId}` };
@@ -272,7 +279,7 @@ test("sender is derived from live execution and one invocation commits exactly o
   });
   try {
     expect(h.store.getRun(accepted.run.id)?.state).toBe("completed");
-    expect(h.calls.map((call) => call.botId)).toEqual([A, B]);
+    expect(h.calls.map((call) => call.botId)).toEqual([A, B, A]);
     expect(h.calls[1]?.executionOrigin).toBe("orchestration");
     expect(h.calls[1]?.permissionRoute).toBeUndefined();
     expect(h.calls[1]?.text).toContain("Task:\nHANDOFF TASK");
@@ -501,17 +508,22 @@ test("handoff permission denial persists structured blocked reason on explicit R
 test("A to B to A handoffs are serialized and retain distinct exact results", async () => {
   let h!: Harness;
   h = await harness({ onRun: async (input) => {
-    if (h.calls.length < 3) await h.send(input, "same-id-in-each-execution", { to: input.botId === A ? B : A, task: `TASK ${h.calls.length}` });
+    if (h.store.getMemberTurn(input.memberTurnId)?.followupSenderMemberTurnId === undefined && h.calls.length < 3) {
+      await h.send(input, "same-id-in-each-execution", { to: input.botId === A ? B : A, task: `TASK ${h.calls.length}` });
+    }
     return { status: "completed", text: `RESULT ${h.calls.length}` };
   } });
   try {
     const accepted = await h.accept(); await h.dispatcher.kick();
     const members = h.store.listMemberTurns(accepted.run.id);
-    expect(h.calls.map((call) => call.botId)).toEqual([A, B, A]);
-    expect(members.map((turn) => h.store.getMemberResult(turn)?.content)).toEqual(["RESULT 1", "RESULT 2", "RESULT 3"]);
-    expect(new Set(members.map((turn) => turn.sourceTurnId)).size).toBe(3);
+    expect(h.calls.map((call) => call.botId)).toEqual([A, B, A, A, B]);
+    expect(members.map((turn) => h.store.getMemberResult(turn)?.content)).toEqual(["RESULT 1", "RESULT 2", "RESULT 3", "RESULT 4", "RESULT 5"]);
+    expect(new Set(members.map((turn) => turn.sourceTurnId)).size).toBe(5);
     expect(h.calls[2]?.text).toContain("RESULT 1");
     expect(h.calls[2]?.text).not.toContain("RESULT 2");
+    expect(members.filter((turn) => turn.origin === "followup").map((turn) => turn.botId)).toEqual([A, B]);
+    expect(h.calls[3]?.text).toContain("RESULT 2");
+    expect(h.calls[4]?.text).toContain("RESULT 3");
   } finally { h.store.close(); }
 });
 
@@ -636,10 +648,13 @@ test(`committed handoff survives lost response/reopen ${crashWindow} and dropped
     await dispatcher.kick(); await dispatcher.kick();
     expect(h.calls.filter((call) => call.memberTurnId === target.id)).toHaveLength(1);
     expect(reopened.listMessages({ conversationId: h.group.id, topicId: h.topic.id, limit: 100 }).filter((m) => m.handoff)).toHaveLength(1);
-    expect(reopened.getRun(accepted.run.id)?.consumedMemberTurns).toBe(2);
+    expect(reopened.getRun(accepted.run.id)?.consumedMemberTurns).toBe(3);
     const result = reopened.getMemberResult(reopened.getMemberTurn(target.id)!)!;
     reopened.completeExecution({ runId: accepted.run.id, memberTurnId: target.id, content: "duplicate", sourceTurn: result.sourceTurn!, now: NOW });
     expect(reopened.listMessages({ conversationId: h.group.id, topicId: h.topic.id, limit: 100 }).filter((m) => m.senderBotId === B && m.role === "bot")).toHaveLength(1);
+    const followups = reopened.listMemberTurns(accepted.run.id).filter((turn) => turn.origin === "followup");
+    expect(followups).toHaveLength(1);
+    expect(h.calls.filter((call) => call.memberTurnId === followups[0]!.id)).toHaveLength(1);
   } finally { reopened.close(); }
 });
 }
@@ -720,7 +735,7 @@ test("accepted target disabled before start fails durably without stranded dispa
   const { h, accepted } = await scenario(async (input, h) => { await h.send(input); await h.bots.updateBot(B, { enabled: false }); });
   try {
     const target = h.store.listMemberTurns(accepted.run.id)[1]!;
-    expect(target.state).toBe("failed"); expect(h.calls.map((c) => c.botId)).toEqual([A]);
+    expect(target.state).toBe("failed"); expect(h.calls.map((c) => c.botId)).toEqual([A, A]);
     expect(h.store.getDispatchForMemberTurn(target.id)?.state).toBe("completed");
   } finally { h.store.close(); }
 });
@@ -734,7 +749,7 @@ test("accepted target removed/deleted through corrupt external state still settl
     const target = h.store.listMemberTurns(accepted.run.id)[1]!;
     expect(target.state).toBe("failed");
     expect(h.store.getDispatchForMemberTurn(target.id)?.state).toBe("completed");
-    expect(h.calls.map((c) => c.botId)).toEqual([A]);
+    expect(h.calls.map((c) => c.botId)).toEqual([A, A]);
   } finally { h.store.close(); }
 });
 
@@ -800,17 +815,17 @@ for (const pr8Fixture of ["queued", "claimed"] as const) {
   test(`real PR8 ${pr8Fixture} explicit Run migrates budget and executes its first handoff`, async () => {
     let h!: Harness;
     h = await harness({ pr8Fixture, onRun: async (input) => {
-      if (input.botId === A) await h.send(input);
+      if (isOriginalSender(input, h)) await h.send(input);
       return { status: "completed", text: `upgraded ${input.botId}` };
     } });
     try {
       expect(h.store.listMemberTurns("run_pr8_explicit")).toHaveLength(1);
       expect(h.store.getRun("run_pr8_explicit")?.maxMemberTurns).toBe(24);
       await h.service.activateAfterConsumerLock();
-      expect(h.calls.map((input) => input.botId)).toEqual([A, B]);
+      expect(h.calls.map((input) => input.botId)).toEqual([A, B, A]);
       expect(h.calls[0]?.text).toContain("PR8 HUMAN REQUEST");
       expect(h.calls[1]?.text).toContain("HANDOFF TASK");
-      expect(h.store.getRun("run_pr8_explicit")).toMatchObject({ state: "completed", consumedMemberTurns: 2 });
+      expect(h.store.getRun("run_pr8_explicit")).toMatchObject({ state: "completed", consumedMemberTurns: 3 });
       expect(h.store.getRun("run_pr8_explicit")?.completionReason).not.toBe("budget-exhausted");
       expect(h.store.listMessages({ conversationId: h.group.id, topicId: h.topic.id, limit: 100 }).filter((m) => m.handoff)).toHaveLength(1);
     } finally { h.store.close(); }
@@ -900,7 +915,7 @@ test("ghost-topic Group teardown removes recovery attempt audit before deleting 
 test("a corrupted handoff trigger borrowing a later Run fails before target provider start", async () => {
   let h!: Harness;
   h = await harness({ onRun: async (input) => {
-    if (input.botId === A) {
+    if (isOriginalSender(input, h)) {
       const receipt = await h.send(input);
       const later = await h.accept("later-human-request");
       h.store.directWriteForTest("member_turns", receipt.memberTurn.id, { trigger_message_ids_json: JSON.stringify([later.message.id]) });

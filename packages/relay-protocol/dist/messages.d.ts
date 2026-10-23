@@ -137,6 +137,7 @@ export declare const MSG: {
     readonly runsTraceGet: "control.runs.trace.get";
     readonly runsList: "control.runs.list";
     readonly runsCancel: "control.runs.cancel";
+    readonly runsCancelMember: "control.runs.cancelMember";
     /**
      * Connector -> hub: OPEN one interaction. Core's broker is the only production
      * caller (`RelayChannel.requestElicitation`), so the direction is dial-out:
@@ -684,6 +685,13 @@ export interface RunsCancelPayload {
 export interface RunsCancelResult {
     run: ConversationRunDetailDto;
 }
+export interface RunsCancelMemberPayload {
+    runId: string;
+    memberTurnId: string;
+}
+export interface RunsCancelMemberResult {
+    run: ConversationRunDetailDto;
+}
 export interface OkResult {
     ok: true;
 }
@@ -1213,6 +1221,9 @@ export declare const RELAY_CAPABILITIES: {
      *  validator and the core accept it, so the web keeps requiring a workspace
      *  for instances whose core predates dedicated Bot workspaces. */
     readonly botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1";
+    /** Scoped MemberTurn cancellation, advertised only when the connector and
+     *  core both support `control.runs.cancelMember`. */
+    readonly runsCancelMemberV1: "runs.cancel-member.v1";
 };
 /**
  * Grace an interaction RPC gets beyond its own `expiresAt`.

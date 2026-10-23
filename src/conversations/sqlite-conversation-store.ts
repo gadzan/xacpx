@@ -185,6 +185,8 @@ interface MemberTurnRow {
   expected_output: string | null;
   depends_on_json: string | null;
   blocked_reason?: string | null;
+  cancellation_reason?: "human-cancelled" | null;
+  followup_sender_member_turn_id?: string | null;
 }
 
 interface DispatchRow {
@@ -691,6 +693,10 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
     ...(optionalString(row.failure_reason) ? { failureReason: row.failure_reason as string } : {}),
+    ...(row.cancellation_reason ? { cancellationReason: row.cancellation_reason } : {}),
+    ...(optionalString(row.followup_sender_member_turn_id)
+      ? { followupSenderMemberTurnId: row.followup_sender_member_turn_id as string }
+      : {}),
     ...(isMemberTurnEffect(row.effect) && row.effect !== "unknown" ? { effect: row.effect } : {}),
     ...(optionalString(row.effect_provenance) ? { effectProvenance: row.effect_provenance as MemberTurnRecord["effectProvenance"] } : {}),
     ...(optionalString(row.assignment_id) ? { assignmentId: row.assignment_id as string } : {}),
@@ -1070,10 +1076,17 @@ export class SqliteConversationStore implements ConversationStore {
       // barriers, while its own durable work budget bounds new assignments.
       this.assertLifecycleAcceptable(run.conversationId, run.topicId);
       const dispatch = this.requireDispatch(input.dispatchId);
-      if (sender.state !== "running" || sender.sourceTurnId !== input.sourceTurnId
+      if (sender.state !== "running" || sender.cancellationReason || sender.sourceTurnId !== input.sourceTurnId
         || dispatch.runId !== run.id || dispatch.memberTurnId !== sender.id || dispatch.state !== "claimed"
         || dispatch.owner !== input.owner || dispatch.generation !== input.generation) {
         throw new ConversationError("stale_group_execution", "handoff sender is no longer the live execution");
+      }
+      if (sender.followupSenderMemberTurnId !== undefined) {
+        // The wake turn summarizes settled assignments; it never dispatches
+        // new ones. Allowing it would chain wake -> dispatch -> wake without
+        // bound and burn the Run budget on summary turns.
+        throw new ConversationError("handoff_from_followup_refused",
+          "a followup wake turn cannot dispatch new assignments");
       }
       if (run.state !== "running" || isRunCancelling(run)) {
         throw new ConversationError("run_not_runnable", "Run cannot accept handoff work");
@@ -1130,6 +1143,13 @@ export class SqliteConversationStore implements ConversationStore {
         VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, memberTurnId, run.generation, input.now]);
       return { reused: false, run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(memberTurnId), message: this.requireMessage(messageId) };
     }) ?? (() => { throw new ConversationError("budget-exhausted", "Run work budget is exhausted"); })();
+  }
+
+  listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[] {
+    return this.sqlite.all<MemberTurnRow>(`SELECT child.* FROM member_turns child
+      JOIN member_turns sender ON child.handoff_source_turn_id = sender.source_turn_id AND child.run_id = sender.run_id
+      WHERE sender.id = ? AND child.state NOT IN ('completed', 'failed', 'cancelled', 'indeterminate')
+      ORDER BY child.batch, child.member_index`, [senderMemberTurnId]).map(mapMemberTurn);
   }
 
   private allocatedWork(runId: string): number {
@@ -1484,7 +1504,7 @@ export class SqliteConversationStore implements ConversationStore {
    * started retry per assignment; not-started redelivery never spends again. */
   private retryEnforcedReadOnly(row: DispatchRow, member: MemberTurnRecord, run: ConversationRun, now: string): boolean {
     if (run.conversationId === createDirectConversationId(member.botId) || isRunCancelling(run)
-      || member.effect !== "read-only" || member.effectProvenance !== "declared-enforced"
+      || member.cancellationReason || member.effect !== "read-only" || member.effectProvenance !== "declared-enforced"
       || !member.sourceTurnId || TERMINAL_MEMBER_STATES.includes(member.state)
       || this.allocatedWork(run.id) >= run.maxMemberTurns
       // A read-only filesystem capability does not prove that repeating
@@ -2535,6 +2555,41 @@ export class SqliteConversationStore implements ConversationStore {
       };
     });
   }
+  cancelMemberTurn(runId: string, memberTurnId: string, now: string): MemberTurnRecord {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(runId);
+      const member = this.requireMemberTurn(memberTurnId);
+      if (member.runId !== run.id) {
+        throw new ConversationError("run_member_mismatch", `member turn "${memberTurnId}" does not belong to run "${runId}"`);
+      }
+      if (TERMINAL_RUN_STATES.includes(run.state)) return member;
+      // A wake that already exists for this leader is still pending work the
+      // user asked to stop: cancel it too, so the leader is never woken.
+      const wake = this.sqlite.get<MemberTurnRow>(
+        "SELECT * FROM member_turns WHERE followup_sender_member_turn_id = ?", [member.id]);
+      if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+        if (wake && !wake.started_at && !TERMINAL_MEMBER_STATES.includes(wake.state as MemberTurnState)) {
+          this.sqlite.run("UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?", [now, wake.id]);
+          this.finishDispatchForMemberTurn(wake.id, now);
+          this.aggregateRunAfterMemberTerminal(run.id, wake.id, now, "human-cancelled");
+        }
+        return member;
+      }
+      this.sqlite.run("UPDATE member_turns SET cancellation_reason = 'human-cancelled' WHERE id = ?", [member.id]);
+      if (!member.startedAt) {
+        this.sqlite.run("UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?", [now, member.id]);
+        this.finishDispatchForMemberTurn(member.id, now);
+        this.aggregateRunAfterMemberTerminal(run.id, member.id, now, "human-cancelled");
+      }
+      if (wake && !wake.started_at && !TERMINAL_MEMBER_STATES.includes(wake.state as MemberTurnState)) {
+        this.sqlite.run("UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?", [now, wake.id]);
+        this.finishDispatchForMemberTurn(wake.id, now);
+        this.aggregateRunAfterMemberTerminal(run.id, wake.id, now, "human-cancelled");
+      }
+      return this.requireMemberTurn(member.id);
+    });
+  }
+
   cancelRun(runId: string, now: string, reason = "cancelled"): CancelRunResult {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(runId);
@@ -3284,6 +3339,8 @@ export class SqliteConversationStore implements ConversationStore {
       ensure("messages", "handoff_json", "TEXT");
       ensure("member_turns", "handoff_source_turn_id", "TEXT");
       ensure("member_turns", "handoff_invocation_id", "TEXT");
+      ensure("member_turns", "cancellation_reason", "TEXT CHECK (cancellation_reason = 'human-cancelled')");
+      ensure("member_turns", "followup_sender_member_turn_id", "TEXT");
       ensure("runs", "quarantined_bot_ids_json", "TEXT NOT NULL DEFAULT '[]'");
       ensure("runs", "budget_exhausted", "INTEGER NOT NULL DEFAULT 0");
       const cancellationUpgrade = !this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)")
@@ -3299,6 +3356,8 @@ export class SqliteConversationStore implements ConversationStore {
       }
       this.sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_invocation ON member_turns
         (handoff_source_turn_id, handoff_invocation_id) WHERE handoff_source_turn_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_followup_sender ON member_turns
+          (followup_sender_member_turn_id) WHERE followup_sender_member_turn_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_envelope ON messages (json_extract(handoff_json, '$.memberTurnId')) WHERE handoff_json IS NOT NULL;
         CREATE TABLE IF NOT EXISTS recovery_attempts (
           member_turn_id TEXT NOT NULL, run_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
@@ -3967,7 +4026,7 @@ export class SqliteConversationStore implements ConversationStore {
       [input.runId],
     );
     this.finishDispatchForMemberTurn(input.memberTurnId, input.now);
-    if (state === "cancelled") {
+    if (state === "cancelled" && !member.cancellationReason) {
       // Provenance survives an indeterminate seal, whose completion_reason
       // must describe the unknown outcome instead of its cancellation source.
       this.sqlite.run(`UPDATE runs SET cancellation_reason = COALESCE(cancellation_reason, 'execution-cancelled') WHERE id = ?`, [run.id]);
@@ -3985,7 +4044,7 @@ export class SqliteConversationStore implements ConversationStore {
       input.memberTurnId,
       input.now,
       input.reason,
-      input.forceRunTerminalOnSettle ?? false,
+      !member.cancellationReason && (input.forceRunTerminalOnSettle ?? false),
     );
   }
 
@@ -3994,6 +4053,68 @@ export class SqliteConversationStore implements ConversationStore {
       if (member.startedAt || TERMINAL_MEMBER_STATES.includes(member.state)) continue;
       this.sqlite.run("UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?", [now, member.id]);
       this.finishDispatchForMemberTurn(member.id, now);
+    }
+  }
+
+  /**
+   * Insert the ONE wake turn a leader member turn earns once every public
+   * handoff it sent has settled.
+   *
+   * The wake is derived from durable state on every settle, so a crash or a
+   * restart re-derives it instead of losing it: the unique index on
+   * `followup_sender_member_turn_id` makes the insert idempotent, and the
+   * `NOT EXISTS` guard means it is never inserted twice.
+   *
+   * A leader whose turn was scoped-cancelled by the user never gets a wake:
+   * its assignments still settle, but the user asked for that work to stop.
+   */
+  private enqueueSettledHandoffFollowups(run: ConversationRun, now: string): void {
+    if (isRunCancelling(run)) return;
+    const groups = this.sqlite.all<{ sender_id: string }>(`SELECT DISTINCT sender.id AS sender_id FROM member_turns sender
+      JOIN member_turns child ON child.handoff_source_turn_id = sender.source_turn_id AND child.run_id = sender.run_id
+      WHERE sender.run_id = ? AND sender.state = 'completed'
+        AND sender.cancellation_reason IS NULL AND sender.source_turn_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM member_turns followup WHERE followup.followup_sender_member_turn_id = sender.id)
+      ORDER BY sender.member_index`, [run.id]);
+    for (const group of groups) {
+      const sender = this.requireMemberTurn(group.sender_id);
+      const assignments = this.sqlite.all<MemberTurnRow>(`SELECT * FROM member_turns
+        WHERE run_id = ? AND handoff_source_turn_id = ? ORDER BY batch, member_index`, [run.id, sender.sourceTurnId!]).map(mapMemberTurn);
+      if (assignments.length === 0) continue;
+      // An unsettled assignment means the leader is not done yet. An
+      // indeterminate assignment is an unknown outcome: the wake would
+      // summarize a result nobody can prove, so no wake is inserted.
+      if (assignments.some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state) || turn.state === "indeterminate")) continue;
+      if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
+        // Budget exhausted: the wake is NOT inserted, but the Run must still
+        // reach a terminal state and the sub-task results stay persisted. The
+        // wake is a summary convenience, not the work itself — marking the
+        // Run budget-exhausted here would report successful work as failed.
+        continue;
+      }
+      const triggers = new Set([run.requestMessageId, ...sender.triggerMessageIds]);
+      const results = assignments.map((turn) => {
+        const result = turn.state === "completed" ? this.getMemberResult(turn) : undefined;
+        if (turn.state === "completed" && !result) {
+          throw new ConversationError("member_result_missing", "handoff followup lost completed public evidence");
+        }
+        if (result) triggers.add(result.id);
+        return { assignmentId: turn.assignmentId, memberTurnId: turn.id, botId: turn.botId, task: turn.task,
+          state: turn.state, ...(result ? { result: result.content } : {}),
+          ...(turn.failureReason ? { failureReason: turn.failureReason } : {}) };
+      });
+      const id = this.ids.memberTurnId();
+      const memberIndex = Number(this.sqlite.get<{ n: number }>(
+        "SELECT COALESCE(MAX(member_index), -1) + 1 AS n FROM member_turns WHERE run_id = ? AND batch = ?",
+        [run.id, run.activeBatch ?? 1])!.n);
+      const task = `All assignments sent by your member turn ${sender.id} have settled. Summarize all results for the user.\n${JSON.stringify(results)}`;
+      this.sqlite.run(`INSERT INTO member_turns (id, run_id, conversation_id, topic_id, bot_id, batch, member_index,
+        attempt, origin, state, trigger_message_ids_json, profile_snapshot_json, created_at, task, effect, followup_sender_member_turn_id, assignment_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'followup', 'queued', ?, ?, ?, ?, 'unknown', ?, ?)`,
+        [id, run.id, run.conversationId, run.topicId, sender.botId, run.activeBatch ?? 1, memberIndex,
+          JSON.stringify([...triggers]), JSON.stringify(sender.profileSnapshot ?? run.profileSnapshot), now, task, sender.id, `followup_${id}`]);
+      this.sqlite.run(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
+        VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, id, run.generation, now]);
     }
   }
 
@@ -4021,6 +4142,9 @@ export class SqliteConversationStore implements ConversationStore {
     const run = this.requireRun(runId);
     if (TERMINAL_RUN_STATES.includes(run.state)) {
       return run;
+    }
+    if (!forceRunTerminal && !this.listMemberTurns(runId).some((turn) => turn.state === "indeterminate")) {
+      this.enqueueSettledHandoffFollowups(run, now);
     }
     const members = this.listMemberTurns(runId);
     const batch = run.activeBatch ?? 1;
@@ -4150,13 +4274,26 @@ export class SqliteConversationStore implements ConversationStore {
     }
     const cancelled = batchMembers.filter((turn) => turn.state === "cancelled");
     if (cancelled.length > 0) {
-      const reason = this.sqlite.get<{ cancellation_reason: string | null }>(
-        "SELECT cancellation_reason FROM runs WHERE id = ?", [runId])?.cancellation_reason ?? "human-cancelled";
-      this.sqlite.run(
-        `UPDATE runs SET state = 'cancelled', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
-        [reason, now, runId],
-      );
-      return this.requireRun(runId);
+      // A member-scoped user cancellation is NOT a Run-level cancellation:
+      // the Run keeps the outcome of its surviving evidence, so cancelling
+      // one subtask cannot silently terminalize the whole Run. Only a
+      // Run-level cancellation (a member cancelled WITHOUT its own scoped
+      // intent) keeps the cancelled classification. When every cancellation
+      // is scoped and no member produced surviving evidence, the Run still
+      // reports the human cancellation, with the same provenance.
+      const runCancelled = cancelled.filter((turn) => turn.cancellationReason === undefined);
+      const surviving = batchMembers.some((turn) => turn.state === "completed");
+      if (runCancelled.length > 0 || !surviving) {
+        const reason = runCancelled.length > 0
+          ? (this.sqlite.get<{ cancellation_reason: string | null }>(
+            "SELECT cancellation_reason FROM runs WHERE id = ?", [runId])?.cancellation_reason ?? "human-cancelled")
+          : "human-cancelled";
+        this.sqlite.run(
+          `UPDATE runs SET state = 'cancelled', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+          [reason, now, runId],
+        );
+        return this.requireRun(runId);
+      }
     }
     this.sqlite.run(
       `UPDATE runs SET state = 'completed', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,

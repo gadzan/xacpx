@@ -403,6 +403,7 @@ export interface ConversationStore {
   listMessages(query: ListMessagesQuery): ConversationMessage[];
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
+  listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[];
   /** Exact public result join using the minted durable execution identity. */
   getMemberResult(turn: MemberTurnRecord): ConversationMessage | undefined;
   getDispatchForRun(runId: string): PendingDispatch | undefined;
@@ -524,6 +525,7 @@ export interface ConversationStore {
    */
   failRun(runId: string, reason: string, state: "failed", now: string, routingGeneration?: number): ConversationRun;
   cancelRun(runId: string, now: string, reason?: string): CancelRunResult;
+  cancelMemberTurn(runId: string, memberTurnId: string, now: string): MemberTurnRecord;
   /**
    * Acquire the next automatic routing generation (state must be routing).
    * Refuses terminal/waiting/deleting Runs, unsettled members and earlier

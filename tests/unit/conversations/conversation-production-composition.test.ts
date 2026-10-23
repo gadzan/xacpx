@@ -68,7 +68,9 @@ test("actual ConsoleAgent and CommandRouter reach transport on the exact trusted
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "real-console", text: "public work", target: { botId: a.id } });
     await current.runtime.dispatcher.kick();
-    expect(physical).toHaveLength(2); expect(physical[1]?.text).toContain("PHYSICAL HANDOFF TASK");
+    // Leader A dispatches to B (physical 2), B settles, then A is woken ONCE
+    // to summarize (physical 3).
+    expect(physical).toHaveLength(3); expect(physical[1]?.text).toContain("PHYSICAL HANDOFF TASK");
     expect(physical[1]?.text).toContain("PHYSICAL EXPECTED OUTPUT");
     expect(physical[0]?.session.mcpSourceHandle).not.toBe(physical[1]?.session.mcpSourceHandle);
     expect((await current.control.getRun(accepted.run.id)).state).toBe("completed");
@@ -99,6 +101,9 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
         args: { to: targetId, task: "downstream" } });
       return { text: "healthy result" };
     }
+    // The failure belongs to the TARGET turn only. The leader's later wake
+    // turn is a separate execution and must reach the provider normally.
+    if (starts === 3) return { text: "wake summary" };
     if (outcome === "permission-denied") throw Object.assign(new Error("permission denied"), { code: "RUNTIME_PERMISSION_DENIED" });
     // No cancellation/permission text or local abort may supply the evidence.
     if (outcome === "runtime-failed" || outcome === "runtime-cancelled") {
@@ -121,7 +126,10 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
     const detail = await current.control.getRun(accepted.run.id);
     const expectedState = outcome === "runtime-cancelled" ? "cancelled"
       : outcome === "permission-denied" || outcome === "runtime-failed" ? "failed" : "indeterminate";
-    expect(starts).toBe(2);
+    // A proven terminal target earns the leader ONE wake turn to summarize.
+    // An indeterminate target proves nothing, so no wake is inserted.
+    const wakeExpected = outcome === "permission-denied" || outcome === "runtime-failed";
+    expect(starts).toBe(wakeExpected ? 3 : 2);
     expect(detail.state).toBe(expectedState);
     expect(detail.memberTurns[0]?.state).toBe("completed");
     expect(detail.memberTurns[1]?.state).toBe(expectedState);
@@ -129,7 +137,7 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
     if (outcome === "permission-denied") expect(detail.memberTurns[1]?.blockedReason).toBe("human-authority-unknown");
     else if (expectedState === "indeterminate") expect(detail.completionReason).toBe("started_result_unknown");
     if (outcome === "runtime-failed" || outcome === "runtime-cancelled") {
-      expect(signals).toHaveLength(2);
+      expect(signals).toHaveLength(wakeExpected ? 3 : 2);
       expect(signals.every((signal) => !signal.aborted)).toBe(true);
       expect(detail.quarantinedBotIds ?? []).toEqual(outcome === "runtime-failed" ? [targetId] : []);
       expect(detail.memberTurns[1]?.blockedReason).toBeUndefined();
@@ -492,10 +500,15 @@ test("production public handoff carries private launch capability through Contro
         args: { to: targetId, task: "PUBLIC TARGET TASK", expectedOutput: "PUBLIC TARGET OUTPUT" } });
       return { text: "healthy sender evidence" };
     }
+    if (metadata.length === 2) {
+      expect(request.text).toContain("PUBLIC TARGET TASK");
+      expect(request.text).toContain("PUBLIC TARGET OUTPUT");
+      expect(request.metadata?.origin).toBe("orchestration");
+      throw Object.assign(new Error("permission denied"), { code: "RUNTIME_PERMISSION_DENIED" });
+    }
+    // The leader's ONE wake turn summarizes the failed assignment.
     expect(request.text).toContain("PUBLIC TARGET TASK");
-    expect(request.text).toContain("PUBLIC TARGET OUTPUT");
-    expect(request.metadata?.origin).toBe("orchestration");
-    throw Object.assign(new Error("permission denied"), { code: "RUNTIME_PERMISSION_DENIED" });
+    return { text: "summary" };
   } } });
   const events: ControlEvent[] = []; current.events.subscribe((event) => events.push(event));
   try {
@@ -506,7 +519,9 @@ test("production public handoff carries private launch capability through Contro
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "production-handoff", text: "work", target: { botId: sender.id } });
     await current.runtime.dispatcher.kick();
-    expect(metadata).toHaveLength(2);
+    // Sender dispatches to Target (metadata 2), Target fails, then Sender is
+    // woken ONCE to summarize (metadata 3).
+    expect(metadata).toHaveLength(3);
     const detail = await current.control.getRun(accepted.run.id);
     expect(detail.memberTurns[1]).toMatchObject({ origin: "handoff", task: "PUBLIC TARGET TASK", blockedReason: "human-authority-unknown", state: "failed" });
     expect(detail.quarantinedBotIds).toEqual([target.id]);

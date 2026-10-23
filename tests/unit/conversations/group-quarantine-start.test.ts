@@ -40,8 +40,12 @@ async function harness(hooks?: ConversationDispatcherHooks) {
   let handoffs!: GroupHandoffService;
   const runner = { async run(input: ConversationTurnRunInput) {
     calls.push(input);
-    if (input.botId === A) await handoffs.send({ executionToken: input.groupExecutionToken!,
-      invocationId: "quarantine-target", args: { to: B, task: "downstream assignment" } });
+    // Only the leader dispatches. The wake turn the runtime creates for a
+    // settled leader summarizes; it never dispatches new assignments.
+    if (input.botId === A && store.getMemberTurn(input.memberTurnId)?.followupSenderMemberTurnId === undefined) {
+      await handoffs.send({ executionToken: input.groupExecutionToken!,
+        invocationId: "quarantine-target", args: { to: B, task: "downstream assignment" } });
+    }
     return { status: "completed" as const, text: `healthy ${input.botId}` };
   }, async cancel() { return { outcome: "cancelled" as const }; } };
   const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions,
@@ -101,23 +105,28 @@ for (const phase of ["beforeRuntimeMaterialize", "beforeExecutionStart"] as cons
     try {
       const accepted = await h.accept();
       await h.dispatcher.kick();
-      expect(h.calls.map((input) => input.botId)).toEqual([A]);
+      // A dispatches to B; B fails the quarantine fence. All assignments
+      // settled, so the leader earns its ONE wake turn, which summarizes the
+      // failed assignment.
+      expect(h.calls.map((input) => input.botId)).toEqual([A, A]);
       const members = h.store.listMemberTurns(accepted.run.id);
-      expect(members).toHaveLength(2);
+      expect(members).toHaveLength(3);
       expect(members[0]?.state).toBe("completed");
       expect(members[1]).toMatchObject({ botId: B, origin: "handoff", state: "failed", failureReason: "member_quarantined" });
       expect(members[1]?.startedAt).toBeUndefined();
       expect(members[1]?.sourceTurnId).toBeUndefined();
+      expect(members[2]).toMatchObject({ botId: A, origin: "followup", state: "completed" });
+      expect(members[2]?.followupSenderMemberTurnId).toBe(members[0]?.id);
       expect(h.store.getDispatchForMemberTurn(members[1]!.id)?.state).toBe("completed");
-      expect(h.store.getRun(accepted.run.id)).toMatchObject({ state: "failed", consumedMemberTurns: 2, quarantinedBotIds: [B] });
+      expect(h.store.getRun(accepted.run.id)).toMatchObject({ state: "failed", consumedMemberTurns: 3, quarantinedBotIds: [B] });
       expect(h.store.getMemberResult(members[0]!)?.content).toBe("healthy bot_a");
       expect(Object.values(h.state.sessions).filter((session) => session.owner?.botId === B))
         .toHaveLength(phase === "beforeRuntimeMaterialize" ? 0 : 1);
       await h.dispatcher.kick();
-      expect(h.calls.map((input) => input.botId)).toEqual([A]);
+      expect(h.calls.map((input) => input.botId)).toEqual([A, A]);
       const reopened = await SqliteConversationStore.open(h.path);
       try {
-        expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "failed", consumedMemberTurns: 2, quarantinedBotIds: [B] });
+        expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "failed", consumedMemberTurns: 3, quarantinedBotIds: [B] });
         expect(reopened.getDispatchForMemberTurn(members[1]!.id)?.state).toBe("completed");
       } finally { reopened.close(); }
     } finally { h.handoffs.close(); h.store.close(); }
@@ -131,9 +140,10 @@ for (const quarantine of [[], [C]]) {
       const accepted = await h.accept();
       h.store.directWriteForTest("runs", accepted.run.id, { quarantined_bot_ids_json: JSON.stringify(quarantine) });
       await h.dispatcher.kick();
-      expect(h.calls.map((input) => input.botId)).toEqual([A, B]);
-      expect(h.store.getRun(accepted.run.id)).toMatchObject({ state: "completed", consumedMemberTurns: 2 });
-      expect(h.store.listMemberTurns(accepted.run.id).map((member) => member.state)).toEqual(["completed", "completed"]);
+      // A dispatches to B, B settles, then A is woken ONCE to summarize.
+      expect(h.calls.map((input) => input.botId)).toEqual([A, B, A]);
+      expect(h.store.getRun(accepted.run.id)).toMatchObject({ state: "completed", consumedMemberTurns: 3 });
+      expect(h.store.listMemberTurns(accepted.run.id).map((member) => member.state)).toEqual(["completed", "completed", "completed"]);
     } finally { h.handoffs.close(); h.store.close(); }
   });
 }

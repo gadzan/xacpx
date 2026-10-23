@@ -551,6 +551,21 @@ test("scoped runs history requests are bounded, unique, and reject unknown keys"
   }
 });
 
+test("scoped member cancellation requires only bounded Run and MemberTurn IDs", () => {
+  const payload = { runId: "run_1", memberTurnId: "mturn_1" };
+  expect(parseControlPayload(MSG.runsCancelMember, payload)).toEqual(payload);
+  expect(parseControlPayload(MSG.runsCancelMember, { runId: "r".repeat(128), memberTurnId: "m".repeat(128) })).not.toBeNull();
+  for (const bad of [
+    null, [], "nope", {}, { runId: "run_1" }, { memberTurnId: "mturn_1" },
+    { ...payload, runId: "" }, { ...payload, memberTurnId: "" },
+    { ...payload, runId: 1 }, { ...payload, memberTurnId: null },
+    { ...payload, runId: "r".repeat(129) }, { ...payload, memberTurnId: "m".repeat(129) },
+    { ...payload, unknown: true }, { ...payload, conversationId: "conversation_1" },
+  ]) {
+    expect(parseControlPayload(MSG.runsCancelMember, bad)).toBeNull();
+  }
+});
+
 test("additive correlation attempt identity accepts legacy shapes and rejects empty ids", () => {
   const legacy = { conversationId: "c", topicId: "t" };
   const permission = { title: "allow", availableOutcomes: ["allow_once"] };

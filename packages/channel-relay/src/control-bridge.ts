@@ -1363,6 +1363,12 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.runsCancel}: malformed payload`);
       return { run: await control.cancelRun(input.runId) };
     }
+    case MSG.runsCancelMember: {
+      const input = parseControlPayload(MSG.runsCancelMember, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsCancelMember}: malformed payload`);
+      if (typeof control.cancelMemberTurn !== "function") return errorPayload("unsupported-rpc", "daemon does not support scoped MemberTurn cancellation");
+      return { run: await control.cancelMemberTurn(input.runId, input.memberTurnId) };
+    }
     default:
       return errorPayload(
         "unknown-type",

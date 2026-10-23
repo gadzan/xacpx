@@ -3033,6 +3033,15 @@ export class ControlService {
       return toRunDetail(result.run, result.memberTurns);
     });
   }
+
+  async cancelMemberTurn(runId: string, memberTurnId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      if (runtime.runs.isPeerTopic(runtime.runs.getRun(runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
+      await runtime.runs.cancelMemberTurn(runId, memberTurnId);
+      const result = runtime.runs.getRun(runId);
+      return toRunDetail(result.run, result.memberTurns);
+    });
+  }
 }
 
 async function readCapabilityAdvertisement(

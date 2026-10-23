@@ -35,7 +35,7 @@ Elicitation 的任务归属从 core 已校验的精确 turn context 传入 `Chan
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。
   Bot / Conversation / Topic / Run RPCs（`control.bots.*`、`control.conversations.*`、
-  `control.topics.*`、`control.conversation.prompt|history`、`control.runs.get|cancel`）
+  `control.topics.*`、`control.conversation.prompt|history`、`control.runs.get|cancel|cancelMember`）
   是 **instance-scoped**，不得加入 Hub `CHAT_SCOPED_TYPES`：它们用 Bot/Conversation/Topic/Run
   ID 路由，不接受客户端 `chatKey`，也不把 hidden session alias 当产品身份。
   `control.conversation.prompt` 额外由 Hub 从已认证 account **覆写** `humanIngress`
@@ -86,6 +86,10 @@ Elicitation 的任务归属从 core 已校验的精确 turn context 传入 `Chan
 - 阶段边界：离线不排队（实例离线时 RPC 返回 503）；~~事件断线期间丢弃~~ 断线期间的回合事件由
   连接器侧镜像暂存并随 `instance.state.sync` 恢复（见阶段七）；无镜像的旧 connector 断线期间事件仍丢弃。
   Web 看板（阶段三）消费本阶段的 HTTP API 与事件。
+- **能力声明**：连接器注册时声明 `interaction.elicitation.form.v1`；其余能力按实现条件声明——
+  `bots.dedicated-workspace.v1` 需要 core 的 `supportsBotDedicatedWorkspace()` 探测通过，
+  `runs.cancel-member.v1` 需要 core 暴露 `cancelMemberTurn(runId, memberTurnId)`。
+  任一半缺失就不声明该能力，Web 保持旧行为而不是发起必然失败的调用。
 
 ## RMUX 终端后端（channel-relay，默认关闭）
 
@@ -496,6 +500,17 @@ peer Topic rejects. A member turn with no recorded process answers
 answers `unsupported-rpc`, so the Web shows the recorded-process panel only when
 the operation is supported. Neither call changes the active Run, the composer
 target, Stop authority or scheduling.
+
+`control.runs.cancelMember` accepts exactly `{runId, memberTurnId}` with non-empty
+product IDs of at most 128 characters and returns `{run: ConversationRunDetailDto}`.
+The connector calls `ControlService.cancelMemberTurn` to cancel that MemberTurn;
+it does not set Run cancellation provenance or cancel already-dispatched subtasks.
+Cancelling a leader suppresses its pending followup. `control.runs.cancel` keeps
+its stop-all behavior. Registration advertises `runs.cancel-member.v1` only when
+the connector validator and core method both support scoped cancellation, so the
+web never offers the action on an instance that cannot perform it. A connector
+that is new enough but runs on an older core answers `unsupported-rpc`; an older
+connector answers `unknown-type`. This additive RPC keeps protocol version 1.
 
 Authenticated instance Control RPC exposes `control.conversation.bindings.list`
 (`{}` → `{bindings}`), `.set` (`{chatKey, conversationId, topicId?}` → `{binding}`)
