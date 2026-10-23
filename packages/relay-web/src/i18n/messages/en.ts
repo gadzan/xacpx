@@ -1178,6 +1178,7 @@ export default {
       stopped: "Stopped",
       failed: "{n} failed",
       instructions: "Instructions",
+      stopMember: "Stop {name}",
     },
     worktree: {
       title: "Member worktrees", boundary: "Separate working directories, not an OS sandbox. Integration creates a candidate; it does not update main.",

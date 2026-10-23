@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, useId } from "vue";
 import { useI18n } from "vue-i18n";
-import { ChevronDown, Loader2 } from "lucide-vue-next";
+import { ChevronDown, Loader2, Square } from "lucide-vue-next";
 import BotAvatar from "./BotAvatar.vue";
 import type { GroupDispatchPresentation } from "../lib/group-dispatch-presentation";
 
@@ -10,14 +10,22 @@ import type { GroupDispatchPresentation } from "../lib/group-dispatch-presentati
  * count and the round status. Clicking the row expands a card below it with
  * the round's dispatch text and one line per dispatched bot.
  *
- * The card is display only in this step: no stop action, no confirmation.
+ * The card is display only apart from the per-member stop button: no stop
+ * all, no confirmation dialog.
  */
 const props = defineProps<{
   presentation: GroupDispatchPresentation;
 }>();
 
-/** Jump to a member's reply message id. Emitted only for members that have one. */
-const emit = defineEmits<{ jump: [messageId: string] }>();
+/**
+ * Jump to a member's reply message id. Emitted only for members that have one.
+ * Stop one member of the round: emitted with the durable run and member turn
+ * the scoped cancellation needs.
+ */
+const emit = defineEmits<{
+  jump: [messageId: string];
+  stopMember: [payload: { runId: string; memberTurnId: string }];
+}>();
 
 const { t } = useI18n();
 
@@ -62,6 +70,11 @@ function jumpToMember(botId: string): void {
   const member = props.presentation.members.find((candidate) => candidate.botId === botId);
   if (!member?.replyId) return;
   emit("jump", member.replyId);
+}
+
+/** Stop one dispatched member; the durable ids travel with the request. */
+function stopMember(member: GroupDispatchPresentation["members"][number]): void {
+  emit("stopMember", { runId: member.runId, memberTurnId: member.memberTurnId });
 }
 </script>
 
@@ -134,13 +147,13 @@ function jumpToMember(botId: string): void {
       <p data-test="group-dispatch-instructions-label" class="text-fg-muted">{{ t("group.dispatch.instructions") }}</p>
       <p data-test="group-dispatch-instructions" class="mt-1 line-clamp-2 text-fg">{{ presentation.instructions }}</p>
       <ul class="mt-2 space-y-1">
-        <li v-for="member in presentation.members" :key="member.botId">
+        <li v-for="member in presentation.members" :key="member.botId" class="flex items-center gap-1">
           <button
             type="button"
             data-test="group-dispatch-member"
             :data-bot-id="member.botId"
             :disabled="!member.replyId"
-            class="flex min-w-0 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-70 disabled:hover:bg-transparent"
+            class="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-70 disabled:hover:bg-transparent"
             @click="jumpToMember(member.botId)"
           >
             <span class="grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2" aria-hidden="true">
@@ -153,6 +166,18 @@ function jumpToMember(botId: string): void {
               data-test="group-dispatch-member-preview"
               class="min-w-0 flex-1 truncate text-fg-muted"
             >{{ member.replyPreview }}</span>
+          </button>
+          <!-- Scoped stop: only the row's own member, never the whole round. -->
+          <button
+            v-if="member.canStop"
+            type="button"
+            data-test="group-dispatch-stop-member"
+            :data-bot-id="member.botId"
+            :aria-label="t('group.dispatch.stopMember', { name: member.name })"
+            class="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
+            @click.stop="stopMember(member)"
+          >
+            <Square :size="12" aria-hidden="true" />
           </button>
         </li>
       </ul>
