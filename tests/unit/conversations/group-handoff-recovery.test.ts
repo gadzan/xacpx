@@ -532,6 +532,92 @@ test("A to B to A handoffs are serialized and retain distinct exact results", as
   } finally { h.store.close(); }
 });
 
+/** The wake prompt embeds the leader's compact assignment manifest as the JSON
+ *  line right after the wake instruction. */
+function wakeManifest(text: string): { assignmentId: string; botId: string; state: string }[] {
+  const lines = text.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("All assignments sent by your member turn"));
+  expect(at).toBeGreaterThanOrEqual(0);
+  return JSON.parse(lines[at + 1]!);
+}
+
+test("a wake turn reads every manifest assignment through group_read_result and never lists wake rows", async () => {
+  let h!: Harness;
+  const pages: { catalog: unknown; results: unknown[] }[] = [];
+  h = await harness({ onRun: async (input) => {
+    if (isOriginalSender(input, h)) {
+      await h.send(input, "to-b", { to: B, task: "TASK FOR B" });
+      await h.send(input, "to-c", { to: C, task: "TASK FOR C" });
+      return { status: "completed", text: "dispatched" };
+    }
+    if (h.store.getMemberTurn(input.memberTurnId)?.followupSenderMemberTurnId !== undefined) {
+      // The wake passes every live-binding check of group_read_result.
+      const read = (args: unknown) => h.handoffs.readResult({ executionToken: input.groupExecutionToken!, args });
+      const manifest = wakeManifest(input.text);
+      pages.push({ catalog: read({}), results: manifest.map((entry) => read({ assignmentId: entry.assignmentId })) });
+      // The wake's own followup_* identity is not a readable public assignment.
+      expect(() => read({ assignmentId: h.store.getMemberTurn(input.memberTurnId)!.assignmentId })).toThrow("no completed public assignment");
+      return { status: "completed", text: "summary" };
+    }
+    return { status: "completed", text: `result ${input.memberTurnId}` };
+  } });
+  try {
+    const accepted = await h.accept(); await h.dispatcher.kick();
+    expect(h.calls.map((call) => call.botId)).toEqual([A, B, C, A]);
+    const members = h.store.listMemberTurns(accepted.run.id);
+    const [, toB, toC, wake] = members;
+    expect(wake).toMatchObject({ followupSenderMemberTurnId: members[0]!.id, state: "completed" });
+    expect(members.filter((turn) => turn.followupSenderMemberTurnId !== undefined)).toHaveLength(1);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.catalog).toEqual({ kind: "catalog", nextOffset: null, assignments: [
+      { assignmentId: toB!.assignmentId, botId: B, state: "completed", task: "TASK FOR B", taskTruncated: false },
+      { assignmentId: toC!.assignmentId, botId: C, state: "completed", task: "TASK FOR C", taskTruncated: false },
+    ] });
+    expect(pages[0]!.results).toMatchObject([
+      { kind: "result", assignmentId: toB!.assignmentId, content: `result ${toB!.id}`, nextOffset: null },
+      { kind: "result", assignmentId: toC!.assignmentId, content: `result ${toC!.id}`, nextOffset: null },
+    ]);
+    expect(h.store.getRun(accepted.run.id)?.state).toBe("completed");
+  } finally { h.store.close(); }
+});
+
+test("another leader's completed wake never appears in a later wake's group_read_result directory", async () => {
+  let h!: Harness;
+  const catalogs = new Map<string, { assignmentId: string }[]>();
+  h = await harness({ onRun: async (input) => {
+    const turn = h.store.getMemberTurn(input.memberTurnId)!;
+    if (turn.followupSenderMemberTurnId === undefined && h.calls.length < 3) {
+      await h.send(input, "chain", { to: input.botId === A ? B : A, task: `TASK ${h.calls.length}` });
+    }
+    if (turn.followupSenderMemberTurnId !== undefined) {
+      const read = (args: unknown) => h.handoffs.readResult({ executionToken: input.groupExecutionToken!, args });
+      const page = read({});
+      if (page.kind !== "catalog") throw new Error("catalog expected");
+      catalogs.set(input.memberTurnId, page.assignments);
+      for (const other of h.store.listMemberTurns(input.runId)) {
+        if (other.followupSenderMemberTurnId !== undefined && other.state === "completed") {
+          expect(() => read({ assignmentId: other.assignmentId })).toThrow("no completed public assignment");
+        }
+      }
+    }
+    return { status: "completed", text: `RESULT ${h.calls.length}` };
+  } });
+  try {
+    const accepted = await h.accept(); await h.dispatcher.kick();
+    const members = h.store.listMemberTurns(accepted.run.id);
+    expect(h.calls.map((call) => call.botId)).toEqual([A, B, A, A, B]);
+    const [, handoffToB, handoffToA, wakeA, wakeB] = members;
+    expect(wakeA).toMatchObject({ followupSenderMemberTurnId: members[0]!.id, state: "completed" });
+    expect(wakeB).toMatchObject({ followupSenderMemberTurnId: handoffToB!.id, state: "completed" });
+    // wakeA has completed (with its followup_* assignmentId) before wakeB lists
+    // the directory, yet only real public assignments are listed.
+    expect(wakeA!.assignmentId).toStartWith("followup_");
+    const expected = [handoffToB!.assignmentId, handoffToA!.assignmentId];
+    expect(catalogs.get(wakeA!.id)!.map((entry) => entry.assignmentId)).toEqual(expected);
+    expect(catalogs.get(wakeB!.id)!.map((entry) => entry.assignmentId)).toEqual(expected);
+  } finally { h.store.close(); }
+});
+
 test("durable budget stops an A B handoff loop and survives reopen", async () => {
   let h!: Harness;
   h = await harness({ onRun: async (input) => {
