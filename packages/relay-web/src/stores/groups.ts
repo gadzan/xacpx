@@ -361,6 +361,12 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     if (merged.task === undefined) merged.task = current.task;
     if (merged.expectedOutput === undefined) merged.expectedOutput = current.expectedOutput;
     if (merged.dependsOn === undefined) merged.dependsOn = current.dependsOn;
+    // The stop intent and the wake identity belong to the member turn, not
+    // to one attempt: a thin snapshot that omits them must not erase them.
+    if (merged.cancellationReason === undefined) merged.cancellationReason = current.cancellationReason;
+    if (merged.followupSenderMemberTurnId === undefined) {
+      merged.followupSenderMemberTurnId = current.followupSenderMemberTurnId;
+    }
     return merged;
   }
   if (!shouldUpdateMemberTurnState(current.state, incoming.state)) {
@@ -383,6 +389,12 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     // omits it must not clear a turn the server marked as needing
     // human-origin authority.
     if (merged.blockedReason === undefined) merged.blockedReason = incoming.blockedReason;
+    // Durable stop evidence and the wake identity: a stale row may simply
+    // predate them.
+    if (merged.cancellationReason === undefined) merged.cancellationReason = incoming.cancellationReason;
+    if (merged.followupSenderMemberTurnId === undefined) {
+      merged.followupSenderMemberTurnId = incoming.followupSenderMemberTurnId;
+    }
     return merged;
   }
   const merged: MemberTurnSummaryDto = { ...incoming };
@@ -400,6 +412,12 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
   if (current.state === incoming.state) {
     if (merged.failureReason === undefined) merged.failureReason = current.failureReason;
     if (merged.blockedReason === undefined) merged.blockedReason = current.blockedReason;
+    // The human stop intent and the wake identity are durable turn facts:
+    // a snapshot that omits them must not erase what the server proved.
+    if (merged.cancellationReason === undefined) merged.cancellationReason = current.cancellationReason;
+    if (merged.followupSenderMemberTurnId === undefined) {
+      merged.followupSenderMemberTurnId = current.followupSenderMemberTurnId;
+    }
   }
   return merged;
 }

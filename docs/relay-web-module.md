@@ -1109,7 +1109,7 @@ core 不支持单成员取消（`supportsCancelMember` 为假）或成员已结�
 
 ## 阶段范围边界
 
-Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。
+Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。`cancellationReason` 与 `followupSenderMemberTurnId` 同属这条规则：它们是成员回合的 durable 事实，缺省的薄 snapshot 不能抹掉服务端已经证明的停止意图或唤醒回合身份。
 
 - **阶段三**交付登录 + 实例/会话树 + 对话流。
 - **阶段四**补齐：右栏任务面板（定时/编排）、设置页（实例接入 token/保留摘要）、notice toast、
