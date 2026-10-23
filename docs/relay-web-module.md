@@ -1067,7 +1067,16 @@ handoff 的 task，两行截断；标题整轮只出现一次。卡片标题与�
 
 点击有回复的成员行跳转到该回复，复用 `GroupTranscript.vue` 既有的 `jumpToMessage()`：
 给目标消息设置 `tabindex="-1"` 并转移焦点，再定位视口。卡片只是桌面展开形态；
-停止动作、确认框和移动端底部弹层是后续步骤。
+确认框和移动端底部弹层是后续步骤。
+
+可停止的成员（`canStop`：`supportsCancelMember` 为真且成员仍 running / queued）在其行右侧
+显示一个 24px 的 ■ 停止按钮（`data-test="group-dispatch-stop-member"`），hover 用 danger 色。
+点击时 `@click.stop` 只发出 `stopMember` 事件（携带该成员的 durable `runId` 与
+`memberTurnId`），不触发展开/收起，也不触发跳转。`GroupTranscript.vue` 接收该事件后调用
+`groupsStore.cancelMember(instanceId, runId, memberTurnId)`，走
+`control.runs.cancelMember` 只取消这一个成员 turn：leader 与同轮其他成员继续运行。
+core 不支持单成员取消（`supportsCancelMember` 为假）或成员已结束时，该按钮不渲染。
+本轮只有逐行停止：没有「全部停止」，没有确认框，也没有移动端弹层。
 
 ## 阶段范围边界
 
