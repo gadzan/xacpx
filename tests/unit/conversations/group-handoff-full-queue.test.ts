@@ -60,7 +60,22 @@ for (const reopen of [false, true]) {
         sessionAlias: "session_b", logicalSessionId: "logical_b", sourceTurnId: "source_b", now: NOW });
       store.completeExecution({ runId: accepted.run.id, memberTurnId: target.id, content: "B done",
         sourceTurn: { sessionAlias: "session_b", turnId: "source_b" }, now: NOW });
-      expect(store.getRun(accepted.run.id)).toMatchObject({ state: "completed", consumedMemberTurns: 2 });
+      // Every assignment the leader sent has settled, so the leader earns
+      // exactly ONE wake turn. The Run stays running until that wake lands.
+      const afterB = store.listMemberTurns(accepted.run.id);
+      expect(afterB).toHaveLength(3);
+      const wake = afterB[2]!;
+      expect(wake).toMatchObject({ botId: "bot_a", origin: "followup", state: "queued" });
+      expect(wake.followupSenderMemberTurnId).toBe(member.id);
+      expect(store.getRun(accepted.run.id)).toMatchObject({ state: "running", consumedMemberTurns: 2 });
+      const wakeClaim = store.claimNextDispatch({ owner: "owner", now: NOW, leaseExpiresAt: LEASE })!;
+      expect(wakeClaim.memberTurn.id).toBe(wake.id);
+      const wakeTurn = store.markExecutionStarted({ dispatchId: wakeClaim.dispatch.id, owner: "owner",
+        generation: wakeClaim.dispatch.generation, runId: accepted.run.id, memberTurnId: wakeClaim.memberTurn.id,
+        sessionAlias: "session_a", logicalSessionId: "logical_a", sourceTurnId: "source_followup", now: NOW });
+      store.completeExecution({ runId: accepted.run.id, memberTurnId: wakeTurn.id, content: "wake done",
+        sourceTurn: { sessionAlias: "session_a", turnId: "source_followup" }, now: NOW });
+      expect(store.getRun(accepted.run.id)).toMatchObject({ state: "completed", consumedMemberTurns: 3 });
       expect(store.acceptRequest({ ...request, requestId: "after-completion" }).reused).toBe(false);
     } finally { store.close(); }
   });
