@@ -93,6 +93,9 @@ export interface GroupDispatchMemberPresentation {
 /** Avatar slot of the aggregate row. */
 export interface GroupDispatchAvatar {
   botId: string;
+  /** Durable member turn behind this avatar: the row's identity, never the
+   *  bot id — the same bot can be dispatched twice in one round. */
+  memberTurnId: string;
   name: string;
   avatar?: BotAvatarConfig;
   driver?: string;
@@ -280,6 +283,7 @@ export function presentGroupDispatch(input: GroupDispatchPresentationInput): Gro
     avatars: {
       items: members.slice(0, GROUP_DISPATCH_AVATAR_LIMIT).map((member) => ({
         botId: member.botId,
+        memberTurnId: member.memberTurnId,
         name: member.name,
         ...(member.avatar ? { avatar: member.avatar } : {}),
         ...(member.driver ? { driver: member.driver } : {}),

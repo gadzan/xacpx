@@ -102,9 +102,14 @@ function memberStatusText(status: GroupDispatchPresentation["members"][number]["
   return t(`group.handoff.states.${status}`);
 }
 
-/** A member without a reply has no target: its line stays inert. */
-function jumpToMember(botId: string): void {
-  const member = props.presentation.members.find((candidate) => candidate.botId === botId);
+/**
+ * A member without a reply has no target: its line stays inert.
+ *
+ * The lookup is by member turn, never by bot: the same bot can be dispatched
+ * twice in one round, and only the member turn tells the two rows apart.
+ */
+function jumpToMember(memberTurnId: string): void {
+  const member = props.presentation.members.find((candidate) => candidate.memberTurnId === memberTurnId);
   if (!member?.replyId) return;
   emit("jump", member.replyId);
 }
@@ -136,7 +141,7 @@ function stopAll(): void {
       <div data-test="group-dispatch-avatars" class="flex shrink-0 items-center" aria-hidden="true">
         <span
           v-for="(avatar, index) in presentation.avatars.items"
-          :key="avatar.botId"
+          :key="avatar.memberTurnId"
           :class="index > 0 ? '-ml-2' : ''"
           class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface"
         >
@@ -196,14 +201,15 @@ function stopAll(): void {
       <p data-test="group-dispatch-instructions-label" class="text-fg-muted">{{ t("group.dispatch.instructions") }}</p>
       <p data-test="group-dispatch-instructions" class="mt-1 line-clamp-2 text-fg">{{ presentation.instructions }}</p>
       <ul class="mt-2 space-y-1">
-        <li v-for="member in presentation.members" :key="member.botId" class="flex items-center gap-1">
+        <li v-for="member in presentation.members" :key="member.memberTurnId" class="flex items-center gap-1">
           <button
             type="button"
             data-test="group-dispatch-member"
             :data-bot-id="member.botId"
+            :data-member-turn-id="member.memberTurnId"
             :disabled="!member.replyId"
             class="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-70 disabled:hover:bg-transparent"
-            @click="jumpToMember(member.botId)"
+            @click="jumpToMember(member.memberTurnId)"
           >
             <span class="grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2" aria-hidden="true">
               <BotAvatar :avatar="member.avatar" :driver="member.driver" :name="member.name" :size="20" static />
@@ -259,9 +265,10 @@ function stopAll(): void {
       <ul class="mt-3">
         <li
           v-for="member in presentation.members"
-          :key="member.botId"
+          :key="member.memberTurnId"
           data-test="group-dispatch-sheet-row"
           :data-bot-id="member.botId"
+          :data-member-turn-id="member.memberTurnId"
           class="flex min-h-11 items-center gap-2 px-2"
         >
           <span data-test="group-dispatch-sheet-member-name" class="min-w-0 truncate text-sm font-medium text-fg">{{ member.name }}</span>

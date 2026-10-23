@@ -224,6 +224,10 @@ describe("presentGroupDispatch", () => {
 
     expect(result.avatars.items).toHaveLength(GROUP_DISPATCH_AVATAR_LIMIT);
     expect(result.avatars.items.map((avatar) => avatar.botId)).toEqual(["bot_a", "bot_b", "bot_c", "bot_d"]);
+    // The avatar slot carries the member turn: the same bot dispatched twice
+    // must not produce two slots with the same identity.
+    expect(result.avatars.items.map((avatar) => avatar.memberTurnId))
+      .toEqual(["turn_bot_a", "turn_bot_b", "turn_bot_c", "turn_bot_d"]);
     expect(result.avatars.overflow).toBe(1);
     expect(result.members).toHaveLength(5);
   });

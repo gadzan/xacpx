@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { isVNode, type VNode } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import {
   RELAY_CAPABILITIES,
@@ -50,9 +51,10 @@ function dispatchHandoff(
   botId: string,
   task: string,
   seq: number,
+  memberTurnId = `turn_${botId}`,
 ): ConversationMessageDto & { handoff: NonNullable<ConversationMessageDto["handoff"]> } {
   return {
-    id: `handoff_${botId}`,
+    id: `handoff_${botId}_${seq}`,
     conversationId: "conversation_g",
     topicId: "topic_1",
     runId: "run_1",
@@ -63,8 +65,8 @@ function dispatchHandoff(
     handoff: {
       senderMemberTurnId: "turn_leader",
       to: botId,
-      assignmentId: `assignment_${botId}`,
-      memberTurnId: `turn_${botId}`,
+      assignmentId: `assignment_${botId}_${seq}`,
+      memberTurnId,
       task,
     },
   };
@@ -73,18 +75,25 @@ function dispatchHandoff(
 function entry(
   botId: string,
   state: MemberTurnSummaryDto["state"],
-  over: { task?: string; seq?: number; turn?: Partial<MemberTurnSummaryDto> } = {},
+  over: { task?: string; seq?: number; turn?: Partial<MemberTurnSummaryDto>; memberTurnId?: string } = {},
 ): GroupDispatchEntry {
+  const memberTurnId = over.memberTurnId ?? `turn_${botId}`;
   return {
-    message: dispatchHandoff(botId, over.task ?? `Review ${botId}`, over.seq ?? 1),
-    memberTurn: turn(botId, state, over.turn),
+    message: dispatchHandoff(botId, over.task ?? `Review ${botId}`, over.seq ?? 1, memberTurnId),
+    memberTurn: turn(botId, state, { id: memberTurnId, ...over.turn }),
   };
 }
 
 /** A member's own reply, addressed by that member turn's prompt identity. */
-function replyMessage(botId: string, promptRequestId: string, content: string, seq: number): ConversationMessageDto {
+function replyMessage(
+  botId: string,
+  promptRequestId: string,
+  content: string,
+  seq: number,
+  id = `reply_${botId}`,
+): ConversationMessageDto {
   return {
-    id: `reply_${botId}`,
+    id,
     conversationId: "conversation_g",
     topicId: "topic_1",
     runId: "run_1",
@@ -97,6 +106,36 @@ function replyMessage(botId: string, promptRequestId: string, content: string, s
   };
 }
 
+/**
+ * The vnode keys of the dispatch member rows.
+ *
+ * The rendered DOM cannot show a key, so the row identity is read from the
+ * rendered vnode tree: it is the only place a duplicate key is visible.
+ */
+function memberRowKeys(wrapper: VueWrapper): PropertyKey[] {
+  const keys: PropertyKey[] = [];
+  const visit = (vnode: VNode, depth: number): void => {
+    if (depth > 40) return;
+    if (vnode.type === "ul") {
+      const children = Array.isArray(vnode.children) ? vnode.children : [];
+      for (const child of children) {
+        if (!isVNode(child)) continue;
+        const rows = Array.isArray(child.children) ? child.children : [];
+        for (const row of rows) {
+          if (isVNode(row)) keys.push(row.key ?? "");
+        }
+      }
+    }
+    if (vnode.component) visit(vnode.component.subTree, depth + 1);
+    if (Array.isArray(vnode.children)) {
+      for (const child of vnode.children) {
+        if (isVNode(child)) visit(child, depth + 1);
+      }
+    }
+  };
+  visit(wrapper.vm.$.subTree, 0);
+  return keys;
+}
 function row(
   states: MemberTurnSummaryDto["state"][],
   botIds = ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"],
@@ -222,6 +261,37 @@ describe("GroupDispatchRow", () => {
     expect(member.attributes("disabled")).toBeDefined();
     await member.trigger("click");
     expect(wrapper.emitted("jump")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("renders one row per dispatch when the same bot is dispatched twice", async () => {
+    const wrapper = row([], ["bot_a"], {
+      dispatches: [
+        entry("bot_a", "completed", { task: "Review the diff", seq: 1, memberTurnId: "turn_a_1", turn: { promptRequestId: "prompt_a_1" } }),
+        entry("bot_a", "completed", { task: "Review the diff", seq: 2, memberTurnId: "turn_a_2", turn: { promptRequestId: "prompt_a_2" } }),
+      ],
+      messages: [
+        replyMessage("bot_a", "prompt_a_1", "First answer", 5, "reply_a_1"),
+        replyMessage("bot_a", "prompt_a_2", "Second answer", 6, "reply_a_2"),
+      ],
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+
+    // The row keys are the member turns, never the bot ids: the same bot
+    // dispatched twice must produce two keyed rows.
+    expect(memberRowKeys(wrapper)).toEqual(["turn_a_1", "turn_a_2"]);
+
+    const members = wrapper.findAll('[data-test="group-dispatch-member"]');
+    expect(members).toHaveLength(2);
+    const memberTurnIds = members.map((member) => member.attributes("data-member-turn-id"));
+    expect(memberTurnIds).toEqual(["turn_a_1", "turn_a_2"]);
+    expect(new Set(memberTurnIds).size).toBe(2);
+    expect(members[0]!.get('[data-test="group-dispatch-member-preview"]').text()).toBe("First answer");
+    expect(members[1]!.get('[data-test="group-dispatch-member-preview"]').text()).toBe("Second answer");
+
+    // The second row jumps to the SECOND dispatch's reply, not the first.
+    await members[1]!.trigger("click");
+    expect(wrapper.emitted("jump")).toEqual([["reply_a_2"]]);
     wrapper.unmount();
   });
 
@@ -827,6 +897,21 @@ describe("GroupDispatchRow on mobile", () => {
     expect(rows[1]!.get('[data-test="group-dispatch-sheet-member-status"]').text()).toBe("Completed");
     // Touch target: every row is at least 44px tall.
     for (const sheetRow of rows) expect(sheetRow.classes()).toContain("min-h-11");
+    wrapper.unmount();
+  });
+
+  it("renders one sheet row per dispatch when the same bot is dispatched twice", async () => {
+    const wrapper = row([], ["bot_a"], {
+      dispatches: [
+        entry("bot_a", "completed", { task: "Review the diff", seq: 1, memberTurnId: "turn_a_1" }),
+        entry("bot_a", "completed", { task: "Review the diff", seq: 2, memberTurnId: "turn_a_2" }),
+      ],
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+
+    const sheetRows = wrapper.findAll('[data-test="group-dispatch-sheet-row"]');
+    expect(sheetRows).toHaveLength(2);
+    expect(sheetRows.map((row) => row.attributes("data-member-turn-id"))).toEqual(["turn_a_1", "turn_a_2"]);
     wrapper.unmount();
   });
 

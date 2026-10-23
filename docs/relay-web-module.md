@@ -1061,6 +1061,10 @@ handoff 的 task，两行截断；标题整轮只出现一次。卡片标题与�
 随后每个被派发的 Bot 一行：头像、名字、状态（复用 `group.handoff.states.*` 的既有措辞）、
 以及一行回复预览。没有回复的成员不显示预览行。
 
+行的身份是 MemberTurn，不是 Bot：同一个 Bot 在一轮里被派发两次时是两个成员行，两行
+都以自己的 `memberTurnId` 作 `:key`（成员行、叠放头像、移动端底部弹层行都是），跳转
+也按 `memberTurnId` 查找。按 `botId` 作 key 会让两行互相覆盖或产生重复 key。
+
 回复预览与跳转都只认精确证据：成员回复必须与该成员 MemberTurn 的 `promptRequestId`
 一致、同 Conversation / Topic / Run、同 Bot，且是 handoff 之后的唯一候选；存在歧义、
 缺证据或回复不在已加载历史中时，该成员不显示预览，其行 disabled、不可点击。
