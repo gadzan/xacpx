@@ -488,9 +488,38 @@ describe("GroupDispatchRow", () => {
     const wrapper = row(["completed", "completed", "indeterminate"]);
     const status = wrapper.get('[data-test="group-dispatch-status"]').text();
     expect(status).toContain("✓ 2 done");
-    expect(wrapper.get('[data-test="group-dispatch-status-indeterminate"]').text()).toContain("1 outcome unknown");
+    expect(wrapper.get('[data-test="group-dispatch-status-indeterminate"]').text()).toContain("1 unknown");
     // An unknown outcome is never folded into the failure count.
     expect(wrapper.find('[data-test="group-dispatch-status-failed"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("puts the unknown count last and in muted tone", () => {
+    const wrapper = row(["running", "failed", "indeterminate"]);
+    const status = wrapper.get('[data-test="group-dispatch-status"]');
+    const children = Array.from(status.element.children)
+      .filter((child) => child.getAttribute("data-test") !== null)
+      .map((child) => child.getAttribute("data-test"));
+    // The unknown count is the gap in what is known: it comes after every
+    // proven outcome, and it is never read as a failure.
+    expect(children).toEqual([
+      "group-dispatch-status-active",
+      "group-dispatch-status-failed",
+      "group-dispatch-status-indeterminate",
+    ]);
+    const unknown = wrapper.get('[data-test="group-dispatch-status-indeterminate"]');
+    expect(unknown.classes()).toContain("text-fg-muted");
+    expect(unknown.classes()).not.toContain("text-warn");
+    expect(unknown.classes()).not.toContain("text-danger");
+    // The question-mark icon marks the gap without shouting.
+    expect(unknown.find("svg").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("words the unknown count in Chinese", () => {
+    i18n.global.locale.value = "zh-CN";
+    const wrapper = row(["completed", "indeterminate"]);
+    expect(wrapper.get('[data-test="group-dispatch-status-indeterminate"]').text()).toContain("1 个结果未知");
     wrapper.unmount();
   });
 
@@ -1229,7 +1258,14 @@ describe("GroupDispatchRow on mobile", () => {
   it("reports members whose outcome is unknown in the mobile summary", () => {
     i18n.global.locale.value = "zh-CN";
     const wrapper = row(["completed", "completed", "indeterminate"]);
-    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("3 个 Bot · 2 已完成 · 1 个结果未知");
+    // The mobile pill has no room for the long wording: it says "1 未知".
+    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("3 个 Bot · 2 已完成 · 1 未知");
+    wrapper.unmount();
+  });
+
+  it("reports members whose outcome is unknown in the English mobile summary", () => {
+    const wrapper = row(["running", "running", "completed", "completed", "indeterminate"]);
+    expect(wrapper.get('[data-test="group-dispatch-summary"]').text()).toBe("5 bots · 2 running · 1 unknown");
     wrapper.unmount();
   });
 

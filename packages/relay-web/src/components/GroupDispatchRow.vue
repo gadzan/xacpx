@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, useId } from "vue";
 import { useI18n } from "vue-i18n";
-import { ChevronDown, Loader2, Square } from "lucide-vue-next";
+import { ChevronDown, CircleHelp, Loader2, Square } from "lucide-vue-next";
 import BotAvatar from "./BotAvatar.vue";
 import MobileSheet from "./MobileSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
@@ -72,6 +72,9 @@ const failedText = computed(() => t("group.dispatch.failed", { n: counts.value.f
 const showFailed = computed(() => counts.value.failed > 0);
 const indeterminateText = computed(() => t("group.dispatch.indeterminate", { n: counts.value.indeterminate }));
 const showIndeterminate = computed(() => counts.value.indeterminate > 0);
+/** The mobile pill has no room for the long wording: it counts the unknown
+ *  outcomes and says so in one word. */
+const indeterminateShortText = computed(() => t("group.dispatch.indeterminateShort", { n: counts.value.indeterminate }));
 const hasLeadingStatus = computed(
   () => isRunning.value || isDone.value || isCancelled.value || counts.value.completed > 0 || counts.value.cancelled > 0,
 );
@@ -91,8 +94,9 @@ const mobileStatusText = computed(() => {
   }
   if (showFailed.value) parts.push(failedText.value);
   // An unknown outcome is never folded into "done" or "failed": it is
-  // reported on its own so the reader sees the gap.
-  if (showIndeterminate.value) parts.push(indeterminateText.value);
+  // reported on its own so the reader sees the gap. It comes last: it is the
+  // gap in what is known, not another outcome of the round.
+  if (showIndeterminate.value) parts.push(indeterminateShortText.value);
   return parts.join(" · ");
 });
 const mobileSummaryText = computed(() => {
@@ -200,7 +204,10 @@ function stopAll(): void {
         <span v-if="showFailed && hasLeadingStatus" aria-hidden="true" class="text-fg-muted">·</span>
         <span v-if="showFailed" data-test="group-dispatch-status-failed" class="font-medium text-danger">{{ failedText }}</span>
         <span v-if="showIndeterminate && (hasLeadingStatus || showFailed)" aria-hidden="true" class="text-fg-muted">·</span>
-        <span v-if="showIndeterminate" data-test="group-dispatch-status-indeterminate" class="font-medium text-warn">{{ indeterminateText }}</span>
+        <span v-if="showIndeterminate" data-test="group-dispatch-status-indeterminate" class="flex items-center gap-x-1 text-fg-muted">
+          <CircleHelp :size="12" class="shrink-0" aria-hidden="true" />
+          {{ indeterminateText }}
+        </span>
       </span>
       <ChevronDown
         v-if="!isMobile"

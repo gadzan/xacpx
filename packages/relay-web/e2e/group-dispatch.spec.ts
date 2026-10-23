@@ -403,6 +403,15 @@ for (const locale of ["en", "zh-CN"]) {
       await expect(row.getByTestId("group-dispatch-title")).toHaveText(title);
       await expect(row.getByTestId("group-dispatch-status-done")).toHaveText(`✓ ${partial}`);
     }
+    // The unknown count comes last and says so in muted tone, never in red.
+    const unknown = locale === "en" ? "1 unknown" : "1 个结果未知";
+    if (isMobile) {
+      // The mobile pill has no room for the long wording.
+      await expect(row.getByTestId("group-dispatch-summary")).toContainText(locale === "en" ? "1 unknown" : "1 未知");
+    } else {
+      await expect(row.getByTestId("group-dispatch-status-indeterminate")).toContainText(unknown);
+      await expect(row.getByTestId("group-dispatch-status-indeterminate")).toHaveClass(/text-fg-muted/);
+    }
     // Same bot dispatched twice: one avatar per member turn, never per bot.
     await expect(row.getByTestId("group-dispatch-avatars").locator(":scope > span")).toHaveCount(2);
     expect(await anchor.locator('[data-avatar-key="row"]').count()).toBe(0);

@@ -1163,6 +1163,7 @@ export default {
       stopped: "已停止",
       failed: "{n} 失败",
       indeterminate: "{n} 个结果未知",
+      indeterminateShort: "{n} 未知",
       mobileSummary: "{n} 个 Bot · {status}",
       mobileBots: "{n} 个 Bot",
       instructions: "派发内容",

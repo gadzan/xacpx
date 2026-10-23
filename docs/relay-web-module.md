@@ -1105,8 +1105,13 @@ core 不支持单成员取消（`supportsCancelMember` 为假）或成员已结�
 聚合行自己已经写着「⊘ 已取消」，再补一句「已停止」只是重复。core 对已结束的项管写停止
 意图时状态仍是 `completed`，所以只读状态是不够的，必须读这个字段。
 
-聚合行里出现 `indeterminate`（结果未知）的成员时，折叠行和手机摘要都单独显示「N 个结果未知」
-（`group.dispatch.indeterminate`）：结果未知既不是已完成也不是失败，混进任何一边都是编造结论。
+聚合行里出现 `indeterminate`（结果未知）的成员时，折叠行和手机摘要都单独显示结果未知的数量：
+结果未知既不是已完成也不是失败，混进任何一边都是编造结论。这个计数排在所有计数之后
+（它是「还不知道」的空缺，不是这一轮的又一个结论），用中性灰 `text-fg-muted`，前面带一个
+lucide 问号图标（`CircleHelp`），不用红色也不用警示色。桌面折叠行的文案是
+「N 个结果未知」/`N unknown`（`group.dispatch.indeterminate`）；手机端折叠胶囊放不下长文案，
+用短格式「N 未知」/`N unknown`（`group.dispatch.indeterminateShort`），
+例如「4 个 Bot · 2 执行中 · 1 未知」。
 
 ## 阶段范围边界
 
