@@ -408,6 +408,23 @@ for (const human of [false, true]) {
   });
 }
 
+for (const policy of [false, true]) {
+  for (const human of [false, true]) {
+    test(`${policy ? "policy" : "normal"} conversation prompt preserves attachment refs for ${human ? "human" : "public"} ingress`, async () => {
+      const calls: unknown[] = [];
+      const accept = async (input: unknown) => { calls.push(input); return { ok: true } as never; };
+      const { control } = makeFakeControl({ promptConversation: accept, promptConversationWithPolicy: accept });
+      const bridge = createControlBridge(control as never, { trustedConversationPrompt: accept, trustedConversationPolicyPrompt: accept });
+      const media = [{ id: "upload", filePath: "/uploads/photo.png", fileName: "photo.png", mimeType: "image/png", kind: "image", size: 4, previewUrl: "data:image/png;base64,AAAA" }];
+      const input = { conversationId: "c", topicId: "t", requestId: "attachment", text: "", media,
+        ...(policy ? { memberPolicies: [{ botId: "b", filesystem: "read-write" }] } : {}) };
+      const payload = { ...input, ...(human ? { humanIngress: { chatKey: "relay:a", senderId: "a", accountId: "a", isOwner: true } } : {}) };
+      expect(await dispatch(bridge, req(policy ? MSG.conversationPromptWithPolicy : MSG.conversationPrompt, payload))).toEqual({ ok: true });
+      expect(calls).toEqual([input]);
+    });
+  }
+}
+
 test("policy RPC with trusted ingress rejects a missing dedicated callback without public downgrade", async () => {
   let publicCalls = 0, oldTrustedCalls = 0;
   const { control } = makeFakeControl({ promptConversationWithPolicy: async () => { publicCalls++; return {} as never; } });

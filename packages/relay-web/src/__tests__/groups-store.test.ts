@@ -1467,6 +1467,7 @@ describe("useGroupsStore", () => {
       requestId: "req_active",
       text: "review",
       target: { mode: "members", botIds: ["bot_a"] },
+      media: [],
     };
     // Reconnect proved the Run is running, so isRunActive is true. The frozen
     // replay must still reach the wire: the backend's idempotent accept returns
@@ -1650,6 +1651,7 @@ describe("useGroupsStore", () => {
       requestId: "req_lost",
       text: "review",
       target: { mode: "members", botIds: ["bot_a"] },
+      media: [],
     };
     const runningRun: ConversationRunDto = {
       id: "run_lost", conversationId: "conversation_g", topicId: "topic_1",
@@ -1693,6 +1695,7 @@ describe("useGroupsStore", () => {
       requestId: "req_queued",
       text: "review",
       target: { mode: "members", botIds: ["bot_a"] },
+      media: [],
     };
     const queuedRun: ConversationRunDto = {
       id: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
@@ -1731,6 +1734,7 @@ describe("useGroupsStore", () => {
       requestId: "req_done",
       text: "review",
       target: { mode: "members", botIds: ["bot_a"] },
+      media: [],
     };
     const completedRun: ConversationRunDto = {
       id: "run_done", conversationId: "conversation_g", topicId: "topic_1",
@@ -1774,6 +1778,7 @@ describe("useGroupsStore", () => {
       requestId: "req_mine_done",
       text: "review",
       target: { mode: "members", botIds: ["bot_a"] },
+      media: [],
     };
     const mineDone: ConversationRunDto = {
       id: "run_mine_done", conversationId: "conversation_g", topicId: "topic_1",
@@ -1821,6 +1826,7 @@ describe("useGroupsStore", () => {
       requestId: "req_mine",
       text: "review",
       target: { mode: "members", botIds: ["bot_a"] },
+      media: [],
     };
     const foreignRun: ConversationRunDto = {
       id: "run_other", conversationId: "conversation_g", topicId: "topic_1",

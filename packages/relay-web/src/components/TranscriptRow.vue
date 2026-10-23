@@ -26,7 +26,7 @@ const props = defineProps<{
 
 <template>
   <div
-    class="flex gap-3"
+    class="conversation-row group flex gap-3"
     :class="[own ? 'justify-end' : '', enterClass]"
     :style="enterStyle"
     :data-row-id="rowId"

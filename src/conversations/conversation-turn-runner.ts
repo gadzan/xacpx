@@ -1,3 +1,4 @@
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { ControlPromptResult } from "../control/control-service";
 import { CANCEL_DRAIN_TIMEOUT_MS } from "../control/turn-support";
 import { directConversationChatKey } from "../domain/ids";
@@ -20,6 +21,7 @@ export interface ConversationTurnRunInput {
   directExecutionToken?: string;
   directMentionContext?: import("./direct-input-metadata").ResolvedDirectMention[];
   text: string;
+  media?: PromptAttachmentRef[];
   agentMentions?: import("@ganglion/xacpx-relay-protocol").AgentMention[];
   /**
    * Server-derived execution provenance from the durable MemberTurn after claim.
@@ -159,6 +161,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
       chatKey,
       sessionAlias: input.sessionAlias,
       text: input.text,
+      ...(input.media?.length ? { media: input.media } : {}),
       senderId: permission?.senderId ?? "bot-conversation",
       promptRequestId: input.promptRequestId,
       abortSignal: abort.signal,

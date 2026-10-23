@@ -1,5 +1,5 @@
-import { parseStoredBotAvatar } from "@ganglion/xacpx-relay-protocol";
-import { parseDirectInputMetadata } from "./direct-input-metadata";
+import { parseStoredBotAvatar, validPromptAttachments } from "@ganglion/xacpx-relay-protocol";
+import { assertPromptReplay, parseDirectInputMetadata } from "./direct-input-metadata";
 import { randomUUID } from "node:crypto";
 import {
   createConversationMessageId,
@@ -112,6 +112,7 @@ export interface ExternalRejectionReceipt {
 }
 
 interface MessageRow {
+  media_json?: string | null;
   input_metadata_json?: string | null;
   handoff_json?: string | null;
   id: string;
@@ -277,6 +278,7 @@ CREATE TABLE IF NOT EXISTS messages (
   role TEXT NOT NULL,
   sender_bot_id TEXT,
   content TEXT NOT NULL,
+  media_json TEXT,
   run_id TEXT,
   source_turn_json TEXT,
   created_at TEXT NOT NULL,
@@ -511,6 +513,8 @@ function mapMessage(row: MessageRow): ConversationMessage {
   const sourceTurn = row.source_turn_json
     ? JSON.parse(row.source_turn_json) as ConversationMessage["sourceTurn"]
     : undefined;
+  const media: unknown = row.media_json ? JSON.parse(row.media_json) : undefined;
+  if (media !== undefined && !validPromptAttachments(media)) throw new ConversationError("invalid-media", "invalid durable prompt attachments");
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -519,6 +523,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
     role: row.role as ConversationMessage["role"],
     ...(optionalString(row.sender_bot_id) ? { senderBotId: row.sender_bot_id as string } : {}),
     content: row.content,
+    ...(media?.length ? { media } : {}),
     ...(row.input_metadata_json !== null && row.input_metadata_json !== undefined ? { inputMetadata: parseDirectInputMetadata(row.content, JSON.parse(row.input_metadata_json)) } : {}),
     ...(row.handoff_json ? { handoff: JSON.parse(row.handoff_json) as ConversationMessage["handoff"] } : {}),
     ...(optionalString(row.run_id) ? { runId: row.run_id as string } : {}),
@@ -774,6 +779,9 @@ export class SqliteConversationStore implements ConversationStore {
     if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)").some(c => c.name === "input_metadata_json")) {
       this.sqlite.exec("ALTER TABLE messages ADD COLUMN input_metadata_json TEXT");
     }
+    if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)").some(c => c.name === "media_json")) {
+      this.sqlite.exec("ALTER TABLE messages ADD COLUMN media_json TEXT");
+    }
     this.ensureBindingRevision();
     this.traces = new SqliteMemberTurnTraceStore(this.sqlite);
   }
@@ -839,9 +847,13 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult {
+    if (input.media !== undefined && !validPromptAttachments(input.media)) throw new ConversationError("invalid-media", "invalid prompt attachments");
     if (input.externalRequest) {
       const replay = this.getExternalRequest(input.externalRequest);
-      if (replay) return replay;
+      if (replay) {
+        if (!input.inputMetadata && (input.members ?? []).length === 0 && !input.primaryMember) assertPromptReplay(replay.message, input.content, input.media);
+        return replay;
+      }
     }
     // Idempotent replay short-circuits BEFORE the bounded-queue check: a
     // retry of an already-accepted request at a full queue must return the
@@ -853,6 +865,7 @@ export class SqliteConversationStore implements ConversationStore {
       if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
       const reused = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
       if (reused) {
+        if (!input.externalRequest && !input.inputMetadata && (input.members ?? []).length === 0 && !input.primaryMember) assertPromptReplay(reused.message, input.content, input.media);
         return { reused: true, ...reused };
       }
     }
@@ -881,10 +894,14 @@ export class SqliteConversationStore implements ConversationStore {
       if (isSqliteUniqueViolation(error)) {
         if (input.externalRequest) {
           const replay = this.getExternalRequest(input.externalRequest);
-          if (replay) return replay;
+          if (replay) {
+            if (!input.inputMetadata && (input.members ?? []).length === 0 && !input.primaryMember) assertPromptReplay(replay.message, input.content, input.media);
+            return replay;
+          }
         }
         const reused = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
         if (reused) {
+          if (!input.externalRequest && !input.inputMetadata && (input.members ?? []).length === 0 && !input.primaryMember) assertPromptReplay(reused.message, input.content, input.media);
           return { reused: true, ...reused };
         }
       }
@@ -3742,9 +3759,9 @@ export class SqliteConversationStore implements ConversationStore {
     const metadata = input.inputMetadata ? parseDirectInputMetadata(input.content, input.inputMetadata) : undefined;
     this.sqlite.run(
       `INSERT INTO messages (
-         id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-       ) VALUES (?, ?, ?, ?, 'human', NULL, ?, ?, NULL, ?)`,
-      [messageId, input.conversationId, input.topicId, seq, input.content, runId, input.now],
+         id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at, media_json
+       ) VALUES (?, ?, ?, ?, 'human', NULL, ?, ?, NULL, ?, ?)`,
+      [messageId, input.conversationId, input.topicId, seq, input.content, runId, input.now, input.media?.length ? JSON.stringify(input.media) : null],
     );
     if (metadata) this.sqlite.run(
       "UPDATE messages SET input_metadata_json = ?, role = ?, sender_bot_id = ? WHERE id = ?",

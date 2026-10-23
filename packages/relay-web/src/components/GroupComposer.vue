@@ -20,6 +20,8 @@ import ConversationComposer from "./ConversationComposer.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown } from "../lib/use-dropdown";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
+import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
+import { mergeRecoveredDraft, sourceRunPrompt } from "../lib/composer-run-actions";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -57,16 +59,34 @@ let inFlightDraft: { key: string; text: string } | null = null;
 /** True while a Group/Topic switch swaps the textarea contents: those writes are
  *  not user edits and must not be persisted under the new key. */
 let swappingDraft = false;
-const targetDd = useDropdown();
+/** Stop / stop-restore / takeover share one fence: a second click while the
+ *  store reports the run as cancelling is a no-op, never a second RPC. */
+const actionBusy = ref(false);
+const actionError = ref<string | null>(null);
+const restoreNotice = ref<string | null>(null);
+interface EveryoneConfirmation {
+  key: string;
+  revision: number;
+  recipientIds: string[];
+  text: string;
+  unresolvedConfirmed: boolean;
+}
+const everyoneConfirm = ref<EveryoneConfirmation | null>(null);
+/** Revision of the draft text, bumped on every user edit. The everyone dialog
+ *  snapshots it so a typed change invalidates the frozen recipient list. */
+const draftRevision = ref(0);
 const composer = ref<InstanceType<typeof ConversationComposer> | null>(null);
+const targetDd = useDropdown();
 const composing = ref(false);
 const collapsedCaret = ref(true);
-const mentionBindings = ref<MentionBinding[]>([]);
-const mentionOwned = ref(false);
-const mentionActiveIdx = ref(0);
 const cmdActiveIdx = ref(0);
 const cmdDismissed = ref(false);
+const mentionActiveIdx = ref(0);
 const mentionDismissed = ref(false);
+const mentionBindings = ref<MentionBinding[]>([]);
+const mentionOwned = ref(false);
+const unresolvedConfirm = ref<{ key: string; text: string; target: string } | null>(null);
+const sendBusy = ref(false);
 
 const selection = computed(() => groupsStore.targetSelection);
 const isEveryone = computed(() => selection.value?.mode === "everyone");
@@ -128,13 +148,24 @@ function clearSentDraft(): void {
 // switching away (and a tab reload). Sync, so an edit is always filed under the
 // key it was typed against.
 watch(promptText, (text) => {
-  if (!swappingDraft) saveDraft(draftKey.value, text);
+  if (swappingDraft) return;
+  saveDraft(draftKey.value, text);
+  draftRevision.value += 1;
+  actionError.value = null;
+  restoreNotice.value = null;
+  // A typed change invalidates a frozen everyone confirmation; the dialog must
+  // refresh its recipient snapshot, never submit a stale list.
+  if (everyoneConfirm.value && (everyoneConfirm.value.key !== draftKey.value || everyoneConfirm.value.text !== text)) {
+    everyoneConfirm.value = null;
+  }
 }, { flush: "sync" });
 
 // A Group/Topic switch swaps in that Group + Topic's own draft. The derived
 // mention suppression and menus reset with the swap (otherwise the first mention
 // in the next draft is ignored). `switchTopic()` sets `topicReady=false` at the
 // same time, which disables the textarea, so the user cannot type in between.
+// A rejected or orphaned send keeps its source draft: only a draft that matches
+// the in-flight text is dropped, never whatever the user typed meanwhile.
 watch(draftKey, (next, prev) => {
   swappingDraft = true;
   try {
@@ -144,11 +175,36 @@ watch(draftKey, (next, prev) => {
       saveDraft(prev, "");
     }
     clearSentDraft();
+    actionError.value = null;
+    restoreNotice.value = null;
+    everyoneConfirm.value = null;
+    unresolvedConfirm.value = null;
     promptText.value = loadDraft(next);
+    draftRevision.value += 1;
   } finally {
     swappingDraft = false;
   }
 }, { flush: "sync" });
+
+/** Eligible everyone recipients in live membership order: enabled members only.
+ *  Names come from the real catalog rows; a missing row falls back to the id so
+ *  the confirm dialog never invents a display name. */
+const everyoneRecipients = computed<Array<{ id: string; name: string; lead: boolean }>>(() => {
+  const group = groupsStore.currentGroup;
+  if (!group) return [];
+  const byId = new Map(props.bots.map((b) => [b.id, b] as const));
+  return group.botIds
+    .filter((id) => byId.get(id)?.enabled === true)
+    .map((id) => ({ id, name: byId.get(id)?.name ?? id, lead: group.leadBotId === id }));
+});
+
+function memberUnavailableReason(bot: BotSummaryDto): string | null {
+  if (bot.retired) return t("bot.status.disabled");
+  const instance = instancesStore.byId(props.instanceId ?? groupsStore.instanceId ?? "");
+  if (instance && (!instance.agents.some(agent => agent.name === bot.agent)
+    || !instance.workspaces.some(workspace => workspace.name === bot.workspace))) return t("group.target.noRuntime");
+  return bot.enabled ? null : t("bot.status.disabled");
+}
 
 function toggleMenu(): void {
   if (props.disabled) return;
@@ -159,13 +215,13 @@ function closeMenu(): void {
   targetDd.closeMenu();
 }
 
-/** Keyboard activation order matches the rendered rows (disabled members excluded). */
+/** Unavailable rows retain keyboard focus and explain why activation is ignored. */
 const navRows = computed<Array<() => void>>(() => {
   const rows: Array<() => void> = [() => pickLead()];
   if (automaticVisible.value) rows.push(() => pickAutomatic());
   rows.push(() => pickEveryone());
   for (const b of props.bots) {
-    if (b.enabled) rows.push(() => toggleMember(b.id));
+    rows.push(() => toggleMember(b.id));
   }
   return rows;
 });
@@ -223,6 +279,8 @@ function pickLead(): void {
 }
 
 function toggleMember(botId: string): void {
+  const bot = props.bots.find(row => row.id === botId);
+  if (!bot || memberUnavailableReason(bot)) return;
   mentionOwned.value = false;
   groupsStore.toggleTargetMember(botId);
 }
@@ -247,7 +305,7 @@ const mentionMembers = computed<GroupMentionMember[]>(() => {
     botId: bot.id,
     name: bot.name,
     ...(bot.role ? { role: bot.role } : {}),
-    enabled: bot.enabled,
+    enabled: memberUnavailableReason(bot) === null,
     lead: bot.id === leadId,
   }));
 });
@@ -342,6 +400,7 @@ function onCompositionEnd(): void {
 }
 
 function pickMention(member: GroupMentionMember): void {
+  if (!member.enabled) return;
   const query = mentionQuery.value;
   if (!query) return;
   const token = mentionDisplayToken(member.name);
@@ -435,6 +494,7 @@ function onKeydown(e: KeyboardEvent): void {
  *  target valid for this very send. */
 const baseCanSend = computed(() => !props.disabled
   && !groupsStore.promptInFlight
+  && !groupsStore.cancellingRunId
   && !groupsStore.isRunActive
   && groupsStore.topicReady
   // A fresh send is refused while a previous prompt's outcome is unknown: the
@@ -444,16 +504,20 @@ const baseCanSend = computed(() => !props.disabled
 /** Final send guard: evaluated after any pending mention has been committed. */
 const canSend = computed(() => baseCanSend.value
   && groupsStore.targetResolvable
+  && !sendBusy.value
   && promptText.value.trim().length > 0);
 
-async function handleSend(): Promise<void> {
-  if (!baseCanSend.value) {
+async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnresolved = false): Promise<void> {
+  if (sendBusy.value || !baseCanSend.value) {
     // Refuse before touching the draft: the store reports why (targetRequired /
     // targetEmpty), and clearing the textarea would throw the typed message away
     // with no recoverable request id and no Retry content.
     groupsStore.reportTargetProblem();
     return;
   }
+  if (confirmedEveryone && (confirmedEveryone.key !== draftKey.value
+    || confirmedEveryone.text !== promptText.value || confirmedEveryone.revision !== draftRevision.value
+    || !isEveryone.value)) { everyoneConfirm.value = null; return; }
   const text = promptText.value.trim();
   if (!text) return;
   if (slashBroadcastBlocked(text)) {
@@ -463,7 +527,12 @@ async function handleSend(): Promise<void> {
   }
   // The token under the caret is now final, so the structured target must
   // reflect it before the store resolves the send target.
-  if (!commitMentionAtBoundary()) return;
+  const resolved = commitMentionAtBoundary();
+  confirmedUnresolved ||= confirmedEveryone?.unresolvedConfirmed === true;
+  if (!resolved && !confirmedUnresolved) {
+    unresolvedConfirm.value = { key: draftKey.value, text: promptText.value, target: JSON.stringify(selection.value) };
+    return;
+  }
   // Re-check after the boundary commit: the mention is what makes an empty
   // target valid for this very send, and entering text with no resolvable
   // target (e.g. deselected all members and typed nothing mentionable) must
@@ -472,6 +541,19 @@ async function handleSend(): Promise<void> {
     groupsStore.reportTargetProblem();
     return;
   }
+  if (isEveryone.value) {
+    const recipientIds = everyoneRecipients.value.map(member => member.id);
+    if (!recipientIds.length) { groupsStore.promptError = "targetEmpty"; return; }
+    const snapshot = { key: draftKey.value, revision: draftRevision.value, recipientIds, text: promptText.value, unresolvedConfirmed: confirmedUnresolved };
+    if (!confirmedEveryone || JSON.stringify(confirmedEveryone) !== JSON.stringify(snapshot)) {
+      everyoneConfirm.value = snapshot;
+      return;
+    }
+    groupsStore.setTarget({ mode: "members", botIds: recipientIds });
+  }
+  everyoneConfirm.value = null;
+  unresolvedConfirm.value = null;
+  sendBusy.value = true;
   // The parent resolves the send against the store and reports the outcome, so
   // the draft decision uses the real result: an accepted prompt is in the
   // transcript, an uncertain one is replayable via Retry, but a definitive
@@ -482,33 +564,82 @@ async function handleSend(): Promise<void> {
   if (props.sendOutcome) {
     // Textbook semantics: after a send the text no longer carries a mention, so
     // the derived state must reset or the next draft would inherit suppression.
-    const outcome = await props.sendOutcome();
+    let outcome: GroupSendOutcome;
+    try { outcome = await props.sendOutcome(); }
+    finally { sendBusy.value = false; }
     if (inFlightDraft === sent) inFlightDraft = null;
     // Only `accepted` and `uncertain` own this draft: their prompt is durably
     // represented (transcript, or replayable via Retry), so the text can go.
-    //
-    // `orphaned` must NOT touch the composer. The Topic watcher already dropped
-    // this draft when the user switched Topics; whatever is in the textarea now
-    // is a NEW draft typed against the new Topic, and clobbering it from a late
-    // completion of another Topic's send loses real user input.
-    //
-    // `rejected` keeps the same draft: no durable accept exists, so the typed
-    // text is the only remaining copy.
-    // Only while still on the Group + Topic it was sent from: after a switch the
-    // textarea holds another Topic's draft (the swap watcher already dropped the
-    // sent copy), and clearing it would erase that draft.
+    // `orphaned` must NOT touch the composer: the Topic watcher already dropped
+    // this draft when the user switched Topics.
+    // `rejected` keeps the same draft: no durable accept exists.
+    // Only while still on the Group + Topic it was sent from.
     if ((outcome === "accepted" || outcome === "uncertain") && draftKey.value === sent.key) {
-      clearSentDraft();
+      if (loadDraft(sent.key) === sent.text) saveDraft(sent.key, "");
+      if (promptText.value === sent.text) clearSentDraft();
     }
     return;
   }
   inFlightDraft = null;
+  sendBusy.value = false;
   clearSentDraft();
 }
 
-function handleCancel(): void {
-  emit("cancel");
+async function handleCancel(): Promise<void> {
+  await runAction("stop");
 }
+
+async function runAction(action: "stop" | "restore" | "takeover"): Promise<void> {
+  const run = groupsStore.activeRun;
+  const instanceId = groupsStore.instanceId;
+  if (!run || !instanceId || actionBusy.value || groupsStore.cancellingRunId) return;
+  const key = draftKey.value;
+  const groupId = groupsStore.selectedGroupId;
+  const text = promptText.value;
+  const revision = draftRevision.value;
+  if (action === "takeover" && !text.trim()) return;
+  actionBusy.value = true;
+  actionError.value = null;
+  try {
+    const recovered = action === "restore" ? await sourceRunPrompt(instanceId, run, groupsStore.messages) : null;
+    if (key !== draftKey.value) return;
+    if (action === "restore" && recovered === null) { actionError.value = t("collaboration.promptUnavailable"); return; }
+    const outcome = await groupsStore.cancelCurrentRun({ runId: run.id });
+    if (key !== draftKey.value || outcome.scope?.instanceId !== instanceId
+      || outcome.scope.conversationId !== run.conversationId || outcome.scope.topicId !== run.topicId
+      || outcome.scope.groupId !== groupId || outcome.runId !== run.id) return;
+    if (outcome.status !== "cancelled" && outcome.status !== "terminal") { actionError.value = t("collaboration.stopUnconfirmed"); return; }
+    if (action === "restore" && recovered !== null) {
+      promptText.value = mergeRecoveredDraft(promptText.value, recovered);
+      restoreNotice.value = t("collaboration.restored");
+      await nextTick();
+      composer.value?.focus();
+    } else if (action === "takeover") {
+      if (promptText.value !== text || draftRevision.value !== revision) return;
+      await handleSend();
+    }
+  } catch { actionError.value = t("collaboration.stopUnconfirmed"); }
+  finally { actionBusy.value = false; }
+}
+
+function confirmUnresolved(): void {
+  const pending = unresolvedConfirm.value;
+  unresolvedConfirm.value = null;
+  if (!pending || pending.key !== draftKey.value || pending.text !== promptText.value
+    || pending.target !== JSON.stringify(selection.value)) return;
+  void handleSend(undefined, true);
+}
+
+watch(() => JSON.stringify(everyoneRecipients.value), () => {
+  if (everyoneConfirm.value) everyoneConfirm.value = {
+    key: draftKey.value, text: promptText.value, revision: draftRevision.value,
+    recipientIds: everyoneRecipients.value.map(member => member.id), unresolvedConfirmed: everyoneConfirm.value.unresolvedConfirmed,
+  };
+});
+watch(() => JSON.stringify(selection.value), () => {
+  if (!isEveryone.value) everyoneConfirm.value = null;
+  unresolvedConfirm.value = null;
+});
 
 /** Replay the frozen prompt tuple (requestId + text + target). Never re-derives
  *  from the current UI selection: the server keyed the durable accept on the
@@ -534,6 +665,24 @@ function handleRetry(): void {
       </button>
     </div>
 
+    <p v-if="actionError" role="alert" class="mb-2 text-xs text-danger">{{ actionError }}</p>
+    <p v-if="restoreNotice" role="status" class="mb-2 text-xs text-fg-muted">{{ restoreNotice }}</p>
+    <div v-if="groupsStore.isRunActive" class="mb-2 flex items-center gap-2 text-xs">
+      <button type="button" class="min-h-11 rounded-lg px-2 text-danger hover:bg-raised disabled:opacity-50" :disabled="actionBusy || !!groupsStore.cancellingRunId" @click="runAction('stop')">{{ $t('group.detail.stopRun') }}</button>
+      <button type="button" class="min-h-11 rounded-lg px-2 hover:bg-raised disabled:opacity-50" :disabled="actionBusy || !!groupsStore.cancellingRunId" @click="runAction('restore')">{{ $t('collaboration.stopRestore') }}</button>
+      <button type="button" class="min-h-11 rounded-lg px-2 text-accent hover:bg-raised disabled:opacity-50" :title="$t('collaboration.takeoverHint')" :disabled="actionBusy || !!groupsStore.cancellingRunId || !promptText.trim()" @click="runAction('takeover')">{{ $t('collaboration.takeover') }}</button>
+    </div>
+    <ComposerConfirmDialog v-if="everyoneConfirm" :title="$t('group.confirmEveryone.title', { count: everyoneRecipients.length })" :confirm-label="$t('group.confirmEveryone.send')" :pending="sendBusy" @cancel="everyoneConfirm = null" @confirm="handleSend(everyoneConfirm ?? undefined)">
+      <ul class="space-y-1">
+        <li v-for="recipient in everyoneRecipients.slice(0, 5)" :key="recipient.id">{{ recipient.name }} <span v-if="recipient.lead" class="text-xs text-fg-muted">{{ $t('group.target.lead') }}</span></li>
+      </ul>
+      <p v-if="everyoneRecipients.length > 5" class="mt-2 text-xs text-fg-muted">{{ $t('group.confirmEveryone.remaining', { count: everyoneRecipients.length - 5 }) }}</p>
+      <p v-if="everyoneRecipients.find(member => member.lead)" class="mt-2 text-xs text-fg-muted">{{ $t('group.target.lead') }}: {{ everyoneRecipients.find(member => member.lead)?.name }}</p>
+    </ComposerConfirmDialog>
+    <ComposerConfirmDialog v-if="unresolvedConfirm" :title="$t('group.mentionConfirm.title')" :confirm-label="$t('group.confirmEveryone.send')" @cancel="unresolvedConfirm = null" @confirm="confirmUnresolved">
+      <p>{{ $t('group.mentionConfirm.body') }}</p>
+      <p class="mt-2 text-xs text-fg-muted">{{ selectionLabel }}</p>
+    </ComposerConfirmDialog>
     <div v-if="!needsFirstTopic" class="mb-2 flex items-center gap-2">
       <div class="relative">
         <button
@@ -583,14 +732,15 @@ function handleRetry(): void {
             <p class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ $t("group.target.selectMembers") }}</p>
             <button v-for="b in props.bots" :key="b.id"
                     :data-test="`group-target-member-${b.id}`"
-                    :disabled="!b.enabled"
+                    :aria-disabled="!!memberUnavailableReason(b)"
+                    :title="memberUnavailableReason(b) ?? undefined"
                     class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
                     :class="[mobile ? 'h-11' : 'h-8', !b.enabled ? 'cursor-not-allowed text-fg-muted/50' : 'text-fg']"
                     @click="toggleMember(b.id)">
               <BotAvatar :avatar="b.avatar" :driver="driverFor(b)" :name="b.name" :size="24" static
                          :disabled="!b.enabled" :retired="b.retired" :class="!b.enabled ? 'opacity-50' : ''" />
               <span class="min-w-0 flex-1 truncate" :class="!b.enabled ? 'text-fg-muted' : 'text-fg'">{{ b.name }}</span>
-              <span v-if="!b.enabled" class="shrink-0 text-xs text-fg-muted">{{ $t("bot.status.disabled") }}</span>
+              <span v-if="memberUnavailableReason(b)" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(b) }}</span>
               <Check v-else-if="selectedIds.includes(b.id)" :size="14" class="shrink-0 text-accent" />
             </button>
             <p v-if="eligibleBots.length === 0" class="px-2 py-2 text-sm text-fg-muted">
@@ -606,14 +756,15 @@ function handleRetry(): void {
       ref="composer"
       v-model="promptText"
       :busy="groupsStore.isRunActive"
-      :disabled="disabled || groupsStore.promptInFlight || groupsStore.isRunActive || !groupsStore.topicReady"
+      :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
       :sending="groupsStore.promptInFlight"
+      :cancelling="actionBusy || !!groupsStore.cancellingRunId"
       :send-disabled="!canSend"
       :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : $t('group.prompt.placeholder')"
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
       stop-test-id="group-stop-run-button"
-      @send="handleSend"
+      @send="handleSend()"
       @cancel="handleCancel"
       @keydown="onKeydown"
       @input="onInput"
@@ -659,16 +810,17 @@ function handleRetry(): void {
             type="button"
             data-test="group-mention-item"
             :data-bot-id="member.botId"
+            :aria-disabled="!member.enabled"
+            :title="!member.enabled ? memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) ?? undefined : undefined"
             class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
             :class="index === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-            @mousedown.prevent="pickMention(member)"
+            @pointerdown.prevent
+            @click="pickMention(member)"
           >
             <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
             <span v-if="member.lead" class="shrink-0 text-xs text-accent">{{ $t("group.target.lead") }}</span>
             <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
-            <span class="shrink-0 text-xs" :class="member.enabled ? 'text-fg-muted' : 'text-warning'">
-              {{ member.enabled ? $t("bot.status.enabled") : $t("bot.status.disabled") }}
-            </span>
+            <span v-if="!member.enabled" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) }}</span>
             <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
           </button>
         </div>

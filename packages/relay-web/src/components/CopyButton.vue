@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onBeforeUnmount, ref } from "vue";
 import { Check, Copy } from "lucide-vue-next";
 
 const props = defineProps<{ text: string }>();
 const copied = ref(false);
 let timer: ReturnType<typeof setTimeout> | null = null;
+onBeforeUnmount(() => {
+  if (timer) clearTimeout(timer);
+});
 
 async function copy(): Promise<void> {
   try {
@@ -36,7 +39,7 @@ async function copy(): Promise<void> {
     type="button"
     :aria-label='$t("copy.copy")'
     :title='copied ? $t("copy.copied") : $t("copy.copy")'
-    class="rounded-sm p-1 leading-none text-fg-muted hover:bg-fg/5 hover:text-fg"
+    class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block"
     @click.stop="copy"
   >
     <Check v-if="copied" :size="14" class="text-run" />

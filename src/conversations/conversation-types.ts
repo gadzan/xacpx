@@ -1,3 +1,4 @@
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { BotProfileSnapshot } from "../bots/bot-types";
 
 export type ConversationKind = "bot" | "group";
@@ -124,6 +125,12 @@ export interface ConversationMessage {
   senderBotId?: string;
   recipients?: string[];
   content: string;
+  /**
+   * Executable upload refs for a human request (daemon filePath + preview).
+   * Persisted atomically with accept; execution re-derives from this row.
+   * Display projections strip filePath and expose only AttachmentMetadata.
+   */
+  media?: PromptAttachmentRef[];
   /** Public structured assignment; never a private message or a model identity. */
   handoff?: PublicHandoffEnvelope;
   replyTo?: string;

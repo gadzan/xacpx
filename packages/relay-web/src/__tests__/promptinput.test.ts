@@ -171,7 +171,8 @@ describe("PromptInput composer", () => {
       (w.get('[data-test="composer-send"]').element as HTMLButtonElement)
         .disabled,
     ).toBe(false);
-    composer.uploading = true;
+    composer.bindInstance("i1", "uploading");
+    composer.pending.push({ id: "pending", filename: "a.txt", mimeType: "text/plain", size: 1, kind: "file", status: "uploading" });
     await w.vm.$nextTick();
     expect(
       (w.get('[data-test="composer-send"]').element as HTMLButtonElement)

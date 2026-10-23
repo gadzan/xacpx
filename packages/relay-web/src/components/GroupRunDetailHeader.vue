@@ -26,7 +26,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ close: []; stop: []; attempt: [attempt: number] }>();
-
 const { t } = useI18n();
 
 const historicalAttempt = computed(() => props.memberTurn && props.attempt !== undefined && props.attempt !== props.memberTurn.attempt);
@@ -124,7 +123,6 @@ const ariaLabel = computed(() =>
     <p v-if="stopAvailable && !dense" data-test="group-stop-run-explanation" class="mt-3 text-xs text-fg-muted">
       {{ $t("group.detail.stopAllMembers") }}
     </p>
-
     <h2
       data-test="group-detail-title"
       class="break-words font-semibold leading-snug tracking-tight text-fg"

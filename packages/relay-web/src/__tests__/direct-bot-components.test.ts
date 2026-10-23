@@ -1510,8 +1510,9 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", []]);
     });
 
-    it("displays stop run button, disables textarea, and blocks Enter when a run is active", async () => {
+    it("keeps the composer editable, blocks Enter, and offers Stop while a run is active", async () => {
       const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
       directBots.activeRun = {
         id: "run_1",
         conversationId: "c1",
@@ -1530,19 +1531,28 @@ describe("Direct Bot Components", () => {
         },
       });
 
-      // Textarea is disabled during active run
+      // A running turn must not lock the textarea: the takeover and
+      // stop-and-restore actions both compose into it.
       const textarea = wrapper.find("textarea");
-      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
 
-      // Pressing Enter does NOT emit send
-      await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
-      expect(wrapper.emitted("send")).toBeUndefined();
-
-      // Stop button is shown and emits cancel
+      // Empty composer during a run offers Stop as the only action, and it
+      // dispatches the store's cancel for this exact run.
+      const cancelSpy = vi.spyOn(directBots, "cancelCurrentRun").mockResolvedValue({
+        status: "blocked", scope: null, runId: null, reason: "no-active-run",
+      });
       const stopBtn = wrapper.find('[data-test="stop-run-button"]');
       expect(stopBtn.exists()).toBe(true);
       await stopBtn.trigger("click");
-      expect(wrapper.emitted("cancel")).toBeTruthy();
+      await flushPromises();
+      expect(cancelSpy).toHaveBeenCalledWith({ runId: "run_1" });
+
+      // Typed text swaps Stop for Send: Enter still refuses to send.
+      await textarea.setValue("steer this");
+      await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
+      expect(wrapper.emitted("send")).toBeUndefined();
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(true);
     });
 
     it("disables the composer while topic recovery is still in flight", async () => {
@@ -1937,6 +1947,7 @@ describe("Direct Bot Components", () => {
           activeRun,
           activeMemberTurn: null,
           runParts: {},
+          stopAvailable: true,
           bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
         },
         global: {
@@ -1948,7 +1959,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain("Running");
       expect(wrapper.text()).toContain("Analyzing code...");
 
-      const stopBtn = wrapper.find('[data-test="stop-turn-hud-button"]');
+      const stopBtn = wrapper.find('[data-test="run-stop-button"]');
       expect(stopBtn.exists()).toBe(true);
       await stopBtn.trigger("click");
       expect(wrapper.emitted("cancelRun")).toBeTruthy();
@@ -2015,7 +2026,7 @@ describe("Direct Bot Components", () => {
         },
       });
       expect(wrapper.find('[data-test="live-turn-container"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="stop-turn-hud-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
       expect(wrapper.text()).toContain("Run cancelled");
     });
 

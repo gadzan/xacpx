@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { config, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { config, flushPromises, mount, type DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
@@ -109,6 +109,13 @@ function botNames(wrapper: VueWrapper): string[] {
   return wrapper.findAll('[data-test="bot-name"]').map((node) => node.text());
 }
 
+
+/** The Disabled section renders after every enabled row, so its last row is the
+ *  one under test in each re-enable case. */
+function disabledRow(wrapper: VueWrapper): DOMWrapper<Element> {
+  const rows = wrapper.findAll('[data-test="bot-row"]');
+  return rows.at(-1)!;
+}
 function toastTexts(): string[] {
   return [...document.body.querySelectorAll('[data-test="toast"] span')].map((node) => node.textContent ?? "");
 }
@@ -159,8 +166,10 @@ describe("Disabled Bots", () => {
       await toggle.trigger("click");
       expect(botNames(wrapper)).toEqual(["Reviewer", "Tester", "Sleeper"]);
       expect(toggle.attributes("aria-expanded")).toBe("true");
-      const enableButtons = wrapper.findAll('[data-test="enable-bot-tree-button"]');
-      expect(enableButtons.map((button) => button.text())).toEqual(["Enable"]);
+      const menu = wrapper.findAll('[data-test="bot-menu-button"]');
+      expect(menu.length).toBeGreaterThanOrEqual(3);
+      await menu.at(-1)!.trigger("click");
+      expect(wrapper.find('[data-test="bot-menu-toggle"]').text()).toBe("Enable");
 
       await toggle.trigger("click");
       expect(botNames(wrapper)).toEqual(["Reviewer", "Tester"]);
@@ -172,7 +181,7 @@ describe("Disabled Bots", () => {
 
       expect(botNames(wrapper)).toEqual(["Reviewer", "Tester"]);
       expect(wrapper.find('[data-test="bots-disabled-toggle"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="enable-bot-tree-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="bot-menu-toggle"]').exists()).toBe(false);
     });
 
     it("keeps the selected disabled Bot visible while the Disabled list is collapsed", async () => {
@@ -210,7 +219,8 @@ describe("Disabled Bots", () => {
       const wrapper = await mountBotsTree();
 
       await wrapper.find('[data-test="bots-disabled-toggle"]').trigger("click");
-      await wrapper.find('[data-test="enable-bot-tree-button"]').trigger("click");
+      await disabledRow(wrapper).find('[data-test="bot-menu-button"]').trigger("click");
+      await wrapper.find('[data-test="bot-menu-toggle"]').trigger("click");
       await flushPromises();
 
       expect(calls.filter((call) => call.type === "control.bots.update").map((call) => call.payload)).toEqual([
@@ -228,7 +238,8 @@ describe("Disabled Bots", () => {
       const wrapper = await mountBotsTree();
 
       await wrapper.find('[data-test="bots-disabled-toggle"]').trigger("click");
-      await wrapper.find('[data-test="enable-bot-tree-button"]').trigger("click");
+      await disabledRow(wrapper).find('[data-test="bot-menu-button"]').trigger("click");
+      await wrapper.find('[data-test="bot-menu-toggle"]').trigger("click");
       await flushPromises();
 
       expect(botNames(wrapper)).toEqual(["Reviewer", "Sleeper"]);
@@ -247,7 +258,8 @@ describe("Disabled Bots", () => {
       expect(wrapper.find('[data-test="bots-disabled-toggle"]').text()).toBe("已禁用（1）");
       expect(wrapper.find('[data-test="no-enabled-bots"]').text()).toBe("此实例的 Bot 均已禁用。展开已禁用列表即可重新启用。");
       await wrapper.find('[data-test="bots-disabled-toggle"]').trigger("click");
-      expect(wrapper.find('[data-test="enable-bot-tree-button"]').text()).toBe("启用");
+      await disabledRow(wrapper).find('[data-test="bot-menu-button"]').trigger("click");
+      expect(wrapper.find('[data-test="bot-menu-toggle"]').text()).toBe("启用");
     });
   });
 
@@ -314,7 +326,8 @@ describe("Disabled Bots", () => {
       await wrapper.find('[data-test="group-target-button"]').trigger("click");
       const sleeper = wrapper.find('[data-test="group-target-member-bot_off"]');
       expect(sleeper.text()).toContain("Disabled");
-      expect(sleeper.attributes("disabled")).toBeDefined();
+      expect(sleeper.attributes("aria-disabled")).toBe("true");
+      expect(sleeper.attributes("disabled")).toBeUndefined();
     });
 
     it("names the fallback member when the Lead is disabled", async () => {

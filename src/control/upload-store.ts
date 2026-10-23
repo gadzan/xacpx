@@ -1,10 +1,10 @@
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { MAX_PROMPT_ATTACHMENT_BYTES } from "@ganglion/xacpx-relay-protocol";
 
 import { coreHomeDir } from "../runtime/core-home.js";
 
-const DEFAULT_MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
 export interface UploadStoreOptions {
@@ -42,7 +42,7 @@ export class UploadStore {
 
   constructor(opts: UploadStoreOptions = {}) {
     this.rootDir = opts.rootDir ?? defaultRootDir();
-    this.maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+    this.maxBytes = opts.maxBytes ?? MAX_PROMPT_ATTACHMENT_BYTES;
     this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
     this.now = opts.now ?? (() => new Date());
   }

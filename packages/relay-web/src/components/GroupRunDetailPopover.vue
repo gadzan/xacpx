@@ -129,6 +129,7 @@ function observeAnchor(): void {
 }
 
 function onOutsidePointer(event: PointerEvent): void {
+  if (document.querySelector('[data-composer-confirm]')) return;
   const path = event.composedPath();
   if (layerEl.value && path.includes(layerEl.value)) return;
   if (props.anchorEl && path.includes(props.anchorEl)) return;
@@ -141,6 +142,7 @@ function closeWithFocus(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (document.querySelector('[data-composer-confirm]')) return;
   if (event.key !== "Escape") return;
   event.preventDefault();
   event.stopPropagation();

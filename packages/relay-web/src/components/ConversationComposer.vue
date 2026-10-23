@@ -30,6 +30,10 @@ const props = withDefaults(
     textareaTestId?: string;
     /** Pane-specific extra guard on Send (e.g. a resolvable target is required). */
     sendDisabled?: boolean;
+    /** Attachments slot needs extra guard on Send (e.g. an upload still in flight). */
+    attachmentsSendDisabled?: boolean;
+    /** True when attachments are staged: an empty body sends instead of stopping. */
+    hasAttachments?: boolean;
     /** The pane drives an ARIA combobox from its completion menu. */
     combobox?: boolean;
     /** Element id of the pane's completion listbox. */
@@ -61,7 +65,7 @@ const emit = defineEmits<{
 
 const textarea = ref<HTMLTextAreaElement | null>(null);
 
-const hasSendable = computed(() => props.modelValue.trim().length > 0);
+const hasSendable = computed(() => props.modelValue.trim().length > 0 || props.hasAttachments === true);
 /** Plainly unavailable (e.g. a Group with zero Topics): dim the whole card and
  *  show not-allowed. A running turn (Stop must stay prominent) or an in-flight
  *  send (spinner) keeps the card at full strength and only dims the textarea. */
@@ -124,6 +128,7 @@ function onInput(event: Event): void {
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >
       <slot name="menus" />
+      <slot name="attachments" />
 
       <textarea
         ref="textarea"
@@ -175,7 +180,7 @@ function onInput(event: Event): void {
             v-else
             type="submit"
             :data-test="sendTestId"
-            :disabled="disabled || sending || sendDisabled || !hasSendable"
+            :disabled="disabled || sending || sendDisabled || attachmentsSendDisabled || !hasSendable"
             :aria-label="$t('chat.send')"
             :title="$t('chat.send')"
             class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"

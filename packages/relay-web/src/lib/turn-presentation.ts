@@ -362,13 +362,15 @@ export function extractCollapsedTraceSummary(
 ): CollapsedTraceSummary {
   const presentation = deriveTurnPresentation(parts, options);
   return {
-    // Single outer normalization: per-node copyText stays compositional
-    // (block terminal newlines separate neighbors), so only the reply tail
-    // is trimmed here.
-    finalReplyText: presentation.finalReplyNodes.map((node) => node.copyText).join("").trimEnd(),
+    finalReplyText: finalReplyTextOf(presentation),
     toolCount: presentation.toolCount,
     thoughtCount: presentation.thoughtCount,
     tally: tallyTrace(presentation.nodes),
     presentation,
   };
+}
+
+/** Plain-text expansion of a derived turn presentation's final reply. Single normalization point for copy semantics. */
+export function finalReplyTextOf(presentation: TurnPresentationPlan): string {
+  return presentation.finalReplyNodes.map((node) => node.copyText).join("").trimEnd();
 }

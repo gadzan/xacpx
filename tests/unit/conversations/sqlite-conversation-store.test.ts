@@ -2,9 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "bun:test";
+import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import { toConversationMessage } from "../../../src/control/conversation-control-dtos";
 
 import { snapshotBotProfile } from "../../../src/bots/bot-types";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
+import { createSqlDriver } from "../../../src/conversations/sql-driver";
 import { createDirectConversationId, createDirectTopicId } from "../../../src/domain/ids";
 import { ConversationError } from "../../../src/conversations/conversation-error";
 import { toRunDetail } from "../../../src/control/conversation-control-dtos";
@@ -52,6 +55,79 @@ test("acceptRequest atomically persists message, run, member turn, and pending d
   expect(accepted.dispatch.state).toBe("pending");
   expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 })).toHaveLength(1);
   store.close();
+});
+
+test("attachment-only refs survive history and restart with safe display metadata", async () => {
+  const path = tempDb();
+  let store = await SqliteConversationStore.open(path);
+  const media: PromptAttachmentRef[] = [
+    { id: "image-1", filePath: "/uploads/image.png", fileName: "image.png", mimeType: "image/png", kind: "image", size: 4, previewUrl: "data:image/png;base64,AAAA" },
+    { id: "file-1", filePath: "/uploads/report.txt", fileName: "report.txt", mimeType: "text/plain", kind: "file", size: 8, previewUrl: "https://example.test/untrusted" },
+  ];
+  const input = { conversationId: CONV, topicId: TOPIC, requestId: "attachments", botId: BOT_ID,
+    content: "", media, profileSnapshot: snapshot(), now: NOW };
+  try {
+    const accepted = store.acceptRequest(input);
+    expect(accepted.message.media).toEqual(media);
+    accepted.message.media![0]!.filePath = "/mutated";
+    store.close();
+    store = await SqliteConversationStore.open(path);
+    const history = store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 });
+    expect(history).toHaveLength(1);
+    expect(history[0]!.media).toEqual(media);
+    expect(toConversationMessage(history[0]!).attachments).toEqual([
+      { id: "image-1", filename: "image.png", mimeType: "image/png", kind: "image", size: 4, previewUrl: "data:image/png;base64,AAAA" },
+      { id: "file-1", filename: "report.txt", mimeType: "text/plain", kind: "file", size: 8 },
+    ]);
+    expect(store.acceptRequest({ ...input, media: media.map(ref => ({ ...ref })) }).reused).toBe(true);
+    for (const changed of [[], [{ ...media[0]!, filePath: "/uploads/changed.png" }], [{ ...media[0]!, previewUrl: "data:image/png;base64,BBBB" }, media[1]!]]) {
+      expect(() => store.acceptRequest({ ...input, media: changed })).toThrow(ConversationError);
+    }
+    expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 })).toHaveLength(1);
+    for (const previewUrl of ["data:image/png,not-base64", "data:image/svg+xml,<svg onload=alert(1)>", "javascript:alert(1)"]) {
+      expect(toConversationMessage({ ...history[0]!, media: [{ ...media[0]!, previewUrl }] }).attachments![0]!.previewUrl).toBeUndefined();
+    }
+  } finally {
+    store.close();
+    rmSync(dirname(path), { recursive: true, force: true });
+  }
+});
+
+test("pre-attachment message databases migrate without losing existing history", async () => {
+  const path = tempDb();
+  let store = await SqliteConversationStore.open(path);
+  const input = { conversationId: CONV, topicId: TOPIC, requestId: "legacy-message", botId: BOT_ID,
+    content: "existing history", profileSnapshot: snapshot(), now: NOW };
+  const legacy = store.acceptRequest(input);
+  store.close();
+  const driver = await createSqlDriver(path);
+  driver.exec("ALTER TABLE messages DROP COLUMN media_json");
+  driver.close();
+  store = await SqliteConversationStore.open(path);
+  try {
+    expect(store.getMessage(legacy.message.id)?.content).toBe("existing history");
+    expect(store.getMessage(legacy.message.id)?.media).toBeUndefined();
+    const media: PromptAttachmentRef[] = [{ id: "new-upload", filePath: "/uploads/new.txt", fileName: "new.txt", mimeType: "text/plain", kind: "file", size: 3 }];
+    const accepted = store.acceptRequest({ ...input, requestId: "new-message", content: "", media });
+    store.close();
+    store = await SqliteConversationStore.open(path);
+    expect(store.getMessage(accepted.message.id)?.media).toEqual(media);
+    expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 }).map(message => message.content)).toEqual(["existing history", ""]);
+  } finally {
+    store.close();
+    rmSync(dirname(path), { recursive: true, force: true });
+  }
+});
+
+test("changed text cannot replay a durable request ID", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const input = { conversationId: CONV, topicId: TOPIC, requestId: "same", botId: BOT_ID,
+    content: "original", profileSnapshot: snapshot(), now: NOW };
+  try {
+    store.acceptRequest(input);
+    expect(() => store.acceptRequest({ ...input, content: "changed" })).toThrow(ConversationError);
+    expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 }).map(message => message.content)).toEqual(["original"]);
+  } finally { store.close(); }
 });
 
 test("Run and MemberTurn avatar configs survive restart and cannot be mutated through returned snapshots", async () => {
@@ -199,7 +275,7 @@ test("duplicate requestId sequential retry reuses the same Run", async () => {
     topicId: TOPIC,
     requestId: "req-dup",
     botId: BOT_ID,
-    content: "hello again",
+    content: "hello",
     profileSnapshot: snapshot(),
     now: NOW,
   });

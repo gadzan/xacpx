@@ -35,7 +35,9 @@ const props = defineProps<{
   attempt?: number;
 }>();
 
-const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
+const emit = defineEmits<{
+  toggle: [element: HTMLElement | null];
+}>();
 
 const { t } = useI18n();
 

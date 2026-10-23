@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { PeerMessageHistoryEntry } from "@ganglion/xacpx-relay-protocol";
-import CopyButton from "./CopyButton.vue";
-import StreamMarkdown from "./StreamMarkdown.vue";
+import ConversationBubble from "./ConversationBubble.vue";
+import ConversationMeta from "./ConversationMeta.vue";
 import AgentIcon from "./AgentIcon.vue";
-import { fmtTime } from "../lib/format";
 import { ArrowRight, ArrowLeft, Folder, AlertCircle, CheckCircle2, Send, Clock3 } from "lucide-vue-next";
 
 const props = withDefaults(
@@ -19,7 +18,6 @@ const props = withDefaults(
 
 const isSent = computed(() => props.message.direction === "sent");
 const peerName = computed(() => props.message.peer.displayName || props.message.peer.handle);
-const timeStr = computed(() => fmtTime(new Date(props.message.createdAt).toISOString()));
 
 // v0.3 sender-card completion state (spec §36): notify/result sends surface an
 // asynchronous system-managed lifecycle chip instead of the delivery chips.
@@ -54,7 +52,7 @@ const completionChip = computed<CompletionChip | null>(() => {
 <template>
   <div
     data-test="agent-message-card"
-    class="cv-row my-2 w-full max-w-2xl rounded-2xl transition-all"
+    class="conversation-row group cv-row my-2 w-full max-w-2xl rounded-2xl transition-all"
     :class="[
       isSent
         ? 'bg-accent-soft'
@@ -130,16 +128,13 @@ const completionChip = computed<CompletionChip | null>(() => {
             <CheckCircle2 :size="11" /> {{ $t("agentMessage.sent") }}
           </span>
         </template>
-        <span v-if="timeStr" data-test="msg-time" class="font-mono tabular-nums">{{ timeStr }}</span>
       </div>
     </div>
 
     <!-- Message Content Body -->
     <div class="px-3.5 py-2.5">
-      <StreamMarkdown v-if="message.content" :text="message.content" class="text-sm leading-relaxed text-fg" />
-      <div class="mt-1 flex items-center justify-end text-fg-muted">
-        <CopyButton v-if="message.content" :text="message.content" />
-      </div>
+      <ConversationBubble :message="message" />
+      <ConversationMeta :message="message" />
     </div>
   </div>
 </template>

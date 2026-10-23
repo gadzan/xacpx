@@ -1,4 +1,5 @@
 import type { BotAvatarConfig } from "./bot-avatar.js";
+import type { AgentMention } from "./agent-mentions.js";
 import type {
   AgentAddressDto,
   AgentCatalogEntryDto,
@@ -711,11 +712,18 @@ export interface GroupTopicsTeardownPayload {
   topicId: string;
 }
 export interface ConversationPromptPayload {
-  agentMentions?: import("./agent-mentions.js").AgentMention[];
+  agentMentions?: AgentMention[];
   conversationId: string;
   topicId: string;
   requestId: string;
   text: string;
+  /**
+   * Executable upload refs (daemon paths). Empty/absent means text-only;
+   * durable accept persists them verbatim and execution re-derives from the
+   * durable request. Display metadata is projected separately and never
+   * carries filePath.
+   */
+  media?: PromptAttachmentRef[];
   target?: ConversationTargetDto;
 }
 export type ConversationPromptResult = ConversationPromptResponseDto;

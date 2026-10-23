@@ -329,7 +329,7 @@ describe("MessageList", () => {
     expect(copy.exists()).toBe(false);
   });
 
-  it("retains full text on failed assistant turns that do not collapse", () => {
+  it("copies the expanded final reply on failed assistant turns without hiding their trace", () => {
     const wrapper = mount(MessageList, {
       props: {
         messages: [
@@ -352,7 +352,7 @@ describe("MessageList", () => {
     });
     const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
     expect(copy.exists()).toBe(true);
-    expect(copy.props("text")).toBe("I'll inspect this.Error occurred.");
+    expect(copy.props("text")).toBe("Error occurred.");
   });
 
   it("badges an inbound prompt from a fired scheduled task (live origin)", () => {
@@ -1173,17 +1173,6 @@ it("re-pins to the bottom when the session changes (atBottom reset)", async () =
   expect(wrapper.find('[data-test="jump-latest"]').attributes("style") ?? "").toContain("display: none");
 });
 
-it("virtualizes message rows and sticks the assistant agent-icon", () => {
-  const wrapper = mount(MessageList, {
-    props: { messages: [msg({ direction: "in", text: "a" }), msg({ direction: "out", text: "b" })], liveTurn: null },
-  });
-  // User row virtualizes at the row (.cv-row); the assistant virtualizes at the bubble
-  // (.cv-bubble) so its sticky avatar + riding working bubble can escape the row box.
-  expect(wrapper.findAll(".cv-row").length).toBe(1); // the user row
-  expect(wrapper.find('[data-test="msg-out"]').classes()).toContain("cv-bubble");
-  // The assistant avatar is the sticky element that hangs at the top of the scroller.
-  expect(wrapper.find(".agent-avatar").exists()).toBe(true);
-});
 
 it("shows a spinner while an older page is loading", () => {
   const wrapper = mount(MessageList, {

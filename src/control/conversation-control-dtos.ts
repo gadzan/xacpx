@@ -1,4 +1,5 @@
 import { copyBotAvatar, type BotAvatarConfig } from "@ganglion/xacpx-relay-protocol";
+import type { AttachmentMetadata, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { BotProfile, BotProfileSnapshot } from "../bots/bot-types";
 import type {
   ConversationMessage,
@@ -220,6 +221,8 @@ export interface ConversationMessageDto {
   createdAt: string;
   /** Join onto live turn-started.promptRequestId when this message came from a MemberTurn. */
   promptRequestId?: string;
+  /** Safe display metadata only; never carries daemon filePath. Omitted when the message has no attachments. */
+  attachments?: AttachmentMetadata[];
 }
 
 export interface ConversationRunDto {
@@ -321,6 +324,11 @@ export interface ConversationPromptRequestDto {
   topicId: string;
   requestId: string;
   text: string;
+  /**
+   * Executable upload refs (daemon paths). Durable accept persists them with
+   * the request; history/product projections expose only safe display metadata.
+   */
+  media?: PromptAttachmentRef[];
   /** Direct legacy `{ botId }` or explicit Group structured target.
    *  Server validates against current membership. */
   target?: ConversationTarget;
@@ -479,6 +487,24 @@ export function toConversationMessage(message: ConversationMessage): Conversatio
     ...(message.replyTo ? { replyTo: message.replyTo } : {}),
     ...(message.runId ? { runId: message.runId } : {}),
     ...(message.sourceTurn?.turnId ? { promptRequestId: message.sourceTurn.turnId } : {}),
+    ...(message.media && message.media.length > 0 ? { attachments: message.media.map(toAttachmentMetadata) } : {}),
+  };
+}
+
+function toAttachmentMetadata(ref: PromptAttachmentRef): AttachmentMetadata {
+  const previewUrl = typeof ref.previewUrl === "string"
+    && /^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/]+={0,2}$/i.test(ref.previewUrl)
+    && ref.previewUrl.length <= 256 * 1024
+    && ref.kind === "image"
+    ? ref.previewUrl
+    : undefined;
+  return {
+    id: ref.id,
+    filename: ref.fileName,
+    mimeType: ref.mimeType,
+    size: ref.size,
+    kind: ref.kind,
+    ...(previewUrl ? { previewUrl } : {}),
   };
 }
 

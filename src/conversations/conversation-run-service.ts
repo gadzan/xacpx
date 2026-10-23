@@ -1,7 +1,7 @@
-import { assertDirectReplay, type ResolvedDirectMention, type DirectInputMetadata } from "./direct-input-metadata";
+import { assertDirectReplay, assertPromptReplay, type ResolvedDirectMention, type DirectInputMetadata } from "./direct-input-metadata";
 import { createHash } from "node:crypto";
-import { validAgentMentions } from "@ganglion/xacpx-relay-protocol";
-import type { AgentMention } from "@ganglion/xacpx-relay-protocol";
+import { validAgentMentions, validPromptAttachments } from "@ganglion/xacpx-relay-protocol";
+import type { AgentMention, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { snapshotBotProfile, snapshotGroupMemberProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
@@ -320,6 +320,7 @@ export class ConversationRunService {
 
   async acceptDirectPrompt(input: {
     agentMentions?: AgentMention[];
+    media?: PromptAttachmentRef[];
     peerInput?: DirectInputMetadata;
     beforeCommit?: () => void;
     memberPolicies?: ConversationMemberPolicy[];
@@ -333,6 +334,7 @@ export class ConversationRunService {
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertAccepting();
+    if (input.media !== undefined && !validPromptAttachments(input.media)) throw new ConversationError("invalid-media", "invalid prompt attachments");
     if (input.agentMentions !== undefined && !validAgentMentions(input.content, input.agentMentions)) throw new ConversationError("invalid-agent-mentions", "invalid reference ranges");
     if (input.peerInput && input.humanIngress) throw new ConversationError("invalid-peer-origin", "peer messages cannot carry human ingress");
     const memberPolicies = input.memberPolicies === undefined ? undefined : parseMemberPolicies(input.memberPolicies);
@@ -350,8 +352,9 @@ export class ConversationRunService {
       const existing = this.store.getAcceptedRequest(conversationId, topicId, input.requestId);
       if (existing) {
         if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
-        assertDirectReplay(existing.message, input.content, input.agentMentions);
-        return assertAcceptedPolicies(existing, memberPolicies);
+        assertAcceptedPolicies(existing, memberPolicies);
+        assertDirectReplay(existing.message, input.content, input.agentMentions, input.media);
+        return existing;
       }
       if (this.store.hasRetiredPrompt(conversationId, topicId, input.requestId)) {
         throw new ConversationError("request_retired", "request was retired with its topic context");
@@ -402,6 +405,7 @@ export class ConversationRunService {
         requestId: input.requestId,
         botId: bot.id,
         content: input.content,
+        ...(input.media?.length ? { media: input.media } : {}),
         profileSnapshot: snapshot,
         primaryMember: {...effect,...(input.peerInput?.peer ? {origin:"handoff" as const} : {})},
         now: timestamp,
@@ -413,8 +417,10 @@ export class ConversationRunService {
     });
     // The store may reuse an acceptance committed during the final await,
     // including its SQLite unique-key fallback. Validate before acknowledgement.
+    // Policies first: a competing durable accept with a different ceiling
+    // must surface effect_policy_conflict, not payload mismatch.
     assertAcceptedPolicies(accepted, memberPolicies);
-    assertDirectReplay(accepted.message, input.content, input.agentMentions);
+    assertDirectReplay(accepted.message, input.content, input.agentMentions, input.media);
     if (!accepted.reused) {
       this.emitAcceptProjection(accepted);
     }
@@ -440,6 +446,7 @@ export class ConversationRunService {
    *  partially-routed Run).
    */
   async acceptGroupPrompt(input: {
+    media?: PromptAttachmentRef[];
     memberPolicies?: ConversationMemberPolicy[];
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
@@ -453,12 +460,15 @@ export class ConversationRunService {
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertAccepting();
+    if (input.media !== undefined && !validPromptAttachments(input.media)) throw new ConversationError("invalid-media", "invalid prompt attachments");
     const memberPolicies = input.memberPolicies === undefined ? undefined : parseMemberPolicies(input.memberPolicies);
     // Durable replay precedes mutable Router/configuration and live-state gates.
     const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
     if (alreadyAccepted) {
       if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
-      return assertAcceptedPolicies(alreadyAccepted, memberPolicies);
+      assertAcceptedPolicies(alreadyAccepted, memberPolicies);
+      if (alreadyAccepted.run.mode !== "automatic") assertPromptReplay(alreadyAccepted.message, input.text, input.media);
+      return alreadyAccepted;
     }
     if (this.store.hasRetiredPrompt(input.conversationId, input.topicId, input.requestId)) {
       throw new ConversationError("request_retired", "request was retired with its topic context");
@@ -536,7 +546,9 @@ export class ConversationRunService {
         const existing = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
         if (existing) {
           if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
-          return assertAcceptedPolicies(existing, memberPolicies);
+          assertAcceptedPolicies(existing, memberPolicies);
+          assertPromptReplay(existing.message, input.text, input.media);
+          return existing;
         }
         const timestamp = this.now().toISOString();
         const target = topic.executionTarget;
@@ -585,6 +597,7 @@ export class ConversationRunService {
             requestId: input.requestId,
             botId: selected[0]!,
             content: input.text,
+            ...(input.media?.length ? { media: input.media } : {}),
             profileSnapshot: snapshots[0]!,
             mode: "automatic",
             members: [],
@@ -612,6 +625,7 @@ export class ConversationRunService {
           requestId: input.requestId,
           botId: firstId,
           content: input.text,
+          ...(input.media?.length ? { media: input.media } : {}),
           profileSnapshot: firstSnapshot,
           primaryMember: effects[0],
           // Headroom is a guardrail, never automatic continuation. Explicit
@@ -635,6 +649,7 @@ export class ConversationRunService {
       });
       if (accepted !== null) {
         assertAcceptedPolicies(accepted, memberPolicies);
+        assertPromptReplay(accepted.message, input.text, input.media);
         if (!accepted.reused) {
           this.emitAcceptProjection(accepted);
         }
@@ -655,6 +670,7 @@ export class ConversationRunService {
 
   async acceptConversationPrompt(input: {
     agentMentions?: AgentMention[];
+    media?: PromptAttachmentRef[];
     memberPolicies?: ConversationMemberPolicy[];
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
@@ -680,6 +696,7 @@ export class ConversationRunService {
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
+        ...(input.media !== undefined ? { media: input.media } : {}),
         ...(input.target ? { target: input.target } : {}),
         ...(input.humanIngress ? { humanIngress: input.humanIngress } : {}),
       });
@@ -711,6 +728,7 @@ export class ConversationRunService {
       ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions } : {}),
       requestId: input.requestId,
       content: input.text,
+      ...(input.media !== undefined ? { media: input.media } : {}),
       conversationId: input.conversationId,
       topicId: input.topicId,
       ...(input.humanIngress ? { humanIngress: input.humanIngress } : {}),

@@ -2834,6 +2834,7 @@ export class ControlService {
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
+        ...(input.media !== undefined ? { media: input.media } : {}),
         ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions } : {}),
         ...(input.target ? { target: input.target } : {}),
         ...(parsedIngress ? { humanIngress: parsedIngress } : {}),

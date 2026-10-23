@@ -1,11 +1,12 @@
 import { defineStore } from "pinia";
-import { computed, ref, watch } from "vue";
+import { computed, ref, toRaw, watch } from "vue";
 import {
   MSG,
   isErrorPayload,
   isRunsDetailsBatchResult,
   isRunsTraceGetResult,
   type BotSummaryDto,
+  type PromptAttachmentRef,
   type ConversationHistoryResponseDto,
   type ConversationMessageDto,
   type ConversationPromptResponseDto,
@@ -32,6 +33,22 @@ import {
 import { api } from "../api/client";
 import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectBotsStore } from "./direct-bots";
+
+export interface GroupCancelScope {
+  kind: "group";
+  instanceId: string;
+  conversationId: string;
+  topicId: string;
+  groupId: string;
+}
+
+export type CancelOutcome =
+  | { status: "cancelled"; scope: GroupCancelScope; runId: string; run: ConversationRunDetailDto }
+  | { status: "terminal"; scope: GroupCancelScope; runId: string; run: ConversationRunDetailDto }
+  | { status: "blocked"; scope: GroupCancelScope | null; runId: string | null; reason: "no-active-run" | "ownership" | "topic-not-ready" }
+  | { status: "pending"; scope: GroupCancelScope; runId: string }
+  | { status: "stale"; scope: GroupCancelScope; runId: string }
+  | { status: "unconfirmed"; scope: GroupCancelScope; runId: string };
 
 /** Result of one send attempt.
  *  - `accepted`: the server durably took the prompt; the composer may drop the draft.
@@ -962,6 +979,7 @@ export const useGroupsStore = defineStore("groups", () => {
     requestId: string;
     text: string;
     target: ConversationTargetDto;
+    media: PromptAttachmentRef[];
   }
   const uncertainPrompt = ref<UncertainPrompt | null>(null);
   /** Promise of the in-flight send attempt; the composer awaits it to learn
@@ -1959,18 +1977,19 @@ export const useGroupsStore = defineStore("groups", () => {
       } else {
         activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       }
+      const mergedCandidate = activeRun.value ?? candidate;
       // Canonical recovery: a candidate for our own lost prompt is durable proof
       // the accept landed, so the prompt stops being outcome-unknown.
       resolveUncertainPromptAgainstRun(candidate);
       if (
         harvestTerminalHandoff &&
-        activeRun.value.id === harvestTerminalHandoff.runId &&
-        isTerminalRunState(activeRun.value.state)
+        mergedCandidate.id === harvestTerminalHandoff.runId &&
+        isTerminalRunState(mergedCandidate.state)
       ) {
         liveTurnsByMember.value = {};
         return true;
       }
-      if (isTerminalRunState(activeRun.value.state)) {
+      if (isTerminalRunState(mergedCandidate.state)) {
         liveTurnsByMember.value = {};
         return true;
       }
@@ -1987,10 +2006,11 @@ export const useGroupsStore = defineStore("groups", () => {
         if (activeRun.value && activeRun.value.id !== candidate.id) {
           return true;
         }
+        const currentCandidate = activeRun.value ?? mergedCandidate;
         if (
           harvestTerminalHandoff &&
-          activeRun.value.id === harvestTerminalHandoff.runId &&
-          isTerminalRunState(activeRun.value.state)
+          currentCandidate.id === harvestTerminalHandoff.runId &&
+          isTerminalRunState(currentCandidate.state)
         ) {
           liveTurnsByMember.value = {};
           return true;
@@ -2122,11 +2142,11 @@ export const useGroupsStore = defineStore("groups", () => {
     convId: string | null,
     topId: string | null,
     harvestRunId?: string,
-  ): void {
-    if (!targetInstanceId || !convId || !topId) return;
+  ): Promise<void> {
+    if (!targetInstanceId || !convId || !topId) return Promise.resolve();
     const runId = harvestRunId;
     const handoffDiscoveryId = ++discoverySequence;
-    void (async () => {
+    return (async () => {
       const generation = currentSelectionGeneration;
       await loadHistory(
         targetInstanceId,
@@ -2359,13 +2379,16 @@ export const useGroupsStore = defineStore("groups", () => {
   /** requestId for a fresh send. An existing uncertain tuple keeps its identity
    *  only when the text AND target still match it; any divergence means this is
    *  a genuinely new request and must get a new durable identity. */
-  function preparePromptRequestId(text: string, target: ConversationTargetDto): string {
+  function preparePromptRequestId(text: string, target: ConversationTargetDto, media: PromptAttachmentRef[] = []): string {
     const prior = uncertainPrompt.value;
-    if (prior && prior.text === text && JSON.stringify(prior.target) === JSON.stringify(target)) {
+    if (prior && prior.text === text && JSON.stringify(prior.target) === JSON.stringify(target)
+      && JSON.stringify(prior.media) === JSON.stringify(media)) {
       return prior.requestId;
     }
     const requestId = mintRequestId();
-    uncertainPrompt.value = { requestId, text, target };
+    // Pinia state is reactive: structuredClone throws DataCloneError on the
+    // proxy, so unwrap with toRaw before freezing the tuple.
+    uncertainPrompt.value = { requestId, text, target: structuredClone(toRaw(target)), media: structuredClone(toRaw(media)) };
     return requestId;
   }
 
@@ -2376,7 +2399,7 @@ export const useGroupsStore = defineStore("groups", () => {
   async function retryUncertainPrompt(): Promise<void> {
     const prior = uncertainPrompt.value;
     if (!prior) return;
-    await sendPrompt(prior.text, prior.target);
+    await sendPrompt(prior.text, prior.target, prior.media);
   }
 
   /** Resolve an uncertain prompt against a canonically observed Run. Durable
@@ -2502,15 +2525,16 @@ export const useGroupsStore = defineStore("groups", () => {
     }
   }
 
-  async function sendPrompt(text: string, forcedTarget?: ConversationTargetDto): Promise<GroupSendOutcome> {
-    const outcome = sendPromptInner(text, forcedTarget);
+  async function sendPrompt(text: string, forcedTarget?: ConversationTargetDto, media: PromptAttachmentRef[] = []): Promise<GroupSendOutcome> {
+    if (promptInFlight.value) return "rejected";
+    const outcome = sendPromptInner(text, forcedTarget, media);
     inFlightSend.value = outcome;
     return await outcome;
   }
 
-  async function sendPromptInner(text: string, forcedTarget?: ConversationTargetDto): Promise<GroupSendOutcome> {
+  async function sendPromptInner(text: string, forcedTarget?: ConversationTargetDto, media: PromptAttachmentRef[] = []): Promise<GroupSendOutcome> {
     const trimmed = text.trim();
-    if (!trimmed || !instanceId.value || !selectedGroupId.value || !activeConversationId.value || !activeTopicId.value) {
+    if ((!trimmed && media.length === 0) || !instanceId.value || !selectedGroupId.value || !activeConversationId.value || !activeTopicId.value) {
       return "rejected";
     }
     if (forcedTarget) {
@@ -2521,8 +2545,8 @@ export const useGroupsStore = defineStore("groups", () => {
       // existing Run. It must therefore still work once reconnection proves the
       // Run is active — otherwise Retry is unreachable for the entire duration of
       // a long-running Run, leaving the user stranded on their own lost response.
-      const reqId = preparePromptRequestId(trimmed, forcedTarget);
-      return await runPromptSend(trimmed, forcedTarget, reqId);
+      const reqId = preparePromptRequestId(trimmed, forcedTarget, media);
+      return await runPromptSend(trimmed, forcedTarget, reqId, media);
     }
     if (!topicReady.value) {
       promptError.value = "topicRecovering";
@@ -2551,8 +2575,8 @@ export const useGroupsStore = defineStore("groups", () => {
       promptErrorDetail.value = null;
       return "rejected";
     }
-    const reqId = preparePromptRequestId(trimmed, resolved.target);
-    return await runPromptSend(trimmed, resolved.target, reqId);
+    const reqId = preparePromptRequestId(trimmed, resolved.target, media);
+    return await runPromptSend(trimmed, resolved.target, reqId, media);
   }
 
   /** Transport half of a send: all fences, the RPC, and the projection. Kept
@@ -2561,6 +2585,7 @@ export const useGroupsStore = defineStore("groups", () => {
     runText: string,
     target: ConversationTargetDto,
     reqId: string,
+    media: PromptAttachmentRef[] = [],
   ): Promise<GroupSendOutcome> {
     // The caller's guards already proved these non-null; restate them here so
     // this shared path stays directly callable from the frozen-tuple retry.
@@ -2579,6 +2604,7 @@ export const useGroupsStore = defineStore("groups", () => {
       activeConversationId.value === targetConvId &&
       activeTopicId.value === targetTopicId;
     latestPlanRunId.value = null;
+    const frozenMedia = structuredClone(toRaw(media));
     promptInFlight.value = true;
     promptError.value = null;
     promptErrorDetail.value = null;
@@ -2591,6 +2617,7 @@ export const useGroupsStore = defineStore("groups", () => {
           requestId: reqId,
           text: runText,
           target,
+          ...(frozenMedia.length ? { media: frozenMedia } : {}),
         }),
       );
       if (!isCurrent()) {
@@ -2819,16 +2846,17 @@ export const useGroupsStore = defineStore("groups", () => {
       } else {
         activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       }
+      const mergedCandidate = activeRun.value ?? candidate;
       // Canonical discovery: a candidate for our own lost prompt is durable
       // proof the accept landed, so the prompt stops being outcome-unknown.
       resolveUncertainPromptAgainstRun(candidate);
-      if (isTerminalRunState(activeRun.value.state)) {
+      if (isTerminalRunState(mergedCandidate.state)) {
         liveTurnsByMember.value = {};
         ownershipUncertain.value = false;
         cancelError.value = null;
         // Terminal ownership still needs member rows back: the list summary
         // carries none, so enrich best-effort before returning.
-        await enrichRunDetail(targetInstId, activeRun.value.id, checkDiscoveryId);
+        await enrichRunDetail(targetInstId, mergedCandidate.id, checkDiscoveryId);
         return true;
       }
       try {
@@ -2879,17 +2907,53 @@ export const useGroupsStore = defineStore("groups", () => {
     }
   }
 
-  async function cancelCurrentRun(): Promise<void> {
-    if (!instanceId.value || !activeRun.value) return;
-    if (cancellingRunId.value === activeRun.value.id) return;
-    if (ownershipUncertain.value || !topicReady.value) {
-      void retryDiscovery();
-      return;
+  function groupCancelScopeOf(
+    instance: string | null,
+    conversation: string | null,
+    topic: string | null,
+    group: string | null,
+  ): GroupCancelScope | null {
+    if (!instance || !conversation || !topic || !group) return null;
+    return { kind: "group", instanceId: instance, conversationId: conversation, topicId: topic, groupId: group };
+  }
+
+  function classifyGroupCancel(scope: GroupCancelScope, runId: string, run: ConversationRunDetailDto): CancelOutcome {
+    if (run.state === "cancelled") return { status: "cancelled", scope, runId, run };
+    if (isTerminalRunState(run.state)) return { status: "terminal", scope, runId, run };
+    return { status: "unconfirmed", scope, runId };
+  }
+
+  function applyGroupCancelRun(run: ConversationRunDetailDto): ConversationRunDto {
+    const merged = mergeRun(activeRun.value, run);
+    activeRun.value = merged;
+    if (run.memberTurns?.length) applyMemberTurns(run.memberTurns);
+    resolveUncertainPromptAgainstRun(run);
+    return merged;
+  }
+
+  async function cancelCurrentRun(expected?: { runId?: string }): Promise<CancelOutcome> {
+    const active = activeRun.value;
+    if (!instanceId.value || !active) {
+      return { status: "blocked", scope: null, runId: null, reason: "no-active-run" };
     }
     const targetInstId = instanceId.value;
     const targetConvId = activeConversationId.value;
     const targetTopicId = activeTopicId.value;
-    const runId = activeRun.value.id;
+    const targetGroupId = selectedGroupId.value;
+    const runId = expected?.runId ?? active.id;
+    const scope = groupCancelScopeOf(targetInstId, targetConvId, targetTopicId, targetGroupId);
+    if (!scope) return { status: "blocked", scope: null, runId, reason: "no-active-run" };
+    if (active.conversationId !== targetConvId || active.topicId !== targetTopicId) {
+      return { status: "stale", scope, runId };
+    }
+    if (expected?.runId && expected.runId !== active.id) {
+      return { status: "stale", scope, runId: expected.runId };
+    }
+    if (cancellingRunId.value === runId) return { status: "pending", scope, runId };
+    if (ownershipUncertain.value || !topicReady.value) {
+      void retryDiscovery();
+      return { status: "blocked", scope, runId, reason: !topicReady.value ? "topic-not-ready" : "ownership" };
+    }
     const generation = currentSelectionGeneration;
     const isCurrent = (): boolean =>
       generation === currentSelectionGeneration &&
@@ -2909,46 +2973,50 @@ export const useGroupsStore = defineStore("groups", () => {
         ),
       );
       if (!isCurrent()) {
-        return;
+        return { status: "stale", scope, runId };
       }
-      const retiringActiveRun = !isTerminalRunState(activeRun.value.state);
-      activeRun.value = mergeRun(activeRun.value, res.run);
-      if (res.run.memberTurns?.length) {
-        applyMemberTurns(res.run.memberTurns);
+      if (res.run.id !== runId || res.run.conversationId !== targetConvId || res.run.topicId !== targetTopicId) {
+        return { status: "unconfirmed", scope, runId };
       }
-      if (isTerminalRunState(activeRun.value.state)) {
+      const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
+      const merged = applyGroupCancelRun(res.run);
+      if (isTerminalRunState(merged.state)) {
         liveTurnsByMember.value = {};
         resolveCancelUncertainty(runId);
         if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
-          void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
+          await rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, merged.id);
         }
       }
+      return classifyGroupCancel(scope, runId, res.run);
     } catch (err: unknown) {
       console.warn("cancelCurrentRun error:", err);
       if (isCurrent() && activeRun.value && activeRun.value.id === runId) {
         cancelUncertaintyRunId.value = runId;
         cancelError.value = "cancelUnknown";
-        void api
-          .rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, { runId })
-          .then((getRes) => {
-            if (!isCurrent()) return;
-            const run = unwrapRpc(getRes).run;
-            const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
-            activeRun.value = mergeRun(activeRun.value, run);
-                resolveUncertainPromptAgainstRun(run);
-            if (run.memberTurns?.length) {
-              applyMemberTurns(run.memberTurns);
+        try {
+          const run = unwrapRpc(
+            await api.rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, { runId }),
+          ).run;
+          if (!isCurrent()) return { status: "stale", scope, runId };
+          if (run.id !== runId || run.conversationId !== targetConvId || run.topicId !== targetTopicId) {
+            return { status: "unconfirmed", scope, runId };
+          }
+          const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
+          const merged = applyGroupCancelRun(run);
+          if (isTerminalRunState(merged.state)) {
+            liveTurnsByMember.value = {};
+            resolveCancelUncertainty(runId);
+            if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
+              await rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, merged.id);
             }
-            if (isTerminalRunState(activeRun.value.state)) {
-              liveTurnsByMember.value = {};
-              resolveCancelUncertainty(runId);
-              if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
-                void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
-              }
-            }
-          })
-          .catch(() => {});
+            return classifyGroupCancel(scope, runId, run);
+          }
+          return { status: "unconfirmed", scope, runId };
+        } catch {
+          return { status: "unconfirmed", scope, runId };
+        }
       }
+      return { status: "stale", scope, runId };
     } finally {
       if (cancellingRunId.value === runId) {
         cancellingRunId.value = null;

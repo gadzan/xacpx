@@ -79,6 +79,18 @@ const avatarActivityKey = computed(() => [
 ].join(":"));
 const observedCompletion = computed(() => !!directBotsStore.activeRun
   && directBotsStore.liveCompletedRunId === directBotsStore.activeRun.id);
+const stopAvailable = computed(() => {
+  const run = directBotsStore.activeRun;
+  return !!run
+    && !!directBotsStore.instanceId
+    && !!directBotsStore.selectedBotId
+    && directBotsStore.topicReady
+    && !directBotsStore.ownershipUncertain
+    && !directBotsStore.ownerUnconfirmed
+    && run.conversationId === directBotsStore.activeConversationId
+    && run.topicId === directBotsStore.activeTopicId
+    && directBotsStore.isRunActive;
+});
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
@@ -342,6 +354,8 @@ function openRemoval(): void {
       :empty-hint="emptyHint"
       :live-turn="directBotsStore.liveTurn"
       :active-run="directBotsStore.activeRun"
+      :stop-available="stopAvailable"
+      :cancelling-run-id="directBotsStore.cancellingRunId"
       :active-member-turn="directBotsStore.activeMemberTurn"
       :run-parts="directBotsStore.completeRunParts"
       :plan-entries="directBotsStore.planEntries"
@@ -368,7 +382,6 @@ function openRemoval(): void {
     <ConversationPromptInput
       :disabled="bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
       :deliver="(text, mentions) => directBotsStore.sendPrompt(text, mentions)"
-      @cancel="directBotsStore.cancelCurrentRun"
     />
     <!-- History failure: Retry reloads the topic (history + durable run
       discovery). Shown whenever the transcript failed to converge — the

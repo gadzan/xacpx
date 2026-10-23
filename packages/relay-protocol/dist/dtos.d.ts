@@ -1,4 +1,5 @@
 import type { BotAvatarConfig } from "./bot-avatar.js";
+import type { AttachmentMetadata } from "./web-dtos.js";
 /** Wire mirror of the core control session listing. */
 export interface SessionDto {
     alias: string;
@@ -461,6 +462,8 @@ export interface ConversationMessageDto {
     runId?: string;
     createdAt: string;
     promptRequestId?: string;
+    /** Safe display metadata only; never carries daemon filePath. Omitted when the message has no attachments. */
+    attachments?: AttachmentMetadata[];
 }
 export type ConversationRunStateDto = "queued" | "running" | "waiting-human" | "completed" | "failed" | "cancelled" | "indeterminate";
 export interface ConversationRunDto {

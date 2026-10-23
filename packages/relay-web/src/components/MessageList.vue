@@ -6,14 +6,14 @@ import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
-import CopyButton from "./CopyButton.vue";
+import ConversationBubble from "./ConversationBubble.vue";
+import ConversationMeta from "./ConversationMeta.vue";
 import { AlertCircle, ArrowDown, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
 import AgentMessageCard from "./AgentMessageCard.vue";
-import AgentIcon from "./AgentIcon.vue";
+import TranscriptRow from "./TranscriptRow.vue";
 import LiveTurnAvatar from "./LiveTurnAvatar.vue";
-import MessageAttachments from "./MessageAttachments.vue";
 import { useWorkingQuip } from "../lib/use-working-quip";
-import { fmtTime, fmtDateTime } from "../lib/format";
+import { fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
   extractCollapsedTraceSummary,
@@ -122,12 +122,6 @@ function traceSummaryOf(m: ChatMessage): CollapsedTraceSummary {
   return summary;
 }
 
-function copyTextOf(m: ChatMessage): string {
-  if (m.direction === "out" && m.structured?.parts?.length && !isFailedTurn(m) && hasTraceParts(m)) {
-    return traceSummaryOf(m).finalReplyText;
-  }
-  return m.text ?? "";
-}
 
 // Presentation-only join (v0.3 spec §8): a SENT peer-message card anchors right after
 // the agent_send tool step whose structured receipt carries its messageId. The map
@@ -604,7 +598,7 @@ watch(
             :style="enterStyle(i)"
           />
           <!-- USER row -->
-          <div v-else-if="m.direction === 'in' && !m.structured?.agentMessage" class="cv-row flex justify-end" :class="enterRowClass"
+          <div v-else-if="m.direction === 'in' && !m.structured?.agentMessage" class="conversation-row group cv-row flex justify-end" :class="enterRowClass"
                :style="enterStyle(i)"
                :data-scheduled-task="schedOf(m)?.taskId">
             <!-- min-w-0: without it the flex item's min-width:auto tracks a wide <pre>/table
@@ -616,17 +610,8 @@ watch(
                     :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
                 <Clock :size="11" />{{ $t("chat.scheduled") }}
               </span>
-              <div data-test="msg-in"
-                   class="min-w-0 max-w-full rounded-2xl rounded-tr-sm px-3.5 py-2"
-                   :class="m.failed ? 'bg-danger/5' : 'bg-accent-soft'">
-                <StreamMarkdown v-if="m.text" :text="m.text" class="text-sm leading-relaxed text-fg" />
-                <MessageAttachments v-if="m.attachments?.length" :attachments="m.attachments" />
-              </div>
-              <!-- Markdown rendering is lossy (headers, lists, fences reshape the text);
-                   copy hands back the verbatim source the user actually sent. -->
-              <div v-if="m.text" class="mt-0.5 flex items-center text-fg-muted">
-                <CopyButton :text="m.text" />
-              </div>
+              <ConversationBubble :message="m" :attachments="m.attachments" own data-test="msg-in" :class="m.failed ? '!bg-danger/5' : ''" />
+              <ConversationMeta :message="m" />
               <!-- Failed sends get a compact retry affordance on their own line below. -->
               <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
                 <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
@@ -638,36 +623,37 @@ watch(
             </div>
           </div>
           <!-- ASSISTANT row -->
-          <div v-else-if="!m.structured?.agentMessage" class="group flex gap-3" :class="enterRowClass" :style="enterStyle(i)">
-            <div class="agent-avatar mt-0.5 h-8 w-8 shrink-0 self-start" :data-avatar-key="`h:${messageKey(m, hiddenCount + i)}`">
-              <span class="grid h-8 w-8 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="20" fill /></span>
-            </div>
-            <div data-test="msg-out" class="cv-bubble min-w-0 flex-1 space-y-2.5"
+          <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" :class="enterRowClass" :style="enterStyle(i)">
+            <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
               <!-- Structured transcript: activity cards interleave with the Markdown
                    narrative at wire-ordered slots. Tool cards own their collapsed state. -->
-              <div data-test="msg-content" class="space-y-2.5">
-                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
-                           :collapse-trace="traceSummaryEligible(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
-                           :tally="traceSummaryEligible(m) ? traceSummaryOf(m).tally : undefined"
-                           :presentation="traceSummaryEligible(m) ? traceSummaryOf(m).presentation : undefined" />
-                <template v-else>
+              <ConversationBubble
+                data-test="msg-content"
+                :message="m"
+                :attachments="m.attachments"
+                :parts="m.structured?.parts"
+                :ensure-full="ensureFullOf(m)"
+                :sent-agent-messages="sentAgentMessageById"
+                :collapse-trace="traceSummaryEligible(m)"
+                :trace-key="traceKeyOf(m)"
+                :trace-elapsed-ms="traceElapsedOf(m)"
+                :tally="traceSummaryEligible(m) ? traceSummaryOf(m).tally : undefined"
+                :presentation="m.structured?.parts?.length ? traceSummaryOf(m).presentation : undefined"
+              >
+                <template v-if="!m.structured?.parts?.length" #default>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />
-                  <StreamMarkdown v-if="m.text" :text="m.text" class="text-sm leading-relaxed text-fg" />
+                  <StreamMarkdown v-if="m.text" :text="m.text" />
                 </template>
-              </div>
-              <div data-test="msg-actions" class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-                <template v-for="copyText in [copyTextOf(m)]" :key="0">
-                  <CopyButton v-if="copyText" :text="copyText" />
-                </template>
-                <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-xs tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+              </ConversationBubble>
+              <ConversationMeta :message="m" :parts="m.structured?.parts" :presentation="m.structured?.parts?.length ? traceSummaryOf(m).presentation : undefined">
                 <span v-if="m.structured?.truncated" data-test="msg-truncated" class="inline-flex items-center gap-1 text-xs text-warn"><TriangleAlert :size="12" /> {{ $t("chat.truncated") }}</span>
                 <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
                 <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-xs text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
-              </div>
+              </ConversationMeta>
             </div>
-          </div>
+          </TranscriptRow>
           <!-- Live slot after this row when it is the turn-started anchor. Later
                received cards in the list therefore render below the still-running turn. -->
           <div
@@ -726,21 +712,6 @@ watch(
   contain-intrinsic-size: auto 88px;
 }
 
-/* Assistant rows hang their avatar at the top of the scroller until the next
-   assistant avatar scrolls over it ("顶走"). `self-start` on the wrapper keeps the
-   avatar from stretching to full row height (which would leave sticky no room to
-   travel); the row's own content-visibility still virtualizes the body off-screen. */
-.agent-avatar {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-}
-/* Assistant body carries the virtualization instead of the row, so the sticky avatar and
-   its riding working bubble can escape the row box without paint containment clipping them. */
-.cv-bubble {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 88px;
-}
 
 /* Gradient + progressive blur under the jump-latest pill (mask fades the backdrop
    blur itself, so content blurs out toward the bottom edge instead of a hard band). */
