@@ -255,7 +255,10 @@ export function presentGroupDispatch(input: GroupDispatchPresentationInput): Gro
   // The leader can be stopped while its own turn runs, or — once that turn
   // ended — while its wake has not settled and the leader itself was never
   // stopped. A missing wake row is unsettled work, not a finished round.
-  const leaderCanStop = leaderActive || (leaderCancellationReason === undefined && !wakeSettled);
+  // Only a completed leader hands off to a wake: a failed or indeterminate
+  // leader never gets one, so once it ended there is nothing left to stop.
+  const leaderCanStop =
+    leaderActive || (leaderState === "completed" && leaderCancellationReason === undefined && !wakeSettled);
   // Stop the live wake when there is one; otherwise stop the leader's own turn.
   const leaderStopMemberTurnId = wakeLive && wake ? wake.id : leaderMemberTurnId;
   const botById = new Map<string, BotSummaryDto>();

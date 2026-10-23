@@ -302,6 +302,15 @@ describe("presentGroupDispatch", () => {
     expect(result.leader.stopMemberTurnId).toBe("turn_leader");
   });
 
+  it.each(["failed", "indeterminate"] as const)("does not offer a stop for a %s leader that will never be woken", (state) => {
+    const result = presentGroupDispatch(present({
+      leader: leader({ state }),
+      dispatches: [entry("bot_a", "running")],
+    }));
+
+    expect(result.leader.canStop).toBe(false);
+  });
+
   it("stops the live wake turn instead of the finished leader", () => {
     const result = presentGroupDispatch(present({
       leader: leader({
