@@ -1005,6 +1005,17 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.state).toBe("cancelled");
   });
 
+  it("stops one dispatched member by run and member turn", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    mockRpc.mockResolvedValueOnce({ run: { id: "run_1", memberTurns: [] } });
+    await store.cancelMember("inst_1", "run_1", "turn_member_1");
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancelMember", {
+      runId: "run_1",
+      memberTurnId: "turn_member_1",
+    });
+  });
+
   it("reconnect converges without duplicating messages", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";

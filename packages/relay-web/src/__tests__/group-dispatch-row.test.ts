@@ -96,7 +96,11 @@ function replyMessage(botId: string, promptRequestId: string, content: string, s
 function row(
   states: MemberTurnSummaryDto["state"][],
   botIds = ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"],
-  over: { dispatches?: GroupDispatchEntry[]; messages?: ConversationMessageDto[] } = {},
+  over: {
+    dispatches?: GroupDispatchEntry[];
+    messages?: ConversationMessageDto[];
+    supportsCancelMember?: boolean;
+  } = {},
 ) {
   return mount(GroupDispatchRow, {
     props: {
@@ -105,7 +109,7 @@ function row(
         dispatches: over.dispatches ?? states.map((state, index) => entry(botIds[index]!, state)),
         bots: BOTS,
         drivers: {},
-        supportsCancelMember: false,
+        supportsCancelMember: over.supportsCancelMember ?? false,
         ...(over.messages ? { messages: over.messages } : {}),
       }),
     },
@@ -214,6 +218,69 @@ describe("GroupDispatchRow", () => {
     expect(member.attributes("disabled")).toBeDefined();
     await member.trigger("click");
     expect(wrapper.emitted("jump")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("offers a stop button only for members that can be stopped", async () => {
+    const wrapper = row([], ["bot_a", "bot_b", "bot_c"], {
+      dispatches: [
+        entry("bot_a", "running", { task: "Review the diff", seq: 1, turn: { id: "turn_a" } }),
+        entry("bot_b", "queued", { task: "Review the diff", seq: 2, turn: { id: "turn_b" } }),
+        entry("bot_c", "completed", { task: "Review the diff", seq: 3, turn: { id: "turn_c" } }),
+      ],
+      supportsCancelMember: true,
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+
+    const stops = wrapper.findAll('[data-test="group-dispatch-stop-member"]');
+    expect(stops).toHaveLength(2);
+    expect(stops[0]!.attributes("data-bot-id")).toBe("bot_a");
+    expect(stops[1]!.attributes("data-bot-id")).toBe("bot_b");
+    wrapper.unmount();
+  });
+
+  it("emits the durable run and member turn when a member is stopped", async () => {
+    const wrapper = row([], ["bot_a"], {
+      dispatches: [entry("bot_a", "running", { task: "Review the diff", seq: 1, turn: { id: "turn_a", runId: "run_9" } })],
+      supportsCancelMember: true,
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+
+    await wrapper.get('[data-test="group-dispatch-stop-member"]').trigger("click");
+    expect(wrapper.emitted("stopMember")).toEqual([[{ runId: "run_9", memberTurnId: "turn_a" }]]);
+    wrapper.unmount();
+  });
+
+  it("keeps the stop action out of the jump action", async () => {
+    const wrapper = row([], ["bot_a", "bot_b"], {
+      dispatches: [
+        entry("bot_a", "running", { task: "Review the diff", seq: 1, turn: { id: "turn_a", promptRequestId: "prompt_a" } }),
+        entry("bot_b", "running", { task: "Review the diff", seq: 2, turn: { id: "turn_b" } }),
+      ],
+      messages: [replyMessage("bot_a", "prompt_a", "Looks good", 5)],
+      supportsCancelMember: true,
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    const trigger = wrapper.get('[data-test="group-dispatch-row"]');
+
+    await wrapper.get('[data-test="group-dispatch-stop-member"]').trigger("click");
+    expect(wrapper.emitted("jump")).toBeUndefined();
+    // The card stays open: stopping a member never collapses the row.
+    expect(trigger.attributes("aria-expanded")).toBe("true");
+    wrapper.unmount();
+  });
+
+  it("offers no stop button when the core cannot cancel a single member", async () => {
+    const wrapper = row(["running", "queued"], ["bot_a", "bot_b"], { supportsCancelMember: false });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.find('[data-test="group-dispatch-stop-member"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("offers no stop button for a member that already finished", async () => {
+    const wrapper = row(["completed"], ["bot_a"], { supportsCancelMember: true });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.find('[data-test="group-dispatch-stop-member"]').exists()).toBe(false);
     wrapper.unmount();
   });
 
@@ -492,6 +559,28 @@ describe("GroupTranscript dispatch aggregation", () => {
     await flushPromises();
     const reply = wrapper.get('[data-message-id="reply_b"]');
     expect(document.activeElement).toBe(reply.element);
+    wrapper.unmount();
+  });
+
+  it("stops one member through the store when the row asks for it", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "running"),
+      ],
+    );
+    const cancelMember = vi.spyOn(groups, "cancelMember").mockResolvedValue(undefined);
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    const dispatchRow = wrapper.findComponent(GroupDispatchRow);
+    expect(dispatchRow.exists()).toBe(true);
+    dispatchRow.vm.$emit("stopMember", { runId: "run_1", memberTurnId: "turn_member_1" });
+    await flushPromises();
+
+    expect(cancelMember).toHaveBeenCalledWith("instance_1", "run_1", "turn_member_1");
     wrapper.unmount();
   });
 });
