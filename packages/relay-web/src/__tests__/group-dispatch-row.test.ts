@@ -264,6 +264,18 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
+  it("keeps a member without a reply readable instead of dimmed", async () => {
+    const wrapper = row([], ["bot_a"], {
+      dispatches: [entry("bot_a", "running", { task: "Review the diff" })],
+    });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    const member = wrapper.get('[data-test="group-dispatch-member"]');
+    // The row stays inert, but the name and the state keep full opacity.
+    expect(member.attributes("disabled")).toBeDefined();
+    expect(member.classes()).not.toContain("disabled:opacity-70");
+    wrapper.unmount();
+  });
+
   it("renders one row per dispatch when the same bot is dispatched twice", async () => {
     const wrapper = row([], ["bot_a"], {
       dispatches: [
@@ -292,6 +304,13 @@ describe("GroupDispatchRow", () => {
     // The second row jumps to the SECOND dispatch's reply, not the first.
     await members[1]!.trigger("click");
     expect(wrapper.emitted("jump")).toEqual([["reply_a_2"]]);
+    wrapper.unmount();
+  });
+
+  it("draws the member stop action as a filled square", async () => {
+    const wrapper = row(["running"], ["bot_a"], { supportsCancelMember: true });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.get('[data-test="group-dispatch-stop-member"] svg').classes()).toContain("fill-current");
     wrapper.unmount();
   });
 
@@ -392,7 +411,7 @@ describe("GroupDispatchRow", () => {
   it("reports all completed with a green check", () => {
     const wrapper = row(["completed", "completed", "completed", "completed"]);
     expect(wrapper.get('[data-test="group-dispatch-status-done"]').text()).toContain("4 done");
-    expect(wrapper.get('[data-test="group-dispatch-status-done"]').classes()).toContain("text-success");
+    expect(wrapper.get('[data-test="group-dispatch-status-done"]').classes()).toContain("text-run");
     wrapper.unmount();
   });
 
@@ -427,6 +446,20 @@ describe("GroupDispatchRow", () => {
     expect(wrapper.get('[data-test="group-dispatch-status-indeterminate"]').text()).toContain("1 outcome unknown");
     // An unknown outcome is never folded into the failure count.
     expect(wrapper.find('[data-test="group-dispatch-status-failed"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("separates the stacked avatars with a surface ring", () => {
+    const wrapper = row(
+      ["completed", "completed", "completed", "completed", "completed"],
+      ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"],
+    );
+    const avatars = Array.from(wrapper.get('[data-test="group-dispatch-avatars"]').element.children);
+    expect(avatars).toHaveLength(5);
+    for (const avatar of avatars) {
+      expect(avatar.classList.contains("ring-2")).toBe(true);
+      expect(avatar.classList.contains("ring-surface")).toBe(true);
+    }
     wrapper.unmount();
   });
 
@@ -842,6 +875,22 @@ describe("GroupTranscript dispatch aggregation", () => {
     await flushPromises();
 
     expect(wrapper.find('[data-test="group-dispatch-stop-leader"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("draws the leader stop pill as a filled square", async () => {
+    seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "running"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    expect(wrapper.get('[data-test="group-dispatch-stop-leader"] svg').classes()).toContain("fill-current");
     wrapper.unmount();
   });
 

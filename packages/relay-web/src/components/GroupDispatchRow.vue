@@ -148,14 +148,14 @@ function stopAll(): void {
           v-for="(avatar, index) in presentation.avatars.items"
           :key="avatar.memberTurnId"
           :class="index > 0 ? '-ml-2' : ''"
-          class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface"
+          class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface ring-2 ring-surface"
         >
           <BotAvatar :avatar="avatar.avatar" :driver="avatar.driver" :name="avatar.name" :size="24" static />
         </span>
         <span
           v-if="presentation.avatars.overflow > 0"
           data-test="group-dispatch-overflow"
-          class="-ml-2 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-surface-2 text-[10px] font-medium text-fg-muted"
+          class="-ml-2 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-surface-2 text-[10px] font-medium text-fg-muted ring-2 ring-surface"
         >
           +{{ presentation.avatars.overflow }}
         </span>
@@ -174,7 +174,7 @@ function stopAll(): void {
           <span data-test="group-dispatch-status-active" class="text-accent">{{ activeText }}</span>
         </template>
         <template v-else-if="isDone">
-          <span data-test="group-dispatch-status-done" class="font-medium text-success">✓ {{ doneText }}</span>
+          <span data-test="group-dispatch-status-done" class="font-medium text-run">✓ {{ doneText }}</span>
         </template>
         <template v-else-if="isCancelled">
           <span data-test="group-dispatch-status-cancelled" class="text-fg-muted">⊘ {{ cancelledText }}</span>
@@ -187,7 +187,7 @@ function stopAll(): void {
         <span v-if="showFailed && hasLeadingStatus" aria-hidden="true" class="text-fg-muted">·</span>
         <span v-if="showFailed" data-test="group-dispatch-status-failed" class="font-medium text-danger">{{ failedText }}</span>
         <span v-if="showIndeterminate && (hasLeadingStatus || showFailed)" aria-hidden="true" class="text-fg-muted">·</span>
-        <span v-if="showIndeterminate" data-test="group-dispatch-status-indeterminate" class="font-medium text-warning">{{ indeterminateText }}</span>
+        <span v-if="showIndeterminate" data-test="group-dispatch-status-indeterminate" class="font-medium text-warn">{{ indeterminateText }}</span>
       </span>
       <ChevronDown
         v-if="!isMobile"
@@ -215,7 +215,7 @@ function stopAll(): void {
             :data-bot-id="member.botId"
             :data-member-turn-id="member.memberTurnId"
             :disabled="!member.replyId"
-            class="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-70 disabled:hover:bg-transparent"
+            class="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-1 py-0.5 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:hover:bg-transparent"
             @click="jumpToMember(member.memberTurnId)"
           >
             <span class="grid h-5 w-5 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2" aria-hidden="true">
@@ -239,7 +239,7 @@ function stopAll(): void {
             class="grid h-6 w-6 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
             @click.stop="stopMember(member)"
           >
-            <Square :size="12" aria-hidden="true" />
+            <Square :size="12" class="fill-current" aria-hidden="true" />
           </button>
         </li>
       </ul>
