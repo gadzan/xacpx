@@ -6,13 +6,11 @@ import type {
   ConversationMessageDto,
   ConversationRunDto,
   MemberTurnSummaryDto,
-  TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import TranscriptRow from "./TranscriptRow.vue";
 import BotAvatar from "./BotAvatar.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
-import type { TurnPresentationPlan } from "../lib/turn-presentation";
 import AgentThinkingBubble, { type BubbleStatus } from "./AgentThinkingBubble.vue";
 import { botAvatarState } from "../lib/bot-avatar-state";
 
@@ -134,12 +132,10 @@ defineExpose({ bubbleStatus });
       <ConversationBubble
         :message="message"
         :attachments="message.attachments"
-        :parts="parts"
-        :presentation="presentation"
         :collapse-trace="true"
         :trace-key="`group:${memberTurn.conversationId}:${memberTurn.runId}:${memberTurn.id}:${memberTurn.attempt}`"
       />
-      <ConversationMeta :message="message" :parts="parts" :presentation="presentation" />
+      <ConversationMeta :message="message" />
     </template>
   </TranscriptRow>
 </template>
