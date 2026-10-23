@@ -1,5 +1,6 @@
 import type { ConfigStore } from "../config/config-store";
 import type { AppConfig } from "../config/types";
+import type { ControlEventBus } from "../control/control-event-bus";
 import type { AppLogger } from "../logging/app-logger";
 import type { OrchestrationService } from "../orchestration/orchestration-service";
 import type { ResolveSessionOptions, SessionService } from "../sessions/session-service";
@@ -85,6 +86,8 @@ export interface CommandRouterContext {
   configStore?: WritableConfigStore;
   logger: AppLogger;
   replaceConfig: (updated: AppConfig) => void;
+  /** Present in the daemon; emits `workspaces-changed` after workspace mutations. */
+  controlEvents?: ControlEventBus;
   /** Refuse destructive lifecycle (reset) while the alias has a running turn. */
   readonly activeTurns?: import("../sessions/active-turn-registry.js").ActiveTurnRegistry;
   /**

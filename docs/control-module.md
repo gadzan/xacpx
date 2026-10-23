@@ -23,7 +23,7 @@
 
 删除工作区注册的路径必须先获取 C，再获取 S。在持有双锁的同一临界区内完成占用检查、`removeWorkspace`、`publishLiveConfig` 和 `workspaces-changed` 事件发布。检查与删除之间不能释放 S，否则会话可能在检查后绑定到即将删除的工作区。
 
-会话与 worker binding 的绑定路径只持 S，不获取 C。删除路径持有 S 期间，绑定写入等待。绑定先完成时，删除路径的锁内占用检查必须拒绝删除。
+会话与 worker binding 的绑定路径只持 S，不获取 C。删除路径持有 S 期间，绑定写入等待。绑定先完成时，删除路径的锁内占用检查必须拒绝删除。占用检查也覆盖已存在的 worker binding，但 worker binding staging 对 pathless/ephemeral 的显式 `cwd` 保留既有回落语义：注册缺失时仍可能写入无法解析的 binding，本节的原子保证只覆盖逻辑会话绑定和既有 binding 的占用检查。聊天命令 `/workspace rm` 与 Control API 删除使用同一 C→S 顺序。进程外 `xacpx workspace rm` 只写配置文件，daemon 经 config watcher 重载，无法与 S 串行；运行中删除已被会话引用的工作区仍应优先走 Control API 或 `/workspace rm`。
 
 ## Bot 头像与交互归属
 
@@ -117,6 +117,8 @@ Phase 10C：Group Topic 可选 `target.isolation: "worktree-per-member"`；
 [Worktree lifecycle](conversation-runtime.md#managed-worktrees-and-explicit-integration-phase-10c)。
 
 `createBot` 的 `workspace` 可省略：daemon 在用户目录的 `~/.xacpx/bots/` 下创建独立目录并注册为普通工作区，再将注册名保存到 Bot。显式传入时必须是已有工作区名；空字符串不表示自动创建。自动命名复用工作区规范化与冲突后缀规则，中文名完全被过滤时使用稳定的 `workspace-<8hex>`。同名并发创建必须得到不同目录，已有目录不得复用。创建失败仅回滚本次新增的工作区注册与空目录；不递归删除文件。Bot 改名、移除以及 Group Topic 的显式工作区规则保持原有语义。
+
+回滚发生在同一 `workspaces.transaction` 临界区内：占用检查（`SessionService.isWorkspaceInUse`）与 `removeWorkspace` 之间不释放 `stateMutex`，因此并发的会话绑定要么在检查前被看见（保留注册与目录，原样透出 `bots.createBot` 错误，不包进 `AggregateError`），要么在删除后因注册已消失而无法绑定。回滚前按 `cwd` 复核注册仍指向本次创建的目录；删除时 `ConfigStore.removeWorkspace(name, expectedCwd)` 在 config 文件锁内按磁盘上的最新条目再次复核 `cwd`，进程外的同名替换也不会被误删。同名但指向别处的注册不属于本次创建，原样保留；此时无法证明目录归属，回滚也不删除该目录。非 transaction 的 `botWorkspaceMutex` 分支只服务于测试与 embedding，生产恒走 transaction，保持 best-effort。
 
 | 方法 | 说明 |
 |------|------|

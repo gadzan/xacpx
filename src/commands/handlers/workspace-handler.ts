@@ -74,21 +74,27 @@ export async function handleWorkspaceRemove(
   if (!context.config || !context.configStore) {
     return { text: w.noWritableConfig };
   }
+  const configStore = context.configStore;
   // A workspace backing persisted sessions or worker bindings cannot be
   // removed: their rows would become unresolvable, turning
   // physical-membership decisions for every same-name owner fail-ambiguous.
-  // Remove those sessions first.
-  const users = [
-    ...context.sessions.aliasesUsingWorkspace(workspaceName),
-    ...context.sessions.workerBindingsUsingWorkspace(workspaceName),
-  ];
-  if (users.length > 0) {
-    return { text: w.stillReferenced(workspaceName, users.join(", ")) };
-  }
-  const configStore = context.configStore;
+  // Remove those sessions first. C outer, S inner (the same order as the
+  // Control API delete): the occupancy check and the delete share one S
+  // section, so a binding that lands while this command waits for C/S is
+  // seen before the delete.
   return await context.configMutationMutex.run(async () => {
-    const updated = await configStore.removeWorkspace(workspaceName);
-    context.replaceConfig(updated);
-    return { text: w.removed(workspaceName) };
+    return await context.sessions.withSessionLock(async () => {
+      const users = [
+        ...context.sessions.aliasesUsingWorkspace(workspaceName),
+        ...context.sessions.workerBindingsUsingWorkspace(workspaceName),
+      ];
+      if (users.length > 0) {
+        return { text: w.stillReferenced(workspaceName, users.join(", ")) };
+      }
+      const updated = await configStore.removeWorkspace(workspaceName);
+      context.replaceConfig(updated);
+      context.controlEvents?.emit({ type: "workspaces-changed" });
+      return { text: w.removed(workspaceName) };
+    });
   });
 }

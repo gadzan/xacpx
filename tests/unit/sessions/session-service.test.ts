@@ -2296,3 +2296,25 @@ test("usage guards see orchestration worker bindings", async () => {
   expect(sessions.workerBindingsUsingAgent("claude")).toEqual([]);
   expect(sessions.workerBindingsUsingWorkspace("other")).toEqual([]);
 });
+
+test("isWorkspaceInUse reports the three occupancy states", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+
+  expect(sessions.isWorkspaceInUse("backend")).toBe(false);
+
+  await sessions.createSession("api-fix", "codex", "backend");
+  expect(sessions.isWorkspaceInUse("backend")).toBe(true);
+  expect(sessions.isWorkspaceInUse("free")).toBe(false);
+
+  delete state.sessions["api-fix"];
+  expect(sessions.isWorkspaceInUse("backend")).toBe(false);
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+  };
+  expect(sessions.isWorkspaceInUse("backend")).toBe(true);
+});

@@ -6,6 +6,7 @@ import { CommandRouter } from "../../../src/commands/command-router";
 import { listAgentTemplates } from "../../../src/config/agent-templates";
 import { normalizeWorkspacePath } from "../../../src/commands/workspace-path";
 import { setLocale, t } from "../../../src/i18n";
+import type { ControlEvent } from "../../../src/control/control-event-bus";
 import {
   MemoryConfigStore,
   MemoryStateStore,
@@ -581,6 +582,34 @@ test("removes a workspace via command", async () => {
   expect(config.workspaces).toEqual({
     backend: { cwd: "/tmp/backend" },
   });
+});
+
+test("removing a workspace via command publishes workspaces-changed", async () => {
+  const config = createConfig();
+  config.workspaces.frontend = { cwd: "/tmp/frontend" };
+  const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const events: ControlEvent[] = [];
+  const router = new CommandRouter(
+    sessions,
+    transport,
+    config,
+    new MemoryConfigStore(config),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { subscribe: () => () => {}, emit: (event) => { events.push(event); } },
+  );
+
+  const reply = await router.handle("wx:user", "/workspace rm frontend");
+
+  expect(reply.text).toBe(t().workspace.removed("frontend"));
+  expect(events).toEqual([{ type: "workspaces-changed" }]);
 });
 
 

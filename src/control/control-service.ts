@@ -3,6 +3,8 @@ import {createHash} from "node:crypto";
 import { mkdir, readdir, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../commands/workspace-name.js";
+import { isWorkspaceRemovalRefused } from "../config/workspace-removal.js";
+import { sameWorkspacePath } from "../commands/workspace-path.js";
 import { resolveBotsHome } from "../bots/bots-home.js";
 import { BotError } from "../bots/bot-error.js";
 import { AsyncMutex } from "../orchestration/async-mutex.js";
@@ -304,7 +306,18 @@ export interface ControlServiceDeps {
       cwd: string,
       description?: string,
     ): Promise<ControlWorkspaceInfo>;
-    remove(name: string): Promise<void>;
+    /**
+     * Remove a registry entry. `expectedCwd` rechecks that the live entry
+     * still points at the directory the caller created before deleting it;
+     * used by the Bot auto-workspace rollback so a same-name entry owned by
+     * someone else is never touched.
+     *
+     * The production wiring (main.ts, direct and transaction remove) refuses
+     * deletion with a `WorkspaceRemovalRefusedError`: `in_use` when a session
+     * or worker binding references the workspace, `cwd_mismatch` when the
+     * live or on-disk entry no longer points at `expectedCwd`.
+     */
+    remove(name: string, expectedCwd?: string): Promise<void>;
     transaction?<T>(fn: (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => Promise<T>): Promise<T>;
   };
   // Automatic-collaboration switch. Persists `conversations.router.enabled`,
@@ -2586,10 +2599,35 @@ export class ControlService {
         registered = true;
         return await runtime.bots.createBot({ ...input, workspace: name });
       } catch (error) {
-        const errors: unknown[] = [error];
         if (registered) {
-          try { await workspaces.remove(name); } catch (cleanupError) { errors.push(cleanupError); }
+          // A same-name entry that is not ours (replaced out from under us, or
+          // never ours) stays: removing by name would delete someone else's
+          // registration. The orphaned directory we created is still removed.
+          const current = workspaces.list().find((workspace) => workspace.name === name);
+          const ours = current !== undefined && sameWorkspacePath(current.cwd, dir);
+          if (ours) {
+            try {
+              await workspaces.remove(name, dir);
+            } catch (cleanupError) {
+              if (isWorkspaceRemovalRefused(cleanupError)) {
+                // `in_use`: a session or worker binding landed on the new
+                // workspace between creation and rollback. `cwd_mismatch`: an
+                // out-of-band config edit replaced the entry, so we cannot
+                // prove the directory is still ours. Keep both and surface the
+                // original Bot failure unwrapped.
+                throw error;
+              }
+              const errors: unknown[] = [error, cleanupError];
+              try { await rmdir(dir); } catch (rmdirError) { errors.push(rmdirError); }
+              throw new AggregateError(errors, "bot-workspace-rollback-failed", { cause: error });
+            }
+          }
         }
+        // Best-effort cleanup outside the registry transaction: production
+        // runs the C-held transaction above, while tests/embeddings may use
+        // `botWorkspaceMutex`. rmdir does not recurse, so only the empty
+        // directory this attempt created can be removed.
+        const errors: unknown[] = [error];
         try { await rmdir(dir); } catch (cleanupError) { errors.push(cleanupError); }
         if (errors.length > 1) throw new AggregateError(errors, "bot-workspace-rollback-failed", { cause: error });
         throw error;

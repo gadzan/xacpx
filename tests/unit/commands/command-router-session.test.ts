@@ -2439,6 +2439,56 @@ test("workspace rm refuses while persisted sessions still use it", async () => {
   expect(freed.text).not.toContain("仍被");
 });
 
+test("workspace rm refuses while worker bindings still use it", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+  };
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
+
+  const reply = await router.handle("wx:user", "/workspace rm backend");
+
+  expect(reply.text).toContain("仍被");
+  expect(reply.text).toContain("backend:codex:backend:main");
+  expect(config.workspaces.backend).toBeDefined();
+});
+
+test("workspace rm holds the state lock across the occupancy re-check and delete", async () => {
+  const { router, sessions, config } = buildRouter();
+  let releaseLock!: () => void;
+  const lockGate = new Promise<void>((resolve) => { releaseLock = resolve; });
+  let lockEntered!: () => void;
+  const lockHeld = new Promise<void>((resolve) => { lockEntered = resolve; });
+  const holding = sessions.withSessionLock(async () => {
+    lockEntered();
+    await lockGate;
+  });
+  await lockHeld;
+
+  // Queue a binding behind the held lock, then delete: the optimistic check
+  // cannot see the queued session, so only an S-held re-check can refuse.
+  const created = sessions.createSession("late", "codex", "backend");
+  let removalSettled = false;
+  const removal = router.handle("wx:user", "/workspace rm backend")
+    .finally(() => { removalSettled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(removalSettled).toBe(false);
+
+  releaseLock();
+  await holding;
+  expect(await created).not.toBeNull();
+  const reply = await removal;
+  expect(reply.text).toContain("仍被");
+  expect(config.workspaces.backend).toBeDefined();
+  await sessions.removeSession("late");
+});
+
 test("agent rm refuses while persisted sessions still use it", async () => {
   const { router, sessions } = buildRouter();
   await router.handle("wx:user", "/session new guarded --agent codex --ws backend");
