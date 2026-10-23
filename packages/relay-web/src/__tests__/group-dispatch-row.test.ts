@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import type {
-  BotSummaryDto,
-  ConversationMessageDto,
-  MemberTurnSummaryDto,
+import {
+  RELAY_CAPABILITIES,
+  type BotSummaryDto,
+  type ConversationMessageDto,
+  type MemberTurnSummaryDto,
 } from "@ganglion/xacpx-relay-protocol";
 import GroupDispatchRow from "../components/GroupDispatchRow.vue";
 import GroupTranscript from "../components/GroupTranscript.vue";
@@ -436,7 +437,11 @@ function memberTurn(id: string, botId: string, state: MemberTurnSummaryDto["stat
   };
 }
 
-function seedTranscript(messages: ConversationMessageDto[], turns: MemberTurnSummaryDto[]) {
+function seedTranscript(
+  messages: ConversationMessageDto[],
+  turns: MemberTurnSummaryDto[],
+  options: { capabilities?: string[] } = {},
+) {
   setActivePinia(createPinia());
   const instances = useInstancesStore();
   instances.instances = [
@@ -446,6 +451,7 @@ function seedTranscript(messages: ConversationMessageDto[], turns: MemberTurnSum
       online: true,
       lastSeenAt: null,
       sessions: [],
+      capabilities: options.capabilities ?? [],
       agents: [{ name: "codex", driver: "codex" }],
       workspaces: [{ name: "repo", cwd: "/repo" }],
       agentCatalog: [],
@@ -681,6 +687,90 @@ describe("GroupTranscript dispatch aggregation", () => {
     await flushPromises();
 
     expect(cancel).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("offers the leader pill while the leader's own turn is still running", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "running"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    const pill = wrapper.get('[data-test="group-dispatch-stop-leader"]');
+    expect(pill.text()).toContain("Stop Reviewer");
+
+    // The leader's turn ends: there is nothing left to cancel, so the pill goes.
+    groups.memberTurnsById = {
+      ...groups.memberTurnsById,
+      turn_a: { ...groups.memberTurnsById.turn_a!, state: "completed" },
+    };
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="group-dispatch-stop-leader"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("stops the leader without a confirmation when the core can scope the cancel", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "running"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const cancelMember = vi.spyOn(groups, "cancelMember").mockResolvedValue(undefined);
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
+      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
+    });
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    await wrapper.get('[data-test="group-dispatch-stop-leader"]').trigger("click");
+    await flushPromises();
+
+    expect(useConfirmState().value).toBeNull();
+    expect(cancelMember).toHaveBeenCalledTimes(1);
+    expect(cancelMember).toHaveBeenCalledWith("instance_1", "run_1", "turn_a");
+    expect(cancel).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("falls back to the confirmed stop-all on a core without scoped cancellation", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "running"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+    );
+    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
+      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
+    });
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    const pill = wrapper.get('[data-test="group-dispatch-stop-leader"]');
+    expect(pill.text()).toContain("Stop all");
+
+    await pill.trigger("click");
+    await flushPromises();
+
+    expect(useConfirmState().value?.title).toBe("Stop all tasks?");
+    expect(cancel).not.toHaveBeenCalled();
+
+    settleConfirm(true);
+    await flushPromises();
+    expect(cancel).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
 });

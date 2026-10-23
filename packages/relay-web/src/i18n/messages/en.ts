@@ -1180,6 +1180,7 @@ export default {
       instructions: "Instructions",
       stopMember: "Stop {name}",
       stopMemberFailed: "Could not stop {msg}",
+      stopLeader: "Stop {name}",
       stopAll: "Stop all",
       stopAllConfirm: {
         title: "Stop all tasks?",
