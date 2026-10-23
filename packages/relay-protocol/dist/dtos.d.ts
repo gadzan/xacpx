@@ -568,6 +568,14 @@ export interface MemberTurnSummaryDto {
      * does not turn it into a human request. Stop the run, then send a new one.
      */
     blockedReason?: "human-authority-required" | "human-authority-unknown";
+    /** User cancellation intent scoped to THIS member turn, never its
+     *  siblings. Present exactly when the member was stopped by the human. */
+    cancellationReason?: "human-cancelled";
+    /** Set exactly on the wake turn the runtime creates for a leader member
+     *  turn whose own public handoffs have all settled. It names the leader
+     *  turn whose assignments this wake summarizes; absent on every other
+     *  turn. */
+    followupSenderMemberTurnId?: string;
 }
 export interface ConversationRunDetailDto extends ConversationRunDto {
     profileSnapshot?: BotProfileSnapshotDto;

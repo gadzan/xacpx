@@ -842,7 +842,7 @@ function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && (c.effect === undefined || c.effect === "unknown" || c.effect === "read-only" || c.effect === "mutating") && (c.effectProvenance === undefined || c.effect === "read-only" && c.effectProvenance === "declared-enforced") && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown");
+  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && (c.effect === undefined || c.effect === "unknown" || c.effect === "read-only" || c.effect === "mutating") && (c.effectProvenance === undefined || c.effect === "read-only" && c.effectProvenance === "declared-enforced") && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown") && (c.cancellationReason === undefined || c.cancellationReason === "human-cancelled") && optStr(c.followupSenderMemberTurnId);
 }
 var historyObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var historyId = (value) => typeof value === "string" && value.length > 0 && value.length <= 128;
@@ -909,7 +909,9 @@ var historyMemberKeys = [
   "expectedOutput",
   "dependsOn",
   "failureReason",
-  "blockedReason"
+  "blockedReason",
+  "cancellationReason",
+  "followupSenderMemberTurnId"
 ];
 function historyWorktree(value, runId) {
   if (!isConversationWorktreeStatus(value) || !historyObject(value) || !historyKeys(value, ["runId", "baseCommitSha", "disposition", "revision", "resources", "preview", "integration", "orphanWorktreePaths"]) || value.runId !== runId)
