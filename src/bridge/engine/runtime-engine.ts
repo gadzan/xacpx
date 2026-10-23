@@ -8,6 +8,9 @@ import { raceWithTimeout } from "../../util/async.js";
 import { normalizePathForComparison, physicalFenceKeyForSession } from "./runtime/physical-session-identity";
 
 import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx-session-files";
+import { modelRestoreFailure, recoverOmpSessionModel } from "../../transport/omp-model-recovery";
+import { resolveOmpRecoveryLaunch } from "../../transport/omp-recovery-launch";
+import { assertAcpxQueueOwnerAbsent } from "../../transport/acpx-queue-owner-launcher";
 import { acpxRecordFileNameMatches } from "../../transport/acpx-record-discovery";
 import type {
   AgentSessionListResult,
@@ -654,9 +657,19 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
   private readonly coolPending = new Set<string>();
+  /** Resolved native identity per logical key (omp model restore recovery input). */
+  private readonly recordNativeIds = new Map<string, { recordId: string; agentSessionId: string }>();
   /** In-flight worker acquisitions (fence discharge + spawn), keyed by session. */
   private readonly acquiring = new Map<string, Promise<RuntimeWorkerClient>>();
   private readonly recordIds = new Map<string, string>();
+  private readonly recoveringModels = new Set<string>();
+  private readonly physicalBusinessOps = new Map<string, number>();
+
+  private assertModelRecoveryIdle(input: EngineSessionInput): void {
+    if (this.recoveringModels.has(this.physicalFenceKeyForInput(input))) {
+      throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `model recovery for session "${this.workerKey(input)}" is in progress; retry after it settles`);
+    }
+  }
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleTtlMs: number;
   private policyTransitionLock?: Promise<void>;
@@ -723,6 +736,12 @@ export class RuntimeEngine implements BridgeEngine {
   private readonly ensureInFlightIdentity = new Map<string, string>();
   private readonly turnLeases = new Map<string, Promise<void>>();
   private readonly queueSuspended = new Set<string>();
+  /** WHY a queue was suspended (engine-visible cause). The drain loop is
+   *  fire-and-forget (kickDrain swallows rejections), so without a retained
+   *  reason the stall would be silent: users see a stuck queue with no
+   *  actionable "pick another model" hint. Cleared when a direct prompt
+   *  resumes the queue. */
+  private readonly queueSuspendReasons = new Map<string, string>();
   private readonly staleAfterTurn = new Set<string>();
 
   constructor(private readonly options: RuntimeEngineOptions) {
@@ -922,6 +941,7 @@ export class RuntimeEngine implements BridgeEngine {
   private kickDrain(input: EngineSessionInput): Promise<void> {
     if (this.shuttingDown) return Promise.resolve();
     const key = this.workerKey(input);
+    if (this.recoveringModels.has(this.physicalFenceKeyForInput(input))) return Promise.resolve();
     if (this.queueSuspended.has(key)) return Promise.resolve();
     const existing = this.draining.get(key);
     if (existing) return existing;
@@ -1056,9 +1076,29 @@ export class RuntimeEngine implements BridgeEngine {
         await this.executeRuntimeTurn(catalogInput, head.text, {});
         isTerminal = true;
       } catch (err) {
-        turnError = err;
+        // Exact native omp model restore failure during a queued turn: every
+        // remaining FIFO head would hit the same native restore error. Persist-
+        // first suspend so the queue cannot spin through the failure; the next
+        // direct prompt is the resume path (accepted UX). The failed head stays
+        // for replay (non-terminal), never silently dropped. The restore error
+        // is retained as the suspend reason so users can see WHY the queue
+        // stalled (the drain loop itself is fire-and-forget: kickDrain swallows
+        // rejections, so without this the failure would be silent).
+        if (modelRestoreFailure(err) && resolveOmpRecoveryLaunch(catalogInput)) {
+          try {
+            await this.getQueueStore().setSuspended(key, true);
+            this.queueSuspended.add(key);
+            this.queueSuspendReasons.set(
+              key,
+              err instanceof Error ? err.message : String(err),
+            );
+          } catch (suspendErr) {
+            turnError = suspendErr;
+          }
+          isTerminal = false;
+        }
         // Only terminal turn results should dequeue (no acked loss). Crash/ambiguous (no terminal result) must keep head for replay.
-        if (err instanceof RuntimeError) {
+        else if (err instanceof RuntimeError) {
           const code = err.code;
           if (code === "RUNTIME_TURN_CANCELLED" || code === "RUNTIME_TURN_FAILED" || code === "RUNTIME_PERMISSION_DENIED") {
             isTerminal = true;
@@ -1364,6 +1404,7 @@ export class RuntimeEngine implements BridgeEngine {
   private async checkSiblingPhysicalOwnerAndHandoff(input: EngineSessionInput): Promise<boolean> {
     const key = this.workerKey(input);
     const requested = this.physicalFenceKeyForInput(input);
+    this.assertModelRecoveryIdle(input);
     const sibling = this.manager?.findSiblingPhysicalOwner(requested, key);
     if (!sibling) return false;
     const siblingActive =
@@ -1379,7 +1420,8 @@ export class RuntimeEngine implements BridgeEngine {
     return true;
   }
 
-  private async ensureWorker(input: EngineSessionInput): Promise<RuntimeWorkerClient> {
+  private async ensureWorker(input: EngineSessionInput, modelRecoverySync = false): Promise<RuntimeWorkerClient> {
+    if (!modelRecoverySync) this.assertModelRecoveryIdle(input);
     if (!this.isRuntimeEligible()) {
       throw new RuntimeError("RUNTIME_ENGINE_UNSUPPORTED", "runtime ineligible: nonInteractivePermissions=fail or escalate policy requires CLI");
     }
@@ -1420,6 +1462,7 @@ export class RuntimeEngine implements BridgeEngine {
         );
       }
       const physicalFenceKey = this.physicalFenceKeyForInput(input);
+      if (!modelRecoverySync) this.assertModelRecoveryIdle(input);
       const client = await manager.acquire(logicalKey, physicalFenceKey);
       if (recordLookup.kind === "found") {
         this.recordIds.set(logicalKey, recordLookup.recordId);
@@ -1444,11 +1487,15 @@ export class RuntimeEngine implements BridgeEngine {
   }
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient, agentProcessEnv: Record<string, string> | undefined) => Promise<T>): Promise<T> {
     const key = this.workerKey(input);
+    this.assertModelRecoveryIdle(input);
     const _lifecycleEpochAtEntry = this.deleteGenerations.get(key) ?? 0;
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
     this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
+    this.assertModelRecoveryIdle(input);
+    const physicalKey = this.physicalFenceKeyForInput(input);
+    this.physicalBusinessOps.set(physicalKey, (this.physicalBusinessOps.get(physicalKey) ?? 0) + 1);
     this.incBusinessOp(key);
     let client: RuntimeWorkerClient | undefined;
     try {
@@ -1594,6 +1641,9 @@ export class RuntimeEngine implements BridgeEngine {
           this.scheduleIdleTtl(key, client);
         }
       } catch {}
+      const remainingPhysicalOps = (this.physicalBusinessOps.get(physicalKey) ?? 1) - 1;
+      if (remainingPhysicalOps > 0) this.physicalBusinessOps.set(physicalKey, remainingPhysicalOps);
+      else this.physicalBusinessOps.delete(physicalKey);
       if (staleError) throw staleError;
     }
   }
@@ -1830,9 +1880,11 @@ export class RuntimeEngine implements BridgeEngine {
     if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
     const key = this.workerKey(input);
     const _lifecycleEpochAtEntry = this.deleteGenerations.get(key) ?? 0;
+    this.assertModelRecoveryIdle(input);
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
+    this.assertModelRecoveryIdle(input);
     if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
       throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
     }
@@ -1849,6 +1901,7 @@ export class RuntimeEngine implements BridgeEngine {
         throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
       }
       this.queueSuspended.delete(key);
+      this.queueSuspendReasons.delete(key);
       await this.checkMcpStaleAndRotate(input, true);
       if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
         throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
@@ -1921,9 +1974,11 @@ export class RuntimeEngine implements BridgeEngine {
     if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
     const key = this.workerKey(input);
     const _lifecycleEpochAtEntry = this.deleteGenerations.get(key) ?? 0;
+    this.assertModelRecoveryIdle(input);
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
+    this.assertModelRecoveryIdle(input);
     if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
       throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
     }
@@ -1989,11 +2044,129 @@ export class RuntimeEngine implements BridgeEngine {
 
   async setModel(input: EngineSessionInput & { modelId: string }) {
     await this.withWorker(input, async (client, agentProcessEnv) => {
-      await this.ensureSessionHandle(input, client, agentProcessEnv);
-      await client.request("setConfigOption", { key: "model", value: input.modelId });
+      try {
+        await this.ensureSessionHandle(input, client, agentProcessEnv);
+        await client.request("setConfigOption", { key: "model", value: input.modelId });
+      } catch (error) {
+        if (!modelRestoreFailure(error) || !resolveOmpRecoveryLaunch(input)) throw error;
+        await this.recoverNativeModelRestore(input, error, agentProcessEnv);
+      }
       return {};
     });
     return {};
+  }
+
+  /**
+   * Explicit omp model restore recovery (accepted UX): the warm worker's resume
+   * failed with the exact `Could not restore model <id>` error. Stop the worker
+   * (fence RETAINED — no release, so no second owner can admit while the native
+   * helper runs), prove no acpx queue owner remains, relaunch omp natively to
+   * persist the requested model, then recreate the worker and re-apply the model
+   * through the normal setConfigOption path. Never replays a prompt and never
+   * releases the durable queue: the queue stays suspended until the next direct
+   * prompt resumes it.
+   */
+  private async recoverNativeModelRestore(input: EngineSessionInput & { modelId: string }, cause: unknown, agentProcessEnv: Record<string, string> | undefined): Promise<void> {
+    const key = this.workerKey(input);
+    const epoch = this.deleteGenerations.get(key) ?? 0;
+    const physicalKey = this.physicalFenceKeyForInput(input);
+    this.assertModelRecoveryIdle(input);
+    // One native writer: refuse an active turn or drain instead of killing it.
+    if (this.hasActiveTurn(key) || this.draining.has(key) || (this.physicalBusinessOps.get(physicalKey) ?? 0) > 1) {
+      throw new RuntimeError(
+        "RUNTIME_WORKER_TEARDOWN_PENDING",
+        `cannot restore model for session "${key}" while a turn or queue drain is active; retry after it settles`,
+      );
+    }
+    for (const [otherKey, session] of this.sessionCatalog) {
+      if (otherKey !== key && this.physicalFenceKeyForInput(session) === physicalKey && (this.hasActiveTurn(otherKey) || this.draining.has(otherKey) || this.acquiring.has(otherKey))) {
+        throw new RuntimeError("RUNTIME_PHYSICAL_OWNER_BUSY", `physical session for "${key}" has operations in flight for "${otherKey}"; retry after they settle`);
+      }
+    }
+    this.recoveringModels.add(physicalKey);
+    let releaseTurn: (() => void) | undefined;
+    try {
+      releaseTurn = await this.acquireTurnLease(key);
+      this.assertLifecycleEpoch(key, epoch);
+      // Native id resolved from the persisted acpx record only — never through
+      // an ensure/status on the broken native session.
+      const native = await this.resolveNativeAgentSessionId(input);
+      if (!native) {
+        throw new RuntimeError(
+          "RUNTIME_INIT_FAILED",
+          `cannot restore model for session "${key}": acpx record with a native session id was not found on disk`,
+        );
+      }
+      const { recordId: acpxRecordId, agentSessionId } = native;
+      // Persist-first suspend so no queued head spins through the failing
+      // restore; stays suspended after recovery (direct prompt resumes).
+      await this.getQueueStore().setSuspended(key, true);
+      this.queueSuspended.add(key);
+      // Stop the verified worker but KEEP its fence + recordIds + construction
+      // identity: an absent fence would admit a foreign owner over the native
+      // helper window, while our own re-acquire below discharges our own dead
+      // fence quickly.
+      const client = this.manager?.get(key);
+      if (client) {
+        if (client.alive) {
+          await client.shutdown().catch((e) => { throw toTeardownError(key, e); });
+        }
+        if (client.lifecycle !== "stopped") {
+          await client.terminate().catch((e) => { throw toTeardownError(key, e); });
+        }
+        if (client.lifecycle !== "stopped") {
+          throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `runtime worker for "${key}" did not reach stopped before native model restore`);
+        }
+      }
+      this.assertLifecycleEpoch(key, epoch);
+      // Native exclusion (acpx CLI queue owner) before the helper launch. The
+      // queue-owner lock is keyed by the acpx RECORD id (shortHash(id,24)), so
+      // the absence check must use the record id, never the session name.
+      await assertAcpxQueueOwnerAbsent(acpxRecordId);
+      const launch = resolveOmpRecoveryLaunch(input);
+      if (!launch) {
+        throw new RuntimeError("RUNTIME_INIT_FAILED", `cannot restore model for session "${key}": unsupported omp launch configuration`);
+      }
+      try {
+        await recoverOmpSessionModel({
+          command: launch.command,
+          args: launch.args,
+          cwd: input.cwd,
+          agentSessionId,
+          modelId: input.modelId,
+          ...(agentProcessEnv && Object.keys(agentProcessEnv).length > 0 ? { env: { ...process.env, ...agentProcessEnv } } : {}),
+          timeoutMs: 30_000,
+        });
+      } catch (nativeError) {
+        throw new RuntimeError(
+          "RUNTIME_INIT_FAILED",
+          `native model restore for session "${key}" (model "${input.modelId}") did not finish: ${nativeError instanceof Error ? nativeError.message : String(nativeError)}; retry the model change to reconcile the saved selection`,
+        );
+      }
+      // Sync: fresh worker + normal setConfigOption under the chosen model.
+      // Partial success (native saved but sync failed) must report the truth
+      // and stay retry-forward.
+      try {
+        this.assertLifecycleEpoch(key, epoch);
+        const fresh = await this.ensureWorker(input, true);
+        await this.ensureSessionHandle(input, fresh, agentProcessEnv);
+        await fresh.request("setConfigOption", { key: "model", value: input.modelId });
+        fresh.lifecycle = fresh.isBootstrapVerified ? "ready" : "starting";
+        this.scheduleIdleTtl(key, fresh);
+      } catch (syncError) {
+        throw new RuntimeError(
+          "RUNTIME_INIT_FAILED",
+          `native model for session "${key}" was saved but acpx/logical synchronization is incomplete (${syncError instanceof Error ? syncError.message : String(syncError)}); retry the model change to re-sync`,
+        );
+      }
+    } finally {
+      // The native session id is unchanged by design, but never trust a
+      // pre-recovery snapshot afterwards: force the next recovery to re-read
+      // the record from disk.
+      this.recordNativeIds.delete(key);
+      this.recoveringModels.delete(physicalKey);
+      releaseTurn?.();
+    }
   }
 
   async probeAgentCapabilities(): Promise<import("../../transport/types").AgentCapabilityProbeResult> {
@@ -2143,6 +2316,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.clearActiveTurn(key);
       this.coolPending.delete(key);
       this.recordIds.delete(key);
+      this.recordNativeIds.delete(key);
       this.lastConstructionIdentity.delete(key);
       this.sessionCatalog.delete(key);
       return {};
@@ -2256,6 +2430,7 @@ export class RuntimeEngine implements BridgeEngine {
         this.clearActiveTurn(key);
         this.coolPending.delete(key);
         this.recordIds.delete(key);
+        this.recordNativeIds.delete(key);
         this.lastConstructionIdentity.delete(key);
         await this.getQueueStore().removeJournal(key);
         this.sessionCatalog.delete(key);
@@ -2391,6 +2566,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.deleteRecordFilesStrict(recordId);
       await removeTombstoneStrict(sessionsDir, safeId);
       this.recordIds.delete(key);
+      this.recordNativeIds.delete(key);
       this.lastConstructionIdentity.delete(key);
       // 6. PR6: only after record deletion verified successful, delete runtime queue journal fail-closed
       await this.getQueueStore().removeJournal(key);
@@ -2408,6 +2584,7 @@ export class RuntimeEngine implements BridgeEngine {
     } finally {
       this.deleting.delete(key);
       this.queueSuspended.delete(key);
+      this.queueSuspendReasons.delete(key);
     }
   }
 
@@ -2541,6 +2718,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.clearActiveTurn(key);
       this.coolPending.delete(key);
       this.recordIds.delete(key);
+      this.recordNativeIds.delete(key);
       this.lastConstructionIdentity.delete(key);
       this.sessionCatalog.delete(key);
       this.lastMcpIdentity.delete(key);
@@ -2557,6 +2735,7 @@ export class RuntimeEngine implements BridgeEngine {
     } finally {
       this.deleting.delete(key);
       this.queueSuspended.delete(key);
+      this.queueSuspendReasons.delete(key);
     }
   }
 
@@ -2641,8 +2820,56 @@ export class RuntimeEngine implements BridgeEngine {
         `failed to resolve acpx record id for delete (disk verification failed): ${lookup.error.message}`,
       );
     }
-
     return undefined;
+  }
+
+  /**
+   * Native full session id for one logical session WITHOUT loading the (possibly
+   * broken) native session: no worker ensure, no status RPC, no resume. Serves the
+   * explicit omp model restore recovery, which must relaunch the native CLI without
+   * first creating a second native owner or replaying any prompt.
+   */
+  private async resolveNativeAgentSessionId(input: EngineSessionInput): Promise<{ recordId: string; agentSessionId: string } | undefined> {
+    const key = this.workerKey(input);
+    const recordId = this.recordIds.get(key);
+    if (!recordId) {
+      const lookup = await findAcpxRecordIdFromDisk(
+        {
+          name: input.name,
+          cwd: input.cwd,
+          agentCommand: input.agentCommand,
+          acpxAgent: input.acpxAgent,
+          rawCommand: input.rawCommand,
+        },
+        this.sessionsDir(),
+      );
+      if (lookup.kind === "found") this.recordIds.set(key, lookup.recordId);
+    }
+    const resolvedRecordId = this.recordIds.get(key);
+    if (!resolvedRecordId) return undefined;
+    // A stale recordNativeIds entry (deleted/recreated session reusing the
+    // alias) must never survive a record-id change: validate against the
+    // current record id before trusting the cache.
+    const cached = this.recordNativeIds.get(key);
+    if (cached && cached.recordId === resolvedRecordId) return cached;
+    let agentSessionId: string | undefined;
+    try {
+      const content = await readFile(join(this.sessionsDir(), `${encodeURIComponent(resolvedRecordId)}.json`), "utf8");
+      const parsed = JSON.parse(content) as { acp_session_id?: unknown; agent_session_id?: unknown };
+      if (typeof parsed.acp_session_id === "string" && parsed.acp_session_id.length > 0) agentSessionId = parsed.acp_session_id;
+      else if (typeof parsed.agent_session_id === "string" && parsed.agent_session_id.length > 0) agentSessionId = parsed.agent_session_id;
+    } catch (error) {
+      if (isEnoent(error)) return undefined;
+      // I/O uncertainty is NOT absence: the record exists but cannot be read.
+      throw new RuntimeError(
+        "RUNTIME_INIT_FAILED",
+        `cannot read the acpx session record for "${key}": ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (!agentSessionId) return undefined;
+    const resolved = { recordId: resolvedRecordId, agentSessionId };
+    this.recordNativeIds.set(key, resolved);
+    return resolved;
   }
   /**
    * Strict delete (G4): verified complete eradication of all record and history artifacts.

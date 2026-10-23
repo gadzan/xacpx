@@ -1646,7 +1646,11 @@ var validateAgentsCapabilitiesGet = (p) => {
 };
 var validateSessionModelGet = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? o : null;
+  if (!o || !isStr(o.chatKey) || !isStr(o.sessionAlias))
+    return null;
+  if (o.refresh !== undefined && typeof o.refresh !== "boolean")
+    return null;
+  return o;
 };
 var validateSessionModelSet = (p) => {
   const o = fields(p);

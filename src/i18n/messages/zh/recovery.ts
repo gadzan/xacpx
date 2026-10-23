@@ -13,6 +13,8 @@ export const recovery: RecoveryMessages = {
     `请先在微信里重新执行：/session new ${alias} --agent ${agent} --ws ${quotedWorkspace}`,
   sessionUnavailableAttachHint: (alias, agent, quotedWorkspace) =>
     `如果你要绑定一个已有会话，再执行：/session attach ${alias} --agent ${agent} --ws ${quotedWorkspace} --name <会话名>`,
+  modelRestoreFailed: "OMP 无法恢复此会话保存的模型。",
+  modelRestoreHint: "请先用 /model 获取当前可选模型，再用 /model <id> 选择替代模型。会话历史将保留，不会新建会话，也不会自动重发原消息。",
 
   // renderTransportError — partial output
   sessionInterrupted: (alias) => `当前会话「${alias}」执行中断，未收到最终回复。`,

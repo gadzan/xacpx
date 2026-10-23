@@ -10,6 +10,9 @@ vi.mock("../api/client", () => ({
 
 import PromptInput from "../components/PromptInput.vue";
 import { dismissToast, useToasts } from "../lib/use-toasts";
+import { useChatStore } from "../stores/chat";
+import { useSessionControlsStore } from "../stores/session-controls";
+import { useInstancesStore } from "../stores/instances";
 
 let pinia: ReturnType<typeof createPinia>;
 beforeEach(() => {
@@ -130,4 +133,82 @@ it("refreshes adapter-advertised effort choices after switching models", async (
   await w.get('[data-test="effort-chip"]').trigger("click");
   expect(w.findAll('[data-test="effort-option"]').map((option) => option.text()))
     .toEqual(["high", "xhigh"]);
+});
+
+it("OMP restore failure: refresh fetches via refresh RPC and replacement selection clears only the matching error", async () => {
+  const chat = useChatStore();
+  const instancesStore = useInstancesStore();
+  // On a pinia store the setup-ref is already unwrapped: `store.instances` IS
+  // the array. Writing `store.instances.value` parks the rows on a detached
+  // object and findSessionRow never sees them.
+  instancesStore.instances = [{ id: "i1", sessions: [{ alias: "backend", agent: "omp", driver: "omp", workspace: "w" }] }] as never;
+  chat.error = 'Could not restore model gpt-5.2[high]: the ACP agent did not advertise that model';
+  rpc.mockResolvedValueOnce({ current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] });
+  const w = mount(PromptInput, { props: { instanceId: "i1", sessionAlias: "backend" }, global: { plugins: [pinia] } });
+  await flush();
+
+  rpc.mockResolvedValueOnce({ current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] });
+  await w.vm.refreshModels();
+  expect(rpc).toHaveBeenLastCalledWith("i1", "control.session.model.get", { sessionAlias: "backend", refresh: true });
+
+  rpc.mockResolvedValueOnce({ ok: true, current: "gpt-5.2[low]" });
+  await w.findAll('[data-test="model-option"]')[0].trigger("click");
+  await flush();
+  // pickModel follows the set with an effort reload (existing behavior), so the
+  // set call is the second-to-last RPC; assert it specifically instead of
+  // "last called with".
+  expect(rpc).toHaveBeenCalledWith("i1", "control.session.model.set", { sessionAlias: "backend", modelId: "gpt-5.2[high]" });
+  expect(chat.error).toBe("");
+});
+
+it("a refresh that lands after the session switched does not publish to the new session", async () => {
+  const { promise, resolve } = Promise.withResolvers<unknown>();
+  rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a"] });
+  const w = mount(PromptInput, { props: { instanceId: "i1", sessionAlias: "session-a" }, global: { plugins: [pinia] } });
+  await flush();
+
+  rpc.mockReturnValueOnce(promise);
+  const pending = w.vm.refreshModels();
+  await w.setProps({ sessionAlias: "session-b" });
+  resolve({ current: "stale-a", available: ["stale-a"] });
+  await pending;
+
+  const controls = useSessionControlsStore();
+  expect(controls.modelCurrent).toBeUndefined();
+  expect(controls.modelAvailable).toEqual([]);
+});
+
+it("a deferred model set followed by a session switch leaves the new session's chip enabled", async () => {
+  // Seed RPC by method so initial load/effort reads can't steal the set mock.
+  const setDeferred = Promise.withResolvers<unknown>();
+  rpc.mockImplementation(async (_instanceId: string, type: string, payload?: unknown) => {
+    if (type === "control.session.model.set") return setDeferred.promise;
+    if (type === "control.session.model.get") {
+      const alias = payload && typeof payload === "object" && "sessionAlias" in payload
+        ? String(payload.sessionAlias)
+        : "";
+      return alias === "session-a"
+        ? { current: "model-a", available: ["model-a", "model-b"] }
+        : { current: "model-x", available: ["model-x"] };
+    }
+    return {};
+  });
+  const w = mount(PromptInput, { props: { instanceId: "i1", sessionAlias: "session-a" }, global: { plugins: [pinia] } });
+  await flush();
+  await w.vm.$nextTick();
+
+  await w.get('[data-test="model-chip"]').trigger("click");
+  await w.findAll('[data-test="model-option"]')[0].trigger("click"); // starts the deferred set
+  await w.vm.$nextTick();
+  expect((w.get('[data-test="model-chip"]').element as HTMLButtonElement).disabled).toBe(true);
+
+  await w.setProps({ sessionAlias: "session-b" });
+  await flush();
+  await w.vm.$nextTick();
+
+  setDeferred.resolve({ ok: true, current: "model-a" }); // stale op lands after the switch
+  await flush();
+  await w.vm.$nextTick();
+
+  expect((w.get('[data-test="model-chip"]').element as HTMLButtonElement).disabled).toBe(false);
 });

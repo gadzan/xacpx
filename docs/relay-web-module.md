@@ -186,6 +186,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   用户选择后立刻发送时，prompt 会等待同一会话正在进行的 effort 设置落地。
 - model 切换完成后会重新读取 effort，因为 adapter 可能按 model 广告不同的推理强度选项；仅当
   composer 仍指向发起切换的同一会话时应用刷新结果。
+- OMP 模型恢复：只有驱动是 `omp` 且报错是精确的 `Could not restore model <id>` 文案才走恢复横幅，其它鉴权/目录/通用报错不视为“模型已下架”，也不做自动映射。横幅隐藏原始报错、只显示受影响的模型 id，并提供“获取模型并选择替代项”动作：该动作经 `control.session.model.get { refresh: true }` 冷探测当前精确启动拿可选项；`current` 是恢复前保存的选择，直到选中替代项并 `control.session.model.set` 成功才被覆盖。选择替代模型走正常 setter 与上面的串行/乐观规则；成功提示明确“原消息尚未重新发送”。
 - session/实例切换以独立 context revision 丢弃 model 与 effort 的迟到响应，避免旧会话结果污染
   当前 composer。没有广告 effort 的 agent 不显示控件，也不会触发设置请求。
 - 新建会话的控件初始化：逻辑会话先可被 `control.sessions.list` 看到，adapter 启动完成后才广告

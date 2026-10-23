@@ -17,6 +17,10 @@ import {
 } from "./transport-diagnostics";
 import { t } from "../i18n";
 import { withDefaultMcpIdentity } from "../orchestration/coordinator-identity";
+import {
+  readSessionModelCatalog,
+  type SessionModelReadOptions,
+} from "../transport/session-model-catalog";
 
 type AutoInstallFn = typeof defaultAutoInstall;
 type DiscoverPathsFn = typeof defaultDiscoverPaths;
@@ -323,14 +327,29 @@ export class TransportInvoker {
     return await this.measureTransportCall("set_model", session, () => setModel(bound, modelId));
   }
 
-  async getModelTransportSession(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
-    if (!this.transport.getSessionModel) {
-      // Transport can't query acpx; fall back to the resolved model with no catalog.
-      return { current: session.model, available: [] };
-    }
+  async getModelTransportSession(
+    session: ResolvedSession,
+    options: SessionModelReadOptions = {},
+  ): Promise<{ current?: string; available: string[] }> {
+    const probe = this.transport.probeAgentCapabilities?.bind(this.transport);
+    const getSessionModel = this.transport.getSessionModel?.bind(this.transport);
     const bound = withDefaultMcpIdentity(session);
-    const getSessionModel = this.transport.getSessionModel.bind(this.transport);
-    return await this.measureTransportCall("get_model", session, () => getSessionModel(bound));
+    // OMP's native session can come back empty or unrestorable while the
+    // adapter itself is fine: fall back to a cold probe of the exact launch
+    // rather than showing "no models" for a working agent.
+    const isOmp = (bound.driver ?? bound.agent) === "omp";
+    return await this.measureTransportCall(
+      options.refresh ? "probe_model_catalog" : "get_model",
+      session,
+      () =>
+        readSessionModelCatalog({
+          session: bound,
+          ...(getSessionModel ? { read: () => getSessionModel(bound) } : {}),
+          ...(probe ? { probe } : {}),
+          ...(options.refresh ? { refresh: true } : {}),
+          ...(isOmp ? { coldFallbackWhenEmpty: true } : {}),
+        }),
+    );
   }
 
   async cancelTransportSession(session: ResolvedSession) {

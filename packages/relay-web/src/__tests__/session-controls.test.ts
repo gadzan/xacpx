@@ -168,6 +168,53 @@ describe("session-controls store", () => {
     log.mockRestore();
   });
 
+  it("setModel non-optimistic keeps the saved model and records the diagnostic until the RPC lands", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    // Seed the store through a real load first: setModel treats an unseen
+    // context as a session switch and clears it, so a bare ref write is not
+    // enough to keep the saved model visible during the non-optimistic window.
+    rpc.mockResolvedValueOnce({ current: "saved-model", available: ["saved-model", "replacement"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+    const { promise, resolve } = Promise.withResolvers<unknown>();
+    rpc.mockReturnValueOnce(promise);
+    const p = s.setModel("i1", "backend", "replacement", { optimistic: false });
+    expect(s.modelCurrent).toBe("saved-model");
+    resolve({ ok: true, current: "replacement" });
+    expect(await p).toBe(true);
+    expect(s.modelCurrent).toBe("replacement");
+    expect(s.modelError).toBe("");
+    log.mockRestore();
+  });
+
+  it("setModel failure carries the partial-sync diagnostic while the toast stays generic", async () => {
+    rpc.mockResolvedValueOnce({ current: "gpt-5.2[high]", available: ["gpt-5.2[high]"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+    const detail = "set applied to native session but acpx sync failed: adapter stalled";
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: detail } });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await s.setModel("i1", "backend", "replacement", { optimistic: false });
+    expect(s.modelCurrent).toBe("gpt-5.2[high]");
+    expect(s.modelError).toBe(detail);
+    expect(useToasts().value[0]).toMatchObject({ tone: "error", key: "chat.modelSetFailed" });
+    log.mockRestore();
+  });
+
+  it("loadModel refresh bypasses the snapshot cache and reports backend diagnostics", async () => {
+    useAuthStore().account = { username: "alice" };
+    await writeViewSnapshot("alice", "session-model", "i1", "backend", { current: "stale", available: ["stale"] });
+    const detail = "Could not restore model gpt-5.2[high]: agent did not advertise it";
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: detail } });
+    const s = useSessionControlsStore();
+    const ok = await s.loadModel("i1", "backend", undefined, { refresh: true });
+    expect(ok).toBe(false);
+    expect(rpc).toHaveBeenCalledWith("i1", "control.session.model.get", { sessionAlias: "backend", refresh: true });
+    expect(s.modelCurrent).toBeUndefined();
+    expect(s.modelAvailable).toEqual([]);
+    expect(s.modelError).toBe(detail);
+  });
+
   it("does not make a new account wait for the previous account's model mutation", async () => {
     useAuthStore().account = { username: "alice" };
     await writeViewSnapshot("bob", "session-model", "i1", "backend", {

@@ -265,6 +265,10 @@ RPC 错误返回，由 relay-web 浏览器诊断保留。同一逻辑会话的�
 会话仍可并行。relay-web 同时用会话上下文与请求序号丢弃迟到响应，并把最后确认的权威模型
 与当前乐观展示值分开保存；连续选择全部失败时回到权威值，而不是回到上一个乐观值。
 
+`control.session.model.get` 接受可选 `refresh?: boolean`。`true` 跳过 native 会话读取，直接冷探测该会话的精确启动（不继承目标模型：目录是 agent 级别的），`current` 取保存的选择直到真正应用；探测失败抛自身诊断，不会把缓存或无关列表包装成刚验证过的结果。不带 `refresh` 时，只有精确的 OMP `Could not restore model <id>` 读取失败才会回退到精确启动冷探测，其它 native 失败原样抛出；回退探测失败则报告原始 native 错误。native 读取成功但可用列表为空时（acpx 无法解析会话记录），冷探测可作为补充目录；仍为空则保留原空结果，因为空列表不是失败。
+
+`control.session.model.set` 的 OMP 恢复：先走普通 acpx setter，只有精确的 `Could not restore model <id>` 且启动是可识别的 OMP 原生启动（裸 `omp acp` 或 output-guard 包装，保留 profile/config；未知包装不支持）才会运行有界原生 helper。helper 用 `--resume <native id> --model <id>` 重启同一 native 会话，经 `switch_session` 持久化（同一 native session id/file，不直接改 JSONL，不发 prompt），再用同一条普通 setter 做 acpx 侧同步后才提交逻辑模型。原生成功但同步失败按部分成功报告，带 retry-forward 语义，重跑同一命令安全。CLI 在任何 acpx queue-owner 租约存在时拒绝（只验证缺席，不 kill、不解链）；同一物理会话的并发恢复互斥。Runtime 路径在 worker 校验通过后停 worker 但保留 fence，不断言前先拒绝活跃 turn/恢复重叠与跨会话物理占用，持久队列挂起直到下一次显式 prompt，不自动排空。
+
 该 RPC 的 connector 侧 60 秒 response timeout 被显式豁免：一次 30 秒 set timeout 后还可能
 跟随一次 30 秒权威查询（bridge backstop 最坏为 45 秒 + 45 秒）。Hub 在下行 request envelope
 中同时附带扣除 15 秒响应余量后的绝对 epoch work deadline 与 connector work budget；connector

@@ -260,6 +260,8 @@ Examples:
 /model gpt-5.2[high]
 ```
 
+OMP model restore: if the native session reports the exact `Could not restore model <id>` failure, bare `/model` re-reads the current choices with a cold probe of the session's exact launch (saved selection stays `current` until applied; a probe failure shows a diagnostic, not a model list). Then `/model <exact id>` retries the normal set first and only that exact failure runs the bounded native repair (`--resume <native id> --model <id>` plus `switch_session`, same native session id/file, no JSONL edit, no prompt sent). The repaired native model is then synced through the normal acpx setter before the logical model is committed; a partial sync reports the truth and is safe to retry with the same command. Repair refuses while an acpx queue owner holds the session — free it (or let it idle out) and retry. History is preserved and the original message is never resent. Dashboard flow: see [relay-web-module](./relay-web-module.md); wire details: see [control-module](./control-module.md).
+
 ## Configuration
 
 `/config` only allows modifying configuration items on the whitelist. For complete configuration field descriptions, see [config-reference.md](./config-reference.md); for the in-WeChat configuration command, see [config-command.md](./config-command.md).

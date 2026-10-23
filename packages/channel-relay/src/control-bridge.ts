@@ -927,7 +927,11 @@ async function dispatchControlRequest(
         );
       if (!input.sessionAlias)
         return errorPayload("bad-request", "sessionAlias is required");
-      return await control.getSessionModel(input.chatKey, input.sessionAlias); // ≅ SessionModelResult
+      return await control.getSessionModel(
+        input.chatKey,
+        input.sessionAlias,
+        input.refresh !== undefined ? { refresh: input.refresh } : undefined,
+      ); // ≅ SessionModelResult
     }
     case MSG.sessionModelSet: {
       const input = parseControlPayload(MSG.sessionModelSet, payload);

@@ -32,6 +32,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   const modelCurrent = ref<string | undefined>(undefined);
   const modelAvailable = ref<string[]>([]);
   const modelLoading = ref(false);
+  const modelError = ref("");
   const effortCurrent = ref<string | undefined>(undefined);
   const effortAvailable = ref<string[]>([]);
   const effortLoading = ref(false);
@@ -79,6 +80,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   function clearModelState(): void {
     modelCurrent.value = undefined;
     modelAvailable.value = [];
+    modelError.value = "";
   }
 
   function clearEffortState(): void {
@@ -138,7 +140,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     authoritativeEfforts.clear();
   }
 
-  async function loadModel(instanceId: string | null, alias: string | null, isValid?: () => boolean): Promise<boolean> {
+  async function loadModel(instanceId: string | null, alias: string | null, isValid?: () => boolean, options?: { refresh?: boolean }): Promise<boolean> {
     if (!instanceId || !alias) { reset(); return false; }
     const context = contextKey(instanceId, alias);
     if (activeContext !== context) {
@@ -152,6 +154,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       ? viewCache.captureGenerationToken(cacheOwner, "session-model", instanceId, alias)
       : null;
     modelLoading.value = true;
+    modelError.value = "";
     let seeded = false;
     try {
       // Never paint a pre-mutation cache while a model change for this exact
@@ -162,7 +165,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
         if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
       }
       const user = cacheOwner;
-      if (user) {
+      if (user && !options?.refresh) {
         const snapshot = viewCache.peek<ControlSnapshot>(user, "session-model", instanceId, alias)
           ?? await viewCache.read<ControlSnapshot>(user, "session-model", instanceId, alias);
         if (!isCurrentRequest(context, revision) || cacheUser() !== user || (isValid && !isValid())) return false;
@@ -175,10 +178,14 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       // selection for this same session is still being reconciled. Read only
       // after the latest mutation settles, otherwise the load can publish the
       // pre-mutation model and make the later set response look stale.
-      const r = await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: alias });
+      const r = await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", {
+        sessionAlias: alias,
+        ...(options?.refresh ? { refresh: true } : {}),
+      });
       if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
       if (isErrorPayload(r)) {
         if (!seeded) clearModelState();
+        modelError.value = r.error.message;
         return false;
       }
       modelCurrent.value = typeof r.current === "string" ? r.current : undefined;
@@ -188,19 +195,18 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       modelAvailable.value = Array.isArray(r.available) ? r.available : [];
       cacheModel(cacheOwner, instanceId, alias, { current: modelCurrent.value, available: modelAvailable.value }, cacheToken);
       return true;
-    } catch {
+    } catch (error) {
       if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
       if (!seeded) clearModelState();
+      modelError.value = error instanceof Error ? error.message : String(error);
       return false;
     } finally {
       if (isCurrentRequest(context, revision)) modelLoading.value = false;
     }
   }
 
-  async function setModel(instanceId: string, alias: string, id: string): Promise<boolean> {
-    // Reflect the choice in the chip immediately. The backend `set` spawns acpx and can
-    // take a second or two (or time out), so updating only AFTER the RPC left the chip
-    // showing the old model until the next session switch. Revert if the switch fails.
+  async function setModel(instanceId: string, alias: string, id: string, options?: { optimistic?: boolean }): Promise<boolean> {
+    // Recovery keeps showing the saved model until both native and acpx state agree.
     const context = contextKey(instanceId, alias);
     if (activeContext !== context) clearModelState();
     activeContext = context;
@@ -215,13 +221,15 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     // This mutation supersedes any in-flight model load for the same UI store.
     // Its stale finally block is intentionally ignored, so clear the spinner now.
     modelLoading.value = false;
-    modelCurrent.value = id;
+    modelError.value = "";
+    if (options?.optimistic !== false) modelCurrent.value = id;
     const operation = (async (): Promise<boolean> => {
       try {
         const r = await api.rpc<SessionModelSetResult>(instanceId, "control.session.model.set", { sessionAlias: alias, modelId: id });
         if (isErrorPayload(r)) {
           if (isCurrentRequest(context, revision)) {
             modelCurrent.value = rollbackModel(context, prev);
+            modelError.value = r.error.message;
             reportModelSwitchFailure(r.error.message);
           }
           return false;
@@ -236,6 +244,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
           cacheModel(cacheOwner, instanceId, alias, { current: observed, available: availableAtSet }, cacheToken);
           if (isCurrentRequest(context, revision)) {
             modelCurrent.value = observed;
+            modelError.value = `requested ${id}; authoritative model is ${r.current ?? "unknown"}`;
             reportModelSwitchFailure(
               `requested ${id}; authoritative model is ${r.current ?? "unknown"}`,
             );
@@ -256,6 +265,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       } catch (e) {
         if (isCurrentRequest(context, revision)) {
           modelCurrent.value = rollbackModel(context, prev);
+          modelError.value = e instanceof Error ? e.message : String(e);
           reportModelSwitchFailure(e instanceof Error ? e.message : "set-failed");
         }
         return false;
@@ -517,7 +527,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   watch(() => auth.account?.username ?? null, () => resetForAccountChange(), { flush: "sync" });
 
   return {
-    modelCurrent, modelAvailable, modelLoading, reset, loadModel, setModel,
+    modelCurrent, modelAvailable, modelLoading, modelError, reset, loadModel, setModel,
     effortCurrent, effortAvailable, effortLoading, loadEffort, setEffort, waitForEffortSet,
     applyLiveEvent,
   };

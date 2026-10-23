@@ -726,6 +726,54 @@ test("session.model.set returns the authoritative reconciled model", async () =>
   ).toEqual({ ok: false, current: "provider/fallback-model" });
 });
 
+test("session.model.get forwards the optional refresh flag to the control method", async () => {
+  const calls: unknown[][] = [];
+  const { control } = makeFakeControl({
+    getSessionModel: async (...args: unknown[]) => {
+      calls.push(args);
+      return { current: "fresh-a", available: ["fresh-a", "fresh-b"] };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+
+  expect(
+    await dispatch(bridge, req(MSG.sessionModelGet, {
+      chatKey: "relay:acct",
+      sessionAlias: "a",
+      refresh: true,
+    })),
+  ).toEqual({ current: "fresh-a", available: ["fresh-a", "fresh-b"] });
+  expect(calls).toEqual([["relay:acct", "a", { refresh: true }]]);
+
+  expect(
+    await dispatch(bridge, req(MSG.sessionModelGet, {
+      chatKey: "relay:acct",
+      sessionAlias: "a",
+    })),
+  ).toEqual({ current: "fresh-a", available: ["fresh-a", "fresh-b"] });
+  expect(calls[1]).toEqual(["relay:acct", "a", undefined]);
+});
+
+test("session.model.get rejects a non-boolean refresh before reaching the control method", async () => {
+  let called = 0;
+  const { control } = makeFakeControl({
+    getSessionModel: async () => {
+      called += 1;
+      return { current: "fresh-a", available: [] };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+
+  expect(
+    await dispatch(bridge, req(MSG.sessionModelGet, {
+      chatKey: "relay:acct",
+      sessionAlias: "a",
+      refresh: "yes",
+    })),
+  ).toMatchObject({ error: { code: "invalid-payload" } });
+  expect(called).toBe(0);
+});
+
 test("session effort get/set dispatch through the structured control methods", async () => {
   const calls: unknown[][] = [];
   const { control } = makeFakeControl({

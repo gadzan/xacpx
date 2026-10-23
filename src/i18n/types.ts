@@ -48,6 +48,10 @@ export interface SessionMessages {
   modelAvailableLabel: (models: string) => string;
   modelSet: (modelId: string) => string;
   modelSetFailed: (modelId: string, detail: string) => string;
+  modelCatalogFailed: (detail: string) => string;
+  modelSelectionHint: string;
+  modelSavedUnavailable: string;
+  modelRecoverySet: (modelId: string) => string;
 
   // handleReplyModeShow / handleReplyModeSet / handleReplyModeReset
   replyModeHeader: string;
@@ -251,6 +255,8 @@ export interface RecoveryMessages {
   sessionUnavailable: (alias: string) => string;
   sessionUnavailableRenewHint: (alias: string, agent: string, quotedWorkspace: string) => string;
   sessionUnavailableAttachHint: (alias: string, agent: string, quotedWorkspace: string) => string;
+  modelRestoreFailed: string;
+  modelRestoreHint: string;
 
   // renderTransportError — partial output
   sessionInterrupted: (alias: string) => string;

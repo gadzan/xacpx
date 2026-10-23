@@ -1,6 +1,7 @@
 import type { ResolvedSession } from "../../transport/types";
 import type { RouterResponse, SessionRecoveryOps } from "../router-types";
 import { isPartialPromptOutputError, summarizeTransportError } from "../transport-diagnostics";
+import { modelRestoreFailure } from "../../transport/omp-model-recovery";
 import { AutoInstallFailedError } from "../../recovery/errors";
 import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import { t } from "../../i18n";
@@ -26,6 +27,14 @@ export function renderTransportError(session: ResolvedSession, error: unknown): 
   }
   const message = error instanceof Error ? error.message : String(error);
   const registryError = renderAdapterRegistryError(session, message);
+  if (session.driver === "omp" && modelRestoreFailure(message)) {
+    return {
+      text: [
+        t().recovery.modelRestoreFailed,
+        t().recovery.modelRestoreHint,
+      ].join("\n"),
+    };
+  }
   if (registryError) return registryError;
 
   if (message.includes("No acpx session found")) {
@@ -61,6 +70,7 @@ export function renderTransportError(session: ResolvedSession, error: unknown): 
       t().recovery.sessionInterruptedError(summarizeTransportError(message)),
     ].join("\n"),
   };
+
 }
 
 export function renderSessionCreationError(session: ResolvedSession, error: unknown): RouterResponse {

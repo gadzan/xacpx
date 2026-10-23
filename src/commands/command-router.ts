@@ -641,7 +641,7 @@ export class CommandRouter {
     return {
       setModeTransportSession: (session, modeId) => this.transportInvoker.setModeTransportSession(session, modeId),
       setModelTransportSession: (session, modelId) => this.transportInvoker.setModelTransportSession(session, modelId),
-      getModelTransportSession: (session) => this.transportInvoker.getModelTransportSession(session),
+      getModelTransportSession: (session, options) => this.transportInvoker.getModelTransportSession(session, options),
       cancelTransportSession: (session) => this.transportInvoker.cancelTransportSession(session),
       promptTransportSession: (session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride, onPlan, onUsage, onCommands, interactionId) =>
         this.transportInvoker.promptTransportSession(session, text, reply, replyContext, media, abortSignal, onToolEvent, onThought, perfSpanOverride ?? perfSpan, onPlan, onUsage, onCommands, interactionId),

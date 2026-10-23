@@ -13,6 +13,8 @@ export const recovery: RecoveryMessages = {
     `Re-create it: /session new ${alias} --agent ${agent} --ws ${quotedWorkspace}`,
   sessionUnavailableAttachHint: (alias, agent, quotedWorkspace) =>
     `Or attach an existing session: /session attach ${alias} --agent ${agent} --ws ${quotedWorkspace} --name <session-name>`,
+  modelRestoreFailed: "OMP could not restore this session's saved model.",
+  modelRestoreHint: "Use /model to fetch current choices, then /model <id> to choose a replacement. This keeps the session history; no new session is created and your original message is not resent.",
 
   // renderTransportError — partial output
   sessionInterrupted: (alias) => `Session "${alias}" was interrupted; no final reply received.`,

@@ -57,6 +57,10 @@ export const session: SessionMessages = {
   modelAvailableLabel: (models) => `- 可选：${models}`,
   modelSet: (modelId) => `已切换当前会话 model：${modelId}`,
   modelSetFailed: (modelId, detail) => `切换 model 失败：${modelId}\n${detail}`,
+  modelCatalogFailed: (detail) => `无法获取当前模型列表：${detail}`,
+  modelSelectionHint: "请用 /model <id> 明确选择模型。会话历史将保留，消息不会自动重发。",
+  modelSavedUnavailable: "保存的模型不在当前模型列表中，请明确选择替代模型。",
+  modelRecoverySet: (modelId) => `已切换当前会话 model：${modelId}\n原消息尚未重新发送。`,
 
   // handleReplyModeShow / handleReplyModeSet / handleReplyModeReset
   replyModeHeader: "当前 reply mode：",

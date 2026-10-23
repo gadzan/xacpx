@@ -1081,6 +1081,12 @@ export interface FsWriteResult {
 export interface SessionModelGetPayload {
     chatKey: string;
     sessionAlias: string;
+    /**
+     * When true, bypass the native-session read and re-probe the agent's exact
+     * launch for a verified-fresh catalog (used when the native session cannot
+     * be restored or the current catalog is known stale).
+     */
+    refresh?: boolean;
 }
 /** Configured agent and workspace, plus an optional product bot id. No session alias. */
 export interface AgentsCapabilitiesGetPayload {
