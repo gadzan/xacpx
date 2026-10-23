@@ -243,7 +243,7 @@ test("the dispatch content is localized", async ({ page, isMobile }) => {
   if (isMobile) await expect(view.surface).toHaveAccessibleName("派发给 2 个 Bot");
   else await expect(page.getByTestId("group-dispatch-title")).toHaveText("派发给 2 个 Bot");
   // The leader stop label joins verb and name without a space.
-  await expect(page.getByTestId("group-dispatch-stop-leader")).toHaveText("停止Lead");
+  await expect(page.getByTestId("group-dispatch-stop-leader")).toHaveText("停止 Lead");
 });
 
 test("the leader pill below the dispatch row stops only the leader", async ({ page }, info) => {
