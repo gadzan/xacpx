@@ -237,7 +237,8 @@ const dispatchRows = computed<Record<string, GroupDispatchPresentation>>(() =>
 const leaderStopAnchorIds = computed<Set<string>>(() => {
   const ids = new Set<string>();
   const active = groupsStore.activeRun;
-  if (!active) return ids;
+  // A terminal run has nothing left to cancel: the pill would offer a no-op.
+  if (!active || !groupsStore.isRunActive) return ids;
   for (const group of dispatchGroups.value) {
     if (!group.presentation.leader.active) continue;
     if (group.presentation.runId !== active.id) continue;

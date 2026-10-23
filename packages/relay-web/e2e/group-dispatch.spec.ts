@@ -160,3 +160,29 @@ test("the dispatch content is localized", async ({ page }) => {
   await page.getByTestId("group-dispatch-row").click();
   await expect(page.getByTestId("group-dispatch-instructions-label")).toHaveText("派发内容");
 });
+
+test("the leader pill below the dispatch row stops only the leader", async ({ page }, info) => {
+  const cancelled: unknown[] = [];
+  await page.route("**/api/instances/i1/rpc", async (route) => {
+    const { type, payload } = route.request().postDataJSON();
+    if (type === "control.runs.cancelMember") {
+      cancelled.push(payload);
+      await route.fulfill({ json: { result: { run } } });
+      return;
+    }
+    await route.fallback();
+  });
+  await openGroup(page);
+
+  const pill = page.getByTestId("group-dispatch-stop-leader");
+  await expect(pill).toBeVisible();
+  await expect(pill).toHaveText("Stop Lead");
+  await pill.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath("dispatch-leader-pill.png") });
+
+  await pill.click();
+  // The scoped stop asks for no confirmation: the dispatched members keep running.
+  await expect(page.getByTestId("confirm-dialog")).toHaveCount(0);
+  await expect.poll(() => cancelled.length).toBe(1);
+  expect(cancelled[0]).toEqual({ runId: run.id, memberTurnId: "turn_lead" });
+});

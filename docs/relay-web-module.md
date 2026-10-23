@@ -1076,7 +1076,22 @@ handoff 的 task，两行截断；标题整轮只出现一次。卡片标题与�
 `groupsStore.cancelMember(instanceId, runId, memberTurnId)`，走
 `control.runs.cancelMember` 只取消这一个成员 turn：leader 与同轮其他成员继续运行。
 core 不支持单成员取消（`supportsCancelMember` 为假）或成员已结束时，该按钮不渲染。
-本轮只有逐行停止：没有「全部停止」，没有确认框，也没有移动端弹层。
+
+`supportsCancelMember` 不再是写死的假值：`GroupTranscript.vue` 用
+`supportsRunsCancelMember(instancesStore.byId(instanceId))` 读实例自身广告的能力
+`runs.cancel-member.v1`。该能力由 connector 在 core 暴露 `cancelMemberTurn` 时才上报，
+因此老 core 上逐行 ■ 不渲染，页面改为只提供整轮的「全部停止」。
+
+派发行下方还有一个项管停止胶囊（`data-test="group-dispatch-stop-leader"`，`bg-surface`、
+`text-fg-muted`、圆角胶囊、小字号）。当该轮所属 run 是当前活跃 run、且项管自己这一轮还没
+结束时（项管自己的 MemberTurn 仍 queued / dispatched / running）才出现；项管 turn 结束后
+胶囊消失。四个挂载点（人消息、Bot 消息、handoff、bubble 锚定的回复）都渲染它。
+
+- core 支持单成员取消时，胶囊文案是「停止 {name}」/`Stop {name}`（`group.dispatch.stopLeader`，
+  name 为项管名），点击不弹确认框，直接按 `control.runs.cancelMember` 取消项管自己的
+  MemberTurn：已派发的成员继续跑，项管也不会再被唤醒做汇总。
+- core 不支持单成员取消时，胶囊文案改为「全部停止」/`Stop all`，点击走与展开卡
+  「全部停止」完全相同的确认框流程，确认后取消整轮 run。
 
 ## 阶段范围边界
 

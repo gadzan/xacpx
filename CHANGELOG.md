@@ -8,6 +8,7 @@
 - Relay protocol and connector support `control.runs.cancelMember` with strict `{runId, memberTurnId}` validation; instances advertise `runs.cancel-member.v1` only when their core supports scoped member cancellation.
 - Group member turns that dispatch assignments end the turn instead of waiting, sleeping or polling; the runtime wakes the member exactly once, in one followup turn, after every assignment dispatched from that turn settles. The wake carries only each assignment's id, target Bot and settled state — the member reads the exact result with `group_read_result`. `group_read_result` refuses every page while the current turn still owns unsettled handoffs and reports the pending assignment ids instead of partial evidence.
 - relay-web: single and group chats accept real attachment uploads with durable prompt references; group target picker explains unavailable members and requires confirm for send-all.
+- relay-web: the group dispatch row gains a stop pill for the 项管 below the row. It appears while the leader's own turn is still running and stops only that leader; on a core without scoped member cancellation it falls back to the confirmed "stop all" of the whole round.
 
 ### Changed
 
