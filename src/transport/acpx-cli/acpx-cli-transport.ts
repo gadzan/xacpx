@@ -58,6 +58,7 @@ import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffort
 import {
   CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
+  isCommandTimeoutError,
   type AcpxCommandStage,
 } from "../command-timeouts";
 import {
@@ -686,6 +687,11 @@ export class AcpxCliTransport implements SessionTransport {
         }), deadlineAt);
         return;
       } catch (error) {
+        // A management timeout carries raw subprocess output in its message,
+        // which can coincidentally contain the restore-failure text (the CI
+        // case: filler bytes matched the pattern). Timeouts never enter
+        // recovery: the acpx side is wedged, not mis-persisted.
+        if (isCommandTimeoutError(error)) throw error;
         const restore = modelRestoreFailure(error);
         const launch = restore && resolveOmpRecoveryLaunch({
           agent: session.agent,
@@ -1286,13 +1292,22 @@ export class AcpxCliTransport implements SessionTransport {
       return result.stdout;
     };
     if (deadlineAt === undefined) return run();
+    const runPromise = run();
     try {
       return await Promise.race([
-        run(),
+        runPromise,
         new Promise<never>((_, reject) => {
           deadlineTimer = setTimeout(() => {
             abortController!.abort();
-            reject(managementTimeoutError(args, { ...options, timeoutMs: this.managementCommandTimeoutMs }));
+            // Adopt run()'s own settlement: the inner timeout error carries
+            // the subprocess output tails (the stage assertion depends on
+            // them); a fresh error here would discard them. This only fires
+            // when the deadline beats every inner bound, so run() settles
+            // momentarily after the abort.
+            void Promise.resolve(runPromise).then(
+              () => reject(managementTimeoutError(args, { ...options, timeoutMs: this.managementCommandTimeoutMs })),
+              (error) => reject(error),
+            );
           }, Math.max(deadlineAt - Date.now(), 0));
         }),
       ]);
