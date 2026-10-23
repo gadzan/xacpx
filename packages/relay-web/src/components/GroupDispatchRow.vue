@@ -10,8 +10,9 @@ import type { GroupDispatchPresentation } from "../lib/group-dispatch-presentati
  * count and the round status. Clicking the row expands a card below it with
  * the round's dispatch text and one line per dispatched bot.
  *
- * The card is display only apart from the per-member stop button: no stop
- * all, no confirmation dialog.
+ * The card is display only apart from two stop actions: one per dispatched
+ * member and, while any member is still active, a round-level stop all that
+ * the transcript confirms before cancelling.
  */
 const props = defineProps<{
   presentation: GroupDispatchPresentation;
@@ -25,6 +26,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   jump: [messageId: string];
   stopMember: [payload: { runId: string; memberTurnId: string }];
+  /** Ask the transcript to stop every dispatched member of this round. */
+  stopAll: [];
 }>();
 
 const { t } = useI18n();
@@ -75,6 +78,11 @@ function jumpToMember(botId: string): void {
 /** Stop one dispatched member; the durable ids travel with the request. */
 function stopMember(member: GroupDispatchPresentation["members"][number]): void {
   emit("stopMember", { runId: member.runId, memberTurnId: member.memberTurnId });
+}
+
+/** Round-level stop: the transcript owns the confirmation and cancellation. */
+function stopAll(): void {
+  emit("stopAll");
 }
 </script>
 
@@ -181,6 +189,16 @@ function stopMember(member: GroupDispatchPresentation["members"][number]): void 
           </button>
         </li>
       </ul>
+      <div v-if="presentation.capability.anyActive" class="mt-2 flex justify-end">
+        <button
+          type="button"
+          data-test="group-dispatch-stop-all"
+          class="rounded-sm px-1 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
+          @click.stop="stopAll"
+        >
+          {{ t("group.dispatch.stopAll") }}
+        </button>
+      </div>
     </div>
   </div>
 </template>

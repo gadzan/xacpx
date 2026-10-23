@@ -1180,6 +1180,12 @@ export default {
       instructions: "Instructions",
       stopMember: "Stop {name}",
       stopMemberFailed: "Could not stop {msg}",
+      stopAll: "Stop all",
+      stopAllConfirm: {
+        title: "Stop all tasks?",
+        message: "{name} and the {n} dispatched tasks will stop",
+        confirm: "Stop all",
+      },
     },
     worktree: {
       title: "Member worktrees", boundary: "Separate working directories, not an OS sandbox. Integration creates a candidate; it does not update main.",
