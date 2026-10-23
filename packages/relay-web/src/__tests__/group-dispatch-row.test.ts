@@ -718,6 +718,23 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 
+  it("drops the stopped note when every dispatched member is cancelled", async () => {
+    seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "cancelled", { cancellationReason: "human-cancelled" }),
+        memberTurn("turn_member_1", "bot_b", "cancelled"),
+        memberTurn("turn_member_2", "bot_c", "cancelled"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    // "⊘ Cancelled" on the aggregate row already says the round stopped.
+    expect(wrapper.get('[data-test="group-dispatch-status-cancelled"]').text()).toContain("Cancelled");
+    expect(wrapper.find('[data-test="group-dispatch-stopped"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("marks the leader message stopped when its wake turn carries the stop reason", async () => {
     seedTranscript(
       [handoffMessage(1), handoffMessage(2)],

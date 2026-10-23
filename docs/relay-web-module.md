@@ -1053,6 +1053,10 @@ Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌�
 durable MemberTurn 与消息，不写 activeRun、不触发服务端调度。项管自己被停止时，聚合状态
 仍按各成员已证明的结果计算，另输出 `leaderStopped` 供上层显示停止说明。
 
+聚合状态的中文措辞按摘要区分：进行中把 queued 读作「排队中」；整轮全部完成才写
+「✓ N 个已完成」；只有部分完成（还有取消、失败或结果未知）时写紧凑的「✓ N 已完成」，
+避免和全完成标题混读。全部取消时只显示「⊘ 已取消」。
+
 点击该行（或聚焦后按 Enter / Space）展开行下方的卡片。卡片为 `bg-surface`、16px 圆角、
 `max-w-[560px]`：先是一段「派发内容」（`group.dispatch.instructions`），正文取该轮第一条
 handoff 的 task，两行截断；标题整轮只出现一次。卡片标题与折叠箭头旋转由 `aria-expanded`
@@ -1093,15 +1097,19 @@ core 不支持单成员取消（`supportsCancelMember` 为假）或成员已结�
 唤醒回合还没插入（派发尚未结算完）时也算没到终态，所以这个窗口里胶囊依然在。四个挂载点
 （人消息、Bot 消息、handoff、bubble 锚定的回复）都渲染它。
 
-- core 支持单成员取消时，胶囊文案是「停止 {name}」/`Stop {name}`（`group.dispatch.stopLeader`，
-  name 为项管名），点击不弹确认框，直接按 `control.runs.cancelMember` 取消一个 durable
+- core 支持单成员取消时，胶囊文案是「停止{name}」/`Stop {name}`（`group.dispatch.stopLeader`，
+  name 为项管名；中文不插空格），点击不弹确认框，直接按 `control.runs.cancelMember` 取消一个 durable
   MemberTurn：已派发的成员继续跑，项管也不会再被唤醒做汇总。取消目标是「停止对象」：
   唤醒回合还在 queued / running 时停唤醒回合的 MemberTurn，否则停项管自己的 MemberTurn。
 - core 不支持单成员取消时，胶囊文案改为「全部停止」/`Stop all`，点击走与展开卡
   「全部停止」完全相同的确认框流程，确认后取消整轮 run。
 
+整轮「全部停止」的确认框（`group.dispatch.stopAllConfirm.*`）以项管命名，而不是群名：
+文案是「{项管名}和已派发的 N 个任务都会停止」/`{name} and the N dispatched tasks will stop`。
+
 「已停止」说明（`group.dispatch.stopped`）来自 durable 证据：项管自己的 MemberTurn 或它的
-唤醒回合任一带 `cancellationReason: "human-cancelled"` 就显示。core 对已结束的项管写停止
+唤醒回合任一带 `cancellationReason: "human-cancelled"` 就显示。但整轮全部取消时不再显示：
+聚合行自己已经写着「⊘ 已取消」，再补一句「已停止」只是重复。core 对已结束的项管写停止
 意图时状态仍是 `completed`，所以只读状态是不够的，必须读这个字段。
 
 聚合行里出现 `indeterminate`（结果未知）的成员时，折叠行和手机摘要都单独显示「N 个结果未知」

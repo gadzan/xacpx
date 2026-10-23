@@ -474,6 +474,13 @@ async function handleStopAll(presentation: GroupDispatchPresentation): Promise<v
   void groupsStore.cancelCurrentRun();
 }
 
+/** The stopped note names a stop the aggregate row does not already show. An
+ *  all-cancelled round reads "⊘ cancelled" on the row itself, so repeating
+ *  "stopped" below it would say the same thing twice. */
+function showsStoppedNote(presentation: GroupDispatchPresentation | undefined): boolean {
+  return !!presentation && presentation.leaderStopped && presentation.summary !== "cancelled";
+}
+
 /**
  * The leader pill's wording: a scoped stop names the leader it stops, while a
  * core without scoped cancellation stops the whole round and says so.
@@ -680,7 +687,7 @@ async function handleLoadOlder(): Promise<void> {
                 @stop="handleStopLeader(dispatchRows[item.message.id]!)"
               />
               <p
-                v-if="dispatchRows[item.message.id]?.leaderStopped"
+                v-if="showsStoppedNote(dispatchRows[item.message.id])"
                 data-test="group-dispatch-stopped"
                 class="mt-1 text-xs text-fg-muted"
               >
@@ -705,7 +712,7 @@ async function handleLoadOlder(): Promise<void> {
                 @stop="handleStopLeader(dispatchRows[item.message.id]!)"
               />
               <p
-                v-if="dispatchRows[item.message.id]?.leaderStopped"
+                v-if="showsStoppedNote(dispatchRows[item.message.id])"
                 data-test="group-dispatch-stopped"
                 class="mt-1 text-xs text-fg-muted"
               >
@@ -727,7 +734,7 @@ async function handleLoadOlder(): Promise<void> {
                   @stop="handleStopLeader(dispatchRows[item.message.id]!)"
                 />
                 <p
-                  v-if="dispatchRows[item.message.id]!.leaderStopped"
+                  v-if="showsStoppedNote(dispatchRows[item.message.id])"
                   data-test="group-dispatch-stopped"
                   class="mt-1 text-xs text-fg-muted"
                 >
@@ -809,7 +816,7 @@ async function handleLoadOlder(): Promise<void> {
               @stop="handleStopLeader(dispatchRows[item.message.id]!)"
             />
             <p
-              v-if="dispatchRows[item.message.id]?.leaderStopped"
+              v-if="showsStoppedNote(dispatchRows[item.message.id])"
               data-test="group-dispatch-stopped"
               class="mt-1 text-xs text-fg-muted"
             >
