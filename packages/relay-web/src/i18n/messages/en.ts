@@ -1169,6 +1169,15 @@ export default {
         indeterminate: "Outcome unknown",
       },
     },
+    dispatch: {
+      sentTo: "Sent to {n} bots",
+      running: "{n} running",
+      queued: "{n} queued",
+      done: "{n} done",
+      cancelled: "Cancelled",
+      stopped: "Stopped",
+      failed: "{n} failed",
+    },
     worktree: {
       title: "Member worktrees", boundary: "Separate working directories, not an OS sandbox. Integration creates a candidate; it does not update main.",
       base: "Base commit", refresh: "Refresh", preview: "Preview member changes", continue: "Continue after resolving and staging conflicts",

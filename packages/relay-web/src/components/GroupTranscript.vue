@@ -22,6 +22,7 @@ import { useInstancesStore } from "../stores/instances";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import GroupHandoffEntry from "./GroupHandoffEntry.vue";
+import GroupDispatchRow from "./GroupDispatchRow.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import BotAvatar from "./BotAvatar.vue";
@@ -30,6 +31,10 @@ import AgentThinkingBubble from "./AgentThinkingBubble.vue";
 import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
 import GroupRunDetailSheet from "./GroupRunDetailSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
+import {
+  presentGroupDispatch,
+  type GroupDispatchPresentation,
+} from "../lib/group-dispatch-presentation";
 import {
   projectGroupTranscript,
   traceEventsToParts,
@@ -125,6 +130,100 @@ const items = computed<GroupTranscriptItem[]>(() =>
     runs: runRecords.value,
   }),
 );
+
+/** Handoff groups of one leader round: same conversation, topic, run and
+ *  issuing leader turn (`senderMemberTurnId`). Only rounds with more than one
+ *  handoff aggregate — a lone dispatch keeps its expandable handoff entry.
+ *  TODO: prove scoped member cancellation before flipping supportsCancelMember. */
+const dispatchGroups = computed(() => {
+  const messages = [...groupsStore.messages].sort((a, b) => a.seq - b.seq);
+  const byLeader = new Map<string, ConversationMessageDto[]>();
+  for (const message of messages) {
+    const senderTurnId = message.handoff?.senderMemberTurnId;
+    if (!senderTurnId) continue;
+    const key = JSON.stringify([message.conversationId, message.topicId, message.runId ?? "", senderTurnId]);
+    const list = byLeader.get(key);
+    if (list) list.push(message);
+    else byLeader.set(key, [message]);
+  }
+  const drivers: Record<string, string> = {};
+  for (const bot of props.bots) {
+    const driver = driverForBot(bot.id);
+    if (driver !== undefined) drivers[bot.id] = driver;
+  }
+  const groups: { handoffs: ConversationMessageDto[]; anchorId: string; presentation: GroupDispatchPresentation }[] = [];
+  for (const handoffs of byLeader.values()) {
+    if (handoffs.length < 2) continue;
+    const anchor = handoffs[0]!;
+    const record = anchor.runId ? runRecords.value[anchor.runId] : undefined;
+    const turnById = new Map((record?.memberTurns ?? []).map((turn) => [turn.id, turn]));
+    const leaderTurn = turnById.get(anchor.handoff!.senderMemberTurnId);
+    // The leader's own reply proves "项管那条消息": exact promptRequestId
+    // match, exactly one candidate, or no anchor — never a guess.
+    const leaderMessage = leaderTurn?.promptRequestId
+      ? messages.filter((message) => message.role === "bot" && !message.handoff
+        && message.runId === anchor.runId
+        && message.conversationId === anchor.conversationId && message.topicId === anchor.topicId
+        && message.senderBotId === anchor.senderBotId
+        && message.promptRequestId === leaderTurn.promptRequestId
+        && message.content.trim().length > 0)
+      : [];
+    const presentation = presentGroupDispatch({
+      leader: {
+        botId: anchor.senderBotId ?? "",
+        ...(leaderTurn ? { memberTurnId: leaderTurn.id } : {}),
+        // Durable stop evidence: the leader turn itself was cancelled while its
+        // members kept (or finished) their own proven outcomes.
+        ...(leaderTurn?.state === "cancelled" ? { cancellationReason: "human-cancelled" as const } : {}),
+      },
+      dispatches: handoffs.map((message) => ({
+        handoff: message.handoff!,
+        // Missing detail (history not loaded yet) still counts the bot: report
+        // it as queued until the run's member turns arrive.
+        memberTurn: turnById.get(message.handoff!.memberTurnId) ?? {
+          id: message.handoff!.memberTurnId,
+          runId: message.runId ?? "",
+          conversationId: message.conversationId,
+          topicId: message.topicId,
+          botId: message.handoff!.to,
+          batch: 0,
+          attempt: 1,
+          origin: "handoff" as const,
+          state: "queued" as const,
+          createdAt: message.createdAt,
+        },
+      })),
+      bots: props.bots,
+      drivers,
+      // TODO: prove scoped member cancellation before enabling the per-row stop UI.
+      supportsCancelMember: false,
+    });
+    groups.push({
+      handoffs,
+      anchorId: leaderMessage.length === 1 ? leaderMessage[0]!.id : anchor.id,
+      presentation,
+    });
+  }
+  return groups;
+});
+
+/** Anchor message id → aggregate row. The row renders below the leader's own
+ *  message when it is in the transcript, else in place of the first handoff. */
+const dispatchRows = computed<Record<string, GroupDispatchPresentation>>(() =>
+  Object.fromEntries(dispatchGroups.value.map((group) => [group.anchorId, group.presentation])),
+);
+
+/** Handoff messages absorbed into an aggregate row: every grouped handoff
+ *  except the anchor (when the anchor itself is a handoff) collapses. */
+const collapsedHandoffIds = computed<Set<string>>(() => {
+  const ids = new Set<string>();
+  for (const group of dispatchGroups.value) {
+    for (const message of group.handoffs) {
+      if (message.id !== group.anchorId) ids.add(message.id);
+    }
+  }
+  return ids;
+});
 
 /** Every run id visible in the transcript, batch-fetched non-blocking. */
 const visibleRunIds = computed<string[]>(() => {
@@ -443,7 +542,7 @@ async function handleLoadOlder(): Promise<void> {
         <!-- Durable message / handoff / system rows -->
         <template v-if="item.kind === 'message' && !(item.bubbleAnchor && item.memberTurn)">
           <TranscriptRow
-            v-if="!item.memberTurn"
+            v-if="!item.memberTurn && !collapsedHandoffIds.has(item.message.id)"
             :key="item.key"
             :row-id="item.message.id"
             :data-anchor-id="item.message.id"
@@ -460,34 +559,72 @@ async function handleLoadOlder(): Promise<void> {
                          :name="senderName(item.message.senderBotId)" :size="32" static
                          :retired="item.message.senderBotId ? botById[item.message.senderBotId]?.retired : false" />
             </template>
-            <GroupHandoffEntry
-              v-if="item.message.handoff"
-              :message="item.message"
-              :from-name="senderName(item.message.senderBotId)"
-              :to-name="senderName(item.message.handoff.to)"
-              :from-driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
-              :to-driver="driverForBot(item.message.handoff.to)"
-              :from-avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
-              :to-avatar="botById[item.message.handoff.to]?.avatar"
-              @jump="jumpToMessage"
-            />
-            <template v-else-if="item.message.role === 'human'">
+            <template v-if="item.message.role === 'human'">
               <ConversationBubble :message="item.message" :attachments="item.message.attachments" own />
               <ConversationMeta :message="item.message" />
+              <GroupDispatchRow
+                v-if="dispatchRows[item.message.id]"
+                :presentation="dispatchRows[item.message.id]!"
+                class="mt-2"
+              />
+              <p
+                v-if="dispatchRows[item.message.id]?.leaderStopped"
+                data-test="group-dispatch-stopped"
+                class="mt-1 text-xs text-fg-muted"
+              >
+                {{ $t("group.dispatch.stopped") }}
+              </p>
             </template>
 
             <template v-else-if="item.message.role === 'bot'">
               <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
               <ConversationMeta :message="item.message" />
+              <GroupDispatchRow
+                v-if="dispatchRows[item.message.id]"
+                :presentation="dispatchRows[item.message.id]!"
+                class="mt-2"
+              />
+              <p
+                v-if="dispatchRows[item.message.id]?.leaderStopped"
+                data-test="group-dispatch-stopped"
+                class="mt-1 text-xs text-fg-muted"
+              >
+                {{ $t("group.dispatch.stopped") }}
+              </p>
+            </template>
+
+            <template v-else-if="item.message.handoff">
+              <GroupDispatchRow
+                v-if="dispatchRows[item.message.id]"
+                :presentation="dispatchRows[item.message.id]!"
+              />
+              <GroupHandoffEntry
+                v-else
+                :message="item.message"
+                :from-name="senderName(item.message.senderBotId)"
+                :to-name="senderName(item.message.handoff.to)"
+                :from-driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
+                :to-driver="driverForBot(item.message.handoff.to)"
+                :from-avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
+                :to-avatar="botById[item.message.handoff.to]?.avatar"
+                @jump="jumpToMessage"
+              />
+            </template>
+
+            <template v-else-if="item.message.role === 'system'">
+              <p class="w-full py-1 text-center text-xs italic text-fg-muted">{{ item.message.content }}</p>
             </template>
 
             <template v-else>
-              <p class="w-full py-1 text-center text-xs italic text-fg-muted">{{ item.message.content }}</p>
+              <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
+              <ConversationMeta :message="item.message" />
             </template>
           </TranscriptRow>
-          <!-- Plain bot message that shares its member bubble with an earlier row -->
+          <!-- Plain bot message that shares its member bubble with an earlier row.
+               A collapsed (aggregated) handoff renders nothing: it must never
+               fall through to the bubble below and print its raw content. -->
           <TranscriptRow
-            v-else
+            v-else-if="item.memberTurn"
             :key="item.key"
             :row-id="item.message.id"
             :data-anchor-id="item.message.id"

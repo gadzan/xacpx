@@ -1166,6 +1166,15 @@ export default {
         indeterminate: "结果未知",
       },
     },
+    dispatch: {
+      sentTo: "派发给 {n} 个 Bot",
+      running: "{n} 执行中",
+      queued: "{n} 等待中",
+      done: "{n} 个已完成",
+      cancelled: "已取消",
+      stopped: "已停止",
+      failed: "{n} 失败",
+    },
     worktree: {
       title: "成员工作树", boundary: "工作目录相互独立，但不是操作系统沙箱。整合只创建候选分支，不修改 main。",
       base: "基准提交", refresh: "刷新", preview: "预览成员修改", continue: "解决并暂存冲突后继续",

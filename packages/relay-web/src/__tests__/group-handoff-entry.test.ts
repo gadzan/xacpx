@@ -120,7 +120,11 @@ describe("Public Group handoff entries", () => {
   });
 
   it("keeps each same-bot assignment paired with its own canonical result regardless of reply order", async () => {
-    const { wrapper } = render([handoff(), handoff(2), reply(2), reply()], [member(), member(2)]);
+    // Different issuing rounds stay separate entries; same-round handoffs now
+    // aggregate into one dispatch row (covered by group-dispatch-row.test.ts).
+    const second = handoff(2);
+    second.handoff!.senderMemberTurnId = "turn_a_2";
+    const { wrapper } = render([handoff(), second, reply(2), reply()], [member(), member(2)]);
     const entries = wrapper.findAll('[data-test="group-handoff"]');
     for (const entry of entries) await entry.get("button").trigger("click");
     expect(entries[0]!.get('[data-test="group-handoff-result"]').text()).toContain("Assignment 1 canonical findings");
@@ -146,7 +150,11 @@ describe("Public Group handoff entries", () => {
   it.each([
     { conversationId: "other_group" }, { topicId: "other_topic" }, { runId: "other_run" },
     { senderBotId: "bot_a" }, { promptRequestId: "prompt_2" }, { seq: 1 },
-    { role: "human" as const }, { content: " \n " }, { handoff: handoff(2).handoff },
+    { role: "human" as const }, { content: " \n " },
+    // A whole-envelope substitution from another round: still a conflicting
+    // handoff, but it must not collapse this round into a dispatch row, so the
+    // single-entry assertions below keep exercising the entry itself.
+    { handoff: { ...handoff(2).handoff, senderMemberTurnId: "turn_other" } },
   ])("does not substitute a reply with conflicting evidence %j", async (mismatch) => {
     const { wrapper, groups } = render([handoff(), reply(1, mismatch)]);
     await wrapper.get('[data-test="group-handoff-toggle"]').trigger("click");
