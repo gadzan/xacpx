@@ -196,6 +196,7 @@ test("PR8 E2E: worker result → coordinator wake via service", async () => {
     sourceKind: "coordinator",
     coordinatorSession: "coord:wake",
     workspace: "repo",
+    cwd: "/tmp/repo",
     targetAgent: "codex",
     task: "do work",
   });
