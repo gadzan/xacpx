@@ -20,6 +20,7 @@ import type {
 import { useGroupsStore } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { supportsRunsCancelMember, useInstancesStore } from "../stores/instances";
+import { useConnectionStore } from "../stores/connection";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import GroupDispatchRow from "./GroupDispatchRow.vue";
@@ -163,6 +164,8 @@ const dispatchGroups = computed(() => {
     if (driver !== undefined) drivers[bot.id] = driver;
   }
   const groups: {
+    /** Stable identity of the round: scope, run and issuing leader turn. */
+    roundId: string;
     handoffs: ConversationMessageDto[];
     anchorId: string;
     /** The leader's own turns: the dispatching turn and its wake turn. */
@@ -171,7 +174,7 @@ const dispatchGroups = computed(() => {
     runCancelled: boolean;
     presentation: GroupDispatchPresentation;
   }[] = [];
-  for (const handoffs of byLeader.values()) {
+  for (const [roundId, handoffs] of byLeader) {
     const anchor = handoffs[0]!;
     const record = anchor.runId ? runRecords.value[anchor.runId] : undefined;
     const turnById = new Map((record?.memberTurns ?? []).map((turn) => [turn.id, turn]));
@@ -235,6 +238,7 @@ const dispatchGroups = computed(() => {
       messages,
     });
     groups.push({
+      roundId,
       handoffs,
       anchorId: leaderMessage.length === 1 ? leaderMessage[0]!.id : anchor.id,
       leaderTurns: [leaderTurn, wakeTurn].filter((turn): turn is MemberTurnSummaryDto => !!turn),
@@ -244,6 +248,96 @@ const dispatchGroups = computed(() => {
   }
   return groups;
 });
+
+// ---------------------------------------------------------------------------
+// Screen-reader announcement of a round's end. The polite live region below
+// stays mounted and empty; it speaks one sentence only when THIS page watched
+// a round go from in progress to finished (every member settled) or to a
+// stopped leader. Rounds first seen already terminal — history load, older
+// pages, a topic switch, a reconnect resync — are recorded silently, and a
+// round is announced at most once.
+// ---------------------------------------------------------------------------
+const connectionStore = useConnectionStore();
+/** Text of the polite live region: empty until a round ends live. */
+const dispatchAnnouncement = ref("");
+/** Round id → terminal, as this page last saw it in the current scope. */
+const seenRounds = new Map<string, boolean>();
+/** Rounds already announced in the current scope. */
+const announcedRounds = new Set<string>();
+/** Scope (instance / conversation / topic) the seen-map belongs to. */
+let observedScope: string | null = null;
+/** The socket dropped: state replayed by the reconnect resync is not live. */
+let resyncPending = false;
+let announceTicket = 0;
+
+/** Clear first, write on the next tick: a repeated sentence is re-announced. */
+function announceDispatch(text: string): void {
+  const ticket = ++announceTicket;
+  dispatchAnnouncement.value = "";
+  void nextTick(() => {
+    if (ticket === announceTicket) dispatchAnnouncement.value = text;
+  });
+}
+
+/** One sentence for a round that just ended: the stopped leader wins over the
+ *  member tally, which otherwise lists the non-zero outcomes in row order. */
+function dispatchEndSentence(presentation: GroupDispatchPresentation): string {
+  if (presentation.leaderStopped) {
+    return t("group.dispatch.announce.leaderStopped", {
+      name: spaceNameForCjk(presentation.leader.name, locale.value, "after"),
+    });
+  }
+  const parts = [t("group.dispatch.announce.finished", { n: presentation.counts.completed })];
+  for (const state of ["cancelled", "failed", "indeterminate"] as const) {
+    const n = presentation.counts[state];
+    if (n > 0) parts.push(t(`group.dispatch.announce.${state}`, { n }));
+  }
+  return parts.join(t("group.dispatch.announce.separator"));
+}
+
+watch(
+  () => [
+    `${groupsStore.instanceId ?? ""}\u0000${groupsStore.activeConversationId ?? ""}\u0000${groupsStore.activeTopicId ?? ""}`,
+    connectionStore.online,
+    groupsStore.topicReady,
+    dispatchGroups.value,
+  ] as const,
+  ([scope, online, topicReady, groups]) => {
+    if (scope !== observedScope) {
+      observedScope = scope;
+      seenRounds.clear();
+      announcedRounds.clear();
+      announceTicket++;
+      dispatchAnnouncement.value = "";
+    }
+    if (!online) resyncPending = true;
+    const quiet = resyncPending;
+    const active = groupsStore.activeRun;
+    const liveRunId = active && groupsStore.isRunActive ? active.id : null;
+    let sentence = "";
+    for (const group of groups) {
+      const presentation = group.presentation;
+      const terminal = presentation.summary !== "running" || presentation.leaderStopped;
+      const previous = seenRounds.get(group.roundId);
+      if (!terminal) {
+        // Only the live run's own round counts as seen in progress: a history
+        // round whose member turns have not loaded yet reads as queued, and
+        // its details arriving must never sound like a live end.
+        if (presentation.runId !== "" && presentation.runId === liveRunId) seenRounds.set(group.roundId, false);
+        continue;
+      }
+      seenRounds.set(group.roundId, true);
+      if (previous !== false || quiet || announcedRounds.has(group.roundId)) continue;
+      announcedRounds.add(group.roundId);
+      // One sentence at a time: the latest round in transcript order speaks.
+      sentence = dispatchEndSentence(presentation);
+    }
+    // The resync is over once the topic is ready again on a live socket.
+    if (resyncPending && online && topicReady) resyncPending = false;
+    if (sentence) announceDispatch(sentence);
+  },
+  { immediate: true },
+);
 
 /** Anchor message id → aggregate row. The row renders below the leader's own
  *  message when it is in the transcript, else in place of the first handoff. */
@@ -668,6 +762,9 @@ async function handleLoadOlder(): Promise<void> {
 
 <template>
   <div class="relative flex min-h-0 flex-1 flex-col">
+  <!-- Always mounted and initially empty: text is written only when a round
+       ends live, so a screen reader hears the end, never the progress. -->
+  <div data-test="group-dispatch-announcer" role="status" aria-live="polite" aria-atomic="true" class="sr-only">{{ dispatchAnnouncement }}</div>
   <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 px-4 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && items.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
       <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent">

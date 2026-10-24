@@ -1180,6 +1180,14 @@ export default {
         message: "{name} and the {n} dispatched tasks will stop",
         confirm: "Stop all",
       },
+      announce: {
+        finished: "Dispatch finished: {n} completed",
+        separator: ", ",
+        cancelled: "{n} cancelled",
+        failed: "{n} failed",
+        indeterminate: "{n} unknown",
+        leaderStopped: "{name} stopped",
+      },
     },
     worktree: {
       title: "Member worktrees", boundary: "Separate working directories, not an OS sandbox. Integration creates a candidate; it does not update main.",

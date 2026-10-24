@@ -587,7 +587,9 @@ function describeSubmitError(err: unknown): string {
             class="w-full rounded-lg bg-surface-2 px-3 py-2 text-sm outline-none transition-colors resize-y disabled:cursor-wait disabled:opacity-60"
             @input="instructionsDirty = true"
           />
-          <p class="mt-1 text-xs text-fg-muted">
+          <!-- A new Bot has no turns yet: the "applies to later turns" note
+               only makes sense when editing, like ModelPicker's showAppliesLater. -->
+          <p v-if="isEditing" data-test="bot-instructions-hint" class="mt-1 text-xs text-fg-muted">
             {{ $t("bot.fields.instructionsHint") }}
           </p>
         </div>

@@ -1177,6 +1177,14 @@ export default {
         message: "{name}和已派发的 {n} 个任务都会停止",
         confirm: "全部停止",
       },
+      announce: {
+        finished: "派发已结束：{n} 个已完成",
+        separator: "，",
+        cancelled: "{n} 个已取消",
+        failed: "{n} 个失败",
+        indeterminate: "{n} 个结果未知",
+        leaderStopped: "{name}已停止",
+      },
     },
     worktree: {
       title: "成员工作树", boundary: "工作目录相互独立，但不是操作系统沙箱。整合只创建候选分支，不修改 main。",
@@ -1218,7 +1226,7 @@ export default {
     effectInEffect: "实际生效：{model}。",
     effectSaved: "已选择 {model}。保存后接受的运行才会使用它。",
     effectSavedApplied: "已选择 {model}。当前运行时：{applied}。保存后的变更作用于之后接受的运行。",
-    effectCustom: "自定义 id {model} 不是适配器公布的模型。",
+    effectCustom: "自定义 ID {model} 不是适配器公布的模型。",
     effectFellBack: "所选 {model} 未生效。实际生效：{applied}。",
     appliesLater: "Bot 的模型变更作用于保存之后接受的运行。已经接受的运行保持当时的配置快照。",
     savedListUnverified: "已保存的列表。上次刷新失败：{message}",

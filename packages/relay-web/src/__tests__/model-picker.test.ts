@@ -138,6 +138,21 @@ describe("ModelPicker", () => {
     expect(wrapper.get('[data-test="model-picker-effect"]').text()).toContain("gpt-real");
   });
 
+  it("writes ID in capitals in the zh-CN unadvertised custom model line", () => {
+    const previous = i18n.global.locale.value;
+    i18n.global.locale.value = "zh-CN";
+    try {
+      const state = readyCapability("runtime", [{ modelId: "gpt-real" }], {
+        fetchedAt: FETCHED,
+        efforts: { status: "known", options: [] },
+      });
+      const wrapper = mountPicker(state, "vendor/custom");
+      expect(wrapper.get('[data-test="model-picker-effect"]').text()).toBe("自定义 ID vendor/custom 不是适配器公布的模型。");
+    } finally {
+      i18n.global.locale.value = previous;
+    }
+  });
+
   it("refreshes effort options with the model and keeps the previous legal list when the refresh fails", async () => {
     const high = readyCapability("session", [{ modelId: "gpt-a" }], {
       fetchedAt: FETCHED,
