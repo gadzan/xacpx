@@ -638,7 +638,7 @@ describe("GroupDispatchRow", () => {
     ["en", "Sent to 2 bots", "2 queued", "Stopped", "Instructions"],
     ["zh-CN", "派发给 2 个 Bot", "2 排队中", "已停止", "派发内容"],
   ] as const)(
-    "localizes title, status, stopped note and dispatch content in %s",
+    "localizes title, status, stopped bubble and dispatch content in %s",
     (locale, title, status, stopped, instructions) => {
       i18n.global.locale.value = locale;
       const wrapper = mount(GroupDispatchRow, {
@@ -658,9 +658,9 @@ describe("GroupDispatchRow", () => {
       });
       expect(wrapper.get('[data-test="group-dispatch-title"]').text()).toBe(title);
       expect(wrapper.get('[data-test="group-dispatch-status-active"]').text()).toBe(status);
-      // The stopped note itself lives in GroupTranscript below the leader bubble;
-      // the row only carries the flag — the locale key must still resolve here.
-      expect(i18n.global.t("group.dispatch.stopped")).toBe(stopped);
+      // The stop is named in the leader's own bubble; the row only carries
+      // the flag — the locale key must still resolve here.
+      expect(i18n.global.t("group.bubble.status.stopped")).toBe(stopped);
       expect(i18n.global.t("group.dispatch.instructions")).toBe(instructions);
       wrapper.unmount();
     },
@@ -866,7 +866,7 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 
-  it("marks the leader message stopped when the leader turn carries the stop reason", async () => {
+  it("names the stop in the leader's bubble when the leader turn carries the stop reason", async () => {
     seedTranscript(
       [handoffMessage(1), handoffMessage(2)],
       [memberTurn("turn_a", "bot_a", "completed", { cancellationReason: "human-cancelled" })],
@@ -874,7 +874,10 @@ describe("GroupTranscript dispatch aggregation", () => {
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
     expect(wrapper.findAll('[data-test="group-dispatch-row"]')).toHaveLength(1);
-    expect(wrapper.get('[data-test="group-dispatch-stopped"]').text()).toBe("Stopped");
+    const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
+    expect(leaderRow.get('[data-test="group-bubble-status"]').text()).toBe("⊘ Stopped");
+    // The stop is named in the leader's status slot only: no note below it.
+    expect(wrapper.find('[data-test="group-dispatch-stopped"]').exists()).toBe(false);
     wrapper.unmount();
   });
 
@@ -890,12 +893,13 @@ describe("GroupTranscript dispatch aggregation", () => {
     );
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
-    expect(wrapper.get('[data-test="group-dispatch-stopped"]').text()).toBe("已停止");
+    const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
+    expect(leaderRow.get('[data-test="group-bubble-status"]').text()).toBe("⊘ 已停止");
     expect(wrapper.get('[data-test="group-dispatch-status-done"]').text()).toBe("✓ 2 个已完成");
     wrapper.unmount();
   });
 
-  it("drops the stopped note when every dispatched member is cancelled", async () => {
+  it("keeps the cancelled round row and names the leader's stop in its bubble", async () => {
     seedTranscript(
       [handoffMessage(1), handoffMessage(2)],
       [
@@ -906,13 +910,16 @@ describe("GroupTranscript dispatch aggregation", () => {
     );
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
-    // "⊘ Cancelled" on the aggregate row already says the round stopped.
+    // "⊘ Cancelled" on the aggregate row names the round; the leader's own
+    // bubble names the human's stop of the leader.
     expect(wrapper.get('[data-test="group-dispatch-status-cancelled"]').text()).toContain("Cancelled");
+    const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
+    expect(leaderRow.get('[data-test="group-bubble-status"]').text()).toBe("⊘ Stopped");
     expect(wrapper.find('[data-test="group-dispatch-stopped"]').exists()).toBe(false);
     wrapper.unmount();
   });
 
-  it("marks the leader message stopped when its wake turn carries the stop reason", async () => {
+  it("names the stop in the wake turn's bubble when the wake carries the stop reason", async () => {
     seedTranscript(
       [handoffMessage(1), handoffMessage(2)],
       [
@@ -929,11 +936,14 @@ describe("GroupTranscript dispatch aggregation", () => {
     );
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
-    expect(wrapper.get('[data-test="group-dispatch-stopped"]').text()).toBe("Stopped");
+    const wakeRow = wrapper.get('[data-member-turn-id="turn_wake"]');
+    expect(wakeRow.get('[data-test="group-bubble-status"]').text()).toBe("⊘ Stopped");
+    // The dispatch turn keeps its own state: the stop belongs to the wake.
+    expect(wrapper.get('[data-member-turn-id="turn_a"] [data-test="group-bubble-status"]').text()).toBe("Completed");
     wrapper.unmount();
   });
 
-  it("puts the stopped note at the bottom of the leader's own message, once", async () => {
+  it("names the stop in the leader's own bubble, once", async () => {
     seedTranscript(
       [
         {
@@ -963,33 +973,20 @@ describe("GroupTranscript dispatch aggregation", () => {
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
     // The stop is named exactly once in the whole transcript.
-    expect(wrapper.findAll('[data-test="group-dispatch-stopped"]')).toHaveLength(1);
-    // It sits on the leader's own row, not on the aggregate dispatch row.
+    const stopped = wrapper.findAll('[data-test="group-bubble-status"]')
+      .filter((entry) => entry.text().includes("Stopped"));
+    expect(stopped).toHaveLength(1);
+    // It sits in the leader's own status slot, not on the aggregate dispatch row.
     const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
-    expect(leaderRow.find('[data-test="group-dispatch-stopped"]').exists()).toBe(true);
+    expect(leaderRow.get('[data-test="group-bubble-status"]').text()).toBe("⊘ Stopped");
     // The leader's bubble must not also read "cancelled".
     expect(leaderRow.text()).not.toContain("Cancelled");
     wrapper.unmount();
   });
 
-  it("drops the leader's cancelled chip once the stop is named by the note", async () => {
+  it("announces the leader's stop to assistive technology", async () => {
     seedTranscript(
-      [
-        {
-          id: "msg_1",
-          conversationId: "group_1",
-          topicId: "topic_1",
-          runId: "run_1",
-          seq: 1,
-          role: "bot",
-          senderBotId: "bot_a",
-          promptRequestId: "prompt_leader",
-          content: "Dispatching two reviews",
-          createdAt: "now",
-        },
-        handoffMessage(1),
-        handoffMessage(2),
-      ],
+      [handoffMessage(1), handoffMessage(2)],
       [
         {
           ...memberTurn("turn_a", "bot_a", "cancelled", { cancellationReason: "human-cancelled" }),
@@ -1002,9 +999,11 @@ describe("GroupTranscript dispatch aggregation", () => {
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
     const leaderBubble = wrapper.get('[data-member-turn-id="turn_a"] [data-test="agent-thinking-bubble"]');
+    expect(leaderBubble.text()).toContain("Stopped");
     expect(leaderBubble.text()).not.toContain("Cancelled");
     // The accessible name follows the visible entry: it must not announce a
     // state the row no longer shows.
+    expect(leaderBubble.attributes("aria-label")).toContain("Stopped");
     expect(leaderBubble.attributes("aria-label")).not.toContain("Cancelled");
     wrapper.unmount();
   });
@@ -1044,7 +1043,7 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 
-  it("shows no stopped note and no cancelled leader chip when every member is cancelled", async () => {
+  it("names the leader's stop and the round's cancellation separately", async () => {
     seedTranscript(
       [
         {
@@ -1074,10 +1073,11 @@ describe("GroupTranscript dispatch aggregation", () => {
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
     expect(wrapper.find('[data-test="group-dispatch-stopped"]').exists()).toBe(false);
-    // The round's own aggregate row already names the cancellation, so the
-    // leader's bubble must not name it a second time.
+    // The round's own aggregate row names the cancellation of the round.
     expect(wrapper.get('[data-test="group-dispatch-status-cancelled"]').text()).toContain("Cancelled");
+    // The leader's own status slot names the human's stop of the leader.
     const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
+    expect(leaderRow.get('[data-test="group-bubble-status"]').text()).toBe("⊘ Stopped");
     expect(leaderRow.text()).not.toContain("Cancelled");
     wrapper.unmount();
   });

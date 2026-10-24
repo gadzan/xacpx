@@ -34,13 +34,13 @@ const props = withDefaults(
     /** Durable attempt index; > 1 earns a small numeric badge so a retried
      *  member is spottable before any failure is visible. */
     attempt?: number;
-    /** False hides the visible status word. The entry stays (it still opens
-     *  the process), but the state is named once, elsewhere: a stopped
-     *  leader says "stopped" in its own note, so its bubble must not also
-     *  read "cancelled". */
-    showStatus?: boolean;
+    /** True when the user stopped this member: the entry reads "stopped"
+     *  instead of its own durable state. A stop is the human's own act, so
+     *  it is named here — in the muted tone and the slot of a cancelled
+     *  member — and nowhere else. */
+    stopped?: boolean;
   }>(),
-  { showStatus: true },
+  { stopped: false },
 );
 
 const emit = defineEmits<{
@@ -54,6 +54,7 @@ function onToggle(event: MouseEvent): void {
 }
 
 const stateTitle = computed(() => {
+  if (props.stopped) return t("group.bubble.status.stopped");
   switch (props.status) {
     case "queued": return t("group.bubble.status.queued");
     case "running": return t("group.bubble.status.running");
@@ -66,16 +67,19 @@ const stateTitle = computed(() => {
     case "routing": return t("group.bubble.status.routing");
   }
 });
-const pulsing = computed(() => props.status === "running" || props.status === "streaming");
+const pulsing = computed(() => !props.stopped && (props.status === "running" || props.status === "streaming"));
 
 /**
- * The accessible name follows the visible entry: with the status word
- * hidden, the state is named once, elsewhere (the stopped note), so the
- * name must not announce a state the row no longer shows.
+ * A stopped member wears the muted tone of a cancelled one: only the word
+ * differs, so the two read as the same kind of entry.
  */
-const accessibleName = computed(() =>
-  props.showStatus ? `${props.label} — ${stateTitle.value}` : props.label,
-);
+const toneClass = computed(() => (props.stopped ? "is-cancelled" : `is-${props.status}`));
+
+/**
+ * The accessible name follows the visible entry: the word the reader sees
+ * is the word the screen reader hears.
+ */
+const accessibleName = computed(() => `${props.label} — ${stateTitle.value}`);
 </script>
 
 <template>
@@ -83,7 +87,7 @@ const accessibleName = computed(() =>
     type="button"
     data-test="agent-thinking-bubble"
     class="group-bubble-trigger"
-    :class="[`is-${status}`, { 'is-pulsing': pulsing, 'is-expanded': expanded }]"
+    :class="[toneClass, { 'is-pulsing': pulsing, 'is-expanded': expanded }]"
     :aria-label="accessibleName"
     aria-haspopup="dialog"
     :aria-expanded="expanded === true"
@@ -102,7 +106,7 @@ const accessibleName = computed(() =>
       <circle class="group-bubble-dot" cx="10.7" cy="20.6" r="0.95" fill="currentColor" />
       <circle class="group-bubble-dot" cx="13.3" cy="22.1" r="0.75" fill="currentColor" />
     </svg>
-    <span v-if="showStatus" class="group-bubble-status" aria-hidden="true">{{ stateTitle }}</span>
+    <span data-test="group-bubble-status" class="group-bubble-status" aria-hidden="true">{{ stopped ? "⊘ " : "" }}{{ stateTitle }}</span>
     <span v-if="attempt !== undefined && attempt > 1" class="group-bubble-attempt" aria-hidden="true">{{ attempt }}</span>
   </button>
 </template>

@@ -39,10 +39,9 @@ const props = defineProps<{
   disabled?: boolean;
   singleMember?: boolean;
   runState?: ConversationRunDto["state"];
-  /** False hides the visible status word on the bubble. A stopped leader
-   *  names its stop in its own note, so the bubble must not also read
-   *  "cancelled". */
-  showStatus?: boolean;
+  /** True when the user stopped this member: the bubble names the stop
+   *  instead of the member's own durable state. */
+  stopped?: boolean;
 }>();
 
 const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
@@ -130,7 +129,7 @@ defineExpose({ bubbleStatus });
       :expanded="expanded"
       :attempt="memberTurn.attempt"
       :controls="controls"
-      :show-status="showStatus !== false"
+      :stopped="stopped === true"
       @toggle="emit('toggle', $event)"
     />
     <template v-if="message">
@@ -142,7 +141,5 @@ defineExpose({ bubbleStatus });
       />
       <ConversationMeta :message="message" />
     </template>
-    <!-- The row's own footer: a stopped leader names its stop here. -->
-    <slot name="footer" />
   </TranscriptRow>
 </template>
