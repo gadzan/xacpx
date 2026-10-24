@@ -44,10 +44,12 @@ describe("focus ring tokens", () => {
     const rule = css.match(/([^{}]*)\{[^}]*box-shadow: 0 0 0 2px rgb\(var\(--c-accent\)\) !important;/);
     const selectors = rule![1].replace(/\/\*[\s\S]*?\*\//g, "").split(",").map((x) => x.trim()).filter(Boolean);
     for (const sel of selectors) expect(sel).toContain(':not([aria-invalid="true"])');
-    // Every aria-invalid field in src must carry its own danger focus ring.
+    // Every aria-invalid field in src must carry its own danger focus ring and
+    // drop the browser outline itself (the excluded global rule no longer does),
+    // otherwise focus shows the default outline plus the red ring.
     const missing = walk(SRC).filter((f) => f.endsWith(".vue")).flatMap((f) =>
       [...readFileSync(f, "utf8").matchAll(/<(?:input|textarea|select)\b[^>]*aria-invalid[^>]*>/g)]
-        .filter((m) => !m[0].includes("focus-visible:ring-danger"))
+        .filter((m) => !m[0].includes("focus-visible:ring-danger") || !/(?:^|[\s"'])outline-none(?:[\s"']|$)/.test(m[0]))
         .map(() => f));
     expect(missing).toEqual([]);
   });
