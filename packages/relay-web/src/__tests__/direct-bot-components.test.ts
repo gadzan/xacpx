@@ -382,6 +382,14 @@ describe("Direct Bot Components", () => {
       expect(createSpy.mock.calls[0]![1]).toMatchObject({ name: botName, workspace: "repo" });
     });
 
+    it("a new Bot does not show the applies-to-later-turns note under system instructions", async () => {
+      const { wrapper } = mountCreateDialog({ dedicated: false });
+      await flushPromises();
+      expect(wrapper.find("#bot-instructions").exists()).toBe(true);
+      expect(wrapper.find('[data-test="bot-instructions-hint"]').exists()).toBe(false);
+      expect(wrapper.text()).not.toContain(i18n.global.t("bot.fields.instructionsHint"));
+    });
+
     it("New workspace with nothing to preview shows a single model hint", async () => {
       const { wrapper } = mountCreateDialog({ dedicated: true, workspaces: [] });
       await flushPromises();
@@ -497,6 +505,8 @@ describe("Direct Bot Components", () => {
       expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
       // Editing an existing Bot keeps the "applies to later runs" note.
       expect(wrapper.find('[data-test="model-picker-applies-later"]').exists()).toBe(true);
+      // ...and the instructions note, which only makes sense for an existing Bot.
+      expect(wrapper.get('[data-test="bot-instructions-hint"]').text()).toBe(i18n.global.t("bot.fields.instructionsHint"));
       await wrapper.find("#bot-workspace").trigger("click");
       expect(wrapper.findAll("[data-value]").map((option) => option.attributes("data-value"))).toEqual(["repo"]);
       await wrapper.find("#bot-workspace").trigger("click");
