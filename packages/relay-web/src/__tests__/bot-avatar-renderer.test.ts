@@ -219,6 +219,18 @@ describe("BotAvatar resources and safe rendering", () => {
     expect(wrapper.find("circle").exists()).toBe(true);
     expect(wrapper.find("circle").attributes("stroke")).toBe("rgb(var(--c-accent))");
   });
+  it("shows no badge for a cancelled bot and leaves every other state's badge unchanged", () => {
+    const badges: Record<string, string | undefined> = {
+      idle: undefined, queued: undefined, working: undefined, streaming: undefined, completed: undefined,
+      waiting: "!", failed: "!", cancelled: undefined, indeterminate: "?", offline: "−", retired: "×",
+    };
+    for (const [state, badge] of Object.entries(badges)) {
+      const wrapper = avatar({ state, static: true });
+      const indicator = wrapper.find(".bot-avatar-indicator");
+      expect(indicator.exists()).toBe(badge !== undefined);
+      if (badge !== undefined) expect(indicator.text()).toBe(badge);
+    }
+  });
   it("renders legacy text as text, never as markup or a network image", () => {
     const text = "<img src=https://example.invalid/avatar onerror=alert(1)>";
     const wrapper = avatar({ avatar: { version: 1, kind: "text", value: text } });

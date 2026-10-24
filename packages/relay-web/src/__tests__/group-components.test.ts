@@ -1206,7 +1206,7 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
-    it("jumps the public Handoff entry to the canonical reply bubble row", async () => {
+    it("jumps the dispatched member to the canonical reply bubble row", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
         { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
@@ -1234,7 +1234,7 @@ describe("Group Components", () => {
         },
         turn_b: {
           id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
-          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "followup",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "handoff",
           state: "completed", promptRequestId: "p_1", assignmentId: "assignment_b", createdAt: "now",
         },
       };
@@ -1251,8 +1251,10 @@ describe("Group Components", () => {
       vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({ top: 10 } as DOMRect);
       vi.spyOn(row.element as HTMLElement, "getBoundingClientRect").mockReturnValue({ top: 210 } as DOMRect);
       scroller.scrollTop = 25;
-      await wrapper.get('[data-test="group-handoff-toggle"]').trigger("click");
-      await wrapper.get('[data-test="group-handoff-jump"]').trigger("click");
+      // The lone dispatch renders the aggregate row; its member row carries the
+      // jump to the member's own reply.
+      await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+      await wrapper.get('[data-test="group-dispatch-member"]').trigger("click");
       await flushPromises();
       // The jump scrolls the bubble row to the viewport top and focuses it.
       expect(scroller.scrollTop).toBe(225);

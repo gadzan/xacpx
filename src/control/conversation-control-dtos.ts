@@ -302,6 +302,13 @@ export interface MemberTurnSummaryDto {
    * human request referencing this turn.
    */
   blockedReason?: MemberTurnRecord["blockedReason"];
+  /** User cancellation intent scoped to THIS member turn, never its
+   *  siblings. Present exactly when the member was stopped by the human. */
+  cancellationReason?: MemberTurnRecord["cancellationReason"];
+  /** Set exactly on the wake turn the runtime creates for a leader member
+   *  turn whose own public handoffs have all settled. Names the leader turn
+   *  whose assignments this wake summarizes; absent on every other turn. */
+  followupSenderMemberTurnId?: MemberTurnRecord["followupSenderMemberTurnId"];
 }
 
 /** Explicit Group routing target. IDs are authority; display names are
@@ -567,6 +574,11 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     ...(turn.dependsOn && turn.dependsOn.length > 0 ? { dependsOn: [...turn.dependsOn] } : {}),
     ...(turn.failureReason ? { failureReason: turn.failureReason } : {}),
     ...(turn.blockedReason ? { blockedReason: turn.blockedReason } : {}),
+    // Scoped human-Stop evidence and the wake's sender: both are durable
+    // member-turn facts the UI must read from the member row, never from the
+    // Run's aggregate state.
+    ...(turn.cancellationReason ? { cancellationReason: turn.cancellationReason } : {}),
+    ...(turn.followupSenderMemberTurnId ? { followupSenderMemberTurnId: turn.followupSenderMemberTurnId } : {}),
   };
 }
 

@@ -1,0 +1,411 @@
+import { describe, expect, it } from "vitest";
+import type {
+  BotSummaryDto,
+  ConversationMessageDto,
+  MemberTurnSummaryDto,
+} from "@ganglion/xacpx-relay-protocol";
+import {
+  GROUP_DISPATCH_AVATAR_LIMIT,
+  presentGroupDispatch,
+  type GroupDispatchEntry,
+  type GroupDispatchLeader,
+  type GroupDispatchPresentationInput,
+} from "../lib/group-dispatch-presentation";
+
+const BOTS: BotSummaryDto[] = [
+  { id: "bot_lead", name: "Leader", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+  { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+  { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+  { id: "bot_c", name: "Builder", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+  { id: "bot_d", name: "Auditor", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+  { id: "bot_e", name: "Planner", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+];
+
+function turn(botId: string, state: MemberTurnSummaryDto["state"], over: Partial<MemberTurnSummaryDto> = {}): MemberTurnSummaryDto {
+  return {
+    id: `turn_${botId}`,
+    runId: "run_1",
+    conversationId: "conv_g",
+    topicId: "topic_1",
+    botId,
+    batch: 1,
+    attempt: 1,
+    origin: "handoff",
+    state,
+    createdAt: "now",
+    ...over,
+  };
+}
+
+function handoffMessage(
+  botId: string,
+  task: string,
+  seq: number,
+): ConversationMessageDto & { handoff: NonNullable<ConversationMessageDto["handoff"]> } {
+  return {
+    id: `handoff_${botId}`,
+    conversationId: "conv_g",
+    topicId: "topic_1",
+    runId: "run_1",
+    seq,
+    role: "system",
+    content: "Public handoff",
+    createdAt: "now",
+    handoff: {
+      senderMemberTurnId: "turn_leader",
+      to: botId,
+      assignmentId: `assignment_${botId}`,
+      memberTurnId: `turn_${botId}`,
+      task,
+    },
+  };
+}
+
+function entry(
+  botId: string,
+  state: MemberTurnSummaryDto["state"],
+  over: {
+    task?: string;
+    seq?: number;
+    turn?: Partial<MemberTurnSummaryDto>;
+  } = {},
+): GroupDispatchEntry {
+  const task = over.task ?? `Do the ${botId} work`;
+  return {
+    message: handoffMessage(botId, task, over.seq ?? 1),
+    memberTurn: turn(botId, state, over.turn),
+  };
+}
+
+/** The member's own reply, addressed by the member turn's prompt identity. */
+function replyMessage(
+  botId: string,
+  promptRequestId: string,
+  content: string,
+  seq: number,
+): ConversationMessageDto {
+  return {
+    id: `reply_${botId}`,
+    conversationId: "conv_g",
+    topicId: "topic_1",
+    runId: "run_1",
+    seq,
+    role: "bot",
+    senderBotId: botId,
+    promptRequestId,
+    content,
+    createdAt: "now",
+  };
+}
+
+function leader(over: Partial<GroupDispatchLeader> = {}): GroupDispatchLeader {
+  return { botId: "bot_lead", memberTurnId: "turn_leader", state: "running", ...over };
+}
+
+function present(over: Partial<GroupDispatchPresentationInput> = {}): GroupDispatchPresentationInput {
+  return {
+    leader: leader(),
+    dispatches: [],
+    bots: BOTS,
+    drivers: { bot_a: "codex" },
+    supportsCancelMember: true,
+    ...over,
+  };
+}
+
+describe("presentGroupDispatch", () => {
+  it("aggregates one leader round into running rows with the task text once", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [
+        entry("bot_a", "running", { task: "Review the diff" }),
+        entry("bot_b", "queued", { task: "Review the diff" }),
+      ],
+    }));
+
+    expect(result.instructions).toBe("Review the diff");
+    expect(result.members.map((member) => [member.botId, member.name, member.status])).toEqual([
+      ["bot_a", "Reviewer", "running"],
+      ["bot_b", "Tester", "queued"],
+    ]);
+    expect(result.counts).toEqual({ running: 1, queued: 1, completed: 0, cancelled: 0, failed: 0, indeterminate: 0 });
+    expect(result.summary).toBe("running");
+    expect(result.leaderStopped).toBe(false);
+    expect(result.members[0]?.replyPreview).toBe("");
+    expect(result.members[0]?.replyId).toBe("");
+    expect(result.members[1]?.replyPreview).toBe("");
+    expect(result.members[1]?.replyId).toBe("");
+    expect(result.capability).toEqual({ canStopMember: true, leaderStopAction: "leader-only", anyActive: true });
+  });
+
+  it("names the round by its first dispatched task", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [
+        entry("bot_a", "completed", { task: "First ask" }),
+        entry("bot_b", "completed", { task: "Second ask" }),
+      ],
+    }));
+
+    expect(result.instructions).toBe("First ask");
+  });
+
+  it("reports done when every dispatched member completed", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "completed")],
+    }));
+
+    expect(result.summary).toBe("done");
+    expect(result.counts.completed).toBe(2);
+    expect(result.capability.anyActive).toBe(false);
+  });
+
+  it("reports cancelled only when every dispatched member was cancelled", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "cancelled"), entry("bot_b", "cancelled")],
+    }));
+
+    expect(result.summary).toBe("cancelled");
+    expect(result.counts.cancelled).toBe(2);
+  });
+
+  it("reports mixed when completed and cancelled members are combined", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "cancelled")],
+    }));
+
+    expect(result.summary).toBe("mixed");
+    expect(result.counts.completed).toBe(1);
+    expect(result.counts.cancelled).toBe(1);
+  });
+
+  it("reports an empty round as done rather than a mixed outcome", () => {
+    const result = presentGroupDispatch(present());
+
+    expect(result.members).toEqual([]);
+    expect(result.summary).toBe("done");
+    expect(result.instructions).toBe("");
+    expect(result.avatars).toEqual({ items: [], overflow: 0 });
+    expect(result.capability.anyActive).toBe(false);
+  });
+
+  it("counts failed members without inventing a failed summary", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "failed")],
+    }));
+
+    expect(result.counts.failed).toBe(1);
+    expect(result.summary).toBe("mixed");
+    expect(result.members[1]?.status).toBe("failed");
+  });
+
+  it("keeps a stopped leader's completed members as done", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({ state: "completed", cancellationReason: "human-cancelled" }),
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "completed")],
+    }));
+
+    expect(result.summary).toBe("done");
+    expect(result.leaderStopped).toBe(true);
+    expect(result.counts.completed).toBe(2);
+  });
+
+  it("falls back to stop-all on a core without scoped member cancellation", () => {
+    const result = presentGroupDispatch(present({
+      supportsCancelMember: false,
+      dispatches: [entry("bot_a", "running"), entry("bot_b", "queued")],
+    }));
+
+    expect(result.capability).toEqual({ canStopMember: false, leaderStopAction: "stop-all", anyActive: true });
+    expect(result.members.every((member) => !member.canStop)).toBe(true);
+  });
+
+  it("collapses avatars past the limit into an overflow count", () => {
+    const dispatches = ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"].map((botId) => entry(botId, "completed"));
+    const result = presentGroupDispatch(present({ dispatches }));
+
+    expect(result.avatars.items).toHaveLength(GROUP_DISPATCH_AVATAR_LIMIT);
+    expect(result.avatars.items.map((avatar) => avatar.botId)).toEqual(["bot_a", "bot_b", "bot_c", "bot_d"]);
+    // The avatar slot carries the member turn: the same bot dispatched twice
+    // must not produce two slots with the same identity.
+    expect(result.avatars.items.map((avatar) => avatar.memberTurnId))
+      .toEqual(["turn_bot_a", "turn_bot_b", "turn_bot_c", "turn_bot_d"]);
+    expect(result.avatars.overflow).toBe(1);
+    expect(result.members).toHaveLength(5);
+  });
+
+  it("reports no active member once every dispatch settled", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "cancelled")],
+    }));
+
+    expect(result.capability.anyActive).toBe(false);
+  });
+
+  it("previews the member reply that its prompt identity proves", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [
+        entry("bot_a", "completed", { seq: 1, turn: { promptRequestId: "prompt_a" } }),
+        entry("bot_b", "queued", { seq: 2, turn: { promptRequestId: "prompt_b" } }),
+      ],
+      messages: [replyMessage("bot_a", "prompt_a", "Looks good\nsecond line", 5)],
+    }));
+
+    expect(result.members[0]?.replyId).toBe("reply_bot_a");
+    expect(result.members[0]?.replyPreview).toBe("Looks good");
+    expect(result.members[1]?.replyId).toBe("");
+    expect(result.members[1]?.replyPreview).toBe("");
+  });
+
+  it("keeps a member without a proven reply unlinked", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed", { seq: 1, turn: { promptRequestId: "prompt_a" } })],
+      // Another bot's answer carries a different prompt identity.
+      messages: [replyMessage("bot_b", "prompt_b", "Not mine", 5)],
+    }));
+
+    expect(result.members[0]?.replyId).toBe("");
+    expect(result.members[0]?.replyPreview).toBe("");
+  });
+
+  it("refuses to link a member whose prompt identity matches two replies", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed", { seq: 1, turn: { promptRequestId: "prompt_a" } })],
+      messages: [
+        replyMessage("bot_a", "prompt_a", "First", 5),
+        { ...replyMessage("bot_a", "prompt_a", "Second", 6), id: "reply_bot_a_2" },
+      ],
+    }));
+
+    expect(result.members[0]?.replyId).toBe("");
+    expect(result.members[0]?.replyPreview).toBe("");
+  });
+
+  it("stops the leader's own turn while the leader has not ended it", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({ state: "running" }),
+      dispatches: [entry("bot_a", "running")],
+    }));
+
+    expect(result.leader.canStop).toBe(true);
+    expect(result.leader.stopMemberTurnId).toBe("turn_leader");
+  });
+
+  it("keeps a finished leader stoppable while its wake has not settled", () => {
+    const result = presentGroupDispatch(present({
+      // The leader ended its turn right after dispatching; no wake row exists
+      // yet, so the dispatch has not settled either.
+      leader: leader({ state: "completed" }),
+      dispatches: [entry("bot_a", "running"), entry("bot_b", "queued")],
+    }));
+
+    expect(result.leader.canStop).toBe(true);
+    // No live wake: the leader's own turn is the only cancelable target.
+    expect(result.leader.stopMemberTurnId).toBe("turn_leader");
+  });
+
+  it.each(["failed", "indeterminate"] as const)("does not offer a stop for a %s leader that will never be woken", (state) => {
+    const result = presentGroupDispatch(present({
+      leader: leader({ state }),
+      dispatches: [entry("bot_a", "running")],
+    }));
+
+    expect(result.leader.canStop).toBe(false);
+  });
+
+  it("stops the live wake turn instead of the finished leader", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({
+        state: "completed",
+        wake: turn("bot_lead", "running", { id: "turn_wake", origin: "followup", followupSenderMemberTurnId: "turn_leader" }),
+      }),
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "completed")],
+    }));
+
+    expect(result.leader.canStop).toBe(true);
+    expect(result.leader.stopMemberTurnId).toBe("turn_wake");
+  });
+
+  it("stops a queued wake turn", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({
+        state: "completed",
+        wake: turn("bot_lead", "queued", { id: "turn_wake", origin: "followup", followupSenderMemberTurnId: "turn_leader" }),
+      }),
+      dispatches: [entry("bot_a", "completed")],
+    }));
+
+    expect(result.leader.canStop).toBe(true);
+    expect(result.leader.stopMemberTurnId).toBe("turn_wake");
+  });
+
+  it("reports the leader as stopped when its wake was stopped", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({
+        state: "completed",
+        wake: turn("bot_lead", "cancelled", {
+          id: "turn_wake",
+          origin: "followup",
+          followupSenderMemberTurnId: "turn_leader",
+          cancellationReason: "human-cancelled",
+        }),
+      }),
+      dispatches: [entry("bot_a", "completed")],
+    }));
+
+    expect(result.leaderStopped).toBe(true);
+    expect(result.leader.canStop).toBe(false);
+  });
+
+  it("drops the leader stop once the wake settled", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({
+        state: "completed",
+        wake: turn("bot_lead", "completed", { id: "turn_wake", origin: "followup", followupSenderMemberTurnId: "turn_leader" }),
+      }),
+      dispatches: [entry("bot_a", "completed")],
+    }));
+
+    expect(result.leader.canStop).toBe(false);
+    expect(result.leaderStopped).toBe(false);
+  });
+
+  it("never offers a stop for a leader that was itself stopped", () => {
+    const result = presentGroupDispatch(present({
+      leader: leader({ state: "completed", cancellationReason: "human-cancelled" }),
+      dispatches: [entry("bot_a", "running")],
+    }));
+
+    expect(result.leader.canStop).toBe(false);
+    expect(result.leaderStopped).toBe(true);
+  });
+
+  it("reports a cancelled leader as stopped when its run was cancelled", () => {
+    const stopped = presentGroupDispatch(present({
+      leader: leader({ state: "cancelled", runCancelled: true }),
+      dispatches: [entry("bot_a", "cancelled")],
+    }));
+    expect(stopped.leaderStopped).toBe(true);
+
+    // Without the run-level cancel, a reasonless cancelled leader is not a stop.
+    const cancelled = presentGroupDispatch(present({
+      leader: leader({ state: "cancelled" }),
+      dispatches: [entry("bot_a", "cancelled")],
+    }));
+    expect(cancelled.leaderStopped).toBe(false);
+
+    // A cancelled run alone does not stop a leader that finished its turn.
+    const finished = presentGroupDispatch(present({
+      leader: leader({ state: "completed", runCancelled: true }),
+      dispatches: [entry("bot_a", "cancelled")],
+    }));
+    expect(finished.leaderStopped).toBe(false);
+  });
+
+  it("counts members whose outcome is unknown", () => {
+    const result = presentGroupDispatch(present({
+      dispatches: [entry("bot_a", "completed"), entry("bot_b", "indeterminate")],
+    }));
+
+    expect(result.counts.indeterminate).toBe(1);
+    expect(result.members[1]?.status).toBe("indeterminate");
+  });
+});

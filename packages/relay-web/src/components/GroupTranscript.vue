@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { spaceNameForCjk } from "../lib/cjk-name-spacing";
 import {
   AlertCircle,
   CircleStop,
@@ -18,10 +19,11 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
-import { useInstancesStore } from "../stores/instances";
+import { supportsRunsCancelMember, useInstancesStore } from "../stores/instances";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
-import GroupHandoffEntry from "./GroupHandoffEntry.vue";
+import GroupDispatchRow from "./GroupDispatchRow.vue";
+import GroupDispatchLeaderStop from "./GroupDispatchLeaderStop.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import BotAvatar from "./BotAvatar.vue";
@@ -30,6 +32,12 @@ import AgentThinkingBubble from "./AgentThinkingBubble.vue";
 import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
 import GroupRunDetailSheet from "./GroupRunDetailSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
+import {
+  presentGroupDispatch,
+  type GroupDispatchPresentation,
+} from "../lib/group-dispatch-presentation";
+import { pushToast } from "../lib/use-toasts";
+import { confirm } from "../lib/use-confirm";
 import {
   projectGroupTranscript,
   traceEventsToParts,
@@ -42,7 +50,7 @@ const props = defineProps<{
   bots: BotSummaryDto[];
 }>();
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
@@ -125,6 +133,190 @@ const items = computed<GroupTranscriptItem[]>(() =>
     runs: runRecords.value,
   }),
 );
+
+/** The core can cancel ONE member turn of a Run: the per-row ■ and the
+ *  leader pill scope their stop to that member. An older core has no scoped
+ *  cancellation, so only the confirmed round-level stop is offered there. */
+const supportsCancelMember = computed(() => {
+  const instanceId = groupsStore.instanceId;
+  if (!instanceId) return false;
+  return supportsRunsCancelMember(instancesStore.byId(instanceId));
+});
+
+/** Handoff groups of one leader round: same conversation, topic, run and
+ *  issuing leader turn (`senderMemberTurnId`). Every round aggregates —
+ *  a lone dispatch renders the same aggregate row as a fan-out round. */
+const dispatchGroups = computed(() => {
+  const messages = [...groupsStore.messages].sort((a, b) => a.seq - b.seq);
+  const byLeader = new Map<string, ConversationMessageDto[]>();
+  for (const message of messages) {
+    const senderTurnId = message.handoff?.senderMemberTurnId;
+    if (!senderTurnId) continue;
+    const key = JSON.stringify([message.conversationId, message.topicId, message.runId ?? "", senderTurnId]);
+    const list = byLeader.get(key);
+    if (list) list.push(message);
+    else byLeader.set(key, [message]);
+  }
+  const drivers: Record<string, string> = {};
+  for (const bot of props.bots) {
+    const driver = driverForBot(bot.id);
+    if (driver !== undefined) drivers[bot.id] = driver;
+  }
+  const groups: {
+    handoffs: ConversationMessageDto[];
+    anchorId: string;
+    /** The leader's own turns: the dispatching turn and its wake turn. */
+    leaderTurns: MemberTurnSummaryDto[];
+    /** The round's run was cancelled (a whole-round stop). */
+    runCancelled: boolean;
+    presentation: GroupDispatchPresentation;
+  }[] = [];
+  for (const handoffs of byLeader.values()) {
+    const anchor = handoffs[0]!;
+    const record = anchor.runId ? runRecords.value[anchor.runId] : undefined;
+    const turnById = new Map((record?.memberTurns ?? []).map((turn) => [turn.id, turn]));
+    const leaderTurn = turnById.get(anchor.handoff!.senderMemberTurnId);
+    // The leader's own reply proves "项管那条消息": exact promptRequestId
+    // match, exactly one candidate, or no anchor — never a guess.
+    const leaderMessage = leaderTurn?.promptRequestId
+      ? messages.filter((message) => message.role === "bot" && !message.handoff
+        && message.runId === anchor.runId
+        && message.conversationId === anchor.conversationId && message.topicId === anchor.topicId
+        && message.senderBotId === anchor.senderBotId
+        && message.promptRequestId === leaderTurn.promptRequestId
+        && message.content.trim().length > 0)
+      : [];
+    // The wake turn the runtime creates for this leader once its own handoffs
+    // settle. It may be absent: the dispatch has not settled yet, so the
+    // wake row does not exist yet either.
+    const wakeTurn = (record?.memberTurns ?? []).find(
+      (turn) => turn.followupSenderMemberTurnId === anchor.handoff!.senderMemberTurnId,
+    );
+    const runCancelled = record?.run.state === "cancelled";
+    const presentation = presentGroupDispatch({
+      leader: {
+        botId: anchor.senderBotId ?? "",
+        ...(leaderTurn ? { memberTurnId: leaderTurn.id } : {}),
+        // The leader's OWN durable state: it decides whether the leader can
+        // still be stopped, never the aggregate row's outcome.
+        ...(leaderTurn ? { state: leaderTurn.state } : {}),
+        // Durable stop evidence: the leader turn itself was stopped by the
+        // human while its members kept (or finished) their own proven
+        // outcomes. The core reports this on the DTO; its own state may still
+        // read `completed`.
+        ...(leaderTurn?.cancellationReason ? { cancellationReason: leaderTurn.cancellationReason } : {}),
+        // A whole-round stop cancels the run but writes no reason on the
+        // leader's turn: the run's own state is the stop evidence then.
+        ...(runCancelled ? { runCancelled: true } : {}),
+        ...(wakeTurn ? { wake: wakeTurn } : {}),
+      },
+      dispatches: handoffs.map((message) => ({
+        message: message as ConversationMessageDto & { handoff: NonNullable<ConversationMessageDto["handoff"]> },
+        // Missing detail (history not loaded yet) still counts the bot: report
+        // it as queued until the run's member turns arrive.
+        memberTurn: turnById.get(message.handoff!.memberTurnId) ?? {
+          id: message.handoff!.memberTurnId,
+          runId: message.runId ?? "",
+          conversationId: message.conversationId,
+          topicId: message.topicId,
+          botId: message.handoff!.to,
+          batch: 0,
+          attempt: 1,
+          origin: "handoff" as const,
+          state: "queued" as const,
+          createdAt: message.createdAt,
+        },
+      })),
+      bots: props.bots,
+      drivers,
+      // The core's own scoped-cancellation capability: without it the web
+      // offers only the confirmed round-level stop.
+      supportsCancelMember: supportsCancelMember.value,
+      messages,
+    });
+    groups.push({
+      handoffs,
+      anchorId: leaderMessage.length === 1 ? leaderMessage[0]!.id : anchor.id,
+      leaderTurns: [leaderTurn, wakeTurn].filter((turn): turn is MemberTurnSummaryDto => !!turn),
+      runCancelled,
+      presentation,
+    });
+  }
+  return groups;
+});
+
+/** Anchor message id → aggregate row. The row renders below the leader's own
+ *  message when it is in the transcript, else in place of the first handoff. */
+const dispatchRows = computed<Record<string, GroupDispatchPresentation>>(() =>
+  Object.fromEntries(dispatchGroups.value.map((group) => [group.anchorId, group.presentation])),
+);
+
+/** True when the leader's turn owns a row of its own in the transcript. */
+function hasLeaderRow(turnId: string): boolean {
+  return items.value.some((item) =>
+    (item.kind === "message" && item.bubbleAnchor && item.memberTurn?.id === turnId) ||
+    (item.kind === "member-activity" && item.memberTurn.id === turnId));
+}
+
+/**
+ * The leader turn whose status slot names the human's stop.
+ *
+ * The stop is named once, in the leader's own bubble: the leader turn that
+ * carries the durable stop evidence and owns a row of its own. A turn the
+ * human cancelled — on its own, or with the whole round, which cancels the
+ * run without a reason on the turn — reads "stopped" instead of
+ * "cancelled"; a leader that
+ * only carries the stop intent reads "stopped" instead of its own state.
+ * A leader without any row has no status slot, so the stop stays unnamed
+ * there — a second line below the message would say it twice.
+ */
+const stoppedLeaderTurnIds = computed<Set<string>>(() => {
+  const ids = new Set<string>();
+  for (const group of dispatchGroups.value) {
+    if (!group.presentation.leaderStopped) continue;
+    // A whole-round stop leaves no reason on the turns: in a cancelled run,
+    // the cancelled turn itself is the evidence.
+    const evidence = group.leaderTurns.filter((turn) =>
+      (turn.cancellationReason === "human-cancelled" || (group.runCancelled && turn.state === "cancelled"))
+      && hasLeaderRow(turn.id));
+    // The cancelled turn first: it is the one whose own state the stop
+    // replaces. Then the dispatch turn, which carries the stop intent.
+    const turn = evidence.find((candidate) => candidate.state === "cancelled") ?? evidence[0];
+    if (turn) ids.add(turn.id);
+  }
+  return ids;
+});
+
+/**
+ * Anchor ids whose leader can still be stopped: the round's run is the live
+ * one and the leader (or the wake turn that replaces it) still has work
+ * left. A leader whose wake already settled has nothing left to cancel, so
+ * the pill disappears with it.
+ */
+const leaderStopAnchorIds = computed<Set<string>>(() => {
+  const ids = new Set<string>();
+  const active = groupsStore.activeRun;
+  // A terminal run has nothing left to cancel: the pill would offer a no-op.
+  if (!active || !groupsStore.isRunActive) return ids;
+  for (const group of dispatchGroups.value) {
+    if (!group.presentation.leader.canStop) continue;
+    if (group.presentation.runId !== active.id) continue;
+    ids.add(group.anchorId);
+  }
+  return ids;
+});
+
+/** Handoff messages absorbed into an aggregate row: every grouped handoff
+ *  except the anchor (when the anchor itself is a handoff) collapses. */
+const collapsedHandoffIds = computed<Set<string>>(() => {
+  const ids = new Set<string>();
+  for (const group of dispatchGroups.value) {
+    for (const message of group.handoffs) {
+      if (message.id !== group.anchorId) ids.add(message.id);
+    }
+  }
+  return ids;
+});
 
 /** Every run id visible in the transcript, batch-fetched non-blocking. */
 const visibleRunIds = computed<string[]>(() => {
@@ -297,6 +489,66 @@ const stopPending = computed(() => {
 function handleStop(): void {
   if (stopAvailable.value && !stopPending.value) void groupsStore.cancelCurrentRun();
 }
+
+/** Stop one dispatched member of a round. The request carries the durable
+ *  run and member turn, so the leader and the other members keep running. */
+async function handleStopMember(payload: { runId: string; memberTurnId: string }): Promise<void> {
+  const instanceId = groupsStore.instanceId;
+  if (!instanceId) return;
+  try {
+    await groupsStore.cancelMember(instanceId, payload.runId, payload.memberTurnId);
+  } catch (err: unknown) {
+    pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/** Round-level stop: confirm first, then cancel the run through the same path
+ *  as the per-run Stop button. */
+async function handleStopAll(presentation: GroupDispatchPresentation): Promise<void> {
+  const runId = presentation.members[0]?.runId;
+  if (!runId) return;
+  const ok = await confirm({
+    title: t("group.dispatch.stopAllConfirm.title"),
+    message: t("group.dispatch.stopAllConfirm.message", {
+      name: spaceNameForCjk(presentation.leader.name, locale.value, "after"),
+      n: presentation.members.length,
+    }),
+    confirmLabel: t("group.dispatch.stopAllConfirm.confirm"),
+    tone: "danger",
+  });
+  if (!ok) return;
+  // The round may have ended while the dialog was open: never cancel a run
+  // other than the one the user confirmed.
+  if (groupsStore.activeRun?.id !== runId) return;
+  void groupsStore.cancelCurrentRun();
+}
+
+/**
+ * The leader pill's wording: a scoped stop names the leader it stops, while a
+ * core without scoped cancellation stops the whole round and says so.
+ */
+function leaderStopLabel(presentation: GroupDispatchPresentation): string {
+  if (presentation.capability.leaderStopAction === "leader-only") {
+    return t("group.dispatch.stopLeader", { name: spaceNameForCjk(presentation.leader.name, locale.value, "before") });
+  }
+  return t("group.dispatch.stopAll");
+}
+
+/**
+ * Stop the leader (项管): on a core with scoped cancellation this cancels the
+ * leader's own member turn and nothing else — no confirmation, because the
+ * dispatched members keep running. A leader that already ended its turn is
+ * stopped through its wake turn while that one is still live. An older core
+ * cannot scope the cancel, so the pill runs the confirmed round-level stop
+ * instead.
+ */
+function handleStopLeader(presentation: GroupDispatchPresentation): void {
+  if (presentation.capability.leaderStopAction === "leader-only" && presentation.leader.stopMemberTurnId) {
+    void handleStopMember({ runId: presentation.runId, memberTurnId: presentation.leader.stopMemberTurnId });
+    return;
+  }
+  void handleStopAll(presentation);
+}
 function handleToggle(key: string, event: unknown): void {
   toggleDetail(key, event instanceof HTMLElement ? event : null);
 }
@@ -443,7 +695,7 @@ async function handleLoadOlder(): Promise<void> {
         <!-- Durable message / handoff / system rows -->
         <template v-if="item.kind === 'message' && !(item.bubbleAnchor && item.memberTurn)">
           <TranscriptRow
-            v-if="!item.memberTurn"
+            v-if="!item.memberTurn && !collapsedHandoffIds.has(item.message.id)"
             :key="item.key"
             :row-id="item.message.id"
             :data-anchor-id="item.message.id"
@@ -460,34 +712,73 @@ async function handleLoadOlder(): Promise<void> {
                          :name="senderName(item.message.senderBotId)" :size="32" static
                          :retired="item.message.senderBotId ? botById[item.message.senderBotId]?.retired : false" />
             </template>
-            <GroupHandoffEntry
-              v-if="item.message.handoff"
-              :message="item.message"
-              :from-name="senderName(item.message.senderBotId)"
-              :to-name="senderName(item.message.handoff.to)"
-              :from-driver="item.message.senderBotId ? driverForBot(item.message.senderBotId) : undefined"
-              :to-driver="driverForBot(item.message.handoff.to)"
-              :from-avatar="item.message.senderBotId ? botById[item.message.senderBotId]?.avatar : undefined"
-              :to-avatar="botById[item.message.handoff.to]?.avatar"
-              @jump="jumpToMessage"
-            />
-            <template v-else-if="item.message.role === 'human'">
+            <template v-if="item.message.role === 'human'">
               <ConversationBubble :message="item.message" :attachments="item.message.attachments" own />
               <ConversationMeta :message="item.message" />
+              <GroupDispatchRow
+                v-if="dispatchRows[item.message.id]"
+                :presentation="dispatchRows[item.message.id]!"
+                class="mt-2"
+                @jump="jumpToMessage"
+                @stop-member="handleStopMember"
+                @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
+              />
+              <GroupDispatchLeaderStop
+                v-if="leaderStopAnchorIds.has(item.message.id)"
+                :label="leaderStopLabel(dispatchRows[item.message.id]!)"
+                @stop="handleStopLeader(dispatchRows[item.message.id]!)"
+              />
             </template>
 
             <template v-else-if="item.message.role === 'bot'">
               <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
               <ConversationMeta :message="item.message" />
+              <GroupDispatchRow
+                v-if="dispatchRows[item.message.id]"
+                :presentation="dispatchRows[item.message.id]!"
+                class="mt-2"
+                @jump="jumpToMessage"
+                @stop-member="handleStopMember"
+                @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
+              />
+              <GroupDispatchLeaderStop
+                v-if="leaderStopAnchorIds.has(item.message.id)"
+                :label="leaderStopLabel(dispatchRows[item.message.id]!)"
+                @stop="handleStopLeader(dispatchRows[item.message.id]!)"
+              />
+            </template>
+
+            <template v-else-if="item.message.handoff">
+              <!-- Every handoff belongs to exactly one round, so the row is
+                   always there: the round renders in place of its anchor
+                   handoff, and every other handoff of the round collapses. -->
+              <GroupDispatchRow
+                :presentation="dispatchRows[item.message.id]!"
+                @jump="jumpToMessage"
+                @stop-member="handleStopMember"
+                @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
+              />
+              <GroupDispatchLeaderStop
+                v-if="leaderStopAnchorIds.has(item.message.id)"
+                :label="leaderStopLabel(dispatchRows[item.message.id]!)"
+                @stop="handleStopLeader(dispatchRows[item.message.id]!)"
+              />
+            </template>
+
+            <template v-else-if="item.message.role === 'system'">
+              <p class="w-full py-1 text-center text-xs italic text-fg-muted">{{ item.message.content }}</p>
             </template>
 
             <template v-else>
-              <p class="w-full py-1 text-center text-xs italic text-fg-muted">{{ item.message.content }}</p>
+              <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
+              <ConversationMeta :message="item.message" />
             </template>
           </TranscriptRow>
-          <!-- Plain bot message that shares its member bubble with an earlier row -->
+          <!-- Plain bot message that shares its member bubble with an earlier row.
+               A collapsed (aggregated) handoff renders nothing: it must never
+               fall through to the bubble below and print its raw content. -->
           <TranscriptRow
-            v-else
+            v-else-if="item.memberTurn"
             :key="item.key"
             :row-id="item.message.id"
             :data-anchor-id="item.message.id"
@@ -507,9 +798,10 @@ async function handleLoadOlder(): Promise<void> {
           </TranscriptRow>
         </template>
 
-        <!-- Canonical bubble-anchored reply: bubble above the reply body -->
-        <GroupAgentTurnRow
-          v-else-if="item.kind === 'message' && item.bubbleAnchor && item.memberTurn"
+        <!-- Canonical bubble-anchored reply: bubble above the reply body.
+             A leader's own reply can own the aggregate row: it renders below. -->
+        <template v-else-if="item.kind === 'message' && item.bubbleAnchor && item.memberTurn">
+          <GroupAgentTurnRow
           :key="item.key"
           :member-turn="item.memberTurn"
           :bot="item.memberTurn.botId ? botById[item.memberTurn.botId] : undefined"
@@ -520,8 +812,24 @@ async function handleLoadOlder(): Promise<void> {
           :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
           :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
           :disabled="item.memberTurn.botId ? botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false : false"
+          :stopped="stoppedLeaderTurnIds.has(item.memberTurn.id)"
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
-        />
+        >
+          </GroupAgentTurnRow>
+          <div v-if="dispatchRows[item.message.id]" class="mx-auto w-full max-w-3xl">
+            <GroupDispatchRow
+              :presentation="dispatchRows[item.message.id]!"
+              @jump="jumpToMessage"
+              @stop-member="handleStopMember"
+              @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
+            />
+            <GroupDispatchLeaderStop
+              v-if="leaderStopAnchorIds.has(item.message.id)"
+              :label="leaderStopLabel(dispatchRows[item.message.id]!)"
+              @stop="handleStopLeader(dispatchRows[item.message.id]!)"
+            />
+          </div>
+        </template>
         <!-- Projection order keeps activity, routing and unresolved rows at their owning request. -->
         <div v-else-if="item.kind === 'member-activity'"
           :data-member-turn-id="item.memberTurn.id"
@@ -536,8 +844,10 @@ async function handleLoadOlder(): Promise<void> {
             :controls="openDetailKey === bubbleKeyOf(item.memberTurn.id) ? detailId : undefined"
             :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
             :disabled="botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false"
+            :stopped="stoppedLeaderTurnIds.has(item.memberTurn.id)"
             @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
-          />
+          >
+          </GroupAgentTurnRow>
         </div>
 
         <!-- Neutral routing entry: no invented Bot identity -->

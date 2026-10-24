@@ -39,6 +39,9 @@ const props = defineProps<{
   disabled?: boolean;
   singleMember?: boolean;
   runState?: ConversationRunDto["state"];
+  /** True when the user stopped this member: the bubble names the stop
+   *  instead of the member's own durable state. */
+  stopped?: boolean;
 }>();
 
 const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
@@ -126,6 +129,7 @@ defineExpose({ bubbleStatus });
       :expanded="expanded"
       :attempt="memberTurn.attempt"
       :controls="controls"
+      :stopped="stopped === true"
       @toggle="emit('toggle', $event)"
     />
     <template v-if="message">

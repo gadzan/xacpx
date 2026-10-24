@@ -1450,6 +1450,34 @@ test("toMemberTurnSummary projects timestamps alongside failureReason", async ()
   expect(summary.failureReason).toBe("provider crashed");
 });
 
+test("toMemberTurnSummary projects the scoped cancellation reason and the followup sender", async () => {
+  const { toMemberTurnSummary } = await import("../../../src/control/conversation-control-dtos");
+  const base = {
+    id: "mturn_1",
+    runId: "run_1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    batch: 1,
+    memberIndex: 0,
+    attempt: 1,
+    origin: "handoff" as const,
+    state: "cancelled" as const,
+    triggerMessageIds: ["cmsg_1"],
+    createdAt: "2026-10-23T00:00:00.000Z",
+  };
+  const stopped = toMemberTurnSummary({ ...base, cancellationReason: "human-cancelled" });
+  expect(stopped.cancellationReason).toBe("human-cancelled");
+  const wake = toMemberTurnSummary({ ...base, origin: "followup" as const, followupSenderMemberTurnId: "mturn_leader" });
+  expect(wake.followupSenderMemberTurnId).toBe("mturn_leader");
+  // A member that was never stopped and is not a wake carries neither field.
+  const plain = toMemberTurnSummary(base);
+  expect(plain.cancellationReason).toBeUndefined();
+  expect(plain.followupSenderMemberTurnId).toBeUndefined();
+  expect(Object.hasOwn(plain, "cancellationReason")).toBe(false);
+  expect(Object.hasOwn(plain, "followupSenderMemberTurnId")).toBe(false);
+});
+
 test("PR7 control: groups.list stays separate from Direct-only conversations.list", async () => {
   const { control } = await wire({ autoKick: false });
   const botA = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

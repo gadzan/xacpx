@@ -808,6 +808,28 @@ describe("useGroupsStore", () => {
       expectedOutput: "", dependsOn: [], failureReason: "typed denial", blockedReason: "human-authority-required" });
   });
 
+  it("preserves the stop intent and the wake identity from a same-state thin member snapshot", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running", profileRevision: 1, createdAt: "now" };
+    store.activeRun = run;
+    const thin: MemberTurnSummaryDto = { id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      botId: "bot_a", batch: 1, attempt: 1, origin: "followup", state: "completed", createdAt: "now" };
+    const rich: MemberTurnSummaryDto = { ...thin, cancellationReason: "human-cancelled",
+      followupSenderMemberTurnId: "turn_leader" };
+    const update = (memberTurn: MemberTurnSummaryDto) => store.applyEvent({ kind: "control-event", instanceId: "inst_1",
+      event: { type: "member-turn-finished", run, memberTurn } } as never);
+    update(rich); update(thin);
+    // The stop intent and the wake identity are durable turn facts: a thin
+    // snapshot that omits them must not erase what the server proved.
+    expect(store.memberTurnsById[thin.id]).toMatchObject({ cancellationReason: "human-cancelled",
+      followupSenderMemberTurnId: "turn_leader" });
+  });
+
   for (const outcome of ["completed", "failed"] as const) {
     it(`keeps assignment metadata without carrying old failure evidence into ${outcome} proof`, () => {
       const store = useGroupsStore();
@@ -1003,6 +1025,17 @@ describe("useGroupsStore", () => {
     await store.cancelCurrentRun();
     expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_stop" });
     expect(store.activeRun?.state).toBe("cancelled");
+  });
+
+  it("stops one dispatched member by run and member turn", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    mockRpc.mockResolvedValueOnce({ run: { id: "run_1", memberTurns: [] } });
+    await store.cancelMember("inst_1", "run_1", "turn_member_1");
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancelMember", {
+      runId: "run_1",
+      memberTurnId: "turn_member_1",
+    });
   });
 
   it("reconnect converges without duplicating messages", async () => {

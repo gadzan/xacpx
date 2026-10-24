@@ -22,18 +22,26 @@ export type BubbleStatus =
   | "waiting"
   | "routing";
 
-const props = defineProps<{
-  status: BubbleStatus;
-  /** Accessible name; localized by the caller so titles stay in one place. */
-  label: string;
-  /** True when this entry currently owns the open detail popover. */
-  expanded?: boolean;
-  /** id of the popover element this trigger controls. */
-  controls?: string;
-  /** Durable attempt index; > 1 earns a small numeric badge so a retried
-   *  member is spottable before any failure is visible. */
-  attempt?: number;
-}>();
+const props = withDefaults(
+  defineProps<{
+    status: BubbleStatus;
+    /** Accessible name; localized by the caller so titles stay in one place. */
+    label: string;
+    /** True when this entry currently owns the open detail popover. */
+    expanded?: boolean;
+    /** id of the popover element this trigger controls. */
+    controls?: string;
+    /** Durable attempt index; > 1 earns a small numeric badge so a retried
+     *  member is spottable before any failure is visible. */
+    attempt?: number;
+    /** True when the user stopped this member: the entry reads "stopped"
+     *  instead of its own durable state. A stop is the human's own act, so
+     *  it is named here — in the muted tone and the slot of a cancelled
+     *  member — and nowhere else. */
+    stopped?: boolean;
+  }>(),
+  { stopped: false },
+);
 
 const emit = defineEmits<{
   toggle: [element: HTMLElement | null];
@@ -46,6 +54,7 @@ function onToggle(event: MouseEvent): void {
 }
 
 const stateTitle = computed(() => {
+  if (props.stopped) return t("group.bubble.status.stopped");
   switch (props.status) {
     case "queued": return t("group.bubble.status.queued");
     case "running": return t("group.bubble.status.running");
@@ -58,8 +67,19 @@ const stateTitle = computed(() => {
     case "routing": return t("group.bubble.status.routing");
   }
 });
+const pulsing = computed(() => !props.stopped && (props.status === "running" || props.status === "streaming"));
 
-const pulsing = computed(() => props.status === "running" || props.status === "streaming");
+/**
+ * A stopped member wears the muted tone of a cancelled one: only the word
+ * differs, so the two read as the same kind of entry.
+ */
+const toneClass = computed(() => (props.stopped ? "is-cancelled" : `is-${props.status}`));
+
+/**
+ * The accessible name follows the visible entry: the word the reader sees
+ * is the word the screen reader hears.
+ */
+const accessibleName = computed(() => `${props.label} — ${stateTitle.value}`);
 </script>
 
 <template>
@@ -67,12 +87,12 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
     type="button"
     data-test="agent-thinking-bubble"
     class="group-bubble-trigger"
-    :class="[`is-${status}`, { 'is-pulsing': pulsing, 'is-expanded': expanded }]"
-    :aria-label="`${label} — ${stateTitle}`"
+    :class="[toneClass, { 'is-pulsing': pulsing, 'is-expanded': expanded }]"
+    :aria-label="accessibleName"
     aria-haspopup="dialog"
     :aria-expanded="expanded === true"
     :aria-controls="controls"
-    :title="`${label} — ${stateTitle}`"
+    :title="accessibleName"
     @click.stop="onToggle"
   >
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" class="group-bubble-icon">
@@ -86,7 +106,7 @@ const pulsing = computed(() => props.status === "running" || props.status === "s
       <circle class="group-bubble-dot" cx="10.7" cy="20.6" r="0.95" fill="currentColor" />
       <circle class="group-bubble-dot" cx="13.3" cy="22.1" r="0.75" fill="currentColor" />
     </svg>
-    <span class="group-bubble-status" aria-hidden="true">{{ stateTitle }}</span>
+    <span data-test="group-bubble-status" class="group-bubble-status" aria-hidden="true">{{ stopped ? "⊘ " : "" }}{{ stateTitle }}</span>
     <span v-if="attempt !== undefined && attempt > 1" class="group-bubble-attempt" aria-hidden="true">{{ attempt }}</span>
   </button>
 </template>

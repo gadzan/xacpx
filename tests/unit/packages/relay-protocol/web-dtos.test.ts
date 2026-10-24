@@ -1178,6 +1178,16 @@ test("history details accepts complete public run metadata and optional historic
   expect(isRunsDetailsBatchResult({ runs: [] })).toBe(true);
 });
 
+test("history details accept the scoped cancellation reason and the followup sender", () => {
+  const stopped = { ...historyMember, cancellationReason: "human-cancelled" };
+  expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, memberTurns: [stopped] }] })).toBe(true);
+  const wake = { ...historyMember, origin: "followup", followupSenderMemberTurnId: "member_leader" };
+  expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, memberTurns: [wake] }] })).toBe(true);
+  // A forged reason or a non-string sender is not public member evidence.
+  expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, memberTurns: [{ ...historyMember, cancellationReason: "forged" }] }] })).toBe(false);
+  expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, memberTurns: [{ ...historyMember, followupSenderMemberTurnId: 7 }] }] })).toBe(false);
+});
+
 test("history details rejects malformed run metadata, duplicate identities and foreign member scope", () => {
   for (const patch of [
     { id: "" }, { profileRevision: undefined }, { profileRevision: NaN }, { profileRevision: -1 },

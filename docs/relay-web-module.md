@@ -979,18 +979,6 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 自动协作每轮按已有结果选择下一步行动和合适成员，支持分析、执行、验证、修正和结束；无需用户描述人员安排。简单问答可以直接完成，产出类任务需要验证最新结果。已有结果后的路由不确定或无进展会显示 waiting-human；预算耗尽仍是失败。公开指派卡的任务与 routingReason 展示当前行动，后续行动沿用同一 Run，不要求所有成员都发言。详见[通用协作策略](conversation-runtime.md#bundled-adaptive-collaboration)。
 
-### Group 公开交接入口（PR #411）
-
-`GroupTranscript.vue` 在公开 `group_send` 消息的原始位置渲染 `GroupHandoffEntry.vue`。默认只显示两个重叠的 24px Bot 身份头像（未配置时回退 Agent 图标），重叠 8px，按钮触控高度 44px；双头像始终静态。不会额外显示行头像或说话人文本。Enter、Space 或点击展开详情，Escape 或收起按钮关闭并恢复焦点。名称与头像使用当前 Bot 资料，已移除或不可用的 Bot 保留资料或现有名称 / ID 回退。
-
-详情包含发送方、接收方、任务、可选期望输出和目标 MemberTurn 的实际状态。`indeterminate` 显示为结果未知。任务和结果预览通过 Vue 文本插值渲染。结果最多预览 240 个 UTF-16 单位，并可跳到已有的原始回复。
-
-结果跳转给目标消息设置 `tabindex="-1"` 并转移焦点，再定位视口。后续 Tab 从目标消息内的操作继续，不返回交接面板。只有被跳转到的消息获得程序化焦点能力，不增加消息行的常规 Tab 停靠点。
-
-结果关联必须满足 `handoff.memberTurnId`、Conversation、Topic、Run、Bot 和非冲突 assignment 身份，再通过 MemberTurn 的 `promptRequestId` 找到唯一的后续 Bot 回复。没有精确证据、存在歧义或结果不在已加载历史中时，显示结果不可用，不按同 Bot 或消息位置猜测。
-
-`groups.loadHandoffRunDetail()` 按需查询历史 `runs.get`。只读缓存按实例、Conversation、Topic、Run 隔离，最多保留 20 个详情，同 Run 的并发请求合并。切换选择、相关事件、重连或删除使缓存失效，并丢弃迟到响应。`handoffDetailRevision` 通知已展开组件重新读取。此路径不更新 active Run、composer、取消状态、计划或历史游标。普通 `agent_send` 和私聊消息不会复制到 Group。
-
 ### Group Agent 思考气泡（PR #447）
 
 多 Agent 群组话题不再渲染底部的 Collaboration Run 卡片。每个真实 MemberTurn 在
@@ -1045,9 +1033,112 @@ Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌�
 底部跟随监听投影条目的完整 key。临时活动行被规范回复替换时，即使条目数量不变，
 停留在底部的读者仍会跟随；已向上滚动的读者保持当前位置。加载较早历史期间仍由原锚点恢复逻辑负责定位。
 
+### Group 派发聚合行与展开卡片（PR #469）
+
+项管（leader）同一轮发出的派发不再各占一行，而是在 `GroupTranscript.vue` 里聚合成一行
+`GroupDispatchRow.vue`：叠放的 Bot 头像、派发数量和该轮的聚合状态。聚合由纯函数
+`lib/group-dispatch-presentation.ts` 的 `presentGroupDispatch()` 计算，只读地投影已有的
+durable MemberTurn 与消息，不写 activeRun、不触发服务端调度。项管自己被停止时，聚合状态
+仍按各成员已证明的结果计算，另输出 `leaderStopped` 供上层显示停止说明。
+
+折叠行左侧的叠放头像是实心圆盘（`bg-surface-2`），每个圆盘加 `ring-2`，描边颜色取所在行
+的背景色（`ring-surface`）：叠放处因此出现一圈与行背景同色的描边，头像之间不会连成一片。
+相邻头像重叠 6px（`-ml-1.5`，第一个不偏移）。行 hover 时背景从 `bg-surface` 变为
+`bg-surface-2`，所以圆盘与描边同步互换（`group-hover/dispatch:bg-surface` +
+`group-hover/dispatch:ring-surface-2`）：描边始终等于行背景色，圆盘始终与行背景可区分，
+亮色与暗色主题都成立。hover 组是具名的（`group/dispatch`）：派发行嵌在带无名 `group`
+的消息行里，用无名 `group-hover` 会在鼠标停在该行别处时也互换，描边就不再等于行背景色。
+
+最多显示 4 个头像（`GROUP_DISPATCH_AVATAR_LIMIT`），超出部分折叠成一个同尺寸圆形徽标
+「+N」，N 是被折叠的成员数（`data-test="group-dispatch-overflow"`）。
+
+一轮只有一个成员时同样走聚合行，不再有单独的单条派发条目：折叠行标题按成员数分两种
+措辞，多个成员写「派发给 N 个 Bot」/`Sent to N bots`，单个成员直接点名
+「派发给 {name}」/`Sent to {name}`（`group.dispatch.sentToOne`）。状态计数与 ■ 停止按钮
+和多条时完全一致，展开卡片里也只有那一个成员行。
+
+聚合状态的中文措辞按摘要区分：进行中把 queued 读作「排队中」；整轮全部完成才写
+「✓ N 个已完成」；只有部分完成（还有取消、失败或结果未知）时写紧凑的「✓ N 已完成」，
+避免和全完成标题混读。全部取消时只显示「⊘ 已取消」。
+
+点击该行（或聚焦后按 Enter / Space）展开行下方的卡片。卡片为 `bg-surface`、16px 圆角、
+`max-w-[560px]`：先是一段「派发内容」（`group.dispatch.instructions`），正文取该轮第一条
+handoff 的 task，两行截断；标题整轮只出现一次。卡片标题与折叠箭头旋转由 `aria-expanded`
+和 `aria-controls` 暴露。
+
+随后每个被派发的 Bot 一行：头像、名字、状态（复用 `group.dispatch.states.*` 的既有措辞）、
+以及一行回复预览。没有回复的成员不显示预览行。
+
+行的身份是 MemberTurn，不是 Bot：同一个 Bot 在一轮里被派发两次时是两个成员行，两行
+都以自己的 `memberTurnId` 作 `:key`（成员行、叠放头像、移动端底部弹层行都是），跳转
+也按 `memberTurnId` 查找。按 `botId` 作 key 会让两行互相覆盖或产生重复 key。
+
+回复预览与跳转都只认精确证据：成员回复必须与该成员 MemberTurn 的 `promptRequestId`
+一致、同 Conversation / Topic / Run、同 Bot，且是 handoff 之后的唯一候选；存在歧义、
+缺证据或回复不在已加载历史中时，该成员不显示预览，其行 disabled、不可点击。
+
+点击有回复的成员行跳转到该回复，复用 `GroupTranscript.vue` 既有的 `jumpToMessage()`：
+给目标消息设置 `tabindex="-1"` 并转移焦点，再定位视口。卡片只是桌面展开形态；
+确认框和移动端底部弹层是后续步骤。
+
+可停止的成员（`canStop`：`supportsCancelMember` 为真且成员仍 running / queued）在其行右侧
+显示一个 24px 的 ■ 停止按钮（`data-test="group-dispatch-stop-member"`），hover 用 danger 色。
+点击时 `@click.stop` 只发出 `stopMember` 事件（携带该成员的 durable `runId` 与
+`memberTurnId`），不触发展开/收起，也不触发跳转。`GroupTranscript.vue` 接收该事件后调用
+`groupsStore.cancelMember(instanceId, runId, memberTurnId)`，走
+`control.runs.cancelMember` 只取消这一个成员 turn：leader 与同轮其他成员继续运行。
+core 不支持单成员取消（`supportsCancelMember` 为假）或成员已结束时，该按钮不渲染。
+
+`supportsCancelMember` 不再是写死的假值：`GroupTranscript.vue` 用
+`supportsRunsCancelMember(instancesStore.byId(instanceId))` 读实例自身广告的能力
+`runs.cancel-member.v1`。该能力由 connector 在 core 暴露 `cancelMemberTurn` 时才上报，
+因此老 core 上逐行 ■ 不渲染，页面改为只提供整轮的「全部停止」。
+
+派发行下方还有一个项管停止胶囊（`data-test="group-dispatch-stop-leader"`，`bg-surface`、
+`text-fg-muted`、圆角胶囊、小字号）。它出现的条件是「项管可停」：项管自己这一轮还没结束
+（项管自己的 MemberTurn 仍 queued / dispatched / running），或者项管自己还没被停止、且它
+的唤醒回合（followup）还没到终态。项管派完活后自己那一轮会立刻结束，真正的活在唤醒回合上；
+唤醒回合还没插入（派发尚未结算完）时也算没到终态，所以这个窗口里胶囊依然在。四个挂载点
+（人消息、Bot 消息、handoff、bubble 锚定的回复）都渲染它。
+
+- core 支持单成员取消时，胶囊文案是「停止{name}」/`Stop {name}`（`group.dispatch.stopLeader`，
+  name 为项管名；中文不插空格），点击不弹确认框，直接按 `control.runs.cancelMember` 取消一个 durable
+  MemberTurn：已派发的成员继续跑，项管也不会再被唤醒做汇总。取消目标是「停止对象」：
+  唤醒回合还在 queued / running 时停唤醒回合的 MemberTurn，否则停项管自己的 MemberTurn。
+- core 不支持单成员取消时，胶囊文案改为「全部停止」/`Stop all`，点击走与展开卡
+  「全部停止」完全相同的确认框流程，确认后取消整轮 run。
+
+老 core 上只有一条派发时，展开卡片里不再渲染「全部停止」：那一行的胶囊已经写着同样的
+「全部停止」，卡片里再放一个就是同一个动作出现两次。此时胶囊是唯一入口；多条派发时
+卡片里仍然保留「全部停止」——它和它停掉的成员列在一起，而胶囊在新 core 上只停项管。
+手机端底部弹层不受这条约束：弹层打开时胶囊被弹层的模态遮罩挡住，点不到，所以弹层
+自己保留「全部停止」。
+
+整轮「全部停止」的确认框（`group.dispatch.stopAllConfirm.*`）以项管命名，而不是群名：
+文案是「{项管名}和已派发的 N 个任务都会停止」/`{name} and the N dispatched tasks will stop`。
+
+「已停止」说明来自 durable 证据：项管自己的 MemberTurn 或它的唤醒回合任一带
+`cancellationReason: "human-cancelled"` 就显示。core 对已结束的项管写停止意图时状态仍是
+`completed`，所以只读状态是不够的，必须读这个字段。
+
+停止只在项管的状态位说一次：`AgentThinkingBubble` 收到 `stopped` 后读「⊘ 已停止」/
+`⊘ Stopped`（`group.bubble.status.stopped`），语气与取消一致、脉冲关闭。项管被停止后，
+它气泡上原本的「已取消」状态词由「已停止」取代，不再另起一行说明。项管完全没有自己的行时
+（历史没加载出来等），停止就没有状态位可写，全页也就没有第二处说明。成员的
+状态标签不受影响——成员 bot 被停止时的显示照旧。派发行的「⊘ 已取消」不变：它说的是
+整轮的结果，项管状态位说的是项管被停这件事，两者是不同的主语。
+
+聚合行里出现 `indeterminate`（结果未知）的成员时，折叠行和手机摘要都单独显示结果未知的数量：
+结果未知既不是已完成也不是失败，混进任何一边都是编造结论。这个计数排在所有计数之后
+（它是「还不知道」的空缺，不是这一轮的又一个结论），用中性灰 `text-fg-muted`，前面带一个
+lucide 问号图标（`CircleHelp`），不用红色也不用警示色。桌面折叠行的文案是
+「N 个结果未知」/`N unknown`（`group.dispatch.indeterminate`）；手机端折叠胶囊放不下长文案，
+用短格式「N 未知」/`N unknown`（`group.dispatch.indeterminateShort`），
+例如「4 个 Bot · 2 执行中 · 1 未知」。
+
 ## 阶段范围边界
 
-Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。
+Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。`cancellationReason` 与 `followupSenderMemberTurnId` 同属这条规则：它们是成员回合的 durable 事实，缺省的薄 snapshot 不能抹掉服务端已经证明的停止意图或唤醒回合身份。
 
 - **阶段三**交付登录 + 实例/会话树 + 对话流。
 - **阶段四**补齐：右栏任务面板（定时/编排）、设置页（实例接入 token/保留摘要）、notice toast、

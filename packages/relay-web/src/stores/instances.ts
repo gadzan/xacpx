@@ -138,6 +138,16 @@ export function supportsBotDedicatedWorkspace(instance: { capabilities?: string[
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
 }
 
+/**
+ * True when the instance's core can cancel ONE member turn of a Run
+ * (`control.runs.cancelMember`). An older core has no scoped cancellation,
+ * so the web must not offer a per-member or per-leader stop there: it offers
+ * the confirmed run-level stop instead.
+ */
+export function supportsRunsCancelMember(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.runsCancelMemberV1);
+}
+
 /** True when the instance is online and advertises the Phase A desktop capability. */
 export function supportsDesktop(instance: {
   online: boolean;
