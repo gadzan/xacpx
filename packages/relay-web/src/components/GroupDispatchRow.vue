@@ -238,6 +238,9 @@ function stopMember(member: GroupDispatchPresentation["members"][number]): void 
 function stopAll(): void {
   emit("stopAll");
 }
+
+/** Icon size inside a 24px stacked disc: ~60% of the disc diameter. */
+const STACK_ICON_SIZE = 14;
 </script>
 
 <template>
@@ -263,21 +266,29 @@ function stopAll(): void {
            row background, the disc always stays distinct from it. The group
            is named: an unnamed `group` on the enclosing transcript row would
            also fire this swap when the pointer is elsewhere in that row. -->
+      <!-- The icon is ~60% of the 24px disc, so it sits inside the disc with
+           a margin. The outer ring (row colour) and the inner 1px fg/10
+           border are both box-shadows and cannot share one element, so the
+           inner border lives on an overlay span: it keeps the disc edge
+           visible on the light theme, where surface-2 is close to the row
+           background. The +N badge gets the same border. -->
       <div data-test="group-dispatch-avatars" class="flex shrink-0 items-center" aria-hidden="true">
         <span
           v-for="(avatar, index) in presentation.avatars.items"
           :key="avatar.memberTurnId"
           :class="index > 0 ? '-ml-1.5' : ''"
-          class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2 ring-2 ring-surface group-hover/dispatch:bg-surface group-hover/dispatch:ring-surface-2"
+          class="relative grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2 ring-2 ring-surface group-hover/dispatch:bg-surface group-hover/dispatch:ring-surface-2"
         >
-          <BotAvatar :avatar="avatar.avatar" :driver="avatar.driver" :name="avatar.name" :size="24" static />
+          <BotAvatar :avatar="avatar.avatar" :driver="avatar.driver" :name="avatar.name" :size="STACK_ICON_SIZE" static />
+          <span data-test="group-dispatch-disc-border" class="pointer-events-none absolute inset-0 rounded-full ring-1 ring-inset ring-fg/10" />
         </span>
         <span
           v-if="presentation.avatars.overflow > 0"
           data-test="group-dispatch-overflow"
-          class="-ml-1.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-surface-2 text-[10px] font-medium text-fg-muted ring-2 ring-surface group-hover/dispatch:bg-surface group-hover/dispatch:ring-surface-2"
+          class="relative -ml-1.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2 text-[10px] font-medium text-fg-muted ring-2 ring-surface group-hover/dispatch:bg-surface group-hover/dispatch:ring-surface-2"
         >
           +{{ presentation.avatars.overflow }}
+          <span data-test="group-dispatch-disc-border" class="pointer-events-none absolute inset-0 rounded-full ring-1 ring-inset ring-fg/10" />
         </span>
       </div>
       <span

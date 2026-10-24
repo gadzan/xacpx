@@ -678,6 +678,45 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
+  it("draws each stacked icon at ~60% of its disc, clipped inside it", () => {
+    const wrapper = row(
+      ["completed", "completed", "completed", "completed", "completed"],
+      ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"],
+    );
+    const stack = wrapper.get('[data-test="group-dispatch-avatars"]');
+    const discs = stack.findAll(":scope > span:not([data-test='group-dispatch-overflow'])");
+    expect(discs).toHaveLength(GROUP_DISPATCH_AVATAR_LIMIT);
+    for (const disc of discs) {
+      // 24px disc, 14px icon: the icon sits inside the disc with a margin.
+      expect(disc.classes()).toEqual(expect.arrayContaining(["h-6", "w-6", "overflow-hidden"]));
+      const icon = disc.get('[data-test="bot-avatar"]').element as HTMLElement;
+      expect(icon.style.width).toBe("14px");
+      expect(icon.style.height).toBe("14px");
+    }
+    wrapper.unmount();
+  });
+
+  it("gives every stacked disc an inner border on top of the row-coloured ring", () => {
+    const wrapper = row(
+      ["completed", "completed", "completed", "completed", "completed"],
+      ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"],
+    );
+    const discs = Array.from(wrapper.get('[data-test="group-dispatch-avatars"]').element.children);
+    expect(discs).toHaveLength(5);
+    for (const disc of discs) {
+      // The outer ring stays on the disc; the inner border is a separate
+      // overlay, since two ring utilities on one element share one shadow.
+      expect(disc.classList.contains("ring-2")).toBe(true);
+      expect(disc.classList.contains("ring-inset")).toBe(false);
+      const borders = disc.querySelectorAll('[data-test="group-dispatch-disc-border"]');
+      expect(borders).toHaveLength(1);
+      expect(Array.from(borders[0]!.classList)).toEqual(
+        expect.arrayContaining(["absolute", "inset-0", "rounded-full", "ring-1", "ring-inset", "ring-fg/10"]),
+      );
+    }
+    wrapper.unmount();
+  });
+
   it("collapses avatars past the limit into an overflow count", () => {
     const wrapper = row(
       ["completed", "completed", "completed", "completed", "completed"],
