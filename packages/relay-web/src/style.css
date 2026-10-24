@@ -102,10 +102,12 @@ a:focus-visible, button:focus-visible,
    the branded double-ring rule above.
    Opt-out: fields marked data-ring="container" sit transparently inside a card
    that draws its own focus-within ring (composer, command palette), so they
-   must not paint a second, square ring inside the rounded container. */
-input:not([data-ring="container"]):focus-visible,
-textarea:not([data-ring="container"]):focus-visible,
-select:not([data-ring="container"]):focus-visible {
+   must not paint a second, square ring inside the rounded container.
+   Invalid fields (aria-invalid="true") opt out too: they paint their own
+   `focus-visible:ring-2 focus-visible:ring-danger` so focus keeps the error color. */
+input:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible,
+textarea:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible,
+select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgb(var(--c-accent)) !important;
 }
