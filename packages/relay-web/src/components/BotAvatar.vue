@@ -45,7 +45,10 @@ const eyeFill = computed(() => character.value?.color === "creme" ? "#0A0A0C" : 
 // into the page: creme on the light theme, encre on the dark one (theme comes from the
 // root `.dark` class, see the style block).
 const hairline = computed(() => character.value?.color === "creme" || character.value?.color === "encre" ? character.value.color : undefined);
-const indicator = computed(() => ({ waiting: "!", failed: "!", indeterminate: "?", offline: "−", retired: "×", cancelled: "−" } as Partial<Record<BotAvatarState, string>>)[state.value]);
+// The badge marks a state the bot cannot act on: waiting (!), failed (!), indeterminate (?),
+// offline (−) and removed (×). A cancelled run has no badge — the "−" reads as a broken
+// status dot rather than as "stopped", so cancellation shows through the state alone.
+const indicator = computed(() => ({ waiting: "!", failed: "!", indeterminate: "?", offline: "−", retired: "×" } as Partial<Record<BotAvatarState, string>>)[state.value]);
 let mounted = false, active = true, time = 0;
 let initialPreviewCompletion = props.preview && state.value === "completed";
 let transition: AvatarTransition | undefined;
