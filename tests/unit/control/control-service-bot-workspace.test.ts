@@ -90,6 +90,7 @@ async function wire(options?: {
   };
   const configMutex = new AsyncMutex();
   const control = new ControlService({
+    now: () => now().getTime(),
     agents: { resolveCapabilityContext: () => undefined },
     agent: { chat: async (_request: ChatRequest) => ({ text: "reply" }) },
     sessions,
@@ -331,4 +332,41 @@ test("an emoji-only Bot name still works with an explicit workspace", async () =
   const bot = await w.control.createBot({ name: "🤖", agent: "codex", workspace: "backend" });
   expect(bot.workspace).toBe("backend");
   expect(existsSync(w.botsHome)).toBe(false);
+});
+
+test("an auto-allocated workspace is recorded as a dedicated-workspace marker on the Bot", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  expect(w.state.bots[bot.id]?.dedicatedWorkspace).toEqual({
+    name: "Reviewer",
+    cwd: join(w.botsHome, "Reviewer"),
+    createdAt: NOW,
+  });
+  expect(bot.workspace).toBe("Reviewer");
+});
+
+test("a user-chosen workspace leaves the Bot without a dedicated-workspace marker", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  expect(w.state.bots[bot.id]?.dedicatedWorkspace).toBeUndefined();
+  expect(existsSync(w.botsHome)).toBe(false);
+});
+
+test("a dedicatedWorkspace key smuggled through the public payload is ignored", async () => {
+  const w = await wire();
+  const smuggled = { name: "Evil", cwd: "/etc", createdAt: NOW };
+  // The relay protocol passes unknown keys through, so the core must not trust one.
+  const chosen = await w.control.createBot({
+    name: "Chosen", agent: "codex", workspace: "backend", dedicatedWorkspace: smuggled,
+  } as never);
+  expect(w.state.bots[chosen.id]?.dedicatedWorkspace).toBeUndefined();
+
+  const auto = await w.control.createBot({
+    name: "Auto", agent: "codex", dedicatedWorkspace: smuggled,
+  } as never);
+  expect(w.state.bots[auto.id]?.dedicatedWorkspace).toEqual({
+    name: "Auto",
+    cwd: join(w.botsHome, "Auto"),
+    createdAt: NOW,
+  });
 });

@@ -190,6 +190,13 @@ Each Bot has a monotonic `profileRevision` (PR2 records default to `1` on parse)
 
 Bot creation through Control may omit `workspace`; the daemon then creates and registers a dedicated directory under `~/.xacpx/bots/` before saving the profile. The stored profile and execution snapshot still contain a registered workspace name. Explicit selection uses the chosen registered workspace. Existing Bots retain their workspace; rename/removal does not move or delete its files. Group members continue to use their Topic's execution target rather than the Bot's default workspace.
 
+An auto-allocated Bot profile also records a `dedicatedWorkspace` marker
+(workspace name, directory path, allocation time) so the daemon can tell a
+directory it created for the Bot apart from a workspace the user chose. The
+marker is only ever written by the daemon: the public create payload cannot
+set it, and a profile whose marker is malformed is quarantined at load rather
+than trusted.
+
 At accept, the Run stores `profileRevision` plus a snapshot of:
 
 - presentation: name / avatar / role

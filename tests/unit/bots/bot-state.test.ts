@@ -665,3 +665,53 @@ test("a missing Bot section is empty and does not persist a migration on load", 
 
   await rm(dir, { recursive: true, force: true });
 });
+
+test("a dedicated workspace marker round-trips through save and load", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-bot-marker-"));
+  const path = join(dir, "state.json");
+  const store = new StateStore(path);
+  const state = createEmptyState();
+  const marker = { name: "Reviewer", cwd: "/home/me/.xacpx/bots/Reviewer", createdAt: NOW };
+  state.bots.bot_a = {
+    id: "bot_a", name: "Reviewer", agent: "codex", workspace: "Reviewer",
+    enabled: true, profileRevision: 1, createdAt: NOW, updatedAt: NOW, dedicatedWorkspace: marker,
+  };
+
+  await store.save(state);
+  const loaded = await new StateStore(path).load();
+  expect(loaded.bots.bot_a?.dedicatedWorkspace).toEqual(marker);
+  expect(store.lastLoadReport?.dropped ?? []).toEqual([]);
+
+  // Save again to prove the parsed marker is not dropped on rewrite.
+  await store.save(loaded);
+  const reloaded = await new StateStore(path).load();
+  expect(reloaded.bots.bot_a?.dedicatedWorkspace).toEqual(marker);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("parseState quarantines a Bot whose dedicated workspace marker is malformed", () => {
+  const base = {
+    id: "bot_a", name: "Reviewer", agent: "codex", workspace: "Reviewer",
+    enabled: true, createdAt: NOW, updatedAt: NOW,
+  };
+  const dropped: StateLoadDroppedRecord[] = [];
+  const loaded = parseState({
+    bots: {
+      "marker-not-object": { ...base, dedicatedWorkspace: "Reviewer" },
+      "marker-missing-cwd": { ...base, dedicatedWorkspace: { name: "Reviewer", createdAt: NOW } },
+      "marker-blank-name": { ...base, dedicatedWorkspace: { name: "   ", cwd: "/bots/Reviewer", createdAt: NOW } },
+      "marker-blank-cwd": { ...base, dedicatedWorkspace: { name: "Reviewer", cwd: "", createdAt: NOW } },
+      "marker-nonstring-time": { ...base, dedicatedWorkspace: { name: "Reviewer", cwd: "/bots/Reviewer", createdAt: 12 } },
+    },
+  }, "state.json", dropped);
+
+  expect(loaded.bots).toEqual({});
+  expect(dropped).toEqual([
+    { section: "bots", key: "marker-not-object", reason: "malformed bot profile" },
+    { section: "bots", key: "marker-missing-cwd", reason: "malformed bot profile" },
+    { section: "bots", key: "marker-blank-name", reason: "malformed bot profile" },
+    { section: "bots", key: "marker-blank-cwd", reason: "malformed bot profile" },
+    { section: "bots", key: "marker-nonstring-time", reason: "malformed bot profile" },
+  ]);
+});

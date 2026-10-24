@@ -28,6 +28,39 @@ export interface BotProfileSnapshot {
   execution: BotProfileExecution;
 }
 
+
+/**
+ * Marks a Bot whose default workspace was auto-allocated by the daemon
+ * under `~/.xacpx/bots/`. Absent when the caller chose a registered
+ * workspace: only the daemon knows that a directory exists because of the
+ * Bot, so only the daemon may claim ownership of it.
+ */
+export interface DedicatedWorkspaceMarker {
+  /** Registered workspace name the Bot points at. */
+  name: string;
+  /** Absolute path of the directory the daemon created. */
+  cwd: string;
+  /** ISO timestamp of the allocation. */
+  createdAt: string;
+}
+
+/** Runtime narrowing for a persisted marker: all three fields must be
+ *  non-empty strings, so a record that lost one is rejected rather than
+ *  silently dropping a directory on disk. */
+export function isDedicatedWorkspaceMarker(value: unknown): value is DedicatedWorkspaceMarker {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const marker = value as Record<string, unknown>;
+  return isNonEmptyString(marker.name)
+    && isNonEmptyString(marker.cwd)
+    && isNonEmptyString(marker.createdAt);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 export interface BotProfile {
   id: string;
   name: string;
@@ -44,6 +77,8 @@ export interface BotProfile {
   profileRevision: number;
   createdAt: string;
   updatedAt: string;
+  /** Present only for a daemon-allocated dedicated workspace. */
+  dedicatedWorkspace?: DedicatedWorkspaceMarker;
 }
 
 export function sessionMatchesExecution(

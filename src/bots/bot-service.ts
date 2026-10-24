@@ -17,7 +17,8 @@ import { BotError } from "./bot-error";
 import type { BotRemovalRecord, BotTombstone } from "./bot-removal";
 import { removalBlocksWork } from "./bot-removal";
 import { BotLifecycleGate } from "./bot-lifecycle-gate";
-import type { BotProfile, BotRuntimeBinding } from "./bot-types";
+import { isDedicatedWorkspaceMarker } from "./bot-types";
+import type { BotProfile, BotRuntimeBinding, DedicatedWorkspaceMarker } from "./bot-types";
 import type { ConversationRecord } from "../conversations/conversation-types";
 
 const NAME_MAX = 80;
@@ -33,6 +34,15 @@ export interface CreateBotInput {
   model?: string;
   effort?: string;
   enabled?: boolean;
+}
+
+/**
+ * Daemon-internal create channel. `dedicatedWorkspace` can only be set here,
+ * never through `CreateBotInput`, so no public control payload can claim
+ * ownership of a directory it did not allocate.
+ */
+export interface CreateBotOptions {
+  dedicatedWorkspace?: DedicatedWorkspaceMarker;
 }
 
 export interface UpdateBotInput {
@@ -417,17 +427,21 @@ export class BotService {
     return this.hasMaterializedRuntime(id);
   }
 
-  async createBot(input: CreateBotInput): Promise<BotProfile> {
+  /** The marker is daemon-internal: `input` never carries one (the profile is
+   *  assembled field by field below), so only `options` can claim ownership
+   *  of a directory this process allocated. */
+  async createBot(input: CreateBotInput, options?: CreateBotOptions): Promise<BotProfile> {
     this.assertOpen();
     return await this.mutate(async () => {
-      this.assertOpen();
       this.rejectUnsupportedCwd(input);
       const id = this.nextId();
       const timestamp = this.now().toISOString();
+      const dedicatedWorkspace = this.validatedMarker(options?.dedicatedWorkspace);
       const bot: BotProfile = {
         id,
         ...this.requireIdentity(input),
         ...this.optionalFields(input),
+        ...(dedicatedWorkspace ? { dedicatedWorkspace } : {}),
         enabled: input.enabled ?? true,
         profileRevision: 1,
         createdAt: timestamp,
@@ -967,6 +981,19 @@ export class BotService {
       throw new BotError("cwd_unsupported", "bot cwd is not supported until runtime migration exists");
     }
   }
+
+
+  /** Internal markers must describe a real, owned directory. */
+  private validatedMarker(marker: DedicatedWorkspaceMarker | undefined): DedicatedWorkspaceMarker | undefined {
+    if (marker === undefined) {
+      return undefined;
+    }
+    if (!isDedicatedWorkspaceMarker(marker)) {
+      throw new BotError("dedicated_workspace_invalid", "bot dedicatedWorkspace must carry a name, cwd, and createdAt");
+    }
+    return { ...marker };
+  }
+
 
   private blockingRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined {
     let sqlite: "deleting" | "indeterminate" | "retired" | undefined;

@@ -2597,7 +2597,9 @@ export class ControlService {
       try {
         await workspaces.create(name, dir, `Bot default workspace for ${input.name.trim()}`);
         registered = true;
-        return await runtime.bots.createBot({ ...input, workspace: name });
+        return await runtime.bots.createBot({ ...input, workspace: name }, {
+          dedicatedWorkspace: { name, cwd: dir, createdAt: new Date(this.deps.now?.() ?? Date.now()).toISOString() },
+        });
       } catch (error) {
         if (registered) {
           // A same-name entry that is not ours (replaced out from under us, or
