@@ -195,7 +195,10 @@ An auto-allocated Bot profile also records a `dedicatedWorkspace` marker
 directory it created for the Bot apart from a workspace the user chose. The
 marker is only ever written by the daemon: the public create payload cannot
 set it, and a profile whose marker is malformed is quarantined at load rather
-than trusted.
+than trusted. Pointing the Bot at a different workspace drops the marker from
+the saved profile, so the daemon no longer claims ownership of that directory;
+the same workspace name, or an update that does not touch the workspace, keeps
+it.
 
 At accept, the Run stores `profileRevision` plus a snapshot of:
 

@@ -12,8 +12,11 @@ import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState } from "../../../src/state/types";
 import type { AppState } from "../../../src/state/types";
-import type { StateStore } from "../../../src/state/state-store";
+import { StateStore } from "../../../src/state/state-store";
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 const NOW = "2026-09-15T10:00:00.000Z";
 
 class MemoryStateStore implements Pick<StateStore, "save"> {
@@ -900,4 +903,55 @@ test("concurrent updateGroup calls keep membership and lifecycle exclusion", asy
     expect(live.botIds).toEqual([a.id, c.id]);
     expect(live.title).toBe("AC");
   }
+});
+
+test("updateBot drops the dedicated workspace marker when the Bot switches workspace", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-bot-marker-"));
+  const path = join(dir, "state.json");
+  const store = new StateStore(path);
+  const state = createEmptyState();
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" }, frontend: { cwd: "/tmp/frontend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW), createId: () => "bot_fixed" },
+  );
+  const marker = { name: "backend", cwd: "/tmp/backend", createdAt: NOW };
+  const bot = await service.createBot(
+    { name: "Reviewer", agent: "codex", workspace: "backend" },
+    { dedicatedWorkspace: marker },
+  );
+  expect(bot.dedicatedWorkspace).toEqual(marker);
+
+  const updated = await service.updateBot(bot.id, { workspace: "frontend" });
+  expect(updated.workspace).toBe("frontend");
+  expect(updated.dedicatedWorkspace).toBeUndefined();
+  expect(state.bots[bot.id]?.dedicatedWorkspace).toBeUndefined();
+
+  // The cleared marker must not come back from disk.
+  const reloaded = await new StateStore(path).load();
+  expect(reloaded.bots[bot.id]?.workspace).toBe("frontend");
+  expect(reloaded.bots[bot.id]?.dedicatedWorkspace).toBeUndefined();
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("updateBot keeps the dedicated workspace marker for the same name or a workspace-free update", async () => {
+  const { service } = createService();
+  const marker = { name: "backend", cwd: "/tmp/backend", createdAt: NOW };
+  const bot = await service.createBot(
+    { name: "Reviewer", agent: "codex", workspace: "backend" },
+    { dedicatedWorkspace: marker },
+  );
+  expect(bot.dedicatedWorkspace).toEqual(marker);
+
+  const renamed = await service.updateBot(bot.id, { name: "Senior Reviewer" });
+  expect(renamed.dedicatedWorkspace).toEqual(marker);
+
+  const sameName = await service.updateBot(bot.id, { workspace: "backend" });
+  expect(sameName.dedicatedWorkspace).toEqual(marker);
+
 });

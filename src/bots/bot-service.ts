@@ -479,10 +479,20 @@ export class BotService {
           workspace: this.requirePatchString(patch.workspace, existing.workspace, "workspace"),
         });
         this.assertAcceptsWork(id);
+        // A dedicated-workspace marker claims a directory this daemon
+        // allocated for the Bot. Pointing the Bot at another workspace
+        // drops that claim, so a later cleanup never removes a directory
+        // the Bot no longer uses. The same name keeps the claim.
+        const { dedicatedWorkspace, ...profile } = existing;
+        const keepsDedicatedWorkspace = dedicatedWorkspace !== undefined
+          && (patch.workspace === undefined
+            || patch.workspace === existing.workspace
+            || patch.workspace === dedicatedWorkspace.name);
         const next: BotProfile = {
-          ...existing,
+          ...profile,
           ...identity,
           ...this.patchOptional(existing, patch),
+          ...(keepsDedicatedWorkspace ? { dedicatedWorkspace } : {}),
           enabled: patch.enabled === undefined || patch.enabled === null ? existing.enabled : patch.enabled,
           profileRevision: (existing.profileRevision ?? 1) + 1,
           updatedAt: this.now().toISOString(),
