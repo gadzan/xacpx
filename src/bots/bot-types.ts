@@ -28,7 +28,6 @@ export interface BotProfileSnapshot {
   execution: BotProfileExecution;
 }
 
-
 /**
  * Marks a Bot whose default workspace was auto-allocated by the daemon
  * under `~/.xacpx/bots/`. Absent when the caller chose a registered

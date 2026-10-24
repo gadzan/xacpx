@@ -433,6 +433,7 @@ export class BotService {
   async createBot(input: CreateBotInput, options?: CreateBotOptions): Promise<BotProfile> {
     this.assertOpen();
     return await this.mutate(async () => {
+      this.assertOpen();
       this.rejectUnsupportedCwd(input);
       const id = this.nextId();
       const timestamp = this.now().toISOString();
@@ -982,7 +983,6 @@ export class BotService {
     }
   }
 
-
   /** Internal markers must describe a real, owned directory. */
   private validatedMarker(marker: DedicatedWorkspaceMarker | undefined): DedicatedWorkspaceMarker | undefined {
     if (marker === undefined) {
@@ -993,7 +993,6 @@ export class BotService {
     }
     return { ...marker };
   }
-
 
   private blockingRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined {
     let sqlite: "deleting" | "indeterminate" | "retired" | undefined;

@@ -715,3 +715,29 @@ test("parseState quarantines a Bot whose dedicated workspace marker is malformed
     { section: "bots", key: "marker-nonstring-time", reason: "malformed bot profile" },
   ]);
 });
+
+test("parseState quarantines a Bot whose profileRevision is malformed", () => {
+  const base = {
+    id: "bot_a", name: "Reviewer", agent: "codex", workspace: "backend",
+    enabled: true, createdAt: NOW, updatedAt: NOW,
+  };
+  const dropped: StateLoadDroppedRecord[] = [];
+  const loaded = parseState({
+    bots: {
+      "revision-zero": { ...base, profileRevision: 0 },
+      "revision-fractional": { ...base, profileRevision: 1.5 },
+      "revision-negative": { ...base, profileRevision: -1 },
+      "revision-nan": { ...base, profileRevision: Number.NaN },
+      "revision-not-number": { ...base, profileRevision: "1" },
+    },
+  }, "state.json", dropped);
+
+  expect(loaded.bots).toEqual({});
+  expect(dropped).toEqual([
+    { section: "bots", key: "revision-zero", reason: "malformed bot profile" },
+    { section: "bots", key: "revision-fractional", reason: "malformed bot profile" },
+    { section: "bots", key: "revision-negative", reason: "malformed bot profile" },
+    { section: "bots", key: "revision-nan", reason: "malformed bot profile" },
+    { section: "bots", key: "revision-not-number", reason: "malformed bot profile" },
+  ]);
+});

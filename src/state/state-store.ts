@@ -958,6 +958,8 @@ function isBotProfile(value: unknown): value is Omit<BotProfile, "avatar"> & { a
     isOptionalString(value.model) &&
     isOptionalString(value.effort) &&
     typeof value.enabled === "boolean" &&
+    (value.profileRevision === undefined
+      || (typeof value.profileRevision === "number" && Number.isInteger(value.profileRevision) && value.profileRevision >= 1)) &&
     (value.dedicatedWorkspace === undefined || isDedicatedWorkspaceMarker(value.dedicatedWorkspace)) &&
     isString(value.createdAt) &&
     isString(value.updatedAt)
