@@ -39,6 +39,19 @@ describe("focus ring tokens", () => {
     expect(selectors.some((sel) => sel.startsWith("textarea"))).toBe(true);
   });
 
+  it("global field ring excludes invalid fields, which paint a danger focus ring", () => {
+    const css = readFileSync(join(SRC, "style.css"), "utf8");
+    const rule = css.match(/([^{}]*)\{[^}]*box-shadow: 0 0 0 2px rgb\(var\(--c-accent\)\) !important;/);
+    const selectors = rule![1].replace(/\/\*[\s\S]*?\*\//g, "").split(",").map((x) => x.trim()).filter(Boolean);
+    for (const sel of selectors) expect(sel).toContain(':not([aria-invalid="true"])');
+    // Every aria-invalid field in src must carry its own danger focus ring.
+    const missing = walk(SRC).filter((f) => f.endsWith(".vue")).flatMap((f) =>
+      [...readFileSync(f, "utf8").matchAll(/<(?:input|textarea|select)\b[^>]*aria-invalid[^>]*>/g)]
+        .filter((m) => !m[0].includes("focus-visible:ring-danger"))
+        .map(() => f));
+    expect(missing).toEqual([]);
+  });
+
   it("transparent fields inside ringed containers opt out via data-ring=\"container\"", () => {
     const composer = readFileSync(join(SRC, "components/ConversationComposer.vue"), "utf8");
     const textarea = composer.match(/<textarea[\s\S]*?>/)?.[0] ?? "";

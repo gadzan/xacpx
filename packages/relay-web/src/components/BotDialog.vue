@@ -151,10 +151,12 @@ async function loadCapabilities(probe = false): Promise<void> {
     });
   } else {
     // No registered workspace to probe: the dedicated workspace does not exist
-    // yet, so there is nothing to discover against.
+    // yet, so there is nothing to discover against. One merged hint serves as
+    // both reason and recovery; ModelPicker renders identical text once.
+    const hint = t("bot.fields.workspacePreviewHint");
     next = unsupportedCapability(
-      { code: "probe-unavailable", message: t("bot.fields.workspacePreviewUnavailable") },
-      t("bot.fields.workspacePreviewManual"),
+      { code: "probe-unavailable", message: hint },
+      hint,
       { fetchedAt: new Date().toISOString() },
     );
   }
@@ -503,7 +505,7 @@ function describeSubmitError(err: unknown): string {
             :aria-invalid="nameNeedsWorkspaceChars ? 'true' : undefined"
             :aria-describedby="nameNeedsWorkspaceChars ? 'bot-name-error' : undefined"
             class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
-            :class="nameNeedsWorkspaceChars ? 'ring-1 ring-danger' : ''"
+            :class="nameNeedsWorkspaceChars ? 'ring-1 ring-danger focus-visible:ring-2 focus-visible:ring-danger' : ''"
           />
           <p v-if="nameNeedsWorkspaceChars" id="bot-name-error" data-test="bot-name-error" role="alert" class="mt-1 text-xs text-danger">
             {{ $t("bot.validation.dedicatedWorkspaceNameInvalid") }}
@@ -592,6 +594,7 @@ function describeSubmitError(err: unknown): string {
 
         <ModelPicker
           audience="bot"
+          :show-applies-later="isEditing"
           :state="capability"
           :model="model"
           :effort="effort"

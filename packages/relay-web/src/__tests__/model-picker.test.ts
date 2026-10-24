@@ -55,6 +55,24 @@ describe("ModelPicker", () => {
     expect(wrapper.find('[data-test="model-picker-fetch"]').exists()).toBe(true);
   });
 
+  it("renders a recovery identical to the reason only once", () => {
+    const state = unsupportedCapability(
+      { code: "probe-unavailable", message: "Enter a model now." },
+      "Enter a model now.",
+      { fetchedAt: FETCHED },
+    );
+    const wrapper = mountPicker(state);
+    expect(wrapper.get('[data-test="model-picker-reason"]').text()).toBe("Enter a model now.");
+    expect(wrapper.find('[data-test="model-picker-recovery"]').exists()).toBe(false);
+  });
+
+  it("hides the bot applies-later note when showAppliesLater is false", async () => {
+    const wrapper = mountPicker(readyCapability("cache", [{ modelId: "m" }], { fetchedAt: FETCHED }));
+    expect(wrapper.find('[data-test="model-picker-applies-later"]').exists()).toBe(true);
+    await wrapper.setProps({ showAppliesLater: false });
+    expect(wrapper.find('[data-test="model-picker-applies-later"]').exists()).toBe(false);
+  });
+
   it("shows unsupported and needs-setup with a reason, and keeps suggestions unmarked as adapter models", async () => {
     const unsupported = unsupportedCapability(
       { code: "adapter-cannot-enumerate", message: "this adapter cannot list models" },

@@ -255,7 +255,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("close")).toBeTruthy();
     });
 
-    function mountCreateDialog(opts: { dedicated: boolean; createImpl?: () => Promise<never> }) {
+    function mountCreateDialog(opts: { dedicated: boolean; createImpl?: () => Promise<never>; workspaces?: Array<{ name: string; cwd: string }> }) {
       const instances = useInstancesStore();
       instances.instances = [
         {
@@ -265,7 +265,7 @@ describe("Direct Bot Components", () => {
           lastSeenAt: null,
           sessions: [],
           agents: [{ name: "codex", driver: "codex" }],
-          workspaces: [{ name: "repo", cwd: "/repo" }],
+          workspaces: opts.workspaces ?? [{ name: "repo", cwd: "/repo" }],
           agentCatalog: [],
           ...(opts.dedicated ? { capabilities: [RELAY_CAPABILITIES.botsDedicatedWorkspaceV1] } : { capabilities: [] }),
         } as never,
@@ -382,6 +382,36 @@ describe("Direct Bot Components", () => {
       expect(createSpy.mock.calls[0]![1]).toMatchObject({ name: botName, workspace: "repo" });
     });
 
+    it("New workspace with nothing to preview shows a single model hint", async () => {
+      const { wrapper } = mountCreateDialog({ dedicated: true, workspaces: [] });
+      await flushPromises();
+      const hints = wrapper.findAll('[data-test="model-picker-reason"], [data-test="model-picker-recovery"], [data-test="model-picker-applies-later"]');
+      expect(hints).toHaveLength(1);
+      expect(hints[0]!.attributes("data-test")).toBe("model-picker-reason");
+      expect(hints[0]!.text()).toBe(i18n.global.t("bot.fields.workspacePreviewHint"));
+    });
+
+    it("focused name in error state uses the danger ring, not the default focus ring", async () => {
+      const { wrapper } = mountCreateDialog({ dedicated: true });
+      await flushPromises();
+      await wrapper.find("#bot-name").setValue("!!!");
+      await wrapper.find("#bot-name").trigger("focus");
+      await flushPromises();
+      const input = wrapper.find("#bot-name");
+      expect(input.attributes("aria-invalid")).toBe("true");
+      const classes = input.classes();
+      // Unfocused error styling is unchanged.
+      expect(classes).toEqual(expect.arrayContaining(["ring-1", "ring-danger"]));
+      // Focused: danger ring instead of the accent focus ring.
+      expect(classes).toEqual(expect.arrayContaining(["focus-visible:ring-2", "focus-visible:ring-danger"]));
+      expect(classes.some((c) => c.includes("ring-accent"))).toBe(false);
+
+      await wrapper.find("#bot-name").setValue("Reviewer");
+      await flushPromises();
+      expect(wrapper.find("#bot-name").attributes("aria-invalid")).toBeUndefined();
+      expect(wrapper.find("#bot-name").classes().some((c) => c.includes("ring-danger"))).toBe(false);
+    });
+
     it("an all-CJK name with New workspace has no error and submits without workspace", async () => {
       const { wrapper, createSpy, createButton } = mountCreateDialog({ dedicated: true });
       await flushPromises();
@@ -465,6 +495,8 @@ describe("Direct Bot Components", () => {
       expect((wrapper.findAll("button").find((b) => b.text().includes("Save"))!.element as HTMLButtonElement).disabled).toBe(false);
       expect((wrapper.find("#bot-name").element as HTMLInputElement).value).toBe("Existing Bot");
       expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
+      // Editing an existing Bot keeps the "applies to later runs" note.
+      expect(wrapper.find('[data-test="model-picker-applies-later"]').exists()).toBe(true);
       await wrapper.find("#bot-workspace").trigger("click");
       expect(wrapper.findAll("[data-value]").map((option) => option.attributes("data-value"))).toEqual(["repo"]);
       await wrapper.find("#bot-workspace").trigger("click");

@@ -12,11 +12,14 @@ const props = withDefaults(defineProps<{
   /** Kept when a refresh cannot fetch efforts. */
   carriedEfforts?: Array<{ id: string; name: string }>;
   audience?: "bot" | "session";
+  /** Bot audience only: the "applies to later runs" note. Off when creating, since a new Bot has no runs. */
+  showAppliesLater?: boolean;
   showEffort?: boolean;
   modelTestId?: string;
   listTestId?: string;
 }>(), {
   audience: "session",
+  showAppliesLater: true,
   showEffort: true,
   modelTestId: "model-picker-custom",
   listTestId: "model-picker-list",
@@ -86,8 +89,9 @@ const reason = computed(() => {
 });
 const recovery = computed(() => {
   const state = settled.value;
-  if (!state || state.status === "error") return "";
-  return state.status === "ready" ? "" : state.recovery;
+  if (!state || state.status === "error" || state.status === "ready") return "";
+  // A recovery that repeats the reason would render the same hint twice.
+  return state.recovery === reason.value ? "" : state.recovery;
 });
 const canFetch = computed(() => {
   const state = settled.value;
@@ -133,7 +137,7 @@ function onKeydown(event: KeyboardEvent): void {
       </button>
     </div>
     <p data-test="model-picker-effect" class="text-xs text-fg-muted">{{ effectText }}</p>
-    <p v-if="audience === 'bot'" class="text-xs text-fg-muted">{{ t("capability.appliesLater") }}</p>
+    <p v-if="audience === 'bot' && showAppliesLater" data-test="model-picker-applies-later" class="text-xs text-fg-muted">{{ t("capability.appliesLater") }}</p>
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <div class="relative">
         <label class="mb-1.5 block text-xs font-medium text-fg-muted" :for="modelTestId">{{ t("capability.model") }}</label>
