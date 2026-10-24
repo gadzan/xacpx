@@ -508,6 +508,31 @@ describe("GroupDispatchRow", () => {
     cancelled.unmount();
   });
 
+  it("drops the card's stop all for a lone dispatch on a core without scoped cancellation", async () => {
+    const wrapper = row(["running"], ["bot_a"], { supportsCancelMember: false });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    // The pill below the row offers the same round-level stop, so the card
+    // must not offer it a second time.
+    expect(wrapper.find('[data-test="group-dispatch-stop-all"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("keeps the card's stop all for a lone dispatch on a core with scoped cancellation", async () => {
+    const wrapper = row(["running"], ["bot_a"], { supportsCancelMember: true });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    // The pill stops the leader alone there, so the round-level stop stays
+    // in the card.
+    expect(wrapper.get('[data-test="group-dispatch-stop-all"]').text()).toBe("Stop all");
+    wrapper.unmount();
+  });
+
+  it("keeps the card's stop all for a fan-out round on a core without scoped cancellation", async () => {
+    const wrapper = row(["running", "queued"], ["bot_a", "bot_b"], { supportsCancelMember: false });
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.get('[data-test="group-dispatch-stop-all"]').text()).toBe("Stop all");
+    wrapper.unmount();
+  });
+
   it("asks for a round-level stop without jumping or collapsing the card", async () => {
     const wrapper = row(["running", "queued"], ["bot_a", "bot_b"]);
     const trigger = wrapper.get('[data-test="group-dispatch-row"]');
@@ -1489,6 +1514,49 @@ describe("GroupTranscript dispatch aggregation", () => {
     settleConfirm(true);
     await flushPromises();
     expect(cancel).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("keeps the round-level stop in the pill only for a lone dispatch on an old core", async () => {
+    seedTranscript(
+      [handoffMessage(1)],
+      [
+        memberTurn("turn_a", "bot_a", "running"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    // The pill offers the round-level stop, so the expanded card must not
+    // offer the same action a second time.
+    const pill = wrapper.get('[data-test="group-dispatch-stop-leader"]');
+    expect(pill.text()).toContain("Stop all");
+
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.find('[data-test="group-dispatch-stop-all"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("keeps the round-level stop in the card for a lone dispatch on a new core", async () => {
+    seedTranscript(
+      [handoffMessage(1)],
+      [
+        memberTurn("turn_a", "bot_a", "running"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+      ],
+      { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    // The pill stops the leader alone here, so the round-level stop stays in
+    // the card.
+    const pill = wrapper.get('[data-test="group-dispatch-stop-leader"]');
+    expect(pill.text()).toContain("Stop Reviewer");
+
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    expect(wrapper.get('[data-test="group-dispatch-stop-all"]').text()).toBe("Stop all");
     wrapper.unmount();
   });
 });

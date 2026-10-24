@@ -60,6 +60,25 @@ const isRunning = computed(() => summary.value === "running");
 const isDone = computed(() => summary.value === "done");
 const isCancelled = computed(() => summary.value === "cancelled");
 
+/**
+ * The round-level stop inside the expanded desktop card.
+ *
+ * A core without scoped member cancellation offers that stop through the
+ * pill below the row, which reads "stop all" there. With a lone dispatch the
+ * card's own button would be the same action a second time, so it is dropped
+ * and the pill stays the single place that offers it. A fan-out round keeps
+ * the card button: there it sits with the members it stops, and the pill
+ * stops the leader alone on a core that can scope the cancel.
+ *
+ * The mobile sheet keeps its own stop-all: the pill sits behind the sheet's
+ * modal backdrop, so it cannot be reached while the sheet is open.
+ */
+const showCardStopAll = computed(() => {
+  if (!props.presentation.capability.anyActive) return false;
+  const oldCore = !props.presentation.capability.canStopMember;
+  return !(oldCore && total.value === 1);
+});
+
 const runningText = computed(() => t("group.dispatch.running", { n: counts.value.running }));
 const queuedText = computed(() => t("group.dispatch.queued", { n: counts.value.queued }));
 const activeText = computed(() => {
@@ -363,7 +382,7 @@ function stopAll(): void {
           </button>
         </li>
       </ul>
-      <div v-if="presentation.capability.anyActive" class="mt-2 flex justify-end">
+      <div v-if="showCardStopAll" class="mt-2 flex justify-end">
         <button
           type="button"
           data-test="group-dispatch-stop-all"
