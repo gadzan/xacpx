@@ -231,25 +231,32 @@ function stopAll(): void {
       :aria-label="capsuleLabel"
       :aria-controls="isMobile ? sheetId : cardId"
       :aria-haspopup="isMobile ? 'dialog' : undefined"
-      class="flex min-w-0 items-center gap-2 rounded-lg bg-surface px-2.5 py-2 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      class="group/dispatch flex min-w-0 items-center gap-2 rounded-lg bg-surface px-2.5 py-2 text-left transition-colors hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       @click="toggle"
       @keydown.enter.prevent="toggle"
       @keydown.space.prevent="toggle"
       @keydown.esc="onEscapeKeydown"
     >
+      <!-- Avatar stack: solid surface-2 discs, each with a 2px ring in the
+           row's own background colour, so the overlap shows a gap of the row
+           colour instead of a seam. The row's hover changes its background,
+           so the disc and its ring swap with it: the ring always matches the
+           row background, the disc always stays distinct from it. The group
+           is named: an unnamed `group` on the enclosing transcript row would
+           also fire this swap when the pointer is elsewhere in that row. -->
       <div data-test="group-dispatch-avatars" class="flex shrink-0 items-center" aria-hidden="true">
         <span
           v-for="(avatar, index) in presentation.avatars.items"
           :key="avatar.memberTurnId"
-          :class="index > 0 ? '-ml-2' : ''"
-          class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface ring-2 ring-surface"
+          :class="index > 0 ? '-ml-1.5' : ''"
+          class="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2 ring-2 ring-surface group-hover/dispatch:bg-surface group-hover/dispatch:ring-surface-2"
         >
           <BotAvatar :avatar="avatar.avatar" :driver="avatar.driver" :name="avatar.name" :size="24" static />
         </span>
         <span
           v-if="presentation.avatars.overflow > 0"
           data-test="group-dispatch-overflow"
-          class="-ml-2 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-surface-2 text-[10px] font-medium text-fg-muted ring-2 ring-surface"
+          class="-ml-1.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-surface-2 text-[10px] font-medium text-fg-muted ring-2 ring-surface group-hover/dispatch:bg-surface group-hover/dispatch:ring-surface-2"
         >
           +{{ presentation.avatars.overflow }}
         </span>

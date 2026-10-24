@@ -603,7 +603,7 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
-  it("separates the stacked avatars with a surface ring", () => {
+  it("stacks the avatars as solid discs ringed in the row background colour", () => {
     const wrapper = row(
       ["completed", "completed", "completed", "completed", "completed"],
       ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"],
@@ -611,8 +611,44 @@ describe("GroupDispatchRow", () => {
     const avatars = Array.from(wrapper.get('[data-test="group-dispatch-avatars"]').element.children);
     expect(avatars).toHaveLength(5);
     for (const avatar of avatars) {
+      // A solid disc, so the stacked avatars read as circles and not as
+      // transparent silhouettes.
+      expect(avatar.classList.contains("bg-surface-2")).toBe(true);
+      expect(avatar.classList.contains("rounded-full")).toBe(true);
+      // The ring carries the row's own background colour, so the overlap
+      // shows a gap of row colour instead of a seam.
       expect(avatar.classList.contains("ring-2")).toBe(true);
       expect(avatar.classList.contains("ring-surface")).toBe(true);
+    }
+    wrapper.unmount();
+  });
+
+  it("keeps the disc and its ring swapped with the row background on hover", () => {
+    const wrapper = row(["completed", "completed"]);
+    // The hover group is named: the enclosing transcript row carries an
+    // unnamed `group`, and an unnamed swap would fire when the pointer is
+    // elsewhere in that row — the ring would then not match the row.
+    expect(wrapper.get('[data-test="group-dispatch-row"]').classes()).toContain("group/dispatch");
+    const avatars = Array.from(wrapper.get('[data-test="group-dispatch-avatars"]').element.children);
+    for (const avatar of avatars) {
+      // The row's hover background is surface-2, so the ring must become
+      // surface-2 (matching the row) and the disc must become surface.
+      expect(avatar.classList.contains("group-hover/dispatch:ring-surface-2")).toBe(true);
+      expect(avatar.classList.contains("group-hover/dispatch:bg-surface")).toBe(true);
+      expect(avatar.classList.contains("group-hover:ring-surface-2")).toBe(false);
+    }
+    wrapper.unmount();
+  });
+
+  it("overlaps the stacked avatars by 6px, the first one flush", () => {
+    const wrapper = row(
+      ["completed", "completed", "completed", "completed", "completed"],
+      ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e"],
+    );
+    const avatars = Array.from(wrapper.get('[data-test="group-dispatch-avatars"]').element.children);
+    expect(avatars[0]!.classList.contains("-ml-1.5")).toBe(false);
+    for (const avatar of avatars.slice(1)) {
+      expect(avatar.classList.contains("-ml-1.5")).toBe(true);
     }
     wrapper.unmount();
   });
@@ -628,9 +664,35 @@ describe("GroupDispatchRow", () => {
     wrapper.unmount();
   });
 
-  it("omits the overflow counter when every avatar fits", () => {
-    const wrapper = row(["completed", "completed"]);
+  it("counts every member past the limit in the overflow badge", () => {
+    const wrapper = row(
+      ["completed", "completed", "completed", "completed", "completed", "completed", "completed"],
+      ["bot_a", "bot_b", "bot_c", "bot_d", "bot_e", "bot_a", "bot_b"],
+    );
+    const overflow = wrapper.get('[data-test="group-dispatch-overflow"]');
+    expect(overflow.text()).toBe("+3");
+    // The badge is a disc of the same size as an avatar.
+    expect(overflow.classes()).toContain("h-6");
+    expect(overflow.classes()).toContain("w-6");
+    expect(overflow.classes()).toContain("rounded-full");
+    expect(overflow.classes()).toContain("bg-surface-2");
+    expect(overflow.classes()).toContain("ring-2");
+    expect(overflow.classes()).toContain("ring-surface");
+    // At most four avatars are drawn; the rest only live in the badge.
+    expect(wrapper.get('[data-test="group-dispatch-avatars"]').element.children).toHaveLength(5);
+    wrapper.unmount();
+  });
+
+  it.each([
+    [1],
+    [2],
+    [3],
+    [GROUP_DISPATCH_AVATAR_LIMIT],
+  ] as const)("omits the overflow counter for %i avatars", (count) => {
+    const states = Array.from({ length: count }, () => "completed" as const);
+    const wrapper = row(states);
     expect(wrapper.find('[data-test="group-dispatch-overflow"]').exists()).toBe(false);
+    expect(wrapper.get('[data-test="group-dispatch-avatars"]').element.children).toHaveLength(count);
     wrapper.unmount();
   });
 

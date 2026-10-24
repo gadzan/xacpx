@@ -1041,6 +1041,17 @@ Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌�
 durable MemberTurn 与消息，不写 activeRun、不触发服务端调度。项管自己被停止时，聚合状态
 仍按各成员已证明的结果计算，另输出 `leaderStopped` 供上层显示停止说明。
 
+折叠行左侧的叠放头像是实心圆盘（`bg-surface-2`），每个圆盘加 `ring-2`，描边颜色取所在行
+的背景色（`ring-surface`）：叠放处因此出现一圈与行背景同色的描边，头像之间不会连成一片。
+相邻头像重叠 6px（`-ml-1.5`，第一个不偏移）。行 hover 时背景从 `bg-surface` 变为
+`bg-surface-2`，所以圆盘与描边同步互换（`group-hover/dispatch:bg-surface` +
+`group-hover/dispatch:ring-surface-2`）：描边始终等于行背景色，圆盘始终与行背景可区分，
+亮色与暗色主题都成立。hover 组是具名的（`group/dispatch`）：派发行嵌在带无名 `group`
+的消息行里，用无名 `group-hover` 会在鼠标停在该行别处时也互换，描边就不再等于行背景色。
+
+最多显示 4 个头像（`GROUP_DISPATCH_AVATAR_LIMIT`），超出部分折叠成一个同尺寸圆形徽标
+「+N」，N 是被折叠的成员数（`data-test="group-dispatch-overflow"`）。
+
 一轮只有一个成员时同样走聚合行，不再有单独的单条派发条目：折叠行标题按成员数分两种
 措辞，多个成员写「派发给 N 个 Bot」/`Sent to N bots`，单个成员直接点名
 「派发给 {name}」/`Sent to {name}`（`group.dispatch.sentToOne`）。状态计数与 ■ 停止按钮
