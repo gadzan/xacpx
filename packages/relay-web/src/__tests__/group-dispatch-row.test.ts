@@ -1045,6 +1045,45 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 
+  it("shows the leader as stopped after a whole-round stop that leaves no reason on its turn", async () => {
+    i18n.global.locale.value = "zh-CN";
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        // 全部停止 cancels the run: the turns are cancelled, but the store
+        // writes the reason on the run only, not on the leader's turn.
+        memberTurn("turn_a", "bot_a", "cancelled"),
+        memberTurn("turn_member_1", "bot_b", "cancelled"),
+        memberTurn("turn_member_2", "bot_c", "cancelled"),
+      ],
+    );
+    groups.activeRun = { ...groups.activeRun!, state: "cancelled", completionReason: "human-cancelled" };
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
+    expect(leaderRow.get('[data-test="group-bubble-status"]').text()).toBe("⊘ 已停止");
+    const label = leaderRow.get('[data-test="agent-thinking-bubble"]').attributes("aria-label") ?? "";
+    expect(label.endsWith("— 已停止")).toBe(true);
+    expect(label).not.toContain("已取消");
+    wrapper.unmount();
+  });
+
+  it("keeps a cancelled leader without a stop reason as cancelled while its run is not cancelled", async () => {
+    seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "cancelled"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+    );
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+    const leaderRow = wrapper.get('[data-member-turn-id="turn_a"]');
+    expect(leaderRow.get('[data-test="group-bubble-status"]').text()).toBe("Cancelled");
+    wrapper.unmount();
+  });
+
   it("names the stop in the wake turn's bubble when the wake carries the stop reason", async () => {
     seedTranscript(
       [handoffMessage(1), handoffMessage(2)],

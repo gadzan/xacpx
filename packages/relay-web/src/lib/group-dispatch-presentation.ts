@@ -27,6 +27,12 @@ export interface GroupDispatchLeader {
   /** Set when the user stopped the leader itself. */
   cancellationReason?: "human-cancelled";
   /**
+   * The run that owns the round was cancelled. A whole-round stop cancels the
+   * run and its turns without writing a reason on the leader's own turn, so
+   * a cancelled leader (or wake) in a cancelled run is a stopped leader too.
+   */
+  runCancelled?: boolean;
+  /**
    * The wake turn the runtime creates for this leader once its own handoffs
    * settle. Absent when the wake has not been inserted yet: the dispatch is
    * still unsettled.
@@ -313,8 +319,11 @@ export function presentGroupDispatch(input: GroupDispatchPresentationInput): Gro
     members,
     counts,
     summary,
-    // Stop evidence on EITHER side: the leader's own turn or its wake.
-    leaderStopped: leaderCancellationReason !== undefined || wake?.cancellationReason !== undefined,
+    // Stop evidence on EITHER side: the leader's own turn or its wake, or —
+    // after a whole-round stop, which leaves no reason on the turns — a
+    // cancelled leader or wake inside a cancelled run.
+    leaderStopped: leaderCancellationReason !== undefined || wake?.cancellationReason !== undefined
+      || (input.leader.runCancelled === true && (leaderState === "cancelled" || wake?.state === "cancelled")),
     capability: {
       canStopMember: input.supportsCancelMember,
       // Scoped leader stop needs BOTH the core capability and a durable

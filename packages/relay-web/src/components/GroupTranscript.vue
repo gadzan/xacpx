@@ -167,6 +167,8 @@ const dispatchGroups = computed(() => {
     anchorId: string;
     /** The leader's own turns: the dispatching turn and its wake turn. */
     leaderTurns: MemberTurnSummaryDto[];
+    /** The round's run was cancelled (a whole-round stop). */
+    runCancelled: boolean;
     presentation: GroupDispatchPresentation;
   }[] = [];
   for (const handoffs of byLeader.values()) {
@@ -190,6 +192,7 @@ const dispatchGroups = computed(() => {
     const wakeTurn = (record?.memberTurns ?? []).find(
       (turn) => turn.followupSenderMemberTurnId === anchor.handoff!.senderMemberTurnId,
     );
+    const runCancelled = record?.run.state === "cancelled";
     const presentation = presentGroupDispatch({
       leader: {
         botId: anchor.senderBotId ?? "",
@@ -202,6 +205,9 @@ const dispatchGroups = computed(() => {
         // outcomes. The core reports this on the DTO; its own state may still
         // read `completed`.
         ...(leaderTurn?.cancellationReason ? { cancellationReason: leaderTurn.cancellationReason } : {}),
+        // A whole-round stop cancels the run but writes no reason on the
+        // leader's turn: the run's own state is the stop evidence then.
+        ...(runCancelled ? { runCancelled: true } : {}),
         ...(wakeTurn ? { wake: wakeTurn } : {}),
       },
       dispatches: handoffs.map((message) => ({
@@ -232,6 +238,7 @@ const dispatchGroups = computed(() => {
       handoffs,
       anchorId: leaderMessage.length === 1 ? leaderMessage[0]!.id : anchor.id,
       leaderTurns: [leaderTurn, wakeTurn].filter((turn): turn is MemberTurnSummaryDto => !!turn),
+      runCancelled,
       presentation,
     });
   }
@@ -256,7 +263,9 @@ function hasLeaderRow(turnId: string): boolean {
  *
  * The stop is named once, in the leader's own bubble: the leader turn that
  * carries the durable stop evidence and owns a row of its own. A turn the
- * human cancelled reads "stopped" instead of "cancelled"; a leader that
+ * human cancelled — on its own, or with the whole round, which cancels the
+ * run without a reason on the turn — reads "stopped" instead of
+ * "cancelled"; a leader that
  * only carries the stop intent reads "stopped" instead of its own state.
  * A leader without any row has no status slot, so the stop stays unnamed
  * there — a second line below the message would say it twice.
@@ -265,8 +274,11 @@ const stoppedLeaderTurnIds = computed<Set<string>>(() => {
   const ids = new Set<string>();
   for (const group of dispatchGroups.value) {
     if (!group.presentation.leaderStopped) continue;
+    // A whole-round stop leaves no reason on the turns: in a cancelled run,
+    // the cancelled turn itself is the evidence.
     const evidence = group.leaderTurns.filter((turn) =>
-      turn.cancellationReason === "human-cancelled" && hasLeaderRow(turn.id));
+      (turn.cancellationReason === "human-cancelled" || (group.runCancelled && turn.state === "cancelled"))
+      && hasLeaderRow(turn.id));
     // The cancelled turn first: it is the one whose own state the stop
     // replaces. Then the dispatch turn, which carries the stop intent.
     const turn = evidence.find((candidate) => candidate.state === "cancelled") ?? evidence[0];

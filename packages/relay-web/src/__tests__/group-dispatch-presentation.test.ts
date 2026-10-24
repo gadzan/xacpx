@@ -378,6 +378,28 @@ describe("presentGroupDispatch", () => {
     expect(result.leaderStopped).toBe(true);
   });
 
+  it("reports a cancelled leader as stopped when its run was cancelled", () => {
+    const stopped = presentGroupDispatch(present({
+      leader: leader({ state: "cancelled", runCancelled: true }),
+      dispatches: [entry("bot_a", "cancelled")],
+    }));
+    expect(stopped.leaderStopped).toBe(true);
+
+    // Without the run-level cancel, a reasonless cancelled leader is not a stop.
+    const cancelled = presentGroupDispatch(present({
+      leader: leader({ state: "cancelled" }),
+      dispatches: [entry("bot_a", "cancelled")],
+    }));
+    expect(cancelled.leaderStopped).toBe(false);
+
+    // A cancelled run alone does not stop a leader that finished its turn.
+    const finished = presentGroupDispatch(present({
+      leader: leader({ state: "completed", runCancelled: true }),
+      dispatches: [entry("bot_a", "cancelled")],
+    }));
+    expect(finished.leaderStopped).toBe(false);
+  });
+
   it("counts members whose outcome is unknown", () => {
     const result = presentGroupDispatch(present({
       dispatches: [entry("bot_a", "completed"), entry("bot_b", "indeterminate")],
