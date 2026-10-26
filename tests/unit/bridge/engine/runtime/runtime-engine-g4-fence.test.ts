@@ -2,6 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 
 import { RuntimeEngine, type EngineSessionInput } from "../../../../../src/bridge/engine/runtime-engine";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
@@ -105,6 +106,45 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
       await expect(manager.assertOwnershipQuiescent("logical-1", "physical-active")).rejects.toThrow(
         WorkerTeardownPendingError,
       );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("POSIX: a stale owned fence with a dead pid discharges and unblocks hard delete", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      // A child that exits immediately, then is reaped: its pid is provably gone.
+      const deadPid = await new Promise<number>((resolve, reject) => {
+        const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+        const pid = child.pid;
+        if (pid === undefined) { reject(new Error("no child pid")); return; }
+        child.on("exit", () => resolve(pid));
+        child.on("error", reject);
+      });
+      const fence = new RuntimeWorkerFence(fenceDir);
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-stale",
+        generation: "gen-stale",
+        pid: deadPid,
+        creationDate: null,
+        bootstrapVerified: false,
+        phase: "owned",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      });
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: { platform: "linux" } });
+      await expect(manager.assertOwnershipQuiescent("logical-stale", "physical-stale", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).resolves.toBeUndefined();
+      // The stale fence is retired off disk, not just skipped in memory.
+      expect((await fence.read("physical-stale")).kind).toBe("absent");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

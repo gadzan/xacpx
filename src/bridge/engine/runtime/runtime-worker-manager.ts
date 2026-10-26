@@ -206,7 +206,7 @@ export class RuntimeWorkerManager {
   async assertOwnershipQuiescent(
     logicalWorkerKey: string,
     physicalFenceKey: string,
-    options: { allowDeleting?: boolean } = {},
+    options: { allowDeleting?: boolean; selfDischargeWaitMs?: number } = {},
   ): Promise<void> {
     const worker = this.workersByKey.get(logicalWorkerKey);
     if (worker && (worker.alive || worker.lifecycle !== "stopped")) {
@@ -238,7 +238,9 @@ export class RuntimeWorkerManager {
       }
       if (read.record.phase === "discharged") {
         if (read.record.jobName) {
-          await this.dischargeStaleFence(physicalFenceKey);
+          await this.dischargeStaleFence(physicalFenceKey, {
+            selfDischargeWaitMs: options.selfDischargeWaitMs,
+          });
           return;
         }
         try {
@@ -248,9 +250,17 @@ export class RuntimeWorkerManager {
         }
         return;
       }
-      throw new WorkerTeardownPendingError(
-        `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") is present and not discharged (phase: ${read.record.phase}, pid: ${read.record.pid})`,
-      );
+      // A live hard delete / logical release must not wait out the owner's
+      // self-discharge window inside a polling quiescence loop: the owner may
+      // prove gone immediately (POSIX process-group ESRCH, or a Job whose
+      // containment already drained). Reuse the spawn path's discharge probe:
+      // a proven-gone owner is retired and quiescence succeeds, anything else
+      // keeps the original refusal (including when live, unverifiable, or
+      // still converging).
+      await this.dischargeStaleFence(physicalFenceKey, {
+        selfDischargeWaitMs: options.selfDischargeWaitMs ?? 0,
+      });
+      return;
     }
   }
 
@@ -739,7 +749,7 @@ export class RuntimeWorkerManager {
     return next;
   }
 
-  private async dischargeStaleFence(logicalSessionId: string): Promise<void> {
+  private async dischargeStaleFence(logicalSessionId: string, opts?: { selfDischargeWaitMs?: number }): Promise<void> {
     const fence = this.fence();
     if (!fence) return;
     // Round 30 Blocking 1: only a PROVEN absence skips the fence check.
@@ -786,7 +796,7 @@ export class RuntimeWorkerManager {
           return "unknown";
         }
       },
-      selfDischargeWaitMs: deps?.selfDischargeWaitMs,
+      selfDischargeWaitMs: opts?.selfDischargeWaitMs ?? deps?.selfDischargeWaitMs,
       readBack: async () => await fence.read(logicalSessionId),
       markDischarged: async (current, from) => {
         await this.enqueueFenceWrite(logicalSessionId, () =>
