@@ -170,9 +170,28 @@ describe("projectGroupTranscript", () => {
     });
     const activities = items.filter((item) => item.kind === "member-activity");
     expect(activities).toHaveLength(1);
-    expect((activities[0] as { memberTurn: MemberTurnSummaryDto }).memberTurn.id).toBe("t1");
-    // It sits directly after the owning human request.
+    expect(activities[0]).toMatchObject({ memberTurn: { id: "t1" } });
+    // The run has no message past its request, so the row closes the block.
     expect(items[1]?.kind).toBe("member-activity");
+  });
+
+  it("keeps a running member below what the leader said after dispatching it", () => {
+    const rec = record(run("r1", { state: "running" }), [
+      turn("t0", "r1", "bot_lead", { state: "completed" }),
+      turn("t1", "r1", "bot_a", { state: "running", memberIndex: 1 }),
+    ]);
+    const items = projectGroupTranscript({
+      messages: [
+        message("req_msg", 1, { runId: "r1" }),
+        message("dispatch", 2, {
+          role: "bot", runId: "r1", senderBotId: "bot_lead", promptRequestId: "src_t0", content: "dispatched",
+        }),
+      ],
+      runs: { r1: rec },
+    });
+    // Anchoring on the request would float the running member above the leader.
+    expect(items.map((item) => (item.kind === "message" ? item.message.id : item.kind)))
+      .toEqual(["req_msg", "dispatch", "member-activity"]);
   });
 
   it("renders exactly one neutral routing entry for a zero-member run", () => {
@@ -291,29 +310,31 @@ describe("projectGroupTranscript", () => {
     expect(items[2]).toMatchObject({ requestMessageId: undefined, explanation: "request-mismatch" });
   });
 
-  it("retains orphan activity without assigning the run's first visible message as its request", () => {
+  it("retains orphan activity at the end of its run's loaded messages", () => {
     const rec = record(run("r1"), [turn("t1", "r1", "bot_a")]);
     const items = projectGroupTranscript({
       messages: [message("first-visible", 2, { role: "system", runId: "r1" }), message("nearby", 3)],
       runs: { r1: rec },
     });
-    expect(items.map((item) => item.kind)).toEqual(["message", "message", "member-activity"]);
-    expect(items[2]).toMatchObject({ requestMessageId: undefined, explanation: "missing-request" });
+    expect(items.map((item) => item.kind)).toEqual(["message", "member-activity", "message"]);
+    expect(items[1]).toMatchObject({ requestMessageId: undefined, explanation: "missing-request" });
   });
 
-  it("waits for the exact request rather than flushing activity at an earlier run message", () => {
+  it("closes the run's block without borrowing the request as a placement anchor", () => {
     const rec = record(run("r1"), [turn("t1", "r1", "bot_a")]);
     const items = projectGroupTranscript({
-      messages: [message("earlier", 1, { role: "system", runId: "r1" }), message("req_msg", 2), message("later", 3)],
+      messages: [message("earlier", 1, { role: "system", runId: "r1" }),
+        message("req_msg", 2, { runId: "r1" }), message("later", 3, { runId: "r1" })],
       runs: { r1: rec },
     });
-    expect(items.map((item) => item.kind)).toEqual(["message", "message", "member-activity", "message"]);
-    expect(items[2]).toMatchObject({ requestMessageId: "req_msg", explanation: undefined });
+    expect(items.map((item) => item.kind)).toEqual(["message", "message", "message", "member-activity"]);
+    // The exact request still labels the row's provenance.
+    expect(items[3]).toMatchObject({ requestMessageId: "req_msg", explanation: undefined });
   });
 
   it("retains one terminal routing entry per zero-member run with independent requests", () => {
     const items = projectGroupTranscript({
-      messages: [message("first-request", 1), message("second-request", 2)],
+      messages: [message("first-request", 1, { runId: "old" }), message("second-request", 2, { runId: "current" })],
       runs: {
         old: record(run("old", { requestMessageId: "first-request", mode: "automatic", state: "failed" }), []),
         current: record(run("current", { requestMessageId: "second-request", mode: "automatic", state: "waiting-human" }), []),
