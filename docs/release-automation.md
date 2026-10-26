@@ -155,10 +155,13 @@ curl -s https://registry.npmjs.org/-/package/@ganglion%2Fxacpx-relay/dist-tags
 
 `publish` refuses to run when the modified paths include anything outside the
 set this tool owns, so unrelated work in progress cannot be swept into the
-release commit. It also drops build-only churn in `packages/relay-protocol/dist`
-when protocol is not part of the release — the artifact gate rebuilds that file
-and bun's bundler sometimes renames a local, producing a diff with no semantic
-content.
+release commit. That set includes each rmux-bridge platform manifest under
+`platform-packages/` — `apply` rewrites all five from channel-relay's version —
+but nothing else inside those directories, so an edit to a shipped binary,
+checksum or README still stops a release. It also drops build-only churn in
+`packages/relay-protocol/dist` when protocol is not part of the release — the
+artifact gate rebuilds that file and bun's bundler sometimes renames a local,
+producing a diff with no semantic content.
 
 A wave is confirmed before the next one starts. `publish` polls that wave's
 packages together — their publishes run in parallel, so serialising the polls
@@ -280,3 +283,39 @@ release id with no entry in `RELEASE_ARTIFACTS` falls back to the unscoped gate,
 because an artifact that cannot be described cannot be assumed unchanged.
 
 `--skip-gates` exists only to recover from a tree already proven green.
+
+## Running the tool on Windows
+
+The script is plain Node and runs unchanged on Linux, macOS and Windows. Three
+things it must not assume about the host, all of which have broken a release:
+
+**npm is not an executable named `npm` everywhere.** It is a shell script on
+POSIX and `npm.cmd` on Windows. `execFileSync("npm", …)` therefore fails with
+`ENOENT` on Windows (nothing by that bare name is on `PATH`) and `EINVAL` for
+`npm.cmd` (Node refuses to spawn a `.cmd` without a shell), and `shell: true`
+would concatenate the arguments unescaped. npm ships as JavaScript next to the
+running `node`, so the tool spawns
+`<dirname process.execPath>/node_modules/npm/bin/npm-cli.js` with
+`process.execPath`: one code path on all three platforms, no `PATH` lookup, no
+shell. If that entry is missing the step fails with the path it looked for
+rather than an opaque `spawnSync` error.
+
+**Line endings are not LF on every checkout.** `CHANGELOG.md` and `bun.lock` are
+committed with LF, but Windows checks them out with CRLF under the default
+`core.autocrlf=true`. `spliceChangelog` normalises to LF before parsing, so the
+header test and every section boundary hold either way, and it writes LF back —
+the format the file is committed in. `bun.lock` needs no normalisation: its
+block terminator is searched as `"\n    },"`, which a CRLF file still contains.
+
+**`gh` has to be new enough.** `publish` reads workflow state through
+`gh run list --json` / `gh run view --json`, which older releases (2.3.0 and
+before, still shipped by some package managers) reject with
+`unknown flag: --json`. The release itself still completes: the tag is pushed
+and the registry is polled, but each tag's workflow is no longer awaited, so
+waves can be reported unconfirmed while their runs are merely still going. Check
+`gh --version` before releasing, or watch `gh run list` alongside.
+
+Platform packages ship as five directories under `platform-packages/`, one per
+OS/arch. `apply` bumps all five manifests to channel-relay's version, so they
+belong to the tool and ride into the release commit; `publish` sweeps them
+without a separate commit. Nothing else inside those directories is owned.

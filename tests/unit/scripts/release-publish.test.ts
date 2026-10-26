@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import * as releaseLib from "../../../scripts/release-lib.mjs";
@@ -409,6 +409,7 @@ test("lock reconciliation restores missing bridge pins and check rejects drift",
       readFileSync: () => JSON.stringify(lock),
       writeFileSync: (_path: string, contents: string) => { lock = JSON.parse(contents); },
       execFileSync() {},
+      npm() {},
       reconcileBunLock() {},
       floorViolations: () => [],
       console: { log() {}, error: (message: string) => errors.push(message) },
@@ -426,4 +427,33 @@ test("lock reconciliation restores missing bridge pins and check rejects drift",
   expect(lock.packages[`node_modules/${prefix}linux-arm64`]?.resolved).toBeUndefined();
   expect(lock.packages["node_modules/unrelated"]).toEqual({ version: previousVersion });
   expect(api.cmdCheck()).toBe(0);
+});
+
+test("the bridge platform list matches the directories apply actually bumps", () => {
+  // `apply` rewrites every platform package manifest through
+  // sync-rmux-bridge-versions.mjs, and `publish` refuses any modified path it
+  // does not own. A platform directory added to the sync script but missing here
+  // makes the very next release refuse its own applied tree.
+  const onDisk = readdirSync(new URL("../../../platform-packages", import.meta.url))
+    .filter((entry) => entry.startsWith("xacpx-rmux-bridge-"))
+    .map((entry) => entry.replace("xacpx-rmux-bridge-", ""))
+    .sort();
+  const owned = source.slice(source.indexOf("const BRIDGE_PLATFORM_SUFFIXES = ["), source.indexOf("];", source.indexOf("const BRIDGE_PLATFORM_SUFFIXES = [")))
+    .match(/"([^"]+)"/g)!
+    .map((quoted) => quoted.slice(1, -1))
+    .sort();
+
+  expect(owned).toEqual(onDisk);
+  for (const suffix of owned) {
+    expect(source).toContain(`platform-packages/xacpx-rmux-bridge-\${suffix}/package.json`);
+  }
+});
+
+test("npm is spawned through its CLI entry, not a platform-specific executable name", () => {
+  // `npm` is a shell script on POSIX and `npm.cmd` on Windows; Node refuses to
+  // execFileSync a .cmd without a shell and cannot resolve a bare "npm" there at
+  // all, so both spellings break one platform. Only the JS entry is portable.
+  expect(source).not.toContain('execFileSync("npm"');
+  expect(source).toContain('join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")');
+  expect(source).toContain("execFileSync(process.execPath, [npmCliPath(), ...args]");
 });

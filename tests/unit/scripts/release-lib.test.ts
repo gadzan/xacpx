@@ -587,3 +587,37 @@ test("spliceChangelog with only [Unreleased] and one release leaves no stray bla
   expect(next).toBe("# Changelog\n## [relay 0.14.12-beta.5] - 2026-10-16\n\n### Fixed\n\n- Only entry.\n");
   expect(next).not.toMatch(/\n{3,}/);
 });
+
+test("spliceChangelog accepts a CRLF checkout and writes LF", () => {
+  // Windows checks this file out with CRLF under the default core.autocrlf=true.
+  // Every offset in the splice is written against `\n`, so the header test used
+  // to throw and, past that, section boundaries landed on the wrong lines.
+  const lf = [
+    "# Changelog",
+    "## [Unreleased]",
+    "",
+    "### Fixed",
+    "",
+    "- Authored prose.",
+    "",
+    "## [relay 0.14.12-beta.4] - 2026-10-15",
+    "",
+    "- Previous release.",
+    "",
+  ].join("\n");
+  const next = spliceChangelog({
+    current: lf.replace(/\n/g, "\r\n"),
+    releases: [
+      { id: "core", from: "0.24.10-beta.3", to: "0.24.10-beta.4" },
+      { id: "relay", from: "0.14.12-beta.4", to: "0.14.12-beta.5" },
+    ],
+    date: "2026-10-16",
+    draft: "unused\n",
+  });
+
+  expect(next).not.toContain("\r");
+  expect(next).toContain("## [0.24.10-beta.4] - 2026-10-16");
+  expect(next).toContain("- Authored prose.");
+  expect(next.indexOf("## [0.24.10-beta.4]")).toBeLessThan(next.indexOf("## [relay 0.14.12-beta.5]"));
+  expect(next).toContain("- Previous release.");
+});
