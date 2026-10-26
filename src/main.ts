@@ -2311,25 +2311,17 @@ export async function buildApp(
         });
       },
     },
-    filesSettings: {
-      // Read the LIVE config, not the file: it is what `filesWriteEnabled()`
-      // gates on, so the switch always shows the value that is actually in force.
-      get: async () => ({ enabled: filesWriteEnabled(config), restartRequired: false }),
-      update: async (enabled) => {
-        return await configMutationMutex.run(async () => {
-          // Raw patch: only `files.writeEnabled` is touched, so a hand-edited
-          // config.json keeps every unrelated field. Publishing the result onto
-          // the live config object is what makes this a hot toggle — the gate
-          // reads that object on every fs/Git mutation.
-          const updated = await configStore.setRawValue(["files", "writeEnabled"], enabled);
-          publishLiveConfig(updated);
-          void logger.info("control.files.write_switch", "file write switch flipped", {
-            enabled,
-          });
-          return { enabled, restartRequired: false };
+    filesSettings: createFilesSettingsDep({
+      config,
+      configStore,
+      configMutationMutex,
+      publishLiveConfig,
+      onFlipped: (enabled) => {
+        void logger.info("control.files.write_switch", "file write switch flipped", {
+          enabled,
         });
       },
-    },
+    }),
     jev: {
       get: () => jevSettings.view(),
       update: async (patch) => {
@@ -2775,6 +2767,45 @@ export async function buildApp(
           .catch(() => {});
       }
       await logger.flush();
+    },
+  };
+}
+
+export interface FilesSettingsDep {
+  get(): Promise<{ enabled: boolean; restartRequired: false }>;
+  update(enabled: boolean): Promise<{ enabled: boolean; restartRequired: false }>;
+}
+
+/**
+ * The instance dialog's file-write switch. Extracted from `buildApp` so the
+ * hot-apply path is reachable from tests: a test that drives this factory fails
+ * if the `publishLiveConfig` call ever disappears, which is the whole reason the
+ * switch needs no restart.
+ *
+ * `get` reads the LIVE config rather than the file: it is what
+ * `filesWriteEnabled()` gates on, so the answer is the value actually in force.
+ * `update` patches only `files.writeEnabled` under the shared config mutation
+ * domain (the same one `reloadRuntimeConfig` and every other config write use),
+ * then publishes the parsed document onto the live config object the gate
+ * closes over.
+ */
+export function createFilesSettingsDep(deps: {
+  config: AppConfig;
+  configStore: Pick<ConfigStore, "setRawValue">;
+  configMutationMutex: Pick<ConfigMutationMutex, "run">;
+  publishLiveConfig: (updated: AppConfig) => void;
+  onFlipped?: (enabled: boolean) => void;
+}): FilesSettingsDep {
+  const { config, configStore, configMutationMutex, publishLiveConfig, onFlipped } = deps;
+  return {
+    get: async () => ({ enabled: filesWriteEnabled(config), restartRequired: false }),
+    update: async (enabled) => {
+      return await configMutationMutex.run(async () => {
+        const updated = await configStore.setRawValue(["files", "writeEnabled"], enabled);
+        publishLiveConfig(updated);
+        onFlipped?.(enabled);
+        return { enabled, restartRequired: false };
+      });
     },
   };
 }
