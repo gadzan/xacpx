@@ -258,6 +258,43 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
     }
   });
 
+  test("an admitted fence with a gone pid still refuses (may have adapter descendants)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-admitted",
+        generation: "gen-admitted",
+        pid: 424245,
+        creationDate: null,
+        bootstrapVerified: true,
+        phase: "admitted",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      });
+      // Even a proven-gone process group must not clear an admitted fence:
+      // the worker entered business RPCs, so adapter descendants may outlive
+      // it. This is the P1-12 fail-closed pin at the manager level.
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: { platform: "linux", probeProcessGroup: () => "gone" as const },
+      });
+      await expect(manager.assertOwnershipQuiescent("logical-admitted", "physical-admitted", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).rejects.toThrow(WorkerTeardownPendingError);
+      expect((await fence.read("physical-admitted")).kind).toBe("present");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("assertOwnershipQuiescent throws WorkerTeardownPendingError when fence is unreadable", async () => {
     const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
     const fenceDir = join(dir, "fences");

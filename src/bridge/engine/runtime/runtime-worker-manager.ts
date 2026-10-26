@@ -253,10 +253,16 @@ export class RuntimeWorkerManager {
       // A live hard delete / logical release must not wait out the owner's
       // self-discharge window inside a polling quiescence loop: the owner may
       // prove gone immediately (POSIX process-group ESRCH, or a Job whose
-      // containment already drained). Reuse the spawn path's discharge probe:
-      // a proven-gone owner is retired and quiescence succeeds, anything else
-      // keeps the original refusal (including when live, unverifiable, or
-      // still converging).
+      // containment already drained). Reuse the spawn path's discharge probe —
+      // but ONLY for a fence that never entered business RPCs
+      // (claiming/owned): an admitted fence may have adapter descendants that
+      // outlive the worker's process group, so it keeps refusing here exactly
+      // as before (P1-12 fail-closed pin).
+      if (read.record.phase !== "claiming" && read.record.phase !== "owned") {
+        throw new WorkerTeardownPendingError(
+          `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") is present and not discharged (phase: ${read.record.phase}, pid: ${read.record.pid})`,
+        );
+      }
       await this.dischargeStaleFence(physicalFenceKey, {
         selfDischargeWaitMs: options.selfDischargeWaitMs ?? 0,
       });
