@@ -1,27 +1,83 @@
 # Changelog
 
-## [Unreleased]
+## [relay-protocol 0.6.4-beta.5] - 2026-10-26
 
 ### Added
 
-- New Bots default to a dedicated workspace under the daemon user's `~/.xacpx/bots/`, with an option to select an existing workspace. Bot removal preserves workspace files by default; the removal dialog can also delete a Bot's dedicated workspace folder, and the daemon unregisters and removes it only when nothing else still references it.
-- Relay protocol and connector support `control.runs.cancelMember` with strict `{runId, memberTurnId}` validation; instances advertise `runs.cancel-member.v1` only when their core supports scoped member cancellation.
-- Relay protocol and connector support `deleteDedicatedWorkspace` on `control.bots.remove`; instances advertise `bots.dedicated-workspace-cleanup.v1` only when their core performs the cleanup and the connector's validator accepts the flag, so the dashboard offers the option only where it works.
-- Group member turns that dispatch assignments end the turn instead of waiting, sleeping or polling; the runtime wakes the member exactly once, in one followup turn, after every assignment dispatched from that turn settles. The wake carries only each assignment's id, target Bot and settled state — the member reads the exact result with `group_read_result`. `group_read_result` refuses every page while the current turn still owns unsettled handoffs and reports the pending assignment ids instead of partial evidence.
-- relay-web: single and group chats accept real attachment uploads with durable prompt references; group target picker explains unavailable members and requires confirm for send-all.
-- relay-web: the group dispatch row gains a stop pill for the 项管 below the row. It appears while the leader's own turn is still running and stops only that leader; on a core without scoped member cancellation it falls back to the confirmed "stop all" of the whole round.
+- `control.runs.cancelMember` with `RunsCancelMemberPayload` / `RunsCancelMemberResult` and a strict `{runId, memberTurnId}` validator, plus `RELAY_CAPABILITIES.runsCancelMemberV1` (#468).
+- `RELAY_CAPABILITIES.botsDedicatedWorkspaceV1` and `botsDedicatedWorkspaceCleanupV1`; `control.bots.create` accepts an omitted `workspace` and `control.bots.remove` accepts `deleteDedicatedWorkspace` (#460, #475).
+- `ConversationPromptPayload.media` with `validPromptAttachments` (at most 5 refs, 10 MiB each) and `ConversationMessageDto.attachments` carrying display metadata only, never a daemon `filePath` (#467).
+- `MemberTurnSummaryDto.cancellationReason` and `followupSenderMemberTurnId`, so a scoped human stop and a leader's wake turn are read from the member row instead of the Run aggregate (#468, #469).
+- `SessionModelGetPayload.refresh` re-probes the agent's exact launch for a verified-fresh model catalog (#464).
+- `workspaceNameFallback`, `hasWorkspaceNameChars` and `stableHash8` give the CLI, the daemon and the dashboard one workspace-naming rule (#460).
+- `BotRemovalPreviewDto.dedicatedWorkspace` and `LifecycleOperationDto.workspaceCleanup` report whether a Bot's dedicated workspace is still in use and what happened to it on removal (#475).
 
-### Changed
+## [relay 0.14.12-beta.10] - 2026-10-26
 
-- 消息复制入口移至时间行 hover/focus，触屏常显；普通消息复制原文，富内容复制展开文本。
+### Added
+
+- A Group's dispatch round renders as one aggregate row instead of one entry per handoff: it expands into a card with each Bot's state and reply, offers a per-member stop, a confirmed stop-all, and a leader stop pill; mobile opens the same content in a bottom sheet (#469).
+- Direct and Group chats accept real attachment uploads, persisted as durable prompt references and replayed after a page reload; the group target picker explains unavailable members and requires confirmation for send-all (#467).
+- One message chrome is shared by direct and Group transcripts, with the copy entry on the time row — hover/focus on desktop, always visible on touch — copying plain text for plain messages and expanded text for rich content (#467).
+- Mobile back navigation routes the top bar's back button, the iOS left-edge swipe and the Android back button through one browser-history stack, one layer per pop (#463).
+- Zero-topic Groups and topicless Bots get real empty states, and a Bot without a topic publishes to an automatically created Default topic (#457).
+- The Bot removal dialog offers to delete a Bot's dedicated workspace folder, shown only against an instance that advertises `bots.dedicated-workspace-cleanup.v1` and hidden when the directory is still referenced (#475).
+- Creating a Bot no longer requires picking a workspace: it defaults to a dedicated one under `~/.xacpx/bots/` (#460).
+- A session whose saved model left the catalog shows the failed model id with a "fetch models and choose a replacement" action instead of the raw error, and states that the original message was not resent (#464).
 
 ### Fixed
 
-- OMP model restore recovery: an exact native `Could not restore model <id>` failure retries the normal set first and only then runs a bounded native helper that re-persists the requested model through OMP's own `switch_session` (same native session id/file, no JSONL edit, no prompt sent) before syncing through the normal acpx setter; partial syncs report retry-forward. Bare `/model` (and the Dashboard recovery action) refreshes choices via `control.session.model.get { refresh: true }`, a cold probe of the session's exact launch with the saved selection as `current`. Chat `/model <id>` keeps history and never resends; Dashboard success states the original message was not resent. A busy queue owner refuses the repair (never kills queued work); generic auth/catalog errors are not treated as removed models and no automatic mapping is applied.
-- OMP restore review hardening: the runtime native-session cache is validated against the current acpx record id on every use (a delete/recreate reusing an alias can never resolve a stale native id), is invalidated at every session teardown and after each recovery, and unreadable records fail closed instead of reporting absence. CLI recovery tracks every learned native id per physical identity (a single stored id no longer misses concurrent cross-alias recoveries) and serializes concurrent `setModel` calls for the same session before the ordinary setter so the loser cannot mutate acpx state first. The fallback-notice exclusion (`Could not restore model X. Using Y`, a successful substitute switch) is per-candidate on both backend and Dashboard matchers, so an unrelated excerpt line can never suppress a real failure. Queued-turn restore failures retain their message as the queue-suspend reason instead of dropping it silently.
-- Automatically generated workspace names use a stable hash fallback for Chinese and other names with no usable ASCII characters, across CLI, onboarding, chat commands and the dashboard. Existing workspace registrations and paths are preserved.
-- Bot auto-workspace rollback keeps a registration and directory that a concurrent session already bound. In-daemon workspace deletes (Control API and `/workspace rm`) re-check occupancy and remove under the same C→S critical section, and a same-name entry owned by another directory is left untouched.
-- `xacpx workspace rm` refuses while the daemon is running (or its state is indeterminate) instead of writing `config.json` behind the daemon's back, and also refuses with the daemon stopped when `state.json` still references the workspace; the message points at `/workspace rm`, the Control API, or `xacpx stop`. Worker-binding staging now rejects a cwd-less delegation to an unregistered workspace before writing the binding, while pathless workers with an explicit cwd keep resolving after their workspace registration is removed, so restart recovery, queue draining and physical-group scans no longer drop them. `xacpx doctor` also reports sessions and cwd-less bindings that reference a workspace missing from a hand-edited config.
+- Tooltips stay attached to their anchor while any scroller moves, hide once the anchor leaves the viewport, and flip and clamp at the viewport edges instead of overflowing them (#458).
+- The Group composer keeps one draft per group and topic, so switching Topic or Group no longer discards text (#459).
+- The Bot editor shows a single model hint instead of three stacked ones, and an invalid name field keeps a danger focus ring instead of the accent ring (#472).
+- A new Bot no longer shows the "applies to later runs" and instructions notes, the Chinese copy reads 自定义 ID, and a finished dispatch round is announced once to screen readers (#473).
+- The Group transcript holds its reading position through row resizes and late `content-visibility` height corrections, removing the CI-only anchor drift (#474).
+- The dispatch row's done and unknown counts use tokens the Tailwind config actually defines, so they are no longer unpainted (#469).
+
+## [channel-relay 0.7.8-beta.6] - 2026-10-26
+
+### Added
+
+- `supportsBotDedicatedWorkspace`, `supportsBotDedicatedWorkspaceCleanup` and `supportsRunsCancelMember` advertise a capability only when the core answers yes *and* this connector's own validator accepts the payload, so the dashboard never offers an action the instance would drop (#460, #468, #475).
+
+### Changed
+
+- The control bridge forwards `deleteDedicatedWorkspace` on Bot removal, `media` on a conversation prompt, `sessionModelGet.refresh`, and the new `control.runs.cancelMember` RPC, which answers `unsupported-rpc` on a core without scoped member cancellation (#464, #467, #468, #475).
+
+## [0.24.10-beta.6] - 2026-10-26
+
+### Added
+
+- New Bots default to a dedicated workspace under `~/.xacpx/bots/`, while an explicit workspace keeps its existing validation. Allocation, registration and the Bot save share one config transaction, and a failure rolls back only this attempt's registration and empty directory (#460).
+- Removing a Bot can delete its dedicated workspace: one eligibility function serves both the preview and the removal, and it reports the directory as in use while Bots, sessions, worker bindings, Group Topic targets, scheduled tasks or worktree Runs still reference it (#475).
+- Group member turns that dispatch assignments end their turn instead of waiting, sleeping or polling; the runtime wakes the member exactly once, in one followup turn, after every assignment dispatched from that turn settles. `group_read_result` refuses every page while the current turn still owns unsettled handoffs and names the pending assignments instead (#468).
+- A single dispatched member turn can be cancelled without touching its siblings: the durable `human-cancelled` reason is recorded on that member only, re-checked before materialization, admission and the provider, and a pending wake for its leader is cancelled with it (#468).
+- `control.conversation.prompt` and `control.upload` accept attachment refs, threaded from accept to execution and validated again on replay, while history exposes display metadata only (#467).
+- `SessionService.isWorkspaceInUse` answers workspace occupancy for a caller holding the session state lock (#462).
+
+### Fixed
+
+- A native OMP session whose saved model left the catalog recovers instead of failing every resume: an exact `Could not restore model <id>` retries the ordinary set, then re-persists the model through OMP's own `switch_session` (same session id and file, no JSONL edit, no prompt sent) before the normal acpx sync. A busy queue owner refuses the repair rather than killing queued work, a partial sync reports retry-forward, and generic auth or catalog errors are never treated as a removed model (#464).
+- Workspace names derived from Chinese or other non-ASCII names use a stable hash fallback across CLI, onboarding, chat commands and the dashboard, instead of degrading to `workspace` or failing to create; names with no letter or digit are rejected everywhere (#460).
+- Workspace removal no longer races a concurrent session bind: in-daemon deletes re-check occupancy and remove under one C→S critical section, and a Bot's auto-workspace rollback keeps a registration and directory that someone just bound (#470). Trailing separators compare equal, pathless worker bindings with an explicit cwd still resolve after deregistration, and a cwd-less delegation to an unregistered workspace is refused before the binding is written (#471).
+- `xacpx workspace rm` refuses while the daemon is running or its state is indeterminate, and with the daemon stopped while `state.json` still references the workspace; `xacpx doctor` reports sessions and cwd-less bindings that name a workspace missing from a hand-edited config (#471).
+- The daemon's default startup timeout is 60s, so a normal Windows start or restart is no longer reported as `did not report ready state` while the daemon goes on to become ready. Crash detection is unchanged (#456).
+
+### Docs
+
+- The config and state locks are documented as C outer, S inner, with the reverse order forbidden, and workspace deletion must hold both across occupancy check, removal and publish (#461).
+
+## [channel-feishu 0.8.7-beta.6] - 2026-10-26
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.6` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.6] - 2026-10-26
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.6` with no channel behavior change.
 
 ## [relay-protocol 0.6.4-beta.4] - 2026-10-22
 
