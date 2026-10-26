@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import * as releaseLib from "../../../scripts/release-lib.mjs";
+import { listBridgePackageDirs } from "../../../scripts/sync-rmux-bridge-versions.mjs";
 
 const source = readFileSync(new URL("../../../scripts/release.mjs", import.meta.url), "utf8");
 const declarationsStart = source.indexOf("const {\n");
@@ -11,6 +14,42 @@ if (declarationsStart < 0 || invocationStart < declarationsStart) {
   throw new Error("Could not isolate release.mjs declarations from its module imports and CLI invocation");
 }
 const declarations = source.slice(declarationsStart, invocationStart);
+
+/**
+ * One top-level `function name(...) { ... }` declaration, extracted verbatim.
+ *
+ * The sandbox needs a function without the module imports it closes over, and
+ * `runInNewContext` cannot strip those — so the helper takes just the text it
+ * needs and the caller supplies the bindings. Non-function declarations are not
+ * supported on purpose: slicing those reliably would mean parsing the file.
+ */
+function isolatedDeclaration(name: string): string {
+  const start = source.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`release.mjs has no function ${name}`);
+  const end = source.indexOf("\n}", start);
+  if (end < 0) throw new Error(`release.mjs: ${name} is not a top-level function`);
+  return source.slice(start, end + 2);
+}
+
+/**
+ * The sweep gate driven with a fixed set of dirty paths.
+ *
+ * `assertReleaseTreeIsSweepable` decides whether a release may commit, and the
+ * only honest way to test it is to hand it a tree and see whether it refuses.
+ */
+function sweepableHarness(dirty: string[]) {
+  const api = runInNewContext(
+    `${source.slice(source.indexOf("const BRIDGE_PLATFORM_SUFFIXES = ["), source.indexOf("const REGISTRY_ATTEMPTS"))}`
+    + `${isolatedDeclaration("assertReleaseTreeIsSweepable")}\n({ assertReleaseTreeIsSweepable });`,
+    {
+      dirtyPaths: () => dirty,
+      COMPAT_MANIFEST: releaseLib.COMPAT_MANIFEST,
+      PACKAGE_REGISTRY: releaseLib.PACKAGE_REGISTRY,
+      CORE_FLOOR_TRACKERS: releaseLib.CORE_FLOOR_TRACKERS,
+    },
+  ) as { assertReleaseTreeIsSweepable: () => boolean };
+  return api;
+}
 const version = "1.2.3";
 const previousVersion = "1.2.2";
 const root = "/release-fixture";
@@ -429,31 +468,116 @@ test("lock reconciliation restores missing bridge pins and check rejects drift",
   expect(api.cmdCheck()).toBe(0);
 });
 
-test("the bridge platform list matches the directories apply actually bumps", () => {
+test("the bridge manifests apply bumps are all paths publish will sweep", () => {
   // `apply` rewrites every platform package manifest through
   // sync-rmux-bridge-versions.mjs, and `publish` refuses any modified path it
-  // does not own. A platform directory added to the sync script but missing here
-  // makes the very next release refuse its own applied tree.
-  const onDisk = readdirSync(new URL("../../../platform-packages", import.meta.url))
-    .filter((entry) => entry.startsWith("xacpx-rmux-bridge-"))
-    .map((entry) => entry.replace("xacpx-rmux-bridge-", ""))
-    .sort();
-  const owned = source.slice(source.indexOf("const BRIDGE_PLATFORM_SUFFIXES = ["), source.indexOf("];", source.indexOf("const BRIDGE_PLATFORM_SUFFIXES = [")))
-    .match(/"([^"]+)"/g)!
-    .map((quoted) => quoted.slice(1, -1))
-    .sort();
+  // does not own. Drive the real predicate with a tree whose ONLY changes are
+  // those manifests: a platform directory the sync script knows about but
+  // TOOL_OWNED_PATHS does not would make the next release refuse its own apply.
+  const bumped = listBridgePackageDirs(fileURLToPath(new URL("../../../", import.meta.url)))
+    .map((dir) => `platform-packages/${dir}/package.json`);
+  expect(bumped.length).toBeGreaterThan(0);
 
-  expect(owned).toEqual(onDisk);
-  for (const suffix of owned) {
-    expect(source).toContain(`platform-packages/xacpx-rmux-bridge-\${suffix}/package.json`);
-  }
+  const api = sweepableHarness(bumped);
+  expect(api.assertReleaseTreeIsSweepable()).toBe(false);
+
+  // ...and an unrelated edit inside the same directory is still refused: only
+  // the manifests are owned, not the shipped binaries, checksums or docs.
+  const unrelated = sweepableHarness([...bumped, "platform-packages/xacpx-rmux-bridge-linux-x64/checksums.json"]);
+  expect(() => unrelated.assertReleaseTreeIsSweepable()).toThrow(/unrelated modified paths/);
 });
 
-test("npm is spawned through its CLI entry, not a platform-specific executable name", () => {
+test("npm is spawned through a resolved CLI entry, never by executable name", () => {
   // `npm` is a shell script on POSIX and `npm.cmd` on Windows; Node refuses to
   // execFileSync a .cmd without a shell and cannot resolve a bare "npm" there at
-  // all, so both spellings break one platform. Only the JS entry is portable.
-  expect(source).not.toContain('execFileSync("npm"');
-  expect(source).toContain('join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")');
-  expect(source).toContain("execFileSync(process.execPath, [npmCliPath(), ...args]");
+  // all, so both spellings break one platform. Assert the spawn the code
+  // performs, not how the source spells it.
+  const spawns: string[][] = [];
+  // The test process is bun, whose execPath ships no npm — so this pins a real
+  // node instead of inheriting the runner's. The guard that refuses bun is
+  // covered by its own test.
+  const nodeExecPath = process.env.RELEASE_TEST_NODE ?? "node";
+  const realNode = spawnSync(nodeExecPath, ["-e", "process.stdout.write(process.execPath)"], { encoding: "utf8" }).stdout;
+  const api = runInNewContext(
+    `${isolatedDeclaration("npmCliPath")}\n${isolatedDeclaration("npm")}\n({ npm, npmCliPath });`,
+    {
+      process: { execPath: realNode, versions: {} },
+      realpathSync,
+      existsSync,
+      resolve,
+      dirname,
+      join,
+      ROOT: root,
+      execFileSync(command: string, args: string[]) {
+        spawns.push([command, ...args]);
+        return "";
+      },
+    },
+  ) as { npm: (args: string[]) => void; npmCliPath: () => string };
+
+  const entry = api.npmCliPath();
+  expect(entry).toBe(join(dirname(realpathSync(realNode)), "node_modules", "npm", "bin", "npm-cli.js"));
+  expect(existsSync(entry)).toBe(true);
+
+  api.npm(["install", "--package-lock-only"]);
+  expect(spawns).toEqual([[realNode, entry, "install", "--package-lock-only"]]);
+  expect(spawns[0]?.[0]).not.toBe("npm");
+});
+
+test("the npm CLI entry is found from every installer layout", () => {
+  // nvm/fnm/Homebrew put npm at <dir>/../lib/node_modules, the Windows
+  // installer at <dir>/node_modules, and some global installs at
+  // <dir>/../node_modules. Resolving only one of those trades the Windows bug
+  // for a POSIX one. Paths are built with `join` so the assertion holds on any
+  // host separator.
+  const posixLayout = join("lib", "node_modules", "npm", "bin", "npm-cli.js");
+  const api = runInNewContext(
+    `${isolatedDeclaration("npmCliPath")}\n({ npmCliPath });`,
+    {
+      process: { execPath: join("fake", "bin", "node"), versions: {} },
+      realpathSync: (path: string) => path,
+      existsSync: (path: string) => path.endsWith(posixLayout),
+      resolve: (path: string) => path,
+      dirname,
+      join,
+    },
+  ) as { npmCliPath: () => string };
+
+  expect(api.npmCliPath().endsWith(posixLayout)).toBe(true);
+});
+
+test("a missing npm entry names every path it tried", () => {
+  const api = runInNewContext(
+    `${isolatedDeclaration("npmCliPath")}\n({ npmCliPath });`,
+    {
+      process: { execPath: "posix-bin-node", versions: {} },
+      realpathSync: (path: string) => path,
+      existsSync: () => false,
+      resolve: (path: string) => path,
+      dirname,
+      join,
+    },
+  ) as { npmCliPath: () => string };
+
+  const message = (() => { try { api.npmCliPath(); } catch (error) { return (error as Error).message; } return ""; })();
+  expect(message).toContain("cannot locate npm");
+  expect(message.match(/npm-cli\.js/g)?.length).toBe(3);
+});
+
+test("running under bun is refused with a message that says what to do", () => {
+  // process.execPath under bun names the bun binary, which ships no npm, so the
+  // candidate paths would all miss and the error would misdirect the operator.
+  const api = runInNewContext(
+    `${isolatedDeclaration("npmCliPath")}\n({ npmCliPath });`,
+    {
+      process: { execPath: "/fake/bun", versions: { bun: "1.4.2" } },
+      realpathSync: (path: string) => path,
+      existsSync: () => true,
+      resolve: (path: string) => path,
+      dirname,
+      join,
+    },
+  ) as { npmCliPath: () => string };
+
+  expect(() => api.npmCliPath()).toThrow(/run the release tool with node, not bun/);
 });

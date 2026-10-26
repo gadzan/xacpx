@@ -284,7 +284,7 @@ because an artifact that cannot be described cannot be assumed unchanged.
 
 `--skip-gates` exists only to recover from a tree already proven green.
 
-## Running the tool on Windows
+## Host requirements (Linux, macOS, Windows)
 
 The script is plain Node and runs unchanged on Linux, macOS and Windows. Three
 things it must not assume about the host, all of which have broken a release:
@@ -294,11 +294,27 @@ POSIX and `npm.cmd` on Windows. `execFileSync("npm", …)` therefore fails with
 `ENOENT` on Windows (nothing by that bare name is on `PATH`) and `EINVAL` for
 `npm.cmd` (Node refuses to spawn a `.cmd` without a shell), and `shell: true`
 would concatenate the arguments unescaped. npm ships as JavaScript next to the
-running `node`, so the tool spawns
-`<dirname process.execPath>/node_modules/npm/bin/npm-cli.js` with
-`process.execPath`: one code path on all three platforms, no `PATH` lookup, no
-shell. If that entry is missing the step fails with the path it looked for
-rather than an opaque `spawnSync` error.
+running `node`, so the tool spawns that entry with `process.execPath`: no `PATH`
+lookup, no shell.
+
+The entry's location depends on the installer, so every known layout is tried
+and the error lists all of them:
+
+| Installer | Entry |
+|---|---|
+| Windows installer, fnm, nvm-windows | `<dir>/node_modules/npm/bin/npm-cli.js` |
+| nvm, fnm, Homebrew, distro packages | `<dir>/../lib/node_modules/npm/bin/npm-cli.js` |
+| some global installs | `<dir>/../node_modules/npm/bin/npm-cli.js` |
+
+`realpathSync` runs first, because nvm/fnm/Homebrew put a symlink shim on `PATH`
+and `process.execPath` may name the shim rather than the install it points at.
+Under `bun`, `process.execPath` names the bun binary — which ships no npm — so
+the tool refuses to start rather than reporting a missing npm. Every `release:*`
+npm script already uses `node`.
+
+The same reasoning applies to the script's own `node` children: `apply` and the
+gates spawn `process.execPath`, not a bare `node`, so a release launched by
+absolute path does not depend on `node` being on `PATH`.
 
 **Line endings are not LF on every checkout.** `CHANGELOG.md` and `bun.lock` are
 committed with LF, but Windows checks them out with CRLF under the default
@@ -314,8 +330,3 @@ before, still shipped by some package managers) reject with
 and the registry is polled, but each tag's workflow is no longer awaited, so
 waves can be reported unconfirmed while their runs are merely still going. Check
 `gh --version` before releasing, or watch `gh run list` alongside.
-
-Platform packages ship as five directories under `platform-packages/`, one per
-OS/arch. `apply` bumps all five manifests to channel-relay's version, so they
-belong to the tool and ride into the release commit; `publish` sweeps them
-without a separate commit. Nothing else inside those directories is owned.

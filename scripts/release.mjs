@@ -27,8 +27,8 @@
  * See `docs/release-automation.md`.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -621,7 +621,7 @@ function cmdApply(plan, options) {
   for (const line of applyEdits(plan)) console.log(`edited ${line}`);
 
   if (plan.releases.some((release) => release.id === "channel-relay")) {
-    execFileSync("node", [join(ROOT, "scripts", "sync-rmux-bridge-versions.mjs")], { cwd: ROOT, stdio: "inherit" });
+    execFileSync(process.execPath, [join(ROOT, "scripts", "sync-rmux-bridge-versions.mjs")], { cwd: ROOT, stdio: "inherit" });
   }
   syncLockfiles();
 
@@ -650,18 +650,41 @@ function cmdApply(plan, options) {
  * one platform, and `shell: true` would concatenate arguments unescaped.
  *
  * npm ships as JavaScript next to the running node binary, so this spawns that
- * entry with `process.execPath`: one code path, no PATH lookup, no shell.
+ * entry with `process.execPath`: no PATH lookup, no shell. The layout differs by
+ * installer, which is why every known location is tried rather than one:
+ *
+ *   Windows, nodejs.org installer / fnm / nvm-windows
+ *     <dir>/node_modules/npm/bin/npm-cli.js
+ *   POSIX, nvm / fnm / Homebrew / distro packages
+ *     <dir>/../lib/node_modules/npm/bin/npm-cli.js
+ *   POSIX, some global installs
+ *     <dir>/../node_modules/npm/bin/npm-cli.js
+ *
+ * `realpathSync` first, because nvm/fnm/Homebrew put a symlink shim on PATH and
+ * `process.execPath` may name the shim rather than the install it points at.
  */
 function npmCliPath() {
-  const candidate = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  if (!existsSync(candidate)) {
+  if (process.versions.bun) {
     throw new Error(
-      `cannot locate npm's CLI entry at ${candidate}.\n`
-      + "This release step regenerates package-lock.json, so npm must be installed"
-      + " alongside the node running this script.",
+      "run the release tool with node, not bun: process.execPath would name the bun binary,"
+      + " which does not ship npm. Every `release:*` npm script already uses node.",
     );
   }
-  return candidate;
+  const exeDir = dirname(realpathSync(process.execPath));
+  const candidates = [
+    join(exeDir, "node_modules", "npm", "bin", "npm-cli.js"),
+    join(exeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    join(exeDir, "..", "node_modules", "npm", "bin", "npm-cli.js"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    "cannot locate npm's CLI entry. Tried:\n"
+    + candidates.map((candidate) => `  ${resolve(candidate)}`).join("\n")
+    + "\nThis release step regenerates package-lock.json, so npm must be installed"
+    + " alongside the node running this script.",
+  );
 }
 
 function npm(args, options = {}) {
@@ -856,7 +879,7 @@ function runGates(plan) {
   console.log("== gates: typecheck ==");
   execFileSync("bun", ["x", "tsc", "--noEmit"], { cwd: ROOT, stdio: "inherit" });
   console.log("== gates: metadata ==");
-  execFileSync("node", [join(ROOT, "scripts", "release.mjs"), "check"], { cwd: ROOT, stdio: "inherit" });
+  execFileSync(process.execPath, [join(ROOT, "scripts", "release.mjs"), "check"], { cwd: ROOT, stdio: "inherit" });
 
   const ids = plan.releases.map((release) => release.id);
   const scope = gateScope(ids);
@@ -871,7 +894,7 @@ function runGates(plan) {
     execFileSync("bun", ["run", script], { cwd: ROOT, stdio: "inherit" });
   }
   execFileSync(
-    "node",
+    process.execPath,
     [join(ROOT, "scripts", "verify-publish.mjs"), "--packages", scope.verifyIds.join(",")],
     { cwd: ROOT, stdio: "inherit" },
   );
