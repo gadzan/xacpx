@@ -29,6 +29,7 @@ export interface RemoveBotInput {
   previewRevision: string;
   clearDirectHistory: boolean;
   releaseDirectBindings: boolean;
+  deleteDedicatedWorkspace?: boolean;
 }
 
 /**
@@ -88,6 +89,9 @@ export class BotRemovalService {
 
     const clearDirectHistory = existing?.params?.clearDirectHistory ?? input.clearDirectHistory;
     const releaseDirectBindings = existing?.params?.releaseDirectBindings ?? input.releaseDirectBindings;
+    const deleteDedicatedWorkspace = existing?.params?.deleteDedicatedWorkspace
+      ?? input.deleteDedicatedWorkspace
+      ?? false;
     await this.bots.runLifecycle(input.botId, async () => {
       const facts = this.facts(input.botId, identity.directConversationId);
       const revision = botRemovalRevision(facts);
@@ -114,7 +118,7 @@ export class BotRemovalService {
         subjectId: input.botId,
         requestId: input.requestId,
         previewRevision: input.previewRevision,
-        params: { clearDirectHistory, releaseDirectBindings },
+        params: { clearDirectHistory, releaseDirectBindings, deleteDedicatedWorkspace },
         at,
       }));
     });

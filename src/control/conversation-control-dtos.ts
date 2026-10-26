@@ -1,5 +1,6 @@
 import { copyBotAvatar, type BotAvatarConfig } from "@ganglion/xacpx-relay-protocol";
 import type { AttachmentMetadata, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import type { DedicatedWorkspaceCleanupOutcome } from "../bots/dedicated-workspace-cleanup";
 import type { BotProfile, BotProfileSnapshot } from "../bots/bot-types";
 import type {
   ConversationMessage,
@@ -96,7 +97,12 @@ export interface BotRemovalPreviewDto {
     groupRuns: number;
   };
   controllerResidue: { bindingIds: string[]; sessionAliases: string[] };
-  memberUnsettledRunIds: string[];
+  dedicatedWorkspace?: {
+    name: string;
+    path: string;
+    /** True when a reference, a moved cwd, or an unsafe path keeps the directory. */
+    inUse: boolean;
+  };
   operation?: {
     id: string;
     requestId: string;
@@ -111,6 +117,8 @@ export interface RemoveBotRequestDto {
   previewRevision: string;
   clearDirectHistory?: boolean;
   releaseDirectBindings?: boolean;
+  /** Delete the dedicated workspace directory after the Bot is retired. Default false. */
+  deleteDedicatedWorkspace?: boolean;
 }
 
 export interface LifecycleOperationDto {
@@ -123,6 +131,8 @@ export interface LifecycleOperationDto {
   previewRevision?: string;
   clearDirectHistory?: boolean;
   releaseDirectBindings?: boolean;
+  /** Dedicated workspace cleanup result, recorded once the Bot is retired. */
+  workspaceCleanup?: DedicatedWorkspaceCleanupOutcome;
   updatedAt: string;
 }
 

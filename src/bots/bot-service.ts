@@ -17,6 +17,10 @@ import { BotError } from "./bot-error";
 import type { BotRemovalRecord, BotTombstone } from "./bot-removal";
 import { removalBlocksWork } from "./bot-removal";
 import { BotLifecycleGate } from "./bot-lifecycle-gate";
+import {
+  gatherDedicatedWorkspaceReferences,
+  type DedicatedWorkspaceReferences,
+} from "./dedicated-workspace-cleanup";
 import { isDedicatedWorkspaceMarker } from "./bot-types";
 import type { BotProfile, BotRuntimeBinding, DedicatedWorkspaceMarker } from "./bot-types";
 import type { ConversationRecord } from "../conversations/conversation-types";
@@ -1080,6 +1084,17 @@ export class BotService {
    */
   directControllerResidue(botId: string): { bindingIds: string[]; sessionAliases: string[] } {
     return this.controllerResidueForDirectRoot(botId);
+  }
+
+  /** Names every durable reference to `name`, excluding the Bot being removed.
+   *  The profile is already retired by cleanup time, so the caller supplies
+   *  the workspace name it read from the marker. */
+  dedicatedWorkspaceReferences(
+    name: string,
+    excludeBotId: string,
+    worktrees: readonly { readonly workspace: string; readonly runId: string }[],
+  ): DedicatedWorkspaceReferences {
+    return gatherDedicatedWorkspaceReferences(this.state, worktrees, name, excludeBotId);
   }
 
   private controllerResidueForDirectRoot(botId: string): { bindingIds: string[]; sessionAliases: string[] } {

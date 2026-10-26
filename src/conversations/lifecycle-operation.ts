@@ -1,3 +1,8 @@
+import {
+  DEDICATED_WORKSPACE_CLEANUP_CODES,
+  type DedicatedWorkspaceCleanupCode,
+  type DedicatedWorkspaceCleanupOutcome,
+} from "../bots/dedicated-workspace-cleanup";
 import { ConversationError } from "./conversation-error";
 
 /** One durable cleanup record. Bot removal and topic or group teardown share it. */
@@ -14,6 +19,7 @@ export interface LifecycleOperationError {
 export interface BotRemoveParams {
   clearDirectHistory: boolean;
   releaseDirectBindings: boolean;
+  deleteDedicatedWorkspace?: boolean;
 }
 
 export interface LifecycleOperation {
@@ -25,6 +31,7 @@ export interface LifecycleOperation {
   error?: LifecycleOperationError;
   previewRevision?: string;
   params?: BotRemoveParams;
+  workspaceCleanup?: DedicatedWorkspaceCleanupOutcome;
   updatedAt: string;
 }
 
@@ -41,7 +48,8 @@ export type LifecycleCommand =
   }
   | { type: "fail"; error: LifecycleOperationError; at: string }
   | { type: "indeterminate"; error: LifecycleOperationError; at: string }
-  | { type: "complete"; at: string };
+  | { type: "complete"; at: string }
+  | { type: "workspaceCleanup"; cleanup: DedicatedWorkspaceCleanupOutcome; at: string };
 
 const KINDS: readonly LifecycleOperationKind[] = ["bot-remove", "topic-teardown", "topic-clear", "group-teardown"];
 const PHASES: readonly LifecycleOperationPhase[] = ["running", "failed", "indeterminate", "completed"];
@@ -117,6 +125,15 @@ export function transitionLifecycleOperation(
       }
       return { ...state, phase: "completed", error: undefined, updatedAt: command.at };
     }
+    case "workspaceCleanup": {
+      if (!state) {
+        throw new ConversationError("lifecycle_operation_not_found", "operation does not exist");
+      }
+      if (state.phase !== "completed") {
+        return state;
+      }
+      return { ...state, workspaceCleanup: command.cleanup, updatedAt: command.at };
+    }
     default: {
       const unreachable: never = command;
       return unreachable;
@@ -130,7 +147,8 @@ function isParams(value: unknown): value is BotRemoveParams {
   }
   const record = value as Record<string, unknown>;
   return typeof record.clearDirectHistory === "boolean"
-    && typeof record.releaseDirectBindings === "boolean";
+    && typeof record.releaseDirectBindings === "boolean"
+    && (record.deleteDedicatedWorkspace === undefined || typeof record.deleteDedicatedWorkspace === "boolean");
 }
 
 /** Parse a stored operation. A wrong shape is corrupt, not a default phase. */
@@ -168,6 +186,10 @@ export function parseLifecycleOperation(value: unknown): LifecycleOperation | un
   if (record.previewRevision !== undefined && typeof record.previewRevision !== "string") {
     return undefined;
   }
+  const workspaceCleanup = parseWorkspaceCleanup(record.workspaceCleanup);
+  if (record.workspaceCleanup !== undefined && workspaceCleanup === undefined) {
+    return undefined;
+  }
   return {
     id: record.id,
     kind: record.kind as LifecycleOperationKind,
@@ -177,6 +199,32 @@ export function parseLifecycleOperation(value: unknown): LifecycleOperation | un
     ...(error ? { error } : {}),
     ...(typeof record.previewRevision === "string" ? { previewRevision: record.previewRevision } : {}),
     ...(record.params ? { params: record.params } : {}),
+    ...(workspaceCleanup ? { workspaceCleanup } : {}),
     updatedAt: record.updatedAt,
   };
+}
+
+function parseWorkspaceCleanup(value: unknown): DedicatedWorkspaceCleanupOutcome | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const outcome = record.outcome;
+  if (outcome !== "deleted" && outcome !== "kept" && outcome !== "failed") {
+    return undefined;
+  }
+  if (outcome === "deleted") {
+    return typeof record.path === "string" ? { outcome, path: record.path } : undefined;
+  }
+  if (typeof record.path !== "string" || !isCleanupCode(record.code)) {
+    return undefined;
+  }
+  return { outcome, path: record.path, code: record.code };
+}
+
+function isCleanupCode(value: unknown): value is DedicatedWorkspaceCleanupCode {
+  return typeof value === "string" && (DEDICATED_WORKSPACE_CLEANUP_CODES as readonly string[]).includes(value);
 }
