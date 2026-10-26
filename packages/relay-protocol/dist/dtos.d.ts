@@ -341,6 +341,13 @@ export interface BotRemovalPreviewDto {
         sessionAliases: string[];
     };
     memberUnsettledRunIds: string[];
+    /** The Bot's daemon-allocated workspace, present only when the daemon
+     *  created it. `inUse` is true when something still keeps the directory. */
+    dedicatedWorkspace?: {
+        name: string;
+        path: string;
+        inUse: boolean;
+    };
     operation?: {
         id: string;
         requestId: string;
@@ -364,6 +371,12 @@ export interface LifecycleOperationDto {
     previewRevision?: string;
     clearDirectHistory?: boolean;
     releaseDirectBindings?: boolean;
+    /** Dedicated workspace cleanup outcome, recorded once the Bot is retired. */
+    workspaceCleanup?: {
+        outcome: "deleted" | "kept" | "failed";
+        path: string;
+        code?: string;
+    };
     updatedAt: string;
 }
 export interface BotDetailDto extends BotSummaryDto {

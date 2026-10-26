@@ -1153,6 +1153,7 @@ async function dispatchControlRequest(
         previewRevision: input.previewRevision,
         ...(input.clearDirectHistory !== undefined ? { clearDirectHistory: input.clearDirectHistory } : {}),
         ...(input.releaseDirectBindings !== undefined ? { releaseDirectBindings: input.releaseDirectBindings } : {}),
+        ...(input.deleteDedicatedWorkspace !== undefined ? { deleteDedicatedWorkspace: input.deleteDedicatedWorkspace } : {}),
       });
     }
     case MSG.lifecycleOperationsGet: {

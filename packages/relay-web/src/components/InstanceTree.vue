@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
-import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsDesktop } from "../stores/instances";
+import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
@@ -1209,6 +1209,7 @@ const rowSwipes = computed(() => {
       :preview="() => directBotsStore.previewBotRemoval(removalFor!.instanceId, removalFor!.bot.id)"
       :remove="(input) => directBotsStore.removeBot(removalFor!.instanceId, { botId: removalFor!.bot.id, ...input })"
       :get-operation="(id) => directBotsStore.getLifecycleOperation(removalFor!.instanceId, id)"
+      :supports-workspace-cleanup="supportsBotDedicatedWorkspaceCleanup(store.byId(removalFor!.instanceId))"
       @close="removalFor = null"
       @removed="removalFor = null"
     />

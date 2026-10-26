@@ -2558,6 +2558,17 @@ export class ControlService {
     return true;
   }
 
+  /**
+   * Feature probe for connectors: `removeBot` accepts
+   * `deleteDedicatedWorkspace` and deletes the Bot's daemon-allocated
+   * workspace directory. Connectors advertise
+   * `RELAY_CAPABILITIES.botsDedicatedWorkspaceCleanupV1` only when this
+   * exists, so a web client never sends the flag to a core that ignores it.
+   */
+  supportsBotDedicatedWorkspaceCleanup(): true {
+    return true;
+  }
+
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
       const bot = input.workspace !== undefined

@@ -580,6 +580,7 @@ const validateBotsRemove: Validator<BotsRemovePayload> = (p) => {
   return o && isStr(o.id) && isBoundedStr(o.requestId, 128) && isBoundedStr(o.previewRevision, 64)
     && (o.clearDirectHistory === undefined || o.clearDirectHistory === true || o.clearDirectHistory === false)
     && (o.releaseDirectBindings === undefined || o.releaseDirectBindings === true || o.releaseDirectBindings === false)
+    && (o.deleteDedicatedWorkspace === undefined || o.deleteDedicatedWorkspace === true || o.deleteDedicatedWorkspace === false)
     ? (o as unknown as BotsRemovePayload) : null;
 };
 const validateLifecycleOperationsGet: Validator<LifecycleOperationsGetPayload> = (p) => {

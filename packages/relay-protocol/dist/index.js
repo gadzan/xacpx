@@ -261,6 +261,7 @@ var RELAY_CAPABILITIES = {
   desktopArdAuthV1: "desktop.ard-auth.v1",
   interactionElicitationFormV1: "interaction.elicitation.form.v1",
   botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
+  botsDedicatedWorkspaceCleanupV1: "bots.dedicated-workspace-cleanup.v1",
   runsCancelMemberV1: "runs.cancel-member.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
@@ -1738,7 +1739,7 @@ var validateBotsRemovePreview = (p) => {
 };
 var validateBotsRemove = (p) => {
   const o = fields(p);
-  return o && isStr(o.id) && isBoundedStr(o.requestId, 128) && isBoundedStr(o.previewRevision, 64) && (o.clearDirectHistory === undefined || o.clearDirectHistory === true || o.clearDirectHistory === false) && (o.releaseDirectBindings === undefined || o.releaseDirectBindings === true || o.releaseDirectBindings === false) ? o : null;
+  return o && isStr(o.id) && isBoundedStr(o.requestId, 128) && isBoundedStr(o.previewRevision, 64) && (o.clearDirectHistory === undefined || o.clearDirectHistory === true || o.clearDirectHistory === false) && (o.releaseDirectBindings === undefined || o.releaseDirectBindings === true || o.releaseDirectBindings === false) && (o.deleteDedicatedWorkspace === undefined || o.deleteDedicatedWorkspace === true || o.deleteDedicatedWorkspace === false) ? o : null;
 };
 var validateLifecycleOperationsGet = (p) => {
   const o = fields(p);

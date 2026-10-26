@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { BotRemovalPreviewDto, LifecycleOperationDto } from "@ganglion/xacpx-relay-protocol";
+import { pushToast } from "../lib/use-toasts";
 
 const props = defineProps<{
   botName: string;
@@ -11,8 +12,11 @@ const props = defineProps<{
     previewRevision: string;
     clearDirectHistory: boolean;
     releaseDirectBindings: boolean;
+    deleteDedicatedWorkspace: boolean;
   }) => Promise<LifecycleOperationDto>;
   getOperation: (id: string) => Promise<LifecycleOperationDto>;
+  /** The instance's core deletes a dedicated workspace on request. */
+  supportsWorkspaceCleanup?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -26,9 +30,20 @@ const operation = ref<LifecycleOperationDto | null>(null);
 const requestId = ref<string>(crypto.randomUUID());
 const clearDirectHistory = ref(false);
 const releaseDirectBindings = ref(false);
+const deleteDedicatedWorkspace = ref(false);
 const loading = ref(true);
 const pending = ref(false);
 const errorText = ref("");
+
+/** The Bot has a daemon-allocated workspace the user may delete with it. */
+const dedicatedWorkspace = computed(() => impact.value?.dedicatedWorkspace ?? null);
+
+/** A workspace something else still uses cannot be deleted, so the option
+ *  stays hidden rather than offering a choice the core would refuse. */
+const canDeleteWorkspace = computed(() =>
+  props.supportsWorkspaceCleanup === true
+  && dedicatedWorkspace.value !== null
+  && dedicatedWorkspace.value.inUse === false);
 
 const blocked = computed(() => {
   const current = impact.value;
@@ -82,9 +97,11 @@ async function confirmRemove(): Promise<void> {
       previewRevision: current.revision,
       clearDirectHistory: clearDirectHistory.value,
       releaseDirectBindings: releaseDirectBindings.value,
+      deleteDedicatedWorkspace: deleteDedicatedWorkspace.value,
     });
     operation.value = result;
     if (result.phase === "completed") {
+      reportWorkspaceCleanup(result);
       emit("removed");
       return;
     }
@@ -109,6 +126,21 @@ async function confirmRemove(): Promise<void> {
   } finally {
     pending.value = false;
   }
+}
+
+/**
+ * The dialog closes as soon as the Bot is retired, so the workspace cleanup
+ * outcome has to reach the user elsewhere. A deleted folder needs no report;
+ * a kept or failed one does, or the checkbox would look like it did nothing.
+ */
+function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
+  const cleanup = result.workspaceCleanup;
+  if (!cleanup || cleanup.outcome === "deleted") return;
+  if (cleanup.outcome === "kept") {
+    pushToast("info", "bot.removal.workspaceKept", { path: cleanup.path });
+    return;
+  }
+  pushToast("error", "bot.removal.workspaceFailed", { path: cleanup.path, code: cleanup.code ?? "" });
 }
 </script>
 
@@ -149,6 +181,16 @@ async function confirmRemove(): Promise<void> {
           <input v-model="releaseDirectBindings" data-test="removal-release-bindings" type="checkbox" :disabled="pending" />
           <span>{{ t("bot.removal.bindings") }}</span>
         </label>
+        <label v-if="canDeleteWorkspace && !finished" class="flex items-start gap-2 text-xs">
+          <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="pending" />
+          <span>
+            {{ t("bot.removal.workspace") }}
+            <code data-test="removal-workspace-path" class="break-all text-[11px] opacity-70">{{ dedicatedWorkspace?.path }}</code>
+          </span>
+        </label>
+        <p v-else-if="dedicatedWorkspace?.inUse && !finished" data-test="removal-workspace-in-use" class="text-xs">
+          {{ t("bot.removal.workspaceInUse") }}
+        </p>
       </div>
       <footer class="flex justify-end gap-2 px-5 py-3">
         <button type="button" class="rounded-lg px-3 py-1.5 text-sm" @click="emit('close')">{{ t("bot.removal.close") }}</button>

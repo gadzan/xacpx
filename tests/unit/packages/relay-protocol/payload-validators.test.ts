@@ -457,6 +457,19 @@ test("bot removal payloads keep the request id and preview revision", () => {
   expect(parseControlPayload(MSG.lifecycleOperationsGet, { id: "" })).toBeNull();
 });
 
+test("bot removal accepts the dedicated-workspace cleanup flag and rejects a non-boolean one", () => {
+  const base = { id: "bot_a", requestId: "req-1", previewRevision: "abc123" };
+  expect(parseControlPayload(MSG.botsRemove, { ...base, deleteDedicatedWorkspace: true }))
+    .toEqual({ ...base, deleteDedicatedWorkspace: true });
+  expect(parseControlPayload(MSG.botsRemove, { ...base, deleteDedicatedWorkspace: false }))
+    .toEqual({ ...base, deleteDedicatedWorkspace: false });
+  // An omitted flag means "do not touch the workspace".
+  expect(parseControlPayload(MSG.botsRemove, base)).toEqual(base);
+  for (const bad of ["true", 1, null, {}, []]) {
+    expect(parseControlPayload(MSG.botsRemove, { ...base, deleteDedicatedWorkspace: bad })).toBeNull();
+  }
+});
+
 test("the Jev get payload is an empty read", () => {
   expect(MSG.jevGet).toBe("control.jev.get");
   expect(parseControlPayload(MSG.jevGet, {})).toEqual({});

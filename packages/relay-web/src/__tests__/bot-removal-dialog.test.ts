@@ -1,8 +1,10 @@
 import { mount, flushPromises } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import BotRemovalDialog from "../components/BotRemovalDialog.vue";
 import { i18n } from "../i18n";
 import type { BotRemovalPreviewDto, LifecycleOperationDto } from "@ganglion/xacpx-relay-protocol";
+import { dismissToast, useToasts } from "../lib/use-toasts";
+
 
 function impact(patch: Partial<BotRemovalPreviewDto> = {}): BotRemovalPreviewDto {
   return {
@@ -40,7 +42,8 @@ function mountDialog(previewValue: BotRemovalPreviewDto, removeImpl?: (input: {
   previewRevision: string;
   clearDirectHistory: boolean;
   releaseDirectBindings: boolean;
-}) => Promise<LifecycleOperationDto>) {
+  deleteDedicatedWorkspace: boolean;
+}) => Promise<LifecycleOperationDto>, supportsWorkspaceCleanup = false) {
   const preview = vi.fn(async () => previewValue);
   const remove = vi.fn(removeImpl ?? (async () => operation("completed", { clearDirectHistory: false })));
   const getOperation = vi.fn(async () => operation("failed", { error: { code: "session_release_failed", message: "release failed" }, requestId: "req-kept" }));
@@ -50,6 +53,7 @@ function mountDialog(previewValue: BotRemovalPreviewDto, removeImpl?: (input: {
       preview,
       remove,
       getOperation,
+      supportsWorkspaceCleanup,
     },
     global: { plugins: [i18n] },
   });
@@ -57,6 +61,9 @@ function mountDialog(previewValue: BotRemovalPreviewDto, removeImpl?: (input: {
 }
 
 describe("BotRemovalDialog", () => {
+  beforeEach(() => {
+    for (const toast of [...useToasts().value]) dismissToast(toast.id);
+  });
   it("shows that group history stays and sends an explicit direct-history choice", async () => {
     const { wrapper, remove } = mountDialog(impact());
     await flushPromises();
@@ -113,5 +120,63 @@ describe("BotRemovalDialog", () => {
     const { wrapper } = mountDialog(impact({ phase: "retired" }));
     await flushPromises();
     expect(wrapper.get("[data-test=removal-finished]").text()).toContain("Group history stays");
+  });
+
+  it("offers the dedicated workspace folder and sends the delete flag", async () => {
+    const { wrapper, remove } = mountDialog(impact({
+      dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false },
+    }), undefined, true);
+    await flushPromises();
+    expect(wrapper.get("[data-test=removal-workspace-path]").text()).toContain("/home/u/.xacpx/bots/reviewer");
+    await wrapper.get("[data-test=removal-delete-workspace]").setValue(true);
+    await wrapper.get("[data-test=removal-confirm]").trigger("click");
+    await flushPromises();
+    expect(remove.mock.calls[0]![0].deleteDedicatedWorkspace).toBe(true);
+  });
+
+  it("keeps the flag off when the instance cannot delete workspaces", async () => {
+    const { wrapper, remove } = mountDialog(impact({
+      dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false },
+    }));
+    await flushPromises();
+    expect(wrapper.find("[data-test=removal-delete-workspace]").exists()).toBe(false);
+    await wrapper.get("[data-test=removal-confirm]").trigger("click");
+    await flushPromises();
+    expect(remove.mock.calls[0]![0].deleteDedicatedWorkspace).toBe(false);
+  });
+
+  it("explains that an in-use workspace is kept instead of offering to delete it", async () => {
+    const { wrapper } = mountDialog(impact({
+      dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: true },
+    }), undefined, true);
+    await flushPromises();
+    expect(wrapper.find("[data-test=removal-delete-workspace]").exists()).toBe(false);
+    expect(wrapper.get("[data-test=removal-workspace-in-use]").text()).toContain("still in use");
+  });
+
+  it("reports a workspace that was kept or could not be deleted", async () => {
+    const { wrapper } = mountDialog(impact({
+      dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false },
+    }), async () => operation("completed", {
+      workspaceCleanup: { outcome: "kept", path: "/home/u/.xacpx/bots/reviewer", code: "workspace_in_use" },
+    }), true);
+    await flushPromises();
+    await wrapper.get("[data-test=removal-confirm]").trigger("click");
+    await flushPromises();
+    const toasts = useToasts().value;
+    expect(toasts[0]?.key).toBe("bot.removal.workspaceKept");
+    expect(toasts[0]?.params?.path).toBe("/home/u/.xacpx/bots/reviewer");
+  });
+
+  it("stays silent when the workspace was deleted", async () => {
+    const { wrapper } = mountDialog(impact({
+      dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false },
+    }), async () => operation("completed", {
+      workspaceCleanup: { outcome: "deleted", path: "/home/u/.xacpx/bots/reviewer" },
+    }), true);
+    await flushPromises();
+    await wrapper.get("[data-test=removal-confirm]").trigger("click");
+    await flushPromises();
+    expect(useToasts().value.some((toast) => toast.key.startsWith("bot.removal.workspace"))).toBe(false);
   });
 });
