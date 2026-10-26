@@ -401,9 +401,11 @@ Run 卡片列出实际执行的成员。`shared-single-writer` 的 Topic 注明�
 
 Group 作曲器里的“自动协作”只在两者同时成立时出现：`control.conversations.router.get` 为 `ready`，且 `control.jev.get` 报告 `keyConfigured: true`。否则（包括读取未返回、旧 daemon 不支持 Jev RPC）该选项完全隐藏，不显示禁用项或原因；默认的负责人模式不变。自动 Run 的卡片显示“已分派给 <成员>”和 Router 给出的 `routingReason`（置信度或回退原因）。Run 卡片显示预算、指派、依赖、`waitingQuestion` 和 `blockedReason`。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
 
-实例管理弹层（会话 tab 的齿轮）General 面板提供群组自动协作和 Relay 终端两个开关。群组自动协作分区显示 daemon 解析出的状态，不暴露 Router 命令、鉴权环境变量或配置路径。开关绑定持久化的 `config.enabled`，不来自可用性状态：探测失败的实例照样显示已开启，并给出修复说明。打开弹层走 `control.conversations.router.update` 的空补丁（纯读，不写盘不探测），切换走同一个 RPC 的非空补丁。开启时若实例没有配置 `conversations.router.command`，daemon 自动写入仓库自带的默认 Router 并运行探测。旧 daemon 对 `update` 答 `unknown-type` 时，store 回落到 `control.conversations.router.get`，面板显示只读状态和升级提示。`conversation-router-changed` 事件触发重读。
+实例管理弹层（会话 tab 的齿轮）General 面板提供群组自动协作、Relay 终端和文件写入三个开关。群组自动协作分区显示 daemon 解析出的状态，不暴露 Router 命令、鉴权环境变量或配置路径。开关绑定持久化的 `config.enabled`，不来自可用性状态：探测失败的实例照样显示已开启，并给出修复说明。打开弹层走 `control.conversations.router.update` 的空补丁（纯读，不写盘不探测），切换走同一个 RPC 的非空补丁。开启时若实例没有配置 `conversations.router.command`，daemon 自动写入仓库自带的默认 Router 并运行探测。旧 daemon 对 `update` 答 `unknown-type` 时，store 回落到 `control.conversations.router.get`，面板显示只读状态和升级提示。`conversation-router-changed` 事件触发重读。
 Jev 路由配置收拢在“Jev 路由”折叠区，包含 endpoint、API key（只显示掩码，输入即替换，可清除）、可选代理、只读模型 `jev-1.13.0`、保存和连接测试。API key 保存在实例 daemon 侧，不会回传 dashboard。
 终端开关读取及更新实例 `channels[id=relay].options.terminal.enabled`，默认关闭；RPC 返回需重启标记，因为 RMUX runtime 与已公布能力在 Relay channel 启动时建立。设置保存后重启该实例的 Relay channel 才会改变实际终端能力。该开关不控制 legacy root `terminal.enabled`。旧 connector 对新 RPC 返回 `unknown-type` 时显示升级提示。
+
+终端不是热切换，和文件写入开关不同，原因在启动期建立的三个不变量：能力集 `terminal.rmux.recovery.v1` / `terminal.multi-view.v1` 只在握手时上报（hub 按 socket 身份落库，改能力必须重连并重新握手）；`bootstrapTerminal()` 一次完成 registry → RMUX sidecar → reconcile，`onRequest` 的路由判断读的是启动期赋值的 `this.terminal` / `terminalReady`；关闭方向还要求 durable registry 先 reaping 再销毁 sidecar（`retireRelayTerminals`），中途打断会留下 tombstone。要热切换就得让 channel 在同一进程内重建 sidecar 并重发能力，而 hub 侧握手的实例记录只在连接时更新，等于变相重启 channel——所以维持「保存即持久化、重启 channel 生效」。
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 
@@ -596,7 +598,7 @@ Files 面板支持以下写操作（均需在 xacpx daemon config 启用 `files.
 
 ### 门控与安全模型
 
-- **`files.writeEnabled` 开关**：xacpx daemon 的 `config.files.writeEnabled`（boolean，默认 `false`）控制文件写入及下述结构化 Git mutation；关闭时相关 Control RPC 返回 `files-write-disabled`，只读操作（list/download/Git status）仍可用。在 xacpx 配置文件中设置 `files.writeEnabled: true` 后重启 daemon 生效。
+- **`files.writeEnabled` 开关**：xacpx daemon 的 `config.files.writeEnabled`（boolean，默认 `false`）控制文件写入及下述结构化 Git mutation；关闭时相关 Control RPC 返回 `files-write-disabled`，只读操作（list/download/Git status）仍可用。**该开关可从看板热切换**：实例管理弹层 General 面板的「文件写入与 Git 改动」开关走 `control.files.settings.get/update`，写入 `files.writeEnabled` 后立即发布到 daemon 的内存 config（门控每次操作读取该对象），无需重启。老 connector 对这两个 RPC 回 `unknown-type`，老 daemon 回 `unsupported`，两者都渲染升级提示。
 - **安全隔离**：写操作复用 `WorkspaceFs.resolveParent()` 和 `WorkspaceFs.resolve()` 三道闸（account-owns-instance → workspace 名白名单 → realpath 包含），确保操作不脱离 workspace 容器。
 - **删除确认**：Web UI 在执行删除前弹出确认对话框，删除后无法恢复（永久删除）。
 - **下载大小限制**：单个文件≤5 MiB；超出大小的文件下载请求被 relay hub 拒绝（413）。

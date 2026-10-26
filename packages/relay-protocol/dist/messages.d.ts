@@ -91,6 +91,8 @@ export declare const MSG: {
     readonly terminalResourceExit: "instance.terminal.resource-exit";
     readonly terminalSettingsGet: "control.terminal.settings.get";
     readonly terminalSettingsUpdate: "control.terminal.settings.update";
+    readonly filesSettingsGet: "control.files.settings.get";
+    readonly filesSettingsUpdate: "control.files.settings.update";
     readonly desktopPrepare: "instance.desktop.prepare";
     readonly desktopCancel: "instance.desktop.cancel";
     readonly instanceAgentEndpointsSync: "instance.agent-endpoints.sync";
@@ -1219,6 +1221,24 @@ export interface TerminalSettingsDto {
     /** Always true: the relay channel's RMUX bootstrap and capability snapshot are
      *  created at startup, so a persisted change takes effect only after restart. */
     restartRequired: true;
+}
+/** Empty read. The instance returns its file write settings. */
+export interface FilesSettingsGetPayload {
+    readonly __empty?: never;
+}
+/**
+ * Flip the file write switch. The instance persists `files.writeEnabled` and
+ * hot-applies it to the live config, so the next fs/Git mutation sees the new
+ * value without a restart. The answer carries `restartRequired: false`.
+ */
+export interface FilesSettingsUpdatePayload {
+    enabled: boolean;
+}
+/** The `control.files.settings.get` / `control.files.settings.update` answer. */
+export interface FilesSettingsDto {
+    enabled: boolean;
+    /** Always false: the switch hot-applies to the live config, no restart needed. */
+    restartRequired: false;
 }
 /** Capability strings a connector may advertise during register/auth. */
 export declare const RELAY_CAPABILITIES: {

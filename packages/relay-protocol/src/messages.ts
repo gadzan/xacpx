@@ -144,6 +144,9 @@ export const MSG = {
   // Relay RMUX terminal settings (instance-scoped switch, not terminal I/O).
   terminalSettingsGet: "control.terminal.settings.get",
   terminalSettingsUpdate: "control.terminal.settings.update",
+  // File writes + structured Git mutations (instance-scoped switch, hot-applied).
+  filesSettingsGet: "control.files.settings.get",
+  filesSettingsUpdate: "control.files.settings.update",
   // Instance desktop (RFB/VNC) over an independent binary WebSocket (additive;
   // prepare is req/res, cancel is a hub→connector event; framebuffer never
   // enters the control envelope).
@@ -1331,6 +1334,27 @@ export interface TerminalSettingsDto {
   /** Always true: the relay channel's RMUX bootstrap and capability snapshot are
    *  created at startup, so a persisted change takes effect only after restart. */
   restartRequired: true;
+}
+
+/** Empty read. The instance returns its file write settings. */
+export interface FilesSettingsGetPayload {
+  readonly __empty?: never;
+}
+
+/**
+ * Flip the file write switch. The instance persists `files.writeEnabled` and
+ * hot-applies it to the live config, so the next fs/Git mutation sees the new
+ * value without a restart. The answer carries `restartRequired: false`.
+ */
+export interface FilesSettingsUpdatePayload {
+  enabled: boolean;
+}
+
+/** The `control.files.settings.get` / `control.files.settings.update` answer. */
+export interface FilesSettingsDto {
+  enabled: boolean;
+  /** Always false: the switch hot-applies to the live config, no restart needed. */
+  restartRequired: false;
 }
 
 /** Capability strings a connector may advertise during register/auth. */

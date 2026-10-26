@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `control.files.settings.get` / `control.files.settings.update` and `FilesSettingsDto`, and Manage Instance gains a "File writes & Git changes" switch on them. Flipping it persists `files.writeEnabled` and hot-applies it to the daemon's live config, so the next file or structured Git mutation is gated by the new value with no restart. Read-only browsing and Git status stay available when it is off, and a connector or daemon that predates the RPCs shows an upgrade notice instead of a switch.
+
 ## [relay-protocol 0.6.4-beta.5] - 2026-10-26
 
 ### Added

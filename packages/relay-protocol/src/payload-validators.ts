@@ -39,6 +39,8 @@ import {
   type GroupTopicsCreatePayload,
   type GroupTopicsTeardownPayload,
   type FsCopyPayload,
+  type FilesSettingsGetPayload,
+  type FilesSettingsUpdatePayload,
   type FsCreatePayload,
   type FsDeletePayload,
   type FsDiffPayload,
@@ -428,6 +430,17 @@ const validateTerminalSettingsGet: Validator<TerminalSettingsGetPayload> = (p) =
   return {};
 };
 const validateTerminalSettingsUpdate: Validator<TerminalSettingsUpdatePayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean") return null;
+  return { enabled: o.enabled };
+};
+// --- file write settings (hot-applied, no restart) ---
+const validateFilesSettingsGet: Validator<FilesSettingsGetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0) return null;
+  return {};
+};
+const validateFilesSettingsUpdate: Validator<FilesSettingsUpdatePayload> = (p) => {
   const o = fields(p);
   if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean") return null;
   return { enabled: o.enabled };
@@ -1166,6 +1179,7 @@ export type ControlRpcType =
   | typeof MSG.terminalOpen | typeof MSG.terminalTakeControl
   | typeof MSG.terminalResync | typeof MSG.terminalTerminate
   | typeof MSG.terminalSettingsGet | typeof MSG.terminalSettingsUpdate
+  | typeof MSG.filesSettingsGet | typeof MSG.filesSettingsUpdate
   | typeof MSG.desktopPrepare
   | typeof MSG.upload
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
@@ -1251,6 +1265,8 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalTerminate]: validateTerminalTerminate,
   [MSG.terminalSettingsGet]: validateTerminalSettingsGet,
   [MSG.terminalSettingsUpdate]: validateTerminalSettingsUpdate,
+  [MSG.filesSettingsGet]: validateFilesSettingsGet,
+  [MSG.filesSettingsUpdate]: validateFilesSettingsUpdate,
   [MSG.desktopPrepare]: validateDesktopPrepare,
   [MSG.upload]: validateUpload,
   [MSG.botsGet]: validateBotsGet,
@@ -1500,6 +1516,10 @@ type _gitUntrackBound = Expect<Equal<PayloadFor<typeof MSG.gitUntrack>, GitPaths
 type _gitDiscardBound = Expect<Equal<PayloadFor<typeof MSG.gitDiscard>, GitPathsPayload>>;
 type _terminalOpenBound = Expect<Equal<PayloadFor<typeof MSG.terminalOpen>, TerminalOpenPayload>>;
 type _terminalTerminateBound = Expect<Equal<PayloadFor<typeof MSG.terminalTerminate>, TerminalTerminatePayload>>;
+type _terminalSettingsGetBound = Expect<Equal<PayloadFor<typeof MSG.terminalSettingsGet>, TerminalSettingsGetPayload>>;
+type _terminalSettingsUpdateBound = Expect<Equal<PayloadFor<typeof MSG.terminalSettingsUpdate>, TerminalSettingsUpdatePayload>>;
+type _filesSettingsGetBound = Expect<Equal<PayloadFor<typeof MSG.filesSettingsGet>, FilesSettingsGetPayload>>;
+type _filesSettingsUpdateBound = Expect<Equal<PayloadFor<typeof MSG.filesSettingsUpdate>, FilesSettingsUpdatePayload>>;
 type _terminalInputEventBound = Expect<Equal<TerminalEventPayloadFor<typeof MSG.terminalInput>, TerminalInputPayload>>;
 type _desktopPrepareBound = Expect<Equal<PayloadFor<typeof MSG.desktopPrepare>, DesktopPreparePayload>>;
 type _desktopCancelBound = Expect<Equal<DesktopEventPayloadFor<typeof MSG.desktopCancel>, DesktopCancelPayload>>;

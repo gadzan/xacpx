@@ -165,6 +165,27 @@ async function toggleTerminal(): Promise<void> {
     // The store keeps the previous value and exposes the error beside the switch.
   }
 }
+// File writes (and structured Git mutations) — hot-applied, so this switch takes
+// effect on the instance's next operation with no restart.
+const filesPanel = computed(() => store.filesSettingsFor(props.instanceId));
+const filesSettings = computed(() => filesPanel.value.phase === "editable" ? filesPanel.value.settings : null);
+const filesSaving = computed(() => filesPanel.value.phase === "editable" && filesPanel.value.save.kind === "saving");
+const filesError = computed(() => filesPanel.value.phase === "editable" && filesPanel.value.save.kind === "failed"
+  ? filesPanel.value.save.message : "");
+const filesStatusText = computed(() => {
+  const state = filesPanel.value;
+  if (state.phase === "loading") return t("instance.autoCollabChecking");
+  if (state.phase === "editable") return state.settings.enabled ? t("instance.autoCollabOn") : t("instance.autoCollabOff");
+  return t(state.notice);
+});
+async function toggleFiles(): Promise<void> {
+  if (!filesSettings.value || filesSaving.value || !instanceOnline.value) return;
+  try {
+    await store.updateFilesSettings(props.instanceId, !filesSettings.value.enabled);
+  } catch {
+    // The store keeps the previous value and exposes the error beside the switch.
+  }
+}
 const jevTestView = computed(() => {
   const state = jevPanel.value;
   if (state.phase !== "editable") return null;
@@ -267,6 +288,7 @@ onMounted(async () => {
   void store.loadRouterPanel(props.instanceId);
   void store.loadJevSettings(props.instanceId);
   void store.loadTerminalSettings(props.instanceId, { force: true });
+  void store.loadFilesSettings(props.instanceId, { force: true });
   try {
     await store.loadFormOptions(props.instanceId);
   } catch {
@@ -368,6 +390,24 @@ onMounted(async () => {
               </div>
               <p v-if="terminalSettings?.restartRequired" data-test="terminal-restart-required" class="text-xs text-warn">{{ $t('instance.terminalSettingsRestart') }}</p>
               <p v-if="terminalError" data-test="terminal-settings-error" class="text-xs text-error">{{ terminalError }}</p>
+            </section>
+            <section data-test="files-settings" class="space-y-2">
+              <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.filesSettingsTitle") }}</h3>
+              <div class="flex items-center gap-3">
+                <button v-if="filesPanel.phase !== 'read-only'" data-test="files-settings-toggle" type="button" role="switch"
+                        :aria-checked="filesSettings?.enabled ?? false"
+                        :aria-label="(filesSettings?.enabled ?? false) ? $t('instance.filesSettingsDisable') : $t('instance.filesSettingsEnable')"
+                        :disabled="filesPanel.phase !== 'editable' || filesSaving || !instanceOnline"
+                        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                        :class="filesSettings?.enabled ? 'bg-accent' : 'bg-surface-2'"
+                        @click="toggleFiles">
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform"
+                        :class="filesSettings?.enabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
+                </button>
+                <p data-test="files-settings-status" class="text-sm text-fg-muted">{{ filesStatusText }}</p>
+              </div>
+              <p data-test="files-settings-hint" class="text-xs text-fg-muted">{{ $t("instance.filesSettingsHint") }}</p>
+              <p v-if="filesError" data-test="files-settings-error" class="text-xs text-error">{{ filesError }}</p>
             </section>
             <details v-if="jevEditable || jevUpgradeNotice" data-test="jev-details" class="rounded-lg border border-border/70 px-3 py-2">
               <summary class="cursor-pointer text-sm font-semibold text-fg">{{ $t("instance.jevTitle") }}</summary>

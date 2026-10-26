@@ -18,6 +18,7 @@ import {
   type ConversationRouterConfigState,
   type ConversationRouterState,
   type ConversationRouterUpdatePayload,
+  type FilesSettingsDto,
   type JevSettingsDto,
   type JevTestResult,
   type JevUpdatePayload,
@@ -246,90 +247,134 @@ export type JevPanelModel =
 
 /** The i18n key the dialog renders when the daemon does not advertise the Jev RPCs. */
 const JEV_UPGRADE_NOTICE = "instance.jevUpgradeNotice";
-export type TerminalSettingsSaveState =
+export type ToggleSettingsSaveState =
   | { kind: "idle" }
   | { kind: "saving" }
   | { kind: "failed"; message: string };
 
-export type TerminalSettingsModel =
+/** One instance-scoped on/off switch that reads and writes through a control RPC. */
+export type ToggleSettingsModel<T> =
   | { phase: "loading" }
   | { phase: "read-only"; notice: string }
-  | { phase: "editable"; settings: TerminalSettingsDto; save: TerminalSettingsSaveState };
+  | { phase: "editable"; settings: T; save: ToggleSettingsSaveState };
+
+export type TerminalSettingsSaveState = ToggleSettingsSaveState;
+export type TerminalSettingsModel = ToggleSettingsModel<TerminalSettingsDto>;
+export type FilesSettingsModel = ToggleSettingsModel<FilesSettingsDto>;
 
 const TERMINAL_SETTINGS_UPGRADE_NOTICE = "instance.terminalSettingsUpgradeNotice";
+const FILES_SETTINGS_UPGRADE_NOTICE = "instance.filesSettingsUpgradeNotice";
 
+interface ToggleSettingsPanelOptions {
+  readRpc: string;
+  writeRpc: string;
+  /** Copy for a connector/daemon that does not implement this switch. */
+  upgradeNotice: string;
+  /** Copy for a read that failed for an ordinary reason. */
+  readFailedNotice: string;
+}
 
-export const useInstancesStore = defineStore("instances", () => {
-  const agentDirectory = ref<WebAgentDirectoryEndpointDto[]>([]);
-  const terminalSettingsById = ref<Record<string, TerminalSettingsModel>>({});
+/**
+ * Per-instance toggle panel shared by every settings switch in the instance
+ * dialog (relay terminal, file writes). The shape is identical for all of them,
+ * so the load/write/staleness rules live here once:
+ *
+ * A monotonic revision per instance lets a landed response tell whether it is
+ * stale. Writes always win; a read lands only when nothing newer was in flight.
+ */
+function toggleSettingsPanel<const T extends { enabled: boolean }>(
+  options: ToggleSettingsPanelOptions,
+) {
+  const byId = ref<Record<string, ToggleSettingsModel<T>>>({});
+  const revById: Record<string, number> = {};
 
-  function terminalSettingsFor(instanceId: string): TerminalSettingsModel {
-    return terminalSettingsById.value[instanceId] ?? { phase: "loading" };
+  function forInstance(instanceId: string): ToggleSettingsModel<T> {
+    return byId.value[instanceId] ?? { phase: "loading" };
   }
 
-  // Monotonic revision per instance: every landed terminal-settings response
-  // (read or write) bumps it, so a response issued earlier can tell its answer
-  // is stale when it lands. Single counter, not a queue or state machine:
-  // writes always win, reads land only when nothing newer happened in flight.
-  const terminalSettingsRevById: Record<string, number> = {};
-
-  async function loadTerminalSettings(instanceId: string, options?: { force?: boolean }): Promise<void> {
-    const current = terminalSettingsById.value[instanceId];
+  async function load(instanceId: string, loadOptions?: { force?: boolean }): Promise<void> {
+    const current = byId.value[instanceId];
     const saving = current?.phase === "editable" && current.save.kind === "saving";
     // Background refreshes never interrupt a write: the GET's stale answer would
     // land as `idle` and re-arm the switch before the UPDATE resolves. An
     // explicit force (dialog open) still issues the read, but keeps the
     // `saving` phase so the switch stays disabled; the revision check below
     // discards its answer if the write lands first.
-    if (saving && !options?.force) return;
-    const issuedRev = terminalSettingsRevById[instanceId] ?? 0;
+    if (saving && !loadOptions?.force) return;
+    const issuedRev = revById[instanceId] ?? 0;
     if (!saving) {
-      terminalSettingsById.value[instanceId] = { phase: "loading" };
+      byId.value[instanceId] = { phase: "loading" };
     }
     try {
-      const settings = unwrap(await api.rpc<TerminalSettingsDto>(instanceId, "control.terminal.settings.get", {}));
+      const settings = unwrap(await api.rpc<T>(instanceId, options.readRpc, {}));
       // A write or a newer read landed while this GET was in flight: discard
       // the stale answer instead of regressing the switch.
-      if ((terminalSettingsRevById[instanceId] ?? 0) !== issuedRev) return;
-      terminalSettingsRevById[instanceId] = issuedRev + 1;
-      terminalSettingsById.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
+      if ((revById[instanceId] ?? 0) !== issuedRev) return;
+      revById[instanceId] = issuedRev + 1;
+      byId.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
     } catch (error) {
-      if ((terminalSettingsRevById[instanceId] ?? 0) !== issuedRev) return;
-      terminalSettingsRevById[instanceId] = issuedRev + 1;
+      if ((revById[instanceId] ?? 0) !== issuedRev) return;
+      revById[instanceId] = issuedRev + 1;
       // Structured wire codes only: an old connector answers `unknown-type`,
       // a new connector paired with an old daemon passes through its typed
-      // `unsupported`. Either means this instance cannot manage terminal
-      // settings, so the upgrade notice renders. Ordinary failures keep their
-      // own copy.
+      // `unsupported`. Either means this instance cannot manage the switch, so
+      // the upgrade notice renders. Ordinary failures keep their own copy.
       const code = readRpcErrorCode(error);
-      terminalSettingsById.value[instanceId] = {
+      byId.value[instanceId] = {
         phase: "read-only",
         notice: code === "unknown-type" || code === "unsupported"
-          ? TERMINAL_SETTINGS_UPGRADE_NOTICE
-          : "instance.terminalSettingsReadFailed",
+          ? options.upgradeNotice
+          : options.readFailedNotice,
       };
     }
   }
 
-  async function updateTerminalSettings(instanceId: string, enabled: boolean): Promise<TerminalSettingsDto> {
-    const current = terminalSettingsById.value[instanceId];
-    if (current?.phase !== "editable") throw new Error("Terminal settings are not available.");
-    terminalSettingsById.value[instanceId] = { ...current, save: { kind: "saving" } };
+  async function update(instanceId: string, enabled: boolean): Promise<T> {
+    const current = byId.value[instanceId];
+    if (current?.phase !== "editable") throw new Error("Settings are not available.");
+    byId.value[instanceId] = { ...current, save: { kind: "saving" } };
     try {
-      const settings = unwrap(await api.rpc<TerminalSettingsDto>(instanceId, "control.terminal.settings.update", { enabled }));
-      terminalSettingsRevById[instanceId] = (terminalSettingsRevById[instanceId] ?? 0) + 1;
-      terminalSettingsById.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
+      const settings = unwrap(await api.rpc<T>(instanceId, options.writeRpc, { enabled }));
+      revById[instanceId] = (revById[instanceId] ?? 0) + 1;
+      byId.value[instanceId] = { phase: "editable", settings, save: { kind: "idle" } };
       return settings;
     } catch (error) {
-      terminalSettingsRevById[instanceId] = (terminalSettingsRevById[instanceId] ?? 0) + 1;
-      terminalSettingsById.value[instanceId] = {
+      revById[instanceId] = (revById[instanceId] ?? 0) + 1;
+      byId.value[instanceId] = {
         ...current,
         save: { kind: "failed", message: error instanceof Error ? error.message : String(error) },
       };
       throw error;
     }
   }
- 
+
+  return { byId, forInstance, load, update };
+}
+
+
+export const useInstancesStore = defineStore("instances", () => {
+  const agentDirectory = ref<WebAgentDirectoryEndpointDto[]>([]);
+  const terminalPanel = toggleSettingsPanel<TerminalSettingsDto>({
+    readRpc: "control.terminal.settings.get",
+    writeRpc: "control.terminal.settings.update",
+    upgradeNotice: TERMINAL_SETTINGS_UPGRADE_NOTICE,
+    readFailedNotice: "instance.terminalSettingsReadFailed",
+  });
+  const filesPanel = toggleSettingsPanel<FilesSettingsDto>({
+    readRpc: "control.files.settings.get",
+    writeRpc: "control.files.settings.update",
+    upgradeNotice: FILES_SETTINGS_UPGRADE_NOTICE,
+    readFailedNotice: "instance.filesSettingsReadFailed",
+  });
+  const terminalSettingsById = terminalPanel.byId;
+  const filesSettingsById = filesPanel.byId;
+  const terminalSettingsFor = terminalPanel.forInstance;
+  const loadTerminalSettings = terminalPanel.load;
+  const updateTerminalSettings = terminalPanel.update;
+  const filesSettingsFor = filesPanel.forInstance;
+  const loadFilesSettings = filesPanel.load;
+  const updateFilesSettings = filesPanel.update;
+
 
   async function loadAgentDirectory(): Promise<void> {
     try {
@@ -1446,6 +1491,7 @@ export const useInstancesStore = defineStore("instances", () => {
           void loadSessions(event.instanceId).catch(() => {});
           refreshLoadedGroupArchivedSessions(event.instanceId);
           if (terminalSettingsById.value[event.instanceId]) void loadTerminalSettings(event.instanceId, { force: true }).catch(() => {});
+          if (filesSettingsById.value[event.instanceId]) void loadFilesSettings(event.instanceId, { force: true }).catch(() => {});
         }
       }
     } else if (event.kind === "control-event" && event.event.type === "sessions-changed") {
@@ -1470,6 +1516,7 @@ export const useInstancesStore = defineStore("instances", () => {
       if (routerPanelById.value[event.instanceId]) void loadRouterPanel(event.instanceId).catch(() => {});
       if (jevPanelById.value[event.instanceId]) void loadJevSettings(event.instanceId).catch(() => {});
       if (terminalSettingsById.value[event.instanceId]) void loadTerminalSettings(event.instanceId, { force: true }).catch(() => {});
+      if (filesSettingsById.value[event.instanceId]) void loadFilesSettings(event.instanceId, { force: true }).catch(() => {});
     } else if (event.kind === "agent-directory") {
       agentDirectory.value = event.endpoints;
     }
@@ -1496,7 +1543,7 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });
 
 /** The instances store's public shape, named for consumers (tests, helpers). */

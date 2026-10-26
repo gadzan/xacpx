@@ -903,6 +903,18 @@ async function dispatchControlRequest(
       if (typeof control.updateTerminalSettings !== "function") return errorPayload("unsupported", "Relay terminal settings are unavailable in this embedding");
       return await control.updateTerminalSettings(input.enabled);
     }
+    case MSG.filesSettingsGet: {
+      const input = parseControlPayload(MSG.filesSettingsGet, payload);
+      if (!input) return errorPayload("invalid-payload", "expected empty files settings payload");
+      if (typeof control.getFilesSettings !== "function") return errorPayload("unsupported", "File write settings require a newer daemon");
+      return await control.getFilesSettings();
+    }
+    case MSG.filesSettingsUpdate: {
+      const input = parseControlPayload(MSG.filesSettingsUpdate, payload);
+      if (!input) return errorPayload("invalid-payload", "expected files settings enabled boolean");
+      if (typeof control.updateFilesSettings !== "function") return errorPayload("unsupported", "File write settings require a newer daemon");
+      return await control.updateFilesSettings(input.enabled);
+    }
     case MSG.agentsCapabilitiesGet: {
       const input = parseControlPayload(MSG.agentsCapabilitiesGet, payload);
       if (!input) {

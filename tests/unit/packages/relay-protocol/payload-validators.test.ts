@@ -637,3 +637,27 @@ test("Bot creation accepts an omitted workspace for automatic default and keeps 
   // workspace_not_registered failure instead of silent automatic creation.
   expect(parseControlPayload(MSG.botsCreate, { name: "Reviewer", agent: "codex", workspace: "" })).not.toBeNull();
 });
+
+test("the file write switch RPCs accept only their exact shapes", () => {
+  expect(MSG.filesSettingsGet).toBe("control.files.settings.get");
+  expect(MSG.filesSettingsUpdate).toBe("control.files.settings.update");
+
+  expect(parseControlPayload(MSG.filesSettingsGet, {})).toEqual({});
+  // The read takes no payload: any object carrying fields is rejected rather
+  // than silently interpreted. An empty array is the same "no fields" answer
+  // `[]` gives the terminal settings getter (arrays have no own keys), so the
+  // two switches stay on one convention.
+  for (const bad of [null, 42, { enabled: true }, { x: 1 }]) {
+    expect(parseControlPayload(MSG.filesSettingsGet, bad)).toBeNull();
+  }
+  expect(parseControlPayload(MSG.filesSettingsGet, [])).toEqual({});
+
+  expect(parseControlPayload(MSG.filesSettingsUpdate, { enabled: true })).toEqual({ enabled: true });
+  expect(parseControlPayload(MSG.filesSettingsUpdate, { enabled: false })).toEqual({ enabled: false });
+  for (const bad of [
+    null, 42, [], {}, { enabled: "true" }, { enabled: 1 }, { enabled: null },
+    { enabled: true, extra: 1 },
+  ]) {
+    expect(parseControlPayload(MSG.filesSettingsUpdate, bad)).toBeNull();
+  }
+});
