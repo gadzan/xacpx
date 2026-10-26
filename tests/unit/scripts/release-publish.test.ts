@@ -516,7 +516,12 @@ test("npm is spawned through a resolved CLI entry, never by executable name", ()
   ) as { npm: (args: string[]) => void; npmCliPath: () => string };
 
   const entry = api.npmCliPath();
-  expect(entry).toBe(join(dirname(realpathSync(realNode)), "node_modules", "npm", "bin", "npm-cli.js"));
+  // Which candidate wins is installer-specific — Windows and fnm put npm at
+  // <dir>/node_modules, nvm/Homebrew/distro at <dir>/../lib/node_modules — so
+  // assert what the tool promises: a real npm-cli.js, spawned via
+  // process.execPath. Pinning one layout here is what made this test pass on
+  // Windows and fail on the ubuntu runner.
+  expect(entry.endsWith(join("npm", "bin", "npm-cli.js"))).toBe(true);
   expect(existsSync(entry)).toBe(true);
 
   api.npm(["install", "--package-lock-only"]);
