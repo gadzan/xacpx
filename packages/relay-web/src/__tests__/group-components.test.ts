@@ -1469,6 +1469,44 @@ describe("Group Components", () => {
       loadSpy.mockRestore();
     });
 
+    // Rows above a parked reader keep changing height after they render: a
+    // content-visibility row swaps its 88px estimate for its real height when it
+    // nears the viewport. The scroller opts out of browser scroll anchoring, so
+    // the component itself must hold the reader's row through every resize.
+    it("holds a parked reader's row when content above it changes height", async () => {
+      const observers: Array<() => void> = [];
+      vi.stubGlobal("ResizeObserver", class {
+        constructor(cb: () => void) { observers.push(cb); }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      });
+      try {
+        seedGroupSelection();
+        const { wrapper, geo } = mountTranscript();
+        seedMessages(10);
+        await flushPromises();
+        const el = scrollerOf(wrapper);
+        el.scrollTop = 480;
+        await wrapper.find('[data-test="group-transcript-scroller"]').trigger("scroll");
+        // A row above the viewport settles 60px taller; the browser leaves
+        // scrollTop alone, so msg_8 would slide down out of view.
+        geo.grow(60);
+        const groups = useGroupsStore();
+        groups.messages = [
+          { id: "msg_settled", conversationId: "conversation_g", topicId: "topic_1", seq: 0,
+            role: "human" as const, content: "settled", createdAt: "2026-08-01T00:00:00.000Z" },
+          ...groups.messages,
+        ];
+        await flushPromises();
+        expect(el.scrollTop).toBe(480);
+        observers.forEach((cb) => cb());
+        expect(el.scrollTop).toBe(540);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
     // The member activity row sits between the request and the oldest plain
     // rows: the reader parked on it must survive the prepend too, and the
     // member row is the only anchor carrying the request id's neighbor.

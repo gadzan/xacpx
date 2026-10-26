@@ -662,6 +662,12 @@ const atBottom = ref(true);
 const THRESHOLD = 64;
 interface ScrollAnchor { rowId: string; offsetTop: number; }
 const pendingAnchor = ref<ScrollAnchor | null>(null);
+/** Where a reader parked above the tail is reading, re-taken on every scroll.
+ *  The scroller opts out of browser scroll anchoring, so this is the one owner
+ *  of the reading position when rows above the viewport change height. */
+let readingAnchor: ScrollAnchor | null = null;
+const content = ref<HTMLElement | null>(null);
+let contentObserver: ResizeObserver | null = null;
 /** Last read position in the detail's trace, per member and attempt; in-memory
  *  so reopening the same process resumes where the reader left off, while a
  *  fresh browser session still starts at the top. */
@@ -670,6 +676,7 @@ function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+  readingAnchor = atBottom.value ? null : captureAnchor();
 }
 function scrollToBottom(): void {
   const el = scroller.value;
@@ -716,17 +723,43 @@ watch(() => {
 });
 onMounted(() => {
   void nextTick(() => scrollToBottom());
+  if (typeof ResizeObserver === "undefined" || !content.value) return;
+  contentObserver = new ResizeObserver(() => holdReadingPosition());
+  contentObserver.observe(content.value);
 });
+onBeforeUnmount(() => contentObserver?.disconnect());
+
+// Rows keep changing height after they are inserted: a `content-visibility:
+// auto` row is laid out at its 88px estimate and swaps in its real height a
+// frame or more later, when it nears the viewport; a trace expands; a reply
+// streams. Browser scroll anchoring would compensate some of that on its own,
+// on its own schedule, and on top of our restores, so the same shift could be
+// applied twice. The scroller opts out of it and every content resize re-applies
+// the reader's position here, after layout and before paint.
+function holdReadingPosition(): void {
+  if (pendingAnchor.value !== null) return;
+  if (atBottom.value) { scrollToBottom(); return; }
+  if (readingAnchor !== null) restoreAnchor(readingAnchor);
+}
 
 function captureAnchor(): ScrollAnchor | null {
   const el = scroller.value;
   if (!el) return null;
   const rows = el.querySelectorAll<HTMLElement>("[data-anchor-id]");
-  const viewportTop = el.getBoundingClientRect().top;
-  for (const row of rows) {
-    const rect = row.getBoundingClientRect();
-    if (rect.bottom > viewportTop) return { rowId: row.dataset["anchorId"] ?? "", offsetTop: rect.top - viewportTop };
+  const viewport = el.getBoundingClientRect();
+  // Rows are in document order, so their tops ascend: find the first row that
+  // starts inside the viewport. A row cut by the top edge is a poor anchor,
+  // because its own height may still be an estimate that changes under it.
+  let lo = 0;
+  let hi = rows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid]!.getBoundingClientRect().top >= viewport.top) hi = mid;
+    else lo = mid + 1;
   }
+  const below = rows[lo];
+  const row = below && (lo === 0 || below.getBoundingClientRect().top < viewport.top + el.clientHeight) ? below : rows[lo - 1];
+  if (row) return { rowId: row.dataset["anchorId"] ?? "", offsetTop: row.getBoundingClientRect().top - viewport.top };
   const last = groupsStore.messages[groupsStore.messages.length - 1];
   return last ? { rowId: last.id, offsetTop: el.clientHeight } : null;
 }
@@ -748,13 +781,12 @@ async function handleLoadOlder(): Promise<void> {
   finally {
     await nextTick();
     const anchor = pendingAnchor.value;
-    if (el && anchor !== null) {
+    pendingAnchor.value = null;
+    // The prepended rows settle their real heights over the next frames; the
+    // content observer keeps holding this anchor through that.
+    if (anchor !== null) {
+      readingAnchor = anchor;
       restoreAnchor(anchor);
-      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-      if (pendingAnchor.value === anchor) {
-        restoreAnchor(anchor);
-        pendingAnchor.value = null;
-      }
     }
   }
 }
@@ -765,7 +797,7 @@ async function handleLoadOlder(): Promise<void> {
   <!-- Always mounted and initially empty: text is written only when a round
        ends live, so a screen reader hears the end, never the progress. -->
   <div data-test="group-dispatch-announcer" role="status" aria-live="polite" aria-atomic="true" class="sr-only">{{ dispatchAnnouncement }}</div>
-  <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 px-4 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
+  <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 px-4 [overflow-anchor:none] lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && items.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
       <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent">
         <Users :size="22" />
@@ -787,7 +819,7 @@ async function handleLoadOlder(): Promise<void> {
       </button>
     </div>
 
-    <div class="mx-auto max-w-3xl space-y-5">
+    <div ref="content" class="mx-auto max-w-3xl space-y-5">
       <template v-for="item in items" :key="item.key">
         <!-- Durable message / handoff / system rows -->
         <template v-if="item.kind === 'message' && !(item.bubbleAnchor && item.memberTurn)">
