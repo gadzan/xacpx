@@ -168,6 +168,16 @@ test("the dispatch row opens the round details listing every bot of the round", 
   await expect(row).toHaveAttribute("aria-expanded", "false");
 });
 
+test("a still-running member closes its round below the leader's reply", async ({ page }) => {
+  await openGroup(page);
+  const rows = await page.getByTestId("group-transcript-scroller").locator("[data-row-id]")
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-row-id") ?? ""));
+  // The completed reviewer owns a bubble; the member still running closes the
+  // round instead of floating above what the leader said after dispatching.
+  expect(rows.indexOf("turn_tester")).toBe(rows.indexOf("reply_reviewer") + 1);
+  expect(rows.indexOf("turn_tester")).toBeGreaterThan(rows.indexOf("msg_leader"));
+});
+
 test("the dispatch card shows reply previews and jumps to a member's reply", async ({ page, isMobile }) => {
   test.skip(isMobile, "inline reply previews and jump exist only in the desktop card; the mobile sheet lists name and state");
   await openGroup(page);

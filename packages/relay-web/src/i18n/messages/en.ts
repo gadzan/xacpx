@@ -1238,4 +1238,8 @@ export default {
     appliesLater: "A bot model change applies to runs accepted after you save. An accepted run keeps its profile.",
     savedListUnverified: "Saved list. The last refresh failed: {message}",
   },
+  time: {
+    justNow: "just now",
+    minutesAgo: "{count} min ago",
+  },
 } as const;

@@ -140,7 +140,7 @@ export function projectGroupTranscript(input: GroupProjectionInput): GroupTransc
       }
     }
   }
-  const pending: { request?: ConversationMessageDto; items: GroupTranscriptItem[] }[] = [];
+  const pending: { anchor?: ConversationMessageDto; items: GroupTranscriptItem[] }[] = [];
   const records = Object.entries(input.runs).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   for (const [runId, record] of records) {
     const matchingIds = messages.filter((message) => message.id === record.run.requestMessageId);
@@ -175,7 +175,12 @@ export function projectGroupTranscript(input: GroupProjectionInput): GroupTransc
         explanation: runId !== record.run.id ? "owner-mismatch" : requestProblem,
       });
     }
-    if (items.length > 0) pending.push({ request, items });
+    // Synthesized rows close out their Run's block: anchoring them on the human
+    // request instead would float a still-running member above everything the
+    // leader said after dispatching it, then drop it below on completion.
+    let anchor: ConversationMessageDto | undefined;
+    for (const message of messages) if (message.runId === record.run.id) anchor = message;
+    if (items.length > 0) pending.push({ anchor, items });
   }
 
   const out: GroupTranscriptItem[] = [];
@@ -198,11 +203,11 @@ export function projectGroupTranscript(input: GroupProjectionInput): GroupTransc
       out.push({ kind: "message", key: `msg:${message.id}`, message, run: record, bubbleAnchor: false });
     }
     for (const group of pending) {
-      if (group.request === message) out.push(...group.items);
+      if (group.anchor === message) out.push(...group.items);
     }
   }
   for (const group of pending) {
-    if (!group.request) out.push(...group.items);
+    if (!group.anchor) out.push(...group.items);
   }
   return out;
 }
