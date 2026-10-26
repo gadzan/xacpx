@@ -37,6 +37,7 @@ import {
   type GroupsUpdatePayload,
   type GroupTopicsArchivePayload,
   type GroupTopicsCreatePayload,
+  type GroupTopicsSetIsolationPayload,
   type GroupTopicsTeardownPayload,
   type FsCopyPayload,
   type FilesSettingsGetPayload,
@@ -704,6 +705,11 @@ const validateGroupTopicsTeardown: Validator<GroupTopicsTeardownPayload> = (p) =
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? (o as unknown as GroupTopicsTeardownPayload) : null;
 };
+const validateGroupTopicsSetIsolation: Validator<GroupTopicsSetIsolationPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) && isCreateIsolation(o.isolation)
+    ? (o as unknown as GroupTopicsSetIsolationPayload) : null;
+};
 const MAX_CONVERSATION_ATTACHMENTS = 5;
 export const MAX_PROMPT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
@@ -1190,7 +1196,8 @@ export type ControlRpcType =
   | typeof MSG.topicsTeardown | typeof MSG.topicsClear | typeof MSG.topicsPreview
   | typeof MSG.groupsCreate | typeof MSG.groupsUpdate | typeof MSG.groupsDelete | typeof MSG.groupsGet
   | typeof MSG.groupsList
-  | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
+  | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsSetIsolation
+  | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
   | typeof MSG.conversationPrompt | typeof MSG.conversationPromptWithPolicy | typeof MSG.conversationHistory
   | typeof MSG.conversationWorktree
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
@@ -1292,6 +1299,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupsGet]: validateGroupsGet,
   [MSG.groupsList]: validateGroupsList,
   [MSG.groupTopicsCreate]: validateGroupTopicsCreate,
+  [MSG.groupTopicsSetIsolation]: validateGroupTopicsSetIsolation,
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,

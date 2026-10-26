@@ -183,6 +183,7 @@ export const MSG = {
   groupsGet: "control.groups.get",
   groupsList: "control.groups.list",
   groupTopicsCreate: "control.group.topics.create",
+  groupTopicsSetIsolation: "control.group.topics.set-isolation",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
   conversationCompletionsGet: "control.conversation.completions.get",
@@ -706,6 +707,11 @@ export interface GroupTopicsCreatePayload {
   conversationId: string;
   title: string;
   target: GroupTopicCreateTargetDto;
+}
+export interface GroupTopicsSetIsolationPayload {
+  conversationId: string;
+  topicId: string;
+  isolation: GroupTopicCreateTargetDto["isolation"];
 }
 export interface GroupTopicsArchivePayload {
   conversationId: string;

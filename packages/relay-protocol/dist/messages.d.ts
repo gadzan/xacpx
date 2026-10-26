@@ -125,6 +125,7 @@ export declare const MSG: {
     readonly groupsGet: "control.groups.get";
     readonly groupsList: "control.groups.list";
     readonly groupTopicsCreate: "control.group.topics.create";
+    readonly groupTopicsSetIsolation: "control.group.topics.set-isolation";
     readonly groupTopicsArchive: "control.group.topics.archive";
     readonly groupTopicsTeardown: "control.group.topics.teardown";
     readonly conversationCompletionsGet: "control.conversation.completions.get";
@@ -612,6 +613,11 @@ export interface GroupTopicsCreatePayload {
     conversationId: string;
     title: string;
     target: GroupTopicCreateTargetDto;
+}
+export interface GroupTopicsSetIsolationPayload {
+    conversationId: string;
+    topicId: string;
+    isolation: GroupTopicCreateTargetDto["isolation"];
 }
 export interface GroupTopicsArchivePayload {
     conversationId: string;

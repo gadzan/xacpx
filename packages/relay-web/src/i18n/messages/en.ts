@@ -895,6 +895,10 @@ export default {
       confirmUnbind: "Disconnect external chats bound to this topic",
       bindingsBlocked: "External chats are bound here. Confirm disconnect before continuing.",
       worktreeWarning: "This topic still has worktrees. Unmerged changes block deletion until you integrate them or leave them in place and retry.",
+      isolation: "Filesystem isolation",
+      isolationTitle: "Filesystem isolation",
+      isolationBody: "Choose how dispatched members share the disk. Only per-member Git worktrees let one round's members execute concurrently.",
+      isolationHint: "The switch applies to later dispatches; an in-flight Run keeps its current target until it settles.",
       save: "Save",
     },
     prompt: {

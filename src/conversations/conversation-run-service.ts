@@ -983,6 +983,82 @@ export class ConversationRunService {
   }
 
   /**
+   * Switch a Group Topic's isolation policy. `worktree-per-member` lifts the
+   * same-Run single-writer slot, so dispatched members execute concurrently —
+   * each in its own verified worktree, with distinct-cwd proof at physical
+   * admission. `shared` and `shared-single-writer` keep serializing unproven
+   * work exactly as before.
+   *
+   * The switch only reaches future dispatches: a Topic with unsettled Runs
+   * keeps its current target, because those members are already bound to
+   * today's directories and rebinding mid-flight would fail their claims.
+   * Linearized like the other topic mutations: the write runs inside every
+   * member Bot's lifecycle gate so no materializer can bind a session to the
+   * target being replaced.
+   */
+  async setGroupTopicIsolation(
+    conversationId: string,
+    topicId: string,
+    isolation: WorkspaceIsolationPolicy,
+  ): Promise<ConversationTopic> {
+    this.assertOpen();
+    const current = this.requireGroupTopic(conversationId, topicId);
+    const target = current.executionTarget;
+    if (!target) {
+      throw new ConversationError("execution_target_missing", `topic "${topicId}" has no execution target`);
+    }
+    if (target.isolation === isolation) return current;
+    this.assertGroupTopicSettled(conversationId, topicId);
+    const executionTarget = this.requireExecutionTarget({
+      workspace: target.workspace,
+      ...(target.cwd !== undefined ? { cwd: target.cwd } : {}),
+      isolation,
+    });
+    for (;;) {
+      const botIds = this.groupTopicMemberBotIds(conversationId, topicId);
+      const gateSet = new Set(botIds);
+      await this.beforeArchiveGatesAcquired?.();
+      const updated = await this.bots.runLifecycleAll(botIds, async () => {
+        const liveIds = this.groupTopicMemberBotIds(conversationId, topicId);
+        if (liveIds.some((id) => !gateSet.has(id))) return null;
+        const topic = this.requireGroupTopic(conversationId, topicId);
+        if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
+          throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
+        }
+        this.assertGroupTopicSettled(conversationId, topicId);
+        const live = this.requireGroupTopic(conversationId, topicId).executionTarget;
+        if (!live || live.isolation === isolation) return topic;
+        const stored: ConversationTopic = {
+          ...topic,
+          executionTarget,
+          updatedAt: this.now().toISOString(),
+        };
+        const next = structuredClone(this.state);
+        next.conversation_topics[topicId] = stored;
+        await this.persist(next);
+        return stored;
+      });
+      if (updated) {
+        emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+        emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: updated });
+        return updated;
+      }
+    }
+  }
+
+  /** A Topic whose Runs are still in flight must not change execution target. */
+  private assertGroupTopicSettled(conversationId: string, topicId: string): void {
+    const nonterminal = this.store.listRuns(conversationId, topicId).filter((run) => this.isUnsettledRun(run.state));
+    if (nonterminal.length > 0) {
+      throw new ConversationError(
+        "conversation_not_settled",
+        `topic "${topicId}" has unsettled runs; settle them before switching isolation`,
+        { runIds: nonterminal.map((run) => run.id) },
+      );
+    }
+  }
+
+  /**
    * Archive flips active → archived. Linearized like teardown/membership
    * update: the status flip runs inside every member Bot's lifecycle gate so
    * no materializer can be between session creation and binding publish when

@@ -60,6 +60,12 @@ async function renameTopic(topicId: string, title: string) {
   await groupsStore.updateTopic(ctx.instanceId, ctx.conversationId, topicId, title);
 }
 
+async function setTopicIsolation(topicId: string, isolation: "shared" | "shared-single-writer" | "worktree-per-member") {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await groupsStore.setGroupTopicIsolation(ctx.instanceId, ctx.conversationId, topicId, isolation);
+}
+
 async function archiveTopic(topicId: string) {
   const ctx = requireTopicContext();
   if (!ctx) return;
@@ -206,6 +212,7 @@ const worktreeRunId = computed(() => {
           :restore-topic="restoreTopic"
           :teardown-topic="teardownTopic"
           :clear-topic="clearTopic"
+          :set-topic-isolation="setTopicIsolation"
           @select="groupsStore.switchTopic"
           @create="newTopicDialogOpen = true"
         />
@@ -236,6 +243,7 @@ const worktreeRunId = computed(() => {
             :restore-topic="restoreTopic"
             :teardown-topic="teardownTopic"
             :clear-topic="clearTopic"
+            :set-topic-isolation="setTopicIsolation"
             @select="groupsStore.switchTopic"
             @create="newTopicDialogOpen = true"
           />

@@ -1264,6 +1264,11 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsCreate}: malformed payload`);
       return { topic: await control.createGroupTopic(input.conversationId, input.title, input.target, { maxConcurrentMemberTurns: input.maxConcurrentMemberTurns }) };
     }
+    case MSG.groupTopicsSetIsolation: {
+      const input = parseControlPayload(MSG.groupTopicsSetIsolation, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsSetIsolation}: malformed payload`);
+      return { topic: await control.setGroupTopicIsolation(input.conversationId, input.topicId, input.isolation) };
+    }
     case MSG.groupTopicsArchive: {
       const input = parseControlPayload(MSG.groupTopicsArchive, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsArchive}: malformed payload`);

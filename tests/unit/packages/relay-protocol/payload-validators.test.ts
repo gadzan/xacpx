@@ -375,6 +375,15 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
     conversationId: "conversation_g", title: "Bad",
     target: { workspace: "backend", isolation: "mesh" },
   })).toBeNull();
+  expect(parseControlPayload(MSG.groupTopicsSetIsolation, {
+    conversationId: "conversation_g", topicId: "topic_1", isolation: "worktree-per-member",
+  })).not.toBeNull();
+  for (const isolation of ["mesh", "", null, 1]) {
+    expect(parseControlPayload(MSG.groupTopicsSetIsolation, {
+      conversationId: "conversation_g", topicId: "topic_1", isolation,
+    })).toBeNull();
+  }
+  expect(parseControlPayload(MSG.groupTopicsSetIsolation, { topicId: "topic_1", isolation: "shared" })).toBeNull();
   // Structured target resource bounds: gate acquisition is process-lifetime
   // state, so an oversized array or an absurd id must be refused at the wire.
   const ids = (count: number): string[] => Array.from({ length: count }, (_, i) => `b${i}`);

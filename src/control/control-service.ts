@@ -2874,6 +2874,17 @@ export class ControlService {
     });
   }
 
+  async setGroupTopicIsolation(
+    conversationId: string,
+    topicId: string,
+    isolation: ExecutionTargetDto["isolation"],
+  ) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.setGroupTopicIsolation(conversationId, topicId, isolation);
+      return this.topicSummary(topic);
+    });
+  }
+
   async archiveGroupTopic(conversationId: string, topicId: string) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.archiveGroupTopic(conversationId, topicId);
