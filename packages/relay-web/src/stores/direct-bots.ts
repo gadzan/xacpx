@@ -1136,6 +1136,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       previewRevision: string;
       clearDirectHistory: boolean;
       releaseDirectBindings: boolean;
+      deleteDedicatedWorkspace: boolean;
     },
   ): Promise<LifecycleOperationDto> {
     const res = unwrapRpc(await api.rpc<{ operation: LifecycleOperationDto }>(
@@ -1147,6 +1148,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         previewRevision: input.previewRevision,
         clearDirectHistory: input.clearDirectHistory,
         releaseDirectBindings: input.releaseDirectBindings,
+        deleteDedicatedWorkspace: input.deleteDedicatedWorkspace,
       },
     ));
     if (res.operation.phase === "completed") {

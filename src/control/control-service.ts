@@ -7,6 +7,12 @@ import { isWorkspaceRemovalRefused } from "../config/workspace-removal.js";
 import { sameWorkspacePath } from "../commands/workspace-path.js";
 import { resolveBotsHome } from "../bots/bots-home.js";
 import { BotError } from "../bots/bot-error.js";
+import {
+  cleanupDedicatedWorkspace,
+  evaluateDedicatedWorkspaceCleanup,
+  type DedicatedWorkspaceReferences,
+} from "../bots/dedicated-workspace-cleanup.js";
+import type { BotProfile, DedicatedWorkspaceMarker } from "../bots/bot-types";
 import { AsyncMutex } from "../orchestration/async-mutex.js";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
@@ -113,7 +119,7 @@ import {
 import type { AppLogger } from "../logging/app-logger";
 import type { ConversationRuntime } from "../conversations/conversation-composition";
 import { ConversationError } from "../conversations/conversation-error";
-import { lifecycleOperationId, type LifecycleOperation } from "../conversations/lifecycle-operation";
+import { lifecycleOperationId, transitionLifecycleOperation, type LifecycleOperation } from "../conversations/lifecycle-operation";
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
@@ -572,6 +578,7 @@ function toLifecycleOperationDto(operation: LifecycleOperation): LifecycleOperat
         releaseDirectBindings: operation.params.releaseDirectBindings,
       }
       : {}),
+    ...(operation.workspaceCleanup ? { workspaceCleanup: operation.workspaceCleanup } : {}),
   };
 }
 
@@ -2551,6 +2558,17 @@ export class ControlService {
     return true;
   }
 
+  /**
+   * Feature probe for connectors: `removeBot` accepts
+   * `deleteDedicatedWorkspace` and deletes the Bot's daemon-allocated
+   * workspace directory. Connectors advertise
+   * `RELAY_CAPABILITIES.botsDedicatedWorkspaceCleanupV1` only when this
+   * exists, so a web client never sends the flag to a core that ignores it.
+   */
+  supportsBotDedicatedWorkspaceCleanup(): true {
+    return true;
+  }
+
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
       const bot = input.workspace !== undefined
@@ -2573,7 +2591,7 @@ export class ControlService {
       );
     }
     const create = async (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => {
-      const root = this.deps.botsHomeRoot ?? resolveBotsHome();
+      const root = this.botsHome();
       await mkdir(root, { recursive: true, mode: 0o700 });
       const taken: Record<string, true> = Object.create(null);
       for (const name of [".", "..", "__proto__", "constructor", "prototype"]) taken[name] = true;
@@ -2597,7 +2615,9 @@ export class ControlService {
       try {
         await workspaces.create(name, dir, `Bot default workspace for ${input.name.trim()}`);
         registered = true;
-        return await runtime.bots.createBot({ ...input, workspace: name });
+        return await runtime.bots.createBot({ ...input, workspace: name }, {
+          dedicatedWorkspace: { name, cwd: dir, createdAt: new Date(this.deps.now?.() ?? Date.now()).toISOString() },
+        });
       } catch (error) {
         if (registered) {
           // A same-name entry that is not ours (replaced out from under us, or
@@ -2638,6 +2658,88 @@ export class ControlService {
       : this.botWorkspaceMutex.run(() => create(this.deps.workspaces));
   }
 
+  private botsHome(): string {
+    return this.deps.botsHomeRoot ?? resolveBotsHome();
+  }
+
+  private dedicatedWorkspaceClaim(
+    runtime: ConversationRuntime,
+    botId: string,
+  ): { marker: DedicatedWorkspaceMarker; workspace: string } | undefined {
+    let bot: BotProfile;
+    try {
+      bot = runtime.bots.getBot(botId);
+    } catch {
+      return undefined;
+    }
+    return bot.dedicatedWorkspace === undefined
+      ? undefined
+      : { marker: bot.dedicatedWorkspace, workspace: bot.workspace };
+  }
+
+  private dedicatedWorkspaceReferences(
+    runtime: ConversationRuntime,
+    botId: string,
+    name: string,
+  ): DedicatedWorkspaceReferences {
+    return runtime.bots.dedicatedWorkspaceReferences(name, botId, runtime.store.worktrees.list());
+  }
+
+  private async dedicatedWorkspacePreview(
+    runtime: ConversationRuntime,
+    botId: string,
+  ): Promise<BotRemovalPreviewDto["dedicatedWorkspace"]> {
+    const claim = this.dedicatedWorkspaceClaim(runtime, botId);
+    if (claim === undefined) {
+      return undefined;
+    }
+    const plan = await evaluateDedicatedWorkspaceCleanup({
+      marker: claim.marker,
+      workspace: claim.workspace,
+      workspaces: this.deps.workspaces.list(),
+      botsHomeRoot: this.botsHome(),
+      references: this.dedicatedWorkspaceReferences(runtime, botId, claim.marker.name),
+    });
+    if (plan === null) {
+      return undefined;
+    }
+    return { name: plan.marker.name, path: plan.path, inUse: plan.blocker !== null };
+  }
+
+  private async recordDedicatedWorkspaceCleanup(
+    runtime: ConversationRuntime,
+    botId: string,
+    claim: { marker: DedicatedWorkspaceMarker; workspace: string },
+    operation: LifecycleOperation,
+  ): Promise<LifecycleOperation> {
+    const cleanup = await cleanupDedicatedWorkspace({
+      marker: claim.marker,
+      workspace: claim.workspace,
+      deps: {
+        workspaces: this.deps.workspaces,
+        botsHomeRoot: this.botsHome(),
+        references: () => this.dedicatedWorkspaceReferences(runtime, botId, claim.marker.name),
+      },
+    });
+    if (cleanup === null) {
+      return operation;
+    }
+    if (cleanup.outcome !== "deleted") {
+      await this.deps.logger?.error(
+        "bot.remove.workspace_cleanup_failed",
+        "Bot removed, but its dedicated workspace could not be deleted",
+        { botId, name: claim.marker.name, path: cleanup.path, error: cleanup.code },
+      );
+    }
+    const recorded = transitionLifecycleOperation(operation, {
+      type: "workspaceCleanup",
+      cleanup,
+      at: new Date(this.deps.now?.() ?? Date.now()).toISOString(),
+    });
+    runtime.store.saveLifecycleOperation(recorded);
+    return recorded;
+  }
+
   async updateBot(id: string, patch: BotUpdateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
       const bot = await runtime.bots.updateBot(id, patch);
@@ -2656,19 +2758,29 @@ export class ControlService {
     });
   }
 
-  previewBotRemoval(id: string): Promise<BotRemovalPreviewDto> {
-    return this.requireConversations().removals.preview(id);
+  async previewBotRemoval(id: string): Promise<BotRemovalPreviewDto> {
+    const runtime = this.requireConversations();
+    const impact = await runtime.removals.preview(id);
+    const dedicatedWorkspace = await this.dedicatedWorkspacePreview(runtime, id);
+    return dedicatedWorkspace ? { ...impact, dedicatedWorkspace } : impact;
   }
 
   async removeBot(input: RemoveBotRequestDto): Promise<{ operation: LifecycleOperationDto }> {
     return this.runConversationMutation(async (runtime) => {
-      const operation = await runtime.removals.remove({
+      const deleteDedicatedWorkspace = input.deleteDedicatedWorkspace === true;
+      // The profile is retired inside remove(), so the claim must be read first.
+      const claim = deleteDedicatedWorkspace ? this.dedicatedWorkspaceClaim(runtime, input.botId) : undefined;
+      const removed = await runtime.removals.remove({
         botId: input.botId,
         requestId: input.requestId,
         previewRevision: input.previewRevision,
         clearDirectHistory: input.clearDirectHistory === true,
         releaseDirectBindings: input.releaseDirectBindings === true,
+        deleteDedicatedWorkspace,
       });
+      const operation = claim === undefined
+        ? removed
+        : await this.recordDedicatedWorkspaceCleanup(runtime, input.botId, claim, removed);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
       return { operation: toLifecycleOperationDto(operation) };

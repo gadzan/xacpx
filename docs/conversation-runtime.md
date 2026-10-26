@@ -190,6 +190,29 @@ Each Bot has a monotonic `profileRevision` (PR2 records default to `1` on parse)
 
 Bot creation through Control may omit `workspace`; the daemon then creates and registers a dedicated directory under `~/.xacpx/bots/` before saving the profile. The stored profile and execution snapshot still contain a registered workspace name. Explicit selection uses the chosen registered workspace. Existing Bots retain their workspace; rename/removal does not move or delete its files. Group members continue to use their Topic's execution target rather than the Bot's default workspace.
 
+An auto-allocated Bot profile also records a `dedicatedWorkspace` marker
+(workspace name, directory path, allocation time) so the daemon can tell a
+directory it created for the Bot apart from a workspace the user chose. The
+marker is only ever written by the daemon: the public create payload cannot
+set it, and a profile whose marker is malformed is quarantined at load rather
+than trusted. Pointing the Bot at a different workspace drops the marker from
+the saved profile, so the daemon no longer claims ownership of that directory;
+the same workspace name, or an update that does not touch the workspace, keeps
+it.
+
+`previewBotRemoval` reports the marker as `dedicatedWorkspace` with an `inUse`
+flag. `removeBot` accepts `deleteDedicatedWorkspace` (default false) and runs
+the cleanup only after the removal reaches `completed`. Eligibility is
+re-evaluated inside one `workspaces.transaction`: the marker must still name
+the Bot's workspace, the registry entry must still point at the marker cwd, no
+other Bot, session, worker binding, group Topic execution target, scheduled
+task, or worktree may name the workspace, and the directory must be the
+daemon's own slot directly under the bots root with no symlink in the path.
+The transaction then unregisters the entry and removes the directory. A
+failure leaves the Bot retired and records
+`workspaceCleanup: { outcome: "deleted" | "kept" | "failed"; path; code? }` on
+the operation, so a retry reports the same result.
+
 At accept, the Run stores `profileRevision` plus a snapshot of:
 
 - presentation: name / avatar / role

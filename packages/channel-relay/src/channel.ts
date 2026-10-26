@@ -179,6 +179,25 @@ export function supportsBotDedicatedWorkspace(control: unknown): boolean {
 }
 
 /**
+ * True when this instance can delete a Bot's dedicated workspace directory on
+ * removal: the core must say so (older cores ignore the flag) AND the
+ * relay-protocol validator this connector resolved must accept it. Either
+ * half missing keeps the capability off, so the web never offers the option
+ * against an instance that would drop or reject the request.
+ */
+export function supportsBotDedicatedWorkspaceCleanup(control: unknown): boolean {
+  const probe = (control as { supportsBotDedicatedWorkspaceCleanup?: unknown } | null)?.supportsBotDedicatedWorkspaceCleanup;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parseControlPayload(MSG.botsRemove, {
+    id: "probe",
+    requestId: "probe",
+    previewRevision: "probe",
+    deleteDedicatedWorkspace: true,
+  }) !== null;
+}
+
+/**
  * True when this instance can cancel ONE member turn of a Run: the core must
  * expose `cancelMemberTurn` AND the relay-protocol validator this connector
  * resolved must accept the scoped payload. Either half missing keeps the
@@ -301,6 +320,9 @@ export class RelayChannel implements MessageChannelRuntime {
     ];
     if (supportsBotDedicatedWorkspace(control)) {
       capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceV1);
+    }
+    if (supportsBotDedicatedWorkspaceCleanup(control)) {
+      capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceCleanupV1);
     }
     if (supportsRunsCancelMember(control)) {
       capabilities.push(RELAY_CAPABILITIES.runsCancelMemberV1);

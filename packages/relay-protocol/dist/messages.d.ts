@@ -485,6 +485,7 @@ export interface BotsRemovePayload {
     previewRevision: string;
     clearDirectHistory?: boolean;
     releaseDirectBindings?: boolean;
+    deleteDedicatedWorkspace?: boolean;
 }
 export interface BotsRemoveResult {
     operation: LifecycleOperationDto;
@@ -1235,6 +1236,11 @@ export declare const RELAY_CAPABILITIES: {
      *  validator and the core accept it, so the web keeps requiring a workspace
      *  for instances whose core predates dedicated Bot workspaces. */
     readonly botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1";
+    /** `control.bots.remove` accepts `deleteDedicatedWorkspace` and deletes the
+     *  Bot's daemon-allocated workspace directory. Advertised only when both the
+     *  connector's validator and the core accept it, so the web never offers
+     *  the option against an instance that would reject the payload. */
+    readonly botsDedicatedWorkspaceCleanupV1: "bots.dedicated-workspace-cleanup.v1";
     /** Scoped MemberTurn cancellation, advertised only when the connector and
      *  core both support `control.runs.cancelMember`. */
     readonly runsCancelMemberV1: "runs.cancel-member.v1";

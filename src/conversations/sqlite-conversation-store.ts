@@ -372,6 +372,7 @@ CREATE TABLE IF NOT EXISTS lifecycle_operations (
   error_message TEXT,
   preview_revision TEXT,
   params_json TEXT,
+  workspace_cleanup_json TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE (kind, request_id)
 );
@@ -776,6 +777,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
     this.ensureExternalStopIngress();
+    this.ensureLifecycleWorkspaceCleanupColumn();
     if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)").some(c => c.name === "input_metadata_json")) {
       this.sqlite.exec("ALTER TABLE messages ADD COLUMN input_metadata_json TEXT");
     }
@@ -1796,8 +1798,9 @@ export class SqliteConversationStore implements ConversationStore {
     }
     this.sqlite.run(
       `INSERT INTO lifecycle_operations (
-         id, kind, subject_id, request_id, phase, error_code, error_message, preview_revision, params_json, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         id, kind, subject_id, request_id, phase, error_code, error_message, preview_revision, params_json,
+         workspace_cleanup_json, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          kind = excluded.kind,
          subject_id = excluded.subject_id,
@@ -1807,6 +1810,7 @@ export class SqliteConversationStore implements ConversationStore {
          error_message = excluded.error_message,
          preview_revision = excluded.preview_revision,
          params_json = excluded.params_json,
+         workspace_cleanup_json = excluded.workspace_cleanup_json,
          updated_at = excluded.updated_at`,
       [
         parsed.id,
@@ -1818,6 +1822,7 @@ export class SqliteConversationStore implements ConversationStore {
         parsed.error?.message ?? null,
         parsed.previewRevision ?? null,
         parsed.params ? JSON.stringify(parsed.params) : null,
+        parsed.workspaceCleanup ? JSON.stringify(parsed.workspaceCleanup) : null,
         parsed.updatedAt,
       ],
     );
@@ -1900,6 +1905,7 @@ export class SqliteConversationStore implements ConversationStore {
       error_message: string | null;
       preview_revision: string | null;
       params_json: string | null;
+      workspace_cleanup_json: string | null;
       updated_at: string;
     }>(sql, params);
     if (!row) {
@@ -1913,6 +1919,14 @@ export class SqliteConversationStore implements ConversationStore {
         throw new ConversationError("lifecycle_operation_corrupt", `operation "${row.id}" has corrupt params`);
       }
     }
+    let workspaceCleanupValue: unknown;
+    if (row.workspace_cleanup_json) {
+      try {
+        workspaceCleanupValue = JSON.parse(row.workspace_cleanup_json);
+      } catch {
+        throw new ConversationError("lifecycle_operation_corrupt", `operation "${row.id}" has corrupt workspace cleanup`);
+      }
+    }
     const parsed = parseLifecycleOperation({
       id: row.id,
       kind: row.kind,
@@ -1922,6 +1936,7 @@ export class SqliteConversationStore implements ConversationStore {
       ...(row.error_code && row.error_message ? { error: { code: row.error_code, message: row.error_message } } : {}),
       ...(row.preview_revision ? { previewRevision: row.preview_revision } : {}),
       ...(paramsValue !== undefined ? { params: paramsValue } : {}),
+      ...(workspaceCleanupValue !== undefined ? { workspaceCleanup: workspaceCleanupValue } : {}),
       updatedAt: row.updated_at,
     });
     if (!parsed) {
@@ -3414,6 +3429,17 @@ export class SqliteConversationStore implements ConversationStore {
       return;
     }
     this.sqlite.exec("ALTER TABLE pending_dispatches ADD COLUMN human_ingress TEXT");
+  }
+
+  /** Dedicated workspace cleanup outcome for a bot removal. NULL on stores
+   *  written before the outcome existed, so a retry reports nothing rather
+   *  than a guess. */
+  private ensureLifecycleWorkspaceCleanupColumn(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(lifecycle_operations)");
+    if (cols.some((col) => col.name === "workspace_cleanup_json")) {
+      return;
+    }
+    this.sqlite.exec("ALTER TABLE lifecycle_operations ADD COLUMN workspace_cleanup_json TEXT");
   }
 
   /**

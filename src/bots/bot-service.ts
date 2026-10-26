@@ -17,7 +17,12 @@ import { BotError } from "./bot-error";
 import type { BotRemovalRecord, BotTombstone } from "./bot-removal";
 import { removalBlocksWork } from "./bot-removal";
 import { BotLifecycleGate } from "./bot-lifecycle-gate";
-import type { BotProfile, BotRuntimeBinding } from "./bot-types";
+import {
+  gatherDedicatedWorkspaceReferences,
+  type DedicatedWorkspaceReferences,
+} from "./dedicated-workspace-cleanup";
+import { isDedicatedWorkspaceMarker } from "./bot-types";
+import type { BotProfile, BotRuntimeBinding, DedicatedWorkspaceMarker } from "./bot-types";
 import type { ConversationRecord } from "../conversations/conversation-types";
 
 const NAME_MAX = 80;
@@ -33,6 +38,15 @@ export interface CreateBotInput {
   model?: string;
   effort?: string;
   enabled?: boolean;
+}
+
+/**
+ * Daemon-internal create channel. `dedicatedWorkspace` can only be set here,
+ * never through `CreateBotInput`, so no public control payload can claim
+ * ownership of a directory it did not allocate.
+ */
+export interface CreateBotOptions {
+  dedicatedWorkspace?: DedicatedWorkspaceMarker;
 }
 
 export interface UpdateBotInput {
@@ -417,17 +431,22 @@ export class BotService {
     return this.hasMaterializedRuntime(id);
   }
 
-  async createBot(input: CreateBotInput): Promise<BotProfile> {
+  /** The marker is daemon-internal: `input` never carries one (the profile is
+   *  assembled field by field below), so only `options` can claim ownership
+   *  of a directory this process allocated. */
+  async createBot(input: CreateBotInput, options?: CreateBotOptions): Promise<BotProfile> {
     this.assertOpen();
     return await this.mutate(async () => {
       this.assertOpen();
       this.rejectUnsupportedCwd(input);
       const id = this.nextId();
       const timestamp = this.now().toISOString();
+      const dedicatedWorkspace = this.validatedMarker(options?.dedicatedWorkspace);
       const bot: BotProfile = {
         id,
         ...this.requireIdentity(input),
         ...this.optionalFields(input),
+        ...(dedicatedWorkspace ? { dedicatedWorkspace } : {}),
         enabled: input.enabled ?? true,
         profileRevision: 1,
         createdAt: timestamp,
@@ -464,10 +483,20 @@ export class BotService {
           workspace: this.requirePatchString(patch.workspace, existing.workspace, "workspace"),
         });
         this.assertAcceptsWork(id);
+        // A dedicated-workspace marker claims a directory this daemon
+        // allocated for the Bot. Pointing the Bot at another workspace
+        // drops that claim, so a later cleanup never removes a directory
+        // the Bot no longer uses. The same name keeps the claim.
+        const { dedicatedWorkspace, ...profile } = existing;
+        const keepsDedicatedWorkspace = dedicatedWorkspace !== undefined
+          && (patch.workspace === undefined
+            || patch.workspace === existing.workspace
+            || patch.workspace === dedicatedWorkspace.name);
         const next: BotProfile = {
-          ...existing,
+          ...profile,
           ...identity,
           ...this.patchOptional(existing, patch),
+          ...(keepsDedicatedWorkspace ? { dedicatedWorkspace } : {}),
           enabled: patch.enabled === undefined || patch.enabled === null ? existing.enabled : patch.enabled,
           profileRevision: (existing.profileRevision ?? 1) + 1,
           updatedAt: this.now().toISOString(),
@@ -968,6 +997,17 @@ export class BotService {
     }
   }
 
+  /** Internal markers must describe a real, owned directory. */
+  private validatedMarker(marker: DedicatedWorkspaceMarker | undefined): DedicatedWorkspaceMarker | undefined {
+    if (marker === undefined) {
+      return undefined;
+    }
+    if (!isDedicatedWorkspaceMarker(marker)) {
+      throw new BotError("dedicated_workspace_invalid", "bot dedicatedWorkspace must carry a name, cwd, and createdAt");
+    }
+    return { ...marker };
+  }
+
   private blockingRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined {
     let sqlite: "deleting" | "indeterminate" | "retired" | undefined;
     try {
@@ -1044,6 +1084,17 @@ export class BotService {
    */
   directControllerResidue(botId: string): { bindingIds: string[]; sessionAliases: string[] } {
     return this.controllerResidueForDirectRoot(botId);
+  }
+
+  /** Names every durable reference to `name`, excluding the Bot being removed.
+   *  The profile is already retired by cleanup time, so the caller supplies
+   *  the workspace name it read from the marker. */
+  dedicatedWorkspaceReferences(
+    name: string,
+    excludeBotId: string,
+    worktrees: readonly { readonly workspace: string; readonly runId: string }[],
+  ): DedicatedWorkspaceReferences {
+    return gatherDedicatedWorkspaceReferences(this.state, worktrees, name, excludeBotId);
   }
 
   private controllerResidueForDirectRoot(botId: string): { bindingIds: string[]; sessionAliases: string[] } {

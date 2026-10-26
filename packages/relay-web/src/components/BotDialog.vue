@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle } from "lucide-vue-next";
 import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import { supportsBotDedicatedWorkspace, useInstancesStore } from "../stores/instances";
+import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
@@ -669,6 +669,7 @@ function describeSubmitError(err: unknown): string {
       :preview="() => directBotsStore.previewBotRemoval(props.instanceId, props.bot!.id)"
       :remove="(input) => directBotsStore.removeBot(props.instanceId, { botId: props.bot!.id, ...input })"
       :get-operation="(id) => directBotsStore.getLifecycleOperation(props.instanceId, id)"
+      :supports-workspace-cleanup="supportsBotDedicatedWorkspaceCleanup(inst)"
       @close="removalOpen = false"
       @removed="removalOpen = false; emit('close')"
     />

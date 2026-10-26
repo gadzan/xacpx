@@ -13,7 +13,7 @@ import {
 } from "lucide-vue-next";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
-import { useInstancesStore } from "../stores/instances";
+import { supportsBotDedicatedWorkspaceCleanup, useInstancesStore } from "../stores/instances";
 import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
 import BotAvatar from "./BotAvatar.vue";
 import MobileSheet from "./MobileSheet.vue";
@@ -410,6 +410,7 @@ function openRemoval(): void {
       :preview="() => directBotsStore.previewBotRemoval(directBotsStore.instanceId!, bot!.id)"
       :remove="(input) => directBotsStore.removeBot(directBotsStore.instanceId!, { botId: bot!.id, ...input })"
       :get-operation="(id) => directBotsStore.getLifecycleOperation(directBotsStore.instanceId!, id)"
+      :supports-workspace-cleanup="supportsBotDedicatedWorkspaceCleanup(instance)"
       @close="removalOpen = false"
       @removed="removalOpen = false"
     />

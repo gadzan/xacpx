@@ -88,7 +88,9 @@ Elicitation 的任务归属从 core 已校验的精确 turn context 传入 `Chan
   Web 看板（阶段三）消费本阶段的 HTTP API 与事件。
 - **能力声明**：连接器注册时声明 `interaction.elicitation.form.v1`；其余能力按实现条件声明——
   `bots.dedicated-workspace.v1` 需要 core 的 `supportsBotDedicatedWorkspace()` 探测通过，
-  `runs.cancel-member.v1` 需要 core 暴露 `cancelMemberTurn(runId, memberTurnId)`。
+  `runs.cancel-member.v1` 需要 core 暴露 `cancelMemberTurn(runId, memberTurnId)`，
+  `bots.dedicated-workspace-cleanup.v1` 需要 core 的
+  `supportsBotDedicatedWorkspaceCleanup()` 探测通过。
   任一半缺失就不声明该能力，Web 保持旧行为而不是发起必然失败的调用。
 
 ## RMUX 终端后端（channel-relay，默认关闭）
@@ -468,7 +470,7 @@ See [Enforced execution effects](conversation-runtime.md#enforced-execution-effe
 
 Topic management RPCs are `control.topics.update`, `control.topics.archive`, `control.topics.restore`, `control.topics.teardown`, `control.topics.clear`, and `control.topics.preview`. Update accepts only `title` (1–200 characters). Teardown and clear require `requestId` (1–128 characters). Clear also requires `confirm: true`. `releaseBindings` is optional. Without it, a topic that still has external bindings fails `topic_bindings_present`. `control.group.topics.archive` and `control.group.topics.teardown` remain. They call the same phase change. The group teardown RPC still releases bindings, matching older clients. Teardown, clear, and group delete responses include `operationId`. `control.lifecycle.operations.get` reads that record.
 
-Bot removal RPCs are `control.bots.remove.preview`, `control.bots.remove`, and `control.lifecycle.operations.get`. Preview takes `{ id }`. Remove takes `{ id, requestId, previewRevision, clearDirectHistory?, releaseDirectBindings? }`. `requestId` is 1–128 characters. `previewRevision` is 1–64 characters. `control.bots.delete` is unchanged and still deletes only a bot with no dependencies. A removal response is `{ operation }`. Repeating the same `requestId` returns the stored operation. See [Conversation runtime](conversation-runtime.md).
+Bot removal RPCs are `control.bots.remove.preview`, `control.bots.remove`, and `control.lifecycle.operations.get`. Preview takes `{ id }`. Remove takes `{ id, requestId, previewRevision, clearDirectHistory?, releaseDirectBindings?, deleteDedicatedWorkspace? }`. `requestId` is 1–128 characters. `previewRevision` is 1–64 characters. `deleteDedicatedWorkspace` is a boolean: when true, the removal also deletes the Bot's daemon-allocated workspace directory. It is only honoured by a core that advertises `bots.dedicated-workspace-cleanup.v1`; the preview reports the directory as `dedicatedWorkspace: { name, path, inUse }`, and the removal operation reports the outcome as `workspaceCleanup: { outcome, path, code? }`. `control.bots.delete` is unchanged and still deletes only a bot with no dependencies. A removal response is `{ operation }`. Repeating the same `requestId` returns the stored operation. See [Conversation runtime](conversation-runtime.md).
 
 Phase 10A Topic creation RPCs (`control.topics.create`, `control.group.topics.create`)
 accept optional top-level `maxConcurrentMemberTurns` (integer 1–64), returned on

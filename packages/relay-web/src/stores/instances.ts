@@ -139,6 +139,15 @@ export function supportsBotDedicatedWorkspace(instance: { capabilities?: string[
 }
 
 /**
+ * True when the instance's core deletes a Bot's dedicated workspace
+ * directory when the user asks for it on removal. An older core ignores the
+ * flag, so the web must not offer the option there.
+ */
+export function supportsBotDedicatedWorkspaceCleanup(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.botsDedicatedWorkspaceCleanupV1);
+}
+
+/**
  * True when the instance's core can cancel ONE member turn of a Run
  * (`control.runs.cancelMember`). An older core has no scoped cancellation,
  * so the web must not offer a per-member or per-leader stop there: it offers
