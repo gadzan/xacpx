@@ -27,8 +27,8 @@
  * See `docs/release-automation.md`.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -56,8 +56,22 @@ const {
   tagFor,
 } = LIB;
 
+/**
+ * Bridge platform packages, by directory suffix under `platform-packages/`.
+ *
+ * `apply` bumps each one's manifest from channel-relay's version through
+ * `sync-rmux-bridge-versions.mjs`, so those manifests belong to this tool and
+ * `publish` must sweep them instead of refusing the tree its own `apply` wrote.
+ * Only the manifests: the rest of each package is shipped binaries, checksums
+ * and docs this tool never writes, and an unrelated edit there must still stop
+ * a release. `tests/unit/scripts/release-publish.test.ts` asserts this list
+ * matches the directories on disk.
+ */
+const BRIDGE_PLATFORM_SUFFIXES = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
+
 /** Paths this tool is allowed to touch. `publish` sweeps only these. */
 const TOOL_OWNED_PATHS = [
+  ...BRIDGE_PLATFORM_SUFFIXES.map((suffix) => `platform-packages/xacpx-rmux-bridge-${suffix}/package.json`),
   "CHANGELOG.md",
   "package-lock.json",
   "bun.lock",
@@ -518,7 +532,11 @@ function applyEdits(plan) {
 function prependChangelog(plan) {
   const path = join(ROOT, "CHANGELOG.md");
   const current = readFileSync(path, "utf8");
-  const hadUnreleased = current.slice(CHANGELOG_HEADER.length).replace(/^\n+/, "").startsWith("## [Unreleased]");
+  // Same CRLF tolerance as `spliceChangelog`: the file is committed as LF, but a
+  // Windows checkout may hand it to us with CRLF, and this decides which of the
+  // two splice paths runs.
+  const normalized = current.replace(/\r\n/g, "\n");
+  const hadUnreleased = normalized.slice(CHANGELOG_HEADER.length).replace(/^\n+/, "").startsWith("## [Unreleased]");
   writeFileSync(
     path,
     spliceChangelog({ current, releases: plan.releases, date: today(), draft: plan.changelog }),
@@ -603,7 +621,7 @@ function cmdApply(plan, options) {
   for (const line of applyEdits(plan)) console.log(`edited ${line}`);
 
   if (plan.releases.some((release) => release.id === "channel-relay")) {
-    execFileSync("node", [join(ROOT, "scripts", "sync-rmux-bridge-versions.mjs")], { cwd: ROOT, stdio: "inherit" });
+    execFileSync(process.execPath, [join(ROOT, "scripts", "sync-rmux-bridge-versions.mjs")], { cwd: ROOT, stdio: "inherit" });
   }
   syncLockfiles();
 
@@ -624,6 +642,56 @@ function cmdApply(plan, options) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Run npm without relying on how its executable is spelled.
+ *
+ * `npm` is a shell script on POSIX, `npm.cmd` on Windows, and Node refuses to
+ * `execFileSync` a `.cmd` without a shell (EINVAL) while `"npm"` itself resolves
+ * to nothing there (ENOENT). Both spellings are therefore unusable on at least
+ * one platform, and `shell: true` would concatenate arguments unescaped.
+ *
+ * npm ships as JavaScript next to the running node binary, so this spawns that
+ * entry with `process.execPath`: no PATH lookup, no shell. The layout differs by
+ * installer, which is why every known location is tried rather than one:
+ *
+ *   Windows, nodejs.org installer / fnm / nvm-windows
+ *     <dir>/node_modules/npm/bin/npm-cli.js
+ *   POSIX, nvm / fnm / Homebrew / distro packages
+ *     <dir>/../lib/node_modules/npm/bin/npm-cli.js
+ *   POSIX, some global installs
+ *     <dir>/../node_modules/npm/bin/npm-cli.js
+ *
+ * `realpathSync` first, because nvm/fnm/Homebrew put a symlink shim on PATH and
+ * `process.execPath` may name the shim rather than the install it points at.
+ */
+function npmCliPath() {
+  if (process.versions.bun) {
+    throw new Error(
+      "run the release tool with node, not bun: process.execPath would name the bun binary,"
+      + " which does not ship npm. Every `release:*` npm script already uses node.",
+    );
+  }
+  const exeDir = dirname(realpathSync(process.execPath));
+  const candidates = [
+    join(exeDir, "node_modules", "npm", "bin", "npm-cli.js"),
+    join(exeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    join(exeDir, "..", "node_modules", "npm", "bin", "npm-cli.js"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    "cannot locate npm's CLI entry. Tried:\n"
+    + candidates.map((candidate) => `  ${resolve(candidate)}`).join("\n")
+    + "\nThis release step regenerates package-lock.json, so npm must be installed"
+    + " alongside the node running this script.",
+  );
+}
+
+function npm(args, options = {}) {
+  return execFileSync(process.execPath, [npmCliPath(), ...args], { cwd: ROOT, ...options });
+}
+
+/**
  * npm can omit rmux-bridge optional packages while their release version is not
  * published yet, or leave versionless stubs that crash `npm ci`. Reconcile every
  * manifest pin after generation so both absent and versionless entries have an
@@ -633,7 +701,7 @@ function cmdApply(plan, options) {
  * the `workspaces` block, so that block is reconciled from the manifests.
  */
 function syncLockfiles() {
-  execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts"], { cwd: ROOT, stdio: "inherit" });
+  npm(["install", "--package-lock-only", "--ignore-scripts"], { stdio: "inherit" });
   execFileSync("bun", ["install"], { cwd: ROOT, stdio: "inherit" });
 
   const lockPath = join(ROOT, "package-lock.json");
@@ -811,7 +879,7 @@ function runGates(plan) {
   console.log("== gates: typecheck ==");
   execFileSync("bun", ["x", "tsc", "--noEmit"], { cwd: ROOT, stdio: "inherit" });
   console.log("== gates: metadata ==");
-  execFileSync("node", [join(ROOT, "scripts", "release.mjs"), "check"], { cwd: ROOT, stdio: "inherit" });
+  execFileSync(process.execPath, [join(ROOT, "scripts", "release.mjs"), "check"], { cwd: ROOT, stdio: "inherit" });
 
   const ids = plan.releases.map((release) => release.id);
   const scope = gateScope(ids);
@@ -826,7 +894,7 @@ function runGates(plan) {
     execFileSync("bun", ["run", script], { cwd: ROOT, stdio: "inherit" });
   }
   execFileSync(
-    "node",
+    process.execPath,
     [join(ROOT, "scripts", "verify-publish.mjs"), "--packages", scope.verifyIds.join(",")],
     { cwd: ROOT, stdio: "inherit" },
   );

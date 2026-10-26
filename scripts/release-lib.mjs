@@ -787,6 +787,19 @@ export const CHANGELOG_HEADER = "# Changelog\n";
 const UNRELEASED_HEADING = "## [Unreleased]";
 
 /**
+ * LF-only view of a file that a platform may have checked out with CRLF.
+ *
+ * Every offset and separator below is written against `\n`, so a Windows
+ * checkout with `core.autocrlf=true` (the default there) would otherwise fail
+ * the header test and mangle the section boundaries. Normalising at this
+ * boundary keeps the one format the file is committed in — LF — independent of
+ * how git happened to write it on this machine.
+ */
+function toLf(text) {
+  return String(text).replace(/\r\n/g, "\n");
+}
+
+/**
  * Splice a release block into CHANGELOG.md.
  *
  * An `## [Unreleased]` section counts only when it is the FIRST section — this
@@ -797,13 +810,14 @@ const UNRELEASED_HEADING = "## [Unreleased]";
  * headings after it.
  *
  * @param {{current:string, releases:Array<{id:PackageId,from:string,to:string}>, date:string, draft:string}} input
- * @returns {string} the new file contents
+ * @returns {string} the new file contents, LF-terminated
  */
 export function spliceChangelog({ current, releases, date, draft }) {
-  if (!current.startsWith(CHANGELOG_HEADER)) {
+  const source = toLf(current);
+  if (!source.startsWith(CHANGELOG_HEADER)) {
     throw new Error("CHANGELOG.md does not start with `# Changelog`");
   }
-  const body = current.slice(CHANGELOG_HEADER.length).replace(/^\n+/, "");
+  const body = source.slice(CHANGELOG_HEADER.length).replace(/^\n+/, "");
   const [first, ...others] = releases;
   if (!first) throw new Error("spliceChangelog needs at least one release");
 
