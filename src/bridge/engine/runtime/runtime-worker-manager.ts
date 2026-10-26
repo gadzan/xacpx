@@ -239,7 +239,7 @@ export class RuntimeWorkerManager {
       if (read.record.phase === "discharged") {
         if (read.record.jobName) {
           await this.dischargeStaleFence(physicalFenceKey, {
-            selfDischargeWaitMs: options.selfDischargeWaitMs,
+            selfDischargeWaitMs: options.selfDischargeWaitMs ?? 0,
           });
           return;
         }
