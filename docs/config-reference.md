@@ -814,7 +814,7 @@ File tree operations configuration for relay-web file browser.
 
 | Field | Type | Required | Description |
 |------|------|------|------|
-| `writeEnabled` | `boolean` | No | Enable or disable file writes and structured Git mutations in relay-web. Git mutations include stage/unstage/commit, fetch, fast-forward-only pull, push, branch switch/create, managed worktree creation, and Conversation worktree preview/integration/recovery/cleanup. Read-only file browsing/download and Git status remain available. Defaults to `false` (write disabled). Requires daemon restart to take effect when changed |
+| `writeEnabled` | `boolean` | No | Enable or disable file writes and structured Git mutations in relay-web. Git mutations include stage/unstage/commit, fetch, fast-forward-only pull, push, branch switch/create, managed worktree creation, and Conversation worktree preview/integration/recovery/cleanup. Read-only file browsing/download and Git status remain available. Defaults to `false` (write disabled). Writing this file hot-applies on the config watcher, and the instance dialog's file-write switch (`control.files.settings.update`) applies it immediately without a restart |
 
 ### Example
 

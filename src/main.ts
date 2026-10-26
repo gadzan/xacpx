@@ -2311,6 +2311,25 @@ export async function buildApp(
         });
       },
     },
+    filesSettings: {
+      // Read the LIVE config, not the file: it is what `filesWriteEnabled()`
+      // gates on, so the switch always shows the value that is actually in force.
+      get: async () => ({ enabled: filesWriteEnabled(config), restartRequired: false }),
+      update: async (enabled) => {
+        return await configMutationMutex.run(async () => {
+          // Raw patch: only `files.writeEnabled` is touched, so a hand-edited
+          // config.json keeps every unrelated field. Publishing the result onto
+          // the live config object is what makes this a hot toggle — the gate
+          // reads that object on every fs/Git mutation.
+          const updated = await configStore.setRawValue(["files", "writeEnabled"], enabled);
+          publishLiveConfig(updated);
+          void logger.info("control.files.write_switch", "file write switch flipped", {
+            enabled,
+          });
+          return { enabled, restartRequired: false };
+        });
+      },
+    },
     jev: {
       get: () => jevSettings.view(),
       update: async (patch) => {

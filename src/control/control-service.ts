@@ -25,6 +25,7 @@ import type {
   ConversationRouterConfigState,
   ConversationRouterState,
   ConversationRouterUpdatePayload,
+  FilesSettingsDto,
   JevSettingsDto,
   JevTestPayload,
   JevTestResult,
@@ -351,6 +352,13 @@ export interface ControlServiceDeps {
   relayTerminalSettings?: {
     get(): Promise<TerminalSettingsDto>;
     update(enabled: boolean): Promise<TerminalSettingsDto>;
+  };
+  // Per-instance file write settings. `get` reads the persisted flag; `update`
+  // persists and hot-applies it to the live config, so no restart is needed.
+  // Optional: embeddings that never manage files leave it unset.
+  filesSettings?: {
+    get(): Promise<FilesSettingsDto>;
+    update(enabled: boolean): Promise<FilesSettingsDto>;
   };
   uploadStore: UploadStore;
   // Interactive terminal PTY manager (web terminal). Optional gate read from live config.
@@ -2492,6 +2500,28 @@ export class ControlService {
     }
     const settings = await this.deps.relayTerminalSettings.update(enabled);
     return { enabled: settings.enabled, restartRequired: true };
+  }
+
+  async getFilesSettings(): Promise<FilesSettingsDto> {
+    if (!this.deps.filesSettings) {
+      throw new ConversationError(
+        "files_settings_unavailable",
+        "the file write settings are not available in this embedding",
+      );
+    }
+    const settings = await this.deps.filesSettings.get();
+    return { enabled: settings.enabled, restartRequired: false };
+  }
+
+  async updateFilesSettings(enabled: boolean): Promise<FilesSettingsDto> {
+    if (!this.deps.filesSettings) {
+      throw new ConversationError(
+        "files_settings_unavailable",
+        "the file write settings are not available in this embedding",
+      );
+    }
+    const settings = await this.deps.filesSettings.update(enabled);
+    return { enabled: settings.enabled, restartRequired: false };
   }
 
   /** Adapter model and effort advertisement for a configured agent and workspace. */
