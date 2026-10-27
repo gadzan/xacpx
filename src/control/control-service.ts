@@ -110,7 +110,7 @@ import {
 } from "./turn-support";
 import type { PeerInterruptEvent } from "./turn-queue";
 import type { UploadStore } from "./upload-store.js";
-import { SessionTurnRunner } from "./session-turn-runner";
+import { dedupeStreamedSuffix, SessionTurnRunner } from "./session-turn-runner";
 import { TurnQueue } from "./turn-queue";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
@@ -1918,7 +1918,11 @@ export class ControlService {
       },
     });
     if (response.text) {
-      chunks.push(response.text);
+      // Transports may stream the answer and return it again: keep only the unsent
+      // suffix. The comparison base is the RAW chunk concatenation — `chunks.join("\n")`
+      // below is a display join whose separators the transport never sent.
+      const suffix = dedupeStreamedSuffix(chunks.join(""), response.text);
+      if (suffix) chunks.push(suffix);
     }
     return chunks.join("\n");
   }
