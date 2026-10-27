@@ -362,6 +362,7 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsGroupTopicIsolation(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupTopicIsolationV1);
+    }
     if (supportsGroupWorkspaceMode(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);
     }
