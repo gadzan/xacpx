@@ -173,16 +173,20 @@ test("a still-running member closes its round below the leader's reply", async (
   // The scroller mounts before history lands (`selectGroup` sets the active
   // topic and only then awaits loadHistory), so wait for rows that must exist
   // instead of snapshotting whatever happens to be rendered.
-  await expect(page.locator('[data-row-id="reply_reviewer"]')).toHaveCount(1);
-  await expect(page.locator('[data-row-id="turn_tester"]')).toHaveCount(1);
-  const order = await page.getByTestId("group-transcript-scroller").locator("[data-row-id]")
+  const scroller = page.getByTestId("group-transcript-scroller");
+  await expect(scroller.locator('[data-row-id="reply_reviewer"]')).toHaveCount(1);
+  await expect(scroller.locator('[data-row-id="turn_tester"]')).toHaveCount(1);
+  const order = await scroller.locator("[data-row-id]")
     .evaluateAll((els) => els.map((el) => el.getAttribute("data-row-id") ?? ""));
   expect(order).toEqual(expect.arrayContaining(["msg_leader", "reply_reviewer", "turn_tester"]));
   // The completed reviewer owns a bubble; the member still running closes the
   // round instead of floating above what the leader said after dispatching.
   expect(order.indexOf("turn_tester")).toBe(order.indexOf("reply_reviewer") + 1);
-  // Everything after it is later history, i.e. the row is no longer pinned to
-  // the tail the way an unanchored entry used to be.
+  // Last real row is the last history message, i.e. the row is no longer
+  // appended at the tail the way an unanchored entry was. Asserting the tail
+  // directly, not `.every()` on the slice below, because an empty slice is
+  // vacuously true — exactly the regression case (the row moved to the end).
+  expect(order.at(-1)).toBe("after_11");
   expect(order.slice(order.indexOf("turn_tester") + 1).every((id) => id.startsWith("after_"))).toBe(true);
 });
 

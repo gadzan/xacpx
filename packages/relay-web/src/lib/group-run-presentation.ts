@@ -112,7 +112,9 @@ export function projectGroupTranscript(input: GroupProjectionInput): GroupTransc
   const problems = new Map<ConversationMessageDto, UnresolvedReason>();
   const memberRepliesByOwner = new Map<GroupRunRecord, Map<string, ConversationMessageDto>>();
   // Latest message per Run, the anchor every synthesized row of that Run closes
-  // on. Built once: the projection re-runs on each live message.
+  // on. Built once: the projection re-runs on each live message. A falsy
+  // `runId` is skipped rather than used as a key, matching the output loop,
+  // which only attributes a message to a Run when the id is truthy.
   const lastMessageByRun = new Map<string, ConversationMessageDto>();
   for (const message of messages) {
     if (message.runId) lastMessageByRun.set(message.runId, message);
