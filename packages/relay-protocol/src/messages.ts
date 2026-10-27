@@ -183,6 +183,7 @@ export const MSG = {
   groupsGet: "control.groups.get",
   groupsList: "control.groups.list",
   groupTopicsCreate: "control.group.topics.create",
+  groupTopicsSetIsolation: "control.group.topics.set-isolation",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
   conversationCompletionsGet: "control.conversation.completions.get",
@@ -709,6 +710,11 @@ export interface GroupTopicsCreatePayload {
   title: string;
   /** Required for a `shared` Group, refused for a `per-member` one. */
   target?: GroupTopicCreateTargetDto;
+}
+export interface GroupTopicsSetIsolationPayload {
+  conversationId: string;
+  topicId: string;
+  isolation: GroupTopicCreateTargetDto["isolation"];
 }
 export interface GroupTopicsArchivePayload {
   conversationId: string;
@@ -1384,6 +1390,10 @@ export const RELAY_CAPABILITIES = {
   /** Scoped MemberTurn cancellation, advertised only when the connector and
    *  core both support `control.runs.cancelMember`. */
   runsCancelMemberV1: "runs.cancel-member.v1",
+  /** `control.group.topics.set-isolation` exists on both ends, so the web may
+   *  offer the Group topic isolation switch. An older core has no such RPC and
+   *  would answer `unknown-type`, which is not a failure a user can act on. */
+  groupTopicIsolationV1: "group.topics.isolation.v1",
   /** `control.groups.create` accepts `workspaceMode` and `control.group.topics.create`
    *  accepts an omitted `target` for a `per-member` Group. Advertised only when
    *  the connector's validator and the core both accept it, so the web never

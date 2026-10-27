@@ -2,6 +2,8 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
+export type TopicIsolation = "shared" | "shared-single-writer" | "worktree-per-member";
+
 export interface TopicActionHandlers {
   previewTopic: (topicId: string) => Promise<TopicImpactDto>;
   renameTopic: (topicId: string, title: string) => Promise<void>;
@@ -9,6 +11,8 @@ export interface TopicActionHandlers {
   restoreTopic: (topicId: string) => Promise<void>;
   teardownTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
   clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
+  /** Absent on surfaces whose topics have no execution target (Direct). */
+  setTopicIsolation?: (topicId: string, isolation: TopicIsolation) => Promise<void>;
 }
 
 // Action state machine behind TopicSwitcher, the one topic surface shared by the group
@@ -25,6 +29,8 @@ export function useTopicActions(handlers: TopicActionHandlers) {
   const confirmImpact = ref<TopicImpactDto | null>(null);
   const releaseBindings = ref(false);
   const confirming = ref(false);
+  const isolationTopic = ref<TopicSummaryDto | null>(null);
+  const isolationSaving = ref(false);
 
   const confirmBlocked = computed(() => {
     const bindings = confirmImpact.value?.bindings.length ?? 0;
@@ -116,6 +122,60 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     }
   }
 
+  function openIsolation(topic: TopicSummaryDto): void {
+    actionError.value = null;
+    isolationTopic.value = topic;
+  }
+
+  function closeIsolation(): void {
+    if (isolationSaving.value) return;
+    isolationTopic.value = null;
+  }
+
+  /** Refusals the switch can hit, so the dialog never shows a raw server sentence. */
+  function isolationErrorText(error: unknown): string {
+    const code = error instanceof Error && "code" in error ? String((error as { code: unknown }).code ?? "") : "";
+    switch (code) {
+      case "conversation_not_settled":
+        return t("bot.topic.isolationErrors.unsettled");
+      case "worktree_unprovisioned":
+        return t("bot.topic.isolationErrors.worktreeUnprovisioned");
+      case "worktree_runs_pending":
+        return t("bot.topic.isolationErrors.worktreeRunsPending");
+      case "invalid-isolation":
+        return t("bot.topic.isolationErrors.invalidIsolation");
+      case "topic_deleting":
+      case "conversation_deleting":
+        return t("bot.topic.isolationErrors.deleting");
+      case "unknown-type":
+        return t("bot.errors.connectorOutdated");
+      default:
+        return t("bot.topic.isolationErrors.failed", {
+          msg: error instanceof Error ? error.message : String(error),
+        });
+    }
+  }
+
+  /** Applies the choice and closes only on success, like the delete/clear confirm. */
+  async function chooseIsolation(isolation: TopicIsolation): Promise<void> {
+    const topic = isolationTopic.value;
+    if (isolationSaving.value) return;
+    if (!topic || !handlers.setTopicIsolation || topic.executionTarget?.isolation === isolation) {
+      isolationTopic.value = null;
+      return;
+    }
+    isolationSaving.value = true;
+    actionError.value = null;
+    try {
+      await handlers.setTopicIsolation(topic.id, isolation);
+      isolationTopic.value = null;
+    } catch (error: unknown) {
+      actionError.value = isolationErrorText(error);
+    } finally {
+      isolationSaving.value = false;
+    }
+  }
+
   return {
     editingId,
     draftTitle,
@@ -124,6 +184,11 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     confirmImpact,
     releaseBindings,
     confirming,
+    isolationTopic,
+    isolationSaving,
+    openIsolation,
+    closeIsolation,
+    chooseIsolation,
     confirmBlocked,
     statusLabel,
     startRename,

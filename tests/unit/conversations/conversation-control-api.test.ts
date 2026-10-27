@@ -207,6 +207,32 @@ test("Control Topic creation persists and projects optional concurrency without 
   await runtime.shutdown();
 });
 
+test("Control group topic isolation switches in place and reports why it refuses", async () => {
+  const { control, runtime, state } = await wire({ autoKick: false });
+  const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
+  const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+  const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared-single-writer" });
+  const switched = await control.setGroupTopicIsolation(group.id, topic.id, "shared");
+  expect(switched.executionTarget).toEqual({ workspace: "backend", isolation: "shared" });
+  expect(control.getGroup(group.id).topics.find((t) => t.id === topic.id)?.executionTarget)
+    .toEqual({ workspace: "backend", isolation: "shared" });
+  expect(state.conversation_topics[topic.id]?.executionTarget?.isolation).toBe("shared");
+  // Same policy is a no-op; an unknown policy fails before any write; worktree
+  // mode without a provisioning manager reports the real reason.
+  expect(await control.setGroupTopicIsolation(group.id, topic.id, "shared")).toMatchObject({
+    id: topic.id, executionTarget: { isolation: "shared" },
+  });
+  await expect(control.setGroupTopicIsolation(group.id, topic.id, "mesh" as never))
+    .rejects.toMatchObject({ code: "invalid-isolation" });
+  // A production composition wires the worktree manager, so the worktree policy
+  // is accepted here; the manager-less refusal is covered by the scheduling test.
+  expect((await control.setGroupTopicIsolation(group.id, topic.id, "worktree-per-member")).executionTarget)
+    .toEqual({ workspace: "backend", isolation: "worktree-per-member" });
+  expect(state.conversation_topics[topic.id]?.executionTarget?.isolation).toBe("worktree-per-member");
+  await runtime.shutdown();
+});
+
 test("historical batch details omit private profile fields and preserve Topic ownership", async () => {
   const { control, runtime } = await wire({ autoKick: false });
   try {

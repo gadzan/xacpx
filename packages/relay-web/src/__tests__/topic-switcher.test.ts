@@ -26,12 +26,14 @@ function impact(partial: Partial<TopicImpactDto> = {}): TopicImpactDto {
 
 function mountSwitcher(overrides: Partial<{
   topics: TopicSummaryDto[];
+  setTopicIsolation?: (topicId: string, isolation: string) => Promise<void>;
   previewTopic: (topicId: string) => Promise<TopicImpactDto>;
   renameTopic: (topicId: string, title: string) => Promise<void>;
   restoreTopic: (topicId: string) => Promise<void>;
   teardownTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
 }> = {}) {
   const renameTopic = overrides.renameTopic ?? vi.fn(async () => {});
+  const setTopicIsolation = overrides.setTopicIsolation ?? vi.fn(async () => {});
   const restoreTopic = overrides.restoreTopic ?? vi.fn(async () => {});
   const teardownTopic = overrides.teardownTopic ?? vi.fn(async () => {});
   const wrapper = mount(TopicSwitcher, {
@@ -45,10 +47,11 @@ function mountSwitcher(overrides: Partial<{
       restoreTopic,
       teardownTopic,
       clearTopic: vi.fn(async () => {}),
+      setTopicIsolation,
     },
     global: { plugins: [i18n] },
   });
-  return { wrapper, renameTopic, restoreTopic, teardownTopic };
+  return { wrapper, renameTopic, restoreTopic, teardownTopic, setTopicIsolation };
 }
 
 async function rowMenu(wrapper: ReturnType<typeof mountSwitcher>["wrapper"], index: number) {
@@ -124,5 +127,63 @@ describe("TopicSwitcher (Bot topics)", () => {
     expect(wrapper.find("[data-test='topic-confirm-submit']").attributes("disabled")).toBeDefined();
     await wrapper.find("[data-test='topic-confirm-submit']").trigger("click");
     expect(teardownTopic).not.toHaveBeenCalled();
+  });
+
+  it("switches a topic's isolation from the row menu and keeps a failed choice open", async () => {
+    const setTopicIsolation = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("topic \"t-group\" has unsettled runs"), {
+        code: "conversation_not_settled",
+      }))
+      .mockResolvedValueOnce(undefined);
+    const groupTopics: TopicSummaryDto[] = [{
+      id: "t-group", conversationId: "c1", title: "Round", status: "active", createdAt: "now", updatedAt: "now",
+      executionTarget: { workspace: "repo", isolation: "shared-single-writer" },
+    }];
+    const { wrapper } = mountSwitcher({ topics: groupTopics, setTopicIsolation });
+    const menu = await rowMenu(wrapper, 0);
+    await menu.find("[data-test='menu-isolation']").trigger("click");
+    await flushPromises();
+    const dialog = wrapper.find("[data-test='topic-isolation']");
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.find("[data-test='topic-isolation-worktree-per-member']").attributes("aria-checked")).toBe("false");
+
+    await dialog.find("[data-test='topic-isolation-worktree-per-member']").trigger("click");
+    await flushPromises();
+    // A rejected switch keeps the dialog open with the reason, like delete does.
+    expect(setTopicIsolation).toHaveBeenCalledWith("t-group", "worktree-per-member");
+    expect(wrapper.find("[data-test='topic-isolation']").exists()).toBe(true);
+    // The server sentence is English; the dialog speaks the active locale.
+    expect(wrapper.text()).toContain(i18n.global.t("bot.topic.isolationErrors.unsettled"));
+
+    await wrapper.find("[data-test='topic-isolation-worktree-per-member']").trigger("click");
+    await flushPromises();
+    expect(setTopicIsolation).toHaveBeenCalledTimes(2);
+    expect(wrapper.find("[data-test='topic-isolation']").exists()).toBe(false);
+  });
+
+  it("names unintegrated worktrees instead of echoing the server sentence", async () => {
+    const setTopicIsolation = vi.fn().mockRejectedValueOnce(Object.assign(
+      new Error("topic \"t-group\" still has unintegrated worktrees"),
+      { code: "worktree_runs_pending" },
+    ));
+    const groupTopics: TopicSummaryDto[] = [{
+      id: "t-group", conversationId: "c1", title: "Round", status: "active", createdAt: "now", updatedAt: "now",
+      executionTarget: { workspace: "repo", isolation: "worktree-per-member" },
+    }];
+    const { wrapper } = mountSwitcher({ topics: groupTopics, setTopicIsolation });
+    const menu = await rowMenu(wrapper, 0);
+    await menu.find("[data-test='menu-isolation']").trigger("click");
+    await flushPromises();
+    await wrapper.find("[data-test='topic-isolation-shared']").trigger("click");
+    await flushPromises();
+    expect(wrapper.find("[data-test='topic-isolation']").exists()).toBe(true);
+    expect(wrapper.text()).toContain(i18n.global.t("bot.topic.isolationErrors.worktreeRunsPending"));
+    expect(wrapper.text()).not.toContain("still has unintegrated worktrees");
+  });
+
+  it("offers no isolation entry when the surface has no execution target", async () => {
+    const { wrapper } = mountSwitcher();
+    const menu = await rowMenu(wrapper, 1);
+    expect(menu.find("[data-test='menu-isolation']").exists()).toBe(false);
   });
 });

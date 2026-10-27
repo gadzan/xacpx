@@ -998,6 +998,119 @@ export class ConversationRunService {
   }
 
   /**
+   * Switch a Group Topic's isolation policy. `worktree-per-member` lifts the
+   * same-Run single-writer slot, so dispatched members execute concurrently —
+   * each in its own verified worktree, with distinct-cwd proof at physical
+   * admission. `shared` and `shared-single-writer` keep serializing unproven
+   * work exactly as before.
+   *
+   * The switch only reaches future dispatches: a Topic with unsettled Runs
+   * keeps its current target, because those members are already bound to
+   * today's directories and rebinding mid-flight would fail their claims.
+   * Linearized like the other topic mutations: the write runs inside every
+   * member Bot's lifecycle gate so no materializer can bind a session to the
+   * target being replaced.
+   */
+  async setGroupTopicIsolation(
+    conversationId: string,
+    topicId: string,
+    isolation: WorkspaceIsolationPolicy,
+  ): Promise<ConversationTopic> {
+    this.assertOpen();
+    const current = this.requireGroupTopic(conversationId, topicId);
+    const target = current.executionTarget;
+    if (!target) {
+      throw new ConversationError("execution_target_missing", `topic "${topicId}" has no execution target`);
+    }
+    // Barriers come before the no-op return: a request against a deleting Topic
+    // must not report success just because the policy already matches.
+    if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
+      throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
+    }
+    if (target.isolation === isolation) return current;
+    // Validate the request before reporting that the Topic is busy: an invalid
+    // policy stays invalid once the Runs settle.
+    this.requireExecutionTarget({
+      workspace: target.workspace,
+      ...(target.cwd !== undefined ? { cwd: target.cwd } : {}),
+      isolation,
+    });
+    this.assertTopicSettled(conversationId, topicId, "switching isolation");
+    for (;;) {
+      const botIds = this.groupTopicMemberBotIds(conversationId, topicId);
+      const gateSet = new Set(botIds);
+      await this.beforeArchiveGatesAcquired?.();
+      const updated = await this.bots.runLifecycleAll(botIds, async () => {
+        const liveIds = this.groupTopicMemberBotIds(conversationId, topicId);
+        if (liveIds.some((id) => !gateSet.has(id))) return null;
+        const topic = this.requireGroupTopic(conversationId, topicId);
+        if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
+          throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
+        }
+        this.assertTopicSettled(conversationId, topicId, "switching isolation");
+        const liveTarget = topic.executionTarget;
+        if (!liveTarget || liveTarget.isolation === isolation) return topic;
+        // Leaving worktree mode hides the only surface that previews, integrates
+        // and cleans those worktrees (GroupPane mounts the panel on the live
+        // isolation), while teardown keeps refusing while they exist. Refuse the
+        // downgrade and name the Runs instead of stranding them.
+        if (liveTarget.isolation === "worktree-per-member") {
+          const pending = this.store.listWorktreeRunIds(conversationId, topicId);
+          if (pending.length > 0) {
+            throw new ConversationError(
+              "worktree_runs_pending",
+              `topic "${topicId}" still has unintegrated worktrees; integrate or drop them before leaving worktree mode`,
+              { runIds: pending },
+            );
+          }
+        }
+        // Rebuild from the gate-held topic, never from the pre-gate read: a
+        // concurrent mutation may have added fields this write must preserve.
+        const executionTarget = this.requireExecutionTarget({
+          workspace: liveTarget.workspace,
+          ...(liveTarget.cwd !== undefined ? { cwd: liveTarget.cwd } : {}),
+          isolation,
+        });
+        const stored: ConversationTopic = {
+          ...topic,
+          executionTarget,
+          updatedAt: this.now().toISOString(),
+        };
+        // `persist` replaces whole runtime state slices, so this clone/write must
+        // hold `stateMutex`, the write lock archive and teardown use; without it
+        // a concurrent topic create is silently overwritten by this snapshot.
+        // (`mutateGroupTopic` predates the mutex and is not covered by it.)
+        return this.stateMutex.run(async () => {
+          const next = structuredClone(this.state);
+          next.conversation_topics[topicId] = stored;
+          await this.persist(next);
+          return stored;
+        });
+      });
+      if (updated) {
+        emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+        emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: updated });
+        return updated;
+      }
+    }
+  }
+
+  /**
+   * A Topic whose Runs are still in flight must not change phase or execution
+   * target: settle or tear the work down first.
+   */
+  private assertTopicSettled(conversationId: string, topicId: string, action: string): void {
+    const nonterminal = this.store.listRuns(conversationId, topicId).filter((run) => this.isUnsettledRun(run.state));
+    if (nonterminal.length > 0) {
+      throw new ConversationError(
+        "conversation_not_settled",
+        `topic "${topicId}" has unsettled runs; settle them before ${action}`,
+        { runIds: nonterminal.map((run) => run.id) },
+      );
+    }
+  }
+
+  /**
    * Archive flips active → archived. Linearized like teardown/membership
    * update: the status flip runs inside every member Bot's lifecycle gate so
    * no materializer can be between session creation and binding publish when
@@ -1027,16 +1140,7 @@ export class ConversationRunService {
         if (liveIds.some((id) => !gateSet.has(id))) {
           return null;
         }
-        const nonterminal = this.store.listRuns(conversationId, topicId).filter(
-          (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
-        );
-        if (nonterminal.length > 0) {
-          throw new ConversationError(
-            "conversation_not_settled",
-            `topic "${topicId}" has unsettled runs; settle or teardown before archiving`,
-            { runIds: nonterminal.map((run) => run.id) },
-          );
-        }
+        this.assertTopicSettled(conversationId, topicId, "archiving");
         const flipped = await this.stateMutex.run(async () => {
           const topic = this.requireGroupTopic(conversationId, topicId);
           if (topic.status !== "active") {
@@ -1650,9 +1754,13 @@ export class ConversationRunService {
     this.bots.assertWorkspaceRegistered(target.workspace);
     if (target.isolation !== "shared"
       && target.isolation !== "shared-single-writer"
-      && !(target.isolation === "worktree-per-member" && this.worktrees)) {
-      // Refuse worktree mode in compositions without a provisioning manager.
+      && target.isolation !== "worktree-per-member") {
       throw new ConversationError("invalid-isolation", `unknown isolation policy "${target.isolation}"`);
+    }
+    // A known policy the composition cannot serve is not an unknown one: name
+    // the missing manager so dispatch, accept and the switch all read alike.
+    if (target.isolation === "worktree-per-member" && !this.worktrees) {
+      throw new ConversationError("worktree_unprovisioned", "worktree manager unavailable");
     }
     // Topic cwd is not honored by member session materialization yet (the
     // resolved session cwd still comes from the workspace config). Persisting
@@ -3212,17 +3320,6 @@ export class ConversationRunService {
     return state === "queued" || state === "running" || state === "waiting-human";
   }
 
-  private assertTopicSettledForArchive(conversationId: string, topicId: string): void {
-    const nonterminal = this.store.listRuns(conversationId, topicId).filter((run) => this.isUnsettledRun(run.state));
-    if (nonterminal.length > 0) {
-      throw new ConversationError(
-        "conversation_not_settled",
-        `topic "${topicId}" has unsettled runs; settle or teardown before archiving`,
-        { runIds: nonterminal.map((run) => run.id) },
-      );
-    }
-  }
-
   private assertTopicHasNoIndeterminate(conversationId: string, topicId: string): void {
     const indeterminate = this.store.listRuns(conversationId, topicId).filter((run) => run.state === "indeterminate");
     if (indeterminate.length > 0) {
@@ -3304,7 +3401,7 @@ export class ConversationRunService {
         throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
       }
       if (options?.requireSettled) {
-        this.assertTopicSettledForArchive(conversationId, topicId);
+        this.assertTopicSettled(conversationId, topicId, "archiving");
       }
       return this.stateMutex.run(async () => {
         const role = this.topicRole(conversationId, topicId);

@@ -228,6 +228,20 @@ export function supportsGroupWorkspaceMode(control: unknown): boolean {
   return parseControlPayload(MSG.groupTopicsCreate, { conversationId: "probe", title: "probe" }) !== null;
 }
 
+/**
+ * True when this instance can rewrite a Group Topic's isolation in place. The
+ * core must implement the RPC AND the connector's validator must accept the
+ * payload, so the web never offers a switch the other end would reject.
+ */
+export function supportsGroupTopicIsolation(control: unknown): boolean {
+  if (typeof (control as { setGroupTopicIsolation?: unknown } | null)?.setGroupTopicIsolation !== "function") return false;
+  return parseControlPayload(MSG.groupTopicsSetIsolation, {
+    conversationId: "probe",
+    topicId: "probe",
+    isolation: "shared-single-writer",
+  }) !== null;
+}
+
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
   readonly nativeSessionListFormat = "table" as const;
@@ -345,6 +359,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsRunsCancelMember(control)) {
       capabilities.push(RELAY_CAPABILITIES.runsCancelMemberV1);
+    }
+    if (supportsGroupTopicIsolation(control)) {
+      capabilities.push(RELAY_CAPABILITIES.groupTopicIsolationV1);
     }
     if (supportsGroupWorkspaceMode(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);

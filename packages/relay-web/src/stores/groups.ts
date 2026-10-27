@@ -1532,6 +1532,23 @@ export const useGroupsStore = defineStore("groups", () => {
     return res.topic;
   }
 
+  async function setGroupTopicIsolation(
+    targetInstanceId: string,
+    conversationId: string,
+    topicId: string,
+    isolation: "shared" | "shared-single-writer" | "worktree-per-member",
+  ): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.groupTopicsSetIsolation, {
+        conversationId,
+        topicId,
+        isolation,
+      }),
+    );
+    upsertGroupTopic(targetInstanceId, res.topic);
+    return res.topic;
+  }
+
   function upsertGroupTopic(targetInstanceId: string, topic: TopicSummaryDto): void {
     const key = `${targetInstanceId}:${topic.conversationId}`;
     if (retiredTopicIds[key]?.has(topic.id)) return;
@@ -3643,6 +3660,7 @@ export const useGroupsStore = defineStore("groups", () => {
     cancelMember,
     loadTopics,
     createGroupTopic,
+    setGroupTopicIsolation,
     updateTopic,
     archiveTopic,
     restoreTopic,

@@ -2162,6 +2162,13 @@ test("group CRUD and topic lifecycle dispatch with product IDs", async () => {
       record("createGroupTopic", { conversationId, title, target });
       return { id: "topic_1", conversationId, title, status: "active", createdAt: "t", updatedAt: "t" };
     },
+    setGroupTopicIsolation: async (conversationId: string, topicId: string, isolation: string) => {
+      record("setGroupTopicIsolation", { conversationId, topicId, isolation });
+      return {
+        id: topicId, conversationId, title: "T", status: "active", createdAt: "t", updatedAt: "t",
+        executionTarget: { workspace: "backend", isolation },
+      };
+    },
     archiveGroupTopic: async (conversationId: string, topicId: string) => {
       record("archiveGroupTopic", { conversationId, topicId });
       return { id: topicId, conversationId, title: "T", status: "archived", createdAt: "t", updatedAt: "t" };
@@ -2185,6 +2192,9 @@ test("group CRUD and topic lifecycle dispatch with product IDs", async () => {
     conversationId: "conversation_g", title: "Sprint 1",
     target: { workspace: "backend", isolation: "shared-single-writer" },
   }))).toMatchObject({ topic: { id: "topic_1" } });
+  expect(await dispatch(bridge, req(MSG.groupTopicsSetIsolation, {
+    conversationId: "conversation_g", topicId: "topic_1", isolation: "worktree-per-member",
+  }))).toMatchObject({ topic: { executionTarget: { isolation: "worktree-per-member" } } });
   expect(await dispatch(bridge, req(MSG.groupTopicsArchive, {
     conversationId: "conversation_g", topicId: "topic_1",
   }))).toMatchObject({ topic: { status: "archived" } });
@@ -2199,8 +2209,14 @@ test("group CRUD and topic lifecycle dispatch with product IDs", async () => {
   expect(await dispatch(bridge, req(MSG.groupTopicsCreate, {
     conversationId: "conversation_g", title: "Bad", target: { workspace: "backend", isolation: "mesh" },
   }))).toMatchObject({ error: { code: "invalid-payload" } });
+  expect(await dispatch(bridge, req(MSG.groupTopicsSetIsolation, {
+    conversationId: "conversation_g", topicId: "topic_1", isolation: "mesh",
+  }))).toMatchObject({ error: { code: "invalid-payload" } });
   await dispatch(bridge, req(MSG.groupsDelete, { id: "conversation_g" }));
   expect(calls.deleteGroup).toEqual(["conversation_g"]);
+  expect(calls.setGroupTopicIsolation).toEqual([
+    { conversationId: "conversation_g", topicId: "topic_1", isolation: "worktree-per-member" },
+  ]);
 });
 
 test("PR7 groups.list dispatches and structured prompt target passes through", async () => {

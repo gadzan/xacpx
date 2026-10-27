@@ -2,7 +2,7 @@ import { setActivePinia, createPinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readyCapability, RELAY_CAPABILITIES, type AgentCapabilityState } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
-import { supportsRmuxTerminal, useInstancesStore } from "../stores/instances";
+import { supportsGroupTopicIsolation, supportsRmuxTerminal, useInstancesStore } from "../stores/instances";
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -221,6 +221,15 @@ test("supportsRmuxTerminal requires online and both RMUX capabilities", () => {
   expect(supportsRmuxTerminal({ online: true, capabilities: ["future.cap.v9", ...both] })).toBe(true);
   expect(supportsRmuxTerminal({ online: true, capabilities: null })).toBe(false);
   expect(supportsRmuxTerminal({ online: true })).toBe(false);
+});
+
+test("supportsGroupTopicIsolation follows the advertised capability", () => {
+  expect(supportsGroupTopicIsolation({ capabilities: [RELAY_CAPABILITIES.groupTopicIsolationV1] })).toBe(true);
+  expect(supportsGroupTopicIsolation({ capabilities: ["future.cap.v9", RELAY_CAPABILITIES.groupTopicIsolationV1] })).toBe(true);
+  expect(supportsGroupTopicIsolation({ capabilities: ["runs.cancel-member.v1"] })).toBe(false);
+  expect(supportsGroupTopicIsolation({ capabilities: null })).toBe(false);
+  expect(supportsGroupTopicIsolation({})).toBe(false);
+  expect(supportsGroupTopicIsolation(undefined)).toBe(false);
 });
 
 test("applyEvent instance-status toggles online without refetch", () => {

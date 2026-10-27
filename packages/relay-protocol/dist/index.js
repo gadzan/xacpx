@@ -207,6 +207,7 @@ var MSG = {
   groupsGet: "control.groups.get",
   groupsList: "control.groups.list",
   groupTopicsCreate: "control.group.topics.create",
+  groupTopicsSetIsolation: "control.group.topics.set-isolation",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
   conversationCompletionsGet: "control.conversation.completions.get",
@@ -265,6 +266,7 @@ var RELAY_CAPABILITIES = {
   botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
   botsDedicatedWorkspaceCleanupV1: "bots.dedicated-workspace-cleanup.v1",
   runsCancelMemberV1: "runs.cancel-member.v1",
+  groupTopicIsolationV1: "group.topics.isolation.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
@@ -1862,6 +1864,10 @@ var validateGroupTopicsTeardown = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? o : null;
 };
+var validateGroupTopicsSetIsolation = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) && isCreateIsolation(o.isolation) ? o : null;
+};
 var MAX_CONVERSATION_ATTACHMENTS = 5;
 var MAX_PROMPT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 function validPromptAttachments(media) {
@@ -2306,6 +2312,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupsGet]: validateGroupsGet,
   [MSG.groupsList]: validateGroupsList,
   [MSG.groupTopicsCreate]: validateGroupTopicsCreate,
+  [MSG.groupTopicsSetIsolation]: validateGroupTopicsSetIsolation,
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,

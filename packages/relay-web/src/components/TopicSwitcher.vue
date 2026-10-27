@@ -6,7 +6,7 @@ import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-prot
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown } from "../lib/use-dropdown";
-import { useTopicActions } from "../lib/use-topic-actions";
+import { useTopicActions, type TopicIsolation } from "../lib/use-topic-actions";
 import { navigateBack, pushModal } from "../lib/mobile-back";
 
 const props = defineProps<{
@@ -20,12 +20,21 @@ const props = defineProps<{
   clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
   /** Which page hosts the switcher: only changes the test hooks (group chat vs Bot page). */
   variant?: "group" | "direct";
+  /** Absent on surfaces whose topics have no execution target (Direct). */
+  setTopicIsolation?: (topicId: string, isolation: TopicIsolation) => Promise<void>;
 }>();
 const emit = defineEmits<{ select: [topicId: string]; create: [] }>();
 
 const { editingId, draftTitle, actionError, confirmKind, confirmImpact, releaseBindings, confirming, confirmBlocked,
-  statusLabel, startRename, saveRename, archive, restore, openConfirm, closeConfirm, submitConfirm } = useTopicActions(props);
+  statusLabel, startRename, saveRename, archive, restore, openConfirm, closeConfirm, submitConfirm,
+  isolationTopic, isolationSaving, openIsolation, closeIsolation, chooseIsolation } = useTopicActions(props);
 
+
+const isolationOptions: { value: TopicIsolation; labelKey: string }[] = [
+  { value: "shared-single-writer", labelKey: "group.topic.isolationSingleWriter" },
+  { value: "shared", labelKey: "group.topic.isolationShared" },
+  { value: "worktree-per-member", labelKey: "group.topic.isolationWorktree" },
+];
 const { t } = useI18n();
 const dd = useDropdown();
 const query = ref("");
@@ -39,6 +48,11 @@ let unregisterConfirm: (() => void) | null = null;
 watch(confirmKind, (kind) => {
   unregisterConfirm?.();
   unregisterConfirm = kind ? pushModal({ id: `topic-confirm:${kind}`, close: closeConfirm }) : null;
+});
+let unregisterIsolation: (() => void) | null = null;
+watch(isolationTopic, (topic) => {
+  unregisterIsolation?.();
+  unregisterIsolation = topic ? pushModal({ id: "topic-isolation", close: closeIsolation }) : null;
 });
 const direct = computed(() => props.variant === "direct");
 const visible = computed(() => {
@@ -78,6 +92,9 @@ const rowMenuItems = computed<ContextMenuItem[]>(() => {
   if (!topic) return [];
   const items: ContextMenuItem[] = [];
   if (topic.status !== "deleting") items.push({ key: "rename", label: t("bot.topic.rename") });
+  if (props.setTopicIsolation && topic.executionTarget && topic.status !== "deleting") {
+    items.push({ key: "isolation", label: t("bot.topic.isolation") });
+  }
   if (topic.status === "active") items.push({ key: "archive", label: t("bot.topic.archive") });
   if (topic.status === "archived") items.push({ key: "restore", label: t("bot.topic.restore") });
   if (topic.status !== "deleting") {
@@ -93,6 +110,7 @@ function onRowMenuSelect(key: string): void {
   rowMenu.value = null;
   if (!topic) return;
   if (key === "rename") { startRename(topic); return; }
+  if (key === "isolation") { openIsolation(topic); return; }
   if (key === "archive") { void archive(topic); return; }
   if (key === "restore") { void restore(topic); return; }
   if (key === "delete" || key === "clear") void openConfirm(key, topic);
@@ -191,6 +209,34 @@ async function submitRowConfirm(): Promise<void> {
           >
             {{ confirmKind === "clear" ? $t("bot.topic.clear") : $t("bot.topic.delete") }}
           </button>
+        </div>
+      </div>
+    </div>
+    <div v-if="isolationTopic" class="fixed inset-0 z-40 flex items-end justify-center bg-black/50 p-4 md:items-center" @click.self="navigateBack">
+      <div role="dialog" aria-modal="true" data-test="topic-isolation" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
+        <h3 class="text-sm font-semibold">{{ $t("bot.topic.isolationTitle") }}</h3>
+        <p class="mt-2 text-xs text-fg-muted">{{ $t("bot.topic.isolationBody") }}</p>
+        <div class="mt-3 space-y-1" role="radiogroup" :aria-label="$t('bot.topic.isolationTitle')">
+          <button
+            v-for="option in isolationOptions"
+            :key="option.value"
+            type="button"
+            role="radio"
+            :aria-checked="isolationTopic.executionTarget?.isolation === option.value"
+            :data-test="`topic-isolation-${option.value}`"
+            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition-colors hover:bg-surface-2 disabled:opacity-50"
+            :disabled="isolationSaving"
+            @click="chooseIsolation(option.value)"
+          >
+            <Check :size="14" class="shrink-0 text-accent" :class="isolationTopic.executionTarget?.isolation === option.value ? '' : 'invisible'" />
+            <span class="min-w-0 flex-1">{{ $t(option.labelKey) }}</span>
+          </button>
+        </div>
+        <p v-if="isolationTopic.executionTarget?.isolation === 'worktree-per-member'" class="mt-2 text-xs text-fg-muted">{{ $t("group.worktree.boundary") }}</p>
+        <p class="mt-2 text-xs text-fg-muted">{{ $t("bot.topic.isolationHint") }}</p>
+        <p v-if="actionError" class="mt-2 text-xs text-danger">{{ actionError }}</p>
+        <div class="mt-4 flex justify-end gap-2">
+          <button type="button" class="rounded-lg px-3 py-1.5 text-xs" @click="navigateBack">{{ $t("common.cancel") }}</button>
         </div>
       </div>
     </div>

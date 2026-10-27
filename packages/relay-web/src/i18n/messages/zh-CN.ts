@@ -892,6 +892,18 @@ export default {
       confirmUnbind: "断开绑定到这个话题的外部聊天",
       bindingsBlocked: "有外部聊天绑定在这里。继续前请确认断开。",
       worktreeWarning: "这个话题还有工作树。未合并的改动会阻止删除，请先整合，或保留它们后再重试。",
+      isolation: "文件系统隔离",
+      isolationTitle: "文件系统隔离",
+      isolationBody: "选择派发成员如何共享磁盘。只有「每名成员独立 Git 工作树」能让同一轮的成员并行执行。",
+      isolationHint: "话题里还有未结束的 Run 时会拒绝切换；先等本轮结束。切换只影响之后的派发。",
+      isolationErrors: {
+        unsettled: "这个话题还有未结束的 Run。等它们结束再切换。",
+        worktreeUnprovisioned: "这个实例没有工作树管理器，无法创建独立工作树。",
+        worktreeRunsPending: "这个话题还有未整合的工作树。离开「独立工作树」模式前请先整合或丢弃它们。",
+        invalidIsolation: "这个实例不支持该隔离策略。",
+        deleting: "这个话题正在删除，切换没有生效。",
+        failed: "切换失败：{msg}",
+      },
       save: "保存",
     },
     prompt: {
