@@ -456,6 +456,7 @@ export function toGroupSummary(
     ...(conversation.description ? { description: conversation.description } : {}),
     botIds: [...conversation.botIds],
     ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
+    ...(conversation.workspaceMode ? { workspaceMode: conversation.workspaceMode } : {}),
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
     ...(defaultTopicId ? { defaultTopicId } : {}),

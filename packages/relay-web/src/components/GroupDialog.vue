@@ -5,6 +5,7 @@ import { AlertCircle, Loader2, Plus, Trash2, X } from "lucide-vue-next";
 import type { BotSummaryDto, ConversationRunStateDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
+import { supportsGroupWorkspaceMode, useInstancesStore } from "../stores/instances";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
 import { pushToast } from "../lib/use-toasts";
@@ -29,6 +30,10 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const directBotsStore = useDirectBotsStore();
 const groupsStore = useGroupsStore();
+const instancesStore = useInstancesStore();
+// An older core drops the field and builds a `shared` Group, so the choice is
+// hidden rather than silently downgraded.
+const supportsWorkspaceMode = computed(() => supportsGroupWorkspaceMode(instancesStore.byId(props.instanceId)));
 
 const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
@@ -50,6 +55,8 @@ const title = ref(opened?.title ?? "");
 const description = ref(opened?.description ?? "");
 const memberIds = ref<string[]>([...(opened?.botIds ?? [])]);
 const leadBotId = ref(opened?.leadBotId ?? "");
+// Fixed at creation; the daemon rejects patching it.
+const workspaceMode = ref<"shared" | "per-member">(opened?.workspaceMode ?? "shared");
 // Create mode keeps suggesting the first enabled member until the user picks a
 // Lead. Edit mode starts from the saved Lead, which may legitimately be none.
 const leadTouched = ref(isEditing);
@@ -263,6 +270,7 @@ async function submit(): Promise<void> {
         ...(trimmedDescription ? { description: trimmedDescription } : {}),
         botIds: [...memberIds.value],
         ...(leadBotId.value ? { leadBotId: leadBotId.value } : {}),
+        ...(supportsWorkspaceMode.value ? { workspaceMode: workspaceMode.value } : {}),
       });
     }
     emit("saved", saved);
@@ -438,6 +446,36 @@ async function confirmDelete(): Promise<void> {
               :placeholder="$t('group.manage.descriptionPlaceholder')"
               class="w-full resize-y rounded-lg bg-surface-2 px-3 py-2 text-sm outline-none transition-colors"
             />
+          </div>
+
+          <div v-if="isEditing || supportsWorkspaceMode" data-test="group-dialog-workspace-mode">
+            <span class="mb-1.5 block text-xs font-medium text-fg-muted">
+              {{ $t("group.manage.workspaceMode") }}
+            </span>
+            <div v-if="isEditing" class="rounded-lg bg-surface-2 px-3 py-2 text-xs">
+              <p class="font-medium text-fg">
+                {{ workspaceMode === "per-member" ? $t("group.manage.workspaceModePerMember") : $t("group.manage.workspaceModeShared") }}
+              </p>
+              <p class="mt-0.5 text-fg-muted">{{ $t("group.manage.workspaceModeLocked") }}</p>
+            </div>
+            <div v-else class="grid gap-1.5">
+              <label data-test="group-dialog-workspace-mode-shared"
+                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                <input v-model="workspaceMode" type="radio" value="shared" class="mt-0.5" />
+                <span class="min-w-0">
+                  <span class="block font-medium text-fg">{{ $t("group.manage.workspaceModeShared") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.workspaceModeSharedHint") }}</span>
+                </span>
+              </label>
+              <label data-test="group-dialog-workspace-mode-per-member"
+                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                <input v-model="workspaceMode" type="radio" value="per-member" class="mt-0.5" />
+                <span class="min-w-0">
+                  <span class="block font-medium text-fg">{{ $t("group.manage.workspaceModePerMember") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.workspaceModePerMemberHint") }}</span>
+                </span>
+              </label>
+            </div>
           </div>
 
           <div>

@@ -15,11 +15,12 @@ import {
 } from "./conversation-router-types";
 import { snapshotGroupMemberProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
-import type {
-  ConversationRecord,
-  ConversationRun,
-  ConversationTopic,
-  MemberTurnRecord,
+import {
+  groupWorkspaceMode,
+  type ConversationRecord,
+  type ConversationRun,
+  type ConversationTopic,
+  type MemberTurnRecord,
 } from "./conversation-types";
 import type { ConversationStore, ListMessagesQuery } from "./conversation-store";
 import type { BotProfile } from "../bots/bot-types";
@@ -332,8 +333,10 @@ export class ConversationRouterEngine {
     if (!conversation || conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `run "${run.id}" is not a Group conversation`);
     }
+    const mode = groupWorkspaceMode(conversation);
     const topic = this.options.readTopic(run.conversationId, run.topicId);
-    if (!topic?.executionTarget) {
+    const groupTarget = mode === "shared" ? topic?.executionTarget : undefined;
+    if (mode === "shared" && !groupTarget) {
       throw new ConversationError("execution_target_missing", `topic "${run.topicId}" has no execution target`);
     }
     const candidates: RoutingMember[] = [];
@@ -343,7 +346,7 @@ export class ConversationRouterEngine {
       // A member whose Bot row vanished mid-Run is not routable: report it
       // disabled rather than fabricating metadata.
       if (!bot) {
-        if (disabled.length < MAX_ROUTER_MEMBER_METADATA) disabled.push({ botId, name: botId, agent: "", workspace: topic.executionTarget.workspace, enabled: false });
+        if (disabled.length < MAX_ROUTER_MEMBER_METADATA) disabled.push({ botId, name: botId, agent: "", workspace: groupTarget?.workspace ?? "", enabled: false });
         continue;
       }
       const metadata: RoutingMember = {
@@ -389,11 +392,11 @@ export class ConversationRouterEngine {
       }
       return assignment;
     });
-    const executionTarget: RoutingExecutionTarget = {
-      workspace: topic.executionTarget.workspace,
-      ...(topic.executionTarget.cwd !== undefined ? { cwd: topic.executionTarget.cwd } : {}),
-      isolation: topic.executionTarget.isolation,
-    };
+    const executionTarget: RoutingExecutionTarget | undefined = groupTarget ? {
+      workspace: groupTarget.workspace,
+      ...(groupTarget.cwd !== undefined ? { cwd: groupTarget.cwd } : {}),
+      isolation: groupTarget.isolation,
+    } : undefined;
     return boundRoutingInput({
       runId: run.id,
       conversationId: run.conversationId,
@@ -420,7 +423,7 @@ export class ConversationRouterEngine {
       },
       completedAssignments,
       remainingBudget: run.maxMemberTurns - run.consumedMemberTurns,
-      executionTarget,
+      ...(executionTarget ? { executionTarget } : {}),
     });
   }
 
@@ -449,8 +452,13 @@ export class ConversationRouterEngine {
       return decision;
     }
     const topic = this.options.readTopic(run.conversationId, run.topicId);
-    const target = topic?.executionTarget;
-    if (!target) {
+    const owner = this.options.readGroup(run.conversationId);
+    if (!owner || owner.kind !== "group") {
+      throw new ConversationError("conversation_not_group", `run "${run.id}" is not a Group conversation`);
+    }
+    const mode = groupWorkspaceMode(owner);
+    const target = mode === "shared" ? topic?.executionTarget : undefined;
+    if (mode === "shared" && !target) {
       throw new ConversationError("execution_target_missing", `topic "${run.topicId}" has no execution target`);
     }
     const now = this.options.now().toISOString();

@@ -1073,21 +1073,12 @@ export class ConversationDispatcher {
   }
 
   /**
-   * PR7 filesystem scheduling gate. PR7 accepts carry no proven read-only
-   * capability, so every Group member is conservatively unknown and takes
-   * the Topic single-writer slot. While another member of the same Run is
-   * already executing, a newly claimed sibling defers instead of running
-   * concurrently. Started members never defer: a claim whose member already
-   * started (recovery redelivery after a crash) must execute, not park
-   * behind siblings that may themselves settle while it waits. Direct Runs
-   * are unaffected.
+   * Only a proven distinct directory authorizes overlap. The workspace-name
+   * comparison below is a cheap pre-filter; the canonical-cwd reservation at
+   * execution start decides, because two names can alias one directory.
    *
-   * Isolation is read from the Topic's durable ExecutionTarget. No isolation
-   * passes unproven work through: only an enforceably read-only member
-   * (`read-only` + `declared-enforced` proof) may overlap another in-flight
-   * turn. The policy-aware producer supplies a runtime-enforced proof;
-   * ordinary, Router and handoff work remains unproven. Both participants
-   * must be readers. A parked claim is a reservation, not physical execution.
+   * Started members never defer: a recovery redelivery must execute rather
+   * than park behind siblings that may settle while it waits.
    */
   private mustDeferForWriterSlot(work: ClaimedWork): boolean {
     if (work.memberTurn.startedAt) {
@@ -1104,9 +1095,14 @@ export class ConversationDispatcher {
       return false;
     }
     const isolation = this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId);
-    // Allow preparation to overlap; physical admission verifies distinct cwd
-    // bindings below. The flag alone never authorizes provider execution.
     if (isolation === "worktree-per-member" && this.worktrees) return false;
+    const mine = work.memberTurn.profileSnapshot?.execution.workspace ?? work.run.profileSnapshot?.execution.workspace;
+    if (mine !== undefined && otherExecuting.every((turn) => {
+      const theirs = turn.profileSnapshot?.execution.workspace ?? work.run.profileSnapshot?.execution.workspace;
+      return theirs !== undefined && theirs !== mine;
+    })) {
+      return false;
+    }
     return !isEffectConcurrencySafe(work.memberTurn.effect, isolation, otherExecuting.length, work.memberTurn.effectProvenance)
       || otherExecuting.some((turn) => !isEffectConcurrencySafe(turn.effect, isolation, 1, turn.effectProvenance));
   }

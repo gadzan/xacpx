@@ -660,10 +660,12 @@ const validMemberConcurrency = (v: unknown): boolean => v === undefined ||
 /** Creation does not grant runtime proof: every worktree binding is verified. */
 const isCreateIsolation = (v: unknown): boolean =>
   v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+const isGroupWorkspaceMode = (v: unknown): boolean => v === undefined || v === "shared" || v === "per-member";
 const validateGroupsCreate: Validator<GroupsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description))
     && (o.leadBotId === undefined || isStr(o.leadBotId))
+    && isGroupWorkspaceMode(o.workspaceMode)
     ? (o as unknown as GroupsCreatePayload) : null;
 };
 const validateGroupsUpdate: Validator<GroupsUpdatePayload> = (p) => {
@@ -673,6 +675,8 @@ const validateGroupsUpdate: Validator<GroupsUpdatePayload> = (p) => {
   if (o.description !== undefined && o.description !== null && !isStr(o.description)) return null;
   if (o.botIds !== undefined && !isStrArr(o.botIds)) return null;
   if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId)) return null;
+  // Creation-time only: a patch would silently re-target accepted work.
+  if (o.workspaceMode !== undefined) return null;
   return o as unknown as GroupsUpdatePayload;
 };
 const validateGroupsDelete: Validator<GroupsDeletePayload> = (p) => {
@@ -691,6 +695,9 @@ const validateGroupTopicsCreate: Validator<GroupTopicsCreatePayload> = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.title) || !validMemberConcurrency(o.maxConcurrentMemberTurns)) return null;
   const t = o.target;
+  if (t === undefined) {
+    return o as unknown as GroupTopicsCreatePayload;
+  }
   if (!isObj(t) || !isStr(t.workspace) || (t.cwd !== undefined && !isStr(t.cwd)) || !isCreateIsolation(t.isolation)) {
     return null;
   }

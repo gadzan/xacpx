@@ -140,6 +140,15 @@ export function supportsBotDedicatedWorkspace(instance: { capabilities?: string[
 }
 
 /**
+ * True when the instance's core accepts a creation-time Group workspace mode
+ * (`per-member` Groups). An older core drops the field and builds a `shared`
+ * Group, so the web must not offer the choice there.
+ */
+export function supportsGroupWorkspaceMode(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupWorkspaceModeV1);
+}
+
+/**
  * True when the instance's core deletes a Bot's dedicated workspace
  * directory when the user asks for it on removal. An older core ignores the
  * flag, so the web must not offer the option there.

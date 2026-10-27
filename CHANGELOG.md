@@ -5,6 +5,7 @@
 ### Added
 
 - `control.files.settings.get` / `control.files.settings.update` and `FilesSettingsDto`, and Manage Instance gains a "File writes & Git changes" switch on them. Flipping it persists `files.writeEnabled` and hot-applies it to the daemon's live config, so the next file or structured Git mutation is gated by the new value with no restart. Read-only browsing and Git status stay available when it is off, and a connector or daemon that predates the RPCs shows an upgrade notice instead of a switch.
+- Groups choose a workspace mode at creation: `shared` (today's model, each Topic owns one workspace all members use) or `per-member` (the Group has no workspace; every member runs in its own Bot workspace). The mode is immutable, exposed as `ConversationRecord.workspaceMode` / `GroupSummaryDto.workspaceMode` and accepted by `control.groups.create`; `groups.update` rejects it. A `per-member` Group creates Topics without an `ExecutionTarget`, and the same-Run scheduling gate now allows members to run concurrently when their accepted workspaces differ instead of requiring `worktree-per-member` — equal workspaces (including two names aliasing one directory, caught by the canonical-cwd reservation) still serialize.
 
 ## [relay-protocol 0.6.4-beta.5] - 2026-10-26
 

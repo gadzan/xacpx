@@ -23,7 +23,7 @@ import {
 } from "./dedicated-workspace-cleanup";
 import { isDedicatedWorkspaceMarker } from "./bot-types";
 import type { BotProfile, BotRuntimeBinding, DedicatedWorkspaceMarker } from "./bot-types";
-import type { ConversationRecord } from "../conversations/conversation-types";
+import type { ConversationRecord, GroupWorkspaceMode } from "../conversations/conversation-types";
 
 const NAME_MAX = 80;
 const TEXT_MAX = 16_384;
@@ -66,6 +66,8 @@ export interface CreateGroupInput {
   description?: string;
   botIds: string[];
   leadBotId?: string;
+  /** Fixed at creation; absent means `shared`. */
+  workspaceMode?: GroupWorkspaceMode;
 }
 
 export interface UpdateGroupInput {
@@ -578,6 +580,7 @@ export class BotService {
       const leadBotId = this.requireGroupLead(input.leadBotId, membership);
       const title = this.requireGroupTitle(input.title);
       const description = this.optionalGroupDescription(input.description);
+      const workspaceMode = this.requireGroupWorkspaceMode(input.workspaceMode);
       const timestamp = this.now().toISOString();
       const id = createConversationId();
       const record: ConversationRecord = {
@@ -587,6 +590,7 @@ export class BotService {
         ...(description ? { description } : {}),
         botIds: membership,
         ...(leadBotId ? { leadBotId } : {}),
+        ...(workspaceMode ? { workspaceMode } : {}),
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -848,6 +852,16 @@ export class BotService {
       throw new BotError("title_too_long", `group title must be at most ${NAME_MAX} characters`);
     }
     return trimmed;
+  }
+
+  private requireGroupWorkspaceMode(mode: unknown): GroupWorkspaceMode | undefined {
+    if (mode === undefined) {
+      return undefined;
+    }
+    if (mode !== "shared" && mode !== "per-member") {
+      throw new BotError("invalid_workspace_mode", "group workspace mode must be 'shared' or 'per-member'");
+    }
+    return mode;
   }
 
   private optionalGroupDescription(description: string | null | undefined): string | undefined {
@@ -1224,23 +1238,16 @@ export class BotService {
     });
   }
 
-  /**
-   * Runtimes that consume the Bot workspace DEFAULT: direct sessions only.
-   * Group Topics always carry an explicit executionTarget (create-time
-   * required; legacy/missing target fails closed at materialize), so the Bot
-   * default never applies to member sessions and changing it never rebuilds
-   * them. Agent changes stay locked by ANY runtime (hasMaterializedRuntime);
-   * workspace-default changes only by direct runtime.
-   */
+  /** Only runtimes that actually read the Bot's workspace block changing it.
+   *  Agent changes stay locked by any runtime; workspace changes do not. */
   private hasDefaultWorkspaceRuntime(botId: string): boolean {
-    // Scope-narrow: only bot-direct bindings/sessions consume the Bot
-    // workspace default. directRuntimeRefs.bindingIds also covers
-    // group-member bindings (any non-controller scope), which must NOT lock
-    // the default — their Topics own an explicit workspace.
-    const hasDirectBinding = Object.values(this.state.bot_runtime_bindings).some(
-      (binding) => binding.scope === "bot-direct" && binding.botId === botId,
-    );
-    if (hasDirectBinding) {
+    const hasDefaultWorkspaceBinding = Object.values(this.state.bot_runtime_bindings).some((binding) => {
+      if (binding.scope === "bot-direct") return binding.botId === botId;
+      if (binding.scope !== "group-member" || binding.botId !== botId) return false;
+      return this.state.conversations[binding.conversationId]?.workspaceMode === "per-member"
+        && this.state.sessions[binding.sessionAlias] !== undefined;
+    });
+    if (hasDefaultWorkspaceBinding) {
       return true;
     }
     const refs = this.directRuntimeRefs(botId);
