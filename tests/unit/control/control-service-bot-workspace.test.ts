@@ -80,10 +80,10 @@ async function wire(options?: {
   const events = createControlEventBus();
   const registry = {
     list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace })),
-    create: options?.createWorkspace ?? (async (name: string, cwd: string, description?: string) => {
+    create: options?.createWorkspace ?? (async (name: string, cwd: string, description?: string, createOptions?: { dedicated?: boolean }) => {
       const registered = options?.takeoverCwd ?? cwd;
-      config.workspaces[name] = { cwd: registered, ...(description ? { description } : {}) };
-      return { name, cwd: registered, ...(description ? { description } : {}) };
+      config.workspaces[name] = { cwd: registered, ...(description ? { description } : {}), ...(createOptions?.dedicated ? { dedicated: true } : {}) };
+      return { name, cwd: registered, ...(description ? { description } : {}), ...(createOptions?.dedicated ? { dedicated: true } : {}) };
     }),
     remove: options?.removeWorkspace ?? (async (name: string) => {
       delete config.workspaces[name];
@@ -133,7 +133,7 @@ async function wire(options?: {
   cleanups.push(async () => {
     await runtime.shutdown();
   });
-  return { botsHome, config, state, control, runtime };
+  return { botsHome, config, state, control, runtime, sessions };
 }
 
 test("omitted workspace allocates an owner-only directory, registers it, and persists the Bot", async () => {
@@ -148,6 +148,7 @@ test("omitted workspace allocates an owner-only directory, registers it, and per
   expect(w.config.workspaces[workspace]).toEqual({
     cwd: join(w.botsHome, workspace),
     description: "Bot default workspace for Reviewer",
+    dedicated: true,
   });
   expect(w.control.listBots().map((row) => row.workspace)).toEqual([workspace]);
   expect(w.state.bots[bot.id]?.workspace).toBe(workspace);
@@ -235,7 +236,7 @@ test("a Bot rolled back over a taken-over registration keeps that registration",
   const w = await wire({ takeoverCwd: foreign });
   await expect(w.control.createBot({ name: "Reviewer", agent: "unregistered" }))
     .rejects.toMatchObject({ code: "agent_not_registered" });
-  expect(w.config.workspaces["Reviewer"]).toEqual({ cwd: foreign, description: "Bot default workspace for Reviewer" });
+  expect(w.config.workspaces["Reviewer"]).toEqual({ cwd: foreign, description: "Bot default workspace for Reviewer", dedicated: true });
   expect(readdirSync(w.botsHome)).toEqual([]);
 });
 
@@ -281,7 +282,7 @@ test("pre-existing directories and symlinks at candidate names are never reused"
   expect(readdirSync(outside)).toEqual([]);
   expect(w.config.workspaces).toEqual({
     backend: { cwd: "/tmp/backend" },
-    "Reviewer-4": { cwd: join(w.botsHome, "Reviewer-4"), description: "Bot default workspace for Reviewer" },
+    "Reviewer-4": { cwd: join(w.botsHome, "Reviewer-4"), description: "Bot default workspace for Reviewer", dedicated: true },
   });
 });
 
@@ -470,7 +471,10 @@ test("a directory still referenced by another Bot, a topic, a task, or a worktre
     const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
     const dir = join(w.botsHome, "Reviewer");
     if (reference === "bot") {
-      await w.control.createBot({ name: "Second", agent: "codex", workspace: "Reviewer" });
+      // Squatting on the dedicated name through the daemon-internal channel:
+      // the registry entry is what keeps the directory alive at cleanup.
+      const second = await w.control.createBot({ name: "Squatter", agent: "codex" });
+      w.state.bots[second.id].workspace = "Reviewer";
     }
     if (reference === "topic") {
       w.state.conversation_topics["topic_x"] = {
@@ -636,4 +640,39 @@ test("a retried removal keeps the workspaceCleanup the first attempt recorded", 
   const retried = await removeBot(w, bot.id, "rm-retry", { deleteDedicatedWorkspace: true });
   expect(retried.operation.workspaceCleanup).toEqual({ outcome: "deleted", path: dir });
   expect(existsSync(dir)).toBe(false);
+});
+test("a dedicated workspace is marked dedicated and hidden from listWorkspaces", async () => {
+  const w = await wire();
+  await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  expect(w.config.workspaces["Reviewer"]).toEqual({
+    cwd: join(w.botsHome, "Reviewer"),
+    description: "Bot default workspace for Reviewer",
+    dedicated: true,
+  });
+  expect(w.control.listWorkspaces().map((workspace) => workspace.name)).toEqual(["backend"]);
+});
+
+test("a dedicated workspace cannot become another Bot or a Topic target", async () => {
+  const w = await wire();
+  const owner = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  const other = await w.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const group = await w.control.createGroup({ title: "G", botIds: [owner.id, other.id] });
+
+  await expect(w.control.createBot({ name: "Squatter", agent: "codex", workspace: "Reviewer" }))
+    .rejects.toMatchObject({ code: "workspace_dedicated" });
+  await expect(w.control.updateBot(other.id, { workspace: "Reviewer" }))
+    .rejects.toMatchObject({ code: "workspace_dedicated" });
+  await expect(w.control.createGroupTopic(group.id, "T", { workspace: "Reviewer", isolation: "shared" }))
+    .rejects.toMatchObject({ code: "workspace_dedicated" });
+});
+
+test("a session may not be created on a dedicated workspace, but the owner Bot's own session still materializes", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+
+  await expect(w.sessions.createSession("relay:squatter", "codex", "Reviewer"))
+    .rejects.toThrow("is reserved for its Bot");
+  await w.runtime.botRuntime.getOrCreateDirectSession({ botId: bot.id });
+  const [owned] = Object.values(w.state.sessions).filter((session) => session.workspace === "Reviewer");
+  expect(owned?.owner?.kind).toBe("bot-direct");
 });

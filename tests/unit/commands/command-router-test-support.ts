@@ -108,10 +108,11 @@ export class MemoryConfigStore
     return this.config;
   }
 
-  async upsertWorkspace(name: string, cwd: string, description?: string): Promise<AppConfig> {
+  async upsertWorkspace(name: string, cwd: string, description?: string, options?: { dedicated?: boolean }): Promise<AppConfig> {
     this.config.workspaces[name] = {
       cwd,
       ...(description ? { description } : {}),
+      ...(options?.dedicated ? { dedicated: true } : {}),
     };
     return this.config;
   }

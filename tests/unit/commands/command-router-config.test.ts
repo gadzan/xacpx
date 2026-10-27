@@ -612,6 +612,36 @@ test("removing a workspace via command publishes workspaces-changed", async () =
   expect(events).toEqual([{ type: "workspaces-changed" }]);
 });
 
+test("hides a dedicated workspace from /ws and refuses /ws rm on it", async () => {
+  const config = createConfig();
+  config.workspaces["bot-reviewer"] = { cwd: "/home/u/.xacpx/bots/reviewer", dedicated: true };
+  const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  const router = new CommandRouter(sessions, createTransport(), config, new MemoryConfigStore(config));
+
+  const listReply = await router.handle("wx:user", "/ws");
+  expect(listReply.text).toBe(["已注册的工作区：", "- backend: /tmp/backend"].join("\n"));
+
+  const removeReply = await router.handle("wx:user", "/ws rm bot-reviewer");
+  expect(removeReply.text).toBe(t().workspace.dedicatedRemove("bot-reviewer"));
+  expect(config.workspaces["bot-reviewer"]).toBeDefined();
+});
+
+test("/ws new refuses to replace a dedicated workspace name", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-workspace-"));
+  try {
+    const config = createConfig();
+    config.workspaces.frontend = { cwd: "/home/u/.xacpx/bots/frontend", dedicated: true };
+    const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState());
+    const router = new CommandRouter(sessions, createTransport(), config, new MemoryConfigStore(config));
+
+    const reply = await router.handle("wx:user", `/ws new frontend -d "${dir}"`);
+
+    expect(reply.text).toBe(t().workspace.dedicatedConflict("frontend"));
+    expect(config.workspaces.frontend).toEqual({ cwd: "/home/u/.xacpx/bots/frontend", dedicated: true });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("updates the live transport policy after /pm auto", async () => {
   const config = createConfig();
