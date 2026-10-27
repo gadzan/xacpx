@@ -734,7 +734,7 @@ The registered workspace mapping, keyed by workspace name (used by `/workspace n
 
 When the configuration is first created, a `home` workspace is automatically seeded (with `cwd` as `~`) so it works out of the box; if you do not need it, you can delete it with `xacpx workspace rm home`.
 
-New Bots default to a dedicated workspace created by their daemon under `~/.xacpx/bots/<workspace-name>/`. Selecting an existing workspace uses that workspace instead. Each generated directory is registered in `workspaces` with its path and a description containing the original Bot name. Removing or renaming a Bot does not delete or move its workspace or files; existing Bots keep their configured workspace.
+New Bots default to a dedicated workspace created by their daemon under `~/.xacpx/bots/<workspace-name>/`. Selecting an existing workspace uses that workspace instead. Each generated directory is registered in `workspaces` with its path, a description containing the original Bot name, and `dedicated: true`. A dedicated workspace is private to its Bot: it never appears in workspace pickers or lists (dashboard, `/workspaces`, `xacpx workspace list`), and other Bots, sessions, or Group Topics cannot select it. Deleting the Bot (with the workspace-deletion option) removes the directory and its registration.
 
 Workspace names derived automatically from nonblank input that contains no usable ASCII characters use a stable `workspace-<8hex>` fallback. For example, Chinese directory basenames no longer all become `workspace`, and the dashboard can create sessions from Chinese paths. Existing ASCII normalization is preserved; occupied names receive `-2`, `-3`, and subsequent suffixes. Directory paths retain their original characters, and existing registered names are not migrated.
 
@@ -744,6 +744,7 @@ Workspace names derived automatically from nonblank input that contains no usabl
 |------|------|------|------|
 | `cwd` | `string` | Yes | Workspace path, acpx's `--cwd` argument; supports paths starting with `~`, which is expanded to the user's home directory on load |
 | `description` | `string` | No | Description information, used for display by the `/workspaces` command |
+| `dedicated` | `boolean` | No | Written by the daemon only: `true` marks a Bot's private workspace, hidden from pickers and rejected as an explicit target elsewhere. Do not set this by hand. |
 
 ### Example
 
