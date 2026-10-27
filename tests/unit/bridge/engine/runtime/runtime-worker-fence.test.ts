@@ -232,6 +232,43 @@ test("spool handshake: pending residuals refuse; an emptied namespace lifts the 
   expect(marked?.generation).toBe("gen-spool");
 });
 
+test("spool handshake: Job-bearing spooled still requires residual proof (containment alone must not retire)", async () => {
+  // A "spooled" fence owns un-converged residuals by definition. An empty or
+  // absent Job proves no live processes, but retiring here would drop the
+  // generation anchor the reaper's handshake needs — require the same
+  // residual proof as the Job-free spooled branch.
+  const generation = "c3e656a0-aee8-46ee-ace9-66658efc9b26";
+  const spooledJob = (): RuntimeWorkerFenceRecord =>
+    record({
+      pid: 424245,
+      phase: "spooled",
+      creationDate: "134374955039010012",
+      bootstrapVerified: true,
+      generation,
+      jobName: windowsJobNameForGeneration(generation)!,
+      jobAttested: true,
+      supervisorPid: 424246,
+      supervisorCreationDate: "134374955005369909",
+    });
+  const deps = (pending: boolean, onMarked: () => void) => ({
+    platform: "win32" as const,
+    probeWorker: async () => "gone" as const,
+    probeSupervisor: async () => "gone" as const,
+    probeJobContainment: async () => "absent" as const,
+    spooledResidualsRemaining: async () => pending,
+    markDischarged: async () => {
+      onMarked();
+    },
+    selfDischargeWaitMs: 0,
+  });
+  let markedPending = false;
+  expect(await dischargeRuntimeWorkerFence(spooledJob(), deps(true, () => { markedPending = true; }))).toBe("refused");
+  expect(markedPending).toBe(false);
+  let markedEmpty = false;
+  expect(await dischargeRuntimeWorkerFence(spooledJob(), deps(false, () => { markedEmpty = true; }))).toBe("discharged");
+  expect(markedEmpty).toBe(true);
+});
+
 test("fence store: corrupt JSON is UNREADABLE, never absent (round 30 Blocking 1)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-corrupt-"));
   try {
