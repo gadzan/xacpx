@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Every Group member turn now carries the Group's title and description in its Bot-profile header (`You are collaborating in the Group "<title>".` / `Group description:`), so an agent working in a Group knows what the Group is for. Both are read live at execution time: an edit lands on the next turn without recreating the owned session, and neither joins the accepted profile snapshot, the sticky-identity check, the Router input or the public transcript. A Group with no title or description composes exactly as before.
+
 ### Fixed
 
 - Hard delete and soft close no longer refuse forever on a durable ownership fence left in `admitted` by a hard-killed host (group removal reported `worker ownership not quiesced`): the quiescence probe now discharges it on the same containment proof the fence's own recovery requires — supervisor provably gone, the generation's Job empty or absent, and the attested worker's birth gone. A live supervisor, a Job that still holds processes, an unverifiable identity, or a pid probe that cannot answer keeps refusing.

@@ -46,6 +46,22 @@ test("an advertised command keeps the original text and the xacpx catalog is not
   clearAdvertisedCommands();
 });
 
+test("group scope header carries the Group title and description", () => {
+  const wrapped = composeBotTurnPrompt({ name: "Reviewer", instructions: "Be terse." }, "do the review",
+    { title: "xacpx 项目小组", description: "维护 gadzan/xacpx 开源项目群。" });
+  expect(wrapped).toContain('You are collaborating in the Group "xacpx 项目小组".');
+  expect(wrapped).toContain("Group description:\n维护 gadzan/xacpx 开源项目群。");
+  expect(wrapped.indexOf("You are collaborating")).toBeGreaterThan(wrapped.indexOf("does not change the underlying model"));
+});
+
+test("group scope header is absent without a title or description", () => {
+  const bare = composeBotTurnPrompt({ name: "Reviewer", instructions: "Be terse." }, "do the review");
+  expect(bare).not.toContain("You are collaborating");
+  const blank = composeBotTurnPrompt({ name: "Reviewer" }, "do the review",
+    { title: "   ", description: "  " });
+  expect(blank).not.toContain("You are collaborating");
+});
+
 async function harness() {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-slash-prompt-")), "conversations.sqlite");
   const store = await SqliteConversationStore.open(path);
