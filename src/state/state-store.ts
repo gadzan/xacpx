@@ -1030,6 +1030,11 @@ function isConversationRecord(value: unknown): value is ConversationRecord {
   if (value.lifecycle !== undefined && value.lifecycle !== "active" && value.lifecycle !== "deleting") {
     return false;
   }
+  // Malformed rather than defaulted: a wrong mode would silently re-target
+  // accepted member work to another directory.
+  if (value.workspaceMode !== undefined && value.workspaceMode !== "shared" && value.workspaceMode !== "per-member") {
+    return false;
+  }
   if (value.leadBotId !== undefined && !value.botIds.includes(value.leadBotId)) {
     return false;
   }
@@ -1289,6 +1294,11 @@ function reconcileProductOwnershipGraph(
     // (live Bot + deterministic conversation + linked custom Topic row):
     // that row is the cross-kind evidence the activation gate must see,
     // so load must keep it instead of mutating it away.
+
+    // A `per-member` Group's Topics carry no target and may have no runtime, so
+    // they present neither marker and are kept here as inert rows — but the
+    // loss of their cleanup root is still reported, like every other anomaly
+    // below, so a quarantined/crashed Group never leaves invisible residue.
     const isGroupTopic = topic.executionTarget !== undefined || groupReferencedTopics.has(id);
     if (!conversations[topic.conversationId] && isGroupTopic) {
       if (classifyConversationRoot(conversations, topics, bots, topic.conversationId, id) !== "missing") {
@@ -1299,6 +1309,12 @@ function reconcileProductOwnershipGraph(
         section: "conversation_topics",
         key: id,
         reason: `topic references missing conversation "${topic.conversationId}"; dropped (cleanup root gone)`,
+      });
+    } else if (!conversations[topic.conversationId] && !isDirectConversation) {
+      dropped.push({
+        section: "conversation_topics",
+        key: id,
+        reason: `topic references missing conversation "${topic.conversationId}"; no group marker (per-member Topic?) — row kept, requires operator review`,
       });
     }
   }

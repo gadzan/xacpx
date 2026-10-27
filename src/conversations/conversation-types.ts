@@ -8,6 +8,26 @@ export type ConversationMessageRole = "human" | "bot" | "system";
 
 export type ConversationRunMode = "explicit" | "automatic";
 export type WorkspaceIsolationPolicy = "shared" | "shared-single-writer" | "worktree-per-member";
+/**
+ * Where a Group's members execute. Chosen once at Group creation and never
+ * patched afterwards: member snapshots and sessions accepted under one mode
+ * stay valid under it, so flipping the axis later would silently re-target
+ * accepted work.
+ *
+ * - `shared`: the Topic owns the work target (`executionTarget.workspace`);
+ *   every member of a Topic runs in that one directory.
+ * - `per-member`: the Group has no work target at all. Each member runs in
+ *   its own Bot workspace, exactly like a Direct session, and Group Topics
+ *   carry no `executionTarget`.
+ *
+ * Absent means `shared` (pre-Group rows and every older writer).
+ */
+export type GroupWorkspaceMode = "shared" | "per-member";
+
+/** Effective workspace mode of a Group. Direct conversations have none. */
+export function groupWorkspaceMode(conversation: Pick<ConversationRecord, "kind" | "workspaceMode">): GroupWorkspaceMode {
+  return conversation.kind === "group" && conversation.workspaceMode === "per-member" ? "per-member" : "shared";
+}
 /** PR7 structured explicit Group target. IDs are authority; display names
  *  never route. `automatic` is a durable-mode reservation (PR8) rejected by
  *  the PR7 explicit accept path. */
@@ -81,7 +101,9 @@ export interface ConversationRecord {
   description?: string;
   botIds: string[];
   leadBotId?: string;
-  /** Bounded AppState lifecycle flag. SQLite conversation_lifecycle is authoritative for dispatch. */
+  /** Group execution mode, fixed at creation. Absent means `shared`; never
+   *  present on Direct conversations. */
+  workspaceMode?: GroupWorkspaceMode;
   lifecycle?: ConversationLifecycle;
   createdAt: string;
   updatedAt: string;

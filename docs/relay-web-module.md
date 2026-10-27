@@ -399,6 +399,7 @@ Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）
 Run 卡片列出实际执行的成员。`shared-single-writer` 的 Topic 注明写入任务会排队。
 
 话题行 ⋯ 菜单对有 executionTarget 的 Group 话题多一项「文件系统隔离」，打开单选对话框列出三种策略并标出当前值；选择即走 `control.group.topics.set-isolation`。只有「每名成员独立 Git 工作树」会让同一轮派发并行执行（每名成员一个已验证的工作树，物理准入仍要求 cwd 互不相同），其余两种对无法证明只读的工作保持串行。切换只影响之后的派发：话题里还有未结束 Run 时服务端返回 `conversation_not_settled`，对话框保持打开并显示原因。失败不关闭、成功才关闭，与删除/清空一致；移动端返回键先关对话框。Direct 页没有 executionTarget，不渲染这一项。
+创建群组时选定工作区模式（`shared` / `per-member`），编辑时只读展示，因为 daemon 拒绝改这个字段。该选择只对公布 `groups.workspace-mode.v1` 的实例显示：旧 core 会丢掉这个字段并建成 `shared` 群组，界面宁可回落到默认也不做静默降级。`per-member` 群组的建话题弹层隐藏工作区与隔离选项，直接创建无 `ExecutionTarget` 的 Topic，并说明成员各自用自己的 Bot 工作区、工作区不同的成员可并行。
 确定性拒绝保留草稿。不确定结果仍复用冻结的 `requestId` 和 target。
 
 Group 作曲器里的“自动协作”只在两者同时成立时出现：`control.conversations.router.get` 为 `ready`，且 `control.jev.get` 报告 `keyConfigured: true`。否则（包括读取未返回、旧 daemon 不支持 Jev RPC）该选项完全隐藏，不显示禁用项或原因；默认的负责人模式不变。自动 Run 的卡片显示“已分派给 <成员>”和 Router 给出的 `routingReason`（置信度或回退原因）。Run 卡片显示预算、指派、依赖、`waitingQuestion` 和 `blockedReason`。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。

@@ -1506,13 +1506,13 @@ export const useGroupsStore = defineStore("groups", () => {
     targetInstanceId: string,
     conversationId: string,
     title: string,
-    target: { workspace: string; isolation: "shared" | "shared-single-writer" | "worktree-per-member" },
+    target?: { workspace: string; isolation: "shared" | "shared-single-writer" | "worktree-per-member" },
   ): Promise<TopicSummaryDto> {
     const res = unwrapRpc(
       await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.groupTopicsCreate, {
         conversationId,
         title,
-        target,
+        ...(target ? { target } : {}),
       }),
     );
     const key = `${targetInstanceId}:${conversationId}`;

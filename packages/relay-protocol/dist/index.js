@@ -266,7 +266,8 @@ var RELAY_CAPABILITIES = {
   botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
   botsDedicatedWorkspaceCleanupV1: "bots.dedicated-workspace-cleanup.v1",
   runsCancelMemberV1: "runs.cancel-member.v1",
-  groupTopicIsolationV1: "group.topics.isolation.v1"
+  groupTopicIsolationV1: "group.topics.isolation.v1",
+  groupWorkspaceModeV1: "groups.workspace-mode.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [
@@ -1808,9 +1809,10 @@ var validateTopicsPreview = (p) => {
 };
 var validMemberConcurrency = (v) => v === undefined || typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64;
 var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+var isGroupWorkspaceMode = (v) => v === undefined || v === "shared" || v === "per-member";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
-  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) ? o : null;
+  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) && isGroupWorkspaceMode(o.workspaceMode) ? o : null;
 };
 var validateGroupsUpdate = (p) => {
   const o = fields(p);
@@ -1823,6 +1825,8 @@ var validateGroupsUpdate = (p) => {
   if (o.botIds !== undefined && !isStrArr(o.botIds))
     return null;
   if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId))
+    return null;
+  if (o.workspaceMode !== undefined)
     return null;
   return o;
 };
@@ -1844,6 +1848,9 @@ var validateGroupTopicsCreate = (p) => {
   if (!o || !isStr(o.conversationId) || !isStr(o.title) || !validMemberConcurrency(o.maxConcurrentMemberTurns))
     return null;
   const t = o.target;
+  if (t === undefined) {
+    return o;
+  }
   if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isCreateIsolation(t.isolation)) {
     return null;
   }

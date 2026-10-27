@@ -54,6 +54,16 @@ test("Topic concurrency limits validate on both creation RPCs without changing e
   }
 });
 
+test("group workspace mode is a creation-time choice with no update path", () => {
+  const base = { title: "Release Team", botIds: ["bot_a", "bot_b"] };
+  for (const workspaceMode of ["shared", "per-member"]) {
+    expect(parseControlPayload(MSG.groupsCreate, { ...base, workspaceMode })).not.toBeNull();
+  }
+  expect(parseControlPayload(MSG.groupsCreate, { ...base, workspaceMode: "per-workspace" })).toBeNull();
+  expect(parseControlPayload(MSG.groupsUpdate, { id: "conversation_g", workspaceMode: "per-member" })).toBeNull();
+  expect(parseControlPayload(MSG.groupTopicsCreate, { conversationId: "conversation_g", title: "Sprint" })).not.toBeNull();
+});
+
 test("the automatic-collaboration switch payload is a single boolean", () => {
   expect(MSG.conversationRouterSet).toBe("control.conversations.router.set");
   expect(parseControlPayload(MSG.conversationRouterGet, {})).not.toBeNull();

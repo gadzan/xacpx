@@ -1027,6 +1027,12 @@ export default {
       descriptionPlaceholder: "这个群组负责什么",
       members: "成员",
       membersHint: "至少选择两个 Bot。",
+      workspaceMode: "工作区",
+      workspaceModeShared: "共用工作区",
+      workspaceModeSharedHint: "每个议题选定一个工作区，所有成员都在其中工作，改动落在同一棵树上。",
+      workspaceModePerMember: "各 Bot 自己的工作区",
+      workspaceModePerMemberHint: "群组本身没有工作区。每个成员在自己的 Bot 工作区中工作，只共享对话。",
+      workspaceModeLocked: "创建群组时选定，之后不可更改。",
       membersSelected: "已选 {count} 个",
       botsLoading: "正在加载 Bot…",
       botsLoadFailed: "Bot 加载失败（{msg}）。",
@@ -1072,6 +1078,7 @@ export default {
     firstTopic: {
       title: "先创建一个话题",
       hint: "话题决定工作区并保存独立的历史记录。创建后即可发送第一条消息。",
+      hintPerMember: "每个成员都在自己的 Bot 工作区中工作，因此话题不决定工作区。创建后即可发送第一条消息。",
       action: "创建第一个话题",
     },
     target: {
@@ -1225,6 +1232,7 @@ export default {
       isolationShared: "共享",
       isolationWorktree: "每名成员独立 Git 工作树",
       isolationHint: "仅在成员任务可被强制证明为只读时并行执行；其他任务会串行执行。",
+      perMemberHint: "该群组让每个成员在自己的 Bot 工作区中工作，因此话题不需要选择工作区。工作区不同的成员可并行执行；共用同一工作区的成员仍会串行。",
     },
     prompt: {
       placeholder: "给所选成员发消息...（{'@'}名称、{'@'}everyone）",

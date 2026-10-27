@@ -1030,6 +1030,12 @@ export default {
       descriptionPlaceholder: "What this Group works on",
       members: "Members",
       membersHint: "Pick at least two Bots.",
+      workspaceMode: "Workspaces",
+      workspaceModeShared: "Shared workspace",
+      workspaceModeSharedHint: "Each Topic picks one workspace and every member works in it. Changes land in one tree.",
+      workspaceModePerMember: "Each Bot's own workspace",
+      workspaceModePerMemberHint: "The Group has no workspace. Each member works in its own Bot workspace and only shares the conversation.",
+      workspaceModeLocked: "Chosen when the Group was created and cannot be changed.",
       membersSelected: "{count} selected",
       botsLoading: "Loading Bots…",
       botsLoadFailed: "Could not load Bots ({msg}).",
@@ -1075,6 +1081,7 @@ export default {
     firstTopic: {
       title: "Start with a Topic",
       hint: "A Topic picks the workspace and keeps its own history. Create one to send the first message.",
+      hintPerMember: "Every member works in its own Bot workspace, so a Topic picks no workspace. Create one to send the first message.",
       action: "Create first Topic",
     },
     target: {
@@ -1228,6 +1235,7 @@ export default {
       isolationShared: "Shared",
       isolationWorktree: "Separate Git worktree per member",
       isolationHint: "Parallel execution requires an enforceably read-only member turn. Other turns are serialized.",
+      perMemberHint: "This Group runs every member in its own Bot workspace, so a Topic has no workspace to pick. Members in different workspaces run in parallel; members sharing one workspace are serialized.",
     },
     prompt: {
       placeholder: "Message the selected members... ({'@'}name, {'@'}everyone)",

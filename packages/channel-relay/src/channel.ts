@@ -208,6 +208,25 @@ export function supportsRunsCancelMember(control: unknown): boolean {
   if (typeof (control as { cancelMemberTurn?: unknown } | null)?.cancelMemberTurn !== "function") return false;
   return parseControlPayload(MSG.runsCancelMember, { runId: "probe", memberTurnId: "probe" }) !== null;
 }
+/**
+ * True when this instance can create a Group with a chosen workspace mode: the
+ * core must say so (older cores drop the field and always build a `shared`
+ * Group) AND the relay-protocol validator this connector resolved must accept
+ * both halves of it -- `groups.create` with the field, and a Group Topic with
+ * no target. Either half missing keeps the capability off, so the web never
+ * offers a mode the first `group.topics.create` would then reject.
+ */
+export function supportsGroupWorkspaceMode(control: unknown): boolean {
+  const probe = (control as { supportsGroupWorkspaceMode?: unknown } | null)?.supportsGroupWorkspaceMode;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  if (parseControlPayload(MSG.groupsCreate, {
+    title: "probe",
+    botIds: ["probe_a", "probe_b"],
+    workspaceMode: "per-member",
+  }) === null) return false;
+  return parseControlPayload(MSG.groupTopicsCreate, { conversationId: "probe", title: "probe" }) !== null;
+}
 
 /**
  * True when this instance can rewrite a Group Topic's isolation in place. The
@@ -343,6 +362,8 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsGroupTopicIsolation(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupTopicIsolationV1);
+    if (supportsGroupWorkspaceMode(control)) {
+      capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);
     }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);

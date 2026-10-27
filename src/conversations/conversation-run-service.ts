@@ -75,7 +75,7 @@ import type {
   MemberTurnRecord,
   WorkspaceIsolationPolicy,
 } from "./conversation-types";
-import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
+import { groupWorkspaceMode, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 
 export interface ConversationRunServiceOptions {
   worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
@@ -551,11 +551,13 @@ export class ConversationRunService {
           return existing;
         }
         const timestamp = this.now().toISOString();
-        const target = topic.executionTarget;
-        if (!target) {
+        // The Group mode is the authority; a stale Topic target is inert.
+        const mode = groupWorkspaceMode(live);
+        const target = mode === "shared" ? topic.executionTarget : undefined;
+        if (mode === "shared" && !target) {
           throw new ConversationError("execution_target_missing", `topic "${input.topicId}" has no execution target`);
         }
-        const worktreeBase = target.isolation === "worktree-per-member"
+        const worktreeBase = target?.isolation === "worktree-per-member"
           ? await (this.worktrees?.preflight(target.workspace) ?? Promise.reject(new ConversationError("worktree_unprovisioned", "worktree manager unavailable"))) : undefined;
         const snapshots = selected.map((botId) => {
           const bot = this.bots.getBot(botId);
@@ -934,17 +936,19 @@ export class ConversationRunService {
     return this.createDirectTopic(this.resolveDirectBotId(conversationId), title, options);
   }
   /**
-   * PR6 Group Topic lifecycle. Creates a Topic under a group Conversation
-   * with an explicit ExecutionTarget. The workspace must be registered; the
-   * isolation policy is validated against the known enum. Worktree mode
-   * requires the durable manager; arbitrary Topic cwd stays unsupported.
-   * Direct Conversations keep resolving execution
-   * from the owning Bot profile and never take this path.
+   * PR6 Group Topic lifecycle. A `shared` Group Topic carries an explicit
+   * ExecutionTarget: the workspace must be registered, the isolation policy
+   * is validated against the known enum, worktree mode requires the durable
+   * manager, and arbitrary Topic cwd stays unsupported. A `per-member` Group
+   * has no group work target, so its Topics carry no ExecutionTarget at all
+   * and a supplied one is refused rather than silently dropped. Direct
+   * Conversations keep resolving execution from the owning Bot profile and
+   * never take this path.
    */
   async createGroupTopic(
     conversationId: string,
     title: string,
-    target: { workspace: string; cwd?: string; isolation: WorkspaceIsolationPolicy },
+    target?: { workspace: string; cwd?: string; isolation: WorkspaceIsolationPolicy },
     options?: TopicSchedulingOptions,
   ): Promise<ConversationTopic> {
     this.assertOpen();
@@ -954,7 +958,18 @@ export class ConversationRunService {
       throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
     }
     this.assertConversationNotDeleting(conversationId);
-    const executionTarget = this.requireExecutionTarget(target);
+    let executionTarget: ExecutionTarget | undefined;
+    if (groupWorkspaceMode(conversation) === "shared") {
+      if (!target) {
+        throw new ConversationError("execution_target_missing", "a shared Group Topic requires an execution target");
+      }
+      executionTarget = this.requireExecutionTarget(target);
+    } else if (target !== undefined) {
+      throw new ConversationError(
+        "execution_target_unexpected",
+        "a per-member Group has no group workspace; its Topics take none",
+      );
+    }
     const timestamp = this.now().toISOString();
     const created = await this.stateMutex.run(async () => {
       this.assertConversationNotDeleting(conversationId);
@@ -967,7 +982,7 @@ export class ConversationRunService {
         conversationId,
         title: title.trim() || "Topic",
         status: "active",
-        executionTarget,
+        ...(executionTarget ? { executionTarget } : {}),
         ...(limit !== undefined ? { maxConcurrentMemberTurns: limit } : {}),
         createdAt: timestamp,
         updatedAt: timestamp,
