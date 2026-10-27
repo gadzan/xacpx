@@ -306,14 +306,6 @@ export async function dischargeRuntimeWorkerFence(
       const supervisorState = await (deps.probeSupervisor ?? probeSupervisorDefault)(current);
       if (workerState === "unknown" || workerState === undefined || supervisorState === "unknown") return "refused";
       if (workerState === "gone" && supervisorState === "gone") {
-        // A Job-bearing "spooled" fence still owns un-converged residuals:
-        // containment alone must not retire it, or the delete would drop the
-        // generation anchor the reaper's handshake needs. Require the same
-        // residual proof the Job-free spooled branch demands below.
-        if (current.phase === "spooled") {
-          const pending = (await deps.spooledResidualsRemaining?.(record.generation)) ?? true;
-          if (pending) return "refused";
-        }
         const containment = await (deps.probeJobContainment ?? probeJobContainmentDefault)(current);
         if (containment === "empty" || containment === "absent") {
           await deps.markDischarged?.({ ...current, phase: "discharged" }, [current.phase]);
