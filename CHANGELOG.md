@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A still-running dispatched member closes its round below everything the leader said after dispatching, instead of floating to the top of the topic and dropping to the bottom when its reply lands.
+- Message timestamps within a minute read "just now" / "N min ago" (「刚刚」/「N 分钟前」) instead of the raw `time.justNow` / `time.minutesAgo` keys: the relative-age branches landed without catalog entries in either locale.
+
 ### Added
 
 - `control.files.settings.get` / `control.files.settings.update` and `FilesSettingsDto`, and Manage Instance gains a "File writes & Git changes" switch on them. Flipping it persists `files.writeEnabled` and hot-applies it to the daemon's live config, so the next file or structured Git mutation is gated by the new value with no restart. Read-only browsing and Git status stay available when it is off, and a connector or daemon that predates the RPCs shows an upgrade notice instead of a switch.
