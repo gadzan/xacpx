@@ -5,7 +5,7 @@ import { RelayChannel, supportsGroupTopicIsolation } from "../../../../packages/
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
 
 /**
- * `group-topic.isolation.v1` tells the web it may offer the Group Topic
+ * `group.topics.isolation.v1` tells the web it may offer the Group Topic
  * isolation switch. A core without `control.group.topics.set-isolation` answers
  * `unknown-type`, which a user cannot act on, so the web must not offer it there.
  */
@@ -47,7 +47,7 @@ async function advertisedCapabilities(control: Record<string, unknown>): Promise
 }
 
 test("the capability constant has the wire name the web reads", () => {
-  expect(RELAY_CAPABILITIES.groupTopicIsolationV1).toBe("group-topic.isolation.v1");
+  expect(RELAY_CAPABILITIES.groupTopicIsolationV1).toBe("group.topics.isolation.v1");
 });
 
 test("a core that implements set-isolation gets the capability advertised at registration", async () => {

@@ -132,9 +132,34 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     isolationTopic.value = null;
   }
 
+  /** Refusals the switch can hit, so the dialog never shows a raw server sentence. */
+  function isolationErrorText(error: unknown): string {
+    const code = error instanceof Error && "code" in error ? String((error as { code: unknown }).code ?? "") : "";
+    switch (code) {
+      case "conversation_not_settled":
+        return t("bot.topic.isolationErrors.unsettled");
+      case "worktree_unprovisioned":
+        return t("bot.topic.isolationErrors.worktreeUnprovisioned");
+      case "worktree_runs_pending":
+        return t("bot.topic.isolationErrors.worktreeRunsPending");
+      case "invalid-isolation":
+        return t("bot.topic.isolationErrors.invalidIsolation");
+      case "topic_deleting":
+      case "conversation_deleting":
+        return t("bot.topic.isolationErrors.deleting");
+      case "unknown-type":
+        return t("bot.errors.connectorOutdated");
+      default:
+        return t("bot.topic.isolationErrors.failed", {
+          msg: error instanceof Error ? error.message : String(error),
+        });
+    }
+  }
+
   /** Applies the choice and closes only on success, like the delete/clear confirm. */
   async function chooseIsolation(isolation: TopicIsolation): Promise<void> {
     const topic = isolationTopic.value;
+    if (isolationSaving.value) return;
     if (!topic || !handlers.setTopicIsolation || topic.executionTarget?.isolation === isolation) {
       isolationTopic.value = null;
       return;
@@ -145,7 +170,7 @@ export function useTopicActions(handlers: TopicActionHandlers) {
       await handlers.setTopicIsolation(topic.id, isolation);
       isolationTopic.value = null;
     } catch (error: unknown) {
-      actionError.value = error instanceof Error ? error.message : String(error);
+      actionError.value = isolationErrorText(error);
     } finally {
       isolationSaving.value = false;
     }

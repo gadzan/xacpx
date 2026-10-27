@@ -3851,7 +3851,7 @@ test("compositions without a worktree manager reject new worktree work and termi
   await expect(first.service.createGroupTopic(group.id, "WT", {
     workspace: "backend",
     isolation: "worktree-per-member",
-  })).rejects.toMatchObject({ code: "invalid-isolation" });
+  })).rejects.toMatchObject({ code: "worktree_unprovisioned" });
   expect(first.state.conversation_topics["wt-missing"]).toBeUndefined();
 
   // A durable row that predates the gate (legacy/damaged state) must settle

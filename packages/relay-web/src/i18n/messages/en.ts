@@ -899,6 +899,14 @@ export default {
       isolationTitle: "Filesystem isolation",
       isolationBody: "Choose how dispatched members share the disk. Only per-member Git worktrees let one round's members execute concurrently.",
       isolationHint: "Finish this topic's running Runs first: the switch is refused while any Run is in flight, and it only applies to later dispatches.",
+      isolationErrors: {
+        unsettled: "This topic still has Runs in flight. Wait for them to finish, then switch.",
+        worktreeUnprovisioned: "This instance has no worktree manager, so it cannot provision worktrees.",
+        worktreeRunsPending: "This topic still has worktrees that were never integrated. Integrate or drop them before leaving worktree mode.",
+        invalidIsolation: "This instance does not support that isolation policy.",
+        deleting: "This topic is being deleted. The switch was not applied.",
+        failed: "The switch failed: {msg}",
+      },
       save: "Save",
     },
     prompt: {

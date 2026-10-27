@@ -1007,12 +1007,14 @@ export class ConversationRunService {
     if (!target) {
       throw new ConversationError("execution_target_missing", `topic "${topicId}" has no execution target`);
     }
+    // Barriers come before the no-op return: a request against a deleting Topic
+    // must not report success just because the policy already matches.
+    if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
+      throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
+    }
     if (target.isolation === isolation) return current;
     // Validate the request before reporting that the Topic is busy: an invalid
     // policy stays invalid once the Runs settle.
-    if (isolation === "worktree-per-member" && !this.worktrees) {
-      throw new ConversationError("worktree_unprovisioned", "worktree manager unavailable");
-    }
     this.requireExecutionTarget({
       workspace: target.workspace,
       ...(target.cwd !== undefined ? { cwd: target.cwd } : {}),
@@ -1033,6 +1035,20 @@ export class ConversationRunService {
         this.assertTopicSettled(conversationId, topicId, "switching isolation");
         const liveTarget = topic.executionTarget;
         if (!liveTarget || liveTarget.isolation === isolation) return topic;
+        // Leaving worktree mode hides the only surface that previews, integrates
+        // and cleans those worktrees (GroupPane mounts the panel on the live
+        // isolation), while teardown keeps refusing while they exist. Refuse the
+        // downgrade and name the Runs instead of stranding them.
+        if (liveTarget.isolation === "worktree-per-member") {
+          const pending = this.store.listWorktreeRunIds(conversationId, topicId);
+          if (pending.length > 0) {
+            throw new ConversationError(
+              "worktree_runs_pending",
+              `topic "${topicId}" still has unintegrated worktrees; integrate or drop them before leaving worktree mode`,
+              { runIds: pending },
+            );
+          }
+        }
         // Rebuild from the gate-held topic, never from the pre-gate read: a
         // concurrent mutation may have added fields this write must preserve.
         const executionTarget = this.requireExecutionTarget({
@@ -1046,8 +1062,9 @@ export class ConversationRunService {
           updatedAt: this.now().toISOString(),
         };
         // `persist` replaces whole runtime state slices, so this clone/write must
-        // hold the mutex every other topic mutation holds; without it a
-        // concurrent create or rename is silently overwritten by this snapshot.
+        // hold `stateMutex`, the write lock archive and teardown use; without it
+        // a concurrent topic create is silently overwritten by this snapshot.
+        // (`mutateGroupTopic` predates the mutex and is not covered by it.)
         return this.stateMutex.run(async () => {
           const next = structuredClone(this.state);
           next.conversation_topics[topicId] = stored;
@@ -1722,9 +1739,13 @@ export class ConversationRunService {
     this.bots.assertWorkspaceRegistered(target.workspace);
     if (target.isolation !== "shared"
       && target.isolation !== "shared-single-writer"
-      && !(target.isolation === "worktree-per-member" && this.worktrees)) {
-      // Refuse worktree mode in compositions without a provisioning manager.
+      && target.isolation !== "worktree-per-member") {
       throw new ConversationError("invalid-isolation", `unknown isolation policy "${target.isolation}"`);
+    }
+    // A known policy the composition cannot serve is not an unknown one: name
+    // the missing manager so dispatch, accept and the switch all read alike.
+    if (target.isolation === "worktree-per-member" && !this.worktrees) {
+      throw new ConversationError("worktree_unprovisioned", "worktree manager unavailable");
     }
     // Topic cwd is not honored by member session materialization yet (the
     // resolved session cwd still comes from the workspace config). Persisting

@@ -89,6 +89,31 @@ test("selecting the isolation a topic already has is a no-op", async () => {
   expect(same.executionTarget?.isolation).toBe("worktree-per-member");
 }, SLOW);
 
+test("leaving worktree mode is refused while its worktrees are unintegrated", async () => {
+  const h = await fixture("worktree-per-member");
+  await h.accept("leave-wt", 2);
+  void h.dispatcher.kick();
+  await wait(() => h.runner.calls.length === 2);
+  h.runner.finish(0);
+  h.runner.finish(1);
+  await wait(() => h.store.listRuns(h.g.id, h.topic.id).every((run) => run.state === "completed"));
+  // Settled but not integrated: the worktree panel is mounted off the live
+  // isolation, so a downgrade would hide the only way to integrate them.
+  const pending = h.store.listWorktreeRunIds(h.g.id, h.topic.id);
+  expect(pending).toHaveLength(1);
+  await expect(h.service.setGroupTopicIsolation(h.g.id, h.topic.id, "shared"))
+    .rejects.toMatchObject({ code: "worktree_runs_pending", details: { runIds: pending } });
+  expect(h.service.listTopics(h.g.id).find((topic) => topic.id === h.topic.id)?.executionTarget?.isolation)
+    .toBe("worktree-per-member");
+}, SLOW);
+
+test("a deleting topic refuses the switch even when the policy already matches", async () => {
+  const h = await fixture("shared-single-writer");
+  h.store.markTopicDeleting(h.topic.id, h.g.id, new Date().toISOString());
+  await expect(h.service.setGroupTopicIsolation(h.g.id, h.topic.id, "shared-single-writer"))
+    .rejects.toMatchObject({ code: "topic_deleting" });
+}, SLOW);
+
 test("worktree isolation stays unavailable without a provisioning manager", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-isolation-nowt-"));
   const h = await harness({ workspaceCwd: dir });
