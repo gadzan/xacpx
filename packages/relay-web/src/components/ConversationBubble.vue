@@ -24,7 +24,7 @@ defineProps<{
 <template>
   <div
     class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
-    :class="own ? 'rounded-2xl rounded-br-[4px] bg-accent-soft px-3.5 py-2' : 'w-full space-y-2.5'"
+    :class="own ? 'own rounded-2xl rounded-br-[4px] bg-accent-soft px-3.5 py-2' : 'w-full space-y-2.5'"
   >
     <slot>
       <TurnParts
@@ -47,6 +47,17 @@ defineProps<{
 <style scoped>
 .conversation-bubble {
   overflow-wrap: anywhere;
+}
+/* Own bubbles are narrow pills: break long words only at soft wrap opportunities.
+   StreamMarkdown's own non-scoped `.stream-md { overflow-wrap: anywhere }` sets the
+   value on the CHILD, so the bubble-level declaration alone never reaches the
+   rendered markdown — the :deep override is what actually applies. Bot bubbles
+   never carry `.own`, so their long links keep breaking anywhere. */
+.conversation-bubble.own {
+  overflow-wrap: break-word;
+}
+.conversation-bubble.own :deep(.stream-md) {
+  overflow-wrap: break-word;
 }
 .conversation-bubble :deep(pre),
 .conversation-bubble :deep(.md-table-wrap) {

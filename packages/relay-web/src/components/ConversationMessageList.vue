@@ -307,7 +307,6 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
                so a Bot run and a session turn read as one system. The chip's dot is the
                only liveness signal; the body below never adds a spinner of its own. -->
           <div class="flex items-center gap-2 flex-wrap">
-            <span class="text-xs font-semibold text-fg">{{ bot?.name ?? "Bot" }}</span>
             <RunStatusChip
               :state="runChipState"
               :label="runChipLabel"

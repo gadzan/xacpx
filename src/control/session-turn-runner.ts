@@ -143,6 +143,83 @@ function escapeXmlAttribute(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/** Whitespace-free form, used ONLY to decide whether a transport re-sent content
+ *  we already streamed. Batched transports re-join their trimmed segments with a
+ *  single newline while the display re-inserts "\n\n", so the separator differs
+ *  even though the answer does not. */
+function squeezeWhitespace(text: string): string {
+  return text.replace(/\s+/g, "");
+}
+
+/** True when `char` may sit at the seam of two independently truncated fragments
+ *  without cutting a word in half: whitespace, punctuation, or a string edge. */
+function isSeamBoundary(char: string | undefined): boolean {
+  return char === undefined || /[\s\p{P}]/u.test(char);
+}
+
+/** Index in `text` just past its `count`-th non-whitespace character, so a
+ *  whitespace-insensitive match can slice the ORIGINAL transport text and keep
+ *  the separators it chose. */
+function indexAfterSqueezed(text: string, count: number): number {
+  let consumed = 0;
+  for (let at = 0; at < text.length; at += 1) {
+    if (consumed === count) return at;
+    if (!/\s/.test(text[at]!)) consumed += 1;
+  }
+  return text.length;
+}
+
+/**
+ * Return the part of a transport's trailing `tail` that still has to be appended
+ * to what we already streamed — the empty string when the tail is a repeat.
+ *
+ * `sent` is the RAW reply-chunk concatenation, never the display text: batched
+ * segments lose their paragraph breaks, and the display re-inserts "\n\n" only
+ * for rendering. Comparisons therefore trim trailing whitespace and, where the
+ * transport merely re-joined its own segments, ignore whitespace entirely — but
+ * slices always come from the original `tail`, so its breaks survive.
+ *
+ * A fuzzy seam overlap is accepted only when it begins at whitespace or
+ * punctuation. A mid-word coincidence ("Done" ← "one more thing") would silently
+ * swallow characters, so those tails are appended whole instead.
+ */
+export function dedupeStreamedSuffix(sent: string, tail: string): string {
+  const tailCmp = tail.trimEnd();
+  if (!tailCmp) return "";
+  const sentCmp = sent.trimEnd();
+  if (!sentCmp) return tail;
+
+  let suffix: string;
+  if (tail.startsWith(sent)) {
+    // Exact continuation: keep the tail's own text, minus the streamed prefix.
+    suffix = tail.slice(sent.length);
+  } else if (tailCmp.endsWith(sentCmp) && isSeamBoundary(tailCmp[tailCmp.length - sentCmp.length - 1])) {
+    // The tail re-sends the whole streamed answer BEHIND a prefix (a summary).
+    // Emit only that prefix: appending the tail wholesale would duplicate the answer.
+    suffix = tailCmp.slice(0, tailCmp.length - sentCmp.length).trimEnd();
+  } else if (squeezeWhitespace(tailCmp) === squeezeWhitespace(sentCmp)) {
+    // Same answer, different separators (see squeezeWhitespace): nothing to append.
+    suffix = "";
+  } else if (tailCmp.startsWith(sentCmp)) {
+    suffix = tail.slice(sentCmp.length);
+  } else if (squeezeWhitespace(tailCmp).startsWith(squeezeWhitespace(sentCmp))) {
+    suffix = tail.slice(indexAfterSqueezed(tail, squeezeWhitespace(sentCmp).length));
+  } else {
+    // Partial repeat at the seam (longest match first), boundary-checked.
+    suffix = tail;
+    const max = Math.min(sentCmp.length, tailCmp.length);
+    for (let len = max; len > 0; len -= 1) {
+      if (!tailCmp.startsWith(sentCmp.slice(sentCmp.length - len))) continue;
+      if (!isSeamBoundary(sentCmp[sentCmp.length - len - 1])) continue;
+      suffix = tail.slice(len);
+      break;
+    }
+  }
+  // A whitespace-only remainder adds nothing: the separator already reached the
+  // display, and emitting it again would widen the gap on every turn.
+  return suffix.trim() ? suffix : "";
+}
+
 /** Approximate displayable size of a tool event, for the batcher's growth check.
  *  Deliberately cheap and total: the batcher only needs to know whether the payload
  *  grew enough to be worth a publish, not its exact byte count. Never throws on a
@@ -260,9 +337,15 @@ export class SessionTurnRunner {
     // no-buffer fallback must not depend on it — turn-finished.text is this full
     // concatenation, exactly what a live-view consumer accumulated from turn-output.
     let finalText = "";
-    const emitChunk = (chunk: string) => {
+    // Raw reply chunks, concatenated with NO reconstructed separator. This is the
+    // only honest baseline for "what has the transport already sent": finalText
+    // carries the batched "\n\n" above, so comparing a trailing response against
+    // it would miss a re-sent answer and duplicate it.
+    let sentText = "";
+    // Verbatim chunks continue streamed text: no batched "\n\n" separator.
+    const emitChunk = (chunk: string, verbatim = false) => {
       if (!chunk) return;
-      const output = !streamMode && emittedChunk ? `\n\n${chunk}` : chunk;
+      const output = !verbatim && !streamMode && emittedChunk ? `\n\n${chunk}` : chunk;
       finalText += output;
       this.deps.events.emit({
         type: "turn-output",
@@ -392,6 +475,7 @@ export class SessionTurnRunner {
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
         reply: async (chunk) => {
           onActivity?.();
+          sentText += chunk;
           emitChunk(chunk);
         },
         onToolEvent: (event) => {
@@ -456,7 +540,18 @@ export class SessionTurnRunner {
       }
       const response = await this.deps.agent.chat(chatRequest);
       if (response.text && !response.silent) {
-        emitChunk(response.text);
+        // Transports may stream the answer and return it again: emit only the unsent
+        // suffix. `sentText` (raw chunks) is the comparison baseline — finalText holds
+        // the reconstructed display separators and would hide a re-sent answer.
+        const suffix = dedupeStreamedSuffix(sentText, response.text);
+        if (suffix) {
+          // The suffix continues the on-screen text only when the tail begins with
+          // what was already sent (whitespace-insensitive: batched segments lose
+          // their breaks). A summary prefix does not, so it gets its own paragraph.
+          const continues = squeezeWhitespace(response.text)
+            .startsWith(squeezeWhitespace(sentText));
+          emitChunk(suffix, continues);
+        }
       }
       // Flush any held tool frames BEFORE turn-finished so the hub's persisted row
       // and the web's live transcript end with the complete, ordered step list.
