@@ -1343,6 +1343,9 @@ test.serial("P1-12c: stale owned fence with a gone owner does NOT block delete (
       startedAt: new Date().toISOString(),
       agent: "runtime-worker",
     }, null, 2), "utf8");
+    // Self-check the seed: a key/dir derivation mistake would otherwise look
+    // like "delete succeeded, nothing to retire" instead of "never seeded".
+    expect((await readdir(fenceDir)).some((f: string) => f.includes(encodeURIComponent(physicalKey)))).toBe(true);
     // Delete must succeed end to end and clear the residue.
     await expect(engine.deleteSession(testInput as unknown as never)).resolves.toEqual({});
     let after: string[] = [];

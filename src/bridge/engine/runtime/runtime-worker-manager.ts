@@ -253,11 +253,19 @@ export class RuntimeWorkerManager {
       // A live hard delete / logical release must not wait out the owner's
       // self-discharge window inside a polling quiescence loop: the owner may
       // prove gone immediately (POSIX process-group ESRCH, or a Job whose
-      // containment already drained). Reuse the spawn path's discharge probe —
-      // but ONLY for a fence that never entered business RPCs
-      // (claiming/owned): an admitted fence may have adapter descendants that
-      // outlive the worker's process group, so it keeps refusing here exactly
-      // as before (P1-12 fail-closed pin).
+      // containment already drained). Reuse the spawn path's discharge probe
+      // for the pre-admission phases only.
+      //
+      // The safety argument is NOT "these phases never ran business RPCs":
+      // on POSIX the spawn path sets bootstrapVerified synchronously and no
+      // path ever writes "admitted", so a LIVE POSIX worker's steady-state
+      // fence is "owned". Safety there rests on the probe itself — the
+      // worker is spawned detached, so its pid is the process-group id and
+      // adapter children inherit the group; ESRCH therefore proves the whole
+      // tree gone, and a live or EPERM group refuses. "admitted" is the
+      // Windows post-identity state, where a Job/supervisor proof is
+      // required and this gate keeps refusing exactly as before (the P1-12
+      // fail-closed pin). "deleting" was already handled above.
       if (read.record.phase !== "claiming" && read.record.phase !== "owned") {
         throw new WorkerTeardownPendingError(
           `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") is present and not discharged (phase: ${read.record.phase}, pid: ${read.record.pid})`,
