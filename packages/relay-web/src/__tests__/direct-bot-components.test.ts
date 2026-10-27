@@ -2072,8 +2072,8 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain("Run cancelled");
     });
 
-    it("renders a failed run banner without the raw completion reason", () => {
-      const failedRun: ConversationRunDto = {
+    it("renders a failed run banner with the provider message but not a bare code", () => {
+      const failedRun = (completionReason: string): ConversationRunDto => ({
         id: "run_failed",
         conversationId: "c1",
         topicId: "t1",
@@ -2081,15 +2081,15 @@ describe("Direct Bot Components", () => {
         requestId: "r1",
         mode: "explicit",
         state: "failed",
-        completionReason: "execution-failed",
+        completionReason,
         profileRevision: 1,
         createdAt: "2026-09-18T00:00:00.000Z",
-      };
-      const wrapper = mount(ConversationMessageList, {
+      });
+      const mountRun = (completionReason: string) => mount(ConversationMessageList, {
         props: {
           messages: [],
           liveTurn: null,
-          activeRun: failedRun,
+          activeRun: failedRun(completionReason),
           activeMemberTurn: null,
           runParts: {},
           bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
@@ -2098,8 +2098,11 @@ describe("Direct Bot Components", () => {
           plugins: [i18n],
         },
       });
-      expect(wrapper.text()).toContain("Run failed");
-      expect(wrapper.text()).not.toContain("execution-failed");
+      const coded = mountRun("execution-failed");
+      expect(coded.text()).toContain("Run failed");
+      expect(coded.text()).not.toContain("execution-failed");
+      const provider = mountRun("model overloaded, retry later");
+      expect(provider.text()).toContain("model overloaded, retry later");
     });
 
     it("renders load older messages button and emits event", async () => {

@@ -420,7 +420,6 @@ describe("GroupThinkingBubbles UI", () => {
     wrapper.unmount();
   });
 
-
   it("hides Stop when topic ownership is uncertain and shows it only after agreement", async () => {
     const groups = seedEnvironment();
     seedLiveRun();
@@ -492,7 +491,7 @@ describe("GroupThinkingBubbles UI", () => {
   it("shows a real provider failure but not a bare bookkeeping code", async () => {
     const groups = seedEnvironment();
     groups.activeRun = runOf({ state: "failed" });
-    groups.memberTurnsById = { turn_a: turnOf({ state: "failed", failureReason: "execution-failed" }) };
+    groups.memberTurnsById = { turn_a: turnOf({ state: "failed", failureReason: "runtime_revision_mismatch" }) };
     vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
     const wrapper = mountTranscript();
     await openFirstBubble(wrapper);

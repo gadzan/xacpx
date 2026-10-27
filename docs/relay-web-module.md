@@ -401,7 +401,7 @@ Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）
 创建群组时选定工作区模式（`shared` / `per-member`），编辑时只读展示，因为 daemon 拒绝改这个字段。该选择只对公布 `groups.workspace-mode.v1` 的实例显示：旧 core 会丢掉这个字段并建成 `shared` 群组，界面宁可回落到默认也不做静默降级。`per-member` 群组的建话题弹层隐藏工作区与隔离选项，直接创建无 `ExecutionTarget` 的 Topic，并说明成员各自用自己的 Bot 工作区、工作区不同的成员可并行。
 确定性拒绝保留草稿。不确定结果仍复用冻结的 `requestId` 和 target。
 
-Group 作曲器里的“自动协作”只在两者同时成立时出现：`control.conversations.router.get` 为 `ready`，且 `control.jev.get` 报告 `keyConfigured: true`。否则（包括读取未返回、旧 daemon 不支持 Jev RPC）该选项完全隐藏，不显示禁用项或原因；默认的负责人模式不变。自动 Run 由路由行承载，行内只显示气泡状态、`waitingQuestion` 和人能处理的原因：Router 自己的 `routingReason`（置信度、回退说明）不再平铺在转录里。执行过程浮层只保留成员自己的过程与需要用户处理的信息（`waitingQuestion`、`blockedReason`、非记账类的失败原因）；派发指令（任务、期望输出）默认折叠，指派 ID、依赖 ID、预算、路由状态、工作区说明和轨迹的 `completenessReason` 都不进浮层。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
+Group 作曲器里的“自动协作”只在两者同时成立时出现：`control.conversations.router.get` 为 `ready`，且 `control.jev.get` 报告 `keyConfigured: true`。否则（包括读取未返回、旧 daemon 不支持 Jev RPC）该选项完全隐藏，不显示禁用项或原因；默认的负责人模式不变。自动 Run 由路由行承载，行内只显示气泡状态、`waitingQuestion` 和人能处理的原因：Router 自己的 `routingReason`（置信度、回退说明）不再平铺在转录里。执行过程浮层只保留成员自己的过程与需要用户处理的信息（`waitingQuestion`、`blockedReason`、成句的失败原因——裸 token 形式的内核原因码不显示）；派发指令（任务、期望输出）默认折叠，指派 ID、依赖 ID、预算、路由状态、工作区说明和轨迹的 `completenessReason` 都不进浮层。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
 
 实例管理弹层（会话 tab 的齿轮）General 面板提供群组自动协作、Relay 终端和文件写入三个开关。群组自动协作分区显示 daemon 解析出的状态，不暴露 Router 命令、鉴权环境变量或配置路径。开关绑定持久化的 `config.enabled`，不来自可用性状态：探测失败的实例照样显示已开启，并给出修复说明。打开弹层走 `control.conversations.router.update` 的空补丁（纯读，不写盘不探测），切换走同一个 RPC 的非空补丁。开启时若实例没有配置 `conversations.router.command`，daemon 自动写入仓库自带的默认 Router 并运行探测。旧 daemon 对 `update` 答 `unknown-type` 时，store 回落到 `control.conversations.router.get`，面板显示只读状态和升级提示。`conversation-router-changed` 事件触发重读。
 Jev 路由配置收拢在“Jev 路由”折叠区，包含 endpoint、API key（只显示掩码，输入即替换，可清除）、可选代理、只读模型 `jev-1.13.0`、保存和连接测试。API key 保存在实例 daemon 侧，不会回传 dashboard。
@@ -949,7 +949,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   - 实时 Run 复用 `TurnParts.vue` 呈现思考过程（reasoning）、工具调用（tool cards）、计划（plan）与流式文本输出；
   - 轮次完成后将流式累积的 trace parts 关联保存在消息卡片上；
   - 支持明确区分与展示 `queued`、`running`、`waiting-human`、`completed`、`failed`、`cancelled`、`indeterminate` 状态。
-  - 失败横幅只写本地化的「运行失败」：`completionReason` 是内核原因码（`execution-failed`、`started_result_unknown` 等），不进入界面。
+  - 失败横幅不再打印裸 token 形式的内核原因码（`execution-failed`、`prompt_failed` 等），成句的提供方错误仍在横幅里原样显示，避免用户无处可查。
   - `queued` / `running` / `waiting-human` 由共享的 `RunStatusChip` 表达（`data-test="run-status"`，`data-status-state`）：
     `running` 呼吸点、`queued` 静止弱化点、`waiting-human` 静止 `bg-warn` 点；状态文字改用 `bot.run.*` 文案。
     正文区在无 parts 时只保留 `run-empty-slot` 高度占位，不再追加第二个 `Loader2`——运行指示只由胶囊承担。

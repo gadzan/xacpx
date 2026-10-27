@@ -8,11 +8,10 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 import { useI18n } from "vue-i18n";
 import GroupTraceTimeline from "./GroupTraceTimeline.vue";
+import { isMachineFailureReason } from "../lib/failure-reason";
 import { useLiveDuration } from "../lib/run-duration";
 import PlanPanel from "./PlanPanel.vue";
 import type { TraceReplayStatus } from "../lib/group-run-presentation";
-
-const STATE_DUPLICATE_REASONS = new Set(["execution-failed", "started_result_unknown", "human-cancelled", "cancelled"]);
 
 const props = defineProps<{
   run: ConversationRunDto;
@@ -86,7 +85,7 @@ const duration = useLiveDuration(() => props.memberTurn
           ? $t("group.run.blockedHumanRequired")
           : $t("group.run.blockedHumanUnknown") }}
       </p>
-      <p v-if="memberTurn.failureReason && !historicalAttempt && !STATE_DUPLICATE_REASONS.has(memberTurn.failureReason)"
+      <p v-if="memberTurn.failureReason && !historicalAttempt && !isMachineFailureReason(memberTurn.failureReason)"
          data-test="group-member-failure" class="mt-1 break-words text-xs text-danger">
         {{ memberTurn.failureReason }}
       </p>
