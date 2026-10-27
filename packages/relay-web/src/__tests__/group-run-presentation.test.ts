@@ -165,7 +165,7 @@ describe("projectGroupTranscript", () => {
       turn("t1", "r1", "bot_a", { state: "running" }),
     ]);
     const items = projectGroupTranscript({
-      messages: [message("req_msg", 1)],
+      messages: [message("req_msg", 1, { runId: "r1" })],
       runs: { r1: rec },
     });
     const activities = items.filter((item) => item.kind === "member-activity");
