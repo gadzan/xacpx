@@ -187,7 +187,9 @@ export interface RoutingInput {
   /** Turns still available to spend. `0` means the Run must be completed,
    *  failed, or declared waiting-human — never dispatched again. */
   remainingBudget: number;
-  executionTarget: RoutingExecutionTarget;
+  /** The Topic's group work target. Absent for a `per-member` Group, which
+   *  has no group workspace: each member runs in its own Bot workspace. */
+  executionTarget?: RoutingExecutionTarget;
 }
 
 /**

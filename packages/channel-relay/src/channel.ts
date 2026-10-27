@@ -208,6 +208,23 @@ export function supportsRunsCancelMember(control: unknown): boolean {
   if (typeof (control as { cancelMemberTurn?: unknown } | null)?.cancelMemberTurn !== "function") return false;
   return parseControlPayload(MSG.runsCancelMember, { runId: "probe", memberTurnId: "probe" }) !== null;
 }
+/**
+ * True when this instance can create a Group with a chosen workspace mode: the
+ * core must say so (older cores drop the field and always build a `shared`
+ * Group) AND the relay-protocol validator this connector resolved must accept
+ * it. Either half missing keeps the capability off, so the web never offers a
+ * mode the instance would silently downgrade.
+ */
+export function supportsGroupWorkspaceMode(control: unknown): boolean {
+  const probe = (control as { supportsGroupWorkspaceMode?: unknown } | null)?.supportsGroupWorkspaceMode;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parseControlPayload(MSG.groupsCreate, {
+    title: "probe",
+    botIds: ["probe_a", "probe_b"],
+    workspaceMode: "per-member",
+  }) !== null;
+}
 
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
@@ -326,6 +343,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsRunsCancelMember(control)) {
       capabilities.push(RELAY_CAPABILITIES.runsCancelMemberV1);
+    }
+    if (supportsGroupWorkspaceMode(control)) {
+      capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);
     }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);

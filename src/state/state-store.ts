@@ -1030,6 +1030,11 @@ function isConversationRecord(value: unknown): value is ConversationRecord {
   if (value.lifecycle !== undefined && value.lifecycle !== "active" && value.lifecycle !== "deleting") {
     return false;
   }
+  // Malformed rather than defaulted: a wrong mode would silently re-target
+  // accepted member work to another directory.
+  if (value.workspaceMode !== undefined && value.workspaceMode !== "shared" && value.workspaceMode !== "per-member") {
+    return false;
+  }
   if (value.leadBotId !== undefined && !value.botIds.includes(value.leadBotId)) {
     return false;
   }
@@ -1289,6 +1294,9 @@ function reconcileProductOwnershipGraph(
     // (live Bot + deterministic conversation + linked custom Topic row):
     // that row is the cross-kind evidence the activation gate must see,
     // so load must keep it instead of mutating it away.
+
+    // A `per-member` Group's Topics carry no target and may have no runtime, so
+    // they present neither marker and survive here as inert rows.
     const isGroupTopic = topic.executionTarget !== undefined || groupReferencedTopics.has(id);
     if (!conversations[topic.conversationId] && isGroupTopic) {
       if (classifyConversationRoot(conversations, topics, bots, topic.conversationId, id) !== "missing") {

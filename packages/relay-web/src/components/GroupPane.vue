@@ -41,6 +41,8 @@ const needsFirstTopic = computed(() =>
   && groupsStore.currentTopics.length === 0,
 );
 
+const perMemberGroup = computed(() => groupsStore.currentGroup?.workspaceMode === "per-member");
+
 function requireTopicContext(): { instanceId: string; conversationId: string } | null {
   const instanceId = groupsStore.instanceId;
   const conversationId = groupsStore.activeConversationId;
@@ -293,7 +295,7 @@ const worktreeRunId = computed(() => {
          class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
       <MessageSquare :size="22" class="text-fg-muted" />
       <p class="text-sm font-semibold">{{ $t("group.firstTopic.title") }}</p>
-      <p class="max-w-sm text-xs text-fg-muted">{{ $t("group.firstTopic.hint") }}</p>
+      <p class="max-w-sm text-xs text-fg-muted">{{ $t(perMemberGroup ? "group.firstTopic.hintPerMember" : "group.firstTopic.hint") }}</p>
       <button
         type="button"
         data-test="group-first-topic-button"

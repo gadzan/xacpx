@@ -124,7 +124,7 @@ import { lifecycleOperationId, transitionLifecycleOperation, type LifecycleOpera
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
-import type { HumanIngressContext } from "../conversations/conversation-types";
+import type { GroupWorkspaceMode, HumanIngressContext } from "../conversations/conversation-types";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import { isHiddenProductSessionOwner } from "../state/types";
 import {
@@ -2599,6 +2599,16 @@ export class ControlService {
     return true;
   }
 
+  /**
+   * Feature probe for connectors: `createGroup` accepts `workspaceMode` and a
+   * `per-member` Group's Topics take no `ExecutionTarget`. Connectors advertise
+   * `RELAY_CAPABILITIES.groupWorkspaceModeV1` only when this exists, so a web
+   * client never offers a mode an older core would silently read as `shared`.
+   */
+  supportsGroupWorkspaceMode(): true {
+    return true;
+  }
+
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
       const bot = input.workspace !== undefined
@@ -2821,7 +2831,7 @@ export class ControlService {
     return toLifecycleOperationDto(this.requireConversations().removals.getOperation(id));
   }
 
-  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string }) {
+  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string; workspaceMode?: GroupWorkspaceMode }) {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.createGroup(input);
       this.deps.events.emit({ type: "bots-changed" });
@@ -2865,7 +2875,7 @@ export class ControlService {
   async createGroupTopic(
     conversationId: string,
     title: string,
-    target: ExecutionTargetDto,
+    target?: ExecutionTargetDto,
     options?: TopicSchedulingOptions,
   ) {
     return this.runConversationMutation(async (runtime) => {

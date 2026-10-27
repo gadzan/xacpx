@@ -32,8 +32,10 @@ import { i18n } from "../i18n";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
+import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 import GroupDialog from "../components/GroupDialog.vue";
 import GroupPane from "../components/GroupPane.vue";
+import GroupTopicDialog from "../components/GroupTopicDialog.vue";
 import InstanceTree from "../components/InstanceTree.vue";
 
 // Keep form/store assertions local; browser E2E covers the real Teleport layout.
@@ -76,7 +78,7 @@ function run(id: string, state: ConversationRunDto["state"]): ConversationRunDto
   };
 }
 
-function seedInstance(): void {
+function seedInstance(capabilities: string[] = [RELAY_CAPABILITIES.groupWorkspaceModeV1]): void {
   const instances = useInstancesStore();
   instances.instances = [
     {
@@ -88,6 +90,7 @@ function seedInstance(): void {
       agents: [{ name: "codex", driver: "codex" }],
       workspaces: [{ name: "repo", cwd: "/repo" }],
       agentCatalog: [],
+      capabilities,
     } as never,
   ];
 }
@@ -165,10 +168,72 @@ describe("Group management", () => {
         title: "Launch",
         botIds: ["bot_off", "bot_b"],
         leadBotId: "bot_b",
+        workspaceMode: "shared",
       });
       expect(groups.groupsByInstance["i1"]?.map((g) => g.id)).toEqual(["conversation_new"]);
       expect(wrapper.emitted("saved")).toEqual([[created]]);
       expect(wrapper.emitted("close")).toHaveLength(1);
+    });
+
+    it("creates a per-member Group and shows the locked mode when editing", async () => {
+      routes.set("control.bots.list", () => ({ bots: [REVIEWER, TESTER] }));
+      const created = { ...GROUP, id: "conversation_split", botIds: ["bot_a", "bot_b"], workspaceMode: "per-member" as const };
+      routes.set("control.groups.create", () => ({ group: created }));
+      routes.set("control.groups.list", () => ({ groups: [created] }));
+      const wrapper = track(mount(GroupDialog, { props: { instanceId: "i1" }, global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      await wrapper.find('[data-test="group-dialog-title"]').setValue("Split");
+      await selectMembers(wrapper, ["bot_a", "bot_b"]);
+      await wrapper.find('[data-test="group-dialog-workspace-mode-per-member"] input').setValue(true);
+      await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+
+      expect(rpcCalls("control.groups.create")[0]?.payload.workspaceMode).toBe("per-member");
+
+      const editor = track(mount(GroupDialog, { props: { instanceId: "i1", group: created }, global: { plugins: [i18n] } }));
+      await flushPromises();
+      const mode = editor.find('[data-test="group-dialog-workspace-mode"]');
+      expect(mode.text()).toContain("Each Bot's own workspace");
+      expect(mode.find('input[type="radio"]').exists()).toBe(false);
+    });
+
+    it("a per-member Group's Topic dialog asks for no workspace", async () => {
+      const groups = useGroupsStore();
+      groups.instanceId = "i1";
+      groups.selectedGroupId = "conversation_split";
+      groups.activeConversationId = "conversation_split";
+      groups.groupsByInstance["i1"] = [{ ...GROUP, id: "conversation_split", workspaceMode: "per-member" }];
+      routes.set("control.group.topics.create", () => ({ topic: TOPIC }));
+      const wrapper = track(mount(GroupTopicDialog, { global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      expect(wrapper.find('[data-test="group-topic-workspace"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-topic-isolation"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-topic-per-member-hint"]').exists()).toBe(true);
+      await wrapper.find('input[type="text"]').setValue("Sprint");
+      await wrapper.find("form").trigger("submit");
+      await flushPromises();
+      expect(rpcCalls("control.group.topics.create")[0]?.payload).toEqual({
+        conversationId: "conversation_split",
+        title: "Sprint",
+      });
+    });
+
+    it("hides the workspace mode picker on an instance whose core predates it", async () => {
+      seedInstance([]);
+      seedBots([REVIEWER, TESTER]);
+      routes.set("control.groups.create", () => ({ group: { ...GROUP, id: "conversation_new" } }));
+      routes.set("control.groups.list", () => ({ groups: [] }));
+      const wrapper = track(mount(GroupDialog, { props: { instanceId: "i1" }, global: { plugins: [i18n] } }));
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-dialog-workspace-mode"]').exists()).toBe(false);
+
+      await wrapper.find('[data-test="group-dialog-title"]').setValue("Legacy");
+      await selectMembers(wrapper, ["bot_a", "bot_b"]);
+      await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+      expect(rpcCalls("control.groups.create")[0]?.payload).not.toHaveProperty("workspaceMode");
     });
 
     it("keeps Save disabled until there is a name and two distinct members", async () => {

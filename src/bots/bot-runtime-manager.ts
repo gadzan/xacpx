@@ -15,7 +15,12 @@ import {
 } from "./bot-service";
 import { sessionMatchesExecution, type BotProfile, type BotProfileExecution, type BotRuntimeBinding } from "./bot-types";
 import { planDirectConversation } from "../conversations/direct-conversation";
-import type { ConversationTopic, WorkspaceIsolationPolicy } from "../conversations/conversation-types";
+import {
+  groupWorkspaceMode,
+  type ConversationTopic,
+  type GroupWorkspaceMode,
+  type WorkspaceIsolationPolicy,
+} from "../conversations/conversation-types";
 import {
   createDirectBindingId,
   createDirectConversationId,
@@ -394,9 +399,9 @@ export class BotRuntimeManager {
     input.assertStillDispatchable?.();
     const bot = this.requireEnabledBot(input.botId);
     const scope = this.resolveGroupMemberScope(bot.id, input.conversationId, input.topicId, input.executionWorktree);
-    const effective = this.resolveGroupMemberExecution(bot, scope.topic, input.execution);
+    const effective = this.resolveGroupMemberExecution(bot, scope.mode, scope.topic, input.execution);
     this.assertExecutionPolicySupported(input.executionPolicy, effective.agent);
-    this.assertGroupMemberStickyIdentity(bot, scope.topic, input.execution);
+    this.assertGroupMemberStickyIdentity(bot, scope.mode, scope.topic, input.execution);
     const scopedId = createScopedGroupMemberBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
     if (existing && !this.groupMemberBindingHasAnySession(existing)) {
@@ -428,23 +433,29 @@ export class BotRuntimeManager {
   }
 
   /**
-   * Effective execution for one member turn: the Bot contributes agent identity
-   * and turn-boundary settings (model/effort); the Topic contributes the work
-   * target (workspace/cwd). An explicit per-member execution override
-   * replaces the whole combination (PR7+ explicit targets carry their own).
+   * A `shared` Group's Topic owns the work target; a `per-member` Group has
+   * none, so the Bot's own workspace is it (the Direct rule). An explicit
+   * override replaces the whole combination.
    */
   private resolveGroupMemberExecution(
     bot: BotProfile,
+    mode: GroupWorkspaceMode,
     topic: ConversationTopic,
     execution?: BotProfileExecution,
   ): BotProfileExecution {
     if (execution) {
       return execution;
     }
-    // Group Topics must carry an explicit ExecutionTarget: a missing target
-    // is unknown policy (legacy/damaged/migration gap), never the Bot
-    // default. Failing closed here avoids silently running member work in
-    // the wrong workspace. Direct Topics keep resolving from the Bot.
+    if (mode === "per-member") {
+      return {
+        agent: bot.agent,
+        workspace: bot.workspace,
+        ...(bot.model ? { model: bot.model } : {}),
+        ...(bot.effort ? { effort: bot.effort } : {}),
+      };
+    }
+    // A missing target on a `shared` Topic is unknown policy (legacy, damaged
+    // row), never the Bot default.
     const target = topic.executionTarget;
     if (!target) {
       throw new BotError("execution_target_missing", `topic "${topic.id}" has no execution target`);
@@ -458,20 +469,22 @@ export class BotRuntimeManager {
   }
 
   /**
-   * Sticky identity for group members is agent + resolved workspace — the
-   * axes the session actually runs on. Unlike direct sessions (where the Bot
-   * profile owns both), a Topic workspace override must not read as drift:
-   * only an agent change, or a workspace change against the *resolved*
-   * target, fails closed. cwd has no Bot-level counterpart (cwd_unsupported)
-   * and no session axis yet; it rides the ExecutionTarget as metadata until
-   * transport launch honors it, so it never triggers mismatch here.
+   * Sticky identity is agent + resolved workspace. Under `shared` the Topic
+   * resolves it, so a Topic override is not drift; under `per-member` the Bot
+   * owns it, so the check is the Direct one. cwd has no session axis yet and
+   * never triggers mismatch here.
    */
   private assertGroupMemberStickyIdentity(
     bot: BotProfile,
+    mode: GroupWorkspaceMode,
     topic: ConversationTopic,
     execution?: BotProfileExecution,
   ): void {
     if (!execution) {
+      return;
+    }
+    if (mode === "per-member") {
+      this.assertAcceptedStickyIdentity(bot, execution);
       return;
     }
     const target = topic.executionTarget;
@@ -491,7 +504,7 @@ export class BotRuntimeManager {
     conversationId: string,
     topicId: string,
     executionWorktree?: LogicalSession["execution_worktree"],
-  ): { conversationId: string; topicId: string; topic: ConversationTopic } {
+  ): { conversationId: string; topicId: string; topic: ConversationTopic; mode: GroupWorkspaceMode } {
     const conversation = this.state.conversations[conversationId];
     if (!conversation || conversation.kind !== "group") {
       throw new BotError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
@@ -514,8 +527,10 @@ export class BotRuntimeManager {
     if (topic.status !== "active") {
       throw new BotError("topic_deleting", `topic "${topicId}" is deleting`);
     }
+    // Group mode is the authority: a stale target on a `per-member` Group is
+    // inert rather than a second source of truth.
     const target = topic.executionTarget;
-    if (target) {
+    if (target && groupWorkspaceMode(conversation) === "shared") {
       this.bots.assertWorkspaceRegistered(target.workspace);
       // A worktree Topic requires the dispatcher's verified durable resource.
       // Falling back to the workspace root would downgrade directory isolation.
@@ -529,7 +544,7 @@ export class BotRuntimeManager {
         throw new BotError("cwd_unsupported", `topic "${topicId}" has an unsupported execution cwd`);
       }
     }
-    return { conversationId, topicId, topic };
+    return { conversationId, topicId, topic, mode: groupWorkspaceMode(conversation) };
   }
   private requireEnabledBot(botId: string): BotProfile {
     this.bots.assertAcceptsWork(botId);

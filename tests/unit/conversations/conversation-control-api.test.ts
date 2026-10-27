@@ -1427,6 +1427,22 @@ test("group CRUD, topic lifecycle, and teardown flow through public Control", as
   await runtime.shutdown();
 });
 
+test("a per-member Group is created without a group workspace", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  const botA = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({
+    title: "Split", botIds: [botA.id, botB.id], workspaceMode: "per-member",
+  });
+  expect(group.workspaceMode).toBe("per-member");
+  expect(control.getGroup(group.id).workspaceMode).toBe("per-member");
+  const topic = await control.createGroupTopic(group.id, "Sprint 1");
+  expect(topic.executionTarget).toBeUndefined();
+  await expect(control.createGroupTopic(group.id, "Sprint 2", { workspace: "backend", isolation: "shared" }))
+    .rejects.toMatchObject({ code: "execution_target_unexpected" });
+  await runtime.shutdown();
+});
+
 test("toMemberTurnSummary projects timestamps alongside failureReason", async () => {
   const { toMemberTurnSummary } = await import("../../../src/control/conversation-control-dtos");
   const summary = toMemberTurnSummary({

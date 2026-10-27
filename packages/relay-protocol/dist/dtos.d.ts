@@ -390,7 +390,8 @@ export interface ExecutionTargetDto {
     /** Worktree execution requires a durable owned resource; no shared fallback. */
     isolation: "shared" | "shared-single-writer" | "worktree-per-member";
 }
-/** Creation-time execution policy; older daemons reject worktree isolation. */
+/** Creation-time execution policy. `per-member` Groups take none: their
+ *  members run in their own Bot workspaces. */
 export interface GroupTopicCreateTargetDto {
     workspace: string;
     cwd?: string;
@@ -433,6 +434,8 @@ export interface GroupSummaryDto {
     description?: string;
     botIds: string[];
     leadBotId?: string;
+    /** Group execution mode, fixed at creation. Absent means `shared`. */
+    workspaceMode?: "shared" | "per-member";
     defaultTopicId?: string;
     lifecycle?: "active" | "deleting";
     createdAt: string;

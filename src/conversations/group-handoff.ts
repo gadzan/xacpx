@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { groupWorkspaceMode } from "./conversation-types";
 import { snapshotGroupMemberProfile } from "../bots/bot-types";
 import type { BotService } from "../bots/bot-service";
 import type { AppState } from "../state/types";
@@ -226,7 +227,9 @@ export class GroupHandoffService {
         throw new ConversationError("handoff_not_member", "sender and target must be current Group members");
       }
       if (args.to === sender.botId) throw new ConversationError("handoff_self_target", "handoff requires another Group member");
-      if (group.lifecycle === "deleting" || topic?.status !== "active" || topic.conversationId !== group.id || !topic.executionTarget) {
+      const mode = groupWorkspaceMode(group);
+      if (group.lifecycle === "deleting" || topic?.status !== "active" || topic.conversationId !== group.id
+        || (mode === "shared" && !topic.executionTarget)) {
         throw new ConversationError("topic_not_active", "Group Topic is not active");
       }
       const session = live?.sessionAlias ? this.options.state.sessions[live.sessionAlias] : undefined;
@@ -244,8 +247,9 @@ export class GroupHandoffService {
       if (!target.enabled) throw new ConversationError("handoff_disabled_member", "target Bot is disabled");
       const timestamp = (this.options.now?.() ?? new Date()).toISOString();
       // No await between final lifecycle read and the synchronous transaction.
+      const topicTarget = mode === "shared" ? topic.executionTarget : undefined;
       return this.options.store.acceptPublicHandoff({ ...binding, invocationId: input.invocationId, args,
-        profileSnapshot: snapshotGroupMemberProfile(target, topic.executionTarget, timestamp), now: timestamp });
+        profileSnapshot: snapshotGroupMemberProfile(target, topicTarget, timestamp), now: timestamp });
     });
     if (!receipt.reused) {
       emitConversationProductEvent(this.options.onProductEvent, { type: "conversation-message", message: receipt.message });

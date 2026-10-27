@@ -581,6 +581,8 @@ export interface GroupsCreatePayload {
     description?: string;
     botIds: string[];
     leadBotId?: string;
+    /** Fixed at creation; omitted means `shared`. */
+    workspaceMode?: "shared" | "per-member";
 }
 export interface GroupsCreateResult {
     group: GroupSummaryDto;
@@ -611,7 +613,8 @@ export interface GroupTopicsCreatePayload {
     maxConcurrentMemberTurns?: number;
     conversationId: string;
     title: string;
-    target: GroupTopicCreateTargetDto;
+    /** Required for a `shared` Group, refused for a `per-member` one. */
+    target?: GroupTopicCreateTargetDto;
 }
 export interface GroupTopicsArchivePayload {
     conversationId: string;
@@ -1264,6 +1267,11 @@ export declare const RELAY_CAPABILITIES: {
     /** Scoped MemberTurn cancellation, advertised only when the connector and
      *  core both support `control.runs.cancelMember`. */
     readonly runsCancelMemberV1: "runs.cancel-member.v1";
+    /** `control.groups.create` accepts `workspaceMode` and `control.group.topics.create`
+     *  accepts an omitted `target` for a `per-member` Group. Advertised only when
+     *  the connector's validator and the core both accept it, so the web never
+     *  offers a mode an instance would silently downgrade to `shared`. */
+    readonly groupWorkspaceModeV1: "groups.workspace-mode.v1";
 };
 /**
  * Grace an interaction RPC gets beyond its own `expiresAt`.
