@@ -1856,6 +1856,35 @@ test("explicit Group execution retains its original prompt without an assignment
   harness.store.close();
 });
 
+test("explicit Group turns carry the live Group title and description", async () => {
+  const harness = await createHarness({ autoKick: false });
+  try {
+    const group = await harness.bots.createGroup({
+      title: "Team",
+      description: "维护 gadzan/xacpx 开源项目群。",
+      botIds: [BOT_ID, TESTER_ID],
+    });
+    const topic = await harness.service.createGroupTopic(group.id, "Sprint", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+      requestId: "group-scope", text: "do the review", target: { botId: BOT_ID } });
+    await harness.dispatcher.kick();
+    const text = harness.runner.runs[0]!.text;
+    expect(text).toContain('You are collaborating in the Group "Team".');
+    expect(text).toContain("Group description:\n维护 gadzan/xacpx 开源项目群。");
+    // A live edit takes effect without a new Run: same accept path, new turn.
+    await harness.bots.updateGroup(group.id, { description: "新版群说明。" });
+    await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+      requestId: "group-scope-2", text: "do the review", target: { botId: BOT_ID } });
+    await harness.dispatcher.kick();
+    expect(harness.runner.runs[1]!.text).toContain("Group description:\n新版群说明。");
+    expect(harness.runner.runs[1]!.text).not.toContain("维护 gadzan/xacpx");
+  } finally {
+    harness.store.close();
+  }
+});
 test("automatic admission retries when its probed carrier is disabled before acquisition", async () => {
   let harness!: Harness;
   let acquisitions = 0;

@@ -113,6 +113,19 @@ export class BotRuntimeManager {
     return this.state.conversations[conversationId]?.kind;
   }
 
+  /** Live Group scope for prompt composition: presentation only (title /
+   *  description), never execution identity. Returns undefined for unknown
+   *  or non-Group Conversations so the dispatcher never substitutes a stale
+   *  or foreign record. The dispatcher reads it at each turn, so a Group
+   *  rename/description edit takes effect on the next turn without a new Run. */
+  getGroupScope(conversationId: string): { title?: string; description?: string } | undefined {
+    const conversation = this.state.conversations[conversationId];
+    if (!conversation || conversation.kind !== "group") return undefined;
+    const title = conversation.title.trim();
+    const description = conversation.description?.trim();
+    return { ...(title ? { title } : {}), ...(description ? { description } : {}) };
+  }
+
   /** Durable Topic scheduling metadata; no live execution counter. */
   topicConcurrencyLimits(): Record<string, number> {
     const limits: Record<string, number> = {};
