@@ -48,7 +48,7 @@ const isolationGroups = computed<SelectGroup[]>(() => [
 
 async function loadWorkspaces(): Promise<void> {
   const instId = groupsStore.instanceId;
-  if (!instId || perMember.value) return;
+  if (!instId) return;
   workspacesLoad.value = "loading";
   try {
     await instancesStore.loadWorkspaces(instId);

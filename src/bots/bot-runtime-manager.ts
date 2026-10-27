@@ -125,14 +125,16 @@ export class BotRuntimeManager {
     return limits;
   }
 
-  /** Effective Topic isolation for Group scheduling. Absent durable target
+  /** Effective Topic isolation for Group scheduling. A `per-member` Group has
+   *  no Topic work target, so a leftover one is inert. Absent durable target
    *  (pre-Group rows) reads as the conservative `shared-single-writer`,
    *  never as a default `shared` policy. */
   groupTopicIsolation(conversationId: string, topicId: string): WorkspaceIsolationPolicy {
     const topic = this.state.conversation_topics[topicId];
-    return topic?.conversationId === conversationId
-      ? topic?.executionTarget?.isolation ?? "shared-single-writer"
-      : "shared-single-writer";
+    if (topic?.conversationId !== conversationId) return "shared-single-writer";
+    const conversation = this.state.conversations[conversationId];
+    if (!conversation || groupWorkspaceMode(conversation) !== "shared") return "shared-single-writer";
+    return topic.executionTarget?.isolation ?? "shared-single-writer";
   }
 
   isRestrictedDirectSession(input: {botId:string;conversationId:string;topicId:string}): boolean {

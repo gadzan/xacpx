@@ -205,9 +205,13 @@ describe("Group management", () => {
       groups.activeConversationId = "conversation_split";
       groups.groupsByInstance["i1"] = [{ ...GROUP, id: "conversation_split", workspaceMode: "per-member" }];
       routes.set("control.group.topics.create", () => ({ topic: TOPIC }));
+      routes.set("control.workspaces.list", () => ({ workspaces: [{ name: "backend", cwd: "/backend" }] }));
       const wrapper = track(mount(GroupTopicDialog, { global: { plugins: [i18n] } }));
       await flushPromises();
 
+      // The composer resolves each member against this list, so skipping the
+      // load here would mark every member "no runtime" right after creation.
+      expect(rpcCalls("control.workspaces.list").length).toBe(1);
       expect(wrapper.find('[data-test="group-topic-workspace"]').exists()).toBe(false);
       expect(wrapper.find('[data-test="group-topic-isolation"]').exists()).toBe(false);
       expect(wrapper.find('[data-test="group-topic-per-member-hint"]').exists()).toBe(true);

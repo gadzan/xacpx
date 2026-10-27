@@ -212,18 +212,20 @@ export function supportsRunsCancelMember(control: unknown): boolean {
  * True when this instance can create a Group with a chosen workspace mode: the
  * core must say so (older cores drop the field and always build a `shared`
  * Group) AND the relay-protocol validator this connector resolved must accept
- * it. Either half missing keeps the capability off, so the web never offers a
- * mode the instance would silently downgrade.
+ * both halves of it -- `groups.create` with the field, and a Group Topic with
+ * no target. Either half missing keeps the capability off, so the web never
+ * offers a mode the first `group.topics.create` would then reject.
  */
 export function supportsGroupWorkspaceMode(control: unknown): boolean {
   const probe = (control as { supportsGroupWorkspaceMode?: unknown } | null)?.supportsGroupWorkspaceMode;
   if (typeof probe !== "function") return false;
   if ((probe as () => unknown).call(control) !== true) return false;
-  return parseControlPayload(MSG.groupsCreate, {
+  if (parseControlPayload(MSG.groupsCreate, {
     title: "probe",
     botIds: ["probe_a", "probe_b"],
     workspaceMode: "per-member",
-  }) !== null;
+  }) === null) return false;
+  return parseControlPayload(MSG.groupTopicsCreate, { conversationId: "probe", title: "probe" }) !== null;
 }
 
 export class RelayChannel implements MessageChannelRuntime {

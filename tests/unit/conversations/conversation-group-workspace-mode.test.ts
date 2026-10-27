@@ -140,3 +140,23 @@ test("Group Topic creation follows the Group's workspace mode", async () => {
     await cleanup();
   }
 });
+
+test("a leftover Topic target on a per-member Group is inert for scheduling", async () => {
+  const { h, backend, cleanup } = await splitHarness();
+  try {
+    const members = [backend[0]!, backend[1]!];
+    const perMember = await h.bots.createGroup({ title: "Split", botIds: members, workspaceMode: "per-member" });
+    const topic = await h.service.createGroupTopic(perMember.id, "Topic");
+    // No RPC can produce this row; a hand-edited or quarantined one can. The
+    // Run was accepted with no worktree base, so honouring the isolation here
+    // would fail every member turn on a prepare that was never provisioned.
+    h.state.conversation_topics[topic.id]!.executionTarget = { workspace: "backend", isolation: "worktree-per-member" };
+    expect(h.runtime.groupTopicIsolation(perMember.id, topic.id)).toBe("shared-single-writer");
+
+    const shared = await h.bots.createGroup({ title: "Shared", botIds: members });
+    const sharedTopic = await h.service.createGroupTopic(shared.id, "Topic", { workspace: "backend", isolation: "shared" });
+    expect(h.runtime.groupTopicIsolation(shared.id, sharedTopic.id)).toBe("shared");
+  } finally {
+    await cleanup();
+  }
+});
