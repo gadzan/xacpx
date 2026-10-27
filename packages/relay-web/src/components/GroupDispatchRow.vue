@@ -355,8 +355,12 @@ const STACK_ICON_SIZE = 14;
       class="mt-2 max-w-[560px] rounded-xl bg-surface p-3 text-xs"
       @keydown.esc="onEscapeKeydown"
     >
-      <p data-test="group-dispatch-instructions-label" class="text-fg-muted">{{ t("group.dispatch.instructions") }}</p>
-      <p data-test="group-dispatch-instructions" class="mt-1 line-clamp-2 text-fg">{{ presentation.instructions }}</p>
+      <details data-test="group-dispatch-brief" class="mt-1">
+        <summary class="cursor-pointer rounded-md py-1 text-fg-muted">
+          <span data-test="group-dispatch-instructions-label">{{ t("group.dispatch.instructions") }}</span>
+        </summary>
+        <p data-test="group-dispatch-instructions" class="mt-1 whitespace-pre-wrap break-words text-fg">{{ presentation.instructions }}</p>
+      </details>
       <ul class="mt-2 space-y-1">
         <li v-for="member in presentation.members" :key="member.memberTurnId" class="flex items-center gap-1">
           <button
@@ -418,10 +422,12 @@ const STACK_ICON_SIZE = 14;
       :title="titleText"
       @close="sheetOpen = false"
     >
-      <p data-test="group-dispatch-sheet-instructions-label" class="px-2 pt-1 text-xs text-fg-muted">
-        {{ t("group.dispatch.instructions") }}
-      </p>
-      <p data-test="group-dispatch-sheet-instructions" class="mt-1 px-2 text-sm text-fg">{{ presentation.instructions }}</p>
+      <details class="mt-1 px-2">
+        <summary class="cursor-pointer rounded-md py-1 text-xs text-fg-muted">
+          <span data-test="group-dispatch-sheet-instructions-label">{{ t("group.dispatch.instructions") }}</span>
+        </summary>
+        <p data-test="group-dispatch-sheet-instructions" class="mt-1 whitespace-pre-wrap break-words text-sm text-fg">{{ presentation.instructions }}</p>
+      </details>
       <ul class="mt-3">
         <li
           v-for="member in presentation.members"

@@ -147,9 +147,11 @@ test("the dispatch row opens the round details listing every bot of the round", 
     await expect(view.surface).toHaveAccessibleName("Sent to 2 bots");
     await expect(view.surface.getByRole("heading", { name: "Sent to 2 bots" })).toBeVisible();
   }
-  // The dispatch content is named once for the whole round.
   await expect(view.label).toHaveCount(1);
   await expect(view.label).toHaveText("Instructions");
+  await expect(view.instructions).toBeHidden();
+  await view.label.click();
+  await expect(view.instructions).toBeVisible();
   await expect(view.instructions).toHaveText("Review the release diff");
   // One line per dispatched bot, with its state.
   await expect(view.members).toHaveCount(2);
@@ -460,7 +462,7 @@ for (const locale of ["en", "zh-CN"]) {
       await expect(view.surface).toHaveAccessibleName(title);
       await expect(view.surface).toBeInViewport({ ratio: 1 });
     }
-    // Task text is rendered inert.
+    await view.label.click();
     await expect(view.instructions).toHaveText("<img src=x onerror=alert(1)> Review first task");
     await expect(view.surface.locator("img")).toHaveCount(0);
     // Exact association: one line per member turn, each with its own state.

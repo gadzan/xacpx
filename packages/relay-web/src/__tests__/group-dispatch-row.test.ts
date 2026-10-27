@@ -286,7 +286,8 @@ describe("GroupDispatchRow", () => {
     await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
     expect(wrapper.findAll('[data-test="group-dispatch-instructions-label"]')).toHaveLength(1);
     expect(wrapper.get('[data-test="group-dispatch-instructions"]').text()).toBe("Review bot_a");
-    expect(wrapper.get('[data-test="group-dispatch-instructions"]').classes()).toContain("line-clamp-2");
+    expect(wrapper.get('details[data-test="group-dispatch-brief"]').attributes("open")).toBeUndefined();
+    expect(wrapper.html()).not.toContain("line-clamp-2");
     wrapper.unmount();
   });
 

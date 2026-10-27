@@ -2072,6 +2072,36 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain("Run cancelled");
     });
 
+    it("renders a failed run banner without the raw completion reason", () => {
+      const failedRun: ConversationRunDto = {
+        id: "run_failed",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "failed",
+        completionReason: "execution-failed",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [],
+          liveTurn: null,
+          activeRun: failedRun,
+          activeMemberTurn: null,
+          runParts: {},
+          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+      expect(wrapper.text()).toContain("Run failed");
+      expect(wrapper.text()).not.toContain("execution-failed");
+    });
+
     it("renders load older messages button and emits event", async () => {
       const wrapper = mount(ConversationMessageList, {
         props: {

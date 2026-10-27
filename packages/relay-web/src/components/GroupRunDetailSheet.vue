@@ -19,9 +19,7 @@ const props = defineProps<{
   attempt?: number;
   attempts?: number[];
   parts?: TurnPartDto[];
-  siblingSummaries?: Array<{ name: string; state: string }>;
   recordingState?: TraceReplayStatus;
-  completenessReason?: string;
   explanation?: string;
   plan?: PlanEntryDto[];
   traceLoading?: boolean;
@@ -33,7 +31,6 @@ const props = defineProps<{
   stopPending?: boolean;
   traceFailure?: string;
   scrollMemory?: Map<string, number>;
-  workspaceMode?: "shared" | "per-member";
 }>();
 const emit = defineEmits<{
   close: []; stop: []; attempt: [attempt: number];
@@ -75,12 +72,11 @@ function close(): void {
       </template>
       <GroupRunDetailContent
         :run="run" :member-turn="memberTurn" :member-name="memberName"
-        :attempt="attempt" :attempts="attempts" :parts="parts" :sibling-summaries="siblingSummaries"
-        :recording-state="recordingState" :completeness-reason="completenessReason" :explanation="explanation"
+        :attempt="attempt" :attempts="attempts" :parts="parts"
+        :recording-state="recordingState" :explanation="explanation"
         :plan="plan" :trace-failure="traceFailure" :trace-loading="traceLoading" :trace-error="traceError"
         :trace-has-more="traceHasMore" :trace-has-earlier="traceHasEarlier" :trace-streaming="traceStreaming"
         :stop-available="stopAvailable" :stop-pending="stopPending"
-        :workspace-mode="workspaceMode"
         @load-more="emit('loadMore')" @load-earlier="emit('loadEarlier')" @retry-trace="emit('retryTrace')"
       />
     </MobileSheet>

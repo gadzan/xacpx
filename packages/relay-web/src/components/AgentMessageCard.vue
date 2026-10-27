@@ -116,13 +116,13 @@ const completionChip = computed<CompletionChip | null>(() => {
         </span>
         <template v-else>
           <span v-if="message.status === 'failed'" data-test="msg-status-failed" class="inline-flex items-center gap-1 text-danger">
-            <AlertCircle :size="11" /> Failed
+            <AlertCircle :size="11" /> {{ $t("agentMessage.failed") }}
           </span>
           <span v-else-if="message.status === 'sending'" data-test="msg-status-sending" class="inline-flex items-center gap-1 text-fg-muted">
-            <Send :size="11" class="animate-pulse" /> Sending
+            <Send :size="11" class="animate-pulse" /> {{ $t("agentMessage.sending") }}
           </span>
           <span v-else-if="message.status === 'delivered'" data-test="msg-status-delivered" class="inline-flex items-center gap-1 text-accent">
-            <CheckCircle2 :size="11" /> Delivered
+            <CheckCircle2 :size="11" /> {{ $t("agentMessage.delivered") }}
           </span>
           <span v-else-if="isSent && (message.status === 'sent' || message.status === 'queued')" data-test="msg-status-sent" class="inline-flex items-center gap-1 text-fg-muted">
             <CheckCircle2 :size="11" /> {{ $t("agentMessage.sent") }}

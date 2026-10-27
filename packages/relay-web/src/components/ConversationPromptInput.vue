@@ -139,7 +139,7 @@ const candidates = computed(() =>
       : (snapshot.value?.mentions.items ?? []).map((m) => ({
           key: m.handle,
           label: "@" + m.displayName,
-          detail: [m.agent, m.workspace, m.botId?.slice(-8)].filter(Boolean).join(" · "),
+          detail: [m.agent, m.workspace].filter(Boolean).join(" · "),
           command: undefined as string | undefined,
           kind: undefined,
           handle: m.handle,
