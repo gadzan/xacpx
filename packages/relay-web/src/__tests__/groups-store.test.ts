@@ -2667,6 +2667,29 @@ describe("useGroupsStore Group management", () => {
     localStorage.clear();
   });
 
+  it("switches a Topic's isolation through the dedicated RPC and upserts the answer", async () => {
+    const store = useGroupsStore();
+    store.topicsByConversation["inst_1:conversation_g"] = [{
+      id: "topic_1", conversationId: "conversation_g", title: "Round", status: "active", createdAt: "now", updatedAt: "now",
+      executionTarget: { workspace: "repo", isolation: "shared-single-writer" },
+    }];
+    const switched = {
+      id: "topic_1", conversationId: "conversation_g", title: "Round", status: "active", createdAt: "now", updatedAt: "later",
+      executionTarget: { workspace: "repo", isolation: "worktree-per-member" },
+    };
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.group.topics.set-isolation") return { topic: switched };
+      throw new Error(`unexpected ${type}`);
+    });
+    await expect(store.setGroupTopicIsolation("inst_1", "conversation_g", "topic_1", "worktree-per-member"))
+      .resolves.toEqual(switched);
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.group.topics.set-isolation", {
+      conversationId: "conversation_g", topicId: "topic_1", isolation: "worktree-per-member",
+    });
+    expect(store.topicsByConversation["inst_1:conversation_g"]?.[0]?.executionTarget?.isolation)
+      .toBe("worktree-per-member");
+  });
+
   function memberTurn(botId: string, state: MemberTurnSummaryDto["state"], runId: string): MemberTurnSummaryDto {
     return {
       id: `mt_${runId}_${botId}`, runId, conversationId: "conversation_g", topicId: "topic_1", botId,

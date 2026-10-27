@@ -898,7 +898,7 @@ export default {
       isolation: "Filesystem isolation",
       isolationTitle: "Filesystem isolation",
       isolationBody: "Choose how dispatched members share the disk. Only per-member Git worktrees let one round's members execute concurrently.",
-      isolationHint: "The switch applies to later dispatches; an in-flight Run keeps its current target until it settles.",
+      isolationHint: "Finish this topic's running Runs first: the switch is refused while any Run is in flight, and it only applies to later dispatches.",
       save: "Save",
     },
     prompt: {

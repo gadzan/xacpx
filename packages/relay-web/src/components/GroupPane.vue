@@ -5,7 +5,7 @@ import { ArrowLeft, Crown, MessageSquare, MoreHorizontal, Pencil, Plus, Users, X
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
-import { useInstancesStore } from "../stores/instances";
+import { supportsGroupTopicIsolation, useInstancesStore } from "../stores/instances";
 import GroupTranscript from "./GroupTranscript.vue";
 import GroupComposer from "./GroupComposer.vue";
 import GroupTopicDialog from "./GroupTopicDialog.vue";
@@ -65,6 +65,13 @@ async function setTopicIsolation(topicId: string, isolation: "shared" | "shared-
   if (!ctx) return;
   await groupsStore.setGroupTopicIsolation(ctx.instanceId, ctx.conversationId, topicId, isolation);
 }
+
+// An older core has no set-isolation RPC; offering the switch there would only
+// produce an unactionable "unknown-type". Offer it where the instance advertises it.
+const isolationSupported = computed(() => {
+  const instId = groupsStore.instanceId;
+  return instId ? supportsGroupTopicIsolation(instancesStore.byId(instId)) : false;
+});
 
 async function archiveTopic(topicId: string) {
   const ctx = requireTopicContext();
@@ -212,7 +219,7 @@ const worktreeRunId = computed(() => {
           :restore-topic="restoreTopic"
           :teardown-topic="teardownTopic"
           :clear-topic="clearTopic"
-          :set-topic-isolation="setTopicIsolation"
+          :set-topic-isolation="isolationSupported ? setTopicIsolation : undefined"
           @select="groupsStore.switchTopic"
           @create="newTopicDialogOpen = true"
         />
@@ -243,7 +250,7 @@ const worktreeRunId = computed(() => {
             :restore-topic="restoreTopic"
             :teardown-topic="teardownTopic"
             :clear-topic="clearTopic"
-            :set-topic-isolation="setTopicIsolation"
+            :set-topic-isolation="isolationSupported ? setTopicIsolation : undefined"
             @select="groupsStore.switchTopic"
             @create="newTopicDialogOpen = true"
           />

@@ -265,7 +265,8 @@ var RELAY_CAPABILITIES = {
   interactionElicitationFormV1: "interaction.elicitation.form.v1",
   botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
   botsDedicatedWorkspaceCleanupV1: "bots.dedicated-workspace-cleanup.v1",
-  runsCancelMemberV1: "runs.cancel-member.v1"
+  runsCancelMemberV1: "runs.cancel-member.v1",
+  groupTopicIsolationV1: "group-topic.isolation.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [

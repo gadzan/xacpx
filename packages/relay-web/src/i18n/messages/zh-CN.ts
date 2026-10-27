@@ -895,7 +895,7 @@ export default {
       isolation: "文件系统隔离",
       isolationTitle: "文件系统隔离",
       isolationBody: "选择派发成员如何共享磁盘。只有「每名成员独立 Git 工作树」能让同一轮的成员并行执行。",
-      isolationHint: "切换只影响之后的派发；正在进行的 Run 会等结束再改。",
+      isolationHint: "话题里还有未结束的 Run 时会拒绝切换；先等本轮结束。切换只影响之后的派发。",
       save: "保存",
     },
     prompt: {

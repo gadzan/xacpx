@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runWorkspaceGit } from "../../../src/control/workspace-git";
-import { harness, HUMAN } from "./fixtures/concurrency-harness";
+import { deferred, harness, HUMAN } from "./fixtures/concurrency-harness";
 import type { ConversationTopic } from "../../../src/conversations/conversation-types";
 
 /** Git-backed harness with one Group Topic whose isolation the test chooses. */
@@ -95,5 +95,35 @@ test("worktree isolation stays unavailable without a provisioning manager", asyn
   const g = await h.bots.createGroup({ title: "No worktrees", botIds: h.ids });
   const topic = await h.service.createGroupTopic(g.id, "Round", { workspace: "backend", isolation: "shared-single-writer" });
   await expect(h.service.setGroupTopicIsolation(g.id, topic.id, "worktree-per-member"))
-    .rejects.toThrow(/unknown isolation policy/);
+    .rejects.toMatchObject({ code: "worktree_unprovisioned" });
 });
+
+test("a concurrent topic creation is not lost behind the isolation write", async () => {
+  const h = await fixture("shared-single-writer");
+  const entered = deferred();
+  const release = deferred();
+  const original = h.stateStore.saveNow.bind(h.stateStore);
+  h.stateStore.saveNow = async (state: Parameters<typeof original>[0]) => {
+    if (armed) {
+      armed = false;
+      entered.resolve();
+      await release.promise;
+    }
+    await original(state);
+  };
+  let armed = true;
+  const switching = h.service.setGroupTopicIsolation(h.g.id, h.topic.id, "worktree-per-member");
+  // The switch cloned state and is parked on its own write; a second mutation
+  // commits meanwhile. It must wait for the mutex, not disappear under the
+  // stale clone this write installs when it resumes.
+  await entered.promise;
+  const creating = h.service.createGroupTopic(h.g.id, "Created during switch", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  release.resolve();
+  await Promise.all([switching, creating]);
+  const topics = h.service.listTopics(h.g.id);
+  expect(topics.map((topic) => topic.title)).toEqual(expect.arrayContaining(["Round", "Created during switch"]));
+  expect(topics.find((topic) => topic.id === h.topic.id)?.executionTarget?.isolation).toBe("worktree-per-member");
+}, SLOW);

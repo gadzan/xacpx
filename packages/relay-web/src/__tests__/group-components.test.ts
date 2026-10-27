@@ -8,6 +8,7 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
+import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 import GroupPane from "../components/GroupPane.vue";
 import GroupComposer from "../components/GroupComposer.vue";
 import GroupTranscript from "../components/GroupTranscript.vue";
@@ -1793,6 +1794,28 @@ describe("Group Components", () => {
       expect(menu.find('[data-test="menu-delete"]').exists()).toBe(true);
       await menu.find('[data-test="menu-archive"]').trigger("click");
       expect(archiveTopic).toHaveBeenCalledWith("i1", "conversation_g", "topic_2");
+    });
+
+    it("offers the isolation switch only when the instance advertises it", async () => {
+      seedGroupSelection();
+      const groups = useGroupsStore();
+      groups.topicsByConversation["i1:conversation_g"]![0]!.executionTarget = { workspace: "repo", isolation: "shared-single-writer" };
+      const withoutCap = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      await withoutCap.find('[data-test="group-topic-pill"]').trigger("click");
+      await withoutCap.find('[data-test="topic-panel"]').findAll('[data-test="topic-row-more"]')[0]!.trigger("click");
+      expect(withoutCap.find('[data-test="menu-isolation"]').exists()).toBe(false);
+      withoutCap.unmount();
+
+      // An older core answers `unknown-type` for the RPC, which a user cannot act
+      // on, so the entry only appears once the instance advertises the capability.
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.groupTopicIsolationV1];
+      const withCap = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      await withCap.find('[data-test="group-topic-pill"]').trigger("click");
+      await withCap.find('[data-test="topic-panel"]').findAll('[data-test="topic-row-more"]')[0]!.trigger("click");
+      expect(withCap.find('[data-test="menu-isolation"]').exists()).toBe(true);
+      withCap.unmount();
     });
 
     it("surfaces a failed row-menu action inside the panel", async () => {

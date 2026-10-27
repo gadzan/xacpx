@@ -1387,6 +1387,10 @@ export const RELAY_CAPABILITIES = {
   /** Scoped MemberTurn cancellation, advertised only when the connector and
    *  core both support `control.runs.cancelMember`. */
   runsCancelMemberV1: "runs.cancel-member.v1",
+  /** `control.group.topics.set-isolation` exists on both ends, so the web may
+   *  offer the Group topic isolation switch. An older core has no such RPC and
+   *  would answer `unknown-type`, which is not a failure a user can act on. */
+  groupTopicIsolationV1: "group-topic.isolation.v1",
   /** This side can carry the relay permission interaction. Reserved: the wire
    *  shape exists so the transport is exercised, but no permission renderer is
    *  implemented yet. Declaring it would advertise a capability that cannot

@@ -479,7 +479,7 @@ existing scheduling. It is creation-only, with no hot-update RPC. Strictness of
 other existing payload fields is unchanged. See the Topic execution concurrency
 contract in [Conversation runtime](conversation-runtime.md).
 
-A Group Topic can also switch isolation after creation through `control.group.topics.set-isolation`. The write is refused while the Topic has unsettled Runs (`conversation_not_settled`), because in-flight members are already bound to the current directories, and it runs inside every member Bot lifecycle gate so no materializer can bind a session to the target being replaced. Selecting the isolation a Topic already has is a no-op.
+A Group Topic can also switch isolation after creation through `control.group.topics.set-isolation`, advertised as `RELAY_CAPABILITIES.groupTopicIsolationV1` (`group-topic.isolation.v1`) so the dashboard only offers it on an instance whose core implements the RPC. The write is refused while the Topic has unsettled Runs (`conversation_not_settled`), because in-flight members are already bound to the current directories, and it runs inside every member Bot lifecycle gate so no materializer can bind a session to the target being replaced. Selecting the isolation a Topic already has is a no-op.
 
 Phase 10C adds authenticated instance RPC `control.conversation.worktree`, returning
 `{worktree}`. Its strict action union accepts `runId` plus: `preview` with complete

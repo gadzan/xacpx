@@ -158,6 +158,15 @@ export function supportsRunsCancelMember(instance: { capabilities?: string[] | n
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.runsCancelMemberV1);
 }
 
+/**
+ * True when the instance's core can rewrite a Group Topic's isolation
+ * (`control.group.topics.set-isolation`). An older core answers `unknown-type`,
+ * which the user cannot act on, so the web must not offer the switch there.
+ */
+export function supportsGroupTopicIsolation(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupTopicIsolationV1);
+}
+
 /** True when the instance is online and advertises the Phase A desktop capability. */
 export function supportsDesktop(instance: {
   online: boolean;

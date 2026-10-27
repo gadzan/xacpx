@@ -351,7 +351,7 @@ ceiling and origin rules, with the existing bounded retry only for enforced
 read-only Group work. Phase 10C adds separately verified worktree execution below;
 it never mints a read-only effect proof.
 
-A Group Topic can switch isolation after creation (`control.group.topics.set-isolation`), which is the only way to get concurrent dispatch on a Topic created `shared-single-writer`: switching to `worktree-per-member` gives every member its own verified worktree, so the same-Run writer slot is lifted and the round executes in parallel up to `maxConcurrentMemberTurns`. The switch is refused while the Topic has unsettled Runs, because those members are already bound to the current directories, and it never applies retroactively. `shared` and `shared-single-writer` keep serializing unproven work exactly as before.
+A Group Topic can switch isolation after creation (`control.group.topics.set-isolation`), which is the only way to get concurrent dispatch on a Topic created `shared-single-writer`: switching to `worktree-per-member` gives every member its own verified worktree, so the same-Run writer slot is lifted and the round's members execute in parallel, bounded by `maxConcurrentMemberTurns` when the Topic set one (a Topic created without it has no per-Topic cap; the global execution ceiling still applies). The switch is refused while the Topic has unsettled Runs, because those members are already bound to the current directories, and it never applies retroactively. `shared` and `shared-single-writer` keep serializing unproven work exactly as before.
 
 The first production parallel scenario is an explicit Group batch with two or
 more managed Claude members requested read-only, under `shared` or

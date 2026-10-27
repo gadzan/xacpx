@@ -1270,6 +1270,10 @@ export declare const RELAY_CAPABILITIES: {
     /** Scoped MemberTurn cancellation, advertised only when the connector and
      *  core both support `control.runs.cancelMember`. */
     readonly runsCancelMemberV1: "runs.cancel-member.v1";
+    /** `control.group.topics.set-isolation` exists on both ends, so the web may
+     *  offer the Group topic isolation switch. An older core has no such RPC and
+     *  would answer `unknown-type`, which is not a failure a user can act on. */
+    readonly groupTopicIsolationV1: "group-topic.isolation.v1";
 };
 /**
  * Grace an interaction RPC gets beyond its own `expiresAt`.

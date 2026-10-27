@@ -1267,6 +1267,9 @@ async function dispatchControlRequest(
     case MSG.groupTopicsSetIsolation: {
       const input = parseControlPayload(MSG.groupTopicsSetIsolation, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsSetIsolation}: malformed payload`);
+      if (typeof control.setGroupTopicIsolation !== "function") {
+        return errorPayload("unsupported-rpc", "daemon does not support Group topic isolation switching");
+      }
       return { topic: await control.setGroupTopicIsolation(input.conversationId, input.topicId, input.isolation) };
     }
     case MSG.groupTopicsArchive: {

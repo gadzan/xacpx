@@ -4,7 +4,7 @@
 
 ### Added
 
-- `control.group.topics.set-isolation` rewrites a Group Topic execution target in place, and the Group topic switcher exposes it, so an existing Topic can move from `shared-single-writer` to `worktree-per-member` and dispatch its members concurrently. The switch is refused while the Topic has unsettled Runs.
+- `control.group.topics.set-isolation` rewrites a Group Topic execution target in place, and the Group topic switcher exposes it, so an existing Topic can move from `shared-single-writer` to `worktree-per-member` and dispatch its members concurrently. The switch is refused while the Topic has unsettled Runs, needs a worktree manager for the worktree policy, holds the state mutex every other topic mutation holds, and is advertised as `RELAY_CAPABILITIES.groupTopicIsolationV1` (`group-topic.isolation.v1`) so the dashboard only offers it where the core implements it.
 - `control.files.settings.get` / `control.files.settings.update` and `FilesSettingsDto`, and Manage Instance gains a "File writes & Git changes" switch on them. Flipping it persists `files.writeEnabled` and hot-applies it to the daemon's live config, so the next file or structured Git mutation is gated by the new value with no restart. Read-only browsing and Git status stay available when it is off, and a connector or daemon that predates the RPCs shows an upgrade notice instead of a switch.
 
 ## [relay-protocol 0.6.4-beta.5] - 2026-10-26

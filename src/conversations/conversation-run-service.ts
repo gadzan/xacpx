@@ -1008,12 +1008,17 @@ export class ConversationRunService {
       throw new ConversationError("execution_target_missing", `topic "${topicId}" has no execution target`);
     }
     if (target.isolation === isolation) return current;
-    this.assertGroupTopicSettled(conversationId, topicId);
-    const executionTarget = this.requireExecutionTarget({
+    // Validate the request before reporting that the Topic is busy: an invalid
+    // policy stays invalid once the Runs settle.
+    if (isolation === "worktree-per-member" && !this.worktrees) {
+      throw new ConversationError("worktree_unprovisioned", "worktree manager unavailable");
+    }
+    this.requireExecutionTarget({
       workspace: target.workspace,
       ...(target.cwd !== undefined ? { cwd: target.cwd } : {}),
       isolation,
     });
+    this.assertTopicSettled(conversationId, topicId, "switching isolation");
     for (;;) {
       const botIds = this.groupTopicMemberBotIds(conversationId, topicId);
       const gateSet = new Set(botIds);
@@ -1025,18 +1030,30 @@ export class ConversationRunService {
         if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
           throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
         }
-        this.assertGroupTopicSettled(conversationId, topicId);
-        const live = this.requireGroupTopic(conversationId, topicId).executionTarget;
-        if (!live || live.isolation === isolation) return topic;
+        this.assertTopicSettled(conversationId, topicId, "switching isolation");
+        const liveTarget = topic.executionTarget;
+        if (!liveTarget || liveTarget.isolation === isolation) return topic;
+        // Rebuild from the gate-held topic, never from the pre-gate read: a
+        // concurrent mutation may have added fields this write must preserve.
+        const executionTarget = this.requireExecutionTarget({
+          workspace: liveTarget.workspace,
+          ...(liveTarget.cwd !== undefined ? { cwd: liveTarget.cwd } : {}),
+          isolation,
+        });
         const stored: ConversationTopic = {
           ...topic,
           executionTarget,
           updatedAt: this.now().toISOString(),
         };
-        const next = structuredClone(this.state);
-        next.conversation_topics[topicId] = stored;
-        await this.persist(next);
-        return stored;
+        // `persist` replaces whole runtime state slices, so this clone/write must
+        // hold the mutex every other topic mutation holds; without it a
+        // concurrent create or rename is silently overwritten by this snapshot.
+        return this.stateMutex.run(async () => {
+          const next = structuredClone(this.state);
+          next.conversation_topics[topicId] = stored;
+          await this.persist(next);
+          return stored;
+        });
       });
       if (updated) {
         emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
@@ -1046,13 +1063,16 @@ export class ConversationRunService {
     }
   }
 
-  /** A Topic whose Runs are still in flight must not change execution target. */
-  private assertGroupTopicSettled(conversationId: string, topicId: string): void {
+  /**
+   * A Topic whose Runs are still in flight must not change phase or execution
+   * target: settle or tear the work down first.
+   */
+  private assertTopicSettled(conversationId: string, topicId: string, action: string): void {
     const nonterminal = this.store.listRuns(conversationId, topicId).filter((run) => this.isUnsettledRun(run.state));
     if (nonterminal.length > 0) {
       throw new ConversationError(
         "conversation_not_settled",
-        `topic "${topicId}" has unsettled runs; settle them before switching isolation`,
+        `topic "${topicId}" has unsettled runs; settle them before ${action}`,
         { runIds: nonterminal.map((run) => run.id) },
       );
     }
@@ -1088,16 +1108,7 @@ export class ConversationRunService {
         if (liveIds.some((id) => !gateSet.has(id))) {
           return null;
         }
-        const nonterminal = this.store.listRuns(conversationId, topicId).filter(
-          (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
-        );
-        if (nonterminal.length > 0) {
-          throw new ConversationError(
-            "conversation_not_settled",
-            `topic "${topicId}" has unsettled runs; settle or teardown before archiving`,
-            { runIds: nonterminal.map((run) => run.id) },
-          );
-        }
+        this.assertTopicSettled(conversationId, topicId, "archiving");
         const flipped = await this.stateMutex.run(async () => {
           const topic = this.requireGroupTopic(conversationId, topicId);
           if (topic.status !== "active") {
@@ -3273,17 +3284,6 @@ export class ConversationRunService {
     return state === "queued" || state === "running" || state === "waiting-human";
   }
 
-  private assertTopicSettledForArchive(conversationId: string, topicId: string): void {
-    const nonterminal = this.store.listRuns(conversationId, topicId).filter((run) => this.isUnsettledRun(run.state));
-    if (nonterminal.length > 0) {
-      throw new ConversationError(
-        "conversation_not_settled",
-        `topic "${topicId}" has unsettled runs; settle or teardown before archiving`,
-        { runIds: nonterminal.map((run) => run.id) },
-      );
-    }
-  }
-
   private assertTopicHasNoIndeterminate(conversationId: string, topicId: string): void {
     const indeterminate = this.store.listRuns(conversationId, topicId).filter((run) => run.state === "indeterminate");
     if (indeterminate.length > 0) {
@@ -3365,7 +3365,7 @@ export class ConversationRunService {
         throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
       }
       if (options?.requireSettled) {
-        this.assertTopicSettledForArchive(conversationId, topicId);
+        this.assertTopicSettled(conversationId, topicId, "archiving");
       }
       return this.stateMutex.run(async () => {
         const role = this.topicRole(conversationId, topicId);
