@@ -1057,6 +1057,7 @@ async function handleLoadOlder(): Promise<void> {
     :stop-available="stopAvailable"
     :stop-pending="stopPending"
     :scroll-memory="detailScrollMemory"
+    :workspace-mode="group?.workspaceMode"
     @close="closeDetail"
     @stop="handleStop"
     @attempt="changeAttempt"
