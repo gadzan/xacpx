@@ -959,7 +959,7 @@ async function handleLoadOlder(): Promise<void> {
             />
           </div>
         </template>
-        <!-- Projection order keeps activity, routing and unresolved rows at their owning request. -->
+        <!-- Projection order closes each Run's block with its activity/routing rows. -->
         <div v-else-if="item.kind === 'member-activity'"
           :data-member-turn-id="item.memberTurn.id"
         >

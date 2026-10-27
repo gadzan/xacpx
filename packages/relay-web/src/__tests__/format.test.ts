@@ -23,13 +23,18 @@ describe("format helpers", () => {
   });
 
   it.each([
-    [0, "time.justNow", undefined],
-    [59_000, "time.justNow", undefined],
-    [60_000, "time.minutesAgo", 1],
-    [299_000, "time.minutesAgo", 4],
-  ] as const)("localizes a timestamp aged %i ms", (age, key, count) => {
-    const expected = count === undefined ? i18n.global.t(key) : i18n.global.t(key, { count });
+    [0, "just now"],
+    [59_000, "just now"],
+    [60_000, "1 min ago"],
+    [299_000, "4 min ago"],
+  ] as const)("localizes a timestamp aged %i ms", (age, expected) => {
     expect(fmtTime(new Date(now.getTime() - age).toISOString())).toBe(expected);
+  });
+
+  it("localizes a relative age in Chinese", () => {
+    i18n.global.locale.value = "zh-CN";
+    expect(fmtTime(new Date(now.getTime() - 30_000).toISOString())).toBe("刚刚");
+    expect(fmtTime(new Date(now.getTime() - 120_000).toISOString())).toBe("2 分钟前");
   });
 
   it("switches to a zero-padded 24-hour clock at exactly five minutes", () => {
@@ -39,7 +44,7 @@ describe("format helpers", () => {
 
   it("uses the relative window across a local midnight boundary", () => {
     vi.setSystemTime(new Date(2026, 9, 22, 0, 0, 30));
-    expect(fmtTime(new Date(2026, 9, 21, 23, 59, 31).toISOString())).toBe(i18n.global.t("time.justNow"));
+    expect(fmtTime(new Date(2026, 9, 21, 23, 59, 31).toISOString())).toBe("just now");
     expect(fmtTime(new Date(2026, 9, 21, 23, 55, 30).toISOString())).toBe("10-21 23:55");
   });
 
@@ -55,7 +60,7 @@ describe("format helpers", () => {
     expect(fmtTime(timestamp)).toBe("09-02 03:04");
     i18n.global.locale.value = "zh-CN";
     expect(fmtTime(timestamp)).toBe("09-02 03:04");
-    expect(fmtTime(now.getTime() - 60_000)).toBe(i18n.global.t("time.minutesAgo", { count: 1 }));
+    expect(fmtTime(now.getTime() - 60_000)).toBe("1 分钟前");
   });
 
   it("does not label future timestamps as just now", () => {
