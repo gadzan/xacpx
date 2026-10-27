@@ -188,6 +188,45 @@ test("external coordinator identity collision is repaired by dropping the coordi
   });
 });
 
+test("a rootless marker-less Topic row is kept but reported instead of carried silently", async () => {
+  await withStateDir(async (dir, path) => {
+    await Bun.write(
+      path,
+      JSON.stringify({
+        sessions: { good: goodSession("good") },
+        chat_contexts: {},
+        bots: {},
+        conversations: {},
+        conversation_topics: {
+          orphan: {
+            id: "orphan",
+            conversationId: "conversation_gone",
+            title: "Sprint",
+            status: "active",
+            createdAt: "2026-06-10T10:00:00.000Z",
+            updatedAt: "2026-06-10T10:00:00.000Z",
+          },
+        },
+        bot_runtime_bindings: {},
+      }),
+    );
+
+    const store = new StateStore(path, { now: () => FIXED_NOW });
+    const state = await store.load();
+
+    // The row survives — nothing here proves it is not a custom Direct Topic
+    // whose Bot was removed — but the lost cleanup root must be visible.
+    expect(state.conversation_topics.orphan).toBeDefined();
+    expect(store.lastLoadReport?.dropped).toEqual([
+      {
+        section: "conversation_topics",
+        key: "orphan",
+        reason: expect.stringContaining("requires operator review"),
+      },
+    ]);
+  });
+});
+
 test("whole-file invalid JSON is renamed to .corrupt-* and load returns empty state", async () => {
   await withStateDir(async (dir, path) => {
     await Bun.write(path, "{not-json");

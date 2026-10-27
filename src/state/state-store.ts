@@ -1296,7 +1296,9 @@ function reconcileProductOwnershipGraph(
     // so load must keep it instead of mutating it away.
 
     // A `per-member` Group's Topics carry no target and may have no runtime, so
-    // they present neither marker and survive here as inert rows.
+    // they present neither marker and are kept here as inert rows — but the
+    // loss of their cleanup root is still reported, like every other anomaly
+    // below, so a quarantined/crashed Group never leaves invisible residue.
     const isGroupTopic = topic.executionTarget !== undefined || groupReferencedTopics.has(id);
     if (!conversations[topic.conversationId] && isGroupTopic) {
       if (classifyConversationRoot(conversations, topics, bots, topic.conversationId, id) !== "missing") {
@@ -1307,6 +1309,12 @@ function reconcileProductOwnershipGraph(
         section: "conversation_topics",
         key: id,
         reason: `topic references missing conversation "${topic.conversationId}"; dropped (cleanup root gone)`,
+      });
+    } else if (!conversations[topic.conversationId] && !isDirectConversation) {
+      dropped.push({
+        section: "conversation_topics",
+        key: id,
+        reason: `topic references missing conversation "${topic.conversationId}"; no group marker (per-member Topic?) — row kept, requires operator review`,
       });
     }
   }
