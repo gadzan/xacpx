@@ -576,7 +576,7 @@ export class RuntimeEngine implements BridgeEngine {
     logicalKey: string,
     physicalKey: string,
     timeoutMs = this.options.workerQuiescenceTimeoutMs ?? 8_000,
-    options: { allowDeletingFence?: boolean } = {},
+    options: { allowDeletingFence?: boolean; selfDischargeWaitMs?: number } = {},
   ): Promise<void> {
     // G4: ensure no worker, no acquiring, no retained fence — all part of same ownership transaction
     const start = Date.now();
@@ -587,6 +587,7 @@ export class RuntimeEngine implements BridgeEngine {
         try {
           await this.manager.assertOwnershipQuiescent(logicalKey, physicalKey, {
             ...(options.allowDeletingFence ? { allowDeleting: true } : {}),
+            ...(options.selfDischargeWaitMs !== undefined ? { selfDischargeWaitMs: options.selfDischargeWaitMs } : {}),
           });
         } catch (err) {
           ownershipError = err;
@@ -2312,7 +2313,7 @@ export class RuntimeEngine implements BridgeEngine {
           }
         }
       }
-      await this.waitForWorkerQuiescence(key, physicalFenceKey);
+      await this.waitForWorkerQuiescence(key, physicalFenceKey, undefined, { selfDischargeWaitMs: 0 });
       this.clearActiveTurn(key);
       this.coolPending.delete(key);
       this.recordIds.delete(key);
@@ -2426,7 +2427,7 @@ export class RuntimeEngine implements BridgeEngine {
             this.manager?.deleteWorker(key, client);
           }
         }
-        await this.waitForWorkerQuiescence(key, physicalFenceKey, undefined, { allowDeletingFence: true });
+        await this.waitForWorkerQuiescence(key, physicalFenceKey, undefined, { allowDeletingFence: true, selfDischargeWaitMs: 0 });
         this.clearActiveTurn(key);
         this.coolPending.delete(key);
         this.recordIds.delete(key);
@@ -2542,7 +2543,7 @@ export class RuntimeEngine implements BridgeEngine {
     // allowDeletingFence: a pre-existing "deleting" fence is another
     // deleter's barrier — quiescence must not brick on it; the claim below
     // decides (refuse if its owner lives, take over if proven dead).
-    await this.waitForWorkerQuiescence(key, physicalFenceKey, undefined, { allowDeletingFence: true });
+    await this.waitForWorkerQuiescence(key, physicalFenceKey, undefined, { allowDeletingFence: true, selfDischargeWaitMs: 0 });
     this.clearActiveTurn(key);
     this.coolPending.delete(key);
 

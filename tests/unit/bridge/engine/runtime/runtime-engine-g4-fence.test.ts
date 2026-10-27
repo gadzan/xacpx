@@ -2,6 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 
 import { RuntimeEngine, type EngineSessionInput } from "../../../../../src/bridge/engine/runtime-engine";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
@@ -105,6 +106,190 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
       await expect(manager.assertOwnershipQuiescent("logical-1", "physical-active")).rejects.toThrow(
         WorkerTeardownPendingError,
       );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("POSIX: a stale owned fence with a gone owner discharges and unblocks hard delete", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-stale",
+        generation: "gen-stale",
+        pid: 424242,
+        creationDate: null,
+        bootstrapVerified: false,
+        phase: "owned",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      });
+      // Deterministic probe, not a real child pid: a non-detached child shares
+      // the parent's process group, so kill(-pid, 0) would return ESRCH whether
+      // the child is alive or dead — that would make this test vacuous. The
+      // real-ESRCH path is covered by the detached-child case below.
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: { platform: "linux", probeProcessGroup: () => "gone" as const },
+      });
+      await expect(manager.assertOwnershipQuiescent("logical-stale", "physical-stale", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).resolves.toBeUndefined();
+      // The stale fence is retired off disk, not just skipped in memory.
+      expect((await fence.read("physical-stale")).kind).toBe("absent");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("POSIX: a stale owned fence with a real dead process group discharges via ESRCH", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      // Detached so the child owns its process group: kill(-pid, 0) proves the
+      // group gone only after the child actually exits and is reaped.
+      const deadPid = await new Promise<number>((resolve, reject) => {
+        const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore", detached: true });
+        const pid = child.pid;
+        if (pid === undefined) { reject(new Error("no child pid")); return; }
+        child.unref();
+        child.on("exit", () => resolve(pid));
+        child.on("error", reject);
+      });
+      const fence = new RuntimeWorkerFence(fenceDir);
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-stale",
+        generation: "gen-stale",
+        pid: deadPid,
+        creationDate: null,
+        bootstrapVerified: false,
+        phase: "owned",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      });
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: { platform: "linux" } });
+      await expect(manager.assertOwnershipQuiescent("logical-stale", "physical-stale", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).resolves.toBeUndefined();
+      expect((await fence.read("physical-stale")).kind).toBe("absent");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("POSIX: a live owner keeps refusing and the fence stays on disk", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-live",
+        generation: "gen-live",
+        pid: 424243,
+        creationDate: null,
+        bootstrapVerified: false,
+        phase: "owned",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      });
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: { platform: "linux", probeProcessGroup: () => "alive" as const },
+      });
+      await expect(manager.assertOwnershipQuiescent("logical-live", "physical-live", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).rejects.toThrow(WorkerTeardownPendingError);
+      expect((await fence.read("physical-live")).kind).toBe("present");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a deleting fence is never discharged by the quiescence probe", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-deleting",
+        generation: "gen-deleting",
+        pid: 424244,
+        creationDate: null,
+        bootstrapVerified: false,
+        phase: "deleting",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      });
+      // Even a gone-owner probe must not touch the in-flight delete barrier.
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: { platform: "linux", probeProcessGroup: () => "gone" as const },
+      });
+      await expect(manager.assertOwnershipQuiescent("logical-deleting", "physical-deleting", {
+        selfDischargeWaitMs: 0,
+      })).rejects.toThrow(WorkerTeardownPendingError);
+      expect((await fence.read("physical-deleting")).kind).toBe("present");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an admitted fence with a gone pid still refuses (may have adapter descendants)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-admitted",
+        generation: "gen-admitted",
+        pid: 424245,
+        creationDate: null,
+        bootstrapVerified: true,
+        phase: "admitted",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      });
+      // Even a proven-gone process group must not clear an admitted fence:
+      // the worker entered business RPCs, so adapter descendants may outlive
+      // it. This is the P1-12 fail-closed pin at the manager level.
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: { platform: "linux", probeProcessGroup: () => "gone" as const },
+      });
+      await expect(manager.assertOwnershipQuiescent("logical-admitted", "physical-admitted", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).rejects.toThrow(WorkerTeardownPendingError);
+      expect((await fence.read("physical-admitted")).kind).toBe("present");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

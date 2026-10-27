@@ -1308,6 +1308,61 @@ test.serial("P1-12b: residual discharged fence does NOT block delete (proven gon
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test.serial("P1-12c: stale owned fence with a gone owner does NOT block delete (daemon-restart residue)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-residual-owned-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  await mkdir(fenceDir, { recursive: true });
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // A daemon restart leaves an owned fence whose worker is gone (ESRCH).
+    // pid 99999 does not exist on any CI/dev box: reserved by the P1-12
+    // fail-closed pin for exactly this meaning.
+    const physicalKey = physicalFenceKeyForSession(testInput);
+    const fencePath = join(fenceDir, `${encodeURIComponent(physicalKey)}.json`);
+    await writeFile(fencePath, JSON.stringify({
+      kind: "runtime-worker-owner",
+      logicalSessionId: physicalKey,
+      generation: "test-gen-stale-owned",
+      pid: 99999,
+      creationDate: null,
+      bootstrapVerified: false,
+      phase: "owned",
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    }, null, 2), "utf8");
+    // Self-check the seed: a key/dir derivation mistake would otherwise look
+    // like "delete succeeded, nothing to retire" instead of "never seeded".
+    expect((await readdir(fenceDir)).some((f: string) => f.includes(encodeURIComponent(physicalKey)))).toBe(true);
+    // Delete must succeed end to end and clear the residue.
+    await expect(engine.deleteSession(testInput as unknown as never)).resolves.toEqual({});
+    let after: string[] = [];
+    try {
+      after = await readdir(fenceDir);
+    } catch (err: unknown) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
+      after = [];
+    }
+    expect(after.filter((f: string) => f.includes(encodeURIComponent(physicalKey)))).toEqual([]);
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
 
 
 
