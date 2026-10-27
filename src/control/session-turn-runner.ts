@@ -205,15 +205,10 @@ export function dedupeStreamedSuffix(sent: string, tail: string): string {
   } else if (squeezeWhitespace(tailCmp).startsWith(squeezeWhitespace(sentCmp))) {
     suffix = tail.slice(indexAfterSqueezed(tail, squeezeWhitespace(sentCmp).length));
   } else {
-    // Partial repeat at the seam (longest match first), boundary-checked.
+    // Not a repeat this code can prove. Transports also return a bare DELTA here
+    // (the bridge slices the settled text past what it already streamed), so a
+    // seam guess truncates a legitimate tail. Append the whole tail.
     suffix = tail;
-    const max = Math.min(sentCmp.length, tailCmp.length);
-    for (let len = max; len > 0; len -= 1) {
-      if (!tailCmp.startsWith(sentCmp.slice(sentCmp.length - len))) continue;
-      if (!isSeamBoundary(sentCmp[sentCmp.length - len - 1])) continue;
-      suffix = tail.slice(len);
-      break;
-    }
   }
   // A whitespace-only remainder adds nothing: the separator already reached the
   // display, and emitting it again would widen the gap on every turn.

@@ -888,11 +888,11 @@ test("B3: a partial seam overlap inside a word is not a repeat, so no characters
   expect(result).toMatchObject({ ok: true, text: streamed });
 });
 
-test("B3: a seam overlap at whitespace still dedupes without losing the shared word", async () => {
+test("B3: an unprovable tail is appended whole, never truncated at a seam", async () => {
   const { runner, captured } = makeRunner(async (opts) => {
     await opts.reply("All done");
-    // "done" is a real word here: the seam sits on whitespace, so the repeat is
-    // accepted and only " again" is appended.
+    // A bare delta that happens to repeat a trailing word. Guessing a seam overlap
+    // here is what truncated real bridge deltas, so the tail goes out intact.
     return { text: "done again" };
   });
   const result = await runner.run(
@@ -901,10 +901,8 @@ test("B3: a seam overlap at whitespace still dedupes without losing the shared w
   );
   const streamed = streamedText(captured);
   const finished = finishedEvent(captured);
-  expect(streamed).toBe("All done again");
+  expect(streamed).toBe("All donedone again");
   expect(finished.text).toBe(streamed);
-  // The seam word appears exactly once — the duplicate "done" was dropped, not kept.
-  expect(streamed.split("done")).toHaveLength(2);
   expect(result).toMatchObject({ ok: true, text: streamed });
 });
 
@@ -915,8 +913,8 @@ test("B4: dedupeStreamedSuffix normalizes whitespace only for the decision and s
   // Genuine extension: only the unsent remainder, sliced from the raw tail.
   expect(dedupeStreamedSuffix("Hello ", "Hello world")).toBe("world");
   expect(dedupeStreamedSuffix("A\n\nB", "A\nB rest")).toBe(" rest");
-  // Mid-word coincidence: append the whole tail instead of swallowing "one".
+  // A bare delta keeps every character, even when its head repeats streamed text.
   expect(dedupeStreamedSuffix("Done", "one more thing")).toBe("one more thing");
-  // Boundary whitespace still allows a legitimate seam repeat.
-  expect(dedupeStreamedSuffix("All done", "done again")).toBe(" again");
+  expect(dedupeStreamedSuffix("All done", "done again")).toBe("done again");
+  expect(dedupeStreamedSuffix("| 列 |\n| --- |\n", "| 值 |")).toBe("| 值 |");
 });
