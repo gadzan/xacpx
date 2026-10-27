@@ -960,7 +960,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 ### 话题切换（`TopicSwitcher.vue`，群聊与 Bot 页共用）
 
-- `GroupPane` 只有一条顶栏：群组名下方是可点的当前话题副标题（纯文字 + `ChevronDown`，无 pill 底色，hover/press `bg-surface-2`），原第二行 `TopicManager` 与 meta 行里重复的话题名都已删除。顶栏不显示「路由 → 负责人」——编辑群组弹窗里的「负责人」已经是同一事实的唯一说明；顶栏下方也不再有「运行 N/M · 排队 · 受阻」统计条——成员状态由消息流里的执行气泡和派发行承担。桌面顶栏因此改为不透明 `bg-surface`：`backdrop-filter` 祖先会成为 `fixed`/`absolute` 后代的包含块，会把切换器 popover、确认框和行菜单一起困在几十 px 高的顶栏里。
+- `GroupPane` 只有一条顶栏：群组名下方是可点的当前话题副标题（纯文字 + `ChevronDown`，无 pill 底色，hover/press `bg-surface-2`），原第二行 `TopicManager` 与 meta 行里重复的话题名都已删除。顶栏不显示「路由 → 负责人」——负责人已在作曲器目标按钮与 @ 菜单里可见，编辑群组弹窗仍显示同一配置；顶栏下方也不再有「运行 N/M · 排队 · 受阻」统计条——成员状态由消息流里的执行气泡和派发行承担。桌面顶栏因此改为不透明 `bg-surface`：`backdrop-filter` 祖先会成为 `fixed`/`absolute` 后代的包含块，会把切换器 popover、确认框和行菜单一起困在几十 px 高的顶栏里。
 - 点副标题：`<lg` 打开 `MobileSheet`「切换话题」（`mobileBar.switchTopic`），≥lg 打开锚在触发器下方的 popover（`shadow-float rounded-lg bg-surface`）。两者内容一致：搜索框、话题列表、底部「+ 新建话题」（`bot.topic.new`）。行点选即切换并关闭；当前行 `bg-accent/10`；已收起 / 删除中的话题保留弱化图标。
 - 行内操作收在每行尾部 `⋯`（`ContextMenu`）：重命名（行内表单）、收起 / 恢复、删除 / 清空（默认话题只给清空）。删除与清空先 `topics.preview` 预览外部绑定与 worktree：有绑定未确认、或有未结束 worktree 时禁止提交；确认框沿用居中 / 底部 sheet 既有样式。打开按钮必须带 `@click.stop`：打开瞬间的那次点击会在监听器挂上后继续冒泡到 document，把自己关掉（`FilesPanel` 的根菜单同理）。
 - 动作状态机在 `lib/use-topic-actions.ts`；`handlers` 在调用时读取，prop 更新能被拿到。触发器在当前话题已收起 / 删除中时于标题后显示状态文字。
