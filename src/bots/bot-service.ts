@@ -47,6 +47,9 @@ export interface CreateBotInput {
  */
 export interface CreateBotOptions {
   dedicatedWorkspace?: DedicatedWorkspaceMarker;
+  /** Daemon-internal: this create allocates `workspace` itself, so the
+   *  dedicated-workspace reuse guard must not reject the owner. */
+  claimsDedicatedWorkspace?: boolean;
 }
 
 export interface UpdateBotInput {
@@ -446,7 +449,7 @@ export class BotService {
       const dedicatedWorkspace = this.validatedMarker(options?.dedicatedWorkspace);
       const bot: BotProfile = {
         id,
-        ...this.requireIdentity(input),
+        ...this.requireIdentity(input, options?.claimsDedicatedWorkspace === true),
         ...this.optionalFields(input),
         ...(dedicatedWorkspace ? { dedicatedWorkspace } : {}),
         enabled: input.enabled ?? true,
@@ -912,7 +915,7 @@ export class BotService {
     return id.startsWith("bot_") ? id : createBotId(() => id);
   }
 
-  private requireIdentity(input: Pick<CreateBotInput, "name" | "agent" | "workspace">): Pick<BotProfile, "name" | "agent" | "workspace"> {
+  private requireIdentity(input: Pick<CreateBotInput, "name" | "agent" | "workspace">, claimsDedicatedWorkspace = false): Pick<BotProfile, "name" | "agent" | "workspace"> {
     const name = input.name.trim();
     if (!name) {
       throw new BotError("name_required", "bot name must be a non-empty string");
@@ -926,14 +929,21 @@ export class BotService {
     if (!this.config.workspaces[input.workspace]) {
       throw new BotError("workspace_not_registered", `workspace "${input.workspace}" is not registered`);
     }
+    if (this.config.workspaces[input.workspace]?.dedicated === true && !claimsDedicatedWorkspace) {
+      throw new BotError("workspace_dedicated", `workspace "${input.workspace}" belongs to another Bot`);
+    }
     return { name, agent: input.agent, workspace: input.workspace };
   }
   /** PR6 seam: Group Topics resolve their ExecutionTarget workspace against
    *  the same registry Bot identity uses. No Bot is involved; the caller
-   *  owns membership validation. */
+   *  owns membership validation. A dedicated workspace is never an explicit
+   *  target: its owning Bot references it only through its stored default. */
   assertWorkspaceRegistered(workspace: string): void {
     if (typeof workspace !== "string" || !this.config.workspaces[workspace]) {
       throw new BotError("workspace_not_registered", `workspace "${workspace}" is not registered`);
+    }
+    if (this.config.workspaces[workspace]?.dedicated === true) {
+      throw new BotError("workspace_dedicated", `workspace "${workspace}" belongs to another Bot`);
     }
   }
 

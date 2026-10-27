@@ -2175,13 +2175,15 @@ export async function buildApp(
           ...(workspace.description
             ? { description: workspace.description }
             : {}),
+          ...(workspace.dedicated ? { dedicated: true } : {}),
         })),
-      create: async (name, cwd, description) => {
+      create: async (name, cwd, description, options) => {
         return await configMutationMutex.run(async () => {
           const updated = await configStore.upsertWorkspace(
             name,
             cwd,
             description,
+            options,
           );
           publishLiveConfig(updated);
           // Push to every web client (the caller updates optimistically; peers need this).
@@ -2190,7 +2192,7 @@ export async function buildApp(
           controlEvents.emit({ type: "workspaces-changed" });
           // The persisted values equal the inputs; build the DTO from them directly
           // (avoids an unchecked index read of the freshly-written workspaces map).
-          return { name, cwd, ...(description ? { description } : {}) };
+          return { name, cwd, ...(description ? { description } : {}), ...(options?.dedicated ? { dedicated: true } : {}) };
         });
       },
       remove: async (name, expectedCwd) => {
@@ -2198,11 +2200,11 @@ export async function buildApp(
       },
       transaction: (fn) => configMutationMutex.run(() => fn({
         list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace })),
-        create: async (name, cwd, description) => {
-          const updated = await configStore.upsertWorkspace(name, cwd, description);
+        create: async (name, cwd, description, options) => {
+          const updated = await configStore.upsertWorkspace(name, cwd, description, options);
           publishLiveConfig(updated);
           controlEvents.emit({ type: "workspaces-changed" });
-          return { name, cwd, ...(description ? { description } : {}) };
+          return { name, cwd, ...(description ? { description } : {}), ...(options?.dedicated ? { dedicated: true } : {}) };
         },
         remove: async (name, expectedCwd) => {
           await removeWorkspaceUnderStateLock(name, expectedCwd);

@@ -16,6 +16,8 @@ export const workspace: WorkspaceMessages = {
     `名称 ${JSON.stringify(original)} 含有特殊字符，已保存为「${saved}」。如需保留原名请加 --raw。`,
   nameUnderivable: (original) =>
     `名称 ${JSON.stringify(original)} 不含字母或数字，无法据此生成工作区名称。请使用含字母或数字的名称，或加 --raw 保留原名。`,
+  dedicatedConflict: (name) =>
+    `工作区「${name}」为其 Bot 专属，不能被覆盖。`,
 
   // handleWorkspaceCreate — saved confirmation
   saved: (name) => `工作区「${name}」已保存`,
@@ -26,6 +28,8 @@ export const workspace: WorkspaceMessages = {
   // handleWorkspaceRemove — still referenced by persisted sessions
   stillReferenced: (name, aliases) =>
     `工作区「${name}」仍被以下会话使用：${aliases}。请先删除这些会话。`,
+  dedicatedRemove: (name) =>
+    `工作区「${name}」为其 Bot 专属。请改为删除对应 Bot（可选同时删除其工作区）。`,
 
   // workspaceHelp metadata
   helpSummary: "管理已注册的工作区。",

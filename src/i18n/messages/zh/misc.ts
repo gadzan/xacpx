@@ -31,6 +31,8 @@ export const misc: MiscMessages = {
   // sessions/session-service: validation errors (Error messages surfaced to user)
   workspaceNotRegistered: (workspace: string) =>
     `工作区「${workspace}」未注册`,
+  workspaceDedicated: (workspace: string) =>
+    `工作区「${workspace}」为其 Bot 专属，不能被选用`,
   agentNotRegistered: (agent: string) =>
     `Agent「${agent}」未注册`,
 

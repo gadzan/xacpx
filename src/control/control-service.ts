@@ -219,6 +219,9 @@ export interface ControlWorkspaceInfo {
   name: string;
   cwd: string;
   description?: string;
+  /** True for a Bot's daemon-allocated workspace. Never served to UI pickers
+   *  and never accepted as an explicit target for another Bot/session/Topic. */
+  dedicated?: boolean;
 }
 
 export interface ControlServiceDeps {
@@ -312,6 +315,7 @@ export interface ControlServiceDeps {
       name: string,
       cwd: string,
       description?: string,
+      options?: { dedicated?: boolean },
     ): Promise<ControlWorkspaceInfo>;
     /**
      * Remove a registry entry. `expectedCwd` rechecks that the live entry
@@ -1471,8 +1475,10 @@ export class ControlService {
     return this.deps.agents.list();
   }
 
+  /** UI-facing list: a Bot's dedicated workspace is never offered as a target.
+   *  Runtime resolution reads `config.workspaces` directly and stays unaffected. */
   listWorkspaces(): ControlWorkspaceInfo[] {
-    return this.deps.workspaces.list();
+    return this.deps.workspaces.list().filter((workspace) => workspace.dedicated !== true);
   }
 
   createWorkspace(
@@ -2653,10 +2659,11 @@ export class ControlService {
       }
       let registered = false;
       try {
-        await workspaces.create(name, dir, `Bot default workspace for ${input.name.trim()}`);
+        await workspaces.create(name, dir, `Bot default workspace for ${input.name.trim()}`, { dedicated: true });
         registered = true;
         return await runtime.bots.createBot({ ...input, workspace: name }, {
           dedicatedWorkspace: { name, cwd: dir, createdAt: new Date(this.deps.now?.() ?? Date.now()).toISOString() },
+          claimsDedicatedWorkspace: true,
         });
       } catch (error) {
         if (registered) {

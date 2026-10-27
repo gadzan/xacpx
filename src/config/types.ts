@@ -141,6 +141,10 @@ export interface AgentConfig {
 export interface WorkspaceConfig {
   cwd: string;
   description?: string;
+  /** True for a Bot's daemon-allocated private workspace. Hidden from
+   *  workspace surfaces and rejected as an explicit target for anything but
+   *  its owning Bot. */
+  dedicated?: boolean;
 }
 
 export interface OrchestrationConfig {

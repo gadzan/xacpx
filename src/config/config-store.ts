@@ -64,13 +64,14 @@ export class ConfigStore {
     });
   }
 
-  async upsertWorkspace(name: string, cwd: string, description?: string): Promise<AppConfig> {
+  async upsertWorkspace(name: string, cwd: string, description?: string, options?: { dedicated?: boolean }): Promise<AppConfig> {
     assertSafeConfigKey(name);
     return await this.patchRaw((raw) => {
       const workspaces = ensureRecordAt(raw, "workspaces");
       workspaces[name] = {
         cwd,
         ...(description ? { description } : {}),
+        ...(options?.dedicated ? { dedicated: true } : {}),
       };
     });
   }

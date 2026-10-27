@@ -61,9 +61,11 @@ export const cli: CliMessages = {
   workspaceSourceLabelName: "Name",
   workspaceAlreadyExists: (name, cwd) => `Workspace "${name}" already exists: ${cwd}`,
   workspaceConflictPath: (name, cwd) => `Workspace "${name}" already exists with a different path: ${cwd}`,
+  workspaceDedicatedConflict: (name) => `Workspace "${name}" is reserved for its Bot and cannot be replaced`,
   workspaceConflictHint: (name) => `Choose a different name, or run: xacpx workspace rm ${name}`,
   workspaceSaved: (name, cwd) => `Workspace "${name}" saved: ${cwd}`,
   workspaceNotFound: (name) => `Workspace "${name}" not found.`,
+  workspaceDedicatedRemove: (name) => `Workspace "${name}" is reserved for its Bot. Remove the Bot (optionally deleting its workspace) instead.`,
   workspaceRemoved: (name) => `Workspace "${name}" removed`,
   workspaceRemoveDaemonRunning:
     "Cannot remove a workspace while the xacpx daemon is running (or its state is indeterminate): the daemon keeps its own config snapshot and session bindings, so editing config.json behind it can race a live delegation. Use /workspace rm in the console or the Control API, or run `xacpx stop` first.",

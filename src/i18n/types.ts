@@ -334,6 +334,7 @@ export interface WorkspaceMessages {
   // handleWorkspaceCreate — name sanitization notice
   nameSanitized: (original: string, saved: string) => string;
   nameUnderivable: (original: string) => string;
+  dedicatedConflict: (name: string) => string;
 
   // handleWorkspaceCreate — saved confirmation
   saved: (name: string) => string;
@@ -346,6 +347,7 @@ export interface WorkspaceMessages {
 
   // handleWorkspaceRemove — still referenced by persisted sessions
   stillReferenced: (name: string, aliases: string) => string;
+  dedicatedRemove: (name: string) => string;
 
   // workspaceHelp metadata
   helpSummary: string;
@@ -930,9 +932,11 @@ export interface CliMessages {
   workspaceSourceLabelName: string;
   workspaceAlreadyExists: (name: string, cwd: string) => string;
   workspaceConflictPath: (name: string, cwd: string) => string;
+  workspaceDedicatedConflict: (name: string) => string;
   workspaceConflictHint: (name: string) => string;
   workspaceSaved: (name: string, cwd: string) => string;
   workspaceNotFound: (name: string) => string;
+  workspaceDedicatedRemove: (name: string) => string;
   workspaceRemoved: (name: string) => string;
   workspaceRemoveDaemonRunning: string;
   workspaceRemoveDaemonStatusFailed: (message: string) => string;
@@ -1332,6 +1336,7 @@ export interface MiscMessages {
 
   // sessions/session-service: validation errors
   workspaceNotRegistered: (workspace: string) => string;
+  workspaceDedicated: (workspace: string) => string;
   agentNotRegistered: (agent: string) => string;
 
   // transport/quota-gated-reply-sink

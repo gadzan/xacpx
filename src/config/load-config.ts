@@ -369,6 +369,7 @@ export function parseConfig(
     workspaces[name] = {
       cwd: normalizeWorkspacePath(workspace.cwd),
       ...(typeof workspace.description === "string" ? { description: workspace.description } : {}),
+      ...(workspace.dedicated === true ? { dedicated: true } : {}),
     };
   }
 
