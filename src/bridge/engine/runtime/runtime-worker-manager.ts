@@ -201,7 +201,10 @@ export class RuntimeWorkerManager {
    * Asserts that ownership for logical session `logicalWorkerKey` (physical fence `physicalFenceKey`)
    * is quiescent. Discharged Job fences still require gone worker and supervisor
    * identities and empty or absent containment before generation-guarded retirement.
-   * Throws WorkerTeardownPendingError while ownership evidence remains unverified.
+   * A still-present owner fence is lifted only through the discharge probe's
+   * terminal proof; a business-capable ("admitted") fence additionally requires
+   * generation-bound Job evidence. Throws WorkerTeardownPendingError while
+   * ownership evidence remains unverified.
    */
   async assertOwnershipQuiescent(
     logicalWorkerKey: string,
@@ -253,8 +256,9 @@ export class RuntimeWorkerManager {
       // A live hard delete / logical release must not wait out the owner's
       // self-discharge window inside a polling quiescence loop: the owner may
       // prove gone immediately (POSIX process-group ESRCH, or a Job whose
-      // containment already drained). Reuse the spawn path's discharge probe
-      // for the pre-admission phases only.
+      // containment already drained). Reuse the spawn path's discharge probe,
+      // which lifts the fence only on a terminal proof and refuses everything
+      // else.
       //
       // The safety argument is NOT "these phases never ran business RPCs":
       // on POSIX the spawn path sets bootstrapVerified synchronously and no
@@ -262,18 +266,38 @@ export class RuntimeWorkerManager {
       // fence is "owned". Safety there rests on the probe itself — the
       // worker is spawned detached, so its pid is the process-group id and
       // adapter children inherit the group; ESRCH therefore proves the whole
-      // tree gone, and a live or EPERM group refuses. "admitted" is the
-      // Windows post-identity state, where a Job/supervisor proof is
-      // required and this gate keeps refusing exactly as before (the P1-12
-      // fail-closed pin). "deleting" was already handled above.
-      if (read.record.phase !== "claiming" && read.record.phase !== "owned") {
+      // tree gone, and a live or EPERM group refuses. Pre-admission phases
+      // (claiming/owned) are probed on every host.
+      //
+      // The later phases — "admitted" above all — name a worker that already
+      // ran business RPCs, so a bare pid proof cannot rule out surviving
+      // adapter descendants. They are liftable ONLY with Windows containment
+      // evidence: the record must name its generation's Job, and the phase
+      // table then demands supervisor-gone + Job empty/absent (+ worker birth
+      // gone when attested). A leftover admitted fence from a crashed host is
+      // exactly that case, and refusing it would brick the delete forever.
+      // A record without Job evidence, or any of these phases on a POSIX host
+      // (which never publishes them), keeps refusing — the P1-12 fail-closed
+      // pin. "deleting" was already handled above.
+      const preAdmission = read.record.phase === "claiming" || read.record.phase === "owned";
+      const windowsContainment =
+        read.record.jobName !== undefined && (this.options.clientDeps?.platform ?? process.platform) === "win32";
+      if (!preAdmission && !windowsContainment) {
         throw new WorkerTeardownPendingError(
           `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") is present and not discharged (phase: ${read.record.phase}, pid: ${read.record.pid})`,
         );
       }
-      await this.dischargeStaleFence(physicalFenceKey, {
-        selfDischargeWaitMs: options.selfDischargeWaitMs ?? 0,
-      });
+      try {
+        await this.dischargeStaleFence(physicalFenceKey, {
+          selfDischargeWaitMs: options.selfDischargeWaitMs ?? 0,
+        });
+      } catch (error) {
+        if (!(error instanceof WorkerTeardownPendingError)) throw error;
+        throw new WorkerTeardownPendingError(
+          `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") ` +
+            `is present and not discharged (phase: ${read.record.phase}, pid: ${read.record.pid}): ${error.message}`,
+        );
+      }
       return;
     }
   }

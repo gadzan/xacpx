@@ -8,6 +8,7 @@ import { RuntimeEngine, type EngineSessionInput } from "../../../../../src/bridg
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
 import { RuntimeWorkerFence, type RuntimeWorkerFenceRecord } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 import { physicalFenceKeyForSession as computePhysicalFenceKey } from "../../../../../src/bridge/engine/runtime/physical-session-identity";
+import { windowsJobNameForGeneration } from "../../../../../src/process/windows-job-query";
 import type { RuntimeWorkerClientDeps } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
 
 const fakeWorkerClientDeps: RuntimeWorkerClientDeps = {
@@ -277,9 +278,9 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
         startedAt: new Date().toISOString(),
         agent: "runtime-worker",
       });
-      // Even a proven-gone process group must not clear an admitted fence:
-      // the worker entered business RPCs, so adapter descendants may outlive
-      // it. This is the P1-12 fail-closed pin at the manager level.
+      // No generation-bound Job evidence means no containment proof: POSIX
+      // never publishes "admitted", so such a record is fabricated or foreign
+      // and the manager keeps the P1-12 fail-closed pin.
       const manager = new RuntimeWorkerManager({
         entryPath: entry,
         fenceDir,
@@ -290,6 +291,129 @@ describe("RuntimeWorkerManager assertOwnershipQuiescent & physicalFenceKeyFor", 
         selfDischargeWaitMs: 0,
       })).rejects.toThrow(WorkerTeardownPendingError);
       expect((await fence.read("physical-admitted")).kind).toBe("present");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("Windows: a stale admitted fence is discharged once supervisor, worker and Job are proven gone", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      const generation = "c3e656a0-aee8-46ee-ace9-66658efc9b26";
+      // Exactly what a hard host kill leaves behind: the worker never reached
+      // its EOF gate, so the durable fence stays "admitted" while every
+      // process and the generation-bound Job are gone.
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-admitted",
+        generation,
+        pid: 424245,
+        creationDate: "134374955039010012",
+        bootstrapVerified: true,
+        phase: "admitted",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+        jobName: windowsJobNameForGeneration(generation)!,
+        jobAttested: true,
+        supervisorPid: 424246,
+        supervisorCreationDate: "134374955005369909",
+      });
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: {
+          platform: "win32",
+          probeWindowsIdentity: async () => ({ status: "missing" }),
+          querySupervisorContainment: async () => "absent",
+        },
+      });
+      await expect(manager.assertOwnershipQuiescent("logical-admitted", "physical-admitted", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).resolves.toBeUndefined();
+      expect((await fence.read("physical-admitted")).kind).toBe("absent");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("Windows: an admitted fence whose Job still holds processes keeps refusing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      const generation = "2ca2e989-988a-4f67-9c43-0b5017c424aa";
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-admitted-live-job",
+        generation,
+        pid: 424247,
+        creationDate: "134374955039010013",
+        bootstrapVerified: true,
+        phase: "admitted",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+        jobName: windowsJobNameForGeneration(generation)!,
+        jobAttested: true,
+        supervisorPid: 424248,
+        supervisorCreationDate: "134374955005369910",
+      });
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: {
+          platform: "win32",
+          probeWindowsIdentity: async () => ({ status: "missing" }),
+          querySupervisorContainment: async () => "active",
+        },
+      });
+      await expect(manager.assertOwnershipQuiescent("logical-admitted", "physical-admitted-live-job", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).rejects.toThrow(/present and not discharged \(phase: admitted/);
+      expect((await fence.read("physical-admitted-live-job")).kind).toBe("present");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("Windows: an admitted fence without Job evidence keeps refusing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-mgr-fence-"));
+    const fenceDir = join(dir, "fences");
+    await mkdir(fenceDir, { recursive: true });
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: "physical-admitted-no-job",
+        generation: "gen-admitted-no-job",
+        pid: 424249,
+        creationDate: "134374955039010014",
+        bootstrapVerified: true,
+        phase: "admitted",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      });
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: { platform: "win32", probeWindowsIdentity: async () => ({ status: "missing" }) },
+      });
+      await expect(manager.assertOwnershipQuiescent("logical-admitted", "physical-admitted-no-job", {
+        allowDeleting: true,
+        selfDischargeWaitMs: 0,
+      })).rejects.toThrow(/present and not discharged \(phase: admitted/);
+      expect((await fence.read("physical-admitted-no-job")).kind).toBe("present");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -426,6 +550,81 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
       const content = await readFile(recordFile, "utf-8");
       expect(JSON.parse(content).acpx_record_id).toBe("019cf-real-rec");
 
+      await engine.shutdown();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fresh Host + stale admitted fence proven gone (Job absent) => delete succeeds", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-g4-fence-stale-admitted-"));
+    const sessionsDir = join(dir, ".acpx", "sessions");
+    const fenceDir = join(dir, ".acpx", "worker-fences");
+    await mkdir(sessionsDir, { recursive: true });
+    await mkdir(fenceDir, { recursive: true });
+
+    const sessionInput: EngineSessionInput = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "stale-admitted-session",
+      logicalSessionId: "logical-stale-admitted-1",
+    };
+
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+
+      const recordFile = join(sessionsDir, "stale-admitted-rec.json");
+      await writeFile(
+        recordFile,
+        JSON.stringify({
+          schema: "acpx.session.v1",
+          acpx_record_id: "stale-admitted-rec",
+          name: sessionInput.name,
+          cwd: sessionInput.cwd,
+          agent_command: sessionInput.agent,
+        }),
+      );
+
+      // The reported production shape: a hard host kill left the fence in
+      // "admitted" with its worker + supervisor births recorded, while the
+      // generation-bound Job drained with the killed host.
+      const physicalKey = computePhysicalFenceKey(sessionInput);
+      const fence = new RuntimeWorkerFence(fenceDir);
+      const generation = "c3e656a0-aee8-46ee-ace9-66658efc9b26";
+      await fence.write({
+        kind: "runtime-worker-owner",
+        logicalSessionId: physicalKey,
+        generation,
+        pid: 29396,
+        creationDate: "134374955039010012",
+        bootstrapVerified: true,
+        phase: "admitted",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+        jobName: windowsJobNameForGeneration(generation)!,
+        jobAttested: true,
+        supervisorPid: 21500,
+        supervisorCreationDate: "134374955005369909",
+      });
+
+      const engine = new RuntimeEngine({
+        workerClientDeps: {
+          platform: "win32",
+          probeWindowsIdentity: async () => ({ status: "missing" }),
+          querySupervisorContainment: async () => "absent",
+          terminateProcessTree: async () => ({ rootOutcome: "gone", outcomes: [] }),
+        },
+        workerEntryPath: entry,
+        stateDir: sessionsDir,
+        fenceDir,
+        workerQuiescenceTimeoutMs: 100,
+        permissionMode: "approve-all",
+      });
+
+      await expect(engine.deleteSession(sessionInput)).resolves.toEqual({});
+      await expect(access(recordFile)).rejects.toThrow();
+      expect(await fence.read(physicalKey)).toEqual({ kind: "absent" });
       await engine.shutdown();
     } finally {
       await rm(dir, { recursive: true, force: true });

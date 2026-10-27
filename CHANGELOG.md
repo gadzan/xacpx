@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Hard delete and soft close no longer refuse forever on a durable ownership fence left in `admitted` by a hard-killed host (group removal reported `worker ownership not quiesced`): the quiescence probe now discharges it on the same containment proof the fence's own recovery requires — supervisor provably gone, the generation's Job empty or absent, and the attested worker's birth gone. A live supervisor, a Job that still holds processes, an unverifiable identity, or a pid probe that cannot answer keeps refusing.
+
 ## [relay-protocol 0.6.4-beta.6] - 2026-10-27
 
 ### Added
