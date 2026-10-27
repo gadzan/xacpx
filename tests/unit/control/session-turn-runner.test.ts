@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { SessionTurnRunner } from "../../../src/control/session-turn-runner";
+import { dedupeStreamedSuffix, SessionTurnRunner } from "../../../src/control/session-turn-runner";
 import { TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
 import { ConsoleAgent } from "../../../src/console-agent";
 import { CommandRouter } from "../../../src/commands/command-router";
@@ -18,6 +18,7 @@ function makeRunner(
     agent: string;
     workspace?: string;
   } | null>,
+  replyMode: "stream" | "final" | "verbose" = "stream",
 ) {
   const events = createControlEventBus();
   const captured: ControlEvent[] = [];
@@ -26,7 +27,7 @@ function makeRunner(
     agent: { chat },
     sessions: {
       resolveAliasForChat: async (_c: string, a: string) => a,
-      getSession: async () => ({ transportSession: "t", replyMode: "stream" }),
+      getSession: async () => ({ transportSession: "t", replyMode }),
       useSession: async () => {},
     },
     events,
@@ -751,4 +752,171 @@ test("Phase 6: human turn without peerOrigin does not emit peerOrigin on turn-st
     { type: "turn-finished" }
   >;
   expect("peerOrigin" in finished).toBe(false);
+});
+
+test("a transport that streams the full answer and returns it again keeps a single copy", async () => {
+  const { runner, captured } = makeRunner(async (opts) => {
+    await opts.reply("完整回答全文");
+    return { text: "完整回答全文" };
+  });
+  const result = await runner.run({
+    ...REQ,
+    conversation: {
+      conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1",
+      runId: "run_1", memberTurnId: "mturn_1",
+    },
+  }, new AbortController().signal);
+  const streamed = streamedText(captured);
+  expect(result).toMatchObject({ ok: true, text: "完整回答全文" });
+  expect(finishedEvent(captured).text).toBe(streamed);
+  expect(streamed).toBe("完整回答全文");
+  expect(captured.filter((event) => event.type === "turn-output")).toHaveLength(1);
+});
+
+test("a trailing response that extends the streamed text appends only the unsent suffix", async () => {
+  const { runner, captured } = makeRunner(async (opts) => {
+    await opts.reply("Hello ");
+    return { text: "Hello world" };
+  });
+  const result = await runner.run({
+    ...REQ,
+    conversation: {
+      conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1",
+      runId: "run_2", memberTurnId: "mturn_2",
+    },
+  }, new AbortController().signal);
+  const streamed = streamedText(captured);
+  expect(result).toMatchObject({ ok: true, text: "Hello world" });
+  expect(finishedEvent(captured).text).toBe(streamed);
+  expect(streamed).toBe("Hello world");
+});
+
+// The hub's no-buffer fallback is turn-finished.text; the live view accumulates
+// turn-output chunks. Both must describe the SAME transcript, so every dedupe
+// case below asserts the event pair, not only the returned value.
+function streamedText(captured: ControlEvent[]): string {
+  return captured
+    .filter((event) => event.type === "turn-output")
+    .map((event) => (event as Extract<ControlEvent, { type: "turn-output" }>).chunk)
+    .join("");
+}
+
+function finishedEvent(
+  captured: ControlEvent[],
+): Extract<ControlEvent, { type: "turn-finished" }> {
+  return captured.find((event) => event.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
+}
+
+function conversationFor(runId: string) {
+  return {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    runId,
+    memberTurnId: `mturn_${runId}`,
+  };
+}
+
+for (const replyMode of ["stream", "final", "verbose"] as const) {
+  test(`B1 (${replyMode}): a response that re-sends the streamed answer behind a summary appends only the summary`, async () => {
+    const answer = "完整回答全文";
+    const summary = "摘要";
+    const { runner, captured } = makeRunner(async (opts) => {
+      await opts.reply(answer);
+      // Shape the transport produces when the final text carries a leading summary
+      // in front of the answer it already streamed.
+      return { text: `${summary}\n\n${answer}` };
+    }, undefined, replyMode);
+    const result = await runner.run(
+      { ...REQ, conversation: conversationFor(`run_summary_${replyMode}`) },
+      new AbortController().signal,
+    );
+    const streamed = streamedText(captured);
+    const finished = finishedEvent(captured);
+    expect(finished.text).toBe(streamed);
+    // Exactly one copy of the answer: the tail must never be appended wholesale.
+    // Only the summary prefix is new content, and it lands after the streamed answer.
+    // Batched modes own the paragraph separator; stream mode appends verbatim.
+    const expected = replyMode === "stream" ? `${answer}${summary}` : `${answer}\n\n${summary}`;
+    expect(streamed.split(answer)).toHaveLength(2);
+    expect(streamed).toBe(expected);
+    expect(result).toMatchObject({ ok: true, text: expected });
+  });
+}
+
+test("B2: replyMode final keeps two batched segments plus a single-newline full text free of duplicates", async () => {
+  const { runner, captured } = makeRunner(
+    async (opts) => {
+      await opts.reply("第一段");
+      await opts.reply("第二段");
+      // A batched transport re-joins its trimmed segments with a single newline,
+      // while the display reconstructs paragraphs with "\n\n".
+      return { text: "第一段\n第二段" };
+    },
+    undefined,
+    "final",
+  );
+  const result = await runner.run(REQ as never, new AbortController().signal);
+  const streamed = streamedText(captured);
+  const finished = finishedEvent(captured);
+  expect(streamed).toBe("第一段\n\n第二段");
+  expect(finished.text).toBe(streamed);
+  expect(streamed.split("第一段")).toHaveLength(2);
+  expect(streamed.split("第二段")).toHaveLength(2);
+  // result.text is the transport's own full text (no conversation correlation).
+  expect(result).toMatchObject({ ok: true, text: "第一段\n第二段" });
+});
+
+test("B3: a partial seam overlap inside a word is not a repeat, so no characters are lost", async () => {
+  const { runner, captured } = makeRunner(async (opts) => {
+    await opts.reply("Done");
+    // "one" looks like a suffix of "Done" but starts mid-word: accepting that
+    // overlap would swallow the tail's first three characters.
+    return { text: "one more thing" };
+  });
+  const result = await runner.run(
+    { ...REQ, conversation: conversationFor("run_seam") },
+    new AbortController().signal,
+  );
+  const streamed = streamedText(captured);
+  const finished = finishedEvent(captured);
+  expect(streamed).toBe("Doneone more thing");
+  expect(finished.text).toBe(streamed);
+  expect(result).toMatchObject({ ok: true, text: streamed });
+});
+
+test("B3: a seam overlap at whitespace still dedupes without losing the shared word", async () => {
+  const { runner, captured } = makeRunner(async (opts) => {
+    await opts.reply("All done");
+    // "done" is a real word here: the seam sits on whitespace, so the repeat is
+    // accepted and only " again" is appended.
+    return { text: "done again" };
+  });
+  const result = await runner.run(
+    { ...REQ, conversation: conversationFor("run_boundary") },
+    new AbortController().signal,
+  );
+  const streamed = streamedText(captured);
+  const finished = finishedEvent(captured);
+  expect(streamed).toBe("All done again");
+  expect(finished.text).toBe(streamed);
+  // The seam word appears exactly once — the duplicate "done" was dropped, not kept.
+  expect(streamed.split("done")).toHaveLength(2);
+  expect(result).toMatchObject({ ok: true, text: streamed });
+});
+
+test("B4: dedupeStreamedSuffix normalizes whitespace only for the decision and slices the original tail", () => {
+  // Already streamed (modulo separators): nothing to append.
+  expect(dedupeStreamedSuffix("A\n\nB", "A\nB")).toBe("");
+  expect(dedupeStreamedSuffix("完整回答全文", "完整回答全文")).toBe("");
+  // Genuine extension: only the unsent remainder, sliced from the raw tail.
+  expect(dedupeStreamedSuffix("Hello ", "Hello world")).toBe("world");
+  expect(dedupeStreamedSuffix("A\n\nB", "A\nB rest")).toBe(" rest");
+  // Mid-word coincidence: append the whole tail instead of swallowing "one".
+  expect(dedupeStreamedSuffix("Done", "one more thing")).toBe("one more thing");
+  // Boundary whitespace still allows a legitimate seam repeat.
+  expect(dedupeStreamedSuffix("All done", "done again")).toBe(" again");
 });

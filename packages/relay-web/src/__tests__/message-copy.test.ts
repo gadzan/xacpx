@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TurnPartDto } from "@ganglion/xacpx-relay-protocol";
@@ -131,5 +133,38 @@ describe("message copy contract", () => {
     expect(wrapper.text()).toContain("report.txt");
     expect(wrapper.findComponent({ name: "MessageAttachments" }).props("attachments")).toEqual(attachments);
     wrapper.unmount();
+  });
+
+  it("marks own bubbles so only their markdown soft-wraps long words", () => {
+    const own = mount(ConversationBubble, {
+      props: { message: { content: "a-very-long-unbroken-token", createdAt }, own: true },
+      global: { stubs: { StreamMarkdown: { props: ["text"], template: '<div class="stream-md">{{ text }}</div>' } } },
+    });
+    // `.own` is what the scoped stylesheet keys on; the bot variant must not carry it,
+    // because `.stream-md`'s non-scoped `overflow-wrap: anywhere` has to keep applying
+    // to Bot long links.
+    const ownBubble = own.get(".conversation-bubble");
+    expect(ownBubble.classes()).toContain("own");
+    expect(ownBubble.find(".stream-md").exists()).toBe(true);
+    own.unmount();
+
+    const bot = mount(ConversationBubble, {
+      props: { message: { content: "https://example.test/an-unbroken/link/segment", createdAt } },
+      global: { stubs: { StreamMarkdown: { props: ["text"], template: '<div class="stream-md">{{ text }}</div>' } } },
+    });
+    expect(bot.get(".conversation-bubble").classes()).not.toContain("own");
+    bot.unmount();
+  });
+
+  it("overrides wrap on the own bubble's markdown, which the bubble-level rule cannot reach", () => {
+    // StreamMarkdown renders v-html with a NON-scoped `.stream-md { overflow-wrap: anywhere }`.
+    // The bubble's own `overflow-wrap` sits on the parent, so only a :deep rule on the
+    // child actually wins the cascade for own bubbles.
+    const sfc = readFileSync(resolve(__dirname, "../components/ConversationBubble.vue"), "utf8");
+    const rule = sfc.match(/\.conversation-bubble\.own\s*:deep\(\.stream-md\)\s*\{([^}]*)\}/);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain("overflow-wrap: break-word");
+    // Bot bubbles never carry `.own`, so this selector can never match them.
+    expect(sfc).not.toMatch(/\.conversation-bubble\s*:deep\(\.stream-md\)/);
   });
 });
