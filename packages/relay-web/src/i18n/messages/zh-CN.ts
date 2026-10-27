@@ -1159,6 +1159,7 @@ export default {
         unavailable: "本次运行没有记录过程",
       },
       worktree: "本次运行在成员独立的 Git 工作树中写入；集成为显式操作。",
+      perMember: "本次运行在成员各自的 Bot 工作区执行；工作区互不相同的成员并行执行。",
       sharedWriter: "本次运行共享会话工作区。写入任务会排队；同一时间只有一名成员可以写。",
       stopAllMembers: "停止作用于整个运行：所有参与成员都会被取消。",
       attemptLabel: "尝试",

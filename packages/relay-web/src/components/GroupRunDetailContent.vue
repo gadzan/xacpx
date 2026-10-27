@@ -35,6 +35,7 @@ const props = defineProps<{
   /** Exact-current active run ownership: Stop is shown only when all agree. */
   stopAvailable?: boolean;
   stopPending?: boolean;
+  workspaceMode?: "shared" | "per-member";
 }>();
 
 const emit = defineEmits<{
@@ -200,7 +201,7 @@ const duration = useLiveDuration(() => props.memberTurn
         <p v-if="run.routingState && run.mode === 'automatic'" class="break-words">
           {{ $t("group.detail.routingState", { state: run.routingState }) }}
         </p>
-        <p data-test="group-detail-workspace">{{ $t(run.worktree ? "group.detail.worktree" : "group.detail.sharedWriter") }}</p>
+        <p data-test="group-detail-workspace">{{ $t(run.worktree ? "group.detail.worktree" : workspaceMode === "per-member" ? "group.detail.perMember" : "group.detail.sharedWriter") }}</p>
         <p v-if="siblingSummaries?.length" class="break-words">
           {{ $t("group.detail.siblings") }}:
           <template v-for="(sibling, i) in siblingSummaries" :key="i">

@@ -1162,6 +1162,7 @@ export default {
         unavailable: "Process was not recorded for this run",
       },
       worktree: "This run writes in an isolated per-member Git worktree; integration is explicit.",
+      perMember: "This Run executes in each member's own Bot workspace; members in different workspaces run in parallel.",
       sharedWriter: "This run shares the conversation workspace. Write tasks queue; one member writes at a time.",
       stopAllMembers: "Stop applies to the whole run: all participating members are cancelled.",
       attemptLabel: "Attempt",

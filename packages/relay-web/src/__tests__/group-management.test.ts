@@ -168,7 +168,7 @@ describe("Group management", () => {
         title: "Launch",
         botIds: ["bot_off", "bot_b"],
         leadBotId: "bot_b",
-        workspaceMode: "shared",
+        workspaceMode: "per-member",
       });
       expect(groups.groupsByInstance["i1"]?.map((g) => g.id)).toEqual(["conversation_new"]);
       expect(wrapper.emitted("saved")).toEqual([[created]]);

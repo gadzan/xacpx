@@ -38,6 +38,7 @@ const props = defineProps<{
   traceFailure?: string;
   /** Read position per member/attempt, owned by the transcript. */
   scrollMemory?: Map<string, number>;
+  workspaceMode?: "shared" | "per-member";
 }>();
 
 const emit = defineEmits<{
@@ -224,6 +225,7 @@ const style = computed(() => ({
               :trace-streaming="traceStreaming"
               :stop-available="stopAvailable"
               :stop-pending="stopPending"
+              :workspace-mode="workspaceMode"
               @load-more="emit('loadMore')"
               @load-earlier="emit('loadEarlier')"
               @retry-trace="emit('retryTrace')"

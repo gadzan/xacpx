@@ -606,6 +606,14 @@ describe("GroupThinkingBubbles UI", () => {
     wrapper.unmount();
   });
 
+  it("describes per-member runs as parallel across Bot workspaces", () => {
+    const wrapper = mount(GroupRunDetailContent, {
+      props: { run: runOf(), workspaceMode: "per-member" },
+    });
+    expect(wrapper.find('[data-test="group-detail-workspace"]').text()).toContain("each member's own Bot workspace");
+    wrapper.unmount();
+  });
+
   it("confirms a cancelled run at the top of the detail", () => {
     const wrapper = mount(GroupRunDetailContent, {
       props: {
