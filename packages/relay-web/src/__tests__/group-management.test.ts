@@ -198,6 +198,18 @@ describe("Group management", () => {
       expect(mode.find('input[type="radio"]').exists()).toBe(false);
     });
 
+    it("shows the locked shared mode when editing a legacy Group with no workspaceMode", async () => {
+      routes.set("control.bots.list", () => ({ bots: [REVIEWER, TESTER] }));
+      const legacy = { ...GROUP, id: "conversation_legacy", botIds: ["bot_a", "bot_b"] };
+      routes.set("control.groups.list", () => ({ groups: [legacy] }));
+      const editor = track(mount(GroupDialog, { props: { instanceId: "i1", group: legacy }, global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      const mode = editor.find('[data-test="group-dialog-workspace-mode"]');
+      expect(mode.text()).toContain("Shared workspace");
+      expect(mode.find('input[type="radio"]').exists()).toBe(false);
+    });
+
     it("a per-member Group's Topic dialog asks for no workspace", async () => {
       const groups = useGroupsStore();
       groups.instanceId = "i1";

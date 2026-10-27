@@ -56,7 +56,7 @@ const description = ref(opened?.description ?? "");
 const memberIds = ref<string[]>([...(opened?.botIds ?? [])]);
 const leadBotId = ref(opened?.leadBotId ?? "");
 // Fixed at creation; the daemon rejects patching it.
-const workspaceMode = ref<"shared" | "per-member">(opened?.workspaceMode ?? "per-member");
+const workspaceMode = ref<"shared" | "per-member">(opened ? (opened.workspaceMode ?? "shared") : "per-member");
 // Create mode keeps suggesting the first enabled member until the user picks a
 // Lead. Edit mode starts from the saved Lead, which may legitimately be none.
 const leadTouched = ref(isEditing);
