@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-relay-protocol",
-  "version": "0.6.4-beta.5",
+  "version": "0.6.4-beta.6",
   "description": "Shared wire protocol types and codecs for the xacpx relay hub.",
   "license": "MIT",
   "keywords": [

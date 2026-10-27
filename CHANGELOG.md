@@ -1,17 +1,55 @@
 # Changelog
 
-## [Unreleased]
+## [relay-protocol 0.6.4-beta.6] - 2026-10-27
+
+### Added
+
+- `control.files.settings.get` / `control.files.settings.update` and `FilesSettingsDto`, carrying `files.writeEnabled` (#477).
+- `control.group.topics.set-isolation` with a validator for the isolation policy, and `RELAY_CAPABILITIES.groupTopicIsolationV1` (`group.topics.isolation.v1`) (#480).
+- `ConversationRecord.workspaceMode` / `GroupSummaryDto.workspaceMode`, accepted by `control.groups.create` and rejected by `groups.update`, plus `RELAY_CAPABILITIES.groupWorkspaceModeV1` (`groups.workspace-mode.v1`) (#481).
+
+## [relay 0.14.12-beta.11] - 2026-10-27
+
+### Added
+
+- Manage Instance gains a "File writes & Git changes" switch over the new `control.files.settings` RPCs: flipping it persists `files.writeEnabled` and hot-applies it, so the next file or structured Git mutation is gated by the new value with no restart. Read-only browsing and Git status stay available when it is off, and an instance that predates the RPCs shows an upgrade notice instead of a switch (#477).
+- A Group Topic that has an execution target gains a "文件系统隔离" dialog in the topic switcher, so an existing Topic can move from `shared-single-writer` to `worktree-per-member` and dispatch its members concurrently; a refusal keeps the dialog open with a localized reason (#480).
+- The Group dialog picks the workspace mode on create — `shared` (each Topic owns one workspace all members use) or `per-member` (no Group workspace; every member runs in its own) — and shows it as a fixed fact on edit; a `per-member` Group's Topic dialog asks for no workspace and says so, and instances whose core predates the field hide the picker (#481).
 
 ### Fixed
 
 - A still-running dispatched member closes its round below everything the leader said after dispatching, instead of floating to the top of the topic and dropping to the bottom when its reply lands.
 - Message timestamps within a minute read "just now" / "N min ago" (「刚刚」/「N 分钟前」) instead of the raw `time.justNow` / `time.minutesAgo` keys: the relative-age branches landed without catalog entries in either locale.
 
+## [channel-relay 0.7.8-beta.7] - 2026-10-27
+
 ### Added
 
-- `control.group.topics.set-isolation` rewrites a Group Topic execution target in place, and the Group topic switcher exposes it, so an existing Topic can move from `shared-single-writer` to `worktree-per-member` and dispatch its members concurrently. The switch is refused while the Topic has unsettled Runs, on a deleting Topic (before the same-policy no-op), and when leaving `worktree-per-member` while unintegrated worktrees remain (`worktree_runs_pending`); a worktree policy without a manager now reports `worktree_unprovisioned` on create as well; the write holds `stateMutex` like archive and teardown; and it is advertised as `RELAY_CAPABILITIES.groupTopicIsolationV1` (`group.topics.isolation.v1`) so the dashboard only offers it where the core implements it.
-- `control.files.settings.get` / `control.files.settings.update` and `FilesSettingsDto`, and Manage Instance gains a "File writes & Git changes" switch on them. Flipping it persists `files.writeEnabled` and hot-applies it to the daemon's live config, so the next file or structured Git mutation is gated by the new value with no restart. Read-only browsing and Git status stay available when it is off, and a connector or daemon that predates the RPCs shows an upgrade notice instead of a switch.
-- Groups choose a workspace mode at creation: `shared` (today's model, each Topic owns one workspace all members use) or `per-member` (the Group has no workspace; every member runs in its own Bot workspace). The mode is immutable, exposed as `ConversationRecord.workspaceMode` / `GroupSummaryDto.workspaceMode` and accepted by `control.groups.create`; `groups.update` rejects it. A `per-member` Group creates Topics without an `ExecutionTarget`, and the same-Run scheduling gate now allows members to run concurrently when their accepted workspaces differ instead of requiring `worktree-per-member` — equal workspaces (including two names aliasing one directory, caught by the canonical-cwd reservation) still serialize.
+- `supportsGroupTopicIsolation` and `supportsGroupWorkspaceMode` advertise `group.topics.isolation.v1` / `groups.workspace-mode.v1` only when the core answers and this connector's own validator accepts the payload (#480, #481).
+
+### Changed
+
+- The control bridge forwards `files.settings.get` / `files.settings.update` and `group.topics.set-isolation`, answering `unsupported-rpc` instead of `internal` on a core that predates them (#477, #480).
+
+## [0.24.10-beta.7] - 2026-10-27
+
+### Added
+
+- `control.files.settings.get` / `.update` persist `files.writeEnabled` and publish the parsed document onto the daemon's live config, so the next file or structured Git mutation is gated by the new value with no restart (#477).
+- `control.group.topics.set-isolation` rewrites a Topic's execution target in place: refused on a deleting Topic and while the Topic has unsettled Runs (`conversation_not_settled`), validated through `requireExecutionTarget` so a manager-less worktree policy reports `worktree_unprovisioned`, written inside every member Bot's lifecycle gate and under `stateMutex`, and refused when leaving `worktree-per-member` while unintegrated worktrees remain (`worktree_runs_pending`) (#480).
+- Groups choose an immutable workspace mode at creation; a `per-member` Topic carries no `ExecutionTarget`, and the same-Run scheduling gate lets members overlap when their accepted workspaces differ, while the canonical-cwd reservation still serializes two names that alias one directory (#481).
+
+### Fixed
+
+- Hard delete no longer refuses forever on a durable ownership fence left behind by a daemon restart: a proven-gone claiming/owned owner is discharged during the quiescence probe, while an admitted fence, a live owner and an in-flight `deleting` barrier keep refusing (#476).
+
+## [channel-feishu 0.8.7-beta.7] - 2026-10-27
+
+- Compatibility floor raised to `0.24.10-beta.7` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.7] - 2026-10-27
+
+- Compatibility floor raised to `0.24.10-beta.7` with no channel behavior change.
 
 ## [relay-protocol 0.6.4-beta.5] - 2026-10-26
 
