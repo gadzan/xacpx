@@ -223,6 +223,132 @@ test("dispatches injectMessage through the message lane", async () => {
   });
 });
 
+test("getSessionModel preempts a running prompt (control lane)", async () => {
+  const order: string[] = [];
+  const promptStarted = Promise.withResolvers<void>();
+  const releasePrompt = Promise.withResolvers<void>();
+  const runtime = {
+    prompt: async (input: Record<string, unknown>) => {
+      order.push(`prompt:${input.text}`);
+      promptStarted.resolve();
+      await releasePrompt.promise;
+      return { text: "done" };
+    },
+    getSessionModel: async () => {
+      order.push("getSessionModel");
+      return { current: "m", available: ["m"] };
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  const promptResponse = server.handleLine(JSON.stringify({
+    id: "prompt-lane-1",
+    method: "prompt",
+    params: { agent: "codex", cwd: "/repo", name: "demo", text: "first" },
+  }));
+  await promptStarted.promise;
+
+  // A second normal-lane prompt pins the tail behind the running turn; the
+  // model read must jump it. Queueing behind the unbounded prompt trips the
+  // 45s client-side bridge backstop and fails relay-web's mid-turn refresh.
+  const followerResponse = server.handleLine(JSON.stringify({
+    id: "prompt-lane-2",
+    method: "prompt",
+    params: { agent: "codex", cwd: "/repo", name: "demo", text: "second" },
+  }));
+  const modelResponse = server.handleLine(JSON.stringify({
+    id: "model-lane-1",
+    method: "getSessionModel",
+    params: { agent: "codex", cwd: "/repo", name: "demo" },
+  }));
+
+  releasePrompt.resolve();
+  await expect(modelResponse).resolves.toBe('{"id":"model-lane-1","ok":true,"result":{"current":"m","available":["m"]}}\n');
+  await expect(promptResponse).resolves.toBe('{"id":"prompt-lane-1","ok":true,"result":{"text":"done"}}\n');
+  await expect(followerResponse).resolves.toBe('{"id":"prompt-lane-2","ok":true,"result":{"text":"done"}}\n');
+  expect(order).toEqual(["prompt:first", "getSessionModel", "prompt:second"]);
+});
+
+test("getSessionEffort preempts a running prompt (control lane)", async () => {
+  const order: string[] = [];
+  const promptStarted = Promise.withResolvers<void>();
+  const releasePrompt = Promise.withResolvers<void>();
+  const runtime = {
+    prompt: async () => {
+      order.push("prompt");
+      promptStarted.resolve();
+      await releasePrompt.promise;
+      return { text: "done" };
+    },
+    getSessionEffort: async () => {
+      order.push("getSessionEffort");
+      return { current: "high", available: ["high"] };
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  const promptResponse = server.handleLine(JSON.stringify({
+    id: "prompt-lane-3",
+    method: "prompt",
+    params: { agent: "codex", cwd: "/repo", name: "demo", text: "hello" },
+  }));
+  await promptStarted.promise;
+
+  const followerResponse = server.handleLine(JSON.stringify({
+    id: "prompt-lane-4",
+    method: "prompt",
+    params: { agent: "codex", cwd: "/repo", name: "demo", text: "second" },
+  }));
+  const effortResponse = server.handleLine(JSON.stringify({
+    id: "effort-lane-1",
+    method: "getSessionEffort",
+    params: { agent: "codex", cwd: "/repo", name: "demo" },
+  }));
+
+  releasePrompt.resolve();
+  await expect(effortResponse).resolves.toBe('{"id":"effort-lane-1","ok":true,"result":{"current":"high","available":["high"]}}\n');
+  await expect(promptResponse).resolves.toBe('{"id":"prompt-lane-3","ok":true,"result":{"text":"done"}}\n');
+  await expect(followerResponse).resolves.toBe('{"id":"prompt-lane-4","ok":true,"result":{"text":"done"}}\n');
+  expect(order).toEqual(["prompt", "getSessionEffort", "prompt"]);
+});
+
+test("setModel still queues behind a running prompt (normal lane)", async () => {
+  const promptStarted = Promise.withResolvers<void>();
+  const releasePrompt = Promise.withResolvers<void>();
+  const order: string[] = [];
+  const runtime = {
+    prompt: async () => {
+      order.push("prompt");
+      promptStarted.resolve();
+      await releasePrompt.promise;
+      return { text: "done" };
+    },
+    setModel: async () => {
+      order.push("setModel");
+      return {};
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  const promptResponse = server.handleLine(JSON.stringify({
+    id: "prompt-lane-5",
+    method: "prompt",
+    params: { agent: "codex", cwd: "/repo", name: "demo", text: "hello" },
+  }));
+  await promptStarted.promise;
+
+  const setResponse = server.handleLine(JSON.stringify({
+    id: "model-set-1",
+    method: "setModel",
+    params: { agent: "codex", cwd: "/repo", name: "demo", modelId: "m" },
+  }));
+
+  releasePrompt.resolve();
+  await expect(promptResponse).resolves.toBe('{"id":"prompt-lane-5","ok":true,"result":{"text":"done"}}\n');
+  await expect(setResponse).resolves.toBe('{"id":"model-set-1","ok":true,"result":{}}\n');
+  expect(order).toEqual(["prompt", "setModel"]);
+});
+
 test("preserves message injection error codes over the bridge protocol", async () => {
   const runtime = {
     injectMessage: async () => {
