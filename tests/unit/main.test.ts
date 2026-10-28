@@ -3313,7 +3313,10 @@ test("a Bot rollback keeps an auto workspace already bound by a persisted sessio
     expect(app.control.listBots()).toEqual([]);
     // in_use rollback: the registration and directory the queued session
     // resolves against survive; the original Bot error is not wrapped.
-    expect(app.control.listWorkspaces().map((workspace) => workspace.name)).toContain("Reviewer");
+    // The kept workspace is dedicated, so the UI-facing listWorkspaces hides
+    // it — read the registry from the store instead.
+    const registry = await app.configStore.load();
+    expect(Object.keys(registry.workspaces)).toContain("Reviewer");
     expect(existsSync(join(dir, ".xacpx", "bots", "Reviewer"))).toBe(true);
   } finally {
     try {
