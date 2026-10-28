@@ -188,7 +188,7 @@ function parseArgs(argv) {
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!["patch", "minor", "major"].includes(options.bump)) throw new Error(`--bump must be patch|minor|major`);
-  if (!["plan", "notes", "apply", "check", "publish"].includes(options.command)) {
+  if (!["plan", "notes", "apply", "check", "publish", "sync-lockfiles"].includes(options.command)) {
     throw new Error(`unknown command: ${options.command}`);
   }
   return options;
@@ -710,10 +710,17 @@ function syncLockfiles() {
   let pinned = 0;
   for (const [name, version] of Object.entries(optionalDependencies)) {
     if (!name.startsWith("@ganglion/xacpx-rmux-bridge-")) continue;
-    const key = `node_modules/${name}`;
-    if (lock.packages[key]?.version === version) continue;
-    lock.packages[key] = { optional: true, version };
-    pinned += 1;
+    // npm hoists the pin to the root lockfile but also plants a workspace-local
+    // stub under `packages/channel-relay/node_modules/` while the version is
+    // unpublished; both shapes must carry the pin or `npm ci` sees an empty
+    // version. Every key ending in `/node_modules/<name>` is the same package.
+    const tail = `/node_modules/${name}`;
+    const keys = [tail.slice(1), ...Object.keys(lock.packages).filter((key) => key.endsWith(tail))];
+    for (const key of new Set(keys)) {
+      if (lock.packages[key]?.version === version) continue;
+      lock.packages[key] = { optional: true, version };
+      pinned += 1;
+    }
   }
   writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`, "utf8");
   if (pinned > 0) console.log(`reconciled ${pinned} rmux-bridge lockfile pin(s) from channel-relay`);
@@ -786,6 +793,17 @@ function reconcileBunLock() {
 // ---------------------------------------------------------------------------
 // check
 // ---------------------------------------------------------------------------
+
+/**
+ * Re-derive both lockfiles from the manifests without touching a version.
+ * `apply` does this itself; the command exists for the resume path — a tree
+ * already carrying the bump, which `apply` must never re-bump past, whose
+ * lockfiles still need regenerating.
+ */
+function cmdSyncLockfiles() {
+  syncLockfiles();
+  return 0;
+}
 
 function cmdCheck() {
   const violations = floorViolations();
@@ -1179,6 +1197,7 @@ async function cmdPublish(plan, options) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.command === "check") process.exit(cmdCheck());
+  if (options.command === "sync-lockfiles") process.exit(cmdSyncLockfiles());
 
   // `publish` reads the tree `apply` produced; everything else computes a fresh
   // plan from the tags.

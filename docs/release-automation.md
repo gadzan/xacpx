@@ -211,6 +211,7 @@ before any new tag is pushed.
 | `publish` stopped after a wave as unconfirmed | Not a failed publish: the workflows reported success and the registry is catching up. Re-check the printed URLs, then re-run `publish --yes` — it resumes at the untagged waves. |
 | `npm test` fails on one unrelated timeout | Confirm locally on the release commit, then re-run the same tag. npm will not republish, so a new version would only add noise. |
 | `E403 ... previously published versions` | That package already published. Verify with `npm view <pkg> dist-tags` and treat it as done. |
+| `check` reports an rmux-bridge entry missing or versionless after `apply` | npm dropped the pin while the bridge version is unpublished. Re-derive both lockfiles from the manifests: `node ./scripts/release.mjs sync-lockfiles`. Never edit `package-lock.json` by hand. |
 | A broken release commit, nothing published | Fix on main, `git tag -f`, force-push the tags. |
 | A broken release commit, some packages published | Move only the still-failing package's tag. Re-pointing a published package's tag re-fires its workflow, which fails with `E403`. |
 
