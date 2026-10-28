@@ -56,6 +56,12 @@ RMUX platform 包发布后，用 `npm install --package-lock-only --ignore-scrip
 
 `bun run publish:relay-stack` 已按 2→3 的拓扑顺序串好。半截升级时旧 hub/connector/web 组合会安全隐藏终端 UI（缺 capability），属预期。
 
+有一条不走"安全隐藏"这一套：**会话表单的放置**（`InteractionRequestDto.sessionAlias`，见
+[relay-interaction-deployment](relay-interaction-deployment.md) §2.3/§6）。字段是附加的，旧 hub 会存成 `""`、
+旧 web 没有会话作用域，线协议仍然兼容、不报错，于是表单会落到无面板可渲染的状态并静默等到超时。
+因此 **`@ganglion/xacpx-relay`（含内嵌 relay-web）与 `@ganglion/xacpx-channel-relay` 必须配套发布**，
+core 不低于 `0.24.10-beta.8`；旧 core 组合会 fail-closed（resolver 不产出路由、channel 在调 hub 前就拒），不会静默。
+
 ### RMUX terminal smoke（opt-in）
 
 真实 RMUX daemon + process-owned sidecar 验收**不**进入默认 `npm test`。
