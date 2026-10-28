@@ -1,5 +1,5 @@
 // Shape recipes, palette and facial poses adapted from bloub; see LICENSE.bloub.
-import { BOT_AVATAR_SHAPES, type ColorId, type ExpressionId, type ShapeId } from "@ganglion/xacpx-relay-protocol";
+import { BOT_AVATAR_COLORS, BOT_AVATAR_EXPRESSIONS, BOT_AVATAR_SHAPES, type CharacterAvatarConfig, type ColorId, type ExpressionId, type ShapeId } from "@ganglion/xacpx-relay-protocol";
 import { ANGLES, eyePoses, hullOfCircles, profileFromPolygon, radiusAtAngle, regularPolygonProfile, unionOfCirclesProfile, type Gaze } from "./geometry";
 
 export const AVATAR_PALETTE: Readonly<Record<ColorId, string>> = Object.freeze({
@@ -65,6 +65,19 @@ export const EYE_SPREAD = 1.3;
 /** Applies the shared PULL / SPREAD placement to one eye coordinate, given the pair's midpoint. */
 export function placeEye(value: number, mid: number): number {
   return mid * EYE_CENTER_PULL + (value - mid) * EYE_SPREAD;
+}
+
+/** Random character for a freshly created Bot; one draw per dialog open. */
+export function randomCharacterAvatar(): CharacterAvatarConfig {
+  const pick = <T>(list: readonly T[]): T => list[Math.floor(Math.random() * list.length)]!;
+  return {
+    version: 1,
+    kind: "character",
+    shape: pick(BOT_AVATAR_SHAPES),
+    color: pick(BOT_AVATAR_COLORS),
+    expression: pick(BOT_AVATAR_EXPRESSIONS),
+    motion: "auto",
+  };
 }
 
 export const AVATAR_EYE_FIT: Readonly<Record<ShapeId, number>> = Object.freeze(Object.fromEntries(BOT_AVATAR_SHAPES.map((shape) => {
