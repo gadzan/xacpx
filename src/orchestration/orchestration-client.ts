@@ -50,6 +50,7 @@ import type {
   PeerCancelInput,
   PeerConfirmInput,
   PeerDelegateInput,
+  PeerGetInput,
   PeerListInput,
   PeerWatchInput,
 } from "../peer/peer-service";
@@ -266,8 +267,8 @@ export class OrchestrationClient {
     return await this.request<PeerRequest[]>("peer.list", input);
   }
 
-  async peerGet(requestId: string): Promise<PeerRequest | null> {
-    return await this.request<PeerRequest | null>("peer.get", { requestId });
+  async peerGet(input: PeerGetInput): Promise<PeerRequest | null> {
+    return await this.request<PeerRequest | null>("peer.get", input);
   }
 
   async request<Result>(method: OrchestrationRpcMethod, params: unknown, timeoutMs = this.timeoutMs): Promise<Result> {

@@ -883,7 +883,7 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "peer_get",
       description:
-        "Get one peer delegation by requestId, with its full status, task, and result. Returns an error when the requestId is unknown.",
+        "Get one peer delegation by requestId, with its full status, task, and result. Only the delegation's party (originator or target) or its coordinator may read it; any other caller gets the same not found error as an unknown requestId.",
       inputSchema: z
         .object({
           requestId: z.string().min(1),
@@ -894,6 +894,8 @@ export function buildXacpxMcpToolRegistry(input: {
           if (!transport.peerGet) throw new Error(PEER_NOT_BOUND_MESSAGE);
           const record = await transport.peerGet({
             requestId: (args as { requestId: string }).requestId,
+            callerAlias: sourceHandle ?? coordinatorSession,
+            coordinatorSession,
           });
           if (!record) {
             throw new Error(

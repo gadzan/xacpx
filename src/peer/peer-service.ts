@@ -82,6 +82,23 @@ export interface PeerListInput {
   status?: PeerRequestStatus;
 }
 
+/**
+ * Caller-scoped get input, mirroring PeerListInput. Visibility rule is
+ * the same story as peer_list: the originator or the target (party view)
+ * may read a record, and so may the record's coordinator (coordinator
+ * view: the caller IS the coordinator and the record's coordinator
+ * stably matches the caller's scope). Any other caller gets null —
+ * indistinguishable from an unknown requestId, so a get can never be
+ * used to probe whether a record exists. Records without a coordinator
+ * (pre-wiring fixtures only) are party-visible only, never coordinator
+ * visible: fail closed.
+ */
+export interface PeerGetInput {
+  requestId: string;
+  callerAlias: string;
+  coordinatorSession?: string;
+}
+
 export interface PeerWatchInput {
   requestId: string;
   timeoutMs?: number;
@@ -128,8 +145,26 @@ export class PeerService {
     this.createRequestId = deps.createRequestId ?? (() => randomUUID());
   }
 
-  async get(requestId: string): Promise<PeerRequest | null> {
-    return await this.deps.store.get(requestId);
+  async get(input: PeerGetInput): Promise<PeerRequest | null> {
+    const record = await this.deps.store.get(input.requestId);
+    if (!record) {
+      return null;
+    }
+    if (
+      record.originator.alias === input.callerAlias ||
+      record.target.alias === input.callerAlias
+    ) {
+      return record;
+    }
+    if (
+      input.coordinatorSession !== undefined &&
+      sameCoordinatorSession(input.callerAlias, input.coordinatorSession) &&
+      record.coordinator !== undefined &&
+      sameCoordinatorSession(record.coordinator, input.coordinatorSession)
+    ) {
+      return record;
+    }
+    return null;
   }
 
   async delegate(input: PeerDelegateInput): Promise<PeerRequest> {

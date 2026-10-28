@@ -59,7 +59,7 @@ test("peer tools are registered and delegate stays unexecuted until approve", as
         peerConfirm: async (input) => h.service.confirm(input),
         peerCancel: async (input) => h.service.cancel(input),
         peerList: async (input) => h.service.list(input),
-        peerGet: async (input) => h.service.get(input.requestId),
+        peerGet: async (input) => h.service.get(input),
       },
     );
     const registry = buildXacpxMcpToolRegistry({
@@ -313,7 +313,7 @@ test("a worker-bound caller cannot approve, and sees only its related view", asy
         peerConfirm: async (input) => h.service.confirm(input),
         peerCancel: async (input) => h.service.cancel(input),
         peerList: async (input) => h.service.list(input),
-        peerGet: async (input) => h.service.get(input.requestId),
+        peerGet: async (input) => h.service.get(input),
       },
     );
     const workerRegistry = buildXacpxMcpToolRegistry({
@@ -328,6 +328,7 @@ test("a worker-bound caller cannot approve, and sees only its related view", asy
     const workerDelegate = workerRegistry.find((tool) => tool.name === "peer_delegate")!;
     const workerApprove = workerRegistry.find((tool) => tool.name === "peer_approve")!;
     const workerList = workerRegistry.find((tool) => tool.name === "peer_list")!;
+    const workerGet = workerRegistry.find((tool) => tool.name === "peer_get")!;
     const coordinatorDelegate = coordinatorRegistry.find((tool) => tool.name === "peer_delegate")!;
 
     await workerDelegate.handler({
@@ -352,6 +353,15 @@ test("a worker-bound caller cannot approve, and sees only its related view", asy
     const listed = await workerList.handler({});
     expect(toolText(listed)).toContain("req-tools-worker");
     expect(toolText(listed)).not.toContain("req-tools-coord");
+
+    // Same story for get: the worker reads its own delegation, but the
+    // coordinator's unrelated one looks exactly like an unknown id.
+    const own = await workerGet.handler({ requestId: "req-tools-worker" });
+    expect(own.isError).not.toBe(true);
+    expect(toolText(own)).toContain("worker task");
+    const hidden = await workerGet.handler({ requestId: "req-tools-coord" });
+    expect(hidden.isError).toBe(true);
+    expect(JSON.stringify(hidden)).toContain("not found");
   } finally {
     await h.cleanup();
   }

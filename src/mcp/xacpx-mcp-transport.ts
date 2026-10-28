@@ -145,6 +145,10 @@ export interface XacpxMcpPeerListArgs {
 
 export interface XacpxMcpPeerGetArgs {
   requestId: string;
+  /** Binding-derived caller (sourceHandle ?? coordinatorSession). */
+  callerAlias: string;
+  /** Server-injected coordinator scope; decides coordinator visibility. */
+  coordinatorSession: string;
 }
 
 export interface XacpxMcpPeerWatchArgs {
@@ -366,7 +370,7 @@ export function createOrchestrationTransport(
       if (!client.peerGet) {
         throw new Error("orchestration client peerGet is not configured");
       }
-      return await client.peerGet(input.requestId);
+      return await client.peerGet(input);
     },
   };
 }

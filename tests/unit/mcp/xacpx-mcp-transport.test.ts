@@ -616,7 +616,11 @@ test("createOrchestrationTransport maps peer methods onto the RPC client", async
   await transport.peerCancel!({ requestId: "req-1", originatorAlias: "peer-a" });
   await transport.peerList!({ callerAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
   await transport.peerList!({ callerAlias: "worker:review", coordinatorSession: "ws-a:peer-a", status: "running" });
-  await transport.peerGet!({ requestId: "req-1" });
+  await transport.peerGet!({
+    requestId: "req-1",
+    callerAlias: "ws-a:peer-a",
+    coordinatorSession: "ws-a:peer-a",
+  });
 
   expect(calls).toEqual([
     {
@@ -651,7 +655,14 @@ test("createOrchestrationTransport maps peer methods onto the RPC client", async
       method: "peerList",
       input: { callerAlias: "worker:review", coordinatorSession: "ws-a:peer-a", status: "running" },
     },
-    { method: "peerGet", input: "req-1" },
+    {
+      method: "peerGet",
+      input: {
+        requestId: "req-1",
+        callerAlias: "ws-a:peer-a",
+        coordinatorSession: "ws-a:peer-a",
+      },
+    },
   ]);
 });
 

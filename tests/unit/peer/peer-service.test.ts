@@ -277,7 +277,7 @@ test("records survive a store reload (daemon restart)", async () => {
       promptSession: async () => ({ text: "" }),
       store: reloadedStore,
     });
-    const found = await reloadedService.get(record.requestId);
+    const found = await reloadedService.get({ requestId: record.requestId, callerAlias: "peer-a" });
     expect(found?.status).toBe("completed");
     expect(found?.result).toContain("t");
   } finally {
@@ -386,7 +386,7 @@ test("a late completion never overwrites a cancellation", async () => {
     release({ text: "done late" });
     // Give the background execution a chance to attempt its backfill.
     await Bun.sleep(100);
-    const after = await h.service.get(record.requestId);
+    const after = await h.service.get({ requestId: record.requestId, callerAlias: "peer-a" });
     expect(after?.status).toBe("cancelled");
     expect(after?.result).toBeUndefined();
     expect(h.promptCalls).toHaveLength(1);
@@ -440,7 +440,7 @@ test("a corrupted store file fails with a clear recovery message", async () => {
       "move this file aside",
     );
     await writeFile(file, JSON.stringify({ not: "an array" }), "utf8");
-    await expect(h.service.get("whatever")).rejects.toThrow(
+    await expect(h.service.get({ requestId: "whatever", callerAlias: "peer-a" })).rejects.toThrow(
       "Peer request store is corrupted",
     );
   } finally {
@@ -544,6 +544,29 @@ test("a worker originator cannot approve its own delegation", async () => {
       }),
     ).rejects.toThrow("only the record's coordinator can approve");
     // The coordinator itself can still approve the worker's delegation.
+    const running = await h.service.approve({
+      requestId: record.requestId,
+      approverAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(running.status).toBe("running");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a coordinator originator may approve its own delegation", async () => {
+  const h = await setup();
+  try {
+    // Distinct from "a worker originator cannot approve its own
+    // delegation": here the originator IS the coordinator session, so
+    // approving is the operator approving, not a worker self-approving.
+    const record = await h.service.delegate({
+      originatorAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+      targetAlias: "peer-b",
+      task: "t",
+    });
     const running = await h.service.approve({
       requestId: record.requestId,
       approverAlias: "ws-a:peer-a",
@@ -668,6 +691,77 @@ test("list splits coordinator view from worker related view", async () => {
       "req-coord-b",
       "req-legacy",
     ]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("get admits party or coordinator, and hides records from anyone else", async () => {
+  const h = await setup();
+  try {
+    const stamp = "2026-10-01T00:00:00.000Z";
+    const fixture = (
+      requestId: string,
+      originator: string,
+      target: string,
+      coordinator: string | undefined,
+      status: PeerRequest["status"],
+    ): PeerRequest => ({
+      requestId,
+      originator: { alias: originator },
+      target: { alias: target },
+      ...(coordinator !== undefined ? { coordinator } : {}),
+      task: "t",
+      status,
+      createdAt: stamp,
+      updatedAt: stamp,
+    });
+    await h.store.upsert(fixture("req-get-a", "peer-a", "peer-b", "ws-a:peer-a", "needs_confirmation"));
+    await h.store.upsert(fixture("req-get-b", "peer-c", "peer-d", "ws-a:peer-a", "completed"));
+    await h.store.upsert(fixture("req-get-legacy", "peer-a", "peer-b", undefined, "needs_confirmation"));
+
+    // Party view: originator and target both read.
+    expect(
+      (await h.service.get({ requestId: "req-get-a", callerAlias: "peer-a" }))?.requestId,
+    ).toBe("req-get-a");
+    expect(
+      (await h.service.get({ requestId: "req-get-a", callerAlias: "peer-b" }))?.requestId,
+    ).toBe("req-get-a");
+    // Coordinator view: in-scope records even when the coordinator is
+    // neither originator nor target.
+    expect(
+      (
+        await h.service.get({
+          requestId: "req-get-b",
+          callerAlias: "ws-a:peer-a",
+          coordinatorSession: "ws-a:peer-a",
+        })
+      )?.requestId,
+    ).toBe("req-get-b");
+    // Anyone else gets null — indistinguishable from an unknown id.
+    expect(
+      await h.service.get({
+        requestId: "req-get-a",
+        callerAlias: "worker:review",
+        coordinatorSession: "ws-a:peer-a",
+      }),
+    ).toBeNull();
+    expect(await h.service.get({ requestId: "req-get-a", callerAlias: "ghost" })).toBeNull();
+    expect(await h.service.get({ requestId: "req-nope", callerAlias: "peer-a" })).toBeNull();
+    // Legacy coordinator-less records stay party-only, never coordinator
+    // visible: fail closed.
+    expect(
+      (
+        await h.service.get({
+          requestId: "req-get-legacy",
+          callerAlias: "ws-a:peer-a",
+          coordinatorSession: "ws-a:peer-a",
+        })
+      ),
+    ).toBeNull();
+    expect(
+      (await h.service.get({ requestId: "req-get-legacy", callerAlias: "peer-a" }))?.requestId,
+    ).toBe("req-get-legacy");
   } finally {
     await h.cleanup();
   }

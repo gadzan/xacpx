@@ -184,8 +184,8 @@ async function main(): Promise<void> {
       promptSession: async () => ({ text: "" }),
       store: new PeerStore(join(home, "peer-requests.json")),
     });
-    const reAb = await reloaded.get("req-demo-ab");
-    const reBa = await reloaded.get("req-demo-ba");
+    const reAb = await reloaded.get({ requestId: "req-demo-ab", callerAlias: "peer-a" });
+    const reBa = await reloaded.get({ requestId: "req-demo-ba", callerAlias: "peer-b" });
     log("STEP 6", `after reload: req-demo-ab=${reAb?.status} req-demo-ba=${reBa?.status}`);
     if (reAb?.status !== "delivered" || reBa?.status !== "delivered") {
       throw new Error("reloaded records did not survive");
@@ -208,7 +208,7 @@ async function main(): Promise<void> {
     log("STEP 7", `watch after cancel: status=${cancelWatched.status} request=${cancelWatched.request.status}`);
     const listedCancelled = await peer.listRelated("peer-b", { status: "cancelled" });
     log("STEP 7", `peer_list (peer-b, cancelled): ${listedCancelled.map((r) => r.requestId).join(", ")}`);
-    const gotCancelled = await peer.get("req-demo-cancel");
+    const gotCancelled = await peer.get({ requestId: "req-demo-cancel", callerAlias: "peer-b" });
     log("STEP 7", `peer_get req-demo-cancel: status=${gotCancelled?.status}`);
     if (cancelled.status !== "cancelled" || cancelWatched.request.status !== "cancelled" || gotCancelled?.status !== "cancelled") {
       throw new Error("cancel flow did not reach cancelled state");

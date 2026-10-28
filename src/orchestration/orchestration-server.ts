@@ -38,6 +38,7 @@ import type {
   PeerCancelInput,
   PeerConfirmInput,
   PeerDelegateInput,
+  PeerGetInput,
   PeerListInput,
   PeerWatchInput,
 } from "../peer/peer-service";
@@ -101,7 +102,7 @@ interface OrchestrationServerDeps {
     confirm: (input: PeerConfirmInput) => Promise<PeerRequest>;
     cancel: (input: PeerCancelInput) => Promise<PeerRequest>;
     list: (input: PeerListInput) => Promise<PeerRequest[]>;
-    get: (requestId: string) => Promise<PeerRequest | null>;
+    get: (input: PeerGetInput) => Promise<PeerRequest | null>;
   };
 }
 
@@ -426,8 +427,12 @@ export class OrchestrationServer {
         });
       }
       case "peer.get": {
-        requireOnlyKeys(params, ["requestId"], "params");
-        return await this.requirePeer().get(requireString(params, "requestId"));
+        requireOnlyKeys(params, ["requestId", "callerAlias", "coordinatorSession"], "params");
+        return await this.requirePeer().get({
+          requestId: requireString(params, "requestId"),
+          callerAlias: requireString(params, "callerAlias"),
+          coordinatorSession: requireString(params, "coordinatorSession"),
+        });
       }
       case "group.new":
         requireOnlyKeys(params, ["coordinatorSession", "title"], "params");

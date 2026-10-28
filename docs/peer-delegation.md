@@ -78,7 +78,7 @@ A 验证后才算交付；B 也能反向委派给 A。
 | `peer_confirm` | 发起方验证结果，标记 `delivered` |
 | `peer_cancel` | 发起方取消运行中的请求，或撤回待批请求，终态 `cancelled`；只停记录，不停对端 turn；回执带下一步 |
 | `peer_list` | 调用方是 coordinator 本人时列出 coordinator 范围内全部委派，否则只列出与调用方相关的委派（发起方或目标方），支持状态过滤 |
-| `peer_get` | 按 `requestId` 查询一条委派的完整状态、任务与结果（目前不做调用方校验，是既有行为） |
+| `peer_get` | 按 `requestId` 查询一条委派的完整状态、任务与结果；只有当事方（发起方或目标方）或记录的 coordinator 能查，其他调用方得到的与未知 `requestId` 相同的 not found 报错 |
 
 七个工具经 `XacpxMcpTransport` 的可选 peer 方法绑定（与 `groupSend` 同款模式）；
 orchestration transport 把它们绑到 daemon RPC；未绑定时工具报明确提示
@@ -98,14 +98,17 @@ orchestration transport 把它们绑到 daemon RPC；未绑定时工具报明确
   未配 peer dep 的 server 收到 peer 方法时报 `peer delegation is not configured`。
   RPC 本身无鉴权，信任只来自 unix socket 0600 owner-only（与 orchestration
   其他方法同款）；coordinator 是调用方断言的作用域键，服务端拿记录里存的键
-  来校验。`peer_get` 目前不做调用方校验，是既有行为，本轮不动。
+  来校验。`peer_get` 与 `peer_list` 同款可见规则：当事方（发起方或目标方）或
+  记录的 coordinator 能查，其他调用方得到的与未知 `requestId` 相同的 not
+  found 报错，不泄露记录存在性；无 coordinator 的旧记录只认当事方。
 - **Client 侧**：`OrchestrationClient` 加 7 个 peer 方法，均走 `this.request`。
   `peerWatch` 与 `task.watch` 同款处理超时坑：用
   `getWatchRequestTimeoutMs` 把 RPC 超时延长到 watch 时长 + padding，否则
   20 分钟的长 watch 会在默认 30 秒 RPC 超时处断掉。
 - **Transport 侧**：`createOrchestrationTransport` 绑上 7 个 peer 方法；
   `peerDelegate` 透传 `coordinatorSession`，`peerApprove` 透传 `approverAlias` +
-  `coordinatorSession`，`peerList` 透传 `callerAlias` + `coordinatorSession`。
+  `coordinatorSession`，`peerList` 透传 `callerAlias` + `coordinatorSession`，
+  `peerGet` 透传 `callerAlias` + `coordinatorSession`。
   Memory transport 的“未绑定” stub 保留：无 daemon 的场景仍报可操作文案。
 - **Daemon 侧会话解析**：`resolveSession` 是 direct + preferred-transport 优先，
   不带 chat：先 `sessions.getSession(key)`（内部别名键），再

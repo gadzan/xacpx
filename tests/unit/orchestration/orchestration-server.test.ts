@@ -1446,7 +1446,11 @@ test("peer RPC methods forward strictly validated params to the peer dep", async
     coordinatorSession: "ws-a:peer-a",
     status: "needs_confirmation",
   })).toMatchObject({ ok: true, result: [{ requestId: "req-1" }] });
-  expect(await call("peer.get", { requestId: "req-1" })).toMatchObject({
+  expect(await call("peer.get", {
+    requestId: "req-1",
+    callerAlias: "ws-a:peer-a",
+    coordinatorSession: "ws-a:peer-a",
+  })).toMatchObject({
     ok: true,
     result: { requestId: "req-1" },
   });
@@ -1473,7 +1477,14 @@ test("peer RPC methods forward strictly validated params to the peer dep", async
       method: "list",
       input: { callerAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a", status: "needs_confirmation" },
     },
-    { method: "get", input: "req-1" },
+    {
+      method: "get",
+      input: {
+        requestId: "req-1",
+        callerAlias: "ws-a:peer-a",
+        coordinatorSession: "ws-a:peer-a",
+      },
+    },
   ]);
 });
 

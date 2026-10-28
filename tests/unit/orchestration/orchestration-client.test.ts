@@ -781,8 +781,21 @@ test("peer methods round-trip through a real IPC endpoint to a bound PeerService
     expect(watched.request.result).toContain("round-trip task");
     expect(prompts).toHaveLength(1);
 
-    const got = await transport.peerGet!({ requestId: "req-round-trip" });
+    const got = await transport.peerGet!({
+      requestId: "req-round-trip",
+      callerAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
     expect(got?.status).toBe("completed");
+
+    // An unrelated worker over the same socket sees nothing: get hides
+    // the record exactly like an unknown id.
+    const workerGot = await transport.peerGet!({
+      requestId: "req-round-trip",
+      callerAlias: "worker:review",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(workerGot).toBeNull();
 
     // Coordinator view over the socket: the coordinator sees its record;
     // a worker under it sees only the related view (here: nothing, since

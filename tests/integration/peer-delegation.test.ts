@@ -213,7 +213,7 @@ test(
       expect(cancelWatched.request.status).toBe("cancelled");
       const listedForB = await peer.listRelated("peer-b", { status: "cancelled" });
       expect(listedForB.map((r) => r.requestId)).toContain("req-e2e-cancel");
-      expect((await peer.get("req-e2e-cancel"))?.status).toBe("cancelled");
+      expect((await peer.get({ requestId: "req-e2e-cancel", callerAlias: "peer-b" }))?.status).toBe("cancelled");
 
       // 5. Records survive a store reload (daemon restart).
       const reloaded = new PeerService({
@@ -221,9 +221,9 @@ test(
         promptSession: async () => ({ text: "" }),
         store: new PeerStore(join(home, "peer-requests.json")),
       });
-      expect((await reloaded.get("req-e2e-ab"))?.status).toBe("delivered");
-      expect((await reloaded.get("req-e2e-ba"))?.status).toBe("delivered");
-      expect((await reloaded.get("req-e2e-cancel"))?.status).toBe("cancelled");
+      expect((await reloaded.get({ requestId: "req-e2e-ab", callerAlias: "peer-a" }))?.status).toBe("delivered");
+      expect((await reloaded.get({ requestId: "req-e2e-ba", callerAlias: "peer-b" }))?.status).toBe("delivered");
+      expect((await reloaded.get({ requestId: "req-e2e-cancel", callerAlias: "peer-b" }))?.status).toBe("cancelled");
     } finally {
       await runtime.dispose();
       await rm(root, { recursive: true, force: true }).catch(() => {});
