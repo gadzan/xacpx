@@ -170,14 +170,15 @@ function onInput(event: Event): void {
       :class="surfaceDisabled ? 'cursor-not-allowed opacity-60' : ''"
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >
-      <!-- Send/stop live INSIDE the input line (bottom-right overlay), WhatsApp
-           style: the resting card is then exactly one text line tall — the button
-           is its own height reference. The affordance row below (model chip,
-           member selector, attach) only exists when a pane passes it, and folds
-           away while the composer rests (v-show: pane state survives the fold).
-           Textarea keeps a constant pr-12 so typed text never runs under the
-           button, and constant vertical padding so the height floor measured in
-           applyHeight never reads a mid-transition value. -->
+      <!-- Send/stop live INSIDE the input line (WhatsApp style): the resting card is
+           one text line tall and the button is its own height reference — both are
+           centred with the same 6px inset the placeholder uses, so a 38px pill has
+           equal gaps top/bottom/left/right. Expanded, the button drops to the
+           bottom-right corner of the grown textarea. The affordance row below
+           (model chip, member selector, attach) only exists when a pane passes it
+           and folds away while the composer rests (v-show: pane state survives the
+           fold). Padding is not animated and the textarea keeps a constant pr-12,
+           so applyHeight always measures a settled box. -->
       <div class="relative">
         <slot name="menus" />
         <slot name="attachments" />
@@ -193,8 +194,8 @@ function onInput(event: Event): void {
           :aria-controls="combobox ? comboboxListId : undefined"
           :aria-expanded="combobox ? comboboxExpanded : undefined"
           :aria-activedescendant="combobox ? comboboxActiveId : undefined"
-          class="w-full resize-none bg-transparent pl-3.5 pr-12 pt-1.5 pb-1 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
-          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
+          class="block w-full resize-none bg-transparent pr-12 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
+          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', expanded ? 'pl-3.5 pt-2.5 pb-1' : 'pl-1.5 pt-1.5 pb-1.5', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
           :disabled="disabled"
           :style="height !== undefined ? { height: height + 'px' } : undefined"
           :placeholder="placeholder || $t('chat.message')"
@@ -210,7 +211,7 @@ function onInput(event: Event): void {
           @paste="emit('paste', $event)"
         />
 
-        <div class="absolute bottom-1 right-1.5 flex items-center gap-1.5">
+        <div class="absolute flex items-center gap-1.5" :class="expanded ? 'bottom-1 right-1.5' : 'right-[5px] top-1/2 -translate-y-1/2'">
           <button
             v-if="showStop"
             type="button"
