@@ -20,7 +20,6 @@ import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useDirectComposerStore } from "../stores/direct-composer";
 import ConversationComposer from "./ConversationComposer.vue";
-import { mergeRecoveredDraft, sourceRunPrompt } from "../lib/composer-run-actions";
 const props = defineProps<{
   disabled?: boolean;
   deliver?: (
@@ -42,9 +41,6 @@ const composing = ref(false),
   cmdActiveIdx = ref(0),
   cmdDismissed = ref(false),
   page = ref(0);
-const actionBusy = ref(false);
-const actionError = ref<string | null>(null);
-const restoreNotice = ref<string | null>(null);
 const scope = computed(() =>
   JSON.stringify([
     directBotsStore.instanceId,
@@ -366,7 +362,7 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 async function handleSend(): Promise<void> {
-  if (blocked.value || actionBusy.value || isRunActive.value || !promptText.value.trim() || composing.value) return;
+  if (blocked.value || isRunActive.value || !promptText.value.trim() || composing.value) return;
   const key = scope.value,
     text = promptText.value,
     mentions = structuredClone(
@@ -384,43 +380,10 @@ async function handleSend(): Promise<void> {
   }
 }
 async function handleCancel(): Promise<void> {
-  await runAction("stop");
-}
-
-async function runAction(action: "stop" | "restore" | "takeover"): Promise<void> {
   const run = directBotsStore.activeRun;
-  const instanceId = directBotsStore.instanceId;
-  const botId = directBotsStore.selectedBotId;
-  if (!run || !instanceId || actionBusy.value || isCancelling.value) return;
-  const key = scope.value;
-  const snapshot = drafts.get(key);
-  if (action === "takeover" && !snapshot.text.trim()) return;
-  actionBusy.value = true;
-  actionError.value = null;
-  try {
-    const recovered = action === "restore" ? await sourceRunPrompt(instanceId, run, directBotsStore.messages) : null;
-    if (key !== scope.value) return;
-    if (action === "restore" && recovered === null) { actionError.value = t("collaboration.promptUnavailable"); return; }
-    const outcome = await directBotsStore.cancelCurrentRun({ runId: run.id });
-    if (key !== scope.value || outcome.scope?.instanceId !== instanceId
-      || outcome.scope.conversationId !== run.conversationId || outcome.scope.topicId !== run.topicId
-      || outcome.scope.botId !== botId || outcome.runId !== run.id) return;
-    if (outcome.status !== "cancelled" && outcome.status !== "terminal") { actionError.value = t("collaboration.stopUnconfirmed"); return; }
-    if (action === "restore" && recovered !== null) {
-      promptText.value = mergeRecoveredDraft(promptText.value, recovered);
-      restoreNotice.value = t("collaboration.restored");
-      await nextTick();
-      composer.value?.focus();
-    } else if (action === "takeover") {
-      if (drafts.get(key) !== snapshot) return;
-      actionBusy.value = false;
-      await handleSend();
-    }
-  } catch { actionError.value = t("collaboration.stopUnconfirmed"); }
-  finally { actionBusy.value = false; }
+  if (!run || isCancelling.value) return;
+  await directBotsStore.cancelCurrentRun({ runId: run.id });
 }
-
-watch(scope, () => { actionError.value = null; restoreNotice.value = null; });
 function handleRetry(): void {
   void handleSend();
 }
@@ -474,20 +437,14 @@ function onInput(): void {
       </button>
     </div>
 
-    <p v-if="actionError" role="alert" class="mb-2 text-xs text-danger">{{ actionError }}</p>
-    <p v-if="restoreNotice" role="status" class="mb-2 text-xs text-fg-muted">{{ restoreNotice }}</p>
-    <div v-if="isRunActive" class="mb-2 flex items-center gap-2 text-xs">
-      <button type="button" class="min-h-11 rounded-lg px-2 text-danger hover:bg-raised disabled:opacity-50" :disabled="actionBusy || isCancelling" @click="runAction('stop')">{{ $t('group.detail.stopRun') }}</button>
-      <button type="button" class="min-h-11 rounded-lg px-2 hover:bg-raised disabled:opacity-50" :disabled="actionBusy || isCancelling" @click="runAction('restore')">{{ $t('collaboration.stopRestore') }}</button>
-      <button type="button" class="min-h-11 rounded-lg px-2 text-accent hover:bg-raised disabled:opacity-50" :title="$t('collaboration.takeoverHint')" :disabled="actionBusy || isCancelling || !promptText.trim()" @click="runAction('takeover')">{{ $t('collaboration.takeover') }}</button>
-    </div>
     <ConversationComposer
       ref="composer"
       v-model="promptText"
       :busy="isRunActive"
       :disabled="blocked"
       :sending="isPromptInFlight"
-      :cancelling="isCancelling || actionBusy"
+      :cancelling="isCancelling"
+      :stop-while-busy="true"
       :placeholder="composerPlaceholder"
       send-test-id="send-prompt-button"
       stop-test-id="stop-run-button"

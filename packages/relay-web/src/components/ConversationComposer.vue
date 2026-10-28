@@ -12,7 +12,8 @@ import { ArrowUp, Loader2, Square } from "lucide-vue-next";
 const props = withDefaults(
   defineProps<{
     modelValue: string;
-    /** A turn is running: an empty composer cancels instead of sending. */
+    /** A turn is running: the button becomes Stop (with stopWhileBusy, always —
+     *  even with sendable text; otherwise only an empty composer cancels). */
     busy?: boolean;
     disabled?: boolean;
     /** A send is in flight: the button shows a spinner and ignores clicks. */
@@ -30,10 +31,11 @@ const props = withDefaults(
     textareaTestId?: string;
     /** Pane-specific extra guard on Send (e.g. a resolvable target is required). */
     sendDisabled?: boolean;
-    /** Attachments slot needs extra guard on Send (e.g. an upload still in flight). */
-    attachmentsSendDisabled?: boolean;
     /** True when attachments are staged: an empty body sends instead of stopping. */
     hasAttachments?: boolean;
+    /** Busy keeps the Stop button even with sendable text. Panes whose sends
+     *  queue server-side mid-run must leave this off. */
+    stopWhileBusy?: boolean;
     /** The pane drives an ARIA combobox from its completion menu. */
     combobox?: boolean;
     /** Element id of the pane's completion listbox. */
@@ -70,7 +72,11 @@ const hasSendable = computed(() => props.modelValue.trim().length > 0 || props.h
  *  show not-allowed. A running turn (Stop must stay prominent) or an in-flight
  *  send (spinner) keeps the card at full strength and only dims the textarea. */
 const surfaceDisabled = computed(() => props.disabled && !props.busy && !props.sending);
-const showStop = computed(() => props.busy && !hasSendable.value);
+/** While a turn runs the button is Stop. Default: only when the composer has
+ *  nothing sendable (queues-while-busy panes keep Send for typed text).
+ *  stopWhileBusy panes refuse to send mid-run entirely, so the button stays
+ *  Stop and the click routes to @cancel. */
+const showStop = computed(() => props.busy && (props.stopWhileBusy === true || !hasSendable.value));
 
 function reportCaret(): void {
   const el = textarea.value;

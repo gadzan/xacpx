@@ -1573,8 +1573,8 @@ describe("Direct Bot Components", () => {
         },
       });
 
-      // A running turn must not lock the textarea: the takeover and
-      // stop-and-restore actions both compose into it.
+      // A running turn must not lock the textarea: the takeover action
+      // composes into it.
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
 
@@ -1589,12 +1589,19 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       expect(cancelSpy).toHaveBeenCalledWith({ runId: "run_1" });
 
-      // Typed text swaps Stop for Send: Enter still refuses to send.
+      // Typed text swaps nothing: the button stays Stop while a run is
+      // active, and Enter still refuses to send.
       await textarea.setValue("steer this");
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
       expect(wrapper.emitted("send")).toBeUndefined();
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
+      // The persistent Stop dispatches the store's cancel for this exact run
+      // and never sends mid-run.
+      await wrapper.find('[data-test="stop-run-button"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.emitted("send")).toBeUndefined();
+      expect(cancelSpy).toHaveBeenCalledTimes(2);
+      expect(cancelSpy).toHaveBeenLastCalledWith({ runId: "run_1" });
     });
 
     it("disables the composer while topic recovery is still in flight", async () => {
