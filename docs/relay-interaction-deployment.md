@@ -89,7 +89,11 @@ An elicitation route has **two** shapes, and both are product surfaces:
 - the turn's ordinary ingress key (e.g. `relay:<accountId>`) on a turn whose
   ingress reports `chatType: "direct"` — a **session** turn. The form is mounted
   by the Sessions ChatPane, and it is placed by the interaction's `sessionAlias`,
-  which core pins to the exact turn and `channel-relay` copies onto the wire.
+  which core pins to the exact turn and `channel-relay` copies onto the wire. That
+  alias is the **display** alias the dashboard lists and selects on
+  (`toDisplaySessionAlias`), not the stored internal one: a relay session record
+  `relay:demo` is the row `demo`, and a form stamped with the internal alias would
+  match no pane.
 
 A permission route is a **`permissionChatKey`** carried from trusted human ingress,
 deliberately **not** the product `bot:` key. Do not unify them; they answer

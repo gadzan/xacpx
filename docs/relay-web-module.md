@@ -420,8 +420,10 @@ hub 的 `interaction-opened` / `interaction-snapshot` 是表单的唯一来源�
   即使信封上还带着一个无关的 `sessionAlias`。
 - **会话表单**：靠 `sessionAlias`。这个别名由 core 钉在精确 turn 上（普通会话 turn 的 resolver 产出），
   connector 抄到线上 `InteractionRequestDto.sessionAlias`，hub 原样存进 pending 记录、并随 live 事件与快照回放。
-  `pendingSessionInteractionFor(instanceId, alias)` **同时**要求实例与别名精确匹配：别名只在实例内唯一
-  （克隆/还原出来的两个 daemon 会有同名会话），而作答会路由到条目自己的 `instanceId`，只比别名会把 B 的问题答进 A。
+  这里是**展示别名**，与会话列表选中用的那个是同一套：记录里存 `relay:demo`，列表与 `chat.sessionAlias` 都是 `demo`，
+  用内部别名去配会一个面板都配不上。`pendingSessionInteractionFor(instanceId, alias)` **同时**要求实例与别名精确匹配：
+  别名只在实例内唯一（克隆/还原出来的两个 daemon 会有同名会话），而作答会路由到条目自己的 `instanceId`，
+  只比别名会把 B 的问题答进 A。
 
 `ChatPane.vue` 把表单作为 composer 栈最上面的一层渲染（`ConversationInteractionForm`），复用 Direct Bot 的同一套渲染与校验：
 必填未答不可提交、`format` 无法本地复核时阻断提交、`pattern` 只展示不执行。作答走 `control.interaction.respond`，
