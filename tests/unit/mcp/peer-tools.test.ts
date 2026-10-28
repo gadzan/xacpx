@@ -58,18 +58,13 @@ test("peer tools are registered and delegate stays unexecuted until approve", as
         peerWatch: async (input) => h.service.watch(input),
         peerConfirm: async (input) => h.service.confirm(input),
         peerCancel: async (input) => h.service.cancel(input),
-        peerList: async (input) =>
-          h.service.listRelated(
-            input.callerAlias,
-            input.status !== undefined ? { status: input.status } : undefined,
-          ),
+        peerList: async (input) => h.service.list(input),
         peerGet: async (input) => h.service.get(input.requestId),
       },
     );
     const registry = buildXacpxMcpToolRegistry({
       transport,
       coordinatorSession: "ws-a:peer-a",
-      sourceHandle: "peer-a",
     });
     const names = registry.map((tool) => tool.name);
     for (const name of [
@@ -128,6 +123,7 @@ test("peer tools are registered and delegate stays unexecuted until approve", as
     const cancelled = await cancelTool.handler({ requestId: "req-tools-2" });
     expect(cancelled.structuredContent).toMatchObject({ status: "cancelled" });
     expect(toolText(cancelled)).toContain("does not stop the target's turn");
+    expect(toolText(cancelled)).toContain("new requestId");
     const watchedCancelled = await watchTool.handler({
       requestId: "req-tools-2",
       timeoutMs: 5000,
@@ -135,6 +131,7 @@ test("peer tools are registered and delegate stays unexecuted until approve", as
     });
     expect(watchedCancelled.structuredContent).toMatchObject({ status: "terminal" });
     expect(toolText(watchedCancelled)).toContain("cancelled");
+    expect(toolText(watchedCancelled)).toContain("new requestId");
 
     const listed = await listTool.handler({});
     expect(toolText(listed)).toContain("req-tools-1");
@@ -170,7 +167,7 @@ test("peer tools throw when no peer transport is bound", async () => {
   const delegateTool = registry.find((tool) => tool.name === "peer_delegate")!;
   const result = await delegateTool.handler({ targetAlias: "peer-b", task: "t" });
   expect(result.isError).toBe(true);
-  expect(JSON.stringify(result)).toContain("not wired into the daemon");
+  expect(JSON.stringify(result)).toContain("not connected to a daemon");
 });
 
 test("peer tools report the same actionable error from the default memory stub", async () => {
@@ -186,7 +183,7 @@ test("peer tools report the same actionable error from the default memory stub",
   const delegateTool = registry.find((tool) => tool.name === "peer_delegate")!;
   const result = await delegateTool.handler({ targetAlias: "peer-b", task: "t" });
   expect(result.isError).toBe(true);
-  expect(JSON.stringify(result)).toContain("not wired into the daemon");
+  expect(JSON.stringify(result)).toContain("not connected to a daemon");
   expect(JSON.stringify(result)).toContain("docs/peer-delegation.md");
 });
 
@@ -204,7 +201,6 @@ test("watch text carries a truncated result with an explicit note", async () => 
     const registry = buildXacpxMcpToolRegistry({
       transport,
       coordinatorSession: "ws-a:peer-a",
-      sourceHandle: "peer-a",
     });
     const delegateTool = registry.find((tool) => tool.name === "peer_delegate")!;
     const approveTool = registry.find((tool) => tool.name === "peer_approve")!;
@@ -248,7 +244,6 @@ test("watch failed text gives a next step distinct from a resend", async () => {
     const registry = buildXacpxMcpToolRegistry({
       transport,
       coordinatorSession: "ws-a:peer-a",
-      sourceHandle: "peer-a",
     });
     const delegateTool = registry.find((tool) => tool.name === "peer_delegate")!;
     const approveTool = registry.find((tool) => tool.name === "peer_approve")!;
@@ -285,7 +280,6 @@ test("watch timeout on an unapproved request says it is still waiting for approv
     const registry = buildXacpxMcpToolRegistry({
       transport,
       coordinatorSession: "ws-a:peer-a",
-      sourceHandle: "peer-a",
     });
     const delegateTool = registry.find((tool) => tool.name === "peer_delegate")!;
     const watchTool = registry.find((tool) => tool.name === "peer_watch")!;
@@ -302,6 +296,62 @@ test("watch timeout on an unapproved request says it is still waiting for approv
     expect(watched.structuredContent).toMatchObject({ status: "timeout" });
     expect(toolText(watched)).toContain("needs_confirmation");
     expect(toolText(watched)).toContain("waiting for approval");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a worker-bound caller cannot approve, and sees only its related view", async () => {
+  const h = await setupService();
+  try {
+    const transport = createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "needs_confirmation" }),
+      {
+        peerDelegate: async (input) => h.service.delegate(input),
+        peerApprove: async (input) => h.service.approve(input),
+        peerWatch: async (input) => h.service.watch(input),
+        peerConfirm: async (input) => h.service.confirm(input),
+        peerCancel: async (input) => h.service.cancel(input),
+        peerList: async (input) => h.service.list(input),
+        peerGet: async (input) => h.service.get(input.requestId),
+      },
+    );
+    const workerRegistry = buildXacpxMcpToolRegistry({
+      transport,
+      coordinatorSession: "ws-a:peer-a",
+      sourceHandle: "worker:review",
+    });
+    const coordinatorRegistry = buildXacpxMcpToolRegistry({
+      transport,
+      coordinatorSession: "ws-a:peer-a",
+    });
+    const workerDelegate = workerRegistry.find((tool) => tool.name === "peer_delegate")!;
+    const workerApprove = workerRegistry.find((tool) => tool.name === "peer_approve")!;
+    const workerList = workerRegistry.find((tool) => tool.name === "peer_list")!;
+    const coordinatorDelegate = coordinatorRegistry.find((tool) => tool.name === "peer_delegate")!;
+
+    await workerDelegate.handler({
+      targetAlias: "peer-b",
+      task: "worker task",
+      requestId: "req-tools-worker",
+    });
+    await coordinatorDelegate.handler({
+      targetAlias: "peer-b",
+      task: "coordinator task",
+      requestId: "req-tools-coord",
+    });
+
+    // The worker originated req-tools-worker but still cannot approve it:
+    // only the recorded coordinator can.
+    const denied = await workerApprove.handler({ requestId: "req-tools-worker" });
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied)).toContain("only the record's coordinator");
+
+    // And the worker's list is the related view: its own delegation only,
+    // not the coordinator's unrelated one.
+    const listed = await workerList.handler({});
+    expect(toolText(listed)).toContain("req-tools-worker");
+    expect(toolText(listed)).not.toContain("req-tools-coord");
   } finally {
     await h.cleanup();
   }

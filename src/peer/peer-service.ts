@@ -11,6 +11,7 @@ import {
 import type { ResolvedSession } from "../transport/types";
 import type { PeerRequest, PeerRequestStatus, PeerWatchResult } from "./peer-types";
 import { isPeerRequestTerminal } from "./peer-types";
+import { sameCoordinatorSession } from "../orchestration/coordinator-identity";
 import type { PeerStore } from "./peer-store";
 
 export interface PeerDelegateInput {
@@ -20,6 +21,12 @@ export interface PeerDelegateInput {
   targetAlias: string;
   targetWorkspace?: string;
   task: string;
+  /**
+   * Server-injected coordinator session (tool binding, never a tool
+   * argument). Recorded on the request as its approval scope; delegate
+   * refuses an empty value so no record is ever created without a scope.
+   */
+  coordinatorSession: string;
   /** Client-supplied idempotency key. Omitted → a fresh UUID. Re-sending
    *  the same requestId with the same originator/target/task returns the
    *  existing record; reusing it for a different delegation is rejected. */
@@ -32,9 +39,20 @@ export interface PeerApproveInput {
    * Binding-derived identity of the approving caller. The tool layer
    * supplies sourceHandle ?? coordinatorSession; this is never a
    * free-form name the caller reports about itself. The target session
-   * cannot approve a delegation addressed to itself.
+   * cannot approve a delegation addressed to itself. Only the record's
+   * coordinator can approve: a worker under the coordinator (sourceHandle
+   * set, so approverAlias is the worker handle) is NOT the coordinator,
+   * even when it originated the delegation.
    */
   approverAlias: string;
+  /**
+   * Server-injected coordinator session of the approving caller. Both
+   * this and approverAlias must stably match the record's coordinator:
+   * approverAlias is the effective caller identity, coordinatorSession
+   * is the scope the caller claims to act in. A mismatch on either side
+   * rejects, so a binding that disagrees with itself cannot approve.
+   */
+  coordinatorSession: string;
 }
 
 export interface PeerCancelInput {
@@ -44,6 +62,23 @@ export interface PeerCancelInput {
 }
 
 export interface PeerListFilter {
+  status?: PeerRequestStatus;
+}
+
+/**
+ * Caller-scoped list input. `callerAlias` is the binding-derived caller
+ * (sourceHandle ?? coordinatorSession); `coordinatorSession` is the
+ * server-injected coordinator scope. When the caller IS the coordinator
+ * (stable comparison of the two), the result is the coordinator view:
+ * every record whose coordinator stably matches, regardless of whether
+ * the caller originated or is targeted by it. Otherwise the result is
+ * the related view (originator or target only), exactly as listRelated.
+ * A missing coordinatorSession degrades to the related view — the
+ * narrower, fail-closed shape — never to an unscoped listing.
+ */
+export interface PeerListInput {
+  callerAlias: string;
+  coordinatorSession?: string;
   status?: PeerRequestStatus;
 }
 
@@ -110,6 +145,10 @@ export class PeerService {
     if (!task) {
       throw new Error("peer_delegate requires a non-empty task");
     }
+    const coordinatorSession = input.coordinatorSession?.trim() ?? "";
+    if (!coordinatorSession) {
+      throw new Error("peer_delegate requires a non-empty coordinatorSession");
+    }
     if (originatorAlias === targetAlias) {
       throw new Error("peer delegation to self is not allowed");
     }
@@ -152,6 +191,7 @@ export class PeerService {
         alias: targetAlias,
         workspace: target.workspace,
       },
+      coordinator: coordinatorSession,
       task,
       status: "needs_confirmation",
       createdAt: now,
@@ -160,6 +200,17 @@ export class PeerService {
     return await this.deps.store.upsert(record);
   }
 
+  /**
+   * Approval rule, in order: status → empty identity → target
+   * self-approval → coordinator match. Only the record's coordinator can
+   * approve: the approver's binding identity AND its coordinator scope
+   * must both stably match the recorded coordinator (stable comparison,
+   * so a `/clear` `:reset-<digits>` suffix on either side does not
+   * orphan the record). A record without a coordinator — only possible
+   * for hand-built pre-wiring fixtures, since delegate always records
+   * one — fails closed with an explicit error instead of admitting any
+   * approver.
+   */
   async approve(input: PeerApproveInput): Promise<PeerRequest> {
     const record = await this.requireRequest(input.requestId);
     if (record.status !== "needs_confirmation") {
@@ -171,9 +222,28 @@ export class PeerService {
     if (!approverAlias) {
       throw new Error("peer approve requires a binding-derived approver identity");
     }
+    const coordinatorSession = input.coordinatorSession?.trim() ?? "";
+    if (!coordinatorSession) {
+      throw new Error("peer approve requires a binding-derived coordinatorSession");
+    }
     if (approverAlias === record.target.alias) {
       throw new Error(
         `the target session cannot approve a delegation addressed to itself (target=${record.target.alias})`,
+      );
+    }
+    if (!record.coordinator) {
+      throw new Error(
+        `peer request "${input.requestId}" has no recorded coordinator; it cannot be approved (pre-wiring record — re-delegate with a new requestId)`,
+      );
+    }
+    if (!sameCoordinatorSession(approverAlias, record.coordinator)) {
+      throw new Error(
+        `only the record's coordinator can approve peer request "${input.requestId}" (coordinator=${record.coordinator})`,
+      );
+    }
+    if (!sameCoordinatorSession(coordinatorSession, record.coordinator)) {
+      throw new Error(
+        `only the record's coordinator can approve peer request "${input.requestId}" (coordinator=${record.coordinator})`,
       );
     }
     const now = this.now().toISOString();
@@ -233,17 +303,18 @@ export class PeerService {
   }
 
   /**
-   * Cancel a running delegation. Record-level only: this does NOT stop the
-   * target's turn — the target keeps running, but its result will no
-   * longer be backfilled (see backfillIfRunning), and watch reports
-   * `cancelled`. Unapproved requests never execute and need no cancel;
-   * terminal requests cannot be cancelled.
+   * Cancel a running delegation, or withdraw one still waiting for
+   * approval. Record-level only: this does NOT stop the target's turn —
+   * the target keeps running, but its result will no longer be
+   * backfilled (see backfillIfRunning), and watch reports `cancelled`.
+   * Withdrawing a needs_confirmation request needs no turn to stop
+   * because it never executed. Terminal requests cannot be cancelled.
    */
   async cancel(input: PeerCancelInput): Promise<PeerRequest> {
     const record = await this.requireRequest(input.requestId);
-    if (record.status !== "running") {
+    if (record.status !== "running" && record.status !== "needs_confirmation") {
       throw new Error(
-        `only a running peer request can be cancelled (status=${record.status}); unapproved requests never execute and need no cancel`,
+        `only a running or unapproved peer request can be cancelled (status=${record.status})`,
       );
     }
     if (record.originator.alias !== input.originatorAlias) {
@@ -274,6 +345,40 @@ export class PeerService {
         (record.originator.alias === callerAlias ||
           record.target.alias === callerAlias) &&
         (filter?.status === undefined || record.status === filter.status),
+    );
+  }
+
+  /**
+   * Caller-scoped listing for the peer_list tool. When the caller IS the
+   * coordinator (stable comparison of callerAlias against
+   * coordinatorSession), this is the coordinator view: every record in
+   * that coordinator's scope, status filter applying as usual, no filter
+   * meaning all in-scope records — the same no-filter semantics as
+   * listRelated. Records without a coordinator (pre-wiring fixtures
+   * only) never enter a coordinator view; they stay visible only in the
+   * related view below. Any other caller gets exactly listRelated.
+   */
+  async list(input: PeerListInput): Promise<PeerRequest[]> {
+    const records = await this.deps.store.list();
+    const statusMatches = (record: PeerRequest): boolean =>
+      input.status === undefined || record.status === input.status;
+    if (
+      input.coordinatorSession !== undefined &&
+      sameCoordinatorSession(input.callerAlias, input.coordinatorSession)
+    ) {
+      const scope = input.coordinatorSession;
+      return records.filter(
+        (record) =>
+          record.coordinator !== undefined &&
+          sameCoordinatorSession(record.coordinator, scope) &&
+          statusMatches(record),
+      );
+    }
+    return records.filter(
+      (record) =>
+        (record.originator.alias === input.callerAlias ||
+          record.target.alias === input.callerAlias) &&
+        statusMatches(record),
     );
   }
 

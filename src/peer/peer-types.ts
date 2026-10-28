@@ -38,6 +38,18 @@ export interface PeerRequest {
   originator: PeerSessionIdentity;
   target: PeerSessionIdentity;
   /**
+   * Coordinator session that owns this delegation's approval scope,
+   * recorded at delegate time from the server-injected tool binding
+   * (never a tool argument, so the agent cannot forge it). Approval and
+   * the coordinator list view compare against this via
+   * sameCoordinatorSession, so a `:reset-<digits>` suffix from `/clear`
+   * does not orphan the record. Absent only on pre-wiring fixtures
+   * hand-built before delegate recorded it; such records fail closed on
+   * approve and never appear in a coordinator view (they stay visible in
+   * the originator/target related view).
+   */
+  coordinator?: string;
+  /**
    * Transport session name resolved from state at execution time.
    * Never hand-built: transport names may carry suffixes (e.g. `:reset-…`),
    * so this is always copied from the resolved session, never composed
@@ -86,8 +98,9 @@ export interface PeerWatchResult {
 
 /**
  * Actionable error text used whenever peer tools have no bound transport.
- * It states the cause (Daemon RPC binding is not part of this prototype)
- * and points at the doc, instead of internal binding jargon.
+ * It states the cause (this session is not connected to a daemon, so no
+ * Daemon RPC binding exists for it) and points at the doc, instead of
+ * internal binding jargon.
  */
 export const PEER_NOT_BOUND_MESSAGE =
-  "Peer delegation is not available in this session: peer tools are not wired into the daemon yet (Daemon RPC binding is not part of this prototype). See docs/peer-delegation.md.";
+  "Peer delegation is not available in this session: this session is not connected to a daemon (no Daemon RPC binding). See docs/peer-delegation.md.";

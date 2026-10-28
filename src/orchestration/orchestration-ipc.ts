@@ -48,6 +48,13 @@ export type OrchestrationRpcMethod =
   | "scheduled.create"
   | "scheduled.list"
   | "scheduled.cancel"
+  | "peer.delegate"
+  | "peer.approve"
+  | "peer.watch"
+  | "peer.confirm"
+  | "peer.cancel"
+  | "peer.list"
+  | "peer.get"
   | "group.new";
 
 export interface OrchestrationIpcEndpoint {

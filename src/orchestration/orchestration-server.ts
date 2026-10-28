@@ -33,6 +33,15 @@ import type { ScheduledTaskRecord } from "../scheduled/scheduled-types";
 import type { AgentMessageRouter } from "./agent-message-router";
 import type { AgentTargetSelector } from "./agent-messaging-types";
 import { AgentMessagingError } from "./agent-messaging-error";
+import type {
+  PeerApproveInput,
+  PeerCancelInput,
+  PeerConfirmInput,
+  PeerDelegateInput,
+  PeerListInput,
+  PeerWatchInput,
+} from "../peer/peer-service";
+import type { PeerRequest, PeerRequestStatus, PeerWatchResult } from "../peer/peer-types";
 class OrchestrationInvalidRequestError extends Error {}
 
 const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
@@ -56,6 +65,13 @@ const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
   "scheduled.create",
   "scheduled.list",
   "scheduled.cancel",
+  "peer.delegate",
+  "peer.approve",
+  "peer.watch",
+  "peer.confirm",
+  "peer.cancel",
+  "peer.list",
+  "peer.get",
   "group.new",
 ]);
 
@@ -71,6 +87,22 @@ interface OrchestrationServerDeps {
   listScheduledTasksFromRoute?: (input: ScheduledListFromRouteInput) => Promise<ScheduledTaskRecord[]>;
   cancelScheduledTaskFromRoute?: (input: ScheduledCancelFromRouteInput) => Promise<{ id: string; cancelled: boolean }>;
   agentMessaging?: Pick<AgentMessageRouter, "listReachable" | "send">;
+  /**
+   * Peer delegation (prototype), bound by the daemon in main.ts to its
+   * single PeerService. Deliberately a dep, not an OrchestrationRpcHandler:
+   * peer requests are not orchestration tasks and must not flow through
+   * OrchestrationService. Each method is a bound PeerService method; the
+   * dispatch cases below only validate RPC keys and forward.
+   */
+  peer?: {
+    delegate: (input: PeerDelegateInput) => Promise<PeerRequest>;
+    approve: (input: PeerApproveInput) => Promise<PeerRequest>;
+    watch: (input: PeerWatchInput) => Promise<PeerWatchResult>;
+    confirm: (input: PeerConfirmInput) => Promise<PeerRequest>;
+    cancel: (input: PeerCancelInput) => Promise<PeerRequest>;
+    list: (input: PeerListInput) => Promise<PeerRequest[]>;
+    get: (requestId: string) => Promise<PeerRequest | null>;
+  };
 }
 
 export class OrchestrationServer {
@@ -330,6 +362,73 @@ export class OrchestrationServer {
         return await this.dispatchScheduledList(params);
       case "scheduled.cancel":
         return await this.dispatchScheduledCancel(params);
+      case "peer.delegate": {
+        requireOnlyKeys(params, ["originatorAlias", "originatorWorkspace", "targetAlias", "targetWorkspace", "task", "requestId", "coordinatorSession"], "params");
+        const originatorWorkspace = requireOptionalString(params, "originatorWorkspace");
+        const targetWorkspace = requireOptionalString(params, "targetWorkspace");
+        const requestId = requireOptionalString(params, "requestId");
+        return await this.requirePeer().delegate({
+          originatorAlias: requireString(params, "originatorAlias"),
+          ...(originatorWorkspace !== undefined ? { originatorWorkspace } : {}),
+          targetAlias: requireString(params, "targetAlias"),
+          ...(targetWorkspace !== undefined ? { targetWorkspace } : {}),
+          task: requireString(params, "task"),
+          ...(requestId !== undefined ? { requestId } : {}),
+          coordinatorSession: requireString(params, "coordinatorSession"),
+        });
+      }
+      case "peer.approve": {
+        requireOnlyKeys(params, ["requestId", "approverAlias", "coordinatorSession"], "params");
+        return await this.requirePeer().approve({
+          requestId: requireString(params, "requestId"),
+          approverAlias: requireString(params, "approverAlias"),
+          coordinatorSession: requireString(params, "coordinatorSession"),
+        });
+      }
+      case "peer.watch": {
+        requireOnlyKeys(params, ["requestId", "timeoutMs", "pollIntervalMs"], "params");
+        const timeoutMs = requireOptionalIntegerInRange(params, "timeoutMs", 0, MAX_TASK_WATCH_TIMEOUT_MS);
+        const pollIntervalMs = requireOptionalIntegerInRange(params, "pollIntervalMs", 1, MAX_TASK_WATCH_POLL_INTERVAL_MS);
+        return await this.requirePeer().watch({
+          requestId: requireString(params, "requestId"),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          ...(pollIntervalMs !== undefined ? { pollIntervalMs } : {}),
+        });
+      }
+      case "peer.confirm": {
+        requireOnlyKeys(params, ["requestId", "originatorAlias"], "params");
+        return await this.requirePeer().confirm({
+          requestId: requireString(params, "requestId"),
+          originatorAlias: requireString(params, "originatorAlias"),
+        });
+      }
+      case "peer.cancel": {
+        requireOnlyKeys(params, ["requestId", "originatorAlias"], "params");
+        return await this.requirePeer().cancel({
+          requestId: requireString(params, "requestId"),
+          originatorAlias: requireString(params, "originatorAlias"),
+        });
+      }
+      case "peer.list": {
+        requireOnlyKeys(params, ["callerAlias", "coordinatorSession", "status"], "params");
+        const status = requireOptionalEnum(params, "status", [
+          "needs_confirmation",
+          "running",
+          "completed",
+          "failed",
+          "delivered",
+          "cancelled",
+        ]) as PeerRequestStatus | undefined;
+        return await this.requirePeer().list({
+          callerAlias: requireString(params, "callerAlias"),
+          coordinatorSession: requireString(params, "coordinatorSession"),
+          ...(status !== undefined ? { status } : {}),
+        });
+      }
+      case "peer.get": {
+        requireOnlyKeys(params, ["requestId"], "params");
+        return await this.requirePeer().get(requireString(params, "requestId"));
+      }
       case "group.new":
         requireOnlyKeys(params, ["coordinatorSession", "title"], "params");
         return await this.handlers.createGroup({
@@ -341,6 +440,13 @@ export class OrchestrationServer {
     }
   }
 
+
+  private requirePeer(): NonNullable<OrchestrationServerDeps["peer"]> {
+    if (!this.deps.peer) {
+      throw new Error("peer delegation is not configured");
+    }
+    return this.deps.peer;
+  }
 
   private async dispatchScheduledCreate(params: Record<string, unknown>): Promise<ScheduledTaskRecord> {
     const input = this.parseScheduledCreateInput(params);

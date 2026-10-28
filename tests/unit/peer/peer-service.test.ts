@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { PeerService } from "../../../src/peer/peer-service";
 import { PeerStore } from "../../../src/peer/peer-store";
+import type { PeerRequest } from "../../../src/peer/peer-types";
 import type { ResolvedSession } from "../../../src/transport/types";
 
 function makeSession(alias: string, workspace: string): ResolvedSession {
@@ -64,6 +65,7 @@ test("delegate creates needs_confirmation and never executes before approval", a
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "summarize the module",
     });
@@ -81,10 +83,11 @@ test("approve executes, backfills the result, and watch observes terminal", asyn
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "summarize the module",
     });
-    const running = await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+    const running = await h.service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
     expect(running.status).toBe("running");
     const watched = await h.service.watch({ requestId: record.requestId, timeoutMs: 5000, pollIntervalMs: 20 });
     expect(watched.status).toBe("terminal");
@@ -105,12 +108,14 @@ test("duplicate requestId returns the existing record; reuse for another delegat
   try {
     const first = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "same task",
       requestId: "req-dup",
     });
     const again = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "same task",
       requestId: "req-dup",
@@ -121,16 +126,17 @@ test("duplicate requestId returns the existing record; reuse for another delegat
     await expect(
       h.service.delegate({
         originatorAlias: "peer-a",
+        coordinatorSession: "ws-a:peer-a",
         targetAlias: "peer-b",
         task: "a different task",
         requestId: "req-dup",
       }),
     ).rejects.toThrow("already used by a different delegation");
     await expect(
-      h.service.approve({ requestId: first.requestId, approverAlias: "operator" }),
+      h.service.approve({ requestId: first.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" }),
     ).resolves.toBeDefined();
     await expect(
-      h.service.approve({ requestId: first.requestId, approverAlias: "operator" }),
+      h.service.approve({ requestId: first.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" }),
     ).rejects.toThrow("not awaiting approval");
   } finally {
     await h.cleanup();
@@ -145,6 +151,7 @@ test("completion mismatch is refused: unknown id and non-running record", async 
     ).rejects.toThrow("not found");
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "t",
     });
@@ -165,10 +172,11 @@ test("watch timeout ends only the watch; the request keeps running", async () =>
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "slow task",
     });
-    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
     const watched = await h.service.watch({ requestId: record.requestId, timeoutMs: 200, pollIntervalMs: 20 });
     expect(watched.status).toBe("timeout");
     expect(watched.request.status).toBe("running");
@@ -187,13 +195,14 @@ test("confirm requires completed status and the originator", async () => {
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "t",
     });
     await expect(
       h.service.confirm({ requestId: record.requestId, originatorAlias: "peer-a" }),
     ).rejects.toThrow("only a completed peer request can be confirmed");
-    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
     const watched = await h.service.watch({ requestId: record.requestId, timeoutMs: 5000, pollIntervalMs: 20 });
     expect(watched.request.status).toBe("completed");
     await expect(
@@ -214,10 +223,11 @@ test("failed execution backfills a sanitized error", async () => {
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "t",
     });
-    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
     const watched = await h.service.watch({ requestId: record.requestId, timeoutMs: 5000, pollIntervalMs: 20 });
     expect(watched.request.status).toBe("failed");
     expect(watched.request.error).toContain("boom");
@@ -231,14 +241,15 @@ test("self-delegation, unknown target, and workspace mismatch are rejected", asy
   const h = await setup();
   try {
     await expect(
-      h.service.delegate({ originatorAlias: "peer-a", targetAlias: "peer-a", task: "t" }),
+      h.service.delegate({ originatorAlias: "peer-a", coordinatorSession: "ws-a:peer-a", targetAlias: "peer-a", task: "t" }),
     ).rejects.toThrow("to self is not allowed");
     await expect(
-      h.service.delegate({ originatorAlias: "peer-a", targetAlias: "ghost", task: "t" }),
+      h.service.delegate({ originatorAlias: "peer-a", coordinatorSession: "ws-a:peer-a", targetAlias: "ghost", task: "t" }),
     ).rejects.toThrow("not found");
     await expect(
       h.service.delegate({
         originatorAlias: "peer-a",
+        coordinatorSession: "ws-a:peer-a",
         targetAlias: "peer-b",
         targetWorkspace: "ws-other",
         task: "t",
@@ -254,10 +265,11 @@ test("records survive a store reload (daemon restart)", async () => {
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "t",
     });
-    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
     await h.service.watch({ requestId: record.requestId, timeoutMs: 5000, pollIntervalMs: 20 });
     const reloadedStore = new PeerStore(join(h.dir, "peer-requests.json"));
     const reloadedService = new PeerService({
@@ -278,27 +290,29 @@ test("approve records the binding-derived approver and rejects target self-appro
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "t",
     });
     await expect(
-      h.service.approve({ requestId: record.requestId, approverAlias: "peer-b" }),
+      h.service.approve({ requestId: record.requestId, approverAlias: "peer-b", coordinatorSession: "ws-a:peer-a" }),
     ).rejects.toThrow("cannot approve a delegation addressed to itself");
     const running = await h.service.approve({
       requestId: record.requestId,
-      approverAlias: "operator",
+      approverAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
     });
     expect(running.status).toBe("running");
-    expect(running.approvedBy).toBe("operator");
+    expect(running.approvedBy).toBe("ws-a:peer-a");
     await expect(
-      h.service.approve({ requestId: record.requestId, approverAlias: "" }),
+      h.service.approve({ requestId: record.requestId, approverAlias: "", coordinatorSession: "ws-a:peer-a" }),
     ).rejects.toThrow("not awaiting approval");
   } finally {
     await h.cleanup();
   }
 });
 
-test("cancel is originator-only, running-only, and watch reports cancelled", async () => {
+test("cancel is originator-only, running-or-pending, and watch reports cancelled", async () => {
   let release!: (value: { text: string }) => void;
   const pending = new Promise<{ text: string }>((resolve) => {
     release = resolve;
@@ -307,32 +321,47 @@ test("cancel is originator-only, running-only, and watch reports cancelled", asy
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "t",
     });
+    // Withdrawing a still-unapproved request succeeds (it never executed),
+    // and a withdrawn request can no longer be approved.
+    const withdrawn = await h.service.cancel({
+      requestId: record.requestId,
+      originatorAlias: "peer-a",
+    });
+    expect(withdrawn.status).toBe("cancelled");
     await expect(
-      h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-a" }),
-    ).rejects.toThrow("only a running peer request can be cancelled");
-    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+      h.service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" }),
+    ).rejects.toThrow("not awaiting approval");
+    const record2 = await h.service.delegate({
+      originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
+      targetAlias: "peer-b",
+      task: "t2",
+      requestId: "req-cancel-running",
+    });
+    await h.service.approve({ requestId: record2.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
     await expect(
-      h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-b" }),
+      h.service.cancel({ requestId: record2.requestId, originatorAlias: "peer-b" }),
     ).rejects.toThrow("only the originator can cancel");
     const cancelled = await h.service.cancel({
-      requestId: record.requestId,
+      requestId: record2.requestId,
       originatorAlias: "peer-a",
     });
     expect(cancelled.status).toBe("cancelled");
     expect(cancelled.cancelledAt).toBeDefined();
     const watched = await h.service.watch({
-      requestId: record.requestId,
+      requestId: record2.requestId,
       timeoutMs: 5000,
       pollIntervalMs: 20,
     });
     expect(watched.status).toBe("terminal");
     expect(watched.request.status).toBe("cancelled");
     await expect(
-      h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-a" }),
-    ).rejects.toThrow("only a running peer request can be cancelled");
+      h.service.cancel({ requestId: record2.requestId, originatorAlias: "peer-a" }),
+    ).rejects.toThrow("only a running or unapproved peer request can be cancelled");
   } finally {
     release({ text: "late" });
     await h.cleanup();
@@ -348,10 +377,11 @@ test("a late completion never overwrites a cancellation", async () => {
   try {
     const record = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "slow task",
     });
-    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
     await h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-a" });
     release({ text: "done late" });
     // Give the background execution a chance to attempt its backfill.
@@ -370,12 +400,14 @@ test("listRelated returns caller-related delegations with optional status filter
   try {
     const ab = await h.service.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
       targetAlias: "peer-b",
       task: "a to b",
       requestId: "req-list-ab",
     });
     await h.service.delegate({
       originatorAlias: "peer-b",
+      coordinatorSession: "ws-b:peer-b",
       targetAlias: "peer-a",
       task: "b to a",
       requestId: "req-list-ba",
@@ -384,7 +416,7 @@ test("listRelated returns caller-related delegations with optional status filter
     expect(forA.map((r) => r.requestId).sort()).toEqual(["req-list-ab", "req-list-ba"]);
     const forGhost = await h.service.listRelated("ghost");
     expect(forGhost).toHaveLength(0);
-    await h.service.approve({ requestId: ab.requestId, approverAlias: "operator" });
+    await h.service.approve({ requestId: ab.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
     const runningForA = await h.service.listRelated("peer-a", { status: "running" });
     expect(runningForA.map((r) => r.requestId)).toEqual(["req-list-ab"]);
     const pendingForB = await h.service.listRelated("peer-b", {
@@ -411,6 +443,258 @@ test("a corrupted store file fails with a clear recovery message", async () => {
     await expect(h.service.get("whatever")).rejects.toThrow(
       "Peer request store is corrupted",
     );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("delegate requires a non-empty coordinatorSession", async () => {
+  const h = await setup();
+  try {
+    await expect(
+      h.service.delegate({
+        originatorAlias: "peer-a",
+        coordinatorSession: "",
+        targetAlias: "peer-b",
+        task: "t",
+      }),
+    ).rejects.toThrow("requires a non-empty coordinatorSession");
+    await expect(
+      h.service.delegate({
+        originatorAlias: "peer-a",
+        coordinatorSession: "   ",
+        targetAlias: "peer-b",
+        task: "t",
+      }),
+    ).rejects.toThrow("requires a non-empty coordinatorSession");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("only the record's coordinator can approve; a non-coordinator is rejected", async () => {
+  const h = await setup();
+  try {
+    const record = await h.service.delegate({
+      originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
+      targetAlias: "peer-b",
+      task: "t",
+    });
+    await expect(
+      h.service.approve({
+        requestId: record.requestId,
+        approverAlias: "someone-else",
+        coordinatorSession: "ws-a:peer-a",
+      }),
+    ).rejects.toThrow("only the record's coordinator can approve");
+    await expect(
+      h.service.approve({
+        requestId: record.requestId,
+        approverAlias: "ws-a:peer-a",
+        coordinatorSession: "ws-other:peer-x",
+      }),
+    ).rejects.toThrow("only the record's coordinator can approve");
+    const running = await h.service.approve({
+      requestId: record.requestId,
+      approverAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(running.status).toBe("running");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a coordinator still approves after /clear rotated its transport name", async () => {
+  const h = await setup();
+  try {
+    const record = await h.service.delegate({
+      originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
+      targetAlias: "peer-b",
+      task: "t",
+    });
+    const running = await h.service.approve({
+      requestId: record.requestId,
+      approverAlias: "ws-a:peer-a:reset-123456",
+      coordinatorSession: "ws-a:peer-a:reset-123456",
+    });
+    expect(running.status).toBe("running");
+    expect(running.approvedBy).toBe("ws-a:peer-a:reset-123456");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a worker originator cannot approve its own delegation", async () => {
+  const h = await setup();
+  try {
+    const record = await h.service.delegate({
+      originatorAlias: "worker:review",
+      coordinatorSession: "ws-a:peer-a",
+      targetAlias: "peer-b",
+      task: "t",
+    });
+    await expect(
+      h.service.approve({
+        requestId: record.requestId,
+        approverAlias: "worker:review",
+        coordinatorSession: "ws-a:peer-a",
+      }),
+    ).rejects.toThrow("only the record's coordinator can approve");
+    // The coordinator itself can still approve the worker's delegation.
+    const running = await h.service.approve({
+      requestId: record.requestId,
+      approverAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(running.status).toBe("running");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a record without a coordinator fails closed on approve", async () => {
+  const h = await setup();
+  try {
+    const legacy: PeerRequest = {
+      requestId: "req-legacy",
+      originator: { alias: "peer-a" },
+      target: { alias: "peer-b", workspace: "ws-b" },
+      task: "t",
+      status: "needs_confirmation",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      updatedAt: "2026-10-01T00:00:00.000Z",
+    };
+    await h.store.upsert(legacy);
+    await expect(
+      h.service.approve({
+        requestId: "req-legacy",
+        approverAlias: "ws-a:peer-a",
+        coordinatorSession: "ws-a:peer-a",
+      }),
+    ).rejects.toThrow("has no recorded coordinator");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("an empty approver is rejected on a fresh needs_confirmation record", async () => {
+  const h = await setup();
+  try {
+    const record = await h.service.delegate({
+      originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
+      targetAlias: "peer-b",
+      task: "t",
+    });
+    // Previous coverage only hit this guard's shadow: an already-approved
+    // record rejects on status first. A fresh record must reach the
+    // empty-identity guard itself.
+    await expect(
+      h.service.approve({
+        requestId: record.requestId,
+        approverAlias: "   ",
+        coordinatorSession: "ws-a:peer-a",
+      }),
+    ).rejects.toThrow("binding-derived approver identity");
+    await expect(
+      h.service.approve({
+        requestId: record.requestId,
+        approverAlias: "ws-a:peer-a",
+        coordinatorSession: "   ",
+      }),
+    ).rejects.toThrow("binding-derived coordinatorSession");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("list splits coordinator view from worker related view", async () => {
+  const h = await setup();
+  try {
+    const stamp = "2026-10-01T00:00:00.000Z";
+    const fixture = (
+      requestId: string,
+      originator: string,
+      target: string,
+      coordinator: string | undefined,
+      status: PeerRequest["status"],
+    ): PeerRequest => ({
+      requestId,
+      originator: { alias: originator },
+      target: { alias: target },
+      ...(coordinator !== undefined ? { coordinator } : {}),
+      task: "t",
+      status,
+      createdAt: stamp,
+      updatedAt: stamp,
+    });
+    await h.store.upsert(fixture("req-coord-a", "peer-a", "peer-b", "ws-a:peer-a", "needs_confirmation"));
+    await h.store.upsert(fixture("req-coord-b", "peer-b", "peer-a", "ws-b:peer-b", "running"));
+    await h.store.upsert(fixture("req-coord-c", "peer-c", "peer-d", "ws-a:peer-a", "completed"));
+    await h.store.upsert(fixture("req-legacy", "peer-a", "peer-b", undefined, "needs_confirmation"));
+
+    // Coordinator view: everything in scope, even delegations the
+    // coordinator neither originated nor is targeted by; the legacy
+    // coordinator-less record stays out.
+    const coordView = await h.service.list({
+      callerAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(coordView.map((r) => r.requestId).sort()).toEqual(["req-coord-a", "req-coord-c"]);
+    const coordPending = await h.service.list({
+      callerAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+      status: "needs_confirmation",
+    });
+    expect(coordPending.map((r) => r.requestId)).toEqual(["req-coord-a"]);
+
+    // Worker view is unchanged: only related records, including the
+    // legacy coordinator-less one where the worker is involved.
+    const workerView = await h.service.list({
+      callerAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(workerView.map((r) => r.requestId).sort()).toEqual([
+      "req-coord-a",
+      "req-coord-b",
+      "req-legacy",
+    ]);
+    // listRelated itself is untouched by the split.
+    expect((await h.service.listRelated("peer-a")).map((r) => r.requestId).sort()).toEqual([
+      "req-coord-a",
+      "req-coord-b",
+      "req-legacy",
+    ]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("withdrawing a pending request reports cancelled on watch", async () => {
+  const h = await setup();
+  try {
+    const record = await h.service.delegate({
+      originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
+      targetAlias: "peer-b",
+      task: "t",
+    });
+    const cancelled = await h.service.cancel({
+      requestId: record.requestId,
+      originatorAlias: "peer-a",
+    });
+    expect(cancelled.status).toBe("cancelled");
+    const watched = await h.service.watch({
+      requestId: record.requestId,
+      timeoutMs: 5000,
+      pollIntervalMs: 20,
+    });
+    expect(watched.status).toBe("terminal");
+    expect(watched.request.status).toBe("cancelled");
+    expect(h.promptCalls).toHaveLength(0);
   } finally {
     await h.cleanup();
   }

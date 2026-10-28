@@ -109,6 +109,7 @@ async function main(): Promise<void> {
     log("STEP 1", "peer-a delegates to peer-b (delay-3000-partial keeps B busy so observation is real)");
     const ab = await peer.delegate({
       originatorAlias: "peer-a",
+      coordinatorSession: sessionA.transportSession,
       targetAlias: "peer-b",
       task: "peer-task-a-to-b delay-3000-partial",
       requestId: "req-demo-ab",
@@ -121,7 +122,7 @@ async function main(): Promise<void> {
     log("STEP 1", "verified: unapproved delegation did NOT execute (B has not seen the task)");
 
     log("STEP 2", "operator approves; peer-a observes");
-    await peer.approve({ requestId: ab.requestId, approverAlias: "operator" });
+    await peer.approve({ requestId: ab.requestId, approverAlias: sessionA.transportSession, coordinatorSession: sessionA.transportSession });
     const shortWatch = await peer.watch({ requestId: ab.requestId, timeoutMs: 1000, pollIntervalMs: 100 });
     log("STEP 2", `short watch: status=${shortWatch.status} request=${shortWatch.request.status} (timeout ends only the watch; B keeps running)`);
     if (shortWatch.status !== "timeout" || shortWatch.request.status !== "running") {
@@ -162,11 +163,12 @@ async function main(): Promise<void> {
     log("STEP 4", "peer-b delegates back to peer-a (mutual delegation)");
     const ba = await peer.delegate({
       originatorAlias: "peer-b",
+      coordinatorSession: sessionB.transportSession,
       targetAlias: "peer-a",
       task: "peer-task-b-to-a",
       requestId: "req-demo-ba",
     });
-    await peer.approve({ requestId: ba.requestId, approverAlias: "operator" });
+    await peer.approve({ requestId: ba.requestId, approverAlias: sessionB.transportSession, coordinatorSession: sessionB.transportSession });
     const baSettled = await peer.watch({ requestId: ba.requestId, timeoutMs: 30_000, pollIntervalMs: 200 });
     log("STEP 4", `reverse delegation: status=${baSettled.request.status}`);
     log("STEP 4", `backfilled result (truncated to 200 chars): ${(baSettled.request.result ?? "").slice(0, 200)}`);
@@ -192,11 +194,12 @@ async function main(): Promise<void> {
     log("STEP 7", "cancel + query: peer-b delegates a slow task to peer-a, then cancels while it runs");
     const cx = await peer.delegate({
       originatorAlias: "peer-b",
+      coordinatorSession: sessionB.transportSession,
       targetAlias: "peer-a",
       task: "peer-task-cancel delay-3000-partial",
       requestId: "req-demo-cancel",
     });
-    await peer.approve({ requestId: cx.requestId, approverAlias: "operator" });
+    await peer.approve({ requestId: cx.requestId, approverAlias: sessionB.transportSession, coordinatorSession: sessionB.transportSession });
     await waitUntil(async () => (await readPrompts(wsA)).some((t) => t.includes("peer-task-cancel")));
     log("STEP 7", "verified: peer-a's turn is running (cancellation is record-level only; it will not stop this turn)");
     const cancelled = await peer.cancel({ requestId: cx.requestId, originatorAlias: "peer-b" });

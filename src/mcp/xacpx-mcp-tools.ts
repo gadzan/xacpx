@@ -713,6 +713,7 @@ export function buildXacpxMcpToolRegistry(input: {
             ...(input.targetWorkspace !== undefined ? { targetWorkspace: input.targetWorkspace } : {}),
             task: input.task,
             ...(input.requestId !== undefined ? { requestId: input.requestId } : {}),
+            coordinatorSession,
           });
           return createSuccessResult(
             `Peer delegation "${record.requestId}" created.\n- Status: ${record.status}\n- From: ${record.originator.alias}\n- To: ${record.target.alias}\n- Target state: peer_delegate does not report whether the target is busy or idle; check agent_list for the target's current state.\nNext: this delegation requires operator authorization. Call peer_approve to authorize execution, or leave it unapproved — it will never run on its own.`,
@@ -723,7 +724,7 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "peer_approve",
       description:
-        "Authorize a peer delegation created by peer_delegate, once the operator has approved it. Execution starts in the background and this call returns running immediately; observe completion with peer_watch. Approving is the operator authorization step — there is no other way to start a peer delegation. The approver identity comes from the caller's binding; the target session cannot approve a delegation addressed to itself.",
+        "Authorize a peer delegation created by peer_delegate, once the operator has approved it. Execution starts in the background and this call returns running immediately; observe completion with peer_watch. Approving is the operator authorization step — there is no other way to start a peer delegation. Only the delegation's recorded coordinator can approve: the approver identity comes from the caller's binding (never a tool argument), a worker under the coordinator cannot approve — only the coordinator itself can — and the target session cannot approve a delegation addressed to itself.",
       inputSchema: z
         .object({
           requestId: z.string().min(1),
@@ -735,6 +736,7 @@ export function buildXacpxMcpToolRegistry(input: {
           const record = await transport.peerApprove({
             requestId: (args as { requestId: string }).requestId,
             approverAlias: sourceHandle ?? coordinatorSession,
+            coordinatorSession,
           });
           return createSuccessResult(
             `Peer delegation "${record.requestId}" approved and running.\nNext: call peer_watch to observe it until it reaches a terminal state.`,
@@ -780,7 +782,9 @@ export function buildXacpxMcpToolRegistry(input: {
                   ? `${renderPeerResultBlock(request)}\nNext: validate the result, then call peer_confirm to mark it delivered. Completion alone is not proof the deliverable is correct.`
                   : request.status === "failed"
                     ? `\nError: ${request.error ?? "unknown"}\nNext: if the task is still needed, delegate it again with a new requestId and approve it. This is a new delegation, not a resend — a timeout is never a reason to resend, and a failed request is not resumed.`
-                    : renderPeerResultBlock(request))
+                    : request.status === "cancelled"
+                      ? `\nNext: if the task is still needed, delegate it again with a new requestId and approve it. This is a new delegation, not a resend.`
+                      : renderPeerResultBlock(request))
               : `Peer watch timed out; request "${request.requestId}" is still ${request.status}. The request keeps running — do not resend. Call peer_watch again to keep observing.` +
                 (request.status === "needs_confirmation"
                   ? ` It is still waiting for approval — call peer_approve once the operator authorizes it.`
@@ -813,7 +817,7 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "peer_cancel",
       description:
-        "Cancel a running peer delegation. Only the originator can cancel, and only while it is running. Cancellation is record-level only: it does NOT stop the target's turn — the target keeps running, but its result will no longer be backfilled, and peer_watch reports cancelled. Unapproved requests never execute and need no cancel.",
+        "Cancel a running peer delegation, or withdraw one still waiting for approval. Only the originator can cancel. Cancellation is record-level only: it does NOT stop the target's turn — the target keeps running, but its result will no longer be backfilled, and peer_watch reports cancelled. Withdrawing an unapproved request is safe because it never executed; a withdrawn request cannot be approved afterwards.",
       inputSchema: z
         .object({
           requestId: z.string().min(1),
@@ -827,7 +831,7 @@ export function buildXacpxMcpToolRegistry(input: {
             originatorAlias: sourceHandle ?? coordinatorSession,
           });
           return createSuccessResult(
-            `Peer delegation "${record.requestId}" cancelled.\nNote: cancellation is record-level only — it does not stop the target's turn. The target keeps running, but its result will no longer be backfilled, and peer_watch reports cancelled.`,
+            `Peer delegation "${record.requestId}" cancelled.\nNote: cancellation is record-level only — it does not stop the target's turn. The target keeps running, but its result will no longer be backfilled, and peer_watch reports cancelled.\nNext: if the task is still needed, delegate it again with a new requestId and approve it. This is a new delegation, not a resend.`,
             record,
           );
         }),
@@ -835,7 +839,7 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "peer_list",
       description:
-        "List peer delegations related to the caller — where the caller is the originator or the target — optionally filtered by status. Use this to recover requestIds after context loss or a restart, and to see what is waiting for approval.",
+        "List peer delegations visible to the caller, optionally filtered by status. Coordinator view: when the caller IS the coordinator itself, this lists every delegation in that coordinator's scope — including ones the coordinator neither originated nor is targeted by — so the operator can see all pending approvals. Any other caller (e.g. a worker under the coordinator) sees only the related view: delegations where the caller is the originator or the target. Use this to recover requestIds after context loss or a restart, and to see what is waiting for approval.",
       inputSchema: z
         .object({
           status: z
@@ -856,6 +860,7 @@ export function buildXacpxMcpToolRegistry(input: {
           const input = args as { status?: string };
           const records = await transport.peerList({
             callerAlias: sourceHandle ?? coordinatorSession,
+            coordinatorSession,
             ...(input.status !== undefined
               ? { status: input.status as PeerRequest["status"] }
               : {}),
@@ -869,8 +874,8 @@ export function buildXacpxMcpToolRegistry(input: {
           });
           return createSuccessResult(
             lines.length === 0
-              ? "No peer delegations related to this caller."
-              : `Peer delegations related to this caller:\n${lines.join("\n")}`,
+              ? "No peer delegations visible to this caller."
+              : `Peer delegations visible to this caller:\n${lines.join("\n")}`,
             { requests: records },
           );
         }),

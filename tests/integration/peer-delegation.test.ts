@@ -91,6 +91,7 @@ test(
       // 1. A delegates to B. Unapproved: nothing executes.
       const ab = await peer.delegate({
         originatorAlias: "peer-a",
+        coordinatorSession: sessionA.transportSession,
         targetAlias: "peer-b",
         // delay-3000-partial keeps B's turn busy for 3s so the watch
         // observes a genuinely running request before it settles.
@@ -105,7 +106,7 @@ test(
       // 2. Operator approves; A observes: first a short watch times out
       // (the request keeps running — timeout is not failure, not a resend),
       // then a longer watch sees terminal completion with the result.
-      await peer.approve({ requestId: ab.requestId, approverAlias: "operator" });
+      await peer.approve({ requestId: ab.requestId, approverAlias: sessionA.transportSession, coordinatorSession: sessionA.transportSession });
       const shortWatch = await peer.watch({
         requestId: ab.requestId,
         timeoutMs: 1000,
@@ -156,11 +157,12 @@ test(
       // 4. B delegates back to A (mutual delegation) and A confirms first.
       const ba = await peer.delegate({
         originatorAlias: "peer-b",
+        coordinatorSession: sessionB.transportSession,
         targetAlias: "peer-a",
         task: "peer-task-b-to-a",
         requestId: "req-e2e-ba",
       });
-      await peer.approve({ requestId: ba.requestId, approverAlias: "operator" });
+      await peer.approve({ requestId: ba.requestId, approverAlias: sessionB.transportSession, coordinatorSession: sessionB.transportSession });
       const baSettled = await peer.watch({
         requestId: ba.requestId,
         timeoutMs: 30_000,
@@ -186,11 +188,12 @@ test(
       // itself still runs (cancellation is record-level only).
       const cancelReq = await peer.delegate({
         originatorAlias: "peer-b",
+        coordinatorSession: sessionB.transportSession,
         targetAlias: "peer-a",
         task: "peer-task-cancel delay-3000-partial",
         requestId: "req-e2e-cancel",
       });
-      await peer.approve({ requestId: cancelReq.requestId, approverAlias: "operator" });
+      await peer.approve({ requestId: cancelReq.requestId, approverAlias: sessionB.transportSession, coordinatorSession: sessionB.transportSession });
       await waitUntil(
         async () => (await readPrompts(wsA)).some((t) => t.includes("peer-task-cancel")),
         30_000,

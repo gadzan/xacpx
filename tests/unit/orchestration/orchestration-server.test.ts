@@ -1370,3 +1370,154 @@ test("group RPC methods reject missing required params", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("peer RPC methods forward strictly validated params to the peer dep", async () => {
+  const record = {
+    requestId: "req-1",
+    originator: { alias: "peer-a" },
+    target: { alias: "peer-b", workspace: "ws-b" },
+    coordinator: "ws-a:peer-a",
+    task: "review",
+    status: "needs_confirmation",
+    createdAt: "a",
+    updatedAt: "a",
+  };
+  const calls: Array<{ method: string; input: unknown }> = [];
+  const peer = {
+    delegate: mock(async (input: unknown) => {
+      calls.push({ method: "delegate", input });
+      return record;
+    }),
+    approve: mock(async (input: unknown) => {
+      calls.push({ method: "approve", input });
+      return { ...record, status: "running" };
+    }),
+    watch: mock(async (input: unknown) => {
+      calls.push({ method: "watch", input });
+      return { status: "terminal", request: { ...record, status: "completed" } };
+    }),
+    confirm: mock(async (input: unknown) => {
+      calls.push({ method: "confirm", input });
+      return { ...record, status: "delivered" };
+    }),
+    cancel: mock(async (input: unknown) => {
+      calls.push({ method: "cancel", input });
+      return { ...record, status: "cancelled" };
+    }),
+    list: mock(async (input: unknown) => {
+      calls.push({ method: "list", input });
+      return [record];
+    }),
+    get: mock(async (input: unknown) => {
+      calls.push({ method: "get", input });
+      return record;
+    }),
+  };
+  const server = new OrchestrationServer(resolveOrchestrationEndpoint("/tmp/peer-ipc-test"), makeServerHandlers(), { peer });
+  const call = async (method: string, params: unknown) =>
+    JSON.parse(await server.handleLine(JSON.stringify({ id: "req", method, params })));
+
+  expect(await call("peer.delegate", {
+    originatorAlias: "peer-a",
+    targetAlias: "peer-b",
+    task: "review",
+    requestId: "req-1",
+    coordinatorSession: "ws-a:peer-a",
+  })).toMatchObject({ ok: true, result: { requestId: "req-1" } });
+  expect(await call("peer.approve", {
+    requestId: "req-1",
+    approverAlias: "ws-a:peer-a",
+    coordinatorSession: "ws-a:peer-a",
+  })).toMatchObject({ ok: true, result: { status: "running" } });
+  expect(await call("peer.watch", { requestId: "req-1", timeoutMs: 5000 })).toMatchObject({
+    ok: true,
+    result: { status: "terminal" },
+  });
+  expect(await call("peer.confirm", { requestId: "req-1", originatorAlias: "peer-a" })).toMatchObject({
+    ok: true,
+    result: { status: "delivered" },
+  });
+  expect(await call("peer.cancel", { requestId: "req-1", originatorAlias: "peer-a" })).toMatchObject({
+    ok: true,
+    result: { status: "cancelled" },
+  });
+  expect(await call("peer.list", {
+    callerAlias: "ws-a:peer-a",
+    coordinatorSession: "ws-a:peer-a",
+    status: "needs_confirmation",
+  })).toMatchObject({ ok: true, result: [{ requestId: "req-1" }] });
+  expect(await call("peer.get", { requestId: "req-1" })).toMatchObject({
+    ok: true,
+    result: { requestId: "req-1" },
+  });
+
+  expect(calls).toEqual([
+    {
+      method: "delegate",
+      input: {
+        originatorAlias: "peer-a",
+        targetAlias: "peer-b",
+        task: "review",
+        requestId: "req-1",
+        coordinatorSession: "ws-a:peer-a",
+      },
+    },
+    {
+      method: "approve",
+      input: { requestId: "req-1", approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" },
+    },
+    { method: "watch", input: { requestId: "req-1", timeoutMs: 5000 } },
+    { method: "confirm", input: { requestId: "req-1", originatorAlias: "peer-a" } },
+    { method: "cancel", input: { requestId: "req-1", originatorAlias: "peer-a" } },
+    {
+      method: "list",
+      input: { callerAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a", status: "needs_confirmation" },
+    },
+    { method: "get", input: "req-1" },
+  ]);
+});
+
+test("peer RPC methods reject extra keys and bad values before dispatch", async () => {
+  const delegate = mock(async () => {
+    throw new Error("must not be called");
+  });
+  const server = new OrchestrationServer(resolveOrchestrationEndpoint("/tmp/peer-ipc-test"), makeServerHandlers(), {
+    peer: {
+      delegate,
+      approve: delegate,
+      watch: delegate,
+      confirm: delegate,
+      cancel: delegate,
+      list: delegate,
+      get: delegate,
+    },
+  });
+  const call = async (method: string, params: unknown) =>
+    JSON.parse(await server.handleLine(JSON.stringify({ id: "req", method, params })));
+
+  for (const [method, params] of [
+    ["peer.delegate", { originatorAlias: "peer-a", targetAlias: "peer-b", task: "t", coordinatorSession: "ws-a:peer-a", approverAlias: "spoof" }],
+    ["peer.delegate", { originatorAlias: "peer-a", targetAlias: "peer-b", task: "t" }],
+    ["peer.approve", { requestId: "req-1", approverAlias: "ws-a:peer-a" }],
+    ["peer.approve", { requestId: "req-1", approverAlias: "ws-a:peer-a", coordinatorSession: "" }],
+    ["peer.watch", { requestId: "req-1", timeoutMs: 99999999 }],
+    ["peer.list", { callerAlias: "peer-a", coordinatorSession: "ws-a:peer-a", status: "bogus" }],
+    ["peer.get", { requestId: "" }],
+    ["peer.confirm", { requestId: "req-1", originatorAlias: "peer-a", extra: true }],
+  ] as Array<[string, unknown]>) {
+    const response = await call(method, params);
+    expect(response.ok).toBe(false);
+    expect(response.error.code).toBe("ORCHESTRATION_INVALID_REQUEST");
+  }
+  expect(delegate).not.toHaveBeenCalled();
+});
+
+test("peer RPC without a peer dep fails as unconfigured", async () => {
+  const server = new OrchestrationServer(resolveOrchestrationEndpoint("/tmp/peer-ipc-test"), makeServerHandlers());
+  const response = JSON.parse(
+    await server.handleLine(JSON.stringify({ id: "req", method: "peer.get", params: { requestId: "req-1" } })),
+  );
+  expect(response.ok).toBe(false);
+  expect(response.error.code).toBe("ORCHESTRATION_INTERNAL_ERROR");
+  expect(response.error.message).toBe("peer delegation is not configured");
+});

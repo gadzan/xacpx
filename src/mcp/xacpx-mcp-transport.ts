@@ -124,16 +124,22 @@ export interface XacpxMcpPeerDelegateArgs {
   targetWorkspace?: string;
   task: string;
   requestId?: string;
+  /** Server-injected coordinator scope; supplied by the tool layer binding, never a tool argument. */
+  coordinatorSession: string;
 }
 
 export interface XacpxMcpPeerRequestArgs {
   requestId: string;
   approverAlias?: string;
   originatorAlias?: string;
+  /** Server-injected coordinator scope; required by peer_approve, ignored by peer_confirm/peer_cancel. */
+  coordinatorSession?: string;
 }
 
 export interface XacpxMcpPeerListArgs {
   callerAlias: string;
+  /** Server-injected coordinator scope; decides coordinator view vs related view. */
+  coordinatorSession: string;
   status?: PeerRequestStatus;
 }
 
@@ -177,9 +183,10 @@ export interface XacpxMcpTransport {
   /**
    * Peer delegation (prototype). Optional like groupSend: a transport binds
    * these only when a PeerService is available; the peer_* tools throw when
-   * unbound instead of advertising calls that cannot run. Daemon RPC binding
-   * (peer.* over orchestration IPC) is NOT part of this prototype — see
-   * docs/peer-delegation.md.
+   * unbound instead of advertising calls that cannot run. The
+   * orchestration transport binds them to peer.* over orchestration IPC;
+   * the memory transport keeps the not-bound stubs below for sessions
+   * with no daemon — see docs/peer-delegation.md.
    */
   peerDelegate?: (input: XacpxMcpPeerDelegateArgs) => Promise<PeerRequest>;
   peerApprove?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
@@ -210,6 +217,13 @@ interface OrchestrationClientLike {
   scheduledCancel?: OrchestrationClient["scheduledCancel"];
   agentList?: OrchestrationClient["agentList"];
   agentSend?: OrchestrationClient["agentSend"];
+  peerDelegate?: OrchestrationClient["peerDelegate"];
+  peerApprove?: OrchestrationClient["peerApprove"];
+  peerWatch?: OrchestrationClient["peerWatch"];
+  peerConfirm?: OrchestrationClient["peerConfirm"];
+  peerCancel?: OrchestrationClient["peerCancel"];
+  peerList?: OrchestrationClient["peerList"];
+  peerGet?: OrchestrationClient["peerGet"];
 }
 
 export function createOrchestrationTransport(
@@ -302,6 +316,58 @@ export function createOrchestrationTransport(
       }
       return await client.agentSend(input);
     },
+    peerDelegate: async (input) => {
+      if (!client.peerDelegate) {
+        throw new Error("orchestration client peerDelegate is not configured");
+      }
+      return await client.peerDelegate(input);
+    },
+    peerApprove: async (input) => {
+      if (!client.peerApprove) {
+        throw new Error("orchestration client peerApprove is not configured");
+      }
+      return await client.peerApprove({
+        requestId: input.requestId,
+        approverAlias: input.approverAlias ?? "",
+        coordinatorSession: input.coordinatorSession ?? "",
+      });
+    },
+    peerWatch: async (input) => {
+      if (!client.peerWatch) {
+        throw new Error("orchestration client peerWatch is not configured");
+      }
+      return await client.peerWatch(input);
+    },
+    peerConfirm: async (input) => {
+      if (!client.peerConfirm) {
+        throw new Error("orchestration client peerConfirm is not configured");
+      }
+      return await client.peerConfirm({
+        requestId: input.requestId,
+        originatorAlias: input.originatorAlias ?? "",
+      });
+    },
+    peerCancel: async (input) => {
+      if (!client.peerCancel) {
+        throw new Error("orchestration client peerCancel is not configured");
+      }
+      return await client.peerCancel({
+        requestId: input.requestId,
+        originatorAlias: input.originatorAlias ?? "",
+      });
+    },
+    peerList: async (input) => {
+      if (!client.peerList) {
+        throw new Error("orchestration client peerList is not configured");
+      }
+      return await client.peerList(input);
+    },
+    peerGet: async (input) => {
+      if (!client.peerGet) {
+        throw new Error("orchestration client peerGet is not configured");
+      }
+      return await client.peerGet(input.requestId);
+    },
   };
 }
 
@@ -314,8 +380,10 @@ export function createMemoryTransport(
   };
 
   // Peer stubs throw the actionable message, not the generic one: a real
-  // session hitting an unbound peer tool must learn that Daemon RPC
-  // binding is not part of this prototype, not internal binding jargon.
+  // session hitting an unbound peer tool must learn that it has no daemon
+  // connection, not internal binding jargon. The stubs stay even now that
+  // the orchestration transport binds peer.* — the memory transport is
+  // exactly the no-daemon case.
   const peerNotBound = () => async () => {
     throw new Error(PEER_NOT_BOUND_MESSAGE);
   };
