@@ -27,22 +27,25 @@ function mounted() {
 describe("ConversationComposer fold", () => {
   it("hides controls/actions until focused; content keeps them open after blur", async () => {
     const wrapper = mount(Host);
-    const style = (testId: string) => wrapper.find(`[data-test="${testId}"]`).attributes("style") ?? "";
-    expect(style("composer-affordances")).toContain("display: none");
+    const folded = () => {
+      const row = wrapper.find('[data-test="composer-affordances"]');
+      return row.classes().includes("max-h-0") && row.classes().includes("invisible");
+    };
+    expect(folded()).toBe(true);
     // The send button is never folded.
     expect(wrapper.find('[data-test="host-send"]').attributes("style") ?? "").not.toContain("display: none");
 
     await wrapper.find("textarea").trigger("focus");
-    expect(style("composer-affordances")).not.toContain("display: none");
+    expect(folded()).toBe(false);
 
     // Typed content keeps the affordances unfolded after blur.
     await wrapper.find("textarea").setValue("draft");
     await wrapper.find("textarea").trigger("blur");
-    expect(style("composer-affordances")).not.toContain("display: none");
+    expect(folded()).toBe(false);
 
     // Clearing folds them back.
     await wrapper.find("textarea").setValue("");
-    expect(style("composer-affordances")).toContain("display: none");
+    expect(folded()).toBe(true);
     wrapper.unmount();
   });
 

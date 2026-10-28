@@ -166,8 +166,8 @@ function onInput(event: Event): void {
   <form class="relative mx-auto w-full max-w-3xl px-0" @submit.prevent="emit('send')">
     <div
       data-test="composer-surface"
-      class="relative rounded-3xl bg-surface transition-colors focus-within:ring-2 focus-within:ring-accent"
-      :class="surfaceDisabled ? 'cursor-not-allowed opacity-60' : ''"
+      class="relative bg-surface transition-[background-color,border-radius] duration-200 ease-out focus-within:ring-2 focus-within:ring-accent"
+      :class="[expanded ? 'rounded-2xl' : 'rounded-3xl', surfaceDisabled ? 'cursor-not-allowed opacity-60' : '']"
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >
       <!-- Send/stop live INSIDE the input line (WhatsApp style): the resting card is
@@ -211,7 +211,7 @@ function onInput(event: Event): void {
           @paste="emit('paste', $event)"
         />
 
-        <div class="absolute flex items-center gap-1.5" :class="expanded ? 'bottom-1 right-1.5' : 'right-[5px] top-1/2 -translate-y-1/2'">
+        <div class="absolute flex items-center gap-1.5" :class="expanded ? 'bottom-2 right-2' : 'right-2 top-1/2 -translate-y-1/2'">
           <button
             v-if="showStop"
             type="button"
@@ -232,7 +232,7 @@ function onInput(event: Event): void {
             :disabled="disabled || sending || sendDisabled || attachmentsSendDisabled || !hasSendable"
             :aria-label="$t('chat.send')"
             :title="$t('chat.send')"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"
             @click="emit('send')"
           >
             <Loader2 v-if="sending" :size="12" class="animate-spin" />
@@ -241,7 +241,12 @@ function onInput(event: Event): void {
         </div>
       </div>
 
-      <div v-if="hasAffordances" v-show="expanded" data-test="composer-affordances" class="flex items-center gap-2 px-2.5 pb-2 pt-0.5">
+      <!-- The fold animates max-height/opacity/visibility instead of v-show: a
+           display:none toggle is what made focus look instant. visibility keeps the
+           hidden controls unfocusable while still transitioning. -->
+      <div v-if="hasAffordances" data-test="composer-affordances"
+           class="flex items-center gap-2 overflow-hidden px-2.5 transition-[max-height,opacity,padding,visibility] duration-200 ease-out motion-reduce:transition-none"
+           :class="expanded ? 'visible max-h-16 opacity-100 pb-2 pt-0.5' : 'invisible max-h-0 opacity-0 pb-0 pt-0'">
         <div data-test="composer-controls" class="flex min-w-0 flex-1 items-center gap-2">
           <slot name="controls" />
         </div>
