@@ -664,6 +664,29 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return terminal.length > 0 ? terminal[terminal.length - 1]! : null;
   }
 
+  /**
+   * Whether this session is WAITING for an answer, i.e. has an OPEN form.
+   *
+   * Deliberately narrower than `pendingSessionInteractionFor`, which also returns a
+   * terminal entry so the pane can keep showing the outcome banner. An attention
+   * signal must not: a resolved entry keeps its `sessionAlias`, so asking that
+   * function here left the sidebar dot pulsing "Agent is waiting for an answer"
+   * for a question that was already answered, until the operator opened the
+   * session and dismissed the notice.
+   */
+  function sessionQuestionPendingFor(
+    targetInstanceId: string | null,
+    targetAlias: string | null,
+  ): boolean {
+    if (!targetInstanceId || !targetAlias) return false;
+    for (const state of pendingInteractions.value.values()) {
+      if (state.request.conversation === undefined
+        && state.sessionAlias === targetAlias
+        && state.instanceId === targetInstanceId) return true;
+    }
+    return false;
+  }
+
   function interactionForMember(targetInstanceId: string | null, member: MemberTurnSummaryDto): PendingInteractionState | null {
     for (const interaction of pendingInteractions.value.values()) {
       const correlation = interaction.request.conversation;
@@ -4131,6 +4154,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptErrorDetail,
     pendingInteraction,
     pendingSessionInteractionFor,
+    sessionQuestionPendingFor,
     // How many retired forms this tab is still holding an explanation for. The
     // terminal set is bounded (see TERMINAL_INTERACTION_LIMIT), and this makes the
     // bound observable rather than an internal implementation detail.

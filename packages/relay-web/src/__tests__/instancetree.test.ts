@@ -332,6 +332,49 @@ describe("InstanceTree session management", () => {
     expect(dot.attributes("title")).toBe("Agent is waiting for an answer");
   });
 
+  it("clears the question dot once the form is answered, even without opening the session", async () => {
+    const instances = useInstancesStore();
+    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    useChatStore().select("i1", "other");
+    const bots = useDirectBotsStore();
+    bots.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "interaction-opened",
+        chatKey: "relay:acct-1",
+        sessionAlias: "backend",
+        instanceId: "i1",
+        interaction: {
+          requestId: "req-1",
+          kind: "elicitation",
+          sessionAlias: "backend",
+          expiresAt: Date.now() + 60_000,
+          elicitation: {
+            mode: "form",
+            agent: { name: "claude", sessionAlias: "backend" },
+            message: "Which environment?",
+            fields: [{ kind: "text", key: "env", title: "Environment", required: true }],
+          },
+        },
+      },
+    } as never);
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="attention-dot"]').attributes("data-attention")).toBe("question");
+
+    // The answer was given somewhere else (another tab, another operator). The dot
+    // must stop claiming a question is waiting; the outcome notice is the pane's
+    // job, and it keeps the same entry.
+    bots.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: { type: "interaction-closed", requestId: "req-1", reason: "resolved", action: "accept", sessionAlias: "" },
+    } as never);
+    expect(bots.pendingSessionInteractionFor("i1", "backend")?.outcome).toBe("accepted");
+    await flushPromises();
+    expect(w.find('[data-test="attention-dot"][data-attention="question"]').exists()).toBe(false);
+  });
+
   it("shows an empty-state row only once sessions have loaded", () => {
     const store = useInstancesStore();
     store.instances = [instance([], true)] as never;
