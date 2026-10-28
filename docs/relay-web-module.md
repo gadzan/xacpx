@@ -843,8 +843,12 @@ Relay-Web 支持双轨桌面系统通知，在任务或会话回合完成/失败
    - **统一 Tag 会话隔离**：使用与 Web Push 相同的 `xacpx-turn:${instanceId}:${sessionAlias}` tag，避免跨会话覆盖，并在多端/双轨下优雅合并。
    - **设计 spec**：`docs/superpowers/specs/2026-08-26-relay-web-local-notification-fallback.md`。
 ## 消息附件（图片 / 文件上传）
-用户可在 `PromptInput.vue` 随 prompt 一并发送图片或文件；附件经 `control.upload` RPC
-上传到 daemon，再随 `control.prompt` 的 `media` 字段转发给 agent。
+用户可在三条消息输入框随 prompt 一并发送图片或文件：会话聊天 `PromptInput.vue`、
+Bot 直聊 `ConversationPromptInput.vue`、群组 `GroupComposer.vue`。附件经 `control.upload` RPC
+上传到 daemon，再随对应 prompt RPC 的 `media` 字段转发给 agent（会话走 `control.prompt`，
+Bot 直聊与群组走 `control.conversation.prompt`）。三者共用 `stores/composer.ts`；会话输入框
+自带 chip 渲染，Bot 直聊与群组共用 `ComposerAttachments.vue`。上传草稿按 scope key 隔离
+（会话 `["session", …]`、Bot `["direct", …]`、群组 `["group", …]`），切换目标不会串草稿。
 
 ### 触发方式
 
@@ -873,8 +877,9 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 1. 选文件后，每个文件单独调用 `control.upload`（`UploadPayload`），
    daemon 返回 `UploadResult`（含服务器绝对路径 `path`）。
-2. 构造 `PromptAttachmentRef[]` 并附在 `control.prompt` 的 `media` 字段内发送。
+2. 构造 `PromptAttachmentRef[]` 并附在 prompt RPC 的 `media` 字段内发送。
 3. Hub 将 `attachments`（`AttachmentMetadata[]`）持久化到消息记录。
+4. 群组发送的 `media` 同时进入 uncertain prompt 的冻结 tuple，Retry 重放同一份附件。
 
 ### 渲染
 
