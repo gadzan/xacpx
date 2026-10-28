@@ -93,7 +93,7 @@ defineExpose({ focus, setSelectionRange });
  *  intent to write, and content must never be clipped (values also arrive from
  *  send-clear, history recall and restored drafts). */
 const focused = ref(false);
-const expanded = computed(() => focused.value || props.modelValue.length > 0 || props.hasAttachments === true);
+const expanded = computed(() => focused.value || props.modelValue.length > 0 || props.hasAttachments === true || showStop.value);
 /** Off until the first apply: the initial rows=2 markup must not animate down. */
 const animateHeight = ref(false);
 
@@ -103,7 +103,9 @@ watch(() => props.modelValue, (value) => {
   emit("caret", { start: value.length, end: value.length });
   void nextTick(applyHeight);
 });
-watch([expanded, () => props.height], () => applyHeight());
+// flush post: the compact/expanded padding classes must be in the DOM before the
+// height floor is measured from computed styles.
+watch([expanded, () => props.height], () => applyHeight(), { flush: "post" });
 
 function applyHeight(): void {
   const el = textarea.value;
@@ -173,7 +175,6 @@ function onInput(event: Event): void {
         :aria-autocomplete="combobox ? 'list' : undefined"
         :aria-controls="combobox ? comboboxListId : undefined"
         :aria-expanded="combobox ? comboboxExpanded : undefined"
-        :aria-activedescendant="combobox ? comboboxActiveId : undefined"
         class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
         :class="[surfaceDisabled ? '' : 'disabled:opacity-50', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
         :disabled="disabled"
@@ -191,7 +192,7 @@ function onInput(event: Event): void {
         @paste="emit('paste', $event)"
       />
 
-      <div class="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-0.5">
+      <div class="flex items-center justify-between gap-2 px-2.5 transition-[padding] duration-200 ease-out motion-reduce:transition-none" :class="expanded ? 'pb-2.5 pt-0.5' : 'pb-1 pt-0'">
         <div class="flex min-w-0 flex-1 items-center gap-2">
           <slot name="controls" />
         </div>
@@ -217,7 +218,8 @@ function onInput(event: Event): void {
             :disabled="disabled || sending || sendDisabled || attachmentsSendDisabled || !hasSendable"
             :aria-label="$t('chat.send')"
             :title="$t('chat.send')"
-            class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"
+            class="grid shrink-0 place-items-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"
+            :class="expanded ? 'h-11 w-11 lg:h-7 lg:w-7' : 'h-7 w-7'"
             @click="emit('send')"
           >
             <Loader2 v-if="sending" :size="12" class="animate-spin" />
