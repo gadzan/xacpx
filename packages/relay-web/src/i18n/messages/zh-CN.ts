@@ -942,6 +942,7 @@ export default {
       waitingHuman: "等待人工确认",
     },
     interaction: {
+      waiting: "Agent 正在等待你的回答",
       title: "需要人工输入",
       submit: "提交",
       decline: "拒绝回答",

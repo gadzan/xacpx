@@ -1049,6 +1049,13 @@ const rowSwipes = computed(() => {
                   @click="onRowTap(inst.id, s.alias)"
                 >
                   <Loader2 v-if="s.creating" data-test="session-creating" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
+                  <!-- A blocking question outranks every other signal: the turn is
+                       parked until someone answers, and the form itself only renders
+                       inside that session's pane, so a dot here is the only thing an
+                       operator looking elsewhere gets before the window closes. -->
+                  <span v-else-if="!s.archived && directBotsStore.pendingSessionInteractionFor(inst.id, s.alias)" data-test="attention-dot" data-attention="question"
+                        class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-warning"
+                        :title="t('bot.interaction.waiting')" :aria-label="t('bot.interaction.waiting')" />
                   <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
                         class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-run-bright" />
                   <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'unread'" data-test="attention-dot" data-attention="unread"

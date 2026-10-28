@@ -1225,18 +1225,6 @@ async function promptWithSession(
       const shared = {
         interactionId,
         origin: "human" as const,
-        // Session-scoped routing for a renderer that mounts the form on a
-        // session pane. Only a session turn carries it: a `bot:` turn's alias is
-        // runtime plumbing (`brt_*`) and must never reach a browser.
-        //
-        // The DISPLAY alias, because that is the key space the dashboard shows
-        // and selects on: its session list is `toDisplaySessionAlias(...)`-mapped,
-        // so a relay session stored as `relay:demo` is the row `demo`, and a form
-        // stamped with the internal alias matches no pane at all. Placement only —
-        // the broker still answers by `requestId`.
-        ...(sessionElicitationRoute !== undefined
-          ? { sessionAlias: toDisplaySessionAlias(session.alias) }
-          : {}),
         ...(route.accountId !== undefined ? { accountId: route.accountId } : {}),
         ...(replyContextToken !== undefined ? { replyContextToken } : {}),
         ...(route.senderId !== undefined ? { senderId: route.senderId } : {}),
@@ -1283,6 +1271,21 @@ async function promptWithSession(
           : {
               ...shared,
               chatKey: elicitationRoute.chatKey,
+              // Session-scoped placement for a renderer that mounts the form on a
+              // session pane. Only a session turn carries it: a `bot:` turn's alias
+              // is runtime plumbing (`brt_*`) and must never reach a browser. It
+              // belongs to the ELICITATION context only — the permission route has
+              // no placement to advertise.
+              //
+              // The DISPLAY alias, because that is the key space the dashboard
+              // shows and selects on: its session list is
+              // `toDisplaySessionAlias(...)`-mapped, so a relay session stored as
+              // `relay:demo` is the row `demo`, and a form stamped with the internal
+              // alias matches no pane at all. Placement only — the broker still
+              // answers by `requestId`.
+              ...(sessionElicitationRoute !== undefined
+                ? { sessionAlias: toDisplaySessionAlias(session.alias) }
+                : {}),
               ...chatType,
               ...(trustedConversationExecution ? {
                 conversation: Object.freeze({

@@ -945,6 +945,7 @@ export default {
       waitingHuman: "Waiting for human",
     },
     interaction: {
+      waiting: "Agent is waiting for an answer",
       title: "Input needed",
       submit: "Submit",
       decline: "Decline",

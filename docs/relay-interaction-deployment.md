@@ -254,7 +254,17 @@ Where to look when a form does not appear, or an answer does not arrive:
 | Form reappears after a reconnect | replay-on-subscribe; if it is a form the hub already closed, the snapshot gap in §5 is the cause |
 
 The hub's own logs carry the open/close transitions; the interaction registry
-notifies a listener from **every** closer, so there is no silent path.
+notifies a listener from **every** closer, so there is no silent path — with one
+exception worth naming.
+
+**Mixed versions.** Session placement travels as `InteractionRequestDto.sessionAlias`,
+which is additive: a hub that predates it stores `""`, and a dashboard that predates
+it has no `pendingSessionInteractionFor`. A **session** form created against an old
+hub or viewed on an old dashboard therefore belongs to no pane and simply expires.
+The wire stays compatible — no handshake failure, no error — which is exactly why
+this failure is invisible rather than loud. Deploy the hub, `channel-relay` and
+`relay-web` together when session forms are in use. A Direct Conversation form is
+unaffected: it is placed by its `conversation` correlation.
 
 ---
 
