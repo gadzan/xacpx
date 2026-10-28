@@ -113,3 +113,64 @@ export function resolveElicitationTurnRoute(
     ...(ingressChatKey !== undefined ? { replyContextToken: ingressChatKey } : {}),
   };
 }
+
+/**
+ * Resolve the elicitation route for a DIRECT SESSION turn — a provably 1:1 chat
+ * that is not a Direct Conversation (`bot:`), e.g. a Relay session chat or a
+ * channel DM.
+ *
+ * WHY THIS EXISTS
+ *
+ * Binding elicitation only for `bot:` keys made a whole class of private
+ * destination unreachable: an agent talking to its operator through a session
+ * chat could not ask anything, and every `ask` was answered by the broker with
+ * `missing interaction route` before any renderer was consulted. The refusal was
+ * justified while a form-capable channel had no surface to put a session-scoped
+ * form on — an invisible form is worse than a refusal — but that is a property
+ * of the RENDERER, not of the route, and it must be decided by the renderer.
+ *
+ * SEMANTICS, deliberately narrow:
+ *
+ * - `chatType` must be exactly `"direct"`, as reported by the channel's own
+ *   ingress. A form publishes the agent's question AND the answer into the
+ *   destination, so an unreported or group destination stays unrouted. This is
+ *   the same privacy input `ChannelElicitationRequest.chatType` carries, and each
+ *   renderer re-checks it.
+ * - The route is the ordinary turn route (`permissionChatKey`, else the isolation
+ *   key) — for a session turn those are the same address, which is exactly what
+ *   the renderer needs to place the form.
+ * - `bot:` keys are refused here: `resolveElicitationTurnRoute` owns them, and a
+ *   second resolver claiming them would let two different routes answer one turn.
+ * - The renderer keeps the last word. A channel that cannot render a form
+ *   (no `elicitationModes`, or a route it cannot address) refuses at dispatch
+ *   time, and the broker settles that as `cancel`.
+ */
+export function resolveSessionElicitationTurnRoute(
+  input: ElicitationRouteInput,
+): Omit<TurnInteractionContext, "interactionId"> | undefined {
+  if (isDirectConversationChatKey(input.isolationChatKey)) return undefined;
+  if (input.metadata?.chatType !== "direct") return undefined;
+  const base = resolveTurnInteractionRoute({
+    isolationChatKey: input.isolationChatKey,
+    ...(input.origin !== undefined ? { origin: input.origin } : {}),
+    metadata: {
+      ...(input.metadata ?? {}),
+      ...(input.senderId !== undefined ? { senderId: input.senderId } : {}),
+      ...(input.senderName !== undefined ? { senderName: input.senderName } : {}),
+      ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
+    } as ChatRequestMetadata,
+    ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
+    // `bot:` was refused above; an ordinary key is what this resolver is for.
+    acceptDirectConversationKeys: false,
+  });
+  if (!base?.senderId) return undefined;
+  const ingressFromMetadata = input.metadata?.permissionChatKey;
+  const ingressChatKey = input.ingressChatKey
+    ?? (typeof ingressFromMetadata === "string" && ingressFromMetadata !== ""
+      ? ingressFromMetadata
+      : undefined);
+  return {
+    ...base,
+    ...(ingressChatKey !== undefined ? { replyContextToken: ingressChatKey } : {}),
+  };
+}

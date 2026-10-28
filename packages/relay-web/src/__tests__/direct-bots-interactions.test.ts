@@ -75,6 +75,10 @@ describe("useDirectBotsStore interactions", () => {
   function openedEvent(
     request: InteractionRequestDto,
     instanceId = "inst_1",
+    // Routing for a session-scoped form. The default keeps the historical
+    // fixture shape (a conversation form whose envelope carries a stray alias) so
+    // the conversation tests keep asserting that topic scoping wins.
+    sessionAlias = "brt_hidden",
   ): WebServerEvent {
     return {
       kind: "control-event",
@@ -82,7 +86,7 @@ describe("useDirectBotsStore interactions", () => {
       event: {
         type: "interaction-opened",
         chatKey: "bot:c1:t1",
-        sessionAlias: "brt_hidden",
+        sessionAlias,
         // On the EVENT, not only the envelope: the hub stamps the opening
         // connector's instance on the control event, and the store reads that to
         // route the answer back. The envelope's is the broadcast's own.
@@ -821,14 +825,33 @@ test("a correlated form IS rendered inside its own topic view", () => {
   expect(store.pendingInteraction).not.toBeNull();
 });
 
-test("an uncorrelated form is reachable on the account-wide surface", () => {
+test("an uncorrelated, alias-less form is reachable on the account-wide surface", () => {
   // Scoped out of a topic, not dropped: with no topic selected there is no topic
   // to be wrong about, so the frame stays answerable where its turn came from.
+  // "Alias-less" is the legacy shape — a frame from a connector that predates
+  // session-scoped placement, so no session pane can claim it either.
   const store = useDirectBotsStore();
   store.instanceId = "inst_1";
   store.selectedBotId = "bot_1";
-  store.applyEvent(openedEvent(formRequest({ conversation: undefined })));
+  store.applyEvent(openedEvent(
+    formRequest({ conversation: undefined }),
+    "inst_1",
+    "",
+  ));
   expect(store.pendingInteraction).not.toBeNull();
+});
+
+test("an uncorrelated form WITH a session alias belongs to that session pane", () => {
+  // The placement rule the session pane depends on: an uncorrelated frame that
+  // names its session alias is rendered by the pane showing that session, and the
+  // Direct Bot slot must not claim it too — two renderers for one form would show
+  // the same question in two places and let either answer it.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst_1";
+  store.selectedBotId = "bot_1";
+  store.applyEvent(openedEvent(formRequest({ conversation: undefined }), "inst_1", "review"));
+  expect(store.pendingInteraction).toBeNull();
+  expect(store.pendingSessionInteractionFor("inst_1", "review")).not.toBeNull();
 });
 
 // The authoritative open-set snapshot, on the client.

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   resolveElicitationTurnRoute,
+  resolveSessionElicitationTurnRoute,
 } from "../../../src/interactions/elicitation-turn-route.js";
 import { resolvePermissionTurnRoute } from "../../../src/permissions/permission-turn-route.js";
 import { getChannelIdFromChatKey } from "../../../src/channels/channel-scope.js";
@@ -230,21 +231,22 @@ describe("exact-turn route: Direct Bot elicitation (M3) + chatType privacy (#360
 });
 
 /**
- * The M5 truthfulness half of the same seam.
+ * The M5 truthfulness half of the same seam, split in two.
  *
- * An ordinary (non-Direct-Conversation) turn must produce NO elicitation route, and
- * the caller must not substitute the permission route for it. Substituting is the
- * bug this pins: the permission route for an ordinary turn is the account-wide
- * ingress key (`relay:<accountId>`), which the elicitation broker would happily
- * bind as a trusted route. Its capability check then passes on the channel's
- * channel-wide `["form"]` declaration, the request reaches a renderer that can
- * only refuse it as `unsupported-route`, and the agent is told a human was asked
- * when no human ever saw the question.
+ * The Direct-Conversation resolver still refuses every ordinary key, and nothing
+ * may substitute the permission route for it: the permission route for a session
+ * turn is the account-wide ingress key, and the elicitation broker would bind it
+ * as a trusted route whose capability check passes on the channel's channel-wide
+ * `["form"]` declaration.
  *
- * So `undefined` has to stay `undefined` all the way through the caller.
+ * What changed is that an ordinary turn is no longer categorically form-less. A
+ * provably DIRECT session turn gets a route from its own resolver
+ * (`resolveSessionElicitationTurnRoute`), which is the only way an agent can ask
+ * its operator a structured question through a session chat instead of being
+ * answered by the broker with `missing interaction route`.
  */
-describe("ordinary turns have no elicitation route to fall back on", () => {
-  test("an ordinary channel turn resolves NO elicitation route", () => {
+describe("session turns: the old resolver still refuses, the session resolver decides", () => {
+  test("an ordinary channel turn resolves NO route from the Direct-Conversation resolver", () => {
     const route = resolveElicitationTurnRoute({
       // The isolation key an ordinary Relay session turn carries.
       isolationChatKey: "relay:acct-9",
@@ -254,19 +256,45 @@ describe("ordinary turns have no elicitation route to fall back on", () => {
     expect(route).toBeUndefined();
   });
 
-  test("a group isolation key resolves NO elicitation route", () => {
-    const route = resolveElicitationTurnRoute({
+  test("a group isolation key resolves NO route from either resolver", () => {
+    expect(resolveElicitationTurnRoute({
       isolationChatKey: "wx:group-7",
       origin: "human",
       metadata: botMetadata({ chatType: "group" }),
+    })).toBeUndefined();
+    // The session resolver is gated on the channel's own direct report, so a
+    // group destination is unroutable there too — the form would show the
+    // question and the answer to every member.
+    expect(resolveSessionElicitationTurnRoute({
+      isolationChatKey: "wx:group-7",
+      origin: "human",
+      metadata: botMetadata({ chatType: "group" }),
+    })).toBeUndefined();
+  });
+
+  test("only a DIRECT session turn reaches the session resolver", () => {
+    // The one case the feature exists for: a Relay session chat, reported direct
+    // by its own ingress. No conversation row, so the renderer places the form by
+    // the turn's session alias.
+    const route = resolveSessionElicitationTurnRoute({
+      isolationChatKey: "relay:acct-9",
+      origin: "human",
+      metadata: botMetadata({ chatType: "direct" }),
     });
-    expect(route).toBeUndefined();
+    expect(route).not.toBeUndefined();
+    expect(route!.chatKey).toBe("relay:acct-42");
+    // An unreported destination stays refused: `undefined` is not "direct".
+    expect(resolveSessionElicitationTurnRoute({
+      isolationChatKey: "relay:acct-9",
+      origin: "human",
+      metadata: botMetadata(),
+    })).toBeUndefined();
   });
 
   test("the permission resolver still resolves for those same turns", () => {
     // The asymmetry is the point. Permission MUST keep working for ordinary turns
     // — it is the only route an ordinary turn has — so the fix cannot be "resolve
-    // nothing for non-bot keys". Only the elicitation route is withheld.
+    // nothing for non-bot keys".
     const perm = resolvePermissionTurnRoute({
       isolationChatKey: "relay:acct-9",
       origin: "human",

@@ -411,6 +411,32 @@ Jev 路由配置收拢在“Jev 路由”折叠区，包含 endpoint、API key�
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 
+## Agent 提问表单（elicitation）
+
+hub 的 `interaction-opened` / `interaction-snapshot` 是表单的唯一来源。前端按**放置键**分成两种互不借用的作用域：
+
+- **Direct Bot 表单**：靠 interaction 自带的 `conversation` 相关键（conversationId / topicId / botId / runId / memberTurnId）
+  落到对应话题的执行区。`stores/direct-bots.ts` 的 `pendingInteraction` 只认这一种：条目有 `conversation` 就永远按话题放置，
+  即使信封上还带着一个无关的 `sessionAlias`。
+- **会话表单**：靠 `sessionAlias`。这个别名由 core 钉在精确 turn 上（普通会话 turn 的 resolver 产出），
+  connector 抄到线上 `InteractionRequestDto.sessionAlias`，hub 原样存进 pending 记录、并随 live 事件与快照回放。
+  这里是**展示别名**，与会话列表选中用的那个是同一套：记录里存 `relay:demo`，列表与 `chat.sessionAlias` 都是 `demo`，
+  用内部别名去配会一个面板都配不上。`pendingSessionInteractionFor(instanceId, alias)` **同时**要求实例与别名精确匹配：
+  别名只在实例内唯一（克隆/还原出来的两个 daemon 会有同名会话），而作答会路由到条目自己的 `instanceId`，
+  只比别名会把 B 的问题答进 A。
+
+会话表单只在**所属会话自己的面板**里渲染，所以侧边栏另有一个注意力信号：该会话有待答表单时，
+`InstanceTree` 在会话名前显示 `data-attention="question"` 的琥珀色脉冲点（`bg-warn` + `pulse-dot`，
+提示文案 `bot.interaction.waiting`），优先级高于 `working` / `unread`——被表单挡住的那个 turn 比"在跑"和"有未读"都更该被点开。
+它读的是 `sessionQuestionPendingFor()`（**只**看仍打开的表单），不是 `pendingSessionInteractionFor()`：后者会把已结束的条目
+一并返回，好让面板继续显示结果说明；用它做信号会让点在答完之后继续显示"正在等待回答"，直到有人打开该会话把提示点掉。
+表单一旦关闭（答复、拒绝、超时、撤回），点立即消失，不需要切到那个会话。
+
+`ChatPane.vue` 把表单作为 composer 栈最上面的一层渲染（`ConversationInteractionForm`），复用 Direct Bot 的同一套渲染与校验：
+必填未答不可提交、`format` 无法本地复核时阻断提交、`pattern` 只展示不执行。作答走 `control.interaction.respond`，
+帧里**不带任何身份**——`responderId` 由 hub 用自己的登录会话盖章；表单收起只由 `interaction-closed` 决定，
+快照缺席一律记 `gone`，不推断"被谁关掉"。
+
 ## 流式 Markdown 渲染
 
 - `src/lib/render-markdown.ts` —— `renderMarkdown(text, { streaming })` 把 markdown 渲染成**已净化**的 HTML：

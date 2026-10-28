@@ -6,7 +6,7 @@ Group PR9：Conversation history/message event 透传公开 `handoff` envelope�
 
 Bot avatar cutover：`control.bots.create/update` 只写结构化 `BotAvatarConfig`；更新 `null` 清除、缺省保留，非法配置返回 `avatar_invalid`。旧字符串仅在 daemon 的磁盘读取边界迁移，不作为长期 wire 类型；Hub、protocol、connector、daemon 与 Web 按 [Relay 发布流程](relay-release.md) 配套升级。Web 不把不兼容头像响应放入渲染缓存。
 
-Elicitation 的任务归属从 core 已校验的精确 turn context 传入 `ChannelElicitationRequest.conversation`，再进入既有 `InteractionRequestDto.conversation`。已有产品 ID 支持精确 Bot / Run / MemberTurn 等待展示；不从 session alias、reply token 或事件先后顺序补出身份，权限与隐私路由不变。
+Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任务归属走 `ChannelElicitationRequest.conversation`，再进入既有 `InteractionRequestDto.conversation`；已有产品 ID 支持精确 Bot / Run / MemberTurn 等待展示，不从 session alias、reply token 或事件先后顺序补出身份，权限与隐私路由不变。**放置**多一条：普通会话 turn 的表单由 `InteractionRequestDto.sessionAlias`（core 钉在精确 turn 上、hub 原样存并回放）落到该会话面板，与 `conversation` 二选一，两者都不给就拒绝——放置键只决定渲染位置，答复仍按 `requestId` 回到原 turn。
 
 ## 服务端（@ganglion/xacpx-relay）
 

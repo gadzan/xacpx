@@ -171,6 +171,42 @@ describe("ElicitationInteractionBroker accept path", () => {
     }
   });
 
+  test("a session route's alias reaches the channel request", async () => {
+    // A session-scoped renderer places the form by the turn's own alias. Core
+    // pins it on the route (the worker never supplies it), so the channel request
+    // must carry it — without it the relay dashboard has no pane to mount the form
+    // on and refuses the route.
+    const seen: ChannelElicitationRequest[] = [];
+    const channel = formChannel(async () => ({ action: "cancel", responderId: "user-A" }), seen);
+    const { broker, registry } = harness({ channel });
+    const route = turn({ chatKey: "relay:acct-9", sessionAlias: "relay:demo", replyContextToken: undefined });
+    bindElicitationTurn(registry, route);
+    await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].agent.sessionAlias).toBe("relay:demo");
+    // Routing only: the requesting agent identity is unchanged, and the alias is
+    // never a responder.
+    expect(seen[0].agent.name).toBe("codex");
+    expect(seen[0].requester.senderId).toBe("user-A");
+  });
+
+  test("a conversation route carries no session alias", async () => {
+    // The two placements must never disagree: a Direct Bot form is mounted by its
+    // conversation correlation, and shipping an alias beside it would give the
+    // browser two keys for one form.
+    const seen: ChannelElicitationRequest[] = [];
+    const channel = formChannel(async () => ({ action: "cancel", responderId: "user-A" }), seen);
+    const { broker } = harness({ channel });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      expect(seen[0].agent.sessionAlias).toBeUndefined();
+    } finally {
+      dispose();
+    }
+  });
+
   test("explicit decline maps to decline", async () => {
     const channel = formChannel(async () => ({ action: "decline", responderId: "user-A" }));
     const { broker } = harness({ channel });

@@ -6,6 +6,7 @@ import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
+import { useDirectBotsStore } from "../stores/direct-bots";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
 import { useActionToastState, dismissToast, runToastAction } from "../lib/use-action-toast";
 import { useToasts } from "../lib/use-toasts";
@@ -15,7 +16,15 @@ const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
 });
 
 describe("InstanceTree session management", () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    // `center-tabs` hydrates from sessionStorage and persists through a 200ms
+    // debounce, and jsdom shares one storage across the whole file. A debounced
+    // write from the previous test could therefore be hydrated by the next one —
+    // enough to make the terminal-marker assertions order-dependent. Start every
+    // test from empty storage instead of from whatever the last one flushed.
+    sessionStorage.clear();
+  });
   afterEach(() => { settleConfirm(false); i18n.global.locale.value = "en"; });
 
   it("opens the new-session dialog from the + new session button", async () => {
@@ -294,6 +303,84 @@ describe("InstanceTree session management", () => {
     chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
     expect(w.find('[data-test="attention-dot"]').attributes("data-attention")).toBe("unread");
+  });
+
+  it("renders a question dot for a session holding a pending form, even when it is not selected", () => {
+    const instances = useInstancesStore();
+    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    // Viewing something else: the form lives inside `backend`'s pane, so the dot
+    // is the only signal the operator gets before the answer window closes.
+    useChatStore().select("i1", "other");
+    useDirectBotsStore().applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "interaction-opened",
+        chatKey: "relay:acct-1",
+        sessionAlias: "backend",
+        instanceId: "i1",
+        interaction: {
+          requestId: "req-1",
+          kind: "elicitation",
+          sessionAlias: "backend",
+          expiresAt: Date.now() + 60_000,
+          elicitation: {
+            mode: "form",
+            agent: { name: "claude", sessionAlias: "backend" },
+            message: "Which environment?",
+            fields: [{ kind: "text", key: "env", title: "Environment", required: true }],
+          },
+        },
+      },
+    } as never);
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const dot = w.find('[data-test="attention-dot"]');
+    expect(dot.exists()).toBe(true);
+    expect(dot.attributes("data-attention")).toBe("question");
+    expect(dot.attributes("title")).toBe("Agent is waiting for an answer");
+  });
+
+  it("clears the question dot once the form is answered, even without opening the session", async () => {
+    const instances = useInstancesStore();
+    instances.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    useChatStore().select("i1", "other");
+    const bots = useDirectBotsStore();
+    bots.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "interaction-opened",
+        chatKey: "relay:acct-1",
+        sessionAlias: "backend",
+        instanceId: "i1",
+        interaction: {
+          requestId: "req-1",
+          kind: "elicitation",
+          sessionAlias: "backend",
+          expiresAt: Date.now() + 60_000,
+          elicitation: {
+            mode: "form",
+            agent: { name: "claude", sessionAlias: "backend" },
+            message: "Which environment?",
+            fields: [{ kind: "text", key: "env", title: "Environment", required: true }],
+          },
+        },
+      },
+    } as never);
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="attention-dot"]').attributes("data-attention")).toBe("question");
+
+    // The answer was given somewhere else (another tab, another operator). The dot
+    // must stop claiming a question is waiting; the outcome notice is the pane's
+    // job, and it keeps the same entry.
+    bots.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: { type: "interaction-closed", requestId: "req-1", reason: "resolved", action: "accept", sessionAlias: "" },
+    } as never);
+    expect(bots.pendingSessionInteractionFor("i1", "backend")?.outcome).toBe("accepted");
+    await flushPromises();
+    expect(w.find('[data-test="attention-dot"][data-attention="question"]').exists()).toBe(false);
   });
 
   it("shows an empty-state row only once sessions have loaded", () => {

@@ -620,15 +620,18 @@ test("handleSessionAttach refuses an existing alias without touching its row", a
   expect(calls).not.toContain("attach");
 });
 
-test("handlePromptWithSession binds ONLY the permission broker on an ordinary channel turn", async () => {
-  // The M5 truthfulness half of the Direct Bot test above.
+test("handlePromptWithSession binds BOTH brokers on an ordinary Relay session turn", async () => {
+  // The M5 truthfulness half of the Direct Bot test above, as it stands after
+  // session-scoped forms.
   //
-  // An ordinary channel turn has a permission route and NO elicitation route.
-  // Binding the elicitation broker to the permission route's address would give it
-  // a trusted-looking route, its channel-wide capability check would pass, and the
-  // request would reach a renderer that can only refuse it as
-  // `unsupported-route` — the agent told a human was asked when no human ever saw
-  // the question. So exactly ONE broker is bound here, and it is permission's.
+  // This used to assert that an ordinary channel turn binds ONLY the permission
+  // broker, because an elicitation route would have reached a renderer that could
+  // only refuse it. That is no longer the contract: a Direct session turn is a
+  // placeable surface now (the Sessions ChatPane, keyed by `sessionAlias`), so it
+  // binds elicitation as well — on its OWN turn route, with the alias the pane
+  // uses. A turn that is not provably private still binds nothing (see the group
+  // and unreported-chatType cases in
+  // `tests/unit/interactions/session-turn-elicitation-route.test.ts`).
   const { setGlobalElicitationBroker, resetGlobalElicitationBrokerForTests } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
   const { resetGlobalPermissionBrokerForTests, setGlobalPermissionBroker } = await import("../../../../src/permissions/permission-interaction-broker.js");
   resetGlobalPermissionBrokerForTests();
@@ -681,11 +684,17 @@ test("handlePromptWithSession binds ONLY the permission broker on an ordinary ch
     } as never,
   );
 
-  // Exactly one bind, and it is the permission route. If this ever binds twice,
-  // the second address is the elicitation broker holding an ordinary-turn key it
-  // must not have — which is the bug this test exists to catch.
-  expect(bound.length).toBe(1);
-  expect(bound[0]!.chatKey).toBe("relay:acct-9");
+  // Two binds, one address each, and only the elicitation one carries the
+  // session placement. `review` is the display alias here: the fixture session is
+  // stored unscoped, so `toDisplaySessionAlias` is the identity.
+  expect(bound.length).toBe(2);
+  expect(bound.map((ctx) => ctx.chatKey)).toEqual(["relay:acct-9", "relay:acct-9"]);
+  const withAlias = bound.filter((ctx) => ctx.sessionAlias !== undefined);
+  expect(withAlias.length).toBe(1);
+  expect(withAlias[0]!.sessionAlias).toBe("review");
+  // The permission bind must not advertise a placement it does not have.
+  const permission = bound.find((ctx) => ctx.sessionAlias === undefined);
+  expect(permission!.chatKey).toBe("relay:acct-9");
 });
 
 test("handleSessionAttach drops its fresh row when post-persist setup fails", async () => {

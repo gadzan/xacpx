@@ -16,7 +16,7 @@ import {
   type RelayEnvelope,
   parseControlPayload,
 } from "@ganglion/xacpx-relay-protocol";
-import { isDirectConversationChatKey, parseDirectConversationChatKey } from "xacpx/plugin-api";
+import { parseDirectConversationChatKey } from "xacpx/plugin-api";
 import type {
   ChannelStartInput,
   ChannelElicitationDecision,
@@ -259,12 +259,12 @@ export class RelayChannel implements MessageChannelRuntime {
    * is caught by the runtime check rather than by this declaration.
    *
    * Note the scope this declaration does NOT express: it is per-CHANNEL, while
-   * the renderer is per-ROUTE. A form is showable only on a Direct Conversation
-   * turn (`bot:<conversation>:<topic>`); an ordinary session turn resolves to
-   * `relay:<accountId>`, which has no `conversation` correlation and no surface
-   * that mounts a form. `requestElicitation` refuses those turns itself — see
-   * `unsupported-route` there — because this contract has no way to say "capable
-   * on some routes only".
+   * the renderer is per-ROUTE. Two routes can be placed on a surface, and
+   * `requestElicitation` places them differently: a Direct Conversation turn
+   * (`bot:<conversation>:<topic>`) by its `conversation` correlation, and a
+   * Direct session turn by the session's own alias (`InteractionRequestDto.sessionAlias`).
+   * A turn that yields neither is refused there — see `unsupported-route` —
+   * because this contract has no way to say "capable on some routes only".
    */
   readonly elicitationModes: readonly ChannelElicitationMode[] = ["form"];
 
@@ -724,27 +724,27 @@ export class RelayChannel implements MessageChannelRuntime {
       );
       throw new RelayElicitationUnavailable("not-direct");
     }
-    // ROUTE-SCOPED capability, which is what the channel-wide
-    // `elicitationModes = ["form"]` above could not express.
+    // ROUTE SCOPE. Two routes can render a form, and they place it differently:
     //
-    // A form is renderable on exactly one route: a Direct Conversation turn,
-    // whose chatKey is `bot:<conversation>:<topic>`. That key is what yields the
-    // `conversation` product correlation the web form needs to find its topic,
-    // and it is the only surface that mounts a renderer — the Direct Bot pane.
-    // An ordinary Relay session turn resolves its route to `relay:<accountId>`
-    // (the permission fallback), so its `conversationCorrelation()` is
-    // `undefined` and the frame it produces belongs to no topic at all.
+    //   - a Direct Conversation turn (`bot:<conversation>:<topic>`) carries the
+    //     `conversation` product correlation, which is what the Direct Bot pane
+    //     mounts the form on;
+    //   - a Relay SESSION turn (`relay:<accountId>`) carries the turn's own
+    //     session alias, which is what the Sessions ChatPane mounts it on.
     //
-    // Declaring `form` channel-wide while only that one route can render made
-    // every ordinary session turn also request a form. The hub opened the
-    // interaction, the uncorrelated frame was scoped out of every topic view,
-    // and the result was a form nobody could see reaching its timeout. That is
-    // worse than refusing: an agent told the human was asked when no human ever
-    // saw the question.
-    if (!isDirectConversationChatKey(request.chatKey)) {
+    // Anything else has no surface: an unprefixed key, or a session turn whose
+    // alias never reached us. A frame that belongs to no pane is worse than a
+    // refusal — the hub opens it, no view renders it, and the agent is told the
+    // human was asked while the form times out unseen.
+    //
+    // `chatType` above is the privacy gate for both routes; this is the
+    // placement gate.
+    const correlation = this.conversationCorrelation(request);
+    const sessionAlias = correlation === undefined ? request.agent.sessionAlias : undefined;
+    if (correlation === undefined && !sessionAlias) {
       await this.startLogger?.warn(
         "relay.elicitation.rejected",
-        "relay form renderer is route-scoped to Direct Conversation turns",
+        "relay form renderer cannot place this route on any surface",
         { requestId, chatKey: request.chatKey },
       );
       throw new RelayElicitationUnavailable("unsupported-route");
@@ -759,12 +759,15 @@ export class RelayChannel implements MessageChannelRuntime {
       });
       throw new RelayElicitationUnavailable("unsupported");
     }
-    const correlation = this.conversationCorrelation(request);
-    if (!correlation) throw new RelayElicitationUnavailable("unsupported-route");
     const interaction: InteractionRequestDto = {
       requestId,
       kind: "elicitation",
       ...(correlation !== undefined ? { conversation: correlation } : {}),
+      // Routing for a session-scoped form. The hub keeps it on the pending entry
+      // and the browser keys the form by it; without it the frame lands in no
+      // session pane. Present only when the turn has no conversation row, so the
+      // two placements can never disagree.
+      ...(sessionAlias !== undefined ? { sessionAlias } : {}),
       expiresAt,
       elicitation: {
         mode: "form",

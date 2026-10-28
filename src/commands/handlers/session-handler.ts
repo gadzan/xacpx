@@ -26,7 +26,7 @@ import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 import { queueOverflowTipText } from "./session-recovery-handler";
 import { PermissionInteractionBroker, getGlobalPermissionBroker } from "../../permissions/permission-interaction-broker.js";
 import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-route.js";
-import { resolveElicitationTurnRoute } from "../../interactions/elicitation-turn-route.js";
+import { resolveElicitationTurnRoute, resolveSessionElicitationTurnRoute } from "../../interactions/elicitation-turn-route.js";
 import type { TurnInteractionContext } from "../../interactions/turn-interaction-registry";
 import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
 import { parseDirectConversationChatKey } from "../../domain/ids";
@@ -1146,20 +1146,42 @@ async function promptWithSession(
     //
     // Running it unconditionally is safe and narrower than the old condition:
     // `resolveElicitationTurnRoute` refuses every non-`bot:` isolation key, so an
-    // ordinary channel turn yields `undefined` here exactly as before.
+    // ordinary channel turn only reaches the session resolver below when the
+    // ingress reports a provably direct destination. A group, a scheduled turn or
+    // an unreported destination still yields `undefined` exactly as before.
     //
     // The two routes are NOT collapsed into one address. Permission keeps its
     // trusted ingress route; elicitation keeps the product isolation key. The
     // selection below is by turn kind, not "whichever matched first".
-    const elicitationRoute = resolveElicitationTurnRoute({
+    const elicitationRouteInput = {
       isolationChatKey: chatKey,
+      // The FULL metadata, not just the flattened fields below. A session route
+      // is gated on the channel's own `chatType` report, which lives here and
+      // nowhere else: omitting it made `resolveSessionElicitationTurnRoute`
+      // return undefined on every real turn, so the router resolved no route and
+      // the broker cancelled every session `ask` while the resolver's own tests
+      // (which build the input by hand) stayed green. `resolveElicitationTurnRoute`
+      // strips `permissionChatKey` itself and this resolver forwards it, so both
+      // keep the address they are supposed to.
+      metadata,
       ...(resolvedOrigin !== undefined ? { origin: resolvedOrigin } : {}),
       ...(metadata?.senderId !== undefined ? { senderId: metadata.senderId } : {}),
       ...(metadata?.senderName !== undefined ? { senderName: metadata.senderName } : {}),
       ...(metadata?.isOwner !== undefined ? { isOwner: metadata.isOwner } : {}),
       ...(accountId !== undefined ? { accountId } : {}),
       ...(replyContextToken !== undefined ? { ingressChatKey: replyContextToken } : {}),
-    });
+    };
+    const conversationElicitationRoute = resolveElicitationTurnRoute(elicitationRouteInput);
+    // A DIRECT session turn (a Relay session chat, a channel DM) is a private
+    // destination too. It used to get no route at all, which is why an agent
+    // asking a structured question there was answered by the broker with
+    // `missing interaction route` before any renderer could offer a form.
+    // The renderer still has the last word: a channel with no form mode, or one
+    // that cannot place the route on a surface, refuses at dispatch time.
+    const sessionElicitationRoute = conversationElicitationRoute
+      ? undefined
+      : resolveSessionElicitationTurnRoute(elicitationRouteInput);
+    const elicitationRoute = conversationElicitationRoute ?? sessionElicitationRoute;
     // Permission wins on its own turns, because its route is the one the daemon
     // trusts for a human permission decision. An elicitation route, when present,
     // belongs to a Direct Conversation turn. Both may exist at once when that
@@ -1230,9 +1252,9 @@ async function promptWithSession(
       //
       // `resolveElicitationTurnRoute` refuses every non-`bot:` isolation key, so
       // `elicitationRoute === undefined` means precisely "this turn has no
-      // surface that can render a form". Falling back to `route.chatKey` — which
-      // for an ordinary channel turn is the permission route, e.g.
-      // `relay:<accountId>` — re-opened the exact hole that resolver closes: the
+      // surface that can render a form": neither a Direct Conversation turn nor a
+      // provably direct session turn. Falling back to `route.chatKey` without
+      // either of those facts re-opened the exact hole the resolver closes: the
       // broker binds a trusted-looking route, its capability check passes on the
       // channel's channel-wide declaration, and the elicitation reaches a renderer
       // that can only refuse it as `unsupported-route`. The agent is then told a
@@ -1249,6 +1271,21 @@ async function promptWithSession(
           : {
               ...shared,
               chatKey: elicitationRoute.chatKey,
+              // Session-scoped placement for a renderer that mounts the form on a
+              // session pane. Only a session turn carries it: a `bot:` turn's alias
+              // is runtime plumbing (`brt_*`) and must never reach a browser. It
+              // belongs to the ELICITATION context only — the permission route has
+              // no placement to advertise.
+              //
+              // The DISPLAY alias, because that is the key space the dashboard
+              // shows and selects on: its session list is
+              // `toDisplaySessionAlias(...)`-mapped, so a relay session stored as
+              // `relay:demo` is the row `demo`, and a form stamped with the internal
+              // alias matches no pane at all. Placement only — the broker still
+              // answers by `requestId`.
+              ...(sessionElicitationRoute !== undefined
+                ? { sessionAlias: toDisplaySessionAlias(session.alias) }
+                : {}),
               ...chatType,
               ...(trustedConversationExecution ? {
                 conversation: Object.freeze({
