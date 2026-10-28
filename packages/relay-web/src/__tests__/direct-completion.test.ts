@@ -5,8 +5,9 @@ import { api } from "../api/client";
 import { i18n } from "../i18n";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useDirectComposerStore } from "../stores/direct-composer";
+import { useComposerStore } from "../stores/composer";
 import Input from "../components/ConversationPromptInput.vue";
-import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
+import type { AgentMention, ConversationCompletions, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 let wrappers: Array<ReturnType<typeof mount>> = [];
 function ready(
   scope = { conversationId: "c1", topicId: "t1", botId: "b1" },
@@ -95,7 +96,7 @@ describe("Direct completion", () => {
     expect((t.element as HTMLTextAreaElement).value).toBe("/reload ");
     expect(w.emitted("send")).toBeUndefined();
     await t.trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")?.[0]).toEqual(["/reload ", []]);
+    expect(w.emitted("send")?.[0]).toEqual(["/reload ", [], []]);
   });
   it("reopens the mention menu after a committed slash dismissed it", async () => {
     const w = input(),
@@ -183,11 +184,11 @@ describe("Direct completion", () => {
     await t.trigger("keydown", { key: "Enter" });
     expect(deliver).toHaveBeenLastCalledWith("😀 @同名 ", [
       { range: [3, 6], handle: "agent:n:b3" },
-    ]);
+    ], []);
     expect((t.element as HTMLTextAreaElement).value).toBe("😀 @同名 ");
     await t.setValue("😀 @修改 ");
     await t.trigger("keydown", { key: "Enter" });
-    expect(deliver).toHaveBeenLastCalledWith("😀 @修改 ", []);
+    expect(deliver).toHaveBeenLastCalledWith("😀 @修改 ", [], []);
   });
   it("keeps rejected/uncertain drafts and isolates accepted clearing across scope switches", async () => {
     let resolve!: (s: string) => void;
@@ -232,7 +233,7 @@ describe("Direct completion", () => {
     expect(w.emitted("send")).toBeUndefined();
     await t.trigger("keydown", { key: "Escape" });
     await t.trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")?.[0]).toEqual(["/", []]);
+    expect(w.emitted("send")?.[0]).toEqual(["/", [], []]);
   });
   it("scope drafts survive unmount and raw typed names carry no refs", async () => {
     const w = input(),
@@ -250,6 +251,67 @@ describe("Direct completion", () => {
         .mentions,
     ).toEqual([]);
   });
+  it("sends a staged image with empty text and clears the chip once the prompt is durable", async () => {
+    const deliver = vi.fn().mockResolvedValue("accepted");
+    const w = input({ deliver });
+    const composer = useComposerStore();
+    composer.bindInstance("i1", JSON.stringify(["direct", "i1", "c1", "t1", "b1"]));
+    composer.pending.push({
+      id: "local-1",
+      uploadId: "u1",
+      filename: "shot.png",
+      mimeType: "image/png",
+      size: 3,
+      kind: "image",
+      filePath: "/uploads/u1/shot.png",
+      status: "ready",
+    });
+    await w.vm.$nextTick();
+    const send = w.get('[data-test="send-prompt-button"]');
+    expect(send.attributes("disabled")).toBeUndefined();
+    await send.trigger("click");
+    await flushPromises();
+    expect(deliver).toHaveBeenCalledWith("", [], [
+      expect.objectContaining({ id: "u1", filePath: "/uploads/u1/shot.png", kind: "image" }),
+    ]);
+    expect(composer.pending).toHaveLength(0);
+  });
+  it("routes a media-only first message to topic creation and consumes the staged draft", async () => {
+    const s = useDirectBotsStore();
+    s.activeConversationId = null;
+    s.activeTopicId = null;
+    const composer = useComposerStore();
+    composer.bindInstance("i1", JSON.stringify(["direct", "i1", null, null, "b1"]));
+    const stagedScope = JSON.stringify(["direct", "i1", null, null, "b1"]);
+    composer.pending.push({
+      id: "local-1",
+      uploadId: "u1",
+      filename: "shot.png",
+      mimeType: "image/png",
+      size: 3,
+      kind: "image",
+      filePath: "/uploads/u1/shot.png",
+      status: "ready",
+    });
+    let promptPayload: { text?: string; media?: PromptAttachmentRef[] } | undefined;
+    vi.mocked(api.rpc).mockImplementation(async (_instance, type, payload) => {
+      if (type === "control.conversations.list") return { conversations: [{ id: "c1" }] } as never;
+      if (type === "control.topics.create") return { topic: { id: "t1" } } as never;
+      if (type === "control.conversation.history") return { conversationId: "c1", topicId: "t1", messages: [], hasMoreBefore: false, hasMoreAfter: false } as never;
+      if (type === "control.conversation.runs.list") return { runs: [] } as never;
+      if (type === "control.conversation.trace.get") return { events: [] } as never;
+      if (type === "control.conversation.prompt") { promptPayload = payload as never; return {} as never; }
+      return ready() as never;
+    });
+    const w = input({
+      deliver: (text: string, mentions: AgentMention[], media: PromptAttachmentRef[]) =>
+        s.sendPrompt(text, mentions, media),
+    });
+    await w.get('[data-test="send-prompt-button"]').trigger("click");
+    await flushPromises();
+    expect(promptPayload?.media).toHaveLength(1);
+    expect(composer.pending).toHaveLength(0);
+  });
 });
 
 it("clears an identical reference draft on durable WS acceptance even when HTTP loses its response", async () => {
@@ -265,7 +327,7 @@ it("clears an identical reference draft on durable WS acceptance even when HTTP 
   const w = input({
       deliver: (
         text: string,
-        mentions: import("@ganglion/xacpx-relay-protocol").AgentMention[],
+        mentions: AgentMention[],
       ) => s.sendPrompt(text, mentions),
     }),
     t = w.get("textarea");

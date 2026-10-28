@@ -381,7 +381,7 @@ function openRemoval(): void {
     <!-- Prompt Composer -->
     <ConversationPromptInput
       :disabled="bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
-      :deliver="(text, mentions) => directBotsStore.sendPrompt(text, mentions)"
+      :deliver="(text, mentions, media) => directBotsStore.sendPrompt(text, mentions, media)"
     />
     <!-- History failure: Retry reloads the topic (history + durable run
       discovery). Shown whenever the transcript failed to converge — the
