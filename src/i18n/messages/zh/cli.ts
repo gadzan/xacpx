@@ -61,9 +61,11 @@ export const cli: CliMessages = {
   workspaceSourceLabelName: "名称",
   workspaceAlreadyExists: (name, cwd) => `工作区「${name}」已存在：${cwd}`,
   workspaceConflictPath: (name, cwd) => `工作区「${name}」已存在，但路径不同：${cwd}`,
+  workspaceDedicatedConflict: (name) => `工作区「${name}」为其 Bot 专属，不能被覆盖`,
   workspaceConflictHint: (name) => `请换一个名称，或先执行：xacpx workspace rm ${name}`,
   workspaceSaved: (name, cwd) => `工作区「${name}」已保存：${cwd}`,
   workspaceNotFound: (name) => `没有找到工作区「${name}」。`,
+  workspaceDedicatedRemove: (name) => `工作区「${name}」为其 Bot 专属。请改为删除对应 Bot（可选同时删除其工作区）。`,
   workspaceRemoved: (name) => `工作区「${name}」已删除`,
   workspaceRemoveDaemonRunning:
     "daemon 运行中（或状态不确定）时无法删除工作区：daemon 持有自己的配置快照和会话绑定，直接修改 config.json 会与进行中的委派竞态。请在控制台使用 /workspace rm 或调用 Control API，或先执行 `xacpx stop`。",

@@ -47,6 +47,9 @@ export interface CreateBotInput {
  */
 export interface CreateBotOptions {
   dedicatedWorkspace?: DedicatedWorkspaceMarker;
+  /** Daemon-internal: this create allocates `workspace` itself, so the
+   *  dedicated-workspace reuse guard must not reject the owner. */
+  claimsDedicatedWorkspace?: boolean;
 }
 
 export interface UpdateBotInput {
@@ -446,7 +449,7 @@ export class BotService {
       const dedicatedWorkspace = this.validatedMarker(options?.dedicatedWorkspace);
       const bot: BotProfile = {
         id,
-        ...this.requireIdentity(input),
+        ...this.requireIdentity(input, options?.claimsDedicatedWorkspace === true),
         ...this.optionalFields(input),
         ...(dedicatedWorkspace ? { dedicatedWorkspace } : {}),
         enabled: input.enabled ?? true,
@@ -479,11 +482,17 @@ export class BotService {
         if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasDefaultWorkspaceRuntime(id)) {
           throw new BotError("runtime_identity_locked", `bot "${id}" workspace cannot change while a runtime exists`);
         }
+        const resolvedWorkspace = this.requirePatchString(patch.workspace, existing.workspace, "workspace");
+        // A Bot always keeps the right to reference its own workspace —
+        // including a dedicated one — so a rename/enable-only update (or an
+        // explicit same-name write) never trips the reuse guard. Pointing at
+        // *another* Bot's dedicated workspace stays rejected.
+        const targetsOwnWorkspace = resolvedWorkspace === existing.workspace;
         const identity = this.requireIdentity({
           name: this.requirePatchString(patch.name, existing.name, "name"),
           agent: this.requirePatchString(patch.agent, existing.agent, "agent"),
-          workspace: this.requirePatchString(patch.workspace, existing.workspace, "workspace"),
-        });
+          workspace: resolvedWorkspace,
+        }, targetsOwnWorkspace);
         this.assertAcceptsWork(id);
         // A dedicated-workspace marker claims a directory this daemon
         // allocated for the Bot. Pointing the Bot at another workspace
@@ -912,7 +921,7 @@ export class BotService {
     return id.startsWith("bot_") ? id : createBotId(() => id);
   }
 
-  private requireIdentity(input: Pick<CreateBotInput, "name" | "agent" | "workspace">): Pick<BotProfile, "name" | "agent" | "workspace"> {
+  private requireIdentity(input: Pick<CreateBotInput, "name" | "agent" | "workspace">, claimsDedicatedWorkspace = false): Pick<BotProfile, "name" | "agent" | "workspace"> {
     const name = input.name.trim();
     if (!name) {
       throw new BotError("name_required", "bot name must be a non-empty string");
@@ -926,14 +935,34 @@ export class BotService {
     if (!this.config.workspaces[input.workspace]) {
       throw new BotError("workspace_not_registered", `workspace "${input.workspace}" is not registered`);
     }
+    if (this.config.workspaces[input.workspace]?.dedicated === true && !claimsDedicatedWorkspace) {
+      throw new BotError("workspace_dedicated", `workspace "${input.workspace}" belongs to another Bot`);
+    }
     return { name, agent: input.agent, workspace: input.workspace };
   }
   /** PR6 seam: Group Topics resolve their ExecutionTarget workspace against
    *  the same registry Bot identity uses. No Bot is involved; the caller
-   *  owns membership validation. */
+   *  owns membership validation. A dedicated workspace is never an explicit
+   *  target: its owning Bot references it only through its stored default. */
   assertWorkspaceRegistered(workspace: string): void {
     if (typeof workspace !== "string" || !this.config.workspaces[workspace]) {
       throw new BotError("workspace_not_registered", `workspace "${workspace}" is not registered`);
+    }
+    if (this.config.workspaces[workspace]?.dedicated === true) {
+      throw new BotError("workspace_dedicated", `workspace "${workspace}" belongs to another Bot`);
+    }
+  }
+  /** Owner-path seam: an owned Bot session may land on a dedicated workspace
+   *  only when that workspace is this Bot's own allocation. A dedicated name
+   *  the marker does not name stays `workspace_dedicated`, however the caller
+   *  reached it; the marker is the only ownership record the registry lacks. */
+  assertOwnsDedicatedWorkspace(botId: string, workspace: string): void {
+    if (this.config.workspaces[workspace]?.dedicated !== true) {
+      return;
+    }
+    const marker = this.getBot(botId).dedicatedWorkspace;
+    if (marker === undefined || marker.name !== workspace) {
+      throw new BotError("workspace_dedicated", `workspace "${workspace}" belongs to another Bot`);
     }
   }
 

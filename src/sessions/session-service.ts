@@ -1912,7 +1912,7 @@ export class SessionService {
     extras?: { owner?: LogicalSessionOwner; model?: string; effort?: string; executionPolicy?: EnforcedExecutionPolicy; executionWorktree?: LogicalSession["execution_worktree"] },
   ): Promise<ResolvedSession> {
     return await this.mutate(async () => {
-      this.validateSession(alias, agent, workspace);
+      this.validateSession(alias, agent, workspace, extras?.owner);
       if (extras?.executionPolicy !== undefined && (extras.executionPolicy !== CLAUDE_READ_ONLY_POLICY
         || !isHiddenProductSessionOwner(extras.owner) || !this.supportsConversationReadOnly(agent))) {
         throw new ConversationError("runtime_revision_mismatch", "restricted execution requires a supported owned runtime");
@@ -2021,7 +2021,7 @@ export class SessionService {
     await this.stateStore.save(this.state);
   }
 
-  private validateSession(alias: string, agent: string, workspace: string): void {
+  private validateSession(alias: string, agent: string, workspace: string, owner?: LogicalSessionOwner): void {
     if (alias.trim().length === 0) {
       throw new Error("session alias must be a non-empty string");
     }
@@ -2036,6 +2036,10 @@ export class SessionService {
 
     if (!this.config.workspaces[workspace]) {
       throw new Error(t().misc.workspaceNotRegistered(workspace));
+    }
+    if (this.config.workspaces[workspace]?.dedicated === true
+      && owner === undefined) {
+      throw new Error(t().misc.workspaceDedicated(workspace));
     }
 
     if (!this.config.agents[agent]) {

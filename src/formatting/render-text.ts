@@ -16,7 +16,7 @@ export function renderAgents(config: AppConfig): string {
 }
 
 export function renderWorkspaces(config: AppConfig): string {
-  const names = Object.entries(config.workspaces);
+  const names = Object.entries(config.workspaces).filter(([, workspace]) => workspace.dedicated !== true);
   const w = t().workspace;
   if (names.length === 0) {
     return w.workspacesEmpty;

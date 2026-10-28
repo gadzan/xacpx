@@ -56,6 +56,9 @@ export async function handleWorkspaceCreate(
       name = allocateWorkspaceName(base, liveConfig.workspaces);
       notice = w.nameSanitized(workspaceName, name);
     }
+    if (liveConfig.workspaces[name]?.dedicated === true) {
+      return { text: w.dedicatedConflict(name) };
+    }
 
     // Persist the user's raw input (a `~` stays literal in the file and is
     // expanded at config-load time), but validate the expanded path above.
@@ -73,6 +76,9 @@ export async function handleWorkspaceRemove(
   const w = t().workspace;
   if (!context.config || !context.configStore) {
     return { text: w.noWritableConfig };
+  }
+  if (context.config.workspaces[workspaceName]?.dedicated === true) {
+    return { text: w.dedicatedRemove(workspaceName) };
   }
   const configStore = context.configStore;
   // A workspace backing persisted sessions or worker bindings cannot be

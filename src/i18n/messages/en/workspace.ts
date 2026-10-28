@@ -16,6 +16,8 @@ export const workspace: WorkspaceMessages = {
     `Name ${JSON.stringify(original)} contains special characters and has been saved as "${saved}". Add --raw to keep the original name.`,
   nameUnderivable: (original) =>
     `Name ${JSON.stringify(original)} has no letters or digits, so no workspace name can be derived from it. Use a name with letters or digits, or add --raw to keep it as is.`,
+  dedicatedConflict: (name) =>
+    `Workspace "${name}" is reserved for its Bot and cannot be replaced.`,
 
   // handleWorkspaceCreate — saved confirmation
   saved: (name) => `Workspace "${name}" saved.`,
@@ -26,6 +28,8 @@ export const workspace: WorkspaceMessages = {
   // handleWorkspaceRemove — still referenced by persisted sessions
   stillReferenced: (name, aliases) =>
     `Workspace "${name}" is still used by sessions: ${aliases}. Remove those sessions first.`,
+  dedicatedRemove: (name) =>
+    `Workspace "${name}" is reserved for its Bot. Remove the Bot (optionally deleting its workspace) instead.`,
 
   // workspaceHelp metadata
   helpSummary: "Manage registered workspaces.",

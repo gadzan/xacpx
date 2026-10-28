@@ -361,6 +361,12 @@ export class BotRuntimeManager {
   }): Promise<BotRuntimeBinding> {
     input.assertStillDispatchable?.();
     const bot = this.requireEnabledBot(input.botId);
+    // Ownership first: a caller-supplied execution override must not land
+    // another Bot's owned session on this dedicated workspace. Sticky-identity
+    // drift is a separate concern checked next.
+    if (input.execution) {
+      this.bots.assertOwnsDedicatedWorkspace(bot.id, input.execution.workspace);
+    }
     this.assertExecutionPolicySupported(input.executionPolicy, (input.execution ?? bot).agent);
     this.assertAcceptedStickyIdentity(bot, input.execution);
     const scope = this.resolveScope(bot.id, input);
@@ -416,6 +422,9 @@ export class BotRuntimeManager {
     const scope = this.resolveGroupMemberScope(bot.id, input.conversationId, input.topicId, input.executionWorktree);
     const effective = this.resolveGroupMemberExecution(bot, scope.mode, scope.topic, input.execution);
     this.assertExecutionPolicySupported(input.executionPolicy, effective.agent);
+    // Ownership first, same as the direct path: the resolved execution must
+    // not land this member on another Bot's dedicated workspace.
+    this.bots.assertOwnsDedicatedWorkspace(bot.id, effective.workspace);
     this.assertGroupMemberStickyIdentity(bot, scope.mode, scope.topic, input.execution);
     const scopedId = createScopedGroupMemberBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);

@@ -692,6 +692,30 @@ test("lists and removes workspaces from the CLI", async () => {
     ]);
   });
 });
+test("a dedicated workspace is hidden from list and refused by add/rm", async () => {
+  setLocale("en");
+  await withTempHome(async (home) => {
+    const lines: string[] = [];
+    const homeWorkspace = normalizeWorkspacePath("~");
+    const configPath = join(home, ".xacpx", "config.json");
+    // The first CLI invocation seeds the default `home` workspace config.
+    await runCli(["ws", "list"], { print: () => {} });
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.workspaces["bot-reviewer"] = { cwd: join(home, ".xacpx", "bots", "reviewer"), dedicated: true };
+    await writeFile(configPath, JSON.stringify(config));
+
+    await expect(runCli(["ws", "list"], { print: (line) => lines.push(line) })).resolves.toBe(0);
+    expect(lines).toEqual([t().cli.workspaceListHeader, `- home: ${homeWorkspace}`]);
+
+    lines.length = 0;
+    await expect(runCli(["ws", "add", "bot-reviewer"], { cwd: () => "/repo/other", print: (line) => lines.push(line) })).resolves.toBe(1);
+    expect(lines).toEqual([t().cli.workspaceDedicatedConflict("bot-reviewer")]);
+
+    lines.length = 0;
+    await expect(runCli(["ws", "rm", "bot-reviewer"], { print: (line) => lines.push(line) })).resolves.toBe(1);
+    expect(lines).toEqual([t().cli.workspaceDedicatedRemove("bot-reviewer")]);
+  });
+});
 
 test("workspace rm trims the provided name", async () => {
   setLocale("zh");

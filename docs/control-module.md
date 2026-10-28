@@ -118,7 +118,7 @@ Phase 10C：Group Topic 可选 `target.isolation: "worktree-per-member"`；
 旧 daemon 无此方法时必须明确 unsupported；无旧接口降级。详见
 [Worktree lifecycle](conversation-runtime.md#managed-worktrees-and-explicit-integration-phase-10c)。
 
-`createBot` 的 `workspace` 可省略：daemon 在用户目录的 `~/.xacpx/bots/` 下创建独立目录并注册为普通工作区，再将注册名保存到 Bot。显式传入时必须是已有工作区名；空字符串不表示自动创建。自动命名复用工作区规范化与冲突后缀规则，中文名完全被过滤时使用稳定的 `workspace-<8hex>`。同名并发创建必须得到不同目录，已有目录不得复用。创建失败仅回滚本次新增的工作区注册与空目录；不递归删除文件。Bot 改名、移除以及 Group Topic 的显式工作区规则保持原有语义。
+`createBot` 的 `workspace` 可省略：daemon 在用户目录的 `~/.xacpx/bots/` 下创建独立目录并注册为专属工作区（注册条目带 `dedicated: true`），再将注册名保存到 Bot。显式传入时必须是已有工作区名；空字符串不表示自动创建。自动命名复用工作区规范化与冲突后缀规则，中文名完全被过滤时使用稳定的 `workspace-<8hex>`。同名并发创建必须得到不同目录，已有目录不得复用。创建失败仅回滚本次新增的工作区注册与空目录；不递归删除文件。Bot 改名、移除以及 Group Topic 的显式工作区规则保持原有语义。专属注册对 UI 隐藏：`listWorkspaces`（Web 工作区选择器、`/workspaces`、`xacpx workspace list`）不返回它，且其他 Bot（create/显式改指）、无 owner 的普通会话创建、Control `workspaces.create/remove`、Group Topic target 显式引用时按 `workspace_dedicated`（会话侧为等价错误文案）拒绝；只有所有者 Bot 通过自身保存的默认名使用它（`updateBot` 保持自指豁免；owned session 物化前由 runtime manager 按 profile `dedicatedWorkspace` marker 断言归属，daemon 内部 create 通道另带 `claimsDedicatedWorkspace` 豁免）。运行时 cwd 解析直接读 config，不查该标记。
 
 回滚发生在同一 `workspaces.transaction` 临界区内：占用检查（`SessionService.isWorkspaceInUse`）与 `removeWorkspace` 之间不释放 `stateMutex`，因此并发的会话绑定要么在检查前被看见（保留注册与目录，原样透出 `bots.createBot` 错误，不包进 `AggregateError`），要么在删除后因注册已消失而无法绑定。回滚前按 `cwd` 复核注册仍指向本次创建的目录；删除时 `ConfigStore.removeWorkspace(name, expectedCwd)` 在 config 文件锁内按磁盘上的最新条目再次复核 `cwd`，进程外的同名替换也不会被误删。同名但指向别处的注册不属于本次创建，原样保留；此时无法证明目录归属，回滚也不删除该目录。非 transaction 的 `botWorkspaceMutex` 分支只服务于测试与 embedding，生产恒走 transaction，保持 best-effort。
 

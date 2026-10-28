@@ -703,7 +703,7 @@ async function handleWorkspaceCli(
 async function workspaceList(print: (line: string) => void): Promise<number> {
   const store = await createCliConfigStore();
   const config = await store.load();
-  const entries = Object.entries(config.workspaces);
+  const entries = Object.entries(config.workspaces).filter(([, workspace]) => workspace.dedicated !== true);
 
   if (entries.length === 0) {
     print(t().cli.workspaceEmpty);
@@ -749,6 +749,10 @@ async function workspaceAdd(
 
   const existing = config.workspaces[name];
   if (existing) {
+    if (existing.dedicated === true) {
+      deps.print(t().cli.workspaceDedicatedConflict(name));
+      return 1;
+    }
     if (sameWorkspacePath(existing.cwd, cwd)) {
       deps.print(t().cli.workspaceAlreadyExists(name, existing.cwd));
       return 0;
@@ -796,6 +800,10 @@ async function workspaceRemove(
   const config = await store.load();
   if (!config.workspaces[name]) {
     print(t().cli.workspaceNotFound(name));
+    return 1;
+  }
+  if (config.workspaces[name]?.dedicated === true) {
+    print(t().cli.workspaceDedicatedRemove(name));
     return 1;
   }
 
