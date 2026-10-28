@@ -201,27 +201,27 @@ function openRemoval(): void {
   <div class="relative flex h-full flex-col bg-bg text-fg">
     <!-- Mobile floating identity (<lg), modeled on the reference mock: the
          transcript runs full-height and the identity floats OVER it — back and ⋯ as
-         glass circles at the edges, a centered glass chip (avatar / name / role)
-         that content scrolls beneath. Zero layout height, so the transcript keeps
-         the whole screen; the chip's backdrop-blur keeps text under it legible.
-         The topic lives in the ⋯ sheet (TopicSwitcher renders its own MobileSheet).
-         The transcript never repeats the avatar in front of bubbles (TranscriptRow
-         hideIdentityOnMobile). pointer-events-none on the layer, auto on the two
-         buttons, so scrolling over the chip still scrolls the transcript. Desktop
-         keeps the opaque header below (a backdrop-filtered ANCESTOR would trap
-         TopicSwitcher's popover — see that header's comment). -->
+         glass circles at the edges, a centered glass base (name only) with a large
+         avatar overlapping its top edge; the avatar disc carries a theme fallback
+         (white in light, black in dark) so avatars without art still read. Content
+         scrolls beneath. Zero layout height, so the transcript keeps the whole
+         screen. The topic lives in the ⋯ sheet (TopicSwitcher renders its own
+         MobileSheet). The transcript never repeats the avatar in front of bubbles
+         (TranscriptRow hideIdentityOnMobile). pointer-events-none on the layer,
+         auto on the two buttons, so scrolling over the chip still scrolls the
+         transcript. Desktop keeps the opaque header below (a backdrop-filtered
+         ANCESTOR would trap TopicSwitcher's popover — see that header's comment). -->
     <div class="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
               class="glass-avatar pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
-      <div class="glass-avatar absolute left-1/2 top-[calc(0.75rem+env(safe-area-inset-top))] flex -translate-x-1/2 flex-col items-center rounded-2xl px-3 pb-1.5">
-        <span class="-mt-4 grid h-11 w-11 shrink-0 place-items-center rounded-full ring-2 ring-bg">
-          <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="40"
+      <div class="glass-avatar absolute left-1/2 top-[calc(0.875rem+env(safe-area-inset-top))] flex -translate-x-1/2 flex-col items-center rounded-xl px-2.5 pb-1 pt-[3.25rem]">
+        <span class="absolute -top-2 left-1/2 grid h-14 w-14 -translate-x-1/2 place-items-center rounded-full bg-white dark:bg-black">
+          <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="56"
                      :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
                      :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
         </span>
-        <span class="mt-0.5 max-w-40 truncate text-xs font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
-        <span v-if="bot?.role?.trim()" class="max-w-40 truncate text-[10px] leading-tight text-fg-muted">{{ bot.role }}</span>
+        <span class="max-w-36 truncate text-xs font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
       </div>
       <button type="button" data-test="mobile-bot-more" :aria-label='$t("common.more")'
               class="glass-avatar pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
