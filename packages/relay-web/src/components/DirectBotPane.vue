@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ChevronDown,
   ArrowLeft,
   Folder,
   MessagesSquare,
+  Hash,
   MoreHorizontal,
   Pencil,
   Trash2,
@@ -92,8 +93,16 @@ const activeSheet = ref<BotSheetId | null>(null);
 function openSheet(id: BotSheetId): void { activeSheet.value = id; }
 function closeSheet(): void { activeSheet.value = null; }
 
-/** One TopicSwitcher at a time: the mobile bar's below lg, the desktop header's from lg. */
+/** One TopicSwitcher at a time: the desktop header's from lg down to… below lg it
+ *  stays parked offscreen, because its own sheet has to outlive the ⋯ sheet that
+ *  opens it — a switcher rendered INSIDE the ⋯ sheet is unmounted by the very click
+ *  that should open its sheet. The ⋯ sheet's topic row clicks this parked trigger. */
 const isMobile = useIsMobile();
+const mobileTopicHost = ref<HTMLElement | null>(null);
+function openMobileTopics(): void {
+  closeSheet();
+  void nextTick(() => mobileTopicHost.value?.querySelector("button")?.click());
+}
 
 function requireTopicContext(): { instanceId: string; conversationId: string } | null {
   const instanceId = directBotsStore.instanceId;
@@ -189,45 +198,52 @@ function openRemoval(): void {
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-bg text-fg">
-    <!-- Mobile single top bar (<lg): one 52px row — back, the pinned Bot avatar, name +
-         role, the topic as a tappable subtitle, and ⋯. A centered three-line identity
-         (avatar / name / role / topic) cost ~126px of an 844px screen and starved the
-         transcript; this matches the GroupPane bar and every chat app's header. The
-         transcript never repeats the avatar in front of bubbles (TranscriptRow
-         hideIdentityOnMobile). Desktop keeps the header below. -->
-    <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
+  <div class="relative flex h-full flex-col bg-bg text-fg">
+    <!-- Mobile floating identity (<lg), modeled on the reference mock: the
+         transcript runs full-height and the identity floats OVER it — back and ⋯ as
+         glass circles at the edges, a centered glass chip (avatar / name / role)
+         that content scrolls beneath. Zero layout height, so the transcript keeps
+         the whole screen; the chip's backdrop-blur keeps text under it legible.
+         The topic lives in the ⋯ sheet (TopicSwitcher renders its own MobileSheet).
+         The transcript never repeats the avatar in front of bubbles (TranscriptRow
+         hideIdentityOnMobile). pointer-events-none on the layer, auto on the two
+         buttons, so scrolling over the chip still scrolls the transcript. Desktop
+         keeps the opaque header below (a backdrop-filtered ANCESTOR would trap
+         TopicSwitcher's popover — see that header's comment). -->
+    <div class="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+              class="glass-avatar pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
-      <span class="glass-avatar grid h-8 w-8 shrink-0 place-items-center rounded-full">
-        <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="30"
-                   :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
-                   :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
-      </span>
-      <div class="flex min-w-0 flex-1 flex-col">
-        <div class="flex min-w-0 items-center gap-1.5">
-          <span class="truncate text-sm font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
-          <span v-if="bot?.role?.trim()" class="truncate text-[11px] text-fg-muted">{{ bot.role }}</span>
-        </div>
-        <TopicSwitcher
-          v-if="isMobile"
-          variant="direct"
-          :topics="directBotsStore.currentTopics"
-          :active-topic-id="directBotsStore.activeTopicId"
-          :preview-topic="previewTopic"
-          :rename-topic="renameTopic"
-          :archive-topic="archiveTopic"
-          :restore-topic="restoreTopic"
-          :teardown-topic="teardownTopic"
-          :clear-topic="clearTopic"
-          @select="directBotsStore.switchTopic"
-          @create="newTopicDialogOpen = true"
-        />
+      <div class="glass-avatar absolute left-1/2 top-[calc(0.75rem+env(safe-area-inset-top))] flex -translate-x-1/2 flex-col items-center rounded-2xl px-3 pb-1.5">
+        <span class="-mt-4 grid h-11 w-11 shrink-0 place-items-center rounded-full ring-2 ring-bg">
+          <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="40"
+                     :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
+                     :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
+        </span>
+        <span class="mt-0.5 max-w-40 truncate text-xs font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
+        <span v-if="bot?.role?.trim()" class="max-w-40 truncate text-[10px] leading-tight text-fg-muted">{{ bot.role }}</span>
       </div>
       <button type="button" data-test="mobile-bot-more" :aria-label='$t("common.more")'
-              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="glass-avatar pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
+    </div>
+    <!-- Parked topic trigger (<lg): see openMobileTopics. Only the TRIGGER moves
+         offscreen — its sheet is a sibling, so it must not inherit clip, opacity or
+         transform from this host (each of those would hide or re-anchor the sheet). -->
+    <div v-if="isMobile" ref="mobileTopicHost" class="parked-topic">
+      <TopicSwitcher
+        variant="direct"
+        :topics="directBotsStore.currentTopics"
+        :active-topic-id="directBotsStore.activeTopicId"
+        :preview-topic="previewTopic"
+        :rename-topic="renameTopic"
+        :archive-topic="archiveTopic"
+        :restore-topic="restoreTopic"
+        :teardown-topic="teardownTopic"
+        :clear-topic="clearTopic"
+        @select="directBotsStore.switchTopic"
+        @create="newTopicDialogOpen = true"
+      />
     </div>
     <MobileConnStrip />
 
@@ -345,8 +361,12 @@ function openRemoval(): void {
     </div>
 
     <!-- Message Area -->
+    <!-- The floating identity chip costs no layout height, so the transcript
+         reserves scroll padding instead: content starts below the chip, then
+         scrolls beneath its glass. -->
     <ConversationMessageList
       :messages="directBotsStore.messages"
+      top-inset-class="pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5"
       :empty-hint="emptyHint"
       :live-turn="directBotsStore.liveTurn"
       :active-run="directBotsStore.activeRun"
@@ -415,6 +435,16 @@ function openRemoval(): void {
 
     <!-- Bot ⋯ sheet (<lg): the desktop header's nav / edit / delete entries. -->
     <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="mobile-bot-more-sheet" @close="closeSheet">
+      <!-- Topics live here on mobile (the floating header has no subtitle row). The
+           row hands off to the parked trigger, so the topic sheet outlives this one. -->
+      <button type="button" data-test="sheet-bot-topic"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="openMobileTopics">
+        <Hash :size="18" class="shrink-0 text-fg-muted" />
+        <span class="min-w-0 flex-1 truncate">{{ $t("mobileBar.switchTopic") }}</span>
+        <span class="max-w-32 truncate text-xs text-fg-muted">{{ directBotsStore.currentTopic?.title ?? $t("bot.topic.default") }}</span>
+        <ChevronDown :size="14" class="shrink-0 text-fg-muted" />
+      </button>
       <button type="button" data-test="sheet-bot-nav"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
               @click="openSheet('nav')">
@@ -474,5 +504,19 @@ function openRemoval(): void {
     0 1px 2px rgb(0 0 0 / 0.05),
     0 4px 14px rgb(0 0 0 / 0.08),
     inset 0 1px 0 rgb(255 255 255 / 0.30);
+}
+
+/* The parked TopicSwitcher trigger (<lg): out of sight and out of flow, but its
+   sheet/dropdown siblings stay in the normal tree (fixed, unclipped). */
+.parked-topic {
+  position: relative;
+  height: 0;
+}
+/* TopicSwitcher is a multi-root fragment, so Vue cannot stamp this component's
+   scope id on its root: only :deep() reaches the trigger pill. */
+.parked-topic :deep([data-test="topic-menu"]) {
+  position: absolute;
+  top: 0;
+  left: -9999px;
 }
 </style>

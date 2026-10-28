@@ -55,6 +55,10 @@ const props = defineProps<{
    *  from the store: this component is a pure renderer and its parent already
    *  subscribes to the store for the rest of the turn. */
   pendingInteraction?: PendingInteractionState | null;
+  /** Extra scroll-padding classes for the transcript top. The direct pane's
+   *  floating identity chip costs no layout height, so the pane passes its
+   *  height as padding here instead; default keeps the plain 16px top pad. */
+  topInsetClass?: string;
 }>();
 const emit = defineEmits<{
   loadOlder: [];
@@ -178,7 +182,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
   <!-- px-4 on mobile (16px): a horizontally scrollable code block inside a message must
        not start within 24px of the left screen edge, or it competes with the iOS Safari
        back swipe. 16 + the block's own padding clears that. -->
-  <div ref="scroller" data-test="conversation-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 px-4 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
+  <div ref="scroller" data-test="conversation-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto pb-4 px-4 pt-4 lg:pb-5 lg:pl-5 lg:pr-5 lg:pt-5" :class="topInsetClass" @scroll.passive="onScroll">
     <!-- Load Older Button -->
     <div v-if="hasMoreOlder" class="mb-4 flex justify-center">
       <button

@@ -2453,7 +2453,7 @@ describe("Direct Bot Components", () => {
       ];
     }
 
-    it("mobile bar uses TopicSwitcher: subtitle pill opens the shared sheet with search-free rows, ⋯ and new topic at the bottom", async () => {
+    it("mobile ⋯ sheet's topic row closes itself and opens the shared topic sheet", async () => {
       seedBot();
       const directBots = useDirectBotsStore();
       const switchTopicSpy = vi.spyOn(directBots, "switchTopic").mockResolvedValue();
@@ -2461,12 +2461,19 @@ describe("Direct Bot Components", () => {
       window.innerWidth = 500;
       try {
         const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
-        // Below lg only the mobile bar's pill is mounted; its label is the active topic.
-        const pills = wrapper.findAll('[data-test="topic-menu"]');
-        expect(pills).toHaveLength(1);
-        const pill = pills[0]!;
-        expect(pill.text()).toBe("Default");
-        await pill.trigger("click");
+        // Below lg the switcher is parked offscreen, never rendered in the header.
+        expect(wrapper.find('header [data-test="topic-menu"]').exists()).toBe(false);
+        const parked = wrapper.find('[data-test="topic-menu"]');
+        expect(parked.element.closest(".parked-topic")).not.toBeNull();
+        expect(parked.text()).toBe("Default");
+        await wrapper.find('[data-test="mobile-bot-more"]').trigger("click");
+        const topicRow = wrapper.find('[data-test="mobile-bot-more-sheet"] [data-test="sheet-bot-topic"]');
+        expect(topicRow.exists()).toBe(true);
+        expect(topicRow.text()).toContain("Default");
+        await topicRow.trigger("click");
+        await flushPromises();
+        // One sheet at a time: the ⋯ sheet yields to the shared topic sheet.
+        expect(wrapper.find('[data-test="mobile-bot-more-sheet"]').exists()).toBe(false);
         const sheet = wrapper.find('[data-test="bot-topic-sheet"]');
         expect(sheet.exists()).toBe(true);
         const rows = sheet.findAll('[data-test="topic-row"]');
@@ -2488,7 +2495,7 @@ describe("Direct Bot Components", () => {
       }
     });
 
-    it("mounts exactly one TopicSwitcher per breakpoint: the header's on desktop, the mobile bar's below lg", async () => {
+    it("mounts exactly one TopicSwitcher per breakpoint: in the header on desktop, parked below lg", async () => {
       seedBot();
       const prevWidth = window.innerWidth;
       try {
@@ -2501,6 +2508,7 @@ describe("Direct Bot Components", () => {
         const mobile = mount(DirectBotPane, { global: { plugins: [i18n] } });
         expect(mobile.findAll('[data-test="topic-menu"]')).toHaveLength(1);
         expect(mobile.find('header [data-test="topic-menu"]').exists()).toBe(false);
+        expect(mobile.find('[data-test="topic-menu"]').element.closest(".parked-topic")).not.toBeNull();
         mobile.unmount();
       } finally {
         window.innerWidth = prevWidth;
@@ -2519,13 +2527,14 @@ describe("Direct Bot Components", () => {
         await flushPromises();
         expect(wrapper.findAll('[data-test="topic-menu"]')).toHaveLength(1);
         expect(wrapper.find('header [data-test="topic-menu"]').exists()).toBe(false);
+        expect(wrapper.find('[data-test="topic-menu"]').element.closest(".parked-topic")).not.toBeNull();
         wrapper.unmount();
       } finally {
         window.innerWidth = prevWidth;
       }
     });
 
-    it("shows Default on both mobile and desktop when no topic is active (not the bot role)", async () => {
+    it("shows Default on both breakpoints when no topic is active (not the bot role)", async () => {
       seedBot();
       useDirectBotsStore().activeTopicId = null;
       const prevWidth = window.innerWidth;
