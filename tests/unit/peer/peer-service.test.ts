@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -84,7 +84,7 @@ test("approve executes, backfills the result, and watch observes terminal", asyn
       targetAlias: "peer-b",
       task: "summarize the module",
     });
-    const running = await h.service.approve({ requestId: record.requestId, approvedBy: "operator" });
+    const running = await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
     expect(running.status).toBe("running");
     const watched = await h.service.watch({ requestId: record.requestId, timeoutMs: 5000, pollIntervalMs: 20 });
     expect(watched.status).toBe("terminal");
@@ -127,10 +127,10 @@ test("duplicate requestId returns the existing record; reuse for another delegat
       }),
     ).rejects.toThrow("already used by a different delegation");
     await expect(
-      h.service.approve({ requestId: first.requestId, approvedBy: "operator" }),
+      h.service.approve({ requestId: first.requestId, approverAlias: "operator" }),
     ).resolves.toBeDefined();
     await expect(
-      h.service.approve({ requestId: first.requestId, approvedBy: "operator" }),
+      h.service.approve({ requestId: first.requestId, approverAlias: "operator" }),
     ).rejects.toThrow("not awaiting approval");
   } finally {
     await h.cleanup();
@@ -168,7 +168,7 @@ test("watch timeout ends only the watch; the request keeps running", async () =>
       targetAlias: "peer-b",
       task: "slow task",
     });
-    await h.service.approve({ requestId: record.requestId, approvedBy: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
     const watched = await h.service.watch({ requestId: record.requestId, timeoutMs: 200, pollIntervalMs: 20 });
     expect(watched.status).toBe("timeout");
     expect(watched.request.status).toBe("running");
@@ -193,7 +193,7 @@ test("confirm requires completed status and the originator", async () => {
     await expect(
       h.service.confirm({ requestId: record.requestId, originatorAlias: "peer-a" }),
     ).rejects.toThrow("only a completed peer request can be confirmed");
-    await h.service.approve({ requestId: record.requestId, approvedBy: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
     const watched = await h.service.watch({ requestId: record.requestId, timeoutMs: 5000, pollIntervalMs: 20 });
     expect(watched.request.status).toBe("completed");
     await expect(
@@ -217,7 +217,7 @@ test("failed execution backfills a sanitized error", async () => {
       targetAlias: "peer-b",
       task: "t",
     });
-    await h.service.approve({ requestId: record.requestId, approvedBy: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
     const watched = await h.service.watch({ requestId: record.requestId, timeoutMs: 5000, pollIntervalMs: 20 });
     expect(watched.request.status).toBe("failed");
     expect(watched.request.error).toContain("boom");
@@ -257,7 +257,7 @@ test("records survive a store reload (daemon restart)", async () => {
       targetAlias: "peer-b",
       task: "t",
     });
-    await h.service.approve({ requestId: record.requestId, approvedBy: "operator" });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
     await h.service.watch({ requestId: record.requestId, timeoutMs: 5000, pollIntervalMs: 20 });
     const reloadedStore = new PeerStore(join(h.dir, "peer-requests.json"));
     const reloadedService = new PeerService({
@@ -268,6 +268,149 @@ test("records survive a store reload (daemon restart)", async () => {
     const found = await reloadedService.get(record.requestId);
     expect(found?.status).toBe("completed");
     expect(found?.result).toContain("t");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("approve records the binding-derived approver and rejects target self-approval", async () => {
+  const h = await setup();
+  try {
+    const record = await h.service.delegate({
+      originatorAlias: "peer-a",
+      targetAlias: "peer-b",
+      task: "t",
+    });
+    await expect(
+      h.service.approve({ requestId: record.requestId, approverAlias: "peer-b" }),
+    ).rejects.toThrow("cannot approve a delegation addressed to itself");
+    const running = await h.service.approve({
+      requestId: record.requestId,
+      approverAlias: "operator",
+    });
+    expect(running.status).toBe("running");
+    expect(running.approvedBy).toBe("operator");
+    await expect(
+      h.service.approve({ requestId: record.requestId, approverAlias: "" }),
+    ).rejects.toThrow("not awaiting approval");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("cancel is originator-only, running-only, and watch reports cancelled", async () => {
+  let release!: (value: { text: string }) => void;
+  const pending = new Promise<{ text: string }>((resolve) => {
+    release = resolve;
+  });
+  const h = await setup(() => pending);
+  try {
+    const record = await h.service.delegate({
+      originatorAlias: "peer-a",
+      targetAlias: "peer-b",
+      task: "t",
+    });
+    await expect(
+      h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-a" }),
+    ).rejects.toThrow("only a running peer request can be cancelled");
+    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+    await expect(
+      h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-b" }),
+    ).rejects.toThrow("only the originator can cancel");
+    const cancelled = await h.service.cancel({
+      requestId: record.requestId,
+      originatorAlias: "peer-a",
+    });
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.cancelledAt).toBeDefined();
+    const watched = await h.service.watch({
+      requestId: record.requestId,
+      timeoutMs: 5000,
+      pollIntervalMs: 20,
+    });
+    expect(watched.status).toBe("terminal");
+    expect(watched.request.status).toBe("cancelled");
+    await expect(
+      h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-a" }),
+    ).rejects.toThrow("only a running peer request can be cancelled");
+  } finally {
+    release({ text: "late" });
+    await h.cleanup();
+  }
+});
+
+test("a late completion never overwrites a cancellation", async () => {
+  let release!: (value: { text: string }) => void;
+  const pending = new Promise<{ text: string }>((resolve) => {
+    release = resolve;
+  });
+  const h = await setup(() => pending);
+  try {
+    const record = await h.service.delegate({
+      originatorAlias: "peer-a",
+      targetAlias: "peer-b",
+      task: "slow task",
+    });
+    await h.service.approve({ requestId: record.requestId, approverAlias: "operator" });
+    await h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-a" });
+    release({ text: "done late" });
+    // Give the background execution a chance to attempt its backfill.
+    await Bun.sleep(100);
+    const after = await h.service.get(record.requestId);
+    expect(after?.status).toBe("cancelled");
+    expect(after?.result).toBeUndefined();
+    expect(h.promptCalls).toHaveLength(1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("listRelated returns caller-related delegations with optional status filter", async () => {
+  const h = await setup();
+  try {
+    const ab = await h.service.delegate({
+      originatorAlias: "peer-a",
+      targetAlias: "peer-b",
+      task: "a to b",
+      requestId: "req-list-ab",
+    });
+    await h.service.delegate({
+      originatorAlias: "peer-b",
+      targetAlias: "peer-a",
+      task: "b to a",
+      requestId: "req-list-ba",
+    });
+    const forA = await h.service.listRelated("peer-a");
+    expect(forA.map((r) => r.requestId).sort()).toEqual(["req-list-ab", "req-list-ba"]);
+    const forGhost = await h.service.listRelated("ghost");
+    expect(forGhost).toHaveLength(0);
+    await h.service.approve({ requestId: ab.requestId, approverAlias: "operator" });
+    const runningForA = await h.service.listRelated("peer-a", { status: "running" });
+    expect(runningForA.map((r) => r.requestId)).toEqual(["req-list-ab"]);
+    const pendingForB = await h.service.listRelated("peer-b", {
+      status: "needs_confirmation",
+    });
+    expect(pendingForB.map((r) => r.requestId)).toEqual(["req-list-ba"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a corrupted store file fails with a clear recovery message", async () => {
+  const h = await setup();
+  try {
+    const file = join(h.dir, "peer-requests.json");
+    await writeFile(file, "{not json", "utf8");
+    await expect(h.service.listRelated("peer-a")).rejects.toThrow(
+      "Peer request store is corrupted",
+    );
+    await expect(h.service.listRelated("peer-a")).rejects.toThrow(
+      "move this file aside",
+    );
+    await writeFile(file, JSON.stringify({ not: "an array" }), "utf8");
+    await expect(h.service.get("whatever")).rejects.toThrow(
+      "Peer request store is corrupted",
+    );
   } finally {
     await h.cleanup();
   }

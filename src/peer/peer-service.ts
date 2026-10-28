@@ -9,7 +9,7 @@ import {
   clampWatchTimeout,
 } from "../orchestration/task-watch-timeouts";
 import type { ResolvedSession } from "../transport/types";
-import type { PeerRequest, PeerWatchResult } from "./peer-types";
+import type { PeerRequest, PeerRequestStatus, PeerWatchResult } from "./peer-types";
 import { isPeerRequestTerminal } from "./peer-types";
 import type { PeerStore } from "./peer-store";
 
@@ -28,8 +28,23 @@ export interface PeerDelegateInput {
 
 export interface PeerApproveInput {
   requestId: string;
-  /** Who authorized execution (operator binding string). */
-  approvedBy: string;
+  /**
+   * Binding-derived identity of the approving caller. The tool layer
+   * supplies sourceHandle ?? coordinatorSession; this is never a
+   * free-form name the caller reports about itself. The target session
+   * cannot approve a delegation addressed to itself.
+   */
+  approverAlias: string;
+}
+
+export interface PeerCancelInput {
+  requestId: string;
+  /** Only the originator can cancel its own delegation. */
+  originatorAlias: string;
+}
+
+export interface PeerListFilter {
+  status?: PeerRequestStatus;
 }
 
 export interface PeerWatchInput {
@@ -152,12 +167,21 @@ export class PeerService {
         `peer request "${input.requestId}" is not awaiting approval (status=${record.status})`,
       );
     }
+    const approverAlias = input.approverAlias.trim();
+    if (!approverAlias) {
+      throw new Error("peer approve requires a binding-derived approver identity");
+    }
+    if (approverAlias === record.target.alias) {
+      throw new Error(
+        `the target session cannot approve a delegation addressed to itself (target=${record.target.alias})`,
+      );
+    }
     const now = this.now().toISOString();
     const running: PeerRequest = {
       ...record,
       status: "running",
       approvedAt: now,
-      approvedBy: input.approvedBy,
+      approvedBy: approverAlias,
       startedAt: now,
       updatedAt: now,
     };
@@ -209,6 +233,51 @@ export class PeerService {
   }
 
   /**
+   * Cancel a running delegation. Record-level only: this does NOT stop the
+   * target's turn — the target keeps running, but its result will no
+   * longer be backfilled (see backfillIfRunning), and watch reports
+   * `cancelled`. Unapproved requests never execute and need no cancel;
+   * terminal requests cannot be cancelled.
+   */
+  async cancel(input: PeerCancelInput): Promise<PeerRequest> {
+    const record = await this.requireRequest(input.requestId);
+    if (record.status !== "running") {
+      throw new Error(
+        `only a running peer request can be cancelled (status=${record.status}); unapproved requests never execute and need no cancel`,
+      );
+    }
+    if (record.originator.alias !== input.originatorAlias) {
+      throw new Error("only the originator can cancel a peer request");
+    }
+    const now = this.now().toISOString();
+    return await this.deps.store.upsert({
+      ...record,
+      status: "cancelled",
+      cancelledAt: now,
+      updatedAt: now,
+    });
+  }
+
+  /**
+   * Delegations related to one caller — where the caller is the originator
+   * or the target — optionally filtered by status. This is the viewing
+   * entry for requestIds lost to context loss or restart, and for what is
+   * waiting for approval.
+   */
+  async listRelated(
+    callerAlias: string,
+    filter?: PeerListFilter,
+  ): Promise<PeerRequest[]> {
+    const records = await this.deps.store.list();
+    return records.filter(
+      (record) =>
+        (record.originator.alias === callerAlias ||
+          record.target.alias === callerAlias) &&
+        (filter?.status === undefined || record.status === filter.status),
+    );
+  }
+
+  /**
    * Backfill a terminal outcome by requestId. This is the ONLY path that
    * moves a running request to completed/failed, and it refuses mismatches:
    * unknown ids and non-running records are rejected, so a receipt can
@@ -254,30 +323,57 @@ export class PeerService {
   }
 
   private async runExecution(record: PeerRequest): Promise<void> {
-    const target = await this.deps.resolveSession(record.target.alias);
+    // Re-read first: a cancel may have landed after approve but before
+    // this background task started. Never resurrect a cancelled record
+    // with a stale snapshot, and never backfill onto it below.
+    const current = await this.deps.store.get(record.requestId);
+    if (!current || current.status !== "running") {
+      return;
+    }
+    const target = await this.deps.resolveSession(current.target.alias);
     if (!target) {
-      await this.recordCompletion(record.requestId, {
-        error: `peer target session "${record.target.alias}" is no longer resolvable`,
+      await this.backfillIfRunning(current.requestId, {
+        error: `peer target session "${current.target.alias}" is no longer resolvable`,
       });
       return;
     }
     // Resolve the transport name from state at execution time — never
     // compose it from workspace + alias (names may carry suffixes).
     const executing: PeerRequest = {
-      ...record,
+      ...current,
       targetTransportSession: target.transportSession,
     };
     await this.deps.store.upsert(executing);
     const promptText =
-      `Peer delegation from ${record.originator.alias} ` +
-      `(request ${record.requestId}):\n\n${record.task}`;
+      `Peer delegation from ${current.originator.alias} ` +
+      `(request ${current.requestId}):\n\n${current.task}`;
     try {
       const { text } = await this.deps.promptSession(target, promptText);
-      await this.recordCompletion(record.requestId, { result: text });
+      await this.backfillIfRunning(current.requestId, { result: text });
     } catch (error) {
-      await this.recordCompletion(record.requestId, {
+      await this.backfillIfRunning(current.requestId, {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Backfill only while the request is still running. A cancel that lands
+   * between the prompt finishing and this write must win: recordCompletion
+   * already refuses non-running records, so this re-read is what keeps a
+   * cancelled record from being overwritten by a late completion. (A
+   * residual race between this re-read and recordCompletion's own check
+   * surfaces as a refused completion inside runExecution's swallowed
+   * catch; the record stays cancelled either way.)
+   */
+  private async backfillIfRunning(
+    requestId: string,
+    outcome: { result: string } | { error: string },
+  ): Promise<void> {
+    const current = await this.deps.store.get(requestId);
+    if (!current || current.status !== "running") {
+      return;
+    }
+    await this.recordCompletion(requestId, outcome);
   }
 }

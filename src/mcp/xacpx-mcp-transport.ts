@@ -27,8 +27,10 @@ import type {
 } from "../orchestration/agent-messaging-types";
 import type {
   PeerRequest,
+  PeerRequestStatus,
   PeerWatchResult,
 } from "../peer/peer-types";
+import { PEER_NOT_BOUND_MESSAGE } from "../peer/peer-types";
 export interface XacpxMcpDelegateRequest {
   coordinatorSession: string;
   sourceHandle?: string;
@@ -126,8 +128,17 @@ export interface XacpxMcpPeerDelegateArgs {
 
 export interface XacpxMcpPeerRequestArgs {
   requestId: string;
-  approvedBy?: string;
+  approverAlias?: string;
   originatorAlias?: string;
+}
+
+export interface XacpxMcpPeerListArgs {
+  callerAlias: string;
+  status?: PeerRequestStatus;
+}
+
+export interface XacpxMcpPeerGetArgs {
+  requestId: string;
 }
 
 export interface XacpxMcpPeerWatchArgs {
@@ -174,6 +185,9 @@ export interface XacpxMcpTransport {
   peerApprove?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
   peerWatch?: (input: XacpxMcpPeerWatchArgs) => Promise<PeerWatchResult>;
   peerConfirm?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
+  peerCancel?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
+  peerList?: (input: XacpxMcpPeerListArgs) => Promise<PeerRequest[]>;
+  peerGet?: (input: XacpxMcpPeerGetArgs) => Promise<PeerRequest | null>;
 }
 
 interface OrchestrationClientLike {
@@ -299,6 +313,13 @@ export function createMemoryTransport(
     throw new Error(`memory transport ${name} is not implemented`);
   };
 
+  // Peer stubs throw the actionable message, not the generic one: a real
+  // session hitting an unbound peer tool must learn that Daemon RPC
+  // binding is not part of this prototype, not internal binding jargon.
+  const peerNotBound = () => async () => {
+    throw new Error(PEER_NOT_BOUND_MESSAGE);
+  };
+
   return {
     delegateRequest: async (input) => await delegateRequest(input),
     createGroup: overrides.createGroup ?? (unimplemented("createGroup") as XacpxMcpTransport["createGroup"]),
@@ -332,15 +353,24 @@ export function createMemoryTransport(
       ?? (unimplemented("sendAgentMessage") as XacpxMcpTransport["sendAgentMessage"]),
     peerDelegate:
       overrides.peerDelegate
-      ?? (unimplemented("peerDelegate") as XacpxMcpTransport["peerDelegate"]),
+      ?? (peerNotBound() as XacpxMcpTransport["peerDelegate"]),
     peerApprove:
       overrides.peerApprove
-      ?? (unimplemented("peerApprove") as XacpxMcpTransport["peerApprove"]),
+      ?? (peerNotBound() as XacpxMcpTransport["peerApprove"]),
     peerWatch:
       overrides.peerWatch
-      ?? (unimplemented("peerWatch") as XacpxMcpTransport["peerWatch"]),
+      ?? (peerNotBound() as XacpxMcpTransport["peerWatch"]),
     peerConfirm:
       overrides.peerConfirm
-      ?? (unimplemented("peerConfirm") as XacpxMcpTransport["peerConfirm"]),
+      ?? (peerNotBound() as XacpxMcpTransport["peerConfirm"]),
+    peerCancel:
+      overrides.peerCancel
+      ?? (peerNotBound() as XacpxMcpTransport["peerCancel"]),
+    peerList:
+      overrides.peerList
+      ?? (peerNotBound() as XacpxMcpTransport["peerList"]),
+    peerGet:
+      overrides.peerGet
+      ?? (peerNotBound() as XacpxMcpTransport["peerGet"]),
   };
 }

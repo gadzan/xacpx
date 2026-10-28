@@ -3,6 +3,8 @@ import type {
   ToolExecution,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { XacpxMcpTransport } from "./xacpx-mcp-transport";
+import type { PeerRequest } from "../peer/peer-types";
+import { PEER_NOT_BOUND_MESSAGE } from "../peer/peer-types";
 import { GROUP_EXECUTION_PREFIX, MAX_GROUP_TASK_LENGTH, MAX_GROUP_EXPECTED_OUTPUT_LENGTH } from "../conversations/group-handoff";
 import {
   DEFAULT_TASK_WATCH_POLL_INTERVAL_MS,
@@ -51,6 +53,49 @@ export interface XacpxMcpToolDefinition<Args> {
 }
 
 export type XacpxMcpToolResult = CallToolResult;
+
+/** Bounded result block for watch/get text: result text when present, plus
+ *  an explicit truncation note. Text-only adapters drop structuredContent,
+ *  so the text channel itself must carry both — a terminal result the
+ *  caller cannot see cannot be validated. */
+function renderPeerResultBlock(request: PeerRequest): string {
+  if (request.result === undefined) {
+    return "";
+  }
+  return (
+    `\nResult:\n${request.result}` +
+    (request.resultTruncated
+      ? `\nNote: the result was truncated to 16 KiB; the full result is not included here.`
+      : "")
+  );
+}
+
+function renderPeerRecordSummary(request: PeerRequest): string {
+  const lines = [
+    `Peer delegation "${request.requestId}".`,
+    `- Status: ${request.status}`,
+    `- From: ${request.originator.alias}`,
+    `- To: ${request.target.alias}`,
+    `- Task: ${request.task}`,
+  ];
+  if (request.error !== undefined) {
+    lines.push(`- Error: ${request.error}`);
+  }
+  lines.push(`- Created: ${request.createdAt}`);
+  if (request.approvedAt !== undefined) {
+    lines.push(`- Approved: ${request.approvedAt} by ${request.approvedBy}`);
+  }
+  if (request.completedAt !== undefined) {
+    lines.push(`- Completed: ${request.completedAt}`);
+  }
+  if (request.deliveredAt !== undefined) {
+    lines.push(`- Delivered: ${request.deliveredAt}`);
+  }
+  if (request.cancelledAt !== undefined) {
+    lines.push(`- Cancelled: ${request.cancelledAt}`);
+  }
+  return lines.join("\n") + renderPeerResultBlock(request);
+}
 
 export function buildXacpxMcpToolRegistry(input: {
   transport: XacpxMcpTransport;
@@ -636,7 +681,7 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "peer_delegate",
       description:
-        "Delegate a task directly to another session, peer-to-peer, bypassing the coordinator — this is NOT top-down dispatch. The delegation is created in needs_confirmation and does NOT execute until peer_approve is called with operator authorization; an unapproved delegation never runs. Execution prompts the target session, which queues behind the target's active turn and never interrupts it. Completion only fills this request's record; call peer_watch to read the terminal result and peer_confirm to validate it — completion is not proof the deliverable is correct. For plain messages between peers, use agent_send, not this tool.",
+        "Delegate a task directly to another session, peer-to-peer, bypassing the coordinator — this is NOT top-down dispatch. The delegation is created in needs_confirmation and does NOT execute until peer_approve is called with operator authorization; an unapproved delegation never runs. Execution prompts the target session, which queues behind the target's active turn and never interrupts it. Completion only fills this request's record; call peer_watch to read the terminal result and peer_confirm to validate it — completion is not proof the deliverable is correct. For plain messages between peers, use agent_send, not this tool. Find the target first with agent_list: use the target's displayName (for a logical session, its displayName is its alias); do not pass a message handle as the alias.",
       inputSchema: z
         .object({
           targetAlias: z.string().min(1).describe("Target session alias"),
@@ -655,7 +700,7 @@ export function buildXacpxMcpToolRegistry(input: {
         .strict(),
       handler: async (args) =>
         await asToolResult(async () => {
-          if (!transport.peerDelegate) throw new Error("peer_delegate requires a bound peer transport");
+          if (!transport.peerDelegate) throw new Error(PEER_NOT_BOUND_MESSAGE);
           const input = args as {
             targetAlias: string;
             targetWorkspace?: string;
@@ -670,7 +715,7 @@ export function buildXacpxMcpToolRegistry(input: {
             ...(input.requestId !== undefined ? { requestId: input.requestId } : {}),
           });
           return createSuccessResult(
-            `Peer delegation "${record.requestId}" created.\n- Status: ${record.status}\n- From: ${record.originator.alias}\n- To: ${record.target.alias}\nNext: this delegation requires operator authorization. Call peer_approve to authorize execution, or leave it unapproved — it will never run on its own.`,
+            `Peer delegation "${record.requestId}" created.\n- Status: ${record.status}\n- From: ${record.originator.alias}\n- To: ${record.target.alias}\n- Target state: peer_delegate does not report whether the target is busy or idle; check agent_list for the target's current state.\nNext: this delegation requires operator authorization. Call peer_approve to authorize execution, or leave it unapproved — it will never run on its own.`,
             record,
           );
         }),
@@ -678,7 +723,7 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "peer_approve",
       description:
-        "Authorize a peer delegation created by peer_delegate, once the operator has approved it. Execution starts in the background and this call returns running immediately; observe completion with peer_watch. Approving is the operator authorization step — there is no other way to start a peer delegation.",
+        "Authorize a peer delegation created by peer_delegate, once the operator has approved it. Execution starts in the background and this call returns running immediately; observe completion with peer_watch. Approving is the operator authorization step — there is no other way to start a peer delegation. The approver identity comes from the caller's binding; the target session cannot approve a delegation addressed to itself.",
       inputSchema: z
         .object({
           requestId: z.string().min(1),
@@ -686,10 +731,10 @@ export function buildXacpxMcpToolRegistry(input: {
         .strict(),
       handler: async (args) =>
         await asToolResult(async () => {
-          if (!transport.peerApprove) throw new Error("peer_approve requires a bound peer transport");
+          if (!transport.peerApprove) throw new Error(PEER_NOT_BOUND_MESSAGE);
           const record = await transport.peerApprove({
             requestId: (args as { requestId: string }).requestId,
-            approvedBy: sourceHandle ?? coordinatorSession,
+            approverAlias: sourceHandle ?? coordinatorSession,
           });
           return createSuccessResult(
             `Peer delegation "${record.requestId}" approved and running.\nNext: call peer_watch to observe it until it reaches a terminal state.`,
@@ -699,7 +744,7 @@ export function buildXacpxMcpToolRegistry(input: {
     },
     {
       name: "peer_watch",
-      description: `Long-poll a peer request until it reaches a terminal state (completed, failed, or delivered). Defaults: timeout ${DEFAULT_TASK_WATCH_TIMEOUT_MS} ms, poll interval ${DEFAULT_TASK_WATCH_POLL_INTERVAL_MS} ms. Maximums: timeout ${MAX_TASK_WATCH_TIMEOUT_MS} ms, poll interval ${MAX_TASK_WATCH_POLL_INTERVAL_MS} ms. A timeout ends only the watch — the request keeps running and a timeout is never a failure, never a reason to resend, and never permission to send again with a new requestId.`,
+      description: `Long-poll a peer request until it reaches a terminal state (completed, failed, delivered, or cancelled). Defaults: timeout ${DEFAULT_TASK_WATCH_TIMEOUT_MS} ms, poll interval ${DEFAULT_TASK_WATCH_POLL_INTERVAL_MS} ms. Maximums: timeout ${MAX_TASK_WATCH_TIMEOUT_MS} ms, poll interval ${MAX_TASK_WATCH_POLL_INTERVAL_MS} ms. A timeout ends only the watch — the request keeps running and a timeout is never a failure, never a reason to resend, and never permission to send again with a new requestId.`,
       inputSchema: z
         .object({
           requestId: z.string().min(1),
@@ -719,7 +764,7 @@ export function buildXacpxMcpToolRegistry(input: {
         .strict(),
       handler: async (args) =>
         await asToolResult(async () => {
-          if (!transport.peerWatch) throw new Error("peer_watch requires a bound peer transport");
+          if (!transport.peerWatch) throw new Error(PEER_NOT_BOUND_MESSAGE);
           const result = await transport.peerWatch(
             args as {
               requestId: string;
@@ -732,11 +777,14 @@ export function buildXacpxMcpToolRegistry(input: {
             result.status === "terminal"
               ? `Peer delegation "${request.requestId}" reached terminal state: ${request.status}.` +
                 (request.status === "completed"
-                  ? `\nNext: validate the result, then call peer_confirm to mark it delivered. Completion alone is not proof the deliverable is correct.`
+                  ? `${renderPeerResultBlock(request)}\nNext: validate the result, then call peer_confirm to mark it delivered. Completion alone is not proof the deliverable is correct.`
                   : request.status === "failed"
-                    ? `\nError: ${request.error ?? "unknown"}`
-                    : "")
-              : `Peer watch timed out; request "${request.requestId}" is still ${request.status}. The request keeps running — do not resend. Call peer_watch again to keep observing.`;
+                    ? `\nError: ${request.error ?? "unknown"}\nNext: if the task is still needed, delegate it again with a new requestId and approve it. This is a new delegation, not a resend — a timeout is never a reason to resend, and a failed request is not resumed.`
+                    : renderPeerResultBlock(request))
+              : `Peer watch timed out; request "${request.requestId}" is still ${request.status}. The request keeps running — do not resend. Call peer_watch again to keep observing.` +
+                (request.status === "needs_confirmation"
+                  ? ` It is still waiting for approval — call peer_approve once the operator authorizes it.`
+                  : "");
           return createSuccessResult(text, result);
         }),
     },
@@ -751,7 +799,7 @@ export function buildXacpxMcpToolRegistry(input: {
         .strict(),
       handler: async (args) =>
         await asToolResult(async () => {
-          if (!transport.peerConfirm) throw new Error("peer_confirm requires a bound peer transport");
+          if (!transport.peerConfirm) throw new Error(PEER_NOT_BOUND_MESSAGE);
           const record = await transport.peerConfirm({
             requestId: (args as { requestId: string }).requestId,
             originatorAlias: sourceHandle ?? coordinatorSession,
@@ -760,6 +808,94 @@ export function buildXacpxMcpToolRegistry(input: {
             `Peer delegation "${record.requestId}" confirmed delivered by its originator.`,
             record,
           );
+        }),
+    },
+    {
+      name: "peer_cancel",
+      description:
+        "Cancel a running peer delegation. Only the originator can cancel, and only while it is running. Cancellation is record-level only: it does NOT stop the target's turn — the target keeps running, but its result will no longer be backfilled, and peer_watch reports cancelled. Unapproved requests never execute and need no cancel.",
+      inputSchema: z
+        .object({
+          requestId: z.string().min(1),
+        })
+        .strict(),
+      handler: async (args) =>
+        await asToolResult(async () => {
+          if (!transport.peerCancel) throw new Error(PEER_NOT_BOUND_MESSAGE);
+          const record = await transport.peerCancel({
+            requestId: (args as { requestId: string }).requestId,
+            originatorAlias: sourceHandle ?? coordinatorSession,
+          });
+          return createSuccessResult(
+            `Peer delegation "${record.requestId}" cancelled.\nNote: cancellation is record-level only — it does not stop the target's turn. The target keeps running, but its result will no longer be backfilled, and peer_watch reports cancelled.`,
+            record,
+          );
+        }),
+    },
+    {
+      name: "peer_list",
+      description:
+        "List peer delegations related to the caller — where the caller is the originator or the target — optionally filtered by status. Use this to recover requestIds after context loss or a restart, and to see what is waiting for approval.",
+      inputSchema: z
+        .object({
+          status: z
+            .enum([
+              "needs_confirmation",
+              "running",
+              "completed",
+              "failed",
+              "delivered",
+              "cancelled",
+            ])
+            .optional(),
+        })
+        .strict(),
+      handler: async (args) =>
+        await asToolResult(async () => {
+          if (!transport.peerList) throw new Error(PEER_NOT_BOUND_MESSAGE);
+          const input = args as { status?: string };
+          const records = await transport.peerList({
+            callerAlias: sourceHandle ?? coordinatorSession,
+            ...(input.status !== undefined
+              ? { status: input.status as PeerRequest["status"] }
+              : {}),
+          });
+          const lines = records.map((record) => {
+            const task =
+              record.task.length > 100
+                ? `${record.task.slice(0, 100)}…`
+                : record.task;
+            return `- ${record.requestId}: ${record.originator.alias} → ${record.target.alias} [${record.status}] — ${task}`;
+          });
+          return createSuccessResult(
+            lines.length === 0
+              ? "No peer delegations related to this caller."
+              : `Peer delegations related to this caller:\n${lines.join("\n")}`,
+            { requests: records },
+          );
+        }),
+    },
+    {
+      name: "peer_get",
+      description:
+        "Get one peer delegation by requestId, with its full status, task, and result. Returns an error when the requestId is unknown.",
+      inputSchema: z
+        .object({
+          requestId: z.string().min(1),
+        })
+        .strict(),
+      handler: async (args) =>
+        await asToolResult(async () => {
+          if (!transport.peerGet) throw new Error(PEER_NOT_BOUND_MESSAGE);
+          const record = await transport.peerGet({
+            requestId: (args as { requestId: string }).requestId,
+          });
+          if (!record) {
+            throw new Error(
+              `peer request "${(args as { requestId: string }).requestId}" not found`,
+            );
+          }
+          return createSuccessResult(renderPeerRecordSummary(record), record);
         }),
     },
   );

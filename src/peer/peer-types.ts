@@ -23,7 +23,8 @@ export type PeerRequestStatus =
   | "running"
   | "completed"
   | "failed"
-  | "delivered";
+  | "delivered"
+  | "cancelled";
 
 /** Logical session identity. `alias` is the session alias; `workspace` is
  *  recorded when known and verified against resolution when provided. */
@@ -56,17 +57,23 @@ export interface PeerRequest {
   startedAt?: string;
   completedAt?: string;
   deliveredAt?: string;
+  cancelledAt?: string;
 }
 
 export type PeerRequestTerminalStatus = Extract<
   PeerRequestStatus,
-  "completed" | "failed" | "delivered"
+  "completed" | "failed" | "delivered" | "cancelled"
 >;
 
 export function isPeerRequestTerminal(
   status: PeerRequestStatus,
 ): status is PeerRequestTerminalStatus {
-  return status === "completed" || status === "failed" || status === "delivered";
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "delivered" ||
+    status === "cancelled"
+  );
 }
 
 export interface PeerWatchResult {
@@ -76,3 +83,11 @@ export interface PeerWatchResult {
   status: "terminal" | "timeout";
   request: PeerRequest;
 }
+
+/**
+ * Actionable error text used whenever peer tools have no bound transport.
+ * It states the cause (Daemon RPC binding is not part of this prototype)
+ * and points at the doc, instead of internal binding jargon.
+ */
+export const PEER_NOT_BOUND_MESSAGE =
+  "Peer delegation is not available in this session: peer tools are not wired into the daemon yet (Daemon RPC binding is not part of this prototype). See docs/peer-delegation.md.";

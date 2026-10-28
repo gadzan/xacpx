@@ -121,7 +121,7 @@ async function main(): Promise<void> {
     log("STEP 1", "verified: unapproved delegation did NOT execute (B has not seen the task)");
 
     log("STEP 2", "operator approves; peer-a observes");
-    await peer.approve({ requestId: ab.requestId, approvedBy: "operator" });
+    await peer.approve({ requestId: ab.requestId, approverAlias: "operator" });
     const shortWatch = await peer.watch({ requestId: ab.requestId, timeoutMs: 1000, pollIntervalMs: 100 });
     log("STEP 2", `short watch: status=${shortWatch.status} request=${shortWatch.request.status} (timeout ends only the watch; B keeps running)`);
     if (shortWatch.status !== "timeout" || shortWatch.request.status !== "running") {
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
       task: "peer-task-b-to-a",
       requestId: "req-demo-ba",
     });
-    await peer.approve({ requestId: ba.requestId, approvedBy: "operator" });
+    await peer.approve({ requestId: ba.requestId, approverAlias: "operator" });
     const baSettled = await peer.watch({ requestId: ba.requestId, timeoutMs: 30_000, pollIntervalMs: 200 });
     log("STEP 4", `reverse delegation: status=${baSettled.request.status}`);
     log("STEP 4", `backfilled result (truncated to 200 chars): ${(baSettled.request.result ?? "").slice(0, 200)}`);
@@ -189,7 +189,29 @@ async function main(): Promise<void> {
       throw new Error("reloaded records did not survive");
     }
 
-    console.log("DEMO OK: delegate -> observe -> message -> complete -> reverse delegate -> confirm");
+    log("STEP 7", "cancel + query: peer-b delegates a slow task to peer-a, then cancels while it runs");
+    const cx = await peer.delegate({
+      originatorAlias: "peer-b",
+      targetAlias: "peer-a",
+      task: "peer-task-cancel delay-3000-partial",
+      requestId: "req-demo-cancel",
+    });
+    await peer.approve({ requestId: cx.requestId, approverAlias: "operator" });
+    await waitUntil(async () => (await readPrompts(wsA)).some((t) => t.includes("peer-task-cancel")));
+    log("STEP 7", "verified: peer-a's turn is running (cancellation is record-level only; it will not stop this turn)");
+    const cancelled = await peer.cancel({ requestId: cx.requestId, originatorAlias: "peer-b" });
+    log("STEP 7", `cancelled: requestId=${cancelled.requestId} status=${cancelled.status}`);
+    const cancelWatched = await peer.watch({ requestId: cx.requestId, timeoutMs: 30_000, pollIntervalMs: 200 });
+    log("STEP 7", `watch after cancel: status=${cancelWatched.status} request=${cancelWatched.request.status}`);
+    const listedCancelled = await peer.listRelated("peer-b", { status: "cancelled" });
+    log("STEP 7", `peer_list (peer-b, cancelled): ${listedCancelled.map((r) => r.requestId).join(", ")}`);
+    const gotCancelled = await peer.get("req-demo-cancel");
+    log("STEP 7", `peer_get req-demo-cancel: status=${gotCancelled?.status}`);
+    if (cancelled.status !== "cancelled" || cancelWatched.request.status !== "cancelled" || gotCancelled?.status !== "cancelled") {
+      throw new Error("cancel flow did not reach cancelled state");
+    }
+
+    console.log("DEMO OK: delegate -> observe -> message -> complete -> reverse delegate -> confirm -> cancel/query");
   } finally {
     await runtime.dispose();
   }

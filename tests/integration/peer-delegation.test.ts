@@ -37,7 +37,7 @@ async function readPrompts(wsDir: string): Promise<string[]> {
 }
 
 test(
-  "Peer delegation E2E: two real sessions delegate mutually, observe, message, and confirm",
+  "Peer delegation E2E: two real sessions delegate mutually, observe, message, confirm, and cancel",
   async () => {
     const root = await mkdtemp(join(tmpdir(), "xacpx-peer-e2e-"));
     const home = join(root, "home");
@@ -105,7 +105,7 @@ test(
       // 2. Operator approves; A observes: first a short watch times out
       // (the request keeps running — timeout is not failure, not a resend),
       // then a longer watch sees terminal completion with the result.
-      await peer.approve({ requestId: ab.requestId, approvedBy: "operator" });
+      await peer.approve({ requestId: ab.requestId, approverAlias: "operator" });
       const shortWatch = await peer.watch({
         requestId: ab.requestId,
         timeoutMs: 1000,
@@ -160,7 +160,7 @@ test(
         task: "peer-task-b-to-a",
         requestId: "req-e2e-ba",
       });
-      await peer.approve({ requestId: ba.requestId, approvedBy: "operator" });
+      await peer.approve({ requestId: ba.requestId, approverAlias: "operator" });
       const baSettled = await peer.watch({
         requestId: ba.requestId,
         timeoutMs: 30_000,
@@ -180,6 +180,38 @@ test(
       });
       expect(deliveredBa.status).toBe("delivered");
 
+      // 4b. Cancel: B delegates a slow task to A; the originator cancels
+      // while it runs. Watch reports cancelled, list/get show it, and the
+      // late completion never overwrites the cancellation — but A's turn
+      // itself still runs (cancellation is record-level only).
+      const cancelReq = await peer.delegate({
+        originatorAlias: "peer-b",
+        targetAlias: "peer-a",
+        task: "peer-task-cancel delay-3000-partial",
+        requestId: "req-e2e-cancel",
+      });
+      await peer.approve({ requestId: cancelReq.requestId, approverAlias: "operator" });
+      await waitUntil(
+        async () => (await readPrompts(wsA)).some((t) => t.includes("peer-task-cancel")),
+        30_000,
+        async () => `A prompts: ${JSON.stringify(await readPrompts(wsA))}`,
+      );
+      const cancelled = await peer.cancel({
+        requestId: cancelReq.requestId,
+        originatorAlias: "peer-b",
+      });
+      expect(cancelled.status).toBe("cancelled");
+      const cancelWatched = await peer.watch({
+        requestId: cancelReq.requestId,
+        timeoutMs: 30_000,
+        pollIntervalMs: 200,
+      });
+      expect(cancelWatched.status).toBe("terminal");
+      expect(cancelWatched.request.status).toBe("cancelled");
+      const listedForB = await peer.listRelated("peer-b", { status: "cancelled" });
+      expect(listedForB.map((r) => r.requestId)).toContain("req-e2e-cancel");
+      expect((await peer.get("req-e2e-cancel"))?.status).toBe("cancelled");
+
       // 5. Records survive a store reload (daemon restart).
       const reloaded = new PeerService({
         resolveSession: async () => null,
@@ -188,6 +220,7 @@ test(
       });
       expect((await reloaded.get("req-e2e-ab"))?.status).toBe("delivered");
       expect((await reloaded.get("req-e2e-ba"))?.status).toBe("delivered");
+      expect((await reloaded.get("req-e2e-cancel"))?.status).toBe("cancelled");
     } finally {
       await runtime.dispose();
       await rm(root, { recursive: true, force: true }).catch(() => {});

@@ -58,19 +58,31 @@ export class PeerStore {
   }
 
   private async readAll(): Promise<PeerRequest[]> {
+    let raw: string;
     try {
-      const raw = await readFile(this.filePath, "utf8");
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        return [];
-      }
-      return parsed as PeerRequest[];
+      raw = await readFile(this.filePath, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return [];
       }
       throw error;
     }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        `Peer request store is corrupted and cannot be parsed: ${this.filePath}. ` +
+          `To reset peer delegation, move this file aside and retry — all peer records will be lost.`,
+      );
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `Peer request store is corrupted (expected a JSON array of records): ${this.filePath}. ` +
+          `To reset peer delegation, move this file aside and retry — all peer records will be lost.`,
+      );
+    }
+    return parsed as PeerRequest[];
   }
 
   private async writeAll(records: PeerRequest[]): Promise<void> {

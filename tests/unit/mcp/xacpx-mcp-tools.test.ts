@@ -54,7 +54,7 @@ test("builds 13 MCP tools and appends messaging tools after orchestration tools"
     sourceHandle: "backend:worker",
   });
 
-  expect(registry).toHaveLength(17);
+  expect(registry).toHaveLength(20);
   expect(registry.map((tool) => tool.name)).toEqual([
     "delegate_request",
     "delegate_batch",
@@ -73,6 +73,9 @@ test("builds 13 MCP tools and appends messaging tools after orchestration tools"
     "peer_approve",
     "peer_watch",
     "peer_confirm",
+    "peer_cancel",
+    "peer_list",
+    "peer_get",
   ]);
 
   const delegateTool = registry.find((tool) => tool.name === "delegate_request");
@@ -722,13 +725,13 @@ test("registry hides human-input package tools when the coordinator is external"
   expect(externalNames).toContain("coordinator_review_contested_result");
   expect(externalNames).toContain("agent_list");
   expect(externalNames).toContain("agent_send");
-  expect(externalRegistry).toHaveLength(16);
+  expect(externalRegistry).toHaveLength(19);
 
   const internalRegistry = buildXacpxMcpToolRegistry({
     transport,
     coordinatorSession: "backend:main",
   });
-  expect(internalRegistry).toHaveLength(17);
+  expect(internalRegistry).toHaveLength(20);
   expect(internalRegistry.map((tool) => tool.name)).toContain("coordinator_request_human_input");
 });
 
