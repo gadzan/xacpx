@@ -16,7 +16,15 @@ const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
 });
 
 describe("InstanceTree session management", () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    // `center-tabs` hydrates from sessionStorage and persists through a 200ms
+    // debounce, and jsdom shares one storage across the whole file. A debounced
+    // write from the previous test could therefore be hydrated by the next one —
+    // enough to make the terminal-marker assertions order-dependent. Start every
+    // test from empty storage instead of from whatever the last one flushed.
+    sessionStorage.clear();
+  });
   afterEach(() => { settleConfirm(false); i18n.global.locale.value = "en"; });
 
   it("opens the new-session dialog from the + new session button", async () => {
