@@ -190,38 +190,43 @@ function openRemoval(): void {
 
 <template>
   <div class="flex h-full flex-col bg-bg text-fg">
-    <!-- Mobile single top bar (<lg): a centered glass avatar + name + role pinned at the
-         top, back and ⋯ at the sides, topic switcher as the subtitle. The transcript
-         never repeats the avatar in front of bubbles (TranscriptRow
+    <!-- Mobile single top bar (<lg): one 52px row — back, the pinned Bot avatar, name +
+         role, the topic as a tappable subtitle, and ⋯. A centered three-line identity
+         (avatar / name / role / topic) cost ~126px of an 844px screen and starved the
+         transcript; this matches the GroupPane bar and every chat app's header. The
+         transcript never repeats the avatar in front of bubbles (TranscriptRow
          hideIdentityOnMobile). Desktop keeps the header below. -->
-    <div class="relative flex shrink-0 flex-col items-center bg-surface px-2 pb-1.5 pt-[calc(0.5rem+env(safe-area-inset-top))] lg:hidden">
+    <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
-              class="absolute left-1 top-[calc(0.75rem+env(safe-area-inset-top))] grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
-      <span class="glass-avatar grid h-12 w-12 place-items-center rounded-full">
-        <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="44"
+      <span class="glass-avatar grid h-8 w-8 shrink-0 place-items-center rounded-full">
+        <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="30"
                    :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
                    :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
       </span>
-      <span class="mt-1 max-w-full truncate text-sm font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
-      <p v-if="bot?.role" class="max-w-full truncate text-xs text-fg-muted">{{ bot.role }}</p>
-      <TopicSwitcher
-        v-if="isMobile"
-        class="mt-0.5"
-        variant="direct"
-        :topics="directBotsStore.currentTopics"
-        :active-topic-id="directBotsStore.activeTopicId"
-        :preview-topic="previewTopic"
-        :rename-topic="renameTopic"
-        :archive-topic="archiveTopic"
-        :restore-topic="restoreTopic"
-        :teardown-topic="teardownTopic"
-        :clear-topic="clearTopic"
-        @select="directBotsStore.switchTopic"
-        @create="newTopicDialogOpen = true"
-      />
+      <div class="flex min-w-0 flex-1 flex-col">
+        <div class="flex min-w-0 items-center gap-1.5">
+          <span class="truncate text-sm font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
+          <span v-if="bot?.role?.trim()" class="truncate text-[11px] text-fg-muted">{{ bot.role }}</span>
+        </div>
+        <TopicSwitcher
+          v-if="isMobile"
+          variant="direct"
+          :topics="directBotsStore.currentTopics"
+          :active-topic-id="directBotsStore.activeTopicId"
+          :preview-topic="previewTopic"
+          :rename-topic="renameTopic"
+          :archive-topic="archiveTopic"
+          :restore-topic="restoreTopic"
+          :teardown-topic="teardownTopic"
+          :clear-topic="clearTopic"
+          @select="directBotsStore.switchTopic"
+          @create="newTopicDialogOpen = true"
+        />
+      </div>
       <button type="button" data-test="mobile-bot-more" :aria-label='$t("common.more")'
-              class="absolute right-1 top-[calc(0.75rem+env(safe-area-inset-top))] grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
     </div>
     <MobileConnStrip />
