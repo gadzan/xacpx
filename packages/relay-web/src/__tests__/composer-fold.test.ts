@@ -17,12 +17,11 @@ const Host = defineComponent(() => {
     }, {
       controls: () => h("button", { type: "button", "data-test": "slot-control" }, "chip"),
       actions: () => h("button", { type: "button", "data-test": "slot-action" }, "attach"),
+      attachments: () => h("div", { "data-test": "slot-attachments" }, [
+        h("button", { type: "button", "data-test": "slot-attach-btn" }, "pick"),
+      ]),
     });
 });
-
-function mounted() {
-  return mount(Host);
-}
 
 describe("ConversationComposer fold", () => {
   it("hides controls/actions until focused; content keeps them open after blur", async () => {
@@ -32,20 +31,28 @@ describe("ConversationComposer fold", () => {
       return row.classes().includes("max-h-0") && row.classes().includes("invisible");
     };
     expect(folded()).toBe(true);
-    // The send button is never folded.
+    // The send button is never folded; the picker entry folds with the composer.
     expect(wrapper.find('[data-test="host-send"]').attributes("style") ?? "").not.toContain("display: none");
+    const attachmentsFolded = () => {
+      const fold = wrapper.find('[data-test="composer-attachments-fold"]');
+      return fold.classes().includes("max-h-0") && fold.classes().includes("invisible");
+    };
+    expect(attachmentsFolded()).toBe(true);
 
     await wrapper.find("textarea").trigger("focus");
     expect(folded()).toBe(false);
+    expect(attachmentsFolded()).toBe(false);
 
     // Typed content keeps the affordances unfolded after blur.
     await wrapper.find("textarea").setValue("draft");
     await wrapper.find("textarea").trigger("blur");
     expect(folded()).toBe(false);
+    expect(attachmentsFolded()).toBe(false);
 
     // Clearing folds them back.
     await wrapper.find("textarea").setValue("");
     expect(folded()).toBe(true);
+    expect(attachmentsFolded()).toBe(true);
     wrapper.unmount();
   });
 

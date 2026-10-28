@@ -191,7 +191,14 @@ function onInput(event: Event): void {
            so applyHeight always measures a settled box. -->
       <div class="relative">
         <slot name="menus" />
-        <slot name="attachments" />
+        <!-- Staged-image previews and the picker entry fold with the composer:
+             staging anything flips hasAttachments -> expanded, so previews are
+             never clipped by the fold. -->
+        <div v-if="slots.attachments" data-test="composer-attachments-fold"
+             class="overflow-hidden transition-[max-height,opacity,visibility] duration-200 ease-out motion-reduce:transition-none"
+             :class="expanded ? 'visible max-h-40 opacity-100' : 'invisible max-h-0 opacity-0'">
+          <slot name="attachments" />
+        </div>
 
         <textarea
           ref="textarea"
