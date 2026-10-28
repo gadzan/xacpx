@@ -192,7 +192,7 @@ onUnmounted(() => clearInterval(timer));
     <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
          inset is applied ONCE here (the bottommost element) and never stacks on top of the
          composer's own padding — env() is 0 off-PWA, so desktop stays at 1rem. -->
-    <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
+    <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
          :style="keyboardInset ? { paddingBottom: '0.5rem' } : undefined"
          data-test="composer-area">
       <!-- Same centered 48rem column as the transcript rows (MessageList mx-auto

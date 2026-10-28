@@ -431,7 +431,7 @@ function onInput(): void {
 }
 </script>
 <template>
-  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <!-- Disabled bot warning -->
     <div
       v-if="isBotDisabled"

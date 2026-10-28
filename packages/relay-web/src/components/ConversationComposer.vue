@@ -157,12 +157,16 @@ function onInput(event: Event): void {
 </script>
 
 <template>
-  <!-- No bottom padding or border-t on the form: the pane owns the bottom spacing,
-       and stack layers above this card baseline to its top border. -->
-  <form class="relative px-0" @submit.prevent="emit('send')">
+  <!-- mx-auto max-w-3xl: the transcript column is max-w-3xl centered
+       (ConversationMessageList), so the composer sits in the same column instead
+       of stretching edge to edge on wide screens. The pane owns bottom spacing
+       and stack layers above this card baseline (no pb / border-t here).
+       rounded-3xl reads as a pill on the one-line resting card (42px) and stays
+       soft on the expanded card. -->
+  <form class="relative mx-auto w-full max-w-3xl px-0" @submit.prevent="emit('send')">
     <div
       data-test="composer-surface"
-      class="relative rounded-2xl bg-surface transition-colors focus-within:ring-2 focus-within:ring-accent"
+      class="relative rounded-3xl bg-surface transition-colors focus-within:ring-2 focus-within:ring-accent"
       :class="surfaceDisabled ? 'cursor-not-allowed opacity-60' : ''"
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >
@@ -214,7 +218,7 @@ function onInput(event: Event): void {
             :aria-label="$t('common.cancel')"
             :title="$t('common.cancel')"
             :disabled="cancelling"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-danger text-on-danger transition-all hover:opacity-90 disabled:opacity-50"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-danger text-on-danger transition-all hover:opacity-90 disabled:opacity-50"
             @click="emit('cancel')"
           >
             <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
