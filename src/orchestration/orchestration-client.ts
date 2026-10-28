@@ -45,6 +45,16 @@ import type {
   AgentSenderBinding,
   AgentTargetSelector,
 } from "./agent-messaging-types";
+import type {
+  PeerApproveInput,
+  PeerCancelInput,
+  PeerConfirmInput,
+  PeerDelegateInput,
+  PeerGetInput,
+  PeerListInput,
+  PeerWatchInput,
+} from "../peer/peer-service";
+import type { PeerRequest, PeerWatchResult } from "../peer/peer-types";
 
 export type CoordinatorTaskListFilter = Pick<OrchestrationTaskFilter, "status" | "stuck" | "sort" | "order"> & {
   coordinatorSession: string;
@@ -228,6 +238,37 @@ export class OrchestrationClient {
 
   async agentSend(input: AgentSendRpcInput): Promise<AgentMessageReceipt> {
     return await this.request<AgentMessageReceipt>("agent.send", input);
+  }
+
+  async peerDelegate(input: PeerDelegateInput): Promise<PeerRequest> {
+    return await this.request<PeerRequest>("peer.delegate", input);
+  }
+
+  async peerApprove(input: PeerApproveInput): Promise<PeerRequest> {
+    return await this.request<PeerRequest>("peer.approve", input);
+  }
+
+  async peerWatch(input: PeerWatchInput): Promise<PeerWatchResult> {
+    // Same timeout trap as task.watch: the default 30s RPC timeout would
+    // kill a long peer watch. peer_watch caps at the same 20 minutes, so
+    // reuse the same padding helper rather than a second rule.
+    return await this.request<PeerWatchResult>("peer.watch", input, getWatchRequestTimeoutMs(input.timeoutMs, this.timeoutMs));
+  }
+
+  async peerConfirm(input: PeerConfirmInput): Promise<PeerRequest> {
+    return await this.request<PeerRequest>("peer.confirm", input);
+  }
+
+  async peerCancel(input: PeerCancelInput): Promise<PeerRequest> {
+    return await this.request<PeerRequest>("peer.cancel", input);
+  }
+
+  async peerList(input: PeerListInput): Promise<PeerRequest[]> {
+    return await this.request<PeerRequest[]>("peer.list", input);
+  }
+
+  async peerGet(input: PeerGetInput): Promise<PeerRequest | null> {
+    return await this.request<PeerRequest | null>("peer.get", input);
   }
 
   async request<Result>(method: OrchestrationRpcMethod, params: unknown, timeoutMs = this.timeoutMs): Promise<Result> {

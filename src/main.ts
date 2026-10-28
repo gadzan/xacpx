@@ -40,6 +40,8 @@ import {
 import { AsyncMutex } from "./orchestration/async-mutex";
 import { OrchestrationServer } from "./orchestration/orchestration-server";
 import { OrchestrationService } from "./orchestration/orchestration-service";
+import { PeerService } from "./peer/peer-service";
+import { PeerStore } from "./peer/peer-store";
 import { MessagingNodeIdentityStore } from "./orchestration/messaging-node-identity-store";
 import { AgentEndpointRegistry } from "./orchestration/agent-endpoint-registry";
 import { AgentMessageRouter } from "./orchestration/agent-message-router";
@@ -1878,10 +1880,41 @@ export async function buildApp(
     paths.orchestrationSocketPath ??
       resolveOrchestrationSocketPathFromConfigPath(paths.configPath),
   );
+  // Peer delegation (prototype): a single PeerService for the daemon,
+  // bound to the orchestration server as a dep (never through
+  // OrchestrationService — peer requests are not orchestration tasks).
+  // Session resolution is chat-independent on purpose: direct internal
+  // alias first, then stable transport-session lookup. There is no
+  // chat-scoped step here — the daemon has no chat to scope by, and
+  // guessing one (e.g. a hardcoded "peer-chat" or "weixin") could
+  // resolve a bare display alias to the wrong channel's session. A bare
+  // display alias from a non-weixin channel (stored as
+  // "channel:alias") therefore does not resolve; pass the transport
+  // session name ("workspace:alias", `:reset-…` suffix tolerated) instead.
+  // Weixin sessions stay unprefixed and product-owned sessions are
+  // unscoped, so their display aliases resolve via the direct step.
+  const peerService = new PeerService({
+    resolveSession: async (key) => {
+      const direct = await sessions.getSession(key);
+      if (direct) return direct;
+      return await sessions.getPreferredSessionForTransport(key);
+    },
+    promptSession: async (session, text) => transport.prompt(session, text),
+    store: new PeerStore(join(dirname(paths.statePath), "peer-requests.json")),
+  });
   const orchestrationServer = new OrchestrationServer(
     orchestrationEndpoint,
     orchestration,
     {
+      peer: {
+        delegate: peerService.delegate.bind(peerService),
+        approve: peerService.approve.bind(peerService),
+        watch: peerService.watch.bind(peerService),
+        confirm: peerService.confirm.bind(peerService),
+        cancel: peerService.cancel.bind(peerService),
+        list: peerService.list.bind(peerService),
+        get: peerService.get.bind(peerService),
+      },
       groupSend: async (invocation) => await conversations.withOperation(async () => {
         const receipt = await conversations.handoffs.send(invocation);
         return { runId: receipt.run.id, assignmentId: receipt.memberTurn.assignmentId!,

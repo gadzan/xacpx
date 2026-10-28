@@ -25,6 +25,12 @@ import type {
   AgentMessageReceipt,
   AgentTargetSelector,
 } from "../orchestration/agent-messaging-types";
+import type {
+  PeerRequest,
+  PeerRequestStatus,
+  PeerWatchResult,
+} from "../peer/peer-types";
+import { PEER_NOT_BOUND_MESSAGE } from "../peer/peer-types";
 export interface XacpxMcpDelegateRequest {
   coordinatorSession: string;
   sourceHandle?: string;
@@ -111,6 +117,46 @@ export interface XacpxMcpAgentSendArgs extends XacpxMcpAgentListArgs {
   replyTo?: string;
   completion?: AgentMessageCompletionMode;
 }
+export interface XacpxMcpPeerDelegateArgs {
+  originatorAlias: string;
+  originatorWorkspace?: string;
+  targetAlias: string;
+  targetWorkspace?: string;
+  task: string;
+  requestId?: string;
+  /** Server-injected coordinator scope; supplied by the tool layer binding, never a tool argument. */
+  coordinatorSession: string;
+}
+
+export interface XacpxMcpPeerRequestArgs {
+  requestId: string;
+  approverAlias?: string;
+  originatorAlias?: string;
+  /** Server-injected coordinator scope; required by peer_approve, ignored by peer_confirm/peer_cancel. */
+  coordinatorSession?: string;
+}
+
+export interface XacpxMcpPeerListArgs {
+  callerAlias: string;
+  /** Server-injected coordinator scope; decides coordinator view vs related view. */
+  coordinatorSession: string;
+  status?: PeerRequestStatus;
+}
+
+export interface XacpxMcpPeerGetArgs {
+  requestId: string;
+  /** Binding-derived caller (sourceHandle ?? coordinatorSession). */
+  callerAlias: string;
+  /** Server-injected coordinator scope; decides coordinator visibility. */
+  coordinatorSession: string;
+}
+
+export interface XacpxMcpPeerWatchArgs {
+  requestId: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
 export interface XacpxMcpTransport {
   groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: (input: GroupSendInvocation) => Promise<{ runId: string; assignmentId: string; memberTurnId: string; messageId: string }>;
@@ -138,6 +184,21 @@ export interface XacpxMcpTransport {
   scheduledCancel: (input: XacpxMcpScheduledCancelArgs) => Promise<{ id: string; cancelled: boolean }>;
   listAgentEndpoints: (input: XacpxMcpAgentListArgs) => Promise<AgentEndpointView[]>;
   sendAgentMessage: (input: XacpxMcpAgentSendArgs) => Promise<AgentMessageReceipt>;
+  /**
+   * Peer delegation (prototype). Optional like groupSend: a transport binds
+   * these only when a PeerService is available; the peer_* tools throw when
+   * unbound instead of advertising calls that cannot run. The
+   * orchestration transport binds them to peer.* over orchestration IPC;
+   * the memory transport keeps the not-bound stubs below for sessions
+   * with no daemon — see docs/peer-delegation.md.
+   */
+  peerDelegate?: (input: XacpxMcpPeerDelegateArgs) => Promise<PeerRequest>;
+  peerApprove?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
+  peerWatch?: (input: XacpxMcpPeerWatchArgs) => Promise<PeerWatchResult>;
+  peerConfirm?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
+  peerCancel?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
+  peerList?: (input: XacpxMcpPeerListArgs) => Promise<PeerRequest[]>;
+  peerGet?: (input: XacpxMcpPeerGetArgs) => Promise<PeerRequest | null>;
 }
 
 interface OrchestrationClientLike {
@@ -160,6 +221,13 @@ interface OrchestrationClientLike {
   scheduledCancel?: OrchestrationClient["scheduledCancel"];
   agentList?: OrchestrationClient["agentList"];
   agentSend?: OrchestrationClient["agentSend"];
+  peerDelegate?: OrchestrationClient["peerDelegate"];
+  peerApprove?: OrchestrationClient["peerApprove"];
+  peerWatch?: OrchestrationClient["peerWatch"];
+  peerConfirm?: OrchestrationClient["peerConfirm"];
+  peerCancel?: OrchestrationClient["peerCancel"];
+  peerList?: OrchestrationClient["peerList"];
+  peerGet?: OrchestrationClient["peerGet"];
 }
 
 export function createOrchestrationTransport(
@@ -252,6 +320,58 @@ export function createOrchestrationTransport(
       }
       return await client.agentSend(input);
     },
+    peerDelegate: async (input) => {
+      if (!client.peerDelegate) {
+        throw new Error("orchestration client peerDelegate is not configured");
+      }
+      return await client.peerDelegate(input);
+    },
+    peerApprove: async (input) => {
+      if (!client.peerApprove) {
+        throw new Error("orchestration client peerApprove is not configured");
+      }
+      return await client.peerApprove({
+        requestId: input.requestId,
+        approverAlias: input.approverAlias ?? "",
+        coordinatorSession: input.coordinatorSession ?? "",
+      });
+    },
+    peerWatch: async (input) => {
+      if (!client.peerWatch) {
+        throw new Error("orchestration client peerWatch is not configured");
+      }
+      return await client.peerWatch(input);
+    },
+    peerConfirm: async (input) => {
+      if (!client.peerConfirm) {
+        throw new Error("orchestration client peerConfirm is not configured");
+      }
+      return await client.peerConfirm({
+        requestId: input.requestId,
+        originatorAlias: input.originatorAlias ?? "",
+      });
+    },
+    peerCancel: async (input) => {
+      if (!client.peerCancel) {
+        throw new Error("orchestration client peerCancel is not configured");
+      }
+      return await client.peerCancel({
+        requestId: input.requestId,
+        originatorAlias: input.originatorAlias ?? "",
+      });
+    },
+    peerList: async (input) => {
+      if (!client.peerList) {
+        throw new Error("orchestration client peerList is not configured");
+      }
+      return await client.peerList(input);
+    },
+    peerGet: async (input) => {
+      if (!client.peerGet) {
+        throw new Error("orchestration client peerGet is not configured");
+      }
+      return await client.peerGet(input);
+    },
   };
 }
 
@@ -261,6 +381,15 @@ export function createMemoryTransport(
 ): XacpxMcpTransport {
   const unimplemented = (name: string) => async () => {
     throw new Error(`memory transport ${name} is not implemented`);
+  };
+
+  // Peer stubs throw the actionable message, not the generic one: a real
+  // session hitting an unbound peer tool must learn that it has no daemon
+  // connection, not internal binding jargon. The stubs stay even now that
+  // the orchestration transport binds peer.* — the memory transport is
+  // exactly the no-daemon case.
+  const peerNotBound = () => async () => {
+    throw new Error(PEER_NOT_BOUND_MESSAGE);
   };
 
   return {
@@ -294,5 +423,26 @@ export function createMemoryTransport(
     sendAgentMessage:
       overrides.sendAgentMessage
       ?? (unimplemented("sendAgentMessage") as XacpxMcpTransport["sendAgentMessage"]),
+    peerDelegate:
+      overrides.peerDelegate
+      ?? (peerNotBound() as XacpxMcpTransport["peerDelegate"]),
+    peerApprove:
+      overrides.peerApprove
+      ?? (peerNotBound() as XacpxMcpTransport["peerApprove"]),
+    peerWatch:
+      overrides.peerWatch
+      ?? (peerNotBound() as XacpxMcpTransport["peerWatch"]),
+    peerConfirm:
+      overrides.peerConfirm
+      ?? (peerNotBound() as XacpxMcpTransport["peerConfirm"]),
+    peerCancel:
+      overrides.peerCancel
+      ?? (peerNotBound() as XacpxMcpTransport["peerCancel"]),
+    peerList:
+      overrides.peerList
+      ?? (peerNotBound() as XacpxMcpTransport["peerList"]),
+    peerGet:
+      overrides.peerGet
+      ?? (peerNotBound() as XacpxMcpTransport["peerGet"]),
   };
 }

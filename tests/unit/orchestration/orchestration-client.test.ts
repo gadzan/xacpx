@@ -13,6 +13,9 @@ import { resolveOrchestrationEndpoint } from "../../../src/orchestration/orchest
 import { OrchestrationServer } from "../../../src/orchestration/orchestration-server";
 import { skipIfLocalIpcUnavailable } from "../../helpers/ipc-capability";
 import { createOrchestrationTransport } from "../../../src/mcp/xacpx-mcp-transport";
+import { PeerService } from "../../../src/peer/peer-service";
+import { PeerStore } from "../../../src/peer/peer-store";
+import type { ResolvedSession } from "../../../src/transport/types";
 
 test("task watch RPC timeout follows one minute default and twenty minute cap", () => {
   expect(getWatchRequestTimeoutMs(undefined, 30_000)).toBe(65_000);
@@ -700,4 +703,139 @@ test("client does not expose an unscoped task getter", () => {
   const client = new OrchestrationClient(endpoint);
 
   expect((client as unknown as { getTask?: unknown }).getTask).toBeUndefined();
+});
+
+test("peer methods round-trip through a real IPC endpoint to a bound PeerService", async () => {
+  if (await skipIfLocalIpcUnavailable("orchestration-client socket integration tests")) return;
+
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-orch-peer-client-"));
+  const endpoint = resolveOrchestrationEndpoint(dir);
+  const sessions = new Map<string, ResolvedSession>([
+    ["peer-a", { alias: "peer-a", agent: "mock", workspace: "ws-a", transportSession: "ws-a:peer-a" } as ResolvedSession],
+    ["peer-b", { alias: "peer-b", agent: "mock", workspace: "ws-b", transportSession: "ws-b:peer-b" } as ResolvedSession],
+  ]);
+  const prompts: string[] = [];
+  const peer = new PeerService({
+    resolveSession: async (key) => sessions.get(key) ?? null,
+    promptSession: async (session, text) => {
+      prompts.push(`${session.alias}:${text}`);
+      return { text: `echo:${text}` };
+    },
+    store: new PeerStore(join(dir, "peer-requests.json")),
+  });
+  const server = new OrchestrationServer(
+    endpoint,
+    {
+      requestDelegate: async () => ({ taskId: "task-1", status: "needs_confirmation" }),
+      getTask: async () => null,
+      listTasks: async () => [],
+      approveTask: async (input) => ({ taskId: input.taskId }) as never,
+      cancelTask: async (input) => ({ taskId: input.taskId }) as never,
+      recordWorkerReply: async () => ({ taskId: "task-1" }) as never,
+    },
+    {
+      peer: {
+        delegate: peer.delegate.bind(peer),
+        approve: peer.approve.bind(peer),
+        watch: peer.watch.bind(peer),
+        confirm: peer.confirm.bind(peer),
+        cancel: peer.cancel.bind(peer),
+        list: peer.list.bind(peer),
+        get: peer.get.bind(peer),
+      },
+    },
+  );
+  const client = new OrchestrationClient(endpoint, { createId: () => "req-peer" });
+
+  try {
+    await server.start();
+    const transport = createOrchestrationTransport(endpoint, { client });
+
+    // Full daemon-bound path: MCP transport -> RPC client -> socket ->
+    // server dispatch -> PeerService -> store, with no direct service call.
+    const created = await transport.peerDelegate!({
+      originatorAlias: "peer-a",
+      targetAlias: "peer-b",
+      task: "round-trip task",
+      requestId: "req-round-trip",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(created.status).toBe("needs_confirmation");
+    expect(created.coordinator).toBe("ws-a:peer-a");
+    expect(prompts).toHaveLength(0);
+
+    const approved = await transport.peerApprove!({
+      requestId: "req-round-trip",
+      approverAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(approved.status).toBe("running");
+
+    const watched = await transport.peerWatch!({
+      requestId: "req-round-trip",
+      timeoutMs: 5000,
+      pollIntervalMs: 20,
+    });
+    expect(watched.status).toBe("terminal");
+    expect(watched.request.status).toBe("completed");
+    expect(watched.request.result).toContain("round-trip task");
+    expect(prompts).toHaveLength(1);
+
+    const got = await transport.peerGet!({
+      requestId: "req-round-trip",
+      callerAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(got?.status).toBe("completed");
+
+    // An unrelated worker over the same socket sees nothing: get hides
+    // the record exactly like an unknown id.
+    const workerGot = await transport.peerGet!({
+      requestId: "req-round-trip",
+      callerAlias: "worker:review",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(workerGot).toBeNull();
+
+    // Coordinator view over the socket: the coordinator sees its record;
+    // a worker under it sees only the related view (here: nothing, since
+    // the worker is neither originator nor target).
+    const coordList = await transport.peerList!({
+      callerAlias: "ws-a:peer-a",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(coordList.map((r) => r.requestId)).toEqual(["req-round-trip"]);
+    const workerList = await transport.peerList!({
+      callerAlias: "worker:review",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(workerList).toHaveLength(0);
+
+    const confirmed = await transport.peerConfirm!({
+      requestId: "req-round-trip",
+      originatorAlias: "peer-a",
+    });
+    expect(confirmed.status).toBe("delivered");
+
+    // A worker approve over the same socket is rejected by the service,
+    // surfacing as an RPC error to the client.
+    const workerReq = await transport.peerDelegate!({
+      originatorAlias: "worker:review",
+      targetAlias: "peer-b",
+      task: "worker task",
+      requestId: "req-round-trip-worker",
+      coordinatorSession: "ws-a:peer-a",
+    });
+    expect(workerReq.status).toBe("needs_confirmation");
+    await expect(
+      transport.peerApprove!({
+        requestId: "req-round-trip-worker",
+        approverAlias: "worker:review",
+        coordinatorSession: "ws-a:peer-a",
+      }),
+    ).rejects.toThrow("only the record's coordinator");
+  } finally {
+    await server.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -521,3 +521,193 @@ test("createMemoryTransport exposes agent messaging override hooks", async () =>
     },
   ]);
 });
+
+test("createOrchestrationTransport maps peer methods onto the RPC client", async () => {
+  const calls: Array<{ method: string; input: unknown }> = [];
+  const record = {
+    requestId: "req-1",
+    originator: { alias: "peer-a" },
+    target: { alias: "peer-b", workspace: "ws-b" },
+    coordinator: "ws-a:peer-a",
+    task: "review",
+    status: "needs_confirmation" as const,
+    createdAt: "a",
+    updatedAt: "a",
+  };
+  const fakeClient = {
+    delegateRequest: async () => {
+      throw new Error("unused");
+    },
+    createGroup: async () => {
+      throw new Error("unused");
+    },
+    getTaskForCoordinator: async () => null,
+    listTasks: async () => [],
+    approveTask: async () => {
+      throw new Error("unused");
+    },
+    cancelTaskForCoordinator: async () => {
+      throw new Error("unused");
+    },
+    watchTask: async () => {
+      throw new Error("unused");
+    },
+    workerRaiseQuestion: async () => {
+      throw new Error("unused");
+    },
+    coordinatorAnswerQuestion: async () => {
+      throw new Error("unused");
+    },
+    coordinatorRequestHumanInput: async () => {
+      throw new Error("unused");
+    },
+    coordinatorReviewContestedResult: async () => {
+      throw new Error("unused");
+    },
+    peerDelegate: async (input: unknown) => {
+      calls.push({ method: "peerDelegate", input });
+      return record;
+    },
+    peerApprove: async (input: unknown) => {
+      calls.push({ method: "peerApprove", input });
+      return { ...record, status: "running" as const };
+    },
+    peerWatch: async (input: unknown) => {
+      calls.push({ method: "peerWatch", input });
+      return { status: "terminal" as const, request: { ...record, status: "completed" as const } };
+    },
+    peerConfirm: async (input: unknown) => {
+      calls.push({ method: "peerConfirm", input });
+      return { ...record, status: "delivered" as const };
+    },
+    peerCancel: async (input: unknown) => {
+      calls.push({ method: "peerCancel", input });
+      return { ...record, status: "cancelled" as const };
+    },
+    peerList: async (input: unknown) => {
+      calls.push({ method: "peerList", input });
+      return [record];
+    },
+    peerGet: async (input: unknown) => {
+      calls.push({ method: "peerGet", input });
+      return record;
+    },
+  };
+
+  const transport = createOrchestrationTransport(
+    { kind: "unix", path: "/tmp/test.sock" },
+    { client: fakeClient },
+  );
+
+  await transport.peerDelegate!({
+    originatorAlias: "peer-a",
+    targetAlias: "peer-b",
+    task: "review",
+    requestId: "req-1",
+    coordinatorSession: "ws-a:peer-a",
+  });
+  await transport.peerApprove!({
+    requestId: "req-1",
+    approverAlias: "ws-a:peer-a",
+    coordinatorSession: "ws-a:peer-a",
+  });
+  await transport.peerWatch!({ requestId: "req-1", timeoutMs: 5000, pollIntervalMs: 100 });
+  await transport.peerConfirm!({ requestId: "req-1", originatorAlias: "peer-a" });
+  await transport.peerCancel!({ requestId: "req-1", originatorAlias: "peer-a" });
+  await transport.peerList!({ callerAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
+  await transport.peerList!({ callerAlias: "worker:review", coordinatorSession: "ws-a:peer-a", status: "running" });
+  await transport.peerGet!({
+    requestId: "req-1",
+    callerAlias: "ws-a:peer-a",
+    coordinatorSession: "ws-a:peer-a",
+  });
+
+  expect(calls).toEqual([
+    {
+      method: "peerDelegate",
+      input: {
+        originatorAlias: "peer-a",
+        targetAlias: "peer-b",
+        task: "review",
+        requestId: "req-1",
+        coordinatorSession: "ws-a:peer-a",
+      },
+    },
+    {
+      method: "peerApprove",
+      input: {
+        requestId: "req-1",
+        approverAlias: "ws-a:peer-a",
+        coordinatorSession: "ws-a:peer-a",
+      },
+    },
+    {
+      method: "peerWatch",
+      input: { requestId: "req-1", timeoutMs: 5000, pollIntervalMs: 100 },
+    },
+    { method: "peerConfirm", input: { requestId: "req-1", originatorAlias: "peer-a" } },
+    { method: "peerCancel", input: { requestId: "req-1", originatorAlias: "peer-a" } },
+    {
+      method: "peerList",
+      input: { callerAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" },
+    },
+    {
+      method: "peerList",
+      input: { callerAlias: "worker:review", coordinatorSession: "ws-a:peer-a", status: "running" },
+    },
+    {
+      method: "peerGet",
+      input: {
+        requestId: "req-1",
+        callerAlias: "ws-a:peer-a",
+        coordinatorSession: "ws-a:peer-a",
+      },
+    },
+  ]);
+});
+
+test("createOrchestrationTransport peer methods fail clearly when the client lacks them", async () => {
+  const fakeClient = {
+    delegateRequest: async () => {
+      throw new Error("unused");
+    },
+    createGroup: async () => {
+      throw new Error("unused");
+    },
+    getTaskForCoordinator: async () => null,
+    listTasks: async () => [],
+    approveTask: async () => {
+      throw new Error("unused");
+    },
+    cancelTaskForCoordinator: async () => {
+      throw new Error("unused");
+    },
+    watchTask: async () => {
+      throw new Error("unused");
+    },
+    workerRaiseQuestion: async () => {
+      throw new Error("unused");
+    },
+    coordinatorAnswerQuestion: async () => {
+      throw new Error("unused");
+    },
+    coordinatorRequestHumanInput: async () => {
+      throw new Error("unused");
+    },
+    coordinatorReviewContestedResult: async () => {
+      throw new Error("unused");
+    },
+  };
+  const transport = createOrchestrationTransport(
+    { kind: "unix", path: "/tmp/test.sock" },
+    { client: fakeClient },
+  );
+  await expect(
+    transport.peerDelegate!({
+      originatorAlias: "peer-a",
+      targetAlias: "peer-b",
+      task: "review",
+      coordinatorSession: "ws-a:peer-a",
+    }),
+  ).rejects.toThrow("peerDelegate is not configured");
+});
