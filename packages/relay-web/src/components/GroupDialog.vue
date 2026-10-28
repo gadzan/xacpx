@@ -74,6 +74,11 @@ const bots = computed<BotSummaryDto[]>(() => directBotsStore.botsByInstance[prop
 const botsById = computed(() => new Map(bots.value.map((b) => [b.id, b])));
 const catalogReady = computed(() => directBotsStore.botsLoaded[props.instanceId] === true || bots.value.length > 0);
 const unknownMemberIds = computed(() => memberIds.value.filter((id) => !botsById.value.has(id)));
+// Create lists only enabled candidates. Edit keeps every catalog row so
+// historical disabled members stay visible and removable.
+const memberCandidates = computed<BotSummaryDto[]>(() =>
+  isEditing ? bots.value : bots.value.filter((bot) => bot.enabled),
+);
 
 const duplicateNames = computed(() => {
   const counts = new Map<string, number>();
@@ -115,6 +120,15 @@ function toggleMember(botId: string): void {
     ? memberIds.value.filter((id) => id !== botId)
     : [...memberIds.value, botId];
 }
+
+// A catalog refresh can disable a Bot the user already picked in create
+// mode. The candidate row disappears, so the selection must go too or the
+// submit would carry a member the list no longer shows.
+watch(bots, () => {
+  if (isEditing) return;
+  const live = memberIds.value.filter((id) => botsById.value.get(id)?.enabled !== false);
+  if (live.length !== memberIds.value.length) memberIds.value = live;
+});
 
 watch([memberIds, botsById], () => {
   if (leadBotId.value && !memberIds.value.includes(leadBotId.value)) {
@@ -502,10 +516,10 @@ async function confirmDelete(): Promise<void> {
               </button>
             </div>
             <template v-else>
-              <div v-if="!isEditing && catalogReady && bots.length < 2"
+              <div v-if="!isEditing && catalogReady && memberCandidates.length < 2"
                    data-test="group-dialog-need-bots"
                    class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-accent-soft p-3 text-xs">
-                <span class="flex-1 leading-relaxed">{{ $t("group.manage.needBots", { count: bots.length }) }}</span>
+                <span class="flex-1 leading-relaxed">{{ $t("group.manage.needBots", { count: memberCandidates.length }) }}</span>
                 <button type="button"
                         data-test="group-dialog-create-bot"
                         class="flex shrink-0 items-center gap-1 rounded-sm bg-accent px-2 py-1 font-medium text-on-accent hover:opacity-90"
@@ -515,7 +529,7 @@ async function confirmDelete(): Promise<void> {
                 </button>
               </div>
               <div class="max-h-56 space-y-px overflow-y-auto rounded-lg bg-bg p-1 thin-scroll">
-                <label v-for="bot in bots"
+                <label v-for="bot in memberCandidates"
                        :key="bot.id"
                        :data-test="`group-dialog-member-${bot.id}`"
                        class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-raised">
