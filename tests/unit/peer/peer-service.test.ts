@@ -382,6 +382,15 @@ test("a late completion never overwrites a cancellation", async () => {
       task: "slow task",
     });
     await h.service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
+    // Wait until the background execution has actually started the prompt
+    // before cancelling: otherwise the execution may bail before prompting
+    // (also correct, but then this test would not exercise the late
+    // backfill it is about). Bounded poll; fails loudly if the prompt
+    // never starts instead of hanging the suite.
+    for (let i = 0; i < 100 && h.promptCalls.length === 0; i++) {
+      await Bun.sleep(10);
+    }
+    expect(h.promptCalls).toHaveLength(1);
     await h.service.cancel({ requestId: record.requestId, originatorAlias: "peer-a" });
     release({ text: "done late" });
     // Give the background execution a chance to attempt its backfill.
@@ -392,6 +401,56 @@ test("a late completion never overwrites a cancellation", async () => {
     expect(h.promptCalls).toHaveLength(1);
   } finally {
     await h.cleanup();
+  }
+});
+
+test("cancel during session resolution is never resurrected by the executing upsert", async () => {
+  // Gate resolveSession so cancel deterministically lands between approve
+  // and the execution's transport-session upsert. Without the re-read
+  // under the per-request lock, the stale running snapshot would overwrite
+  // the cancellation and the late backfill would complete the request.
+  let releaseResolve!: (value: ResolvedSession | null) => void;
+  const resolveGate = new Promise<ResolvedSession | null>((resolve) => {
+    releaseResolve = resolve;
+  });
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-peer-unit-"));
+  const store = new PeerStore(join(dir, "peer-requests.json"));
+  const promptCalls: Array<{ session: string; text: string }> = [];
+  // delegate itself resolves the target once to validate it; only the
+  // second call (the background execution's) is gated, so the gate
+  // deterministically lands between approve and the executing upsert.
+  let resolveCalls = 0;
+  const service = new PeerService({
+    resolveSession: () => {
+      resolveCalls += 1;
+      if (resolveCalls === 1) {
+        return Promise.resolve(makeSession("peer-b", "ws-b"));
+      }
+      return resolveGate;
+    },
+    promptSession: async (session, text) => {
+      promptCalls.push({ session: session.alias, text });
+      return { text: "late" };
+    },
+    store,
+  });
+  try {
+    const record = await service.delegate({
+      originatorAlias: "peer-a",
+      coordinatorSession: "ws-a:peer-a",
+      targetAlias: "peer-b",
+      task: "slow task",
+    });
+    await service.approve({ requestId: record.requestId, approverAlias: "ws-a:peer-a", coordinatorSession: "ws-a:peer-a" });
+    await service.cancel({ requestId: record.requestId, originatorAlias: "peer-a" });
+    releaseResolve(makeSession("peer-b", "ws-b"));
+    await Bun.sleep(100);
+    const after = await service.get({ requestId: record.requestId, callerAlias: "peer-a" });
+    expect(after?.status).toBe("cancelled");
+    expect(after?.result).toBeUndefined();
+    expect(promptCalls).toHaveLength(0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
