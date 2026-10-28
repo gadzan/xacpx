@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { X, Loader2, AlertCircle } from "lucide-vue-next";
+import { X, Loader2, AlertCircle, ChevronLeft, Pencil } from "lucide-vue-next";
 import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
@@ -13,7 +13,8 @@ import ModelPicker from "./ModelPicker.vue";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import BotAvatarEditor from "./BotAvatarEditor.vue";
-
+import BotAvatar from "./BotAvatar.vue";
+import { randomCharacterAvatar } from "../lib/bot-avatar/catalog";
 const props = defineProps<{
   instanceId: string;
   instanceName: string;
@@ -63,26 +64,14 @@ const identityLocked = computed(() => {
 // Form fields
 const name = ref(props.bot?.name ?? "");
 const avatar = ref<BotAvatarConfig | undefined>(
-  props.bot
-    ? copyBotAvatar(props.bot.avatar)
-    : { version: 1, kind: "character", shape: "cercle", color: "bleu", expression: "neutre", motion: "auto" },
+  props.bot ? copyBotAvatar(props.bot.avatar) : randomCharacterAvatar(),
 );
 const avatarPreviewState = ref<BotAvatarState>("idle");
-const activeTab = ref<"basic" | "appearance">("basic");
-const tabs = ["basic", "appearance"] as const;
-
-function onTabKeydown(event: KeyboardEvent): void {
-  const index = tabs.indexOf(activeTab.value);
-  let next: number;
-  if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
-  else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
-  else if (event.key === "Home") next = 0;
-  else if (event.key === "End") next = tabs.length - 1;
-  else return;
-  event.preventDefault();
-  activeTab.value = tabs[next]!;
-  void nextTick(() => dialogEl.value?.querySelector<HTMLButtonElement>(`#bot-tab-${activeTab.value}`)?.focus());
-}
+// Single-surface dialog: the basic form embeds the avatar (click = enlarged
+// quick view); the corner badge flips to the full appearance editor and the
+// header back button returns.
+const view = ref<"basic" | "appearance">("basic");
+const avatarQuickView = ref(false);
 
 function onAvatarPick(value: BotAvatarConfig | undefined): void {
   avatar.value = copyBotAvatar(value);
@@ -434,13 +423,25 @@ function describeSubmitError(err: unknown): string {
          aria-modal="true"
          :aria-labelledby="'bot-dialog-title'"
          tabindex="-1"
-         class="flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-surface text-fg shadow-float"
-         :class="activeTab === 'appearance' ? 'max-w-3xl' : 'max-w-lg'">
+       class="relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-surface text-fg shadow-float"
+       :class="view === 'appearance' ? 'max-w-3xl' : 'max-w-lg'">
       <!-- Header -->
-      <div class="flex shrink-0 items-center justify-between px-5 py-3.5">
-        <h2 id="bot-dialog-title" class="text-base font-semibold">
-          {{ isEditing ? $t("bot.dialog.editTitle") : $t("bot.dialog.createTitle") }}
-        </h2>
+      <div class="flex shrink-0 items-center justify-between gap-2 px-5 py-3.5">
+        <div class="flex min-w-0 items-center gap-1.5">
+          <button
+            v-if="view === 'appearance'"
+            type="button"
+            data-test="bot-avatar-back"
+            :aria-label="$t('common.back')"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+            @click="view = 'basic'"
+          >
+            <ChevronLeft :size="16" />
+          </button>
+          <h2 id="bot-dialog-title" class="min-w-0 truncate text-base font-semibold">
+            {{ view === 'appearance' ? $t("bot.avatar.tabs.appearance") : isEditing ? $t("bot.dialog.editTitle") : $t("bot.dialog.createTitle") }}
+          </h2>
+        </div>
         <button
           type="button"
           :aria-label="$t('common.close')"
@@ -448,15 +449,6 @@ function describeSubmitError(err: unknown): string {
           @click="navigateBack"
         >
           <X :size="16" />
-        </button>
-      </div>
-      <div role="tablist" :aria-label="$t('bot.avatar.tabs.label')" class="flex shrink-0 gap-5 px-5">
-        <button v-for="tab in tabs" :id="`bot-tab-${tab}`" :key="tab" type="button" role="tab"
-                :aria-selected="activeTab === tab" :aria-controls="`bot-panel-${tab}`" :tabindex="activeTab === tab ? 0 : -1"
-                class="border-b-2 py-3 text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                :class="activeTab === tab ? 'border-accent text-accent' : 'border-transparent text-fg-muted hover:text-fg'"
-                @click="activeTab = tab" @keydown="onTabKeydown">
-          {{ $t(`bot.avatar.tabs.${tab}`) }}
         </button>
       </div>
 
@@ -488,7 +480,24 @@ function describeSubmitError(err: unknown): string {
           {{ $t("bot.validation.detailLoading") }}
         </div>
 
-        <section v-show="activeTab === 'basic'" id="bot-panel-basic" role="tabpanel" aria-labelledby="bot-tab-basic" class="space-y-4">
+        <section v-show="view === 'basic'" id="bot-panel-basic" class="space-y-4">
+        <!-- Avatar: click to view enlarged; the corner badge opens the appearance editor. -->
+        <div class="flex items-center gap-3">
+          <div class="relative shrink-0">
+            <button type="button" data-test="bot-avatar-quick-view"
+                    :aria-label="$t('bot.avatar.quickView')"
+                    class="block rounded-xl outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent"
+                    @click="avatarQuickView = true">
+              <BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="56" static />
+            </button>
+            <button type="button" data-test="bot-avatar-edit"
+                    :aria-label="$t('bot.avatar.editAppearance')"
+                    class="absolute -bottom-1 -right-1 grid h-5 w-5 place-items-center rounded-full bg-surface-2 text-fg-muted ring-1 ring-border transition-colors hover:bg-raised hover:text-fg focus-visible:outline-2 focus-visible:outline-accent"
+                    @click="view = 'appearance'">
+              <Pencil :size="11" />
+            </button>
+          </div>
+        </div>
         <!-- Name -->
         <div>
           <label for="bot-name" class="block text-xs font-medium text-fg-muted mb-1.5">
@@ -629,7 +638,7 @@ function describeSubmitError(err: unknown): string {
           {{ $t("bot.lifecycle.reenableNote") }}
         </p>
         </section>
-        <section v-show="activeTab === 'appearance'" id="bot-panel-appearance" role="tabpanel" aria-labelledby="bot-tab-appearance">
+        <section v-show="view === 'appearance'" id="bot-panel-appearance">
           <BotAvatarEditor v-model:preview-state="avatarPreviewState" :model-value="avatar" :driver="avatarDriver" :name="name" @update:model-value="onAvatarPick" />
         </section>
       </form>
@@ -661,6 +670,20 @@ function describeSubmitError(err: unknown): string {
           <Loader2 v-if="submitting" :size="13" class="animate-spin" />
           <span>{{ isEditing ? $t("common.save") : $t("common.create") }}</span>
         </button>
+      </div>
+      <!-- Avatar quick view: enlarged look-only preview over the dialog. -->
+      <div v-if="avatarQuickView" data-test="bot-avatar-quick-view-overlay"
+           class="absolute inset-0 z-10 grid place-items-center bg-black/60 p-4"
+           @click.self="avatarQuickView = false">
+        <div class="flex flex-col items-center gap-3 rounded-2xl bg-surface p-6 shadow-float">
+          <BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="144" static />
+          <p class="max-w-[12rem] truncate text-sm font-semibold">{{ name || $t('bot.avatar.preview.unnamed') }}</p>
+          <button type="button"
+                  class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+                  @click="avatarQuickView = false">
+            {{ $t("common.close") }}
+          </button>
+        </div>
       </div>
     </div>
     <BotRemovalDialog

@@ -242,7 +242,8 @@ describe("Direct Bot Components", () => {
       expect(createSpy).toHaveBeenCalledWith("i1", expect.objectContaining({
         name: "Code Reviewer",
         agent: "codex",
-        avatar: { version: 1, kind: "character", shape: "cercle", color: "bleu", expression: "neutre", motion: "auto" },
+        // The create-time avatar is drawn at random; only its character shape is contractual.
+        avatar: expect.objectContaining({ version: 1, kind: "character", motion: "auto" }),
         instructions: "Look for bugs",
         model: "custom-model",
         effort: "high",

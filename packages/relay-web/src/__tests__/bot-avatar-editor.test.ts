@@ -96,7 +96,7 @@ describe("Bot dialog avatar draft", () => {
     const update = vi.spyOn(store, "updateBot").mockResolvedValue(DETAIL);
     const wrapper = dialog(DEFAULT_AVATAR);
     await flushPromises();
-    await wrapper.get("#bot-tab-appearance").trigger("click");
+    await wrapper.get('[data-test="bot-avatar-edit"]').trigger("click");
     await wrapper.get('[data-test="avatar-color-rouge"]').trigger("click");
     await wrapper.get('[data-test="avatar-color-bleu"]').trigger("click");
     gate.resolve(DETAIL);
@@ -115,7 +115,7 @@ describe("Bot dialog avatar draft", () => {
     const update = vi.spyOn(store, "updateBot").mockResolvedValue({ ...DETAIL, avatar: undefined });
     const wrapper = dialog();
     await flushPromises();
-    await wrapper.get("#bot-tab-appearance").trigger("click");
+    await wrapper.get('[data-test="bot-avatar-edit"]').trigger("click");
     await wrapper.get('[data-test="avatar-reset"]').trigger("click");
     expect(update).not.toHaveBeenCalled();
     await wrapper.get("form").trigger("submit.prevent");
@@ -123,21 +123,19 @@ describe("Bot dialog avatar draft", () => {
     expect(update).toHaveBeenCalledWith("i1", "bot_1", { avatar: null });
   });
 
-  it("keeps preview state and selection across keyboard tab switches and discards on cancel", async () => {
+  it("keeps preview state and selection across badge navigation and discards on cancel", async () => {
     const store = useDirectBotsStore();
     vi.spyOn(store, "loadBotDetail").mockResolvedValue(DETAIL);
     const update = vi.spyOn(store, "updateBot").mockResolvedValue(DETAIL);
     const wrapper = dialog();
     await flushPromises();
-    await wrapper.get("#bot-tab-basic").trigger("keydown", { key: "ArrowRight" });
-    expect(wrapper.get("#bot-tab-appearance").attributes("aria-selected")).toBe("true");
+    await wrapper.get('[data-test="bot-avatar-edit"]').trigger("click");
     await wrapper.get('[data-test="avatar-shape-nuage"]').trigger("click");
     await wrapper.get('[data-test="avatar-preview-working"]').trigger("click");
     expect(wrapper.get('[data-test="avatar-preview-working"]').attributes("aria-pressed")).toBe("true");
-    await wrapper.get("#bot-tab-appearance").trigger("keydown", { key: "Home" });
-    expect(wrapper.get("#bot-tab-basic").attributes("tabindex")).toBe("0");
-    await wrapper.get("#bot-tab-basic").trigger("keydown", { key: "End" });
-    expect(wrapper.get("#bot-tab-appearance").attributes("aria-selected")).toBe("true");
+    await wrapper.get('[data-test="bot-avatar-back"]').trigger("click");
+    expect(wrapper.get('[data-test="avatar-shape-nuage"]').isVisible()).toBe(false);
+    await wrapper.get('[data-test="bot-avatar-edit"]').trigger("click");
     expect(wrapper.get('[data-test="avatar-preview-working"]').attributes("aria-pressed")).toBe("true");
     expect(wrapper.getComponent(BotAvatarEditor).props("modelValue")).toEqual({ ...DETAIL.avatar, shape: "nuage" });
     const cancel = wrapper.findAll("button").find((button) => button.text() === i18n.global.t("common.cancel"))!;
@@ -145,5 +143,28 @@ describe("Bot dialog avatar draft", () => {
     expect(wrapper.emitted("close")).toBeTruthy();
     expect(update).not.toHaveBeenCalled();
     expect(DETAIL.avatar).toEqual({ ...DEFAULT_AVATAR, color: "rose" });
+  });
+
+  it("opens the enlarged quick view from the embedded avatar and closes it", async () => {
+    const store = useDirectBotsStore();
+    vi.spyOn(store, "loadBotDetail").mockResolvedValue(DETAIL);
+    const wrapper = dialog(DETAIL.avatar);
+    await flushPromises();
+    expect(wrapper.find('[data-test="bot-avatar-quick-view-overlay"]').exists()).toBe(false);
+    await wrapper.get('[data-test="bot-avatar-quick-view"]').trigger("click");
+    expect(wrapper.get('[data-test="bot-avatar-quick-view-overlay"]').isVisible()).toBe(true);
+    await wrapper.get('[data-test="bot-avatar-quick-view-overlay"] button').trigger("click");
+    expect(wrapper.find('[data-test="bot-avatar-quick-view-overlay"]').exists()).toBe(false);
+  });
+
+  it("generates a random character avatar for a new Bot", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.999);
+    const wrapper = track(mount(BotDialog, {
+      props: { instanceId: "i1", instanceName: "Local" },
+      global: { plugins: [i18n], stubs: { teleport: true, BotAvatar: true } },
+    }));
+    await flushPromises();
+    const avatar = wrapper.getComponent(BotAvatarEditor).props("modelValue") as CharacterAvatarConfig;
+    expect(avatar).toEqual({ version: 1, kind: "character", shape: "goutte", color: "creme", expression: "somnolent", motion: "auto" });
   });
 });
