@@ -961,10 +961,9 @@ function onKeydown(e: KeyboardEvent) {
                          :title='$t("chat.model")' test-id="model-menu"
                          :groups="modelGroups" @select="pickModel" />
           <button v-if="modelUnavailable || modelRecovery" type="button" data-test="model-refresh"
-                  class="flex shrink-0 items-center gap-1 rounded-sm px-1 py-0.5 text-xs text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-60"
-                  :disabled="controls.modelLoading || modelApplying" :title="$t('chat.modelRefresh')" @click="refreshModels">
-            <RefreshCw :size="12" :class="{ 'animate-spin': controls.modelLoading }" />
-            <span>{{ $t('chat.modelRefresh') }}</span>
+                  class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted hover:bg-surface-2 hover:text-fg disabled:opacity-60"
+                  :disabled="controls.modelLoading || modelApplying" :title="$t('chat.modelRefresh')" :aria-label="$t('chat.modelRefresh')" @click="refreshModels">
+            <RefreshCw :size="14" :class="{ 'animate-spin': controls.modelLoading }" />
           </button>
           <div v-if="controls.effortAvailable.length" class="relative shrink-0">
             <button

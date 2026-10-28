@@ -192,12 +192,18 @@ function onInput(event: Event): void {
         @paste="emit('paste', $event)"
       />
 
-      <div class="flex items-center justify-between gap-2 px-2.5 transition-[padding] duration-200 ease-out motion-reduce:transition-none" :class="expanded ? 'pb-2.5 pt-0.5' : 'pb-1 pt-0'">
-        <div class="flex min-w-0 flex-1 items-center gap-2">
+      <div class="flex items-center gap-2 px-2.5 transition-[padding] duration-200 ease-out motion-reduce:transition-none" :class="expanded ? 'pb-2.5 pt-0.5' : 'pb-1 pt-0'">
+        <!-- Everything but send/stop is a writing affordance: while the composer
+             rests (empty + unfocused) it is display:none so the resting card is
+             just the input line plus the button. v-show, not v-if: pane state
+             (open dropdowns, staged attachments) must survive the fold. -->
+        <div v-show="expanded" data-test="composer-controls" class="flex min-w-0 flex-1 items-center gap-2">
           <slot name="controls" />
         </div>
-        <div class="flex shrink-0 items-center gap-1.5">
-          <slot name="actions" />
+        <div class="ml-auto flex shrink-0 items-center gap-1.5">
+          <div v-show="expanded" data-test="composer-actions" class="flex items-center gap-1.5">
+            <slot name="actions" />
+          </div>
           <button
             v-if="showStop"
             type="button"
