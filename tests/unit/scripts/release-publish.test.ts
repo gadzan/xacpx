@@ -28,7 +28,10 @@ function isolatedDeclaration(name: string): string {
   if (start < 0) throw new Error(`release.mjs has no function ${name}`);
   const end = source.indexOf("\n}", start);
   if (end < 0) throw new Error(`release.mjs: ${name} is not a top-level function`);
-  return source.slice(start, end + 2);
+  // `async ` sits before `function`, so slicing at the keyword would strip it
+  // and turn every `await` inside into a syntax error.
+  const prefix = source.slice(Math.max(0, start - 6), start) === "async " ? "async " : "";
+  return prefix + source.slice(start, end + 2);
 }
 
 /**
@@ -585,4 +588,80 @@ test("running under bun is refused with a message that says what to do", () => {
   ) as { npmCliPath: () => string };
 
   expect(() => api.npmCliPath()).toThrow(/run the release tool with node, not bun/);
+});
+
+/**
+ * The Test-run hold, driven with a scripted `gh`.
+ *
+ * It decides whether every publish job re-runs a suite the Test workflow has
+ * already covered, so the two properties that matter are: the run it reads is
+ * the release commit's push-on-main run, and every outcome other than green
+ * still lets the tags go out.
+ */
+function holdHarness(runs: Array<{ status: string; conclusion?: string | null }> | (() => never)) {
+  const calls: string[][] = [];
+  const output: string[] = [];
+  const api = runInNewContext(
+    `const ROOT = "/release-fixture";
+     const TEST_RUN_WAIT_MS = 120_000;
+     const TEST_RUN_WAIT_MINUTES = TEST_RUN_WAIT_MS / 60_000;
+     const TEST_RUN_POLL_MS = 20_000;
+     const sleep = async () => {};
+     ${isolatedDeclaration("awaitTestRun")}
+     ({ awaitTestRun });`,
+    {
+      execFileSync(_command: string, args: string[]) {
+        calls.push(args);
+        if (typeof runs === "function") throw new Error("gh unavailable");
+        const run = runs[Math.min(calls.length - 1, runs.length - 1)];
+        return JSON.stringify(run ? [run] : []);
+      },
+      console: Object.fromEntries(["log", "warn", "error"].map((method) => [
+        method,
+        (...args: unknown[]) => output.push(args.join(" ")),
+      ])),
+    },
+  ) as { awaitTestRun: (head: string) => Promise<void> };
+  return { api, calls, output };
+}
+
+test("the hold reads the release commit's push-on-main Test run", async () => {
+  const fixture = holdHarness([{ status: "completed", conclusion: "success" }]);
+  await fixture.api.awaitTestRun("release-head");
+  expect(fixture.calls).toHaveLength(1);
+  expect(fixture.calls[0]).toEqual([
+    "run", "list", "--workflow", "test.yml", "--commit", "release-head",
+    "--event", "push", "--branch", "main", "--limit", "1",
+    "--json", "databaseId,status,conclusion",
+  ]);
+  expect(fixture.output.join("\n")).toContain("publish jobs will skip their own suite");
+});
+
+test("the hold keeps polling while the run is in flight", async () => {
+  const fixture = holdHarness([{ status: "in_progress" }, { status: "completed", conclusion: "success" }]);
+  await fixture.api.awaitTestRun("release-head");
+  expect(fixture.calls).toHaveLength(2);
+  expect(fixture.output.join("\n")).toContain("publish jobs will skip their own suite");
+});
+
+test("every outcome that is not green still releases on the suite in each publish job", async () => {
+  for (const [runs, expected] of [
+    [[{ status: "completed", conclusion: "failure" }], "concluded failure"],
+    [[{ status: "in_progress" }], "still in_progress"],
+    [[], "no Test run found"],
+  ] as const) {
+    const fixture = holdHarness(runs as Array<{ status: string; conclusion?: string | null }>);
+    await fixture.api.awaitTestRun("release-head");
+    expect(fixture.output.join("\n")).toContain(expected);
+  }
+  // The polls are bounded: a run that never concludes cannot hold the tags.
+  const stuck = holdHarness([{ status: "in_progress" }]);
+  await stuck.api.awaitTestRun("release-head");
+  expect(stuck.calls).toHaveLength(7);
+});
+
+test("an unreadable gh falls through to tagging instead of failing the release", async () => {
+  const fixture = holdHarness(() => { throw new Error("gh unavailable"); });
+  await fixture.api.awaitTestRun("release-head");
+  expect(fixture.output.join("\n")).toContain("could not query Test runs");
 });
