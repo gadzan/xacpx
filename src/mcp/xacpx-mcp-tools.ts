@@ -633,6 +633,135 @@ export function buildXacpxMcpToolRegistry(input: {
           );
         }),
     },
+    {
+      name: "peer_delegate",
+      description:
+        "Delegate a task directly to another session, peer-to-peer, bypassing the coordinator — this is NOT top-down dispatch. The delegation is created in needs_confirmation and does NOT execute until peer_approve is called with operator authorization; an unapproved delegation never runs. Execution prompts the target session, which queues behind the target's active turn and never interrupts it. Completion only fills this request's record; call peer_watch to read the terminal result and peer_confirm to validate it — completion is not proof the deliverable is correct. For plain messages between peers, use agent_send, not this tool.",
+      inputSchema: z
+        .object({
+          targetAlias: z.string().min(1).describe("Target session alias"),
+          targetWorkspace: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Expected workspace of the target session; rejected on mismatch"),
+          task: z.string().min(1).describe("Task prompt for the target session"),
+          requestId: z
+            .string()
+            .min(1)
+            .optional()
+            .describe("Client idempotency key; re-sending the same requestId with the same originator/target/task returns the existing record"),
+        })
+        .strict(),
+      handler: async (args) =>
+        await asToolResult(async () => {
+          if (!transport.peerDelegate) throw new Error("peer_delegate requires a bound peer transport");
+          const input = args as {
+            targetAlias: string;
+            targetWorkspace?: string;
+            task: string;
+            requestId?: string;
+          };
+          const record = await transport.peerDelegate({
+            originatorAlias: sourceHandle ?? coordinatorSession,
+            targetAlias: input.targetAlias,
+            ...(input.targetWorkspace !== undefined ? { targetWorkspace: input.targetWorkspace } : {}),
+            task: input.task,
+            ...(input.requestId !== undefined ? { requestId: input.requestId } : {}),
+          });
+          return createSuccessResult(
+            `Peer delegation "${record.requestId}" created.\n- Status: ${record.status}\n- From: ${record.originator.alias}\n- To: ${record.target.alias}\nNext: this delegation requires operator authorization. Call peer_approve to authorize execution, or leave it unapproved — it will never run on its own.`,
+            record,
+          );
+        }),
+    },
+    {
+      name: "peer_approve",
+      description:
+        "Authorize a peer delegation created by peer_delegate, once the operator has approved it. Execution starts in the background and this call returns running immediately; observe completion with peer_watch. Approving is the operator authorization step — there is no other way to start a peer delegation.",
+      inputSchema: z
+        .object({
+          requestId: z.string().min(1),
+        })
+        .strict(),
+      handler: async (args) =>
+        await asToolResult(async () => {
+          if (!transport.peerApprove) throw new Error("peer_approve requires a bound peer transport");
+          const record = await transport.peerApprove({
+            requestId: (args as { requestId: string }).requestId,
+            approvedBy: sourceHandle ?? coordinatorSession,
+          });
+          return createSuccessResult(
+            `Peer delegation "${record.requestId}" approved and running.\nNext: call peer_watch to observe it until it reaches a terminal state.`,
+            record,
+          );
+        }),
+    },
+    {
+      name: "peer_watch",
+      description: `Long-poll a peer request until it reaches a terminal state (completed, failed, or delivered). Defaults: timeout ${DEFAULT_TASK_WATCH_TIMEOUT_MS} ms, poll interval ${DEFAULT_TASK_WATCH_POLL_INTERVAL_MS} ms. Maximums: timeout ${MAX_TASK_WATCH_TIMEOUT_MS} ms, poll interval ${MAX_TASK_WATCH_POLL_INTERVAL_MS} ms. A timeout ends only the watch — the request keeps running and a timeout is never a failure, never a reason to resend, and never permission to send again with a new requestId.`,
+      inputSchema: z
+        .object({
+          requestId: z.string().min(1),
+          timeoutMs: z
+            .number()
+            .int()
+            .min(0)
+            .max(MAX_TASK_WATCH_TIMEOUT_MS)
+            .optional(),
+          pollIntervalMs: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_TASK_WATCH_POLL_INTERVAL_MS)
+            .optional(),
+        })
+        .strict(),
+      handler: async (args) =>
+        await asToolResult(async () => {
+          if (!transport.peerWatch) throw new Error("peer_watch requires a bound peer transport");
+          const result = await transport.peerWatch(
+            args as {
+              requestId: string;
+              timeoutMs?: number;
+              pollIntervalMs?: number;
+            },
+          );
+          const request = result.request;
+          const text =
+            result.status === "terminal"
+              ? `Peer delegation "${request.requestId}" reached terminal state: ${request.status}.` +
+                (request.status === "completed"
+                  ? `\nNext: validate the result, then call peer_confirm to mark it delivered. Completion alone is not proof the deliverable is correct.`
+                  : request.status === "failed"
+                    ? `\nError: ${request.error ?? "unknown"}`
+                    : "")
+              : `Peer watch timed out; request "${request.requestId}" is still ${request.status}. The request keeps running — do not resend. Call peer_watch again to keep observing.`;
+          return createSuccessResult(text, result);
+        }),
+    },
+    {
+      name: "peer_confirm",
+      description:
+        "Validate a completed peer delegation's result and mark it delivered. Only the originator can confirm, and only from completed. This is the step that turns a terminal result into a delivery — completion alone is not proof the deliverable is correct.",
+      inputSchema: z
+        .object({
+          requestId: z.string().min(1),
+        })
+        .strict(),
+      handler: async (args) =>
+        await asToolResult(async () => {
+          if (!transport.peerConfirm) throw new Error("peer_confirm requires a bound peer transport");
+          const record = await transport.peerConfirm({
+            requestId: (args as { requestId: string }).requestId,
+            originatorAlias: sourceHandle ?? coordinatorSession,
+          });
+          return createSuccessResult(
+            `Peer delegation "${record.requestId}" confirmed delivered by its originator.`,
+            record,
+          );
+        }),
+    },
   );
   if (internalSessionTools && !isExternalCoordinator && !sourceHandle) {
     tools.push({

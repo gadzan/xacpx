@@ -73,7 +73,7 @@ test("Group MCP server instructions require ending the dispatch turn and render 
   } finally { await client.close(); await server.close(); }
 });
 
-test("lists 13 MCP tools and hides coordinator/source identity from input schemas", async () => {
+test("lists 17 MCP tools and hides coordinator/source identity from input schemas", async () => {
   const transport = createMemoryTransport(
     async () => ({ taskId: "task-1", status: "needs_confirmation" }),
     {
@@ -110,7 +110,7 @@ test("lists 13 MCP tools and hides coordinator/source identity from input schema
     await client.connect(clientTransport);
 
     const list = await client.listTools();
-    expect(list.tools).toHaveLength(13);
+    expect(list.tools).toHaveLength(17);
     const delegate = list.tools.find((tool) => tool.name === "delegate_request");
     const workerRaiseQuestion = list.tools.find((tool) => tool.name === "worker_raise_question");
     const coordinatorAnswerQuestion = list.tools.find((tool) => tool.name === "coordinator_answer_question");
@@ -166,7 +166,7 @@ test("lists scheduled_create only when internal session tools are enabled", asyn
     await client.connect(clientTransport);
 
     const list = await client.listTools();
-    expect(list.tools).toHaveLength(16);
+    expect(list.tools).toHaveLength(20);
     expect(list.tools.map((tool) => tool.name)).toContain("scheduled_list");
     expect(list.tools.map((tool) => tool.name)).toContain("scheduled_cancel");
     const scheduledCreate = list.tools.find((tool) => tool.name === "scheduled_create");
@@ -602,7 +602,7 @@ test("hides coordinator human-input package tools when resolveIdentity reports a
 
     const list = await client.listTools();
     const names = list.tools.map((tool) => tool.name);
-    expect(list.tools).toHaveLength(12);
+    expect(list.tools).toHaveLength(16);
     expect(names).not.toContain("coordinator_request_human_input");
     expect(names).toContain("coordinator_answer_question");
     expect(names).toContain("coordinator_review_contested_result");
@@ -638,7 +638,7 @@ test("infers MCP identity from client roots before listing tools", async () => {
     await client.connect(clientTransport);
 
     const list = await client.listTools();
-    expect(list.tools).toHaveLength(13);
+    expect(list.tools).toHaveLength(17);
     expect(resolved).toEqual([
       {
         clientName: "Claude Code",
@@ -670,7 +670,7 @@ test("uses resolveIdentity when both static and lazy MCP identities are configur
     await client.connect(clientTransport);
 
     const list = await client.listTools();
-    expect(list.tools).toHaveLength(13);
+    expect(list.tools).toHaveLength(17);
     expect(resolved).toEqual([{ clientName: "Claude Code" }]);
   } finally {
     await client.close();
@@ -743,8 +743,8 @@ test("memoizes in-flight lazy MCP identity resolution across concurrent first re
     releaseResolve();
 
     const [first, second] = await Promise.all([firstList, secondList]);
-    expect(first.tools).toHaveLength(13);
-    expect(second.tools).toHaveLength(13);
+    expect(first.tools).toHaveLength(17);
+    expect(second.tools).toHaveLength(17);
     expect(resolveCalls).toBe(1);
   } finally {
     await client.close();

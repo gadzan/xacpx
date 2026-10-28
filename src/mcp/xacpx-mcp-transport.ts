@@ -25,6 +25,10 @@ import type {
   AgentMessageReceipt,
   AgentTargetSelector,
 } from "../orchestration/agent-messaging-types";
+import type {
+  PeerRequest,
+  PeerWatchResult,
+} from "../peer/peer-types";
 export interface XacpxMcpDelegateRequest {
   coordinatorSession: string;
   sourceHandle?: string;
@@ -111,6 +115,27 @@ export interface XacpxMcpAgentSendArgs extends XacpxMcpAgentListArgs {
   replyTo?: string;
   completion?: AgentMessageCompletionMode;
 }
+export interface XacpxMcpPeerDelegateArgs {
+  originatorAlias: string;
+  originatorWorkspace?: string;
+  targetAlias: string;
+  targetWorkspace?: string;
+  task: string;
+  requestId?: string;
+}
+
+export interface XacpxMcpPeerRequestArgs {
+  requestId: string;
+  approvedBy?: string;
+  originatorAlias?: string;
+}
+
+export interface XacpxMcpPeerWatchArgs {
+  requestId: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
 export interface XacpxMcpTransport {
   groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: (input: GroupSendInvocation) => Promise<{ runId: string; assignmentId: string; memberTurnId: string; messageId: string }>;
@@ -138,6 +163,17 @@ export interface XacpxMcpTransport {
   scheduledCancel: (input: XacpxMcpScheduledCancelArgs) => Promise<{ id: string; cancelled: boolean }>;
   listAgentEndpoints: (input: XacpxMcpAgentListArgs) => Promise<AgentEndpointView[]>;
   sendAgentMessage: (input: XacpxMcpAgentSendArgs) => Promise<AgentMessageReceipt>;
+  /**
+   * Peer delegation (prototype). Optional like groupSend: a transport binds
+   * these only when a PeerService is available; the peer_* tools throw when
+   * unbound instead of advertising calls that cannot run. Daemon RPC binding
+   * (peer.* over orchestration IPC) is NOT part of this prototype — see
+   * docs/peer-delegation.md.
+   */
+  peerDelegate?: (input: XacpxMcpPeerDelegateArgs) => Promise<PeerRequest>;
+  peerApprove?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
+  peerWatch?: (input: XacpxMcpPeerWatchArgs) => Promise<PeerWatchResult>;
+  peerConfirm?: (input: XacpxMcpPeerRequestArgs) => Promise<PeerRequest>;
 }
 
 interface OrchestrationClientLike {
@@ -294,5 +330,17 @@ export function createMemoryTransport(
     sendAgentMessage:
       overrides.sendAgentMessage
       ?? (unimplemented("sendAgentMessage") as XacpxMcpTransport["sendAgentMessage"]),
+    peerDelegate:
+      overrides.peerDelegate
+      ?? (unimplemented("peerDelegate") as XacpxMcpTransport["peerDelegate"]),
+    peerApprove:
+      overrides.peerApprove
+      ?? (unimplemented("peerApprove") as XacpxMcpTransport["peerApprove"]),
+    peerWatch:
+      overrides.peerWatch
+      ?? (unimplemented("peerWatch") as XacpxMcpTransport["peerWatch"]),
+    peerConfirm:
+      overrides.peerConfirm
+      ?? (unimplemented("peerConfirm") as XacpxMcpTransport["peerConfirm"]),
   };
 }
