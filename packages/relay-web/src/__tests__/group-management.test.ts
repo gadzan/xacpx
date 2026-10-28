@@ -143,7 +143,7 @@ describe("Group management", () => {
   describe("GroupDialog.vue create", () => {
     it("creates a Group with the first enabled member suggested as Lead and lists it only after the RPC succeeds", async () => {
       routes.set("control.bots.list", () => ({ bots: [SLEEPER, REVIEWER, TESTER] }));
-      const created = { ...GROUP, id: "conversation_new", title: "Launch", botIds: ["bot_off", "bot_b"], leadBotId: "bot_b" };
+      const created = { ...GROUP, id: "conversation_new", title: "Launch", botIds: ["bot_a", "bot_b"], leadBotId: "bot_a" };
       const gate = Promise.withResolvers<void>();
       routes.set("control.groups.create", async () => {
         await gate.promise;
@@ -155,9 +155,10 @@ describe("Group management", () => {
       await flushPromises();
 
       await wrapper.find('[data-test="group-dialog-title"]').setValue("Launch");
-      await selectMembers(wrapper, ["bot_off", "bot_b"]);
+      expect(wrapper.find('[data-test="group-dialog-member-bot_off"]').exists()).toBe(false);
+      await selectMembers(wrapper, ["bot_a", "bot_b"]);
       // The Lead picker is the unified SelectMenu: the trigger shows the suggested Lead.
-      expect(wrapper.find('[data-test="group-dialog-lead"]').text()).toContain("Tester");
+      expect(wrapper.find('[data-test="group-dialog-lead"]').text()).toContain("Reviewer");
 
       await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
       expect(groups.groupsByInstance["i1"] ?? []).toEqual([]);
@@ -166,13 +167,44 @@ describe("Group management", () => {
 
       expect(rpcCalls("control.groups.create")[0]?.payload).toEqual({
         title: "Launch",
-        botIds: ["bot_off", "bot_b"],
-        leadBotId: "bot_b",
+        botIds: ["bot_a", "bot_b"],
+        leadBotId: "bot_a",
         workspaceMode: "per-member",
       });
       expect(groups.groupsByInstance["i1"]?.map((g) => g.id)).toEqual(["conversation_new"]);
       expect(wrapper.emitted("saved")).toEqual([[created]]);
       expect(wrapper.emitted("close")).toHaveLength(1);
+    });
+
+    it("hides disabled Bots from create candidates and drops a pick disabled by a later refresh", async () => {
+      const third = { ...TESTER, id: "bot_c", name: "Third" };
+      seedBots([REVIEWER, TESTER, third, SLEEPER]);
+      const created = { ...GROUP, id: "conversation_new", title: "Launch", botIds: ["bot_a", "bot_c"], leadBotId: "bot_a" };
+      routes.set("control.groups.create", () => ({ group: created }));
+      routes.set("control.groups.list", () => ({ groups: [] }));
+      const wrapper = track(mount(GroupDialog, { props: { instanceId: "i1" }, global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      expect(wrapper.find('[data-test="group-dialog-member-bot_off"]').exists()).toBe(false);
+      await selectMembers(wrapper, ["bot_a", "bot_b", "bot_c"]);
+
+      // A refresh disables the picked Tester. Its row disappears, so the
+      // submit must not carry it.
+      seedBots([REVIEWER, { ...TESTER, enabled: false }, third, SLEEPER]);
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-dialog-member-bot_b"]').exists()).toBe(false);
+
+      await wrapper.find('[data-test="group-dialog-title"]').setValue("Launch");
+      await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+
+      expect(rpcCalls("control.groups.create")[0]?.payload).toEqual({
+        title: "Launch",
+        botIds: ["bot_a", "bot_c"],
+        leadBotId: "bot_a",
+        workspaceMode: "per-member",
+      });
+      expect(wrapper.emitted("saved")).toEqual([[created]]);
     });
 
     it("creates a per-member Group and shows the locked mode when editing", async () => {
