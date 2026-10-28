@@ -29,7 +29,7 @@ import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import BotAvatar from "./BotAvatar.vue";
 import GroupAgentTurnRow from "./GroupAgentTurnRow.vue";
-import AgentThinkingBubble from "./AgentThinkingBubble.vue";
+import AgentThinkingBubble, { type BubbleStatus } from "./AgentThinkingBubble.vue";
 import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
 import GroupRunDetailSheet from "./GroupRunDetailSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
@@ -77,7 +77,7 @@ function driverForBot(botId: string): string | undefined {
 function senderName(botId: string | undefined): string {
   if (!botId) return "Bot";
   const bot = botById.value[botId];
-  if (!bot) return botId;
+  if (!bot) return "Bot";
   if (bot.retired) return t("bot.removal.removedName", { name: bot.name });
   return bot.name;
 }
@@ -559,18 +559,6 @@ const detailPlan = computed<PlanEntryDto[] | undefined>(() => {
   }
   return undefined;
 });
-const siblingSummaries = computed<Array<{ name: string; state: string }> | undefined>(() => {
-  const detail = openDetail.value;
-  if (!detail?.memberTurn) return undefined;
-  const record = runRecords.value[detail.run.id];
-  if (!record) return undefined;
-  const out: Array<{ name: string; state: string }> = [];
-  for (const turn of record.memberTurns) {
-    if (turn.id === detail.memberTurn.id) continue;
-    out.push({ name: senderName(turn.botId), state: turn.state });
-  }
-  return out;
-});
 const stopAvailable = computed(() => {
   const detail = openDetail.value;
   return !!detail && !detail.identityUncertain && canStopRun(detail.run);
@@ -790,6 +778,17 @@ async function handleLoadOlder(): Promise<void> {
     }
   }
 }
+function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
+  switch (state) {
+    case "queued": return "queued";
+    case "waiting-human": return "waiting";
+    case "completed": return "done";
+    case "failed": return "failed";
+    case "cancelled": return "cancelled";
+    case "indeterminate": return "indeterminate";
+    default: return "routing";
+  }
+}
 </script>
 
 <template>
@@ -988,16 +987,14 @@ async function handleLoadOlder(): Promise<void> {
           :data-run-id="item.run.run.id"
         >
           <div class="min-w-0">
-            <p class="text-xs font-medium text-fg-muted">{{ $t("group.bubble.routingTitle") }}</p>
             <AgentThinkingBubble
-              :status="item.run.run.state === 'waiting-human' ? 'waiting' : 'routing'"
+              :status="zeroMemberRunStatus(item.run.run.state)"
               :label="$t('group.bubble.routingLabel')"
               :expanded="openDetailKey === routingKeyOf(item.run.run.id)"
               :controls="openDetailKey === routingKeyOf(item.run.run.id) ? detailId : undefined"
               @toggle="handleToggle(routingKeyOf(item.run.run.id), $event)"
             />
             <p v-if="item.run.run.waitingQuestion" class="mt-0.5 break-words text-xs text-fg">{{ item.run.run.waitingQuestion }}</p>
-            <p v-if="item.run.run.routingReason" class="mt-0.5 break-words text-xs text-fg-muted">{{ item.run.run.routingReason }}</p>
             <p v-if="item.explanation" class="mt-0.5 text-xs text-warning">{{ explanationText(item.explanation) }}</p>
           </div>
         </TranscriptRow>
@@ -1044,9 +1041,7 @@ async function handleLoadOlder(): Promise<void> {
     :attempts="detailAttempts"
     :explanation="openDetail.explanation ? explanationText(openDetail.explanation) : undefined"
     :parts="detailParts"
-    :sibling-summaries="siblingSummaries"
     :recording-state="detailRecordingState"
-    :completeness-reason="detailPage?.completenessReason"
     :plan="detailPlan"
     :trace-loading="detailPage?.loading"
     :trace-error="detailPage?.error"
@@ -1057,7 +1052,6 @@ async function handleLoadOlder(): Promise<void> {
     :stop-available="stopAvailable"
     :stop-pending="stopPending"
     :scroll-memory="detailScrollMemory"
-    :workspace-mode="group?.workspaceMode"
     @close="closeDetail"
     @stop="handleStop"
     @attempt="changeAttempt"

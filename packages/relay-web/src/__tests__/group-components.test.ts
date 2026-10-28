@@ -1101,7 +1101,7 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(false);
       const routing = wrapper.find('[data-test="group-routing-row"]');
       expect(routing.exists()).toBe(true);
-      expect(routing.text()).toContain("Jev picked Reviewer");
+      expect(routing.find('[data-test="group-bubble-status"]').text()).toBe("Choosing members");
       await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
       await flushPromises();
       expect(document.body.querySelector('[data-test="group-detail-layer"]') !== null).toBe(true);
@@ -1136,12 +1136,12 @@ describe("Group Components", () => {
       await flushPromises();
       const html = document.body.innerHTML;
       expect(html).toContain("Which branch ships?");
-      expect(html).toContain("24");
-      expect(html).toContain("step-1");
       expect(html).toContain("Review the patch");
-      expect(html).toContain("step-0");
       expect(html).toContain("permission");
       expect(html).toContain("new run");
+      expect(html).not.toContain("step-1");
+      expect(html).not.toContain("Depends on");
+      expect(html).not.toContain("Budget");
       expect(document.body.querySelector('[data-test="group-stop-run-button"]') !== null).toBe(true);
       expect(groups.activeRun?.state).toBe("waiting-human");
       wrapper.unmount();

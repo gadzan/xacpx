@@ -29,6 +29,7 @@ import { avatarHasOpenInteraction, botAvatarState, type BotAvatarState } from ".
 import PlanPanel from "./PlanPanel.vue";
 import ConversationInteractionForm from "./ConversationInteractionForm.vue";
 import { useLiveElapsedClock } from "../lib/use-live-elapsed";
+import { isMachineFailureReason } from "../lib/failure-reason";
 
 import RunStatusChip from "./RunStatusChip.vue";
 const props = defineProps<{
@@ -234,9 +235,6 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
                  :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
       <h3 class="text-base font-semibold text-fg">{{ bot?.name ?? "Direct Bot" }}</h3>
       <p v-if="bot?.role" class="mt-0.5 text-xs text-fg-muted">{{ bot.role }}</p>
-      <div v-if="bot && 'instructions' in bot && bot.instructions" class="mt-3 max-w-md rounded-2xl bg-surface/60 p-3 text-left text-xs text-fg-muted leading-relaxed">
-        {{ bot.instructions }}
-      </div>
       <p v-if="emptyHint !== null" data-test="bot-empty-hint" class="mt-4 text-xs text-fg-muted">{{ emptyHint ?? $t("bot.chat.emptyHint") }}</p>
     </div>
 
@@ -337,8 +335,10 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       <div v-if="activeRun?.state === 'failed'" class="flex items-center gap-2 rounded-2xl bg-danger/10 p-3 text-xs text-danger">
         <AlertCircle :size="16" class="shrink-0" />
         <div class="flex-1">
-          <span class="font-semibold">{{ $t("bot.run.failed") }}: </span>
-          <span>{{ activeRun.completionReason || $t("bot.run.unknownError") }}</span>
+          <span class="font-semibold">{{ $t("bot.run.failed") }}</span>
+          <span v-if="activeRun.completionReason && !isMachineFailureReason(activeRun.completionReason)">
+            : {{ activeRun.completionReason }}
+          </span>
         </div>
       </div>
 

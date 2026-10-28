@@ -23,9 +23,7 @@ const props = defineProps<{
   attempt?: number;
   attempts?: number[];
   parts?: TurnPartDto[];
-  siblingSummaries?: Array<{ name: string; state: string }>;
   recordingState?: TraceReplayStatus;
-  completenessReason?: string;
   explanation?: string;
   plan?: PlanEntryDto[];
   traceLoading?: boolean;
@@ -38,7 +36,6 @@ const props = defineProps<{
   traceFailure?: string;
   /** Read position per member/attempt, owned by the transcript. */
   scrollMemory?: Map<string, number>;
-  workspaceMode?: "shared" | "per-member";
 }>();
 
 const emit = defineEmits<{
@@ -212,9 +209,7 @@ const style = computed(() => ({
               :attempt="attempt"
               :attempts="attempts"
               :parts="parts"
-              :sibling-summaries="siblingSummaries"
               :recording-state="recordingState"
-              :completeness-reason="completenessReason"
               :explanation="explanation"
               :plan="plan"
               :trace-failure="traceFailure"
@@ -225,7 +220,6 @@ const style = computed(() => ({
               :trace-streaming="traceStreaming"
               :stop-available="stopAvailable"
               :stop-pending="stopPending"
-              :workspace-mode="workspaceMode"
               @load-more="emit('loadMore')"
               @load-earlier="emit('loadEarlier')"
               @retry-trace="emit('retryTrace')"

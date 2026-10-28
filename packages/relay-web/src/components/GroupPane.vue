@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowLeft, Crown, MessageSquare, MoreHorizontal, Pencil, Plus, Users, X } from "lucide-vue-next";
+import { ArrowLeft, MessageSquare, MoreHorizontal, Pencil, Plus, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
@@ -16,7 +16,6 @@ import MobileConnStrip from "./MobileConnStrip.vue";
 import MobileSheet from "./MobileSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
 import { backInFlight } from "../lib/mobile-back";
-import { fmtTime } from "../lib/format";
 
 const emit = defineEmits<{
   /** Mobile top bar's ←: back to the home list (DashboardView clears the selection). */
@@ -26,7 +25,7 @@ const emit = defineEmits<{
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
-const { t, locale } = useI18n();
+const { locale } = useI18n();
 
 const newTopicDialogOpen = ref(false);
 const groupDialogOpen = ref(false);
@@ -111,41 +110,6 @@ const memberBots = computed<BotSummaryDto[]>(() => {
   const ids = new Set(group.value?.botIds ?? []);
   return bots.value.filter((b) => ids.has(b.id));
 });
-const currentRun = computed(() => {
-  const run = groupsStore.activeRun;
-  return run && run.conversationId === groupsStore.activeConversationId && run.topicId === groupsStore.activeTopicId
-    && ["queued", "running", "waiting-human"].includes(run.state) ? run : null;
-});
-const currentTurns = computed(() => Object.values(groupsStore.memberTurnsById).filter(turn =>
-  turn.runId === currentRun.value?.id && turn.topicId === groupsStore.activeTopicId
-  && turn.conversationId === groupsStore.activeConversationId
-  && (currentRun.value?.activeBatch === undefined || turn.batch === currentRun.value.activeBatch)));
-const aggregate = computed(() => ({
-  running: new Set(currentTurns.value.filter(turn => turn.state === "running" || turn.state === "dispatched").map(turn => turn.botId)).size,
-  queued: new Set(currentTurns.value.filter(turn => turn.state === "queued").map(turn => turn.botId)).size,
-  blocked: new Set([...currentTurns.value.filter(turn => !!turn.blockedReason).map(turn => turn.botId), ...(currentRun.value?.unavailableBotIds ?? [])]).size,
-}));
-const routeLabel = computed(() => {
-  const run = currentRun.value;
-  if (run?.mode === "automatic" || groupsStore.targetSelection?.mode === "automatic") {
-    const ready = groupsStore.instanceId && instancesStore.routerAvailabilityFor(groupsStore.instanceId).status === "ready";
-    return t(ready ? "group.target.automatic" : "group.header.waitingRouting");
-  }
-  const lead = memberBots.value.find(bot => bot.id === group.value?.leadBotId);
-  return lead ? t("group.header.routingLead", { name: lead.name }) : t("group.header.waitingRouting");
-});
-const memberActivity = computed(() => memberBots.value.map(bot => {
-  const turns = currentTurns.value.filter(turn => turn.botId === bot.id);
-  const tasks = [...new Set(turns.filter(turn => ["queued", "dispatched", "running"].includes(turn.state)).map(turn => turn.task?.trim()).filter((task): task is string => !!task))];
-  const timestamps = [
-    ...Object.values(groupsStore.memberTurnsById).filter(turn => turn.botId === bot.id
-      && turn.conversationId === groupsStore.activeConversationId && turn.topicId === groupsStore.activeTopicId)
-      .flatMap(turn => [turn.finishedAt, turn.startedAt]),
-    ...groupsStore.messages.filter(message => message.senderBotId === bot.id
-      && message.conversationId === groupsStore.activeConversationId && message.topicId === groupsStore.activeTopicId).map(message => message.createdAt),
-  ].filter((value): value is string => !!value).sort();
-  return { id: bot.id, name: bot.name, task: tasks[0], additional: Math.max(0, tasks.length - 1), lastActive: timestamps.at(-1) };
-}));
 
 type MemberStatus =
   | { kind: "none-enabled" }
@@ -210,7 +174,7 @@ const worktreeRunId = computed(() => {
         <Users :size="16" />
       </div>
       <div class="flex min-w-0 flex-1 flex-col">
-        <div class="flex min-w-0 items-center gap-2"><span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span><span class="flex shrink-0 items-center gap-1 text-xs text-fg-muted"><Crown :size="8" :aria-label="$t('group.target.lead')" />{{ routeLabel }}</span></div>
+        <div class="flex min-w-0 items-center gap-2"><span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span></div>
         <TopicSwitcher
           v-if="isMobile && !needsFirstTopic"
           :topics="groupsStore.currentTopics"
@@ -240,7 +204,7 @@ const worktreeRunId = computed(() => {
         <Users :size="15" />
       </div>
       <div class="flex min-w-0 flex-col">
-        <div class="flex min-w-0 items-center gap-2"><h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2><span class="flex shrink-0 items-center gap-1 text-xs text-fg-muted"><Crown :size="8" :aria-label="$t('group.target.lead')" />{{ routeLabel }}</span></div>
+        <div class="flex min-w-0 items-center gap-2"><h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2></div>
         <div class="flex min-w-0 items-center gap-1.5 text-xs text-fg-muted">
           <TopicSwitcher
             v-if="!isMobile && !needsFirstTopic"
@@ -277,15 +241,6 @@ const worktreeRunId = computed(() => {
         <Pencil :size="14" />
       </button>
     </header>
-    <div class="flex min-h-11 shrink-0 items-center gap-2 overflow-x-auto px-3 text-xs text-fg-muted lg:min-h-8 lg:px-5" data-test="group-current-summary">
-      <span class="shrink-0 whitespace-nowrap">{{ $t('group.header.aggregate', { running: aggregate.running, total: group?.botIds.length ?? 0, queued: aggregate.queued, blocked: aggregate.blocked }) }}</span>
-      <span v-for="member in memberActivity" :key="member.id" class="flex shrink-0 items-center gap-1 whitespace-nowrap">
-        <span>{{ member.name }}</span>
-        <span v-if="member.task" class="max-w-48 truncate" :title="member.task">{{ member.task }}</span>
-        <span v-if="member.additional">+{{ member.additional }}</span>
-        <time v-if="member.lastActive" :datetime="member.lastActive">{{ fmtTime(member.lastActive) }}</time>
-      </span>
-    </div>
 
     <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>

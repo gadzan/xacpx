@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Clock, HelpCircle, AlertCircle, CircleX, Loader2 } from "lucide-vue-next";
 import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
@@ -9,6 +8,7 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 import { useI18n } from "vue-i18n";
 import GroupTraceTimeline from "./GroupTraceTimeline.vue";
+import { isMachineFailureReason } from "../lib/failure-reason";
 import { useLiveDuration } from "../lib/run-duration";
 import PlanPanel from "./PlanPanel.vue";
 import type { TraceReplayStatus } from "../lib/group-run-presentation";
@@ -19,10 +19,7 @@ const props = defineProps<{
   attempt?: number;
   /** Ordered replayed/combined member trace parts (empty = none recorded). */
   parts?: TurnPartDto[];
-  /** Other members of the same Run, summarized by name and state only. */
-  siblingSummaries?: Array<{ name: string; state: string }>;
   recordingState?: TraceReplayStatus;
-  completenessReason?: string;
   explanation?: string;
   plan?: PlanEntryDto[];
   traceLoading?: boolean;
@@ -35,7 +32,6 @@ const props = defineProps<{
   /** Exact-current active run ownership: Stop is shown only when all agree. */
   stopAvailable?: boolean;
   stopPending?: boolean;
-  workspaceMode?: "shared" | "per-member";
 }>();
 
 const emit = defineEmits<{
@@ -46,34 +42,9 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 
-const runStateLabel = computed(() => {
-  switch (props.run.state) {
-    case "queued": return t("bot.run.queued");
-    case "running": return t("bot.run.running");
-    case "waiting-human": return t("bot.run.waitingHuman");
-    case "completed": return t("group.run.memberCompleted");
-    case "failed": return t("bot.run.failed");
-    case "cancelled": return t("bot.run.cancelled");
-    case "indeterminate": return t("bot.run.indeterminate");
-  }
-});
-
-const stateIcon = computed(() => {
-  switch (props.run.state) {
-    case "queued": return Clock;
-    case "running": return Loader2;
-    case "waiting-human": return HelpCircle;
-    case "completed": return undefined;
-    case "failed": return AlertCircle;
-    case "cancelled": return CircleX;
-    case "indeterminate": return HelpCircle;
-  }
-});
-
-
-const recordingLabel = computed(() => {
+const recordingNotice = computed(() => {
   switch (props.recordingState) {
-    case "complete": return t("group.detail.recording.complete");
+    case "complete": return undefined;
     case "recording": return t("group.detail.recording.recording");
     case "interrupted": return t("group.detail.recording.interrupted");
     case "unavailable": return t("group.detail.recording.unavailable");
@@ -87,6 +58,8 @@ const canStop = computed(() => props.stopAvailable === true
 
 const selectedAttempt = computed(() => props.attempt ?? props.memberTurn?.attempt);
 const historicalAttempt = computed(() => selectedAttempt.value !== props.memberTurn?.attempt);
+const hasBrief = computed(() => !!props.memberTurn
+  && !!(props.memberTurn.task || props.memberTurn.expectedOutput));
 const duration = useLiveDuration(() => props.memberTurn
   ? undefined
   : { startedAt: props.run.startedAt, finishedAt: props.run.finishedAt, active: props.run.state === "running" });
@@ -95,26 +68,25 @@ const duration = useLiveDuration(() => props.memberTurn
 
 <template>
   <div class="flex flex-col gap-3 text-sm" data-test="group-run-detail">
-    <!-- Who this is and what they were asked for. -->
     <div v-if="memberTurn" class="min-w-0">
-      <p v-if="memberTurn.task" data-test="group-member-task" class="mt-2 break-words text-sm leading-relaxed text-fg">
-        {{ memberTurn.task }}
-      </p>
-      <p v-if="memberTurn.assignmentId" data-test="group-member-assignment" class="mt-1 break-words text-xs text-fg-muted">
-        {{ $t("group.run.assignment") }} {{ memberTurn.assignmentId }}
-      </p>
-      <p v-if="memberTurn.expectedOutput" data-test="group-member-expected" class="mt-1 break-words text-xs text-fg-muted">
-        {{ $t("group.detail.expectedOutput") }} {{ memberTurn.expectedOutput }}
-      </p>
-      <p v-if="memberTurn.dependsOn?.length" data-test="group-member-depends" class="mt-1 break-words text-xs text-fg-muted">
-        {{ $t("group.run.dependsOn") }} {{ memberTurn.dependsOn.join(", ") }}
-      </p>
+      <details v-if="hasBrief" data-test="group-member-brief" class="mt-2 text-xs text-fg-muted">
+        <summary class="cursor-pointer rounded-md py-1 font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent">
+          {{ $t("group.detail.brief") }}
+        </summary>
+        <div class="mt-1.5 space-y-1.5 rounded-lg bg-surface/50 p-2.5">
+          <p v-if="memberTurn.task" data-test="group-member-task" class="break-words leading-relaxed text-fg">{{ memberTurn.task }}</p>
+          <p v-if="memberTurn.expectedOutput" data-test="group-member-expected" class="break-words">
+            {{ $t("group.detail.expectedOutput") }} {{ memberTurn.expectedOutput }}
+          </p>
+        </div>
+      </details>
       <p v-if="memberTurn.blockedReason" data-test="group-member-blocked" class="mt-1 break-words text-xs text-warning">
         {{ memberTurn.blockedReason === "human-authority-required"
           ? $t("group.run.blockedHumanRequired")
           : $t("group.run.blockedHumanUnknown") }}
       </p>
-      <p v-if="memberTurn.failureReason && !historicalAttempt" data-test="group-member-failure" class="mt-1 break-words text-xs text-danger">
+      <p v-if="memberTurn.failureReason && !historicalAttempt && !isMachineFailureReason(memberTurn.failureReason)"
+         data-test="group-member-failure" class="mt-1 break-words text-xs text-danger">
         {{ memberTurn.failureReason }}
       </p>
     </div>
@@ -145,20 +117,19 @@ const duration = useLiveDuration(() => props.memberTurn
     <!-- Trace completeness/pagination/failure status: always audible, even
          when a partial window is all that exists. -->
     <div
-      v-if="memberTurn && (recordingLabel || traceHasMore || traceHasEarlier || traceLoading || traceError || traceFailure || completenessReason)"
+      v-if="memberTurn && (recordingNotice || traceHasMore || traceHasEarlier || traceLoading || traceError || traceFailure)"
       data-test="group-trace-status"
       class="space-y-1 text-xs text-fg-muted"
       aria-live="polite"
       aria-atomic="true"
     >
-      <p v-if="recordingLabel">{{ recordingLabel }}</p>
+      <p v-if="recordingNotice">{{ recordingNotice }}</p>
       <p v-if="recordingState === 'complete' && (traceHasMore || traceHasEarlier)" class="break-words">
         {{ traceHasEarlier ? $t("group.detail.earlierWindow") : $t("group.detail.partialPage") }}
       </p>
       <p v-if="traceLoading">{{ $t("group.detail.loading") }}</p>
       <p v-if="traceError" role="alert" class="break-words text-danger">{{ traceError }}</p>
       <p v-if="traceFailure" role="alert" class="break-words text-danger">{{ traceFailure }}</p>
-      <p v-if="completenessReason" class="break-words">{{ completenessReason }}</p>
       <div class="flex flex-wrap gap-2">
         <button v-if="traceHasEarlier" type="button" data-test="group-trace-load-earlier"
                 class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('loadEarlier')">
@@ -178,41 +149,7 @@ const duration = useLiveDuration(() => props.memberTurn
     <!-- Plan: the run's own plan, kept near the process it explains. -->
     <PlanPanel v-if="plan && plan.length" :entries="plan" class="w-full" />
 
-    <!-- Run-wide material: secondary by default so it never competes with the
-         member's own process. -->
-    <details class="group-run-metadata text-xs text-fg-muted" data-test="group-detail-run">
-      <summary class="flex cursor-pointer items-center justify-between rounded-md py-1.5 font-medium text-fg-muted outline-none focus-visible:ring-2 focus-visible:ring-accent">
-        <span>{{ $t("group.detail.runInfo") }}</span>
-        <span aria-hidden="true" class="text-fg-muted">+</span>
-      </summary>
-      <div class="mt-1.5 space-y-1 rounded-lg bg-surface/50 p-2.5">
-        <p class="flex items-center gap-1.5 font-medium text-fg">
-          <component :is="stateIcon" v-if="stateIcon" :size="12"
-                     :class="run.state === 'running' ? 'animate-spin motion-reduce:animate-none' : ''" />
-          <span>{{ runStateLabel }}</span>
-          <span v-if="run.completionReason" class="font-normal text-fg-muted">· {{ run.completionReason }}</span>
-        </p>
-        <p v-if="run.mode === 'automatic' && run.routingReason" data-test="group-run-routing-reason" class="break-words">
-          {{ run.routingReason }}
-        </p>
-        <p v-if="run.maxMemberTurns !== undefined" data-test="group-run-budget">
-          {{ $t("group.run.budget", { consumed: run.consumedMemberTurns ?? 0, max: run.maxMemberTurns }) }}
-        </p>
-        <p v-if="run.routingState && run.mode === 'automatic'" class="break-words">
-          {{ $t("group.detail.routingState", { state: run.routingState }) }}
-        </p>
-        <p data-test="group-detail-workspace">{{ $t(run.worktree ? "group.detail.worktree" : workspaceMode === "per-member" ? "group.detail.perMember" : "group.detail.sharedWriter") }}</p>
-        <p v-if="siblingSummaries?.length" class="break-words">
-          {{ $t("group.detail.siblings") }}:
-          <template v-for="(sibling, i) in siblingSummaries" :key="i">
-            <span v-if="i > 0"> · </span>
-            <span class="text-fg">{{ sibling.name }}</span>
-            <span> ({{ sibling.state }})</span>
-          </template>
-        </p>
-        <p v-if="completenessReason && !memberTurn" class="break-words italic">{{ completenessReason }}</p>
-      </div>
-    </details>
+
 
   </div>
 </template>

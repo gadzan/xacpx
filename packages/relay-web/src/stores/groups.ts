@@ -591,7 +591,6 @@ export const useGroupsStore = defineStore("groups", () => {
     hasEarlier?: boolean;
     firstSeq?: number;
     recordingState: ConversationRunTraceDto["recordingState"];
-    completenessReason?: string;
     plan?: PlanEntryDto[];
     attempts?: number[];
     loading: boolean;
@@ -707,7 +706,6 @@ export const useGroupsStore = defineStore("groups", () => {
         hasEarlier,
         firstSeq: events[0]?.seq,
         recordingState: page.recordingState,
-        ...(page.completenessReason !== undefined ? { completenessReason: page.completenessReason } : previous?.completenessReason !== undefined ? { completenessReason: previous.completenessReason } : {}),
         ...(page.plan !== undefined ? { plan: page.plan } : previous?.plan !== undefined ? { plan: previous.plan } : {}),
         ...(page.attempts !== undefined ? { attempts: page.attempts } : previous?.attempts !== undefined ? { attempts: previous.attempts } : {}),
         loading: false,

@@ -10,6 +10,10 @@
 
 - Hard delete and soft close no longer refuse forever on a durable ownership fence left in `admitted` by a hard-killed host (group removal reported `worker ownership not quiesced`): the quiescence probe now discharges it on the same containment proof the fence's own recovery requires — supervisor provably gone, the generation's Job empty or absent, and the attested worker's birth gone. A live supervisor, a Job that still holds processes, an unverifiable identity, or a pid probe that cannot answer keeps refusing.
 
+### Changed
+
+- Relay Web 只向用户展示能据以行动的信息。群组顶栏去掉「运行 N/M · 排队 · 受阻」统计条与「路由 → 负责人」（编辑群组弹窗已有同一事实）；执行过程浮层去掉整个「本次协作信息」（指派 ID、依赖 ID、预算、路由状态、工作区说明、其他成员列表）和轨迹的 `completenessReason`，「已记录过程（完整）」不再占位；派发指令与成员任务（任务、期望输出）都改为默认折叠。零成员 Run 的路由气泡显示 Run 自身的终态，不再永远停在「选择成员中」；Router 的 `routingReason` 不再平铺在转录里。直接对话的失败横幅不再打印裸 token 形式的内核原因码，但保留提供方返回的成句错误；Bot 简介不再把系统提示词整段铺在空会话上；消息状态胶囊文案改为本地化（`agentMessage.*`）不再显示英文原文，`failureReason` 的记账类原因码、缺失 Bot 的原始 id 与 @ 候选里的 id 片段都不再出现在界面上。
+
 ## [relay-protocol 0.6.4-beta.6] - 2026-10-27
 
 ### Added

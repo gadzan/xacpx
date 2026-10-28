@@ -397,7 +397,7 @@ describe("GroupThinkingBubbles UI", () => {
     wrapper.unmount();
   });
 
-  it("renders duration, expected output, and the run-level stop explanation", async () => {
+  it("renders duration and folds the agent-authored dispatch brief", async () => {
     const groups = seedEnvironment();
     groups.activeRun = runOf({ state: "completed", finishedAt: "2026-09-01T00:01:01.000Z", worktree: { runId: "run_1", baseCommitSha: "abc", disposition: "pending", revision: 1, resources: [] } });
     groups.memberTurnsById = {
@@ -410,22 +410,13 @@ describe("GroupThinkingBubbles UI", () => {
     const wrapper = mountTranscript();
     await openFirstBubble(wrapper);
     expect(card()!.textContent).toContain("Duration 1:00");
+    expect(card()!.textContent).toContain("Dispatch brief");
     expect(card()!.textContent).toContain("A reviewed patch");
-    expect(card()!.textContent).toContain("isolated per-member Git worktree");
+    expect((card()!.querySelector('[data-test="group-member-brief"]') as HTMLDetailsElement).open).toBe(false);
+    expect(card()!.querySelector('[data-test="group-detail-run"]')).toBeNull();
+    expect(card()!.textContent).not.toContain("step-1");
     expect(card()!.textContent).not.toContain("Stop this run");
     expect(card()!.querySelector('[data-test="group-stop-run-button"]')).toBeNull();
-    wrapper.unmount();
-  });
-
-  it("uses the shared single-writer note when the run has no worktree", async () => {
-    const groups = seedEnvironment();
-    seedLiveRun();
-    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
-    const wrapper = mountTranscript();
-    await openFirstBubble(wrapper);
-    expect(card()!.textContent).toContain("shares the conversation workspace");
-    expect(card()!.querySelector('[data-test="group-stop-run-button"]')?.getAttribute("title"))
-      .toContain("all participating members are cancelled");
     wrapper.unmount();
   });
 
@@ -462,13 +453,15 @@ describe("GroupThinkingBubbles UI", () => {
     const wrapper = mountTranscript();
     await flushPromises();
     expect(wrapper.find('[data-test="group-routing-row"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="group-routing-row"] [data-test="group-bubble-status"]').text()).toBe("Failed");
     await openFirstBubble(wrapper);
-    expect(card()!.textContent).toContain("Automatic route to Tester");
+    expect(wrapper.find('[data-test="group-routing-row"]').text()).not.toContain("Automatic route to Tester");
+    expect(document.body.querySelector('[data-test="group-detail-run"]')).toBeNull();
     expect(document.body.querySelector('[data-test="group-stop-run-button"]')).toBeNull();
     wrapper.unmount();
   });
 
-  it("shows trace completeness, partial windows, and failure truthfully with partial parts", async () => {
+  it("shows partial windows and failure truthfully with partial parts", async () => {
     const groups = seedEnvironment();
     groups.activeRun = runOf({ state: "completed" });
     groups.memberTurnsById = { turn_a: turnOf({ state: "completed", finishedAt: "2026-09-01T00:03:00.000Z" }) };
@@ -479,7 +472,6 @@ describe("GroupThinkingBubbles UI", () => {
       recordingState: "complete",
       hasMore: true,
       hasEarlier: true,
-      completenessReason: "Older events were pruned from the cache",
       events: [
         { seq: 1, createdAt: "now", kind: "text", payload: { text: "Partial visible output" } },
         { seq: 2, createdAt: "now", kind: "terminal", payload: { ok: false, errorMessage: "tool failed" } },
@@ -489,12 +481,25 @@ describe("GroupThinkingBubbles UI", () => {
     const wrapper = mountTranscript();
     await openFirstBubble(wrapper);
     const status = document.body.querySelector('[data-test="group-trace-status"]')!;
-    expect(status.textContent).toContain("Recorded process (complete)");
-    expect(status.textContent).toContain("Older events were pruned from the cache");
     expect(status.textContent).toContain("tool failed");
     expect(status.textContent).toContain("Load more");
     expect(status.textContent).toContain("Load earlier");
     expect(card()!.textContent).toContain("Partial visible output");
+    wrapper.unmount();
+  });
+
+  it("shows a real provider failure but not a bare bookkeeping code", async () => {
+    const groups = seedEnvironment();
+    groups.activeRun = runOf({ state: "failed" });
+    groups.memberTurnsById = { turn_a: turnOf({ state: "failed", failureReason: "runtime_revision_mismatch" }) };
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const wrapper = mountTranscript();
+    await openFirstBubble(wrapper);
+    expect(card()!.querySelector('[data-test="group-member-failure"]')).toBeNull();
+    groups.memberTurnsById = { turn_a: turnOf({ state: "failed", failureReason: "model overloaded, retry later" }) };
+    await flushPromises();
+    expect(card()!.querySelector('[data-test="group-member-failure"]')!.textContent)
+      .toContain("model overloaded, retry later");
     wrapper.unmount();
   });
 
@@ -603,14 +608,6 @@ describe("GroupThinkingBubbles UI", () => {
     const el = wrapper.find('[data-test="group-run-detail"]').element as HTMLElement;
     expect(el.querySelectorAll('[data-test="group-detail-explanation"]')).toHaveLength(1);
     expect(el.querySelectorAll('[data-test="group-detail-duration"]')).toHaveLength(1);
-    wrapper.unmount();
-  });
-
-  it("describes per-member runs as parallel across Bot workspaces", () => {
-    const wrapper = mount(GroupRunDetailContent, {
-      props: { run: runOf(), workspaceMode: "per-member" },
-    });
-    expect(wrapper.find('[data-test="group-detail-workspace"]').text()).toContain("each member's own Bot workspace");
     wrapper.unmount();
   });
 

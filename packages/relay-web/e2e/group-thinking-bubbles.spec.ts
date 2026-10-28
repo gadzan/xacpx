@@ -159,7 +159,11 @@ for (const scenario of ["one", "multi", "same-bot"] as const) {
       await expect(detail(page)).toContainText(`RECORDED ${turn.id} chunk 1`);
       await expect(detail(page)).toContainText(`RECORDED ${turn.id} chunk 99`);
       await expect(detail(page)).toContainText(turn.task!);
-      await expect(detail(page)).toContainText(turn.assignmentId!);
+      const brief = detail(page).getByTestId("group-member-brief");
+      await expect(brief).toBeVisible();
+      await expect(brief).toHaveJSProperty("open", false);
+      await expect(detail(page)).not.toContainText(turn.assignmentId!);
+      await expect(detail(page).getByTestId("group-detail-run")).toHaveCount(0);
       await expect(detail(page)).toContainText("Recorded public plan");
       await expect(detail(page).getByTestId("group-stop-run-button")).toHaveCount(0);
       await expect(page.getByTestId("group-trace-load-more")).toBeVisible();
@@ -365,7 +369,7 @@ test("an open process catches up during streaming and shows the sealed tail with
   const finished = { ...fixture.liveMember, state: "completed" as const, finishedAt: createdAt };
   hub.send({ kind: "control-event", instanceId: "i1", event: { type: "member-turn-finished", run: fixture.current, memberTurn: finished } });
   await expect(detail(page)).toContainText("SEALED FINAL UPDATE");
-  await expect(detail(page)).toContainText("Recorded process (complete)");
+  await expect(detail(page)).not.toContainText("Recorded process");
   await expect(detail(page).getByTestId("group-stop-run-button")).toHaveCount(0);
   await expect(trigger).toHaveAttribute("aria-expanded", "true");
   await expectInsideViewport(page);
