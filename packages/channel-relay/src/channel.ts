@@ -259,12 +259,12 @@ export class RelayChannel implements MessageChannelRuntime {
    * is caught by the runtime check rather than by this declaration.
    *
    * Note the scope this declaration does NOT express: it is per-CHANNEL, while
-   * the renderer is per-ROUTE. A form is showable only on a Direct Conversation
-   * turn (`bot:<conversation>:<topic>`); an ordinary session turn resolves to
-   * `relay:<accountId>`, which has no `conversation` correlation and no surface
-   * that mounts a form. `requestElicitation` refuses those turns itself — see
-   * `unsupported-route` there — because this contract has no way to say "capable
-   * on some routes only".
+   * the renderer is per-ROUTE. Two routes can be placed on a surface, and
+   * `requestElicitation` places them differently: a Direct Conversation turn
+   * (`bot:<conversation>:<topic>`) by its `conversation` correlation, and a
+   * Direct session turn by the session's own alias (`InteractionRequestDto.sessionAlias`).
+   * A turn that yields neither is refused there — see `unsupported-route` —
+   * because this contract has no way to say "capable on some routes only".
    */
   readonly elicitationModes: readonly ChannelElicitationMode[] = ["form"];
 
