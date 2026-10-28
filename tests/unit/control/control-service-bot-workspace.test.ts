@@ -662,6 +662,14 @@ test("a dedicated workspace cannot become another Bot or a Topic target", async 
     .rejects.toMatchObject({ code: "workspace_dedicated" });
   await expect(w.control.updateBot(other.id, { workspace: "Reviewer" }))
     .rejects.toMatchObject({ code: "workspace_dedicated" });
+  // The owner keeps its own default: rename and enable-only updates pass.
+  await expect(w.control.updateBot(owner.id, { name: "Senior Reviewer" }))
+    .resolves.toMatchObject({ workspace: "Reviewer" });
+  // The Control API guards match the chat/CLI surfaces (`createWorkspace` is
+  // sync, so its guard throws instead of rejecting).
+  expect(() => w.control.createWorkspace("Reviewer", "/tmp/elsewhere")).toThrow("is reserved for its Bot");
+  await expect(w.control.removeWorkspace("Reviewer"))
+    .rejects.toThrow("is reserved for its Bot");
   await expect(w.control.createGroupTopic(group.id, "T", { workspace: "Reviewer", isolation: "shared" }))
     .rejects.toMatchObject({ code: "workspace_dedicated" });
 });
@@ -672,7 +680,16 @@ test("a session may not be created on a dedicated workspace, but the owner Bot's
 
   await expect(w.sessions.createSession("relay:squatter", "codex", "Reviewer"))
     .rejects.toThrow("is reserved for its Bot");
-  await w.runtime.botRuntime.getOrCreateDirectSession({ botId: bot.id });
+  // Another Bot's execution override must not land on this dedicated workspace.
+  await w.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const other = (await w.control.listBots()).find((row) => row.name === "Helper")!;
+  // The owner's own session still materializes on its dedicated workspace.
+  await expect(w.runtime.botRuntime.getOrCreateDirectSession({ botId: bot.id }))
+    .resolves.toBeDefined();
+  await expect(w.runtime.botRuntime.getOrCreateDirectSession({
+    botId: other.id,
+    execution: { agent: "codex", workspace: "Reviewer" } as never,
+  })).rejects.toMatchObject({ code: "workspace_dedicated" });
   const [owned] = Object.values(w.state.sessions).filter((session) => session.workspace === "Reviewer");
   expect(owned?.owner?.kind).toBe("bot-direct");
 });

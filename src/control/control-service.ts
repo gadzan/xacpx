@@ -1486,6 +1486,9 @@ export class ControlService {
     cwd: string,
     description?: string,
   ): Promise<ControlWorkspaceInfo> {
+    if (this.deps.workspaces.list().some((workspace) => workspace.name === name && workspace.dedicated === true)) {
+      throw new Error(`workspace "${name}" is reserved for its Bot and cannot be replaced`);
+    }
     return this.deps.workspaces.create(name, cwd, description);
   }
 
@@ -1513,6 +1516,9 @@ export class ControlService {
         .some((s) => s.workspace === name)
     ) {
       throw new Error(`workspace "${name}" is in use by an existing session`);
+    }
+    if (this.deps.workspaces.list().some((workspace) => workspace.name === name && workspace.dedicated === true)) {
+      throw new Error(`workspace "${name}" is reserved for its Bot. Remove the Bot (optionally deleting its workspace) instead.`);
     }
     await this.deps.workspaces.remove(name);
   }

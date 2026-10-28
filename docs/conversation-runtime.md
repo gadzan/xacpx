@@ -192,11 +192,15 @@ Bot creation through Control may omit `workspace`; the daemon then creates and r
 
 The registry entry for an auto-allocated workspace carries `dedicated: true`.
 The daemon treats the name as private: `listWorkspaces` (the dashboard's
-workspace pickers) omits it, and `createBot`/`updateBot`, session creation,
-and Group Topic targets reject it with `workspace_dedicated` or the
-session-level equivalent. The owning Bot references it only through its
-stored default, so its own sessions materialize unchanged. Runtime cwd
-resolution reads the config directly and never consults the flag.
+workspace pickers) omits it, and `createBot`/`updateBot` (other Bots), session
+creation (unowned callers), Control `workspaces.create/remove`, and Group
+Topic targets reject it with `workspace_dedicated` or the session-level
+equivalent. The owning Bot keeps its own default through `updateBot` and its
+owned Direct/Group sessions materialize unchanged: the runtime manager
+asserts the profile `dedicatedWorkspace` marker names the target before any
+session is minted, so a foreign execution override can never land on another
+Bot's directory. Runtime cwd resolution reads the config directly and never
+consults the flag.
 
 An auto-allocated Bot profile also records a `dedicatedWorkspace` marker
 (workspace name, directory path, allocation time) so the daemon can tell a

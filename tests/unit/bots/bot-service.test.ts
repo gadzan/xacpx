@@ -39,6 +39,19 @@ function createService(state = createEmptyState()) {
   );
   return { service, store, state };
 }
+function createServiceWithIds(ids: string[]) {
+  const store = new MemoryStateStore();
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend", dedicated: true }, frontend: { cwd: "/tmp/frontend" } },
+    },
+    createEmptyState(),
+    store,
+    { now: () => new Date(NOW), createId: () => ids.shift() ?? "bot_extra" },
+  );
+  return { service, store };
+}
 
 test("createBot persists a profile with a stable id independent from its name", async () => {
   const { service, state } = createService();
@@ -954,4 +967,20 @@ test("updateBot keeps the dedicated workspace marker for the same name or a work
   const sameName = await service.updateBot(bot.id, { workspace: "backend" });
   expect(sameName.dedicatedWorkspace).toEqual(marker);
 
+});
+test("a Bot keeps its own dedicated workspace on update but cannot take another's", async () => {
+  const ids = ["bot_owner", "bot_other"];
+  const { service } = createServiceWithIds(ids);
+  const owner = await service.createBot(
+    { name: "Reviewer", agent: "codex", workspace: "backend" },
+    { dedicatedWorkspace: { name: "backend", cwd: "/tmp/backend", createdAt: NOW }, claimsDedicatedWorkspace: true },
+  );
+  const other = await service.createBot({ name: "Helper", agent: "codex", workspace: "frontend" });
+
+  await expect(service.updateBot(owner.id, { name: "Senior Reviewer" })).resolves.toMatchObject({ workspace: "backend" });
+  await expect(service.updateBot(other.id, { workspace: "backend" })).rejects.toMatchObject({ code: "workspace_dedicated" });
+  expect(() => service.assertOwnsDedicatedWorkspace(owner.id, "backend")).not.toThrow();
+  expect(() => service.assertOwnsDedicatedWorkspace(other.id, "backend")).toThrow(
+    expect.objectContaining({ code: "workspace_dedicated" }),
+  );
 });
