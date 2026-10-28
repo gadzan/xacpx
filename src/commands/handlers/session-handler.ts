@@ -1155,6 +1155,15 @@ async function promptWithSession(
     // selection below is by turn kind, not "whichever matched first".
     const elicitationRouteInput = {
       isolationChatKey: chatKey,
+      // The FULL metadata, not just the flattened fields below. A session route
+      // is gated on the channel's own `chatType` report, which lives here and
+      // nowhere else: omitting it made `resolveSessionElicitationTurnRoute`
+      // return undefined on every real turn, so the router resolved no route and
+      // the broker cancelled every session `ask` while the resolver's own tests
+      // (which build the input by hand) stayed green. `resolveElicitationTurnRoute`
+      // strips `permissionChatKey` itself and this resolver forwards it, so both
+      // keep the address they are supposed to.
+      metadata,
       ...(resolvedOrigin !== undefined ? { origin: resolvedOrigin } : {}),
       ...(metadata?.senderId !== undefined ? { senderId: metadata.senderId } : {}),
       ...(metadata?.senderName !== undefined ? { senderName: metadata.senderName } : {}),
@@ -1219,7 +1228,15 @@ async function promptWithSession(
         // Session-scoped routing for a renderer that mounts the form on a
         // session pane. Only a session turn carries it: a `bot:` turn's alias is
         // runtime plumbing (`brt_*`) and must never reach a browser.
-        ...(sessionElicitationRoute !== undefined ? { sessionAlias: session.alias } : {}),
+        //
+        // The DISPLAY alias, because that is the key space the dashboard shows
+        // and selects on: its session list is `toDisplaySessionAlias(...)`-mapped,
+        // so a relay session stored as `relay:demo` is the row `demo`, and a form
+        // stamped with the internal alias matches no pane at all. Placement only —
+        // the broker still answers by `requestId`.
+        ...(sessionElicitationRoute !== undefined
+          ? { sessionAlias: toDisplaySessionAlias(session.alias) }
+          : {}),
         ...(route.accountId !== undefined ? { accountId: route.accountId } : {}),
         ...(replyContextToken !== undefined ? { replyContextToken } : {}),
         ...(route.senderId !== undefined ? { senderId: route.senderId } : {}),
