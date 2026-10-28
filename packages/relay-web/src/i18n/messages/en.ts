@@ -745,7 +745,7 @@ export default {
       editTitle: "Edit Bot",
     },
     avatar: {
-      tabs: { label: "Bot settings", basic: "Basic settings", appearance: "Avatar appearance" },
+      appearanceTitle: "Avatar appearance",
       shape: "Shape",
       color: "Color",
       expression: "Default expression",
@@ -754,6 +754,8 @@ export default {
       selectedExpression: "Selected: {expression}",
       restoreDefault: "Use Agent default icon",
       defaultNotice: "Using the Agent default icon. Choose a preset or any appearance option to create a character.",
+      quickView: "View avatar",
+      editAppearance: "Edit avatar appearance",
       preview: {
         title: "Live preview",
         unnamed: "Your Bot",

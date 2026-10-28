@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AtSign, Bot, Check, ChevronDown, Users } from "lucide-vue-next";
-import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { completionKey, replaceRange, slashQuery } from "../lib/composer-completion";
 import {
   filterMentionMembers,
@@ -13,10 +13,12 @@ import {
   type MentionBinding,
 } from "../lib/group-mention";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
-import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
+import { useComposerStore } from "../stores/composer";
 import { useInstancesStore } from "../stores/instances";
+import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import BotAvatar from "./BotAvatar.vue";
 import ConversationComposer from "./ConversationComposer.vue";
+import ComposerAttachments from "./ComposerAttachments.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown } from "../lib/use-dropdown";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
@@ -38,7 +40,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  send: [text: string];
+  send: [text: string, media: PromptAttachmentRef[]];
   cancel: [];
 }>();
 
@@ -83,6 +85,17 @@ const mentionBindings = ref<MentionBinding[]>([]);
 const mentionOwned = ref(false);
 const unresolvedConfirm = ref<{ key: string; text: string; target: string } | null>(null);
 const sendBusy = ref(false);
+const attachments = useComposerStore();
+/** Attachment scope: one upload draft per instance + Group + Topic, namespaced
+ *  "group" so it never collides with the session chat or direct Bot scopes. */
+const attachKey = computed(() =>
+  JSON.stringify(["group", props.instanceId ?? groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId]),
+);
+watch(attachKey, () => {
+  const id = props.instanceId ?? groupsStore.instanceId;
+  if (id) attachments.bindInstance(id, attachKey.value);
+}, { immediate: true });
+const readyMedia = computed(() => attachments.pending.some((entry) => entry.status === "ready"));
 
 const selection = computed(() => groupsStore.targetSelection);
 const isEveryone = computed(() => selection.value?.mode === "everyone");
@@ -493,11 +506,12 @@ const baseCanSend = computed(() => !props.disabled
   // only way forward is replaying that prompt's frozen tuple.
   && !groupsStore.hasUncertainPrompt);
 
-/** Final send guard: evaluated after any pending mention has been committed. */
+/** Final send guard: evaluated after any pending mention has been committed.
+ *  Staged attachments make an empty text sendable. */
 const canSend = computed(() => baseCanSend.value
   && groupsStore.targetResolvable
   && !sendBusy.value
-  && promptText.value.trim().length > 0);
+  && (promptText.value.trim().length > 0 || readyMedia.value));
 
 async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnresolved = false): Promise<void> {
   if (sendBusy.value || !baseCanSend.value) {
@@ -511,7 +525,9 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
     || confirmedEveryone.text !== promptText.value || confirmedEveryone.revision !== draftRevision.value
     || !isEveryone.value)) { everyoneConfirm.value = null; return; }
   const text = promptText.value.trim();
-  if (!text) return;
+  const staged = attachments.snapshot(attachKey.value);
+  if (!text && staged.media.length === 0) return;
+  if (attachments.uploading) return;
   if (slashBroadcastBlocked(text)) {
     groupsStore.promptError = "slashSelectMember";
     groupsStore.promptErrorDetail = null;
@@ -552,7 +568,7 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
   // refusal has neither and must leave the typed text in place.
   const sent = { key: draftKey.value, text: promptText.value };
   inFlightDraft = sent;
-  emit("send", text);
+  emit("send", text, staged.media);
   if (props.sendOutcome) {
     // Textbook semantics: after a send the text no longer carries a mention, so
     // the derived state must reset or the next draft would inherit suppression.
@@ -567,6 +583,9 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
     // `rejected` keeps the same draft: no durable accept exists.
     // Only while still on the Group + Topic it was sent from.
     if ((outcome === "accepted" || outcome === "uncertain") && draftKey.value === sent.key) {
+      // The media travelled with the prompt (transcript, or the frozen retry
+      // tuple on uncertain), so the staged chips go with the text.
+      attachments.consume(attachKey.value, staged.ids);
       if (loadDraft(sent.key) === sent.text) saveDraft(sent.key, "");
       if (promptText.value === sent.text) clearSentDraft();
     }
@@ -574,6 +593,7 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
   }
   inFlightDraft = null;
   sendBusy.value = false;
+  attachments.consume(attachKey.value, staged.ids);
   clearSentDraft();
 }
 
@@ -581,6 +601,20 @@ async function handleCancel(): Promise<void> {
   const run = groupsStore.activeRun;
   if (!run || groupsStore.cancellingRunId) return;
   await groupsStore.cancelCurrentRun({ runId: run.id });
+}
+
+async function onPaste(e: ClipboardEvent): Promise<void> {
+  const files = Array.from(e.clipboardData?.files ?? []);
+  if (files.length === 0 || props.disabled || !groupsStore.topicReady || groupsStore.promptInFlight) return;
+  e.preventDefault();
+  await attachments.addFiles(files, attachKey.value);
+}
+
+async function onDrop(e: DragEvent): Promise<void> {
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  if (files.length === 0 || props.disabled || !groupsStore.topicReady || groupsStore.promptInFlight) return;
+  e.preventDefault();
+  await attachments.addFiles(files, attachKey.value);
 }
 
 function confirmUnresolved(): void {
@@ -625,6 +659,7 @@ function handleRetry(): void {
         {{ $t("bot.prompt.retry") }}
       </button>
     </div>
+
 
     <ComposerConfirmDialog v-if="everyoneConfirm" :title="$t('group.confirmEveryone.title', { count: everyoneRecipients.length })" :confirm-label="$t('group.confirmEveryone.send')" :pending="sendBusy" @cancel="everyoneConfirm = null" @confirm="handleSend(everyoneConfirm ?? undefined)">
       <ul class="space-y-1">
@@ -714,6 +749,8 @@ function handleRetry(): void {
       :cancelling="!!groupsStore.cancellingRunId"
       :send-disabled="!canSend"
       :stop-while-busy="true"
+      :has-attachments="readyMedia"
+      :attachments-send-disabled="attachments.uploading"
       :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : $t('group.prompt.placeholder')"
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
@@ -722,11 +759,21 @@ function handleRetry(): void {
       @cancel="handleCancel"
       @keydown="onKeydown"
       @input="onInput"
+      @paste="onPaste"
+      @drop="onDrop"
       @caret="onCaret"
       @compositionstart="composing = true"
       @compositionend="onCompositionEnd"
       @blur="commitMentionAtBoundary"
     >
+      <template #attachments>
+        <ComposerAttachments
+          v-if="props.instanceId ?? groupsStore.instanceId"
+          :scope-key="attachKey"
+          :instance-id="(props.instanceId ?? groupsStore.instanceId)!"
+          :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
+        />
+      </template>
       <template #menus>
         <div
           v-if="slashHint"

@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArrowLeft, MessageSquare, MoreHorizontal, Pencil, Plus, Users, X } from "lucide-vue-next";
-import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { supportsGroupTopicIsolation, useInstancesStore } from "../stores/instances";
@@ -132,16 +132,14 @@ const memberStatus = computed<MemberStatus | null>(() => {
   };
 });
 
-/** Resolves the send against the store so the composer can decide whether to drop
- *  the draft. A definitive refusal returns "rejected" and the text stays put. */
 /** Resolves once the current send attempt finishes, so the composer can keep the
  *  draft when the refusal was definitive. */
 function sendPromptOutcome(): Promise<GroupSendOutcome> {
   return groupsStore.sendPromptOutcomePromise;
 }
 
-function handleSend(text: string): void {
-  void groupsStore.sendPrompt(text);
+function handleSend(text: string, media: PromptAttachmentRef[] = []): void {
+  void groupsStore.sendPrompt(text, undefined, media);
 }
 
 function handleCancel(): void {

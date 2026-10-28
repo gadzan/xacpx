@@ -742,7 +742,7 @@ export default {
       editTitle: "编辑 Bot",
     },
     avatar: {
-      tabs: { label: "Bot 设置", basic: "基本设置", appearance: "头像外观" },
+      appearanceTitle: "头像外观",
       shape: "形状",
       color: "颜色",
       expression: "默认表情",
@@ -751,6 +751,8 @@ export default {
       selectedExpression: "已选择：{expression}",
       restoreDefault: "使用 Agent 默认图标",
       defaultNotice: "当前使用 Agent 默认图标。选择预设或任意外观选项即可创建动态角色。",
+      quickView: "查看头像",
+      editAppearance: "编辑头像外观",
       preview: {
         title: "实时预览",
         unnamed: "你的 Bot",

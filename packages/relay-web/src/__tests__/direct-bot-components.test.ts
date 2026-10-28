@@ -21,6 +21,7 @@ import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
 import { useChatStore } from "../stores/chat";
+import { useComposerStore } from "../stores/composer";
 import BotDialog from "../components/BotDialog.vue";
 import ConversationPromptInput from "../components/ConversationPromptInput.vue";
 import ConversationMessageList from "../components/ConversationMessageList.vue";
@@ -242,7 +243,8 @@ describe("Direct Bot Components", () => {
       expect(createSpy).toHaveBeenCalledWith("i1", expect.objectContaining({
         name: "Code Reviewer",
         agent: "codex",
-        avatar: { version: 1, kind: "character", shape: "cercle", color: "bleu", expression: "neutre", motion: "auto" },
+        // The create-time avatar is drawn at random; only its character shape is contractual.
+        avatar: expect.objectContaining({ version: 1, kind: "character", motion: "auto" }),
         instructions: "Look for bugs",
         model: "custom-model",
         effort: "high",
@@ -1549,7 +1551,7 @@ describe("Direct Bot Components", () => {
       expect((sendBtn.element as HTMLButtonElement).disabled).toBe(false);
 
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
-      expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", []]);
+      expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", [], []]);
     });
 
     it("keeps the composer editable, blocks Enter, and offers Stop while a run is active", async () => {
@@ -1602,6 +1604,42 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")).toBeUndefined();
       expect(cancelSpy).toHaveBeenCalledTimes(2);
       expect(cancelSpy).toHaveBeenLastCalledWith({ runId: "run_1" });
+    });
+
+    it("disables Send for a staged image while a run is active", async () => {
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      directBots.activeConversationId = "c1";
+      directBots.activeTopicId = "t1";
+      directBots.activeRun = {
+        id: "run_1",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const composer = useComposerStore();
+      composer.bindInstance("i1", JSON.stringify(["direct", "i1", "c1", "t1", "b1"]));
+      composer.pending.push({
+        id: "local-1",
+        uploadId: "u1",
+        filename: "shot.png",
+        mimeType: "image/png",
+        size: 3,
+        kind: "image",
+        filePath: "/uploads/u1/shot.png",
+        status: "ready",
+      });
+      const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const send = wrapper.find('[data-test="send-prompt-button"]');
+      expect(send.exists()).toBe(true);
+      expect((send.element as HTMLButtonElement).disabled).toBe(true);
     });
 
     it("disables the composer while topic recovery is still in flight", async () => {

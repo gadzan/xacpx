@@ -7,6 +7,7 @@ import { groupDraftKey, loadDraft } from "../lib/composer-drafts";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
+import { useComposerStore } from "../stores/composer";
 import { useInstancesStore } from "../stores/instances";
 import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 import GroupPane from "../components/GroupPane.vue";
@@ -678,7 +679,39 @@ describe("Group Components", () => {
       // carries the typed text for the resolved target.
       (document.body.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
       await flushPromises();
-      expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review"]);
+      expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review", []]);
+      wrapper.unmount();
+    });
+
+    it("sends a staged image with empty text and clears the chip once the prompt is durable", async () => {
+      sessionStorage.clear();
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, sendOutcome: () => Promise.resolve("accepted" as GroupSendOutcome) },
+        global: { plugins: [i18n] },
+      });
+      const composer = useComposerStore();
+      composer.bindInstance("i1", JSON.stringify(["group", "i1", "conversation_g", "topic_1"]));
+      composer.pending.push({
+        id: "local-1",
+        uploadId: "u1",
+        filename: "shot.png",
+        mimeType: "image/png",
+        size: 3,
+        kind: "image",
+        filePath: "/uploads/u1/shot.png",
+        status: "ready",
+      });
+      await flushPromises();
+      const send = wrapper.find('[data-test="group-send-prompt-button"]');
+      expect(send.attributes("disabled")).toBeUndefined();
+      await send.trigger("click");
+      await flushPromises();
+      expect(wrapper.emitted("send")?.[0]).toEqual(["", [
+        expect.objectContaining({ id: "u1", filePath: "/uploads/u1/shot.png", kind: "image" }),
+      ]]);
+      expect(composer.pending).toHaveLength(0);
       wrapper.unmount();
     });
 
