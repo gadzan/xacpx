@@ -54,6 +54,8 @@ const emit = defineEmits<{
   cancel: [];
   keydown: [event: KeyboardEvent];
   paste: [event: ClipboardEvent];
+  /** Files dragged onto the composer card. */
+  drop: [event: DragEvent];
   /** IME composition started. Completions stay closed while it is active. */
   compositionstart: [];
   compositionend: [];
@@ -120,7 +122,7 @@ function onInput(event: Event): void {
 <template>
   <!-- No bottom padding or border-t on the form: the pane owns the bottom spacing,
        and stack layers above this card baseline to its top border. -->
-  <form class="relative px-0" @submit.prevent="emit('send')">
+  <form class="relative px-0" @submit.prevent="emit('send')" @dragover.prevent @drop="emit('drop', $event)">
     <div
       data-test="composer-surface"
       class="relative rounded-2xl bg-surface transition-colors focus-within:ring-2 focus-within:ring-accent"

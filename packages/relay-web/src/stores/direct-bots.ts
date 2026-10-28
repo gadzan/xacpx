@@ -2468,7 +2468,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   async function sendPrompt(text: string, agentMentions:AgentMention[] = [], media:PromptAttachmentRef[] = []): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
     if (promptInFlight.value) return "rejected";
     const trimmed = text;
-    if (trimmed.trim() && instanceId.value && selectedBotId.value && !activeTopicId.value) {
+    if ((trimmed.trim() || media.length > 0) && instanceId.value && selectedBotId.value && !activeTopicId.value) {
       return sendFirstPrompt(trimmed, agentMentions, media);
     }
     if ((!trimmed.trim() && media.length === 0) || !instanceId.value || !selectedBotId.value || !activeConversationId.value || !activeTopicId.value) {
