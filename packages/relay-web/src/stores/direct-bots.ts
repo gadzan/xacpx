@@ -111,6 +111,14 @@ export type DirectBotGeneralErrorCode = "instanceOffline";
 export interface PendingInteractionState {
   /** Instance this interaction was opened against; empty while unresolved. */
   instanceId: string;
+  /**
+   * The turn's session alias, for a SESSION-scoped interaction.
+   *
+   * Empty for a Direct Conversation form, which is placed by
+   * `request.conversation` instead, and empty for a hub that did not send one.
+   * The Sessions ChatPane keys on it; the Direct Bot pane never reads it.
+   */
+  sessionAlias: string;
   request: InteractionRequestDto;
   /** The kind, kept alongside so a component does not re-derive it. */
   kind: InteractionKindDto;
@@ -566,6 +574,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         ? { conversationId: activeConversationId.value, topicId: activeTopicId.value }
         : undefined;
     const inScope = (state: PendingInteractionState): boolean => {
+      // A SESSION-scoped form belongs to the session pane that owns its alias,
+      // never to this one. The two placements are disjoint: the channel stamps
+      // `sessionAlias` only when it could NOT produce a conversation correlation,
+      // and this pane scopes conversation forms by their topic.
+      //
+      // The `conversation === undefined` guard matters: an entry that HAS a
+      // correlation is placed by that correlation even if a stray alias rode
+      // along, so a conversation form can never be stolen by this rule.
+      if (state.request.conversation === undefined && state.sessionAlias !== "") return false;
       if (visibleTopic === undefined) return true;
       const correlation = state.request.conversation;
       // The instance is a scope key in its own right, checked FIRST.
@@ -613,6 +630,39 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const terminal = [...terminalInteractions.value.values()].filter(inScope);
     return terminal.length > 0 ? terminal[terminal.length - 1]! : null;
   });
+
+  /**
+   * The SESSION-scoped form the given pane should show, if any.
+   *
+   * The mirror of `pendingInteraction` for a destination that has no Conversation
+   * product row: a Relay session turn. Its placement key is the turn's own session
+   * alias, which the hub keeps on the pending entry and replays in every snapshot,
+   * so a form survives a reconnect exactly like a topic-scoped one.
+   *
+   * Scope is exact: instance AND alias both have to match. Aliases are only unique
+   * within an instance (the same alias can exist on two daemons that were cloned
+   * from one backup), and the answer is submitted to the entry's own `instanceId`,
+   * so matching on the alias alone would let a user answer B's form while looking
+   * at A.
+   *
+   * Only entries with NO conversation correlation are eligible. A Direct Bot form
+   * belongs to a topic and is shown there; rendering it here would put one turn's
+   * question into another turn's transcript.
+   */
+  function pendingSessionInteractionFor(
+    targetInstanceId: string | null,
+    targetAlias: string | null,
+  ): PendingInteractionState | null {
+    if (!targetInstanceId || !targetAlias) return null;
+    const inScope = (state: PendingInteractionState): boolean =>
+      state.request.conversation === undefined
+      && state.sessionAlias === targetAlias
+      && state.instanceId === targetInstanceId;
+    const open = [...pendingInteractions.value.values()].filter(inScope);
+    if (open.length > 0) return open[open.length - 1]!;
+    const terminal = [...terminalInteractions.value.values()].filter(inScope);
+    return terminal.length > 0 ? terminal[terminal.length - 1]! : null;
+  }
 
   function interactionForMember(targetInstanceId: string | null, member: MemberTurnSummaryDto): PendingInteractionState | null {
     for (const interaction of pendingInteractions.value.values()) {
@@ -2785,8 +2835,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
    * rather than stored, because the hub-validated field list is the authority on
    * what this form asks.
    */
-  function setInteractionAnswer(key: string, value: InteractionValueDto): void {
-    const current = pendingInteraction.value;
+  function setInteractionAnswer(
+    key: string,
+    value: InteractionValueDto,
+    // Which form the answer belongs to. Defaults to the Direct Bot pane's visible
+    // one; the Sessions ChatPane passes its own entry, because that pane's form is
+    // never `pendingInteraction` (it has no Conversation correlation).
+    target: PendingInteractionState | null = pendingInteraction.value,
+  ): void {
+    const current = target;
     if (!current) return;
     const known = current.request.elicitation?.fields.some((field) => field.key === key);
     if (!known) return;
@@ -2873,13 +2930,17 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   }
 
   /** Dismiss a form without answering. Records the user's own dismissal. */
-  async function declineInteraction(): Promise<void> {
-    await submitInteraction("decline");
+  async function declineInteraction(
+    target: PendingInteractionState | null = pendingInteraction.value,
+  ): Promise<void> {
+    await submitInteraction("decline", target);
   }
 
   /** Dismiss a form as abandoned. Distinct from decline: the user gave up. */
-  async function cancelInteraction(): Promise<void> {
-    await submitInteraction("cancel");
+  async function cancelInteraction(
+    target: PendingInteractionState | null = pendingInteraction.value,
+  ): Promise<void> {
+    await submitInteraction("cancel", target);
   }
 
   /**
@@ -2907,8 +2968,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
    */
   async function submitInteraction(
     action: "accept" | "decline" | "cancel",
+    target: PendingInteractionState | null = pendingInteraction.value,
   ): Promise<void> {
-    const current = pendingInteraction.value;
+    const current = target;
     if (!current || current.submitting) return;
     // Expiry is checked FIRST. An expired form must report that the window
     // closed, not "you left a field blank" — the incomplete-answer message would
@@ -3044,8 +3106,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   }
 
   /** Dismiss a form that already reached a terminal outcome. */
-  function dismissResolvedInteraction(): void {
-    const current = pendingInteraction.value;
+  function dismissResolvedInteraction(
+    target: PendingInteractionState | null = pendingInteraction.value,
+  ): void {
+    const current = target;
     if (!current) return;
     const requestId = current.request.requestId;
     const nextTerminals = new Map(terminalInteractions.value);
@@ -3630,6 +3694,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         // The connector instance that opened it, which is also the instance the
         // answer routes back to. Never "".
         instanceId: e.instanceId,
+        // Routing for a session-scoped form. The envelope states it (the hub kept
+        // what the connector sent); the DTO is the fallback for a frame that
+        // carried it only on the interaction itself.
+        sessionAlias: e.sessionAlias || interaction.sessionAlias || "",
         request: interaction,
         kind: interaction.kind,
         // An explicit edit is the only thing that fills answers, so a replay
@@ -4062,6 +4130,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptError,
     promptErrorDetail,
     pendingInteraction,
+    pendingSessionInteractionFor,
     // How many retired forms this tab is still holding an explanation for. The
     // terminal set is bounded (see TERMINAL_INTERACTION_LIMIT), and this makes the
     // bound observable rather than an internal implementation detail.

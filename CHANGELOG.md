@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Agents can ask structured questions through an ordinary session chat (`ask` / ACP form elicitation). Core now resolves an elicitation route for any turn whose ingress reports `chatType: "direct"`, not only for Direct Conversation turns: the relay dashboard mounts the form in the session's own pane, keyed by the interaction's `sessionAlias` (core pins it to the exact turn, `channel-relay` copies it onto `InteractionRequestDto.sessionAlias`, the hub keeps it on the pending entry and replays it in every snapshot). A turn that cannot name a session or a conversation is still refused before the hub is called — an invisible form is worse than a refusal. Group and unreported destinations stay unroutable, and each renderer keeps its own `chatType` gate.
+
 ## [relay 0.14.12-beta.12] - 2026-10-28
 
 ### Added

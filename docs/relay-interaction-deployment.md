@@ -82,10 +82,25 @@ survive every refactor:
 
 ### 2.3 Routes
 
-An elicitation route is `bot:<conversation>:<topic>` — a product surface.
+An elicitation route has **two** shapes, and both are product surfaces:
+
+- `bot:<conversation>:<topic>` — a Direct Conversation turn. The form is mounted
+  by the Direct Bot pane from the interaction's `conversation` correlation.
+- the turn's ordinary ingress key (e.g. `relay:<accountId>`) on a turn whose
+  ingress reports `chatType: "direct"` — a **session** turn. The form is mounted
+  by the Sessions ChatPane, and it is placed by the interaction's `sessionAlias`,
+  which core pins to the exact turn and `channel-relay` copies onto the wire.
+
 A permission route is a **`permissionChatKey`** carried from trusted human ingress,
 deliberately **not** the product `bot:` key. Do not unify them; they answer
 different questions and belong to different trust domains.
+
+What both elicitation routes share is the fail-closed rule: `chatType` must be
+exactly `"direct"` (an unreported destination is not "direct"), the origin must be
+human with a trusted `senderId`, and the renderer must be able to PLACE the frame
+on a surface. A frame that belongs to no pane is refused before the hub is called —
+an invisible form is worse than a refusal, because the agent tells the user the
+human was asked while the question times out unseen.
 
 ### 2.4 The window
 

@@ -315,6 +315,33 @@ describe("relay hub interaction transport (production direction)", () => {
     expect(closed.reason).toBe("resolved");
   });
 
+  it("carries a session-scoped form's alias to the browsers and the snapshot", async () => {
+    // A session turn has no `conversation` row, so the browser has exactly one way
+    // to know which pane the form belongs on: the alias the connector put on the
+    // frame. The hub must keep it (registry entry + live event + snapshot replay),
+    // or the form lands in no session and times out unseen.
+    const h = await makeHarness();
+    const frame = interactionOpenFrame({ requestId: "req-session-1", sessionAlias: "relay:demo" });
+    const opening = h.open(frame);
+    await h.waitForEvents("interaction-opened", 1);
+
+    const opened = h.broadcasts
+      .filter((e): e is Extract<ControlEventDto, { type: "interaction-opened" }> => e.type === "interaction-opened")
+      .find((e) => e.interaction.requestId === "req-session-1");
+    expect(opened).toBeDefined();
+    // The envelope's own routing field is what the store keys on…
+    expect(opened!.sessionAlias).toBe("relay:demo");
+    // …and the frame keeps it too, so a snapshot replay and a live event agree.
+    expect(opened!.interaction.sessionAlias).toBe("relay:demo");
+
+    await h.respond({
+      requestId: "req-session-1",
+      kind: "elicitation",
+      action: "cancel",
+    });
+    expect((await opening).status).toBe(200);
+  });
+
   it("stamps the responder OVER anything the browser frame claims", async () => {
     // The mutation this guards: reading the identity off the answer frame. A
     // tampered client could then answer as any account, and core would receive an

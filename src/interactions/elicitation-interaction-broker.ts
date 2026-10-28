@@ -334,7 +334,14 @@ export class ElicitationInteractionBroker {
           ...(route.senderName !== undefined ? { senderName: route.senderName } : {}),
           ...(route.isOwner !== undefined ? { isOwner: route.isOwner } : {}),
         },
-        agent: { name: input.agentName },
+        agent: {
+          name: input.agentName,
+          // The turn's own session alias, when this is a session turn: a
+          // renderer that mounts the form on a session pane needs it to place
+          // the question. Routing only — the responder identity is still the
+          // channel's own authenticated answer.
+          ...(route.sessionAlias !== undefined ? { sessionAlias: route.sessionAlias } : {}),
+        },
         message: normalized.form.message,
         mode: "form",
         fields: presentation.fields,

@@ -144,27 +144,12 @@ test("a form is refused unless the destination is provably direct", async () => 
   }
 });
 
-test("a form on a non-Direct-Conversation route is refused as unsupported", async () => {
-  // ROUTE-SCOPED capability, not channel-wide. `elicitationModes = ["form"]`
-  // is declared for the whole channel, but a form is renderable on exactly one
-  // route: the Direct Conversation turn, whose `bot:<conversation>:<topic>` key
-  // is what produces the `conversation` correlation the web form needs to find
-  // its topic, and the only surface that mounts a renderer.
-  //
-  // An ordinary Relay session turn resolves to `relay:<accountId>` instead, so
-  // its correlation is `undefined` and the frame belongs to no topic at all. The
-  // hub still opened the interaction, the uncorrelated frame was then scoped out
-  // of every topic view, and the form could only ever reach its timeout — the
-  // agent reported a human had been asked when no human ever saw the question.
-  //
-  // Refusing here is what makes the advertised capability truthful, and it
-  // matches the existing convention of a per-turn refusal inside the renderer
-  // (see `not-direct` above).
-  //
-  // The refusal is asserted to be IMMEDIATE, and that timing is part of the
-  // contract: if this guard is removed the call proceeds to a hub round trip and
-  // only settles when the transport gives up, so a test that merely awaits
-  // rejection would hang instead of failing red.
+test("a session route with no session alias is refused before the hub is called", async () => {
+  // A session turn has no `conversation` product row, so the only thing that can
+  // place its form is the turn's own session alias. Without one the frame belongs
+  // to no pane: the hub would open it, no view would render it, and the agent
+  // would be told a human was asked while the form timed out unseen. Refusing is
+  // the truthful answer, and it must land BEFORE the hub round trip.
   let hubCalled = false;
   let rejection: unknown;
   const { channel, options } = makeHarness({
@@ -174,24 +159,62 @@ test("a form on a non-Direct-Conversation route is refused as unsupported", asyn
     },
   });
   await startStarted(channel, options);
-  // The refusal must land BEFORE any await inside requestElicitation reaches
-  // the hub, so it is checked synchronously first. A test shaped only as
-  // `await expect(...).rejects` cannot tell a fast refusal from a slow one, and
-  // with the guard removed the promise never rejects at all — the test would
-  // hang for its full timeout instead of failing red.
   try {
     await channel.requestElicitation(
-      coreRequest({ chatKey: "relay:acct-9", chatType: "direct" }),
+      coreRequest({ chatKey: "relay:acct-9", chatType: "direct", agent: { name: "codex" } }),
     );
   } catch (error) {
     rejection = error;
   }
-  // Suspended long enough that a hub round trip WOULD have been attempted had
-  // the guard not fired first.
+  // Suspended long enough that a hub round trip WOULD have been attempted had the
+  // guard not fired first.
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(rejection).toBeInstanceOf(Error);
   expect((rejection as Error).message).toContain("unsupported-route");
   expect(hubCalled).toBe(false);
+});
+
+test("a session route opens an interaction carrying the session alias", async () => {
+  // The Sessions ChatPane is a renderer, so a plain Relay session turn
+  // (`relay:<accountId>`) can show a form. What it cannot do is guess WHICH
+  // session: the frame must say so, and that alias is what the browser keys the
+  // form by. This is the routing half of the capability; `chatType` above is the
+  // privacy half.
+  const outbound: Array<{ type: string; payload: unknown }> = [];
+  let answer: ((value: unknown) => void) | null = null;
+  const { channel, options } = makeHarness({
+    sendRequest: (type, payload) => {
+      outbound.push({ type, payload });
+      return new Promise((resolve) => { answer = resolve; });
+    },
+  });
+  await startStarted(channel, options);
+
+  const settled = channel.requestElicitation(coreRequest({
+    chatKey: "relay:acct-9",
+    chatType: "direct",
+    agent: { name: "codex", sessionAlias: "relay:demo" },
+  }));
+  await waitFor(() => outbound.length === 1, "outbound session interaction request");
+
+  const validated = parseControlPayload(MSG.interactionRequest, outbound[0]!.payload);
+  expect(validated).not.toBeNull();
+  // Session-scoped: the alias is the placement key, and the conversation
+  // correlation is absent so the two can never disagree.
+  expect(validated!.sessionAlias).toBe("relay:demo");
+  expect(validated!.conversation).toBeUndefined();
+
+  answer!({
+    responded: true,
+    response: {
+      requestId: "req-channel-1",
+      kind: "elicitation",
+      action: "accept",
+      content: { region: "us-east" },
+      responderId: "relay:acct-9",
+    },
+  });
+  expect(await settled).toEqual({ action: "accept", responderId: "relay:acct-9", content: { region: "us-east" } });
 });
 
 test("a contradictory task scope is refused before publishing a private form", async () => {

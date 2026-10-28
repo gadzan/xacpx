@@ -11,12 +11,20 @@ import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
 import PlanPanel from "./PlanPanel.vue";
 import QueueStrip from "./QueueStrip.vue";
+import ConversationInteractionForm from "./ConversationInteractionForm.vue";
+import { useDirectBotsStore } from "../stores/direct-bots";
+import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Bot, Folder, GitBranch, Loader2, X } from "lucide-vue-next";
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
 
 const chat = useChatStore();
 const instances = useInstancesStore();
+// Interaction state lives with the other account-wide control-event projections
+// (`direct-bots.ts`). It is not a Direct-Bot-only concern: the ingress and the
+// pending set are per account and per instance, and only the SCOPING differs —
+// a session form is placed by session alias instead of by Conversation topic.
+const directBots = useDirectBotsStore();
 const files = useFilesStore();
 const composer = useComposerStore();
 const promptInput = ref<InstanceType<typeof PromptInput> | null>(null);
@@ -33,6 +41,39 @@ const showPlan = computed(() => (chat.sessionPlan?.length ?? 0) > 0);
 // Pending-prompt queue joins the same document-flow stack as its own layer
 // (between plan and input).
 const showQueue = computed(() => chat.sessionQueue.length > 0);
+
+/**
+ * The form an agent opened on THIS session, if one is open (or just closed).
+ *
+ * Scoped by instance + alias, so a question asked in another session — or on a
+ * daemon that happens to share the alias — is never rendered into this pane.
+ */
+const sessionInteraction = computed(() =>
+  directBots.pendingSessionInteractionFor(chat.instanceId, chat.sessionAlias),
+);
+
+// Handlers take the entry explicitly: the store's default target is the Direct
+// Bot pane's visible form, which a session form never is.
+function onInteractionAnswer(key: string, value: InteractionValueDto) {
+  const current = sessionInteraction.value;
+  if (current) directBots.setInteractionAnswer(key, value, current);
+}
+function onInteractionSubmit() {
+  const current = sessionInteraction.value;
+  if (current) void directBots.submitInteraction("accept", current);
+}
+function onInteractionDecline() {
+  const current = sessionInteraction.value;
+  if (current) void directBots.declineInteraction(current);
+}
+function onInteractionCancel() {
+  const current = sessionInteraction.value;
+  if (current) void directBots.cancelInteraction(current);
+}
+function onInteractionDismiss() {
+  const current = sessionInteraction.value;
+  if (current) directBots.dismissResolvedInteraction(current);
+}
 
 function onSend(
   text: string,
@@ -216,6 +257,20 @@ onUnmounted(() => clearInterval(timer));
         <QueueStrip v-if="showQueue" key="queue-layer"
                     class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] sm:mx-3"
                     :class="{ 'stack-layer--pull': showPlan }" />
+        <!-- Agent question, as its own layer directly above the composer: the
+             transcript has no interaction slot, and a form the user cannot see is
+             worse than no form. Topmost layer so a blocking question wins over
+             plan/queue chrome. -->
+        <ConversationInteractionForm v-if="sessionInteraction" key="interaction-layer"
+                                     class="stack-layer stack-layer--interaction relative z-40 mx-2 pb-[var(--stack-overlap)] sm:mx-3"
+                                     :request="sessionInteraction.request"
+                                     :answers="sessionInteraction.answers"
+                                     :submitting="sessionInteraction.submitting"
+                                     :error-code="sessionInteraction.errorCode"
+                                     :outcome="sessionInteraction.outcome"
+                                     @answer="onInteractionAnswer" @submit="onInteractionSubmit"
+                                     @decline="onInteractionDecline" @cancel="onInteractionCancel"
+                                     @dismiss="onInteractionDismiss" />
         <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
              :class="{ 'stack-layer--pull': showPlan || showQueue }">
           <PromptInput ref="promptInput" :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"

@@ -657,6 +657,10 @@ function validInteractionRequest(value: unknown): boolean {
   if (!isBoundedStr(c.requestId, 128)) return false;
   if (c.kind !== "permission" && c.kind !== "elicitation") return false;
   if (typeof c.expiresAt !== "number" || !Number.isFinite(c.expiresAt) || c.expiresAt <= 0) return false;
+  // Session-scoped placement: mirror of the hub validator. Absent is legal (a
+  // conversation interaction, or an older hub); present must be a real alias.
+  if (c.sessionAlias !== undefined
+    && (typeof c.sessionAlias !== "string" || c.sessionAlias.length === 0 || c.sessionAlias.length > 200)) return false;
   if (c.conversation !== undefined) {
     if (typeof c.conversation !== "object" || c.conversation === null) return false;
     const conv = c.conversation as Record<string, unknown>;
