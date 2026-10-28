@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { ArrowUp, Loader2, Square } from "lucide-vue-next";
 
 /**
@@ -88,14 +88,24 @@ function setSelectionRange(start: number, end: number): void {
 
 defineExpose({ focus, setSelectionRange });
 
+/** Empty and unfocused: one line. Focus, content or staged attachments: the
+ *  familiar two-line card. Focus/blur drives it because a tap on the card is the
+ *  intent to write, and content must never be clipped (values also arrive from
+ *  send-clear, history recall and restored drafts). */
+const focused = ref(false);
+const expanded = computed(() => focused.value || props.modelValue.length > 0 || props.hasAttachments === true);
+/** Off until the first apply: the initial rows=2 markup must not animate down. */
+const animateHeight = ref(false);
+
 watch(() => props.modelValue, (value) => {
   // A pane-set value (send clears, history recall fills) needs the caret reported
   // too, or pane keyboard logic reads a stale position.
   emit("caret", { start: value.length, end: value.length });
-  void nextTick(resize);
+  void nextTick(applyHeight);
 });
+watch([expanded, () => props.height], () => applyHeight());
 
-function resize(): void {
+function applyHeight(): void {
   const el = textarea.value;
   if (!el) return;
   // A fixed height (the session pane's drag handle) overrides the auto-grow.
@@ -103,8 +113,31 @@ function resize(): void {
     el.style.height = `${props.height}px`;
     return;
   }
+  const style = getComputedStyle(el);
+  // jsdom reports no line-height and a 0 scrollHeight, so every term has a fallback.
+  const line = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.4 || 22;
+  const box = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+  const previous = el.style.height;
   el.style.height = "auto";
-  el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  const content = Math.min(el.scrollHeight || 0, 200);
+  el.style.height = previous;
+  const floor = line * (expanded.value ? 2 : 1) + box;
+  el.style.height = `${Math.max(content, floor)}px`;
+}
+
+onMounted(() => {
+  applyHeight();
+  // One frame later: from here on the height change is animated.
+  requestAnimationFrame(() => { animateHeight.value = true; });
+});
+
+function onFocus(): void {
+  focused.value = true;
+}
+
+function onBlur(): void {
+  focused.value = false;
+  emit("blur");
 }
 
 function onInput(event: Event): void {
@@ -113,7 +146,7 @@ function onInput(event: Event): void {
   emit("update:modelValue", value);
   emit("input", value);
   emit("caret", { start: el.selectionStart, end: el.selectionEnd });
-  resize();
+  applyHeight();
 }
 </script>
 
@@ -135,14 +168,14 @@ function onInput(event: Event): void {
         :data-test="textareaTestId"
         data-ring="container"
         :value="modelValue"
-        rows="2"
+        rows="1"
         :role="combobox ? 'combobox' : undefined"
         :aria-autocomplete="combobox ? 'list' : undefined"
         :aria-controls="combobox ? comboboxListId : undefined"
         :aria-expanded="combobox ? comboboxExpanded : undefined"
         :aria-activedescendant="combobox ? comboboxActiveId : undefined"
         class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
-        :class="surfaceDisabled ? '' : 'disabled:opacity-50'"
+        :class="[surfaceDisabled ? '' : 'disabled:opacity-50', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
         :disabled="disabled"
         :style="height !== undefined ? { height: height + 'px' } : undefined"
         :placeholder="placeholder || $t('chat.message')"
@@ -153,7 +186,8 @@ function onInput(event: Event): void {
         @select="reportCaret"
         @compositionstart="emit('compositionstart')"
         @compositionend="emit('compositionend')"
-        @blur="emit('blur')"
+        @focus="onFocus"
+        @blur="onBlur"
         @paste="emit('paste', $event)"
       />
 
