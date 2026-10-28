@@ -1,0 +1,54 @@
+import { describe, expect, it } from "vitest";
+import { defineComponent, h, ref } from "vue";
+import { mount } from "@vue/test-utils";
+import ConversationComposer from "../components/ConversationComposer.vue";
+
+// A host with real two-way binding: the fold depends on the bound model value,
+// so a bare mount with a frozen prop would test the wrong thing.
+const Host = defineComponent(() => {
+  const text = ref("");
+  return () =>
+    h(ConversationComposer, {
+      modelValue: text.value,
+      "onUpdate:modelValue": (value: string) => {
+        text.value = value;
+      },
+      sendTestId: "host-send",
+    }, {
+      controls: () => h("button", { type: "button", "data-test": "slot-control" }, "chip"),
+      actions: () => h("button", { type: "button", "data-test": "slot-action" }, "attach"),
+    });
+});
+
+function mounted() {
+  return mount(Host);
+}
+
+describe("ConversationComposer fold", () => {
+  it("hides controls/actions until focused; content keeps them open after blur", async () => {
+    const wrapper = mount(Host);
+    const style = (testId: string) => wrapper.find(`[data-test="${testId}"]`).attributes("style") ?? "";
+    expect(style("composer-affordances")).toContain("display: none");
+    // The send button is never folded.
+    expect(wrapper.find('[data-test="host-send"]').attributes("style") ?? "").not.toContain("display: none");
+
+    await wrapper.find("textarea").trigger("focus");
+    expect(style("composer-affordances")).not.toContain("display: none");
+
+    // Typed content keeps the affordances unfolded after blur.
+    await wrapper.find("textarea").setValue("draft");
+    await wrapper.find("textarea").trigger("blur");
+    expect(style("composer-affordances")).not.toContain("display: none");
+
+    // Clearing folds them back.
+    await wrapper.find("textarea").setValue("");
+    expect(style("composer-affordances")).toContain("display: none");
+    wrapper.unmount();
+  });
+
+  it("panes without controls/actions slots render no affordance row at all", () => {
+    const wrapper = mount(ConversationComposer, { props: { modelValue: "", sendTestId: "send" } });
+    expect(wrapper.find('[data-test="composer-affordances"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+});

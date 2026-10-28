@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, useSlots, watch } from "vue";
 import { ArrowUp, Loader2, Square } from "lucide-vue-next";
 
 /**
@@ -96,6 +96,10 @@ const focused = ref(false);
 const expanded = computed(() => focused.value || props.modelValue.length > 0 || props.hasAttachments === true || showStop.value);
 /** Off until the first apply: the initial rows=2 markup must not animate down. */
 const animateHeight = ref(false);
+/** Panes without any controls/actions slot (the direct Bot composer) render no
+ *  affordance row at all, focused or not. */
+const slots = useSlots();
+const hasAffordances = computed(() => !!slots.controls || !!slots.actions);
 
 watch(() => props.modelValue, (value) => {
   // A pane-set value (send clears, history recall fills) needs the caret reported
@@ -162,48 +166,47 @@ function onInput(event: Event): void {
       :class="surfaceDisabled ? 'cursor-not-allowed opacity-60' : ''"
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >
-      <slot name="menus" />
-      <slot name="attachments" />
+      <!-- Send/stop live INSIDE the input line (bottom-right overlay), WhatsApp
+           style: the resting card is then exactly one text line tall — the button
+           is its own height reference. The affordance row below (model chip,
+           member selector, attach) only exists when a pane passes it, and folds
+           away while the composer rests (v-show: pane state survives the fold).
+           Textarea keeps a constant pr-12 so typed text never runs under the
+           button, and constant vertical padding so the height floor measured in
+           applyHeight never reads a mid-transition value. -->
+      <div class="relative">
+        <slot name="menus" />
+        <slot name="attachments" />
 
-      <textarea
-        ref="textarea"
-        :data-test="textareaTestId"
-        data-ring="container"
-        :value="modelValue"
-        rows="1"
-        :role="combobox ? 'combobox' : undefined"
-        :aria-autocomplete="combobox ? 'list' : undefined"
-        :aria-controls="combobox ? comboboxListId : undefined"
-        :aria-expanded="combobox ? comboboxExpanded : undefined"
-        class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
-        :class="[surfaceDisabled ? '' : 'disabled:opacity-50', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
-        :disabled="disabled"
-        :style="height !== undefined ? { height: height + 'px' } : undefined"
-        :placeholder="placeholder || $t('chat.message')"
-        @input="onInput"
-        @keydown="emit('keydown', $event)"
-        @keyup="reportCaret"
-        @click="reportCaret"
-        @select="reportCaret"
-        @compositionstart="emit('compositionstart')"
-        @compositionend="emit('compositionend')"
-        @focus="onFocus"
-        @blur="onBlur"
-        @paste="emit('paste', $event)"
-      />
+        <textarea
+          ref="textarea"
+          :data-test="textareaTestId"
+          data-ring="container"
+          :value="modelValue"
+          rows="1"
+          :role="combobox ? 'combobox' : undefined"
+          :aria-autocomplete="combobox ? 'list' : undefined"
+          :aria-controls="combobox ? comboboxListId : undefined"
+          :aria-expanded="combobox ? comboboxExpanded : undefined"
+          :aria-activedescendant="combobox ? comboboxActiveId : undefined"
+          class="w-full resize-none bg-transparent pl-3.5 pr-12 pt-1.5 pb-1 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
+          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
+          :disabled="disabled"
+          :style="height !== undefined ? { height: height + 'px' } : undefined"
+          :placeholder="placeholder || $t('chat.message')"
+          @input="onInput"
+          @keydown="emit('keydown', $event)"
+          @keyup="reportCaret"
+          @click="reportCaret"
+          @select="reportCaret"
+          @compositionstart="emit('compositionstart')"
+          @compositionend="emit('compositionend')"
+          @focus="onFocus"
+          @blur="onBlur"
+          @paste="emit('paste', $event)"
+        />
 
-      <div class="flex items-center gap-2 px-2.5 transition-[padding] duration-200 ease-out motion-reduce:transition-none" :class="expanded ? 'pb-2.5 pt-0.5' : 'pb-1 pt-0'">
-        <!-- Everything but send/stop is a writing affordance: while the composer
-             rests (empty + unfocused) it is display:none so the resting card is
-             just the input line plus the button. v-show, not v-if: pane state
-             (open dropdowns, staged attachments) must survive the fold. -->
-        <div v-show="expanded" data-test="composer-controls" class="flex min-w-0 flex-1 items-center gap-2">
-          <slot name="controls" />
-        </div>
-        <div class="ml-auto flex shrink-0 items-center gap-1.5">
-          <div v-show="expanded" data-test="composer-actions" class="flex items-center gap-1.5">
-            <slot name="actions" />
-          </div>
+        <div class="absolute bottom-1 right-1.5 flex items-center gap-1.5">
           <button
             v-if="showStop"
             type="button"
@@ -211,7 +214,7 @@ function onInput(event: Event): void {
             :aria-label="$t('common.cancel')"
             :title="$t('common.cancel')"
             :disabled="cancelling"
-            class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center rounded-sm bg-danger text-on-danger transition-all hover:opacity-90 disabled:opacity-50"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-danger text-on-danger transition-all hover:opacity-90 disabled:opacity-50"
             @click="emit('cancel')"
           >
             <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
@@ -224,13 +227,21 @@ function onInput(event: Event): void {
             :disabled="disabled || sending || sendDisabled || attachmentsSendDisabled || !hasSendable"
             :aria-label="$t('chat.send')"
             :title="$t('chat.send')"
-            class="grid shrink-0 place-items-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"
-            :class="expanded ? 'h-11 w-11 lg:h-7 lg:w-7' : 'h-7 w-7'"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"
             @click="emit('send')"
           >
             <Loader2 v-if="sending" :size="12" class="animate-spin" />
             <ArrowUp v-else :size="13" :stroke-width="2.5" />
           </button>
+        </div>
+      </div>
+
+      <div v-if="hasAffordances" v-show="expanded" data-test="composer-affordances" class="flex items-center gap-2 px-2.5 pb-2 pt-0.5">
+        <div data-test="composer-controls" class="flex min-w-0 flex-1 items-center gap-2">
+          <slot name="controls" />
+        </div>
+        <div data-test="composer-actions" class="flex shrink-0 items-center gap-1.5">
+          <slot name="actions" />
         </div>
       </div>
     </div>

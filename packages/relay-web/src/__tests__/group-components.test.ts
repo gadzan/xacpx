@@ -1922,31 +1922,6 @@ describe("Group Components", () => {
     });
 
 
-    it("folds everything but send/stop out of the composer until the textarea is focused", async () => {
-      seedGroupSelection();
-      window.innerWidth = 1280;
-      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
-      await flushPromises();
-      const folded = (testId: string) => (wrapper.find(`[data-test="${testId}"]`).attributes("style") ?? "").includes("display: none");
-      // Other tests may leave a draft behind; folding is a property of an EMPTY,
-      // unfocused composer.
-      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      await textarea.setValue("");
-      await textarea.trigger("blur");
-      await flushPromises();
-      // Resting composer: writing affordances take no space at all.
-      expect(folded("composer-controls")).toBe(true);
-      expect(folded("composer-actions")).toBe(true);
-      await wrapper.find('[data-test="group-composer-textarea"]').trigger("focus");
-      await flushPromises();
-      expect(folded("composer-controls")).toBe(false);
-      expect(folded("composer-actions")).toBe(false);
-      // Blurring with no text folds them back.
-      await wrapper.find('[data-test="group-composer-textarea"]').trigger("blur");
-      await flushPromises();
-      expect(folded("composer-controls")).toBe(true);
-      wrapper.unmount();
-    });
 
     it("mobile ⋯ sheet opens the group editor and ← emits back", async () => {
       seedGroupSelection();
