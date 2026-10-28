@@ -1606,7 +1606,7 @@ describe("Direct Bot Components", () => {
       expect(cancelSpy).toHaveBeenLastCalledWith({ runId: "run_1" });
     });
 
-    it("disables Send for a staged image while a run is active", async () => {
+    it("keeps Stop (not Send) with a staged image while a run is active", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
       directBots.selectedBotId = "b1";
@@ -1637,9 +1637,11 @@ describe("Direct Bot Components", () => {
       });
       const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
       await flushPromises();
-      const send = wrapper.find('[data-test="send-prompt-button"]');
-      expect(send.exists()).toBe(true);
-      expect((send.element as HTMLButtonElement).disabled).toBe(true);
+      // A staged image counts as sendable, but with stopWhileBusy the
+      // button stays Stop for the whole run and never flips back to Send.
+      const stop = wrapper.find('[data-test="stop-run-button"]');
+      expect(stop.exists()).toBe(true);
+      expect((stop.element as HTMLButtonElement).disabled).toBe(false);
     });
 
     it("disables the composer while topic recovery is still in flight", async () => {
