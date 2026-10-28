@@ -378,7 +378,7 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 async function handleSend(): Promise<void> {
-  if (blocked.value || isRunActive.value || !promptText.value.trim() || composing.value) return;
+  if (blocked.value || isRunActive.value || composing.value || attachments.uploading) return;
   const key = scope.value,
     text = promptText.value,
     staged = attachments.snapshot(attachKey.value),
