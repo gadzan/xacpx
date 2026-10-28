@@ -13,6 +13,7 @@ import ModelPicker from "./ModelPicker.vue";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import BotAvatarEditor from "./BotAvatarEditor.vue";
+import BotAvatarQuickView from "./BotAvatarQuickView.vue";
 import BotAvatar from "./BotAvatar.vue";
 import { randomCharacterAvatar } from "../lib/bot-avatar/catalog";
 const props = defineProps<{
@@ -439,7 +440,7 @@ function describeSubmitError(err: unknown): string {
             <ChevronLeft :size="16" />
           </button>
           <h2 id="bot-dialog-title" class="min-w-0 truncate text-base font-semibold">
-            {{ view === 'appearance' ? $t("bot.avatar.tabs.appearance") : isEditing ? $t("bot.dialog.editTitle") : $t("bot.dialog.createTitle") }}
+            {{ view === 'appearance' ? $t("bot.avatar.appearanceTitle") : isEditing ? $t("bot.dialog.editTitle") : $t("bot.dialog.createTitle") }}
           </h2>
         </div>
         <button
@@ -486,6 +487,7 @@ function describeSubmitError(err: unknown): string {
           <div class="relative shrink-0">
             <button type="button" data-test="bot-avatar-quick-view"
                     :aria-label="$t('bot.avatar.quickView')"
+                    aria-haspopup="dialog"
                     class="block rounded-xl outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent"
                     @click="avatarQuickView = true">
               <BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="56" static />
@@ -671,20 +673,8 @@ function describeSubmitError(err: unknown): string {
           <span>{{ isEditing ? $t("common.save") : $t("common.create") }}</span>
         </button>
       </div>
-      <!-- Avatar quick view: enlarged look-only preview over the dialog. -->
-      <div v-if="avatarQuickView" data-test="bot-avatar-quick-view-overlay"
-           class="absolute inset-0 z-10 grid place-items-center bg-black/60 p-4"
-           @click.self="avatarQuickView = false">
-        <div class="flex flex-col items-center gap-3 rounded-2xl bg-surface p-6 shadow-float">
-          <BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="144" static />
-          <p class="max-w-[12rem] truncate text-sm font-semibold">{{ name || $t('bot.avatar.preview.unnamed') }}</p>
-          <button type="button"
-                  class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
-                  @click="avatarQuickView = false">
-            {{ $t("common.close") }}
-          </button>
-        </div>
-      </div>
+      <BotAvatarQuickView v-if="avatarQuickView" :avatar="avatar" :driver="avatarDriver" :name="name"
+                          @close="avatarQuickView = false" />
     </div>
     <BotRemovalDialog
       v-if="removalOpen && props.bot"

@@ -753,7 +753,7 @@ export default {
       editTitle: "Edit Bot",
     },
     avatar: {
-      tabs: { label: "Bot settings", basic: "Basic settings", appearance: "Avatar appearance" },
+      appearanceTitle: "Avatar appearance",
       shape: "Shape",
       color: "Color",
       expression: "Default expression",

@@ -750,7 +750,7 @@ export default {
       editTitle: "编辑 Bot",
     },
     avatar: {
-      tabs: { label: "Bot 设置", basic: "基本设置", appearance: "头像外观" },
+      appearanceTitle: "头像外观",
       shape: "形状",
       color: "颜色",
       expression: "默认表情",

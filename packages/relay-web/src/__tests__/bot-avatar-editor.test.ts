@@ -157,6 +157,19 @@ describe("Bot dialog avatar draft", () => {
     expect(wrapper.find('[data-test="bot-avatar-quick-view-overlay"]').exists()).toBe(false);
   });
 
+  it("closes the enlarged quick view on Escape without closing the dialog", async () => {
+    const store = useDirectBotsStore();
+    vi.spyOn(store, "loadBotDetail").mockResolvedValue(DETAIL);
+    const wrapper = dialog(DETAIL.avatar);
+    await flushPromises();
+    await wrapper.get('[data-test="bot-avatar-quick-view"]').trigger("click");
+    expect(wrapper.find('[data-test="bot-avatar-quick-view-overlay"]').exists()).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await flushPromises();
+    expect(wrapper.find('[data-test="bot-avatar-quick-view-overlay"]').exists()).toBe(false);
+    expect(wrapper.emitted("close")).toBeUndefined();
+  });
+
   it("generates a random character avatar for a new Bot", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.999);
     const wrapper = track(mount(BotDialog, {
