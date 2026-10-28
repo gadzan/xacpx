@@ -1054,7 +1054,7 @@ const rowSwipes = computed(() => {
                        inside that session's pane, so a dot here is the only thing an
                        operator looking elsewhere gets before the window closes. -->
                   <span v-else-if="!s.archived && directBotsStore.pendingSessionInteractionFor(inst.id, s.alias)" data-test="attention-dot" data-attention="question"
-                        class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-warning"
+                        class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-warn"
                         :title="t('bot.interaction.waiting')" :aria-label="t('bot.interaction.waiting')" />
                   <span v-else-if="!s.archived && chat.sessionAttention(inst.id, s.alias) === 'working'" data-test="attention-dot" data-attention="working"
                         class="pulse-dot h-2 w-2 shrink-0 rounded-full bg-run-bright" />
