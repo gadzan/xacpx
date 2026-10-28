@@ -764,26 +764,23 @@ export interface LiveTurn {
 - `text` — `whitespace-pre-wrap` 纯文本。
 - `fields` — `<dl>` 键值表格 + 可选输出块（用于 other/think 类型）。
 
+**思考气泡 `ThinkingDots`**（`packages/relay-web/src/components/ThinkingDots.vue`）
+
+会话 transcript 与 Direct Bot transcript 共用的唯一 liveness 信号：一个灰色圆角气泡里三颗
+错峰起伏的圆点（透明度呼吸 + `translateY` 波浪，`prefers-reduced-motion` 下静止）。
+
+- 没有文案、计时、停止按钮——执行中的一切中间信息由流式内容本身承担；停止动作留在 composer
+  （`PromptInput` / `ConversationPromptInput` 的 cancel）。
+- 会话侧由 `MessageList` 在实时回合行正文渲染（`data-test="live-working"`）：parts 到来即被
+  `TurnParts` 替换；无实时回合时不渲染。
+- Direct Bot 侧由 `ConversationMessageList` 在实时回合正文渲染（`data-test="run-empty-slot"`）；
+  `waiting-human` 时被抑制（等待用户不是"思考"），改由静止的 warn 圆点承担。
+
 **运行状态胶囊 `RunStatusChip`**（`packages/relay-web/src/components/RunStatusChip.vue`）
 
-所有“有运行在飞”的界面共用一个状态胶囊，避免两套视觉语言：
-
-- props：`state`（`running` / `queued` / `waiting`）、`label`、`elapsed?`、`shimmer?`。
-- 三态**只靠圆点的行为与颜色**区分，不靠给文字染色：`running` 呼吸点（`pulse-dot` + `bg-run-bright`）、
-  `queued` 静止弱化点（`bg-fg-muted/60`）、`waiting` 静止 `bg-warn` 点。静止本身就是“等你动手”的信号，
-  因此等待人工确认时**不再转动**，不会被误读成仍在工作。
-- 耗时用 `border-l` 细线 + `text-fg-muted`（5.4:1）。测试钩子：`run-status`（带 `data-status-state`）、
-  `hud-dot`、`hud-quip`、`hud-elapsed`。
-- 胶囊是**唯一**的运行指示；调用方的正文区不再渲染第二个 spinner，只保留高度占位。
-
-**工作气泡 `WorkingQuip`**（`packages/relay-web/src/components/LiveTurnAvatar.vue` / `WorkingQuip.vue`）
-
-回合进行中，俏皮状态行 `data-test="hud-quip"`（`chat.workingQuips` 池随机抽、每 20s 轮换不连重；池为空回退 `chat.mentionActivity.working`）+ `M:SS` elapsed 计时（`useWorkingQuip`，由 `liveTurn.startedAt` 驱动）以对话气泡形式挂在**实时回合**行的 sticky 头像上（`[data-avatar-key="live"]`，即最新一条 agent 回合），而不是视口内最靠上的头像。
-- 气泡复用 `RunStatusChip`，当前固定为 `running`：会话的 `LiveTurn.status` 只有 `working | streaming`，没有等待/排队态。
-- transcript 正文区的 `data-test="live-working"` 槽位只保留 `h-[22px]` 占位，不再渲染独立的 `Loader2`。
-- 气泡是 `LiveTurnAvatar` 内的子元素，相对 sticky 头像绝对定位于图标头顶（`bottom: calc(100% + 4px)`），随布局原生移动：无滚动监听、无 `getBoundingClientRect`、无跟随延迟。
-- 头像被钉在滚动容器顶部、头顶无空间时，`IntersectionObserver` 观察头顶的哨兵条并切换 `quip-beside` 类，把气泡移到图标右侧；不支持 `IntersectionObserver` 的环境保持默认头顶位置。
-- 全局同一时刻只有一个气泡；无实时回合时不渲染。输入框 busy 时 placeholder 保持静态 `chat.working`。
+仅剩 `waiting-human` 一个调用方（Direct Bot 实时回合）：`state="waiting"` 静止 `bg-warn` 圆点 +
+状态文字。`running` / `queued` 呼吸点分支与停止按钮保留在组件内但 transcript 不再使用；胶囊
+永远不携带停止动作。
 
 **`PromptInput` busy-guard**（`packages/relay-web/src/components/PromptInput.vue`）
 
@@ -941,7 +938,9 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 ### 话题与消息流（`DirectBotPane.vue`）
 
-- **顶部栏**：展示 Bot 头像、名称、角色、工作区/Agent 徽标与操作入口；
+- **移动端顶栏（<lg）**：置顶的居中玻璃头像（`.glass-avatar`：backdrop-blur + 高光弧，只作用于头像
+  本身，避免 backdrop-filter 祖先困住 TopicSwitcher 的弹层）+ 名称 + 角色 + 话题切换；返回与 ⋯ 靠边。
+  桌面顶栏保持原布局。
 - **话题栏**：当前话题显示在一个按钮里。桌面端打开下拉列表，窄屏打开底部列表面板。列表可以搜索，并提供重命名、收起、恢复。额外话题可以删除。默认话题只提供清空，并要求确认。删除和清空会先预览外部绑定与 worktree。有绑定且未确认时不能提交。有未结束的 worktree 时不能提交。切换话题时按 `conversationId + topicId` 隔离历史与实时 Run。已删除话题的迟到列表或 `conversation-topic-changed` 不会把它加回缓存。清空默认话题提升 generation 后，当前历史缓存会被丢掉并重新加载；
 - **消息列表（`ConversationMessageList.vue`）**：
   - 历史消息严格按 `seq` 排序并按 message `id` 去重；
@@ -950,9 +949,11 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   - 轮次完成后将流式累积的 trace parts 关联保存在消息卡片上；
   - 支持明确区分与展示 `queued`、`running`、`waiting-human`、`completed`、`failed`、`cancelled`、`indeterminate` 状态。
   - 失败横幅不再打印裸 token 形式的内核原因码（`execution-failed`、`prompt_failed` 等），成句的提供方错误仍在横幅里原样显示，避免用户无处可查。
-  - `queued` / `running` / `waiting-human` 由共享的 `RunStatusChip` 表达（`data-test="run-status"`，`data-status-state`）：
-    `running` 呼吸点、`queued` 静止弱化点、`waiting-human` 静止 `bg-warn` 点；状态文字改用 `bot.run.*` 文案。
-    正文区在无 parts 时只保留 `run-empty-slot` 高度占位，不再追加第二个 `Loader2`——运行指示只由胶囊承担。
+  - 实时回合不再渲染状态胶囊/停止按钮：无 parts 时由共享的 `ThinkingDots` 思考气泡承担全部
+    运行指示（`data-test="run-empty-slot"`），parts 到来即被 `TurnParts` 替换；`waiting-human`
+    由静止 warn 圆点的 `RunStatusChip` 表达。停止动作只存在于输入框。
+  - 移动端（<lg）消息行不渲染头像与发言人名（`TranscriptRow hideIdentityOnMobile`），身份由顶栏
+    置顶头像承担；群聊 transcript 不受影响。
 - **输入框（`ConversationPromptInput.vue`）**：
   - 支持输入 prompt 发送，Bot 处于禁用状态时给出明确警告提示；
   - 客户端生成稳定的 `requestId`，发送失败或超时重试时复用原 `requestId` 保持幂等；

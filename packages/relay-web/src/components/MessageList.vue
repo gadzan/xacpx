@@ -12,7 +12,7 @@ import { AlertCircle, ArrowDown, CircleStop, Clock, Loader2, RotateCcw, Triangle
 import AgentMessageCard from "./AgentMessageCard.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import LiveTurnAvatar from "./LiveTurnAvatar.vue";
-import { useWorkingQuip } from "../lib/use-working-quip";
+import ThinkingDots from "./ThinkingDots.vue";
 import { fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
@@ -23,13 +23,8 @@ import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
-// Rotating quip + elapsed clock that ride the sticky agent-icon as a speech bubble
-// while a turn is in progress (replaces the old composer-anchored turn HUD). The
-// bubble itself is rendered by LiveTurnAvatar inside the live row's avatar.
-const { status: quipStatus, elapsed: quipElapsed } = useWorkingQuip(
-  () => (props.liveTurn ? `${props.sessionKey ?? ""}\0${props.liveTurn.startedAt}` : null),
-  () => props.liveTurn?.startedAt ?? null,
-);
+// While a turn is in progress the live row body renders the ThinkingDots bubble
+// (the only liveness signal) until streamed content replaces it.
 
 function ensureFullOf(m: ChatMessage): (() => Promise<void>) | undefined {
   const id = m.id;
@@ -580,12 +575,11 @@ watch(
             :class="enterRowClass"
             :style="enterStyle(0)"
           >
-            <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
+            <LiveTurnAvatar class="hidden lg:block" :driver="driver" />
             <div data-test="msg-streaming" class="min-w-0 flex-1">
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-              <!-- The bubble on the avatar already carries liveness (status dot), so the
-                   body slot only reserves its height: no second, unrelated spinner. -->
-              <div v-else data-test="live-working" class="h-[22px]" />
+              <!-- Thinking bubble until content arrives; no second spinner once it does. -->
+              <ThinkingDots v-else data-test="live-working" />
             </div>
           </div>
           <!-- AGENT MESSAGE card (sender / receiver collaboration event). A sent card
@@ -623,7 +617,7 @@ watch(
             </div>
           </div>
           <!-- ASSISTANT row -->
-          <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" :class="enterRowClass" :style="enterStyle(i)">
+          <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" hide-identity-on-mobile :class="enterRowClass" :style="enterStyle(i)">
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
               <!-- Structured transcript: activity cards interleave with the Markdown
@@ -662,10 +656,10 @@ watch(
             :class="enterRowClass"
             :style="enterStyle(i + 1)"
           >
-            <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
+            <LiveTurnAvatar class="hidden lg:block" :driver="driver" />
             <div data-test="msg-streaming" class="min-w-0 flex-1">
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-              <div v-else data-test="live-working" class="h-[22px]" />
+              <ThinkingDots v-else data-test="live-working" />
             </div>
           </div>
         </template>
@@ -673,10 +667,10 @@ watch(
         <!-- live streaming assistant row when the transcript is empty (working spinner occupies the slot even with no parts yet) -->
         <div v-if="liveTurn && visibleMessages.length === 0" class="flex gap-3" :class="enterRowClass"
              :style="enterStyle(0)">
-          <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
+          <LiveTurnAvatar class="hidden lg:block" :driver="driver" />
           <div data-test="msg-streaming" class="min-w-0 flex-1">
             <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-            <div v-else data-test="live-working" class="h-[22px]" />
+            <ThinkingDots v-else data-test="live-working" />
           </div>
         </div>
       </div>

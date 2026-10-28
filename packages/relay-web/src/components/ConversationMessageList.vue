@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { useI18n } from "vue-i18n";
 import {
   AlertCircle,
+  CircleStop,
   HelpCircle,
   Loader2,
 } from "lucide-vue-next";
@@ -28,16 +28,14 @@ import BotAvatar from "./BotAvatar.vue";
 import { avatarHasOpenInteraction, botAvatarState, type BotAvatarState } from "../lib/bot-avatar-state";
 import PlanPanel from "./PlanPanel.vue";
 import ConversationInteractionForm from "./ConversationInteractionForm.vue";
-import { useLiveElapsedClock } from "../lib/use-live-elapsed";
 import { isMachineFailureReason } from "../lib/failure-reason";
 
 import RunStatusChip from "./RunStatusChip.vue";
+import ThinkingDots from "./ThinkingDots.vue";
 const props = defineProps<{
   messages: ConversationMessageDto[];
   liveTurn: DirectBotLiveTurn | null;
   activeRun: ConversationRunDto | null;
-  stopAvailable?: boolean;
-  cancellingRunId?: string | null;
   activeMemberTurn: MemberTurnSummaryDto | null;
   runParts: Record<string, TurnPartDto[]>;
   planEntries?: PlanEntryDto[];
@@ -60,7 +58,6 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   loadOlder: [];
-  cancelRun: [];
   answer: [key: string, value: import("@ganglion/xacpx-relay-protocol").InteractionValueDto];
   submitInteraction: [];
   declineInteraction: [];
@@ -68,7 +65,6 @@ const emit = defineEmits<{
   dismissInteraction: [];
 }>();
 
-const { t } = useI18n();
 const instancesStore = useInstancesStore();
 
 const scroller = ref<HTMLElement | null>(null);
@@ -76,34 +72,6 @@ const atBottom = ref(true);
 const pendingAnchor = ref<number | null>(null);
 const THRESHOLD = 64;
 
-const { nowMs } = useLiveElapsedClock(() => {
-  const state = props.activeRun?.state;
-  return state === "queued" || state === "running" || state === "waiting-human" || (!props.activeRun && !!props.liveTurn);
-});
-
-const liveElapsedLabel = computed(() => {
-  const startedAt = props.liveTurn?.startedAt
-    ?? (props.activeRun?.startedAt ? Date.parse(props.activeRun.startedAt) : undefined);
-  if (startedAt === undefined || !Number.isFinite(startedAt)) return "";
-  const s = Math.max(0, Math.floor((nowMs.value - startedAt) / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
-  return `${Math.floor(s / 3600)}h`;
-});
-
-// Map the Run lifecycle onto the shared chip's three visual states. `waiting-human` is the
-// one state where stillness is the message: the run is blocked on the user, so the dot
-// stops breathing and turns warn instead of pretending to still be working.
-const runChipState = computed<"running" | "queued" | "waiting">(() => {
-  if (props.activeRun?.state === "waiting-human") return "waiting";
-  if (props.activeRun?.state === "queued") return "queued";
-  return "running";
-});
-const runChipLabel = computed(() => {
-  if (props.activeRun?.state === "waiting-human") return t("bot.run.waitingHuman");
-  if (props.activeRun?.state === "queued") return t("bot.run.queued");
-  return t("bot.run.running");
-});
 
 // Resolve agent driver for bot avatar
 const botDriver = computed(() => {
@@ -230,11 +198,15 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       outcome state (e.g. cancelled before the first assistant row), not an
       empty conversation. -->
     <div v-if="!loadingHistory && messages.length === 0 && !liveTurn && !(activeRun && (activeRun.state === 'failed' || activeRun.state === 'cancelled' || activeRun.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
-      <BotAvatar class="mb-3" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="72"
-                 :state="currentAvatarState" :activity-key="avatarActivityKey" :observed-completion="observedAvatarCompletion"
-                 :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
-      <h3 class="text-base font-semibold text-fg">{{ bot?.name ?? "Direct Bot" }}</h3>
-      <p v-if="bot?.role" class="mt-0.5 text-xs text-fg-muted">{{ bot.role }}</p>
+      <!-- Mobile pins this identity in the pane's top bar; repeating it here would show
+           the avatar twice. -->
+      <div class="hidden flex-col items-center lg:flex">
+        <BotAvatar class="mb-3" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="72"
+                   :state="currentAvatarState" :activity-key="avatarActivityKey" :observed-completion="observedAvatarCompletion"
+                   :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
+        <h3 class="text-base font-semibold text-fg">{{ bot?.name ?? "Direct Bot" }}</h3>
+        <p v-if="bot?.role" class="mt-0.5 text-xs text-fg-muted">{{ bot.role }}</p>
+      </div>
       <p v-if="emptyHint !== null" data-test="bot-empty-hint" class="mt-4 text-xs text-fg-muted">{{ emptyHint ?? $t("bot.chat.emptyHint") }}</p>
     </div>
 
@@ -252,7 +224,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         </TranscriptRow>
 
         <!-- Bot Message -->
-        <TranscriptRow v-else-if="m.role === 'bot'" :driver="botDriver" :row-id="m.id"
+        <TranscriptRow v-else-if="m.role === 'bot'" :driver="botDriver" :row-id="m.id" hide-identity-on-mobile
                        :speaker="bot?.name ?? 'Bot'" :speaker-role="bot?.role">
           <template #avatar>
             <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32" static :retired="bot?.retired" />
@@ -275,7 +247,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
 
       <!-- Live Active Turn -->
       <TranscriptRow v-if="liveTurn || (activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human'))"
-           data-test="live-turn-container"
+           data-test="live-turn-container" hide-identity-on-mobile
            :driver="botDriver"
            :speaker="bot?.name ?? 'Bot'" :speaker-role="bot?.role">
         <template #avatar>
@@ -301,33 +273,27 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             @dismiss="emit('dismissInteraction')"
           />
 
-          <!-- Run status: the same chip the session transcript floats on its live avatar,
-               so a Bot run and a session turn read as one system. The chip's dot is the
-               only liveness signal; the body below never adds a spinner of its own. -->
-          <div class="flex items-center gap-2 flex-wrap">
-            <RunStatusChip
-              :state="runChipState"
-              :label="runChipLabel"
-              :elapsed="liveElapsedLabel || undefined"
-              :stop-available="stopAvailable"
-              :stop-pending="!!activeRun && cancellingRunId === activeRun.id"
-              @stop="stopAvailable && cancellingRunId !== activeRun?.id && emit('cancelRun')"
-            />
-          </div>
+          <!-- Waiting on the user: stillness is the message, so the shared chip renders
+               its warn dot. It carries no stop action — Stop lives in the composer. -->
+          <RunStatusChip
+            v-if="activeRun?.state === 'waiting-human'"
+            state="waiting"
+            :label="$t('bot.run.waitingHuman')"
+          />
 
           <!-- Plan Panel if plan emitted -->
           <PlanPanel v-if="planEntries && planEntries.length > 0" :entries="planEntries" class="w-full" />
 
-          <!-- Live Turn Content. An empty run reserves its slot height only: the status
-               chip above already says "in flight", and a spinner here would be a second,
-               unrelated indicator that disappears the moment text arrives. -->
+          <!-- Live Turn Content. While the run has produced nothing visible yet, the
+               thinking bubble is the only signal; streamed content replaces it. A run
+               blocked on the user is not "thinking", so its chip stands alone. -->
           <div v-if="liveTurn && liveTurn.parts.length > 0" class="w-full rounded-2xl bg-surface/50 p-3">
             <TurnParts
               :parts="liveTurn.parts"
               :streaming="liveTurn.status === 'streaming'"
             />
           </div>
-          <div v-else class="h-[22px]" data-test="run-empty-slot" />
+          <ThinkingDots v-else-if="activeRun?.state !== 'waiting-human'" data-test="run-empty-slot" />
         </div>
       </TranscriptRow>
 

@@ -16,9 +16,12 @@ const props = defineProps<{
   speakerRole?: string;
   own?: boolean;
   hideLeadingAvatar?: boolean;
+  /** Mobile (<lg) transcripts drop per-row identity: the avatar + speaker ride the
+   *  pane's pinned top bar instead of fronting every bubble (see the chat reference
+   *  design). Group transcripts keep per-row identity — many Bots speak there. */
+  hideIdentityOnMobile?: boolean;
   /** Stable id for the prepend scroll anchor. */
   rowId?: string;
-  /** Enter choreography from the pane's own scroll logic. */
   enterClass?: string;
   enterStyle?: Record<string, string>;
 }>();
@@ -31,7 +34,7 @@ const props = defineProps<{
     :style="enterStyle"
     :data-row-id="rowId"
   >
-    <div v-if="!own && !hideLeadingAvatar" class="agent-avatar mt-0.5 h-8 w-8 shrink-0 self-start" data-avatar-key="row">
+    <div v-if="!own && !hideLeadingAvatar" class="agent-avatar mt-0.5 h-8 w-8 shrink-0 self-start" :class="hideIdentityOnMobile ? 'hidden lg:block' : ''" data-avatar-key="row">
       <!-- A slotted BotAvatar draws its own silhouette: no round backing (it reads as a
            halo in the dark theme) and no clipping, so its status badge stays whole. The
            driver-icon fallback keeps the round surface backing. -->
@@ -47,7 +50,7 @@ const props = defineProps<{
       class="cv-bubble min-w-0"
       :class="own ? 'flex max-w-[80%] flex-col items-end' : 'flex-1 space-y-2.5'"
     >
-      <div v-if="!own && speaker" class="flex items-center gap-2">
+      <div v-if="!own && speaker" class="flex items-center gap-2" :class="hideIdentityOnMobile ? 'hidden lg:flex' : ''">
         <span class="text-xs font-semibold text-fg">{{ speaker }}</span>
         <span v-if="speakerRole" class="text-xs font-normal text-fg-muted">{{ speakerRole }}</span>
       </div>

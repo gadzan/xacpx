@@ -70,18 +70,16 @@ it("renders a git summary chip and clicking it opens the Changes tab", async () 
   expect(w.emitted("show-files")).toBeTruthy();
 });
 
-it("shows a working quip chip while a live turn is active (no more composer HUD)", async () => {
+it("shows the thinking bubble in the transcript while a live turn is active (no composer HUD)", async () => {
   const chat = useChatStore();
   chat.select("i1", "backend");
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
   const w = mount(ChatPane);
   await w.vm.$nextTick();
-  // The status HUD was removed; the quip now rides the transcript as a chip (MessageList).
+  // The status HUD is gone; the bubble lives in the transcript body (MessageList).
   expect(w.find('[data-test="turn-hud"]').exists()).toBe(false);
-  const quip = w.find('[data-test="hud-quip"]');
-  expect(quip.exists()).toBe(true);
-  expect(quip.text().length).toBeGreaterThan(0);
-  expect(quip.text()).not.toMatch(/…{2,}|…\s*…$/);
+  expect(w.find('[data-test="hud-quip"]').exists()).toBe(false);
+  expect(w.find('[data-test="live-working"]').exists()).toBe(true);
 });
 
 it("stacks plan and composer as document-flow layers (plan → input), no status HUD", async () => {
@@ -303,11 +301,11 @@ it("unarchiveSession: a connector ErrorPayload rejects without a follow-up reloa
   rpc.mockRestore();
 });
 
-it("hides the working quip when no turn is active", () => {
+it("hides the thinking bubble when no turn is active", () => {
   const chat = useChatStore();
   chat.select("i1", "backend");
   const w = mount(ChatPane);
-  expect(w.find('[data-test="hud-quip"]').exists()).toBe(false);
+  expect(w.find('[data-test="live-working"]').exists()).toBe(false);
 });
 
 it("clears staged attachments when switching session so they don't leak to the next target", async () => {
@@ -384,34 +382,21 @@ it("surfaces a create failure in the booting view with a dismiss action", async 
   expect(chat.sessionAlias).toBeNull();
 });
 
-it("rotates a HUD quip every 20s while the turn runs, clears the timer when idle", async () => {
-  vi.useFakeTimers();
+it("removes the thinking bubble when the turn finishes", async () => {
   const chat = useChatStore();
   chat.select("i1", "backend");
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
   const w = mount(ChatPane);
   await w.vm.$nextTick();
-  const first = w.find('[data-test="hud-quip"]').text();
-  expect(first.length).toBeGreaterThan(1); // quip picked, not an empty fallback
-
-  vi.advanceTimersByTime(19000);
-  await w.vm.$nextTick();
-  expect(w.find('[data-test="hud-quip"]').text()).toBe(first); // calm cadence: no rotation before 20s
-
-  vi.advanceTimersByTime(1000);
-  await w.vm.$nextTick();
-  expect(w.find('[data-test="hud-quip"]').text()).not.toBe(first); // pickQuip never repeats immediately
+  expect(w.find('[data-test="live-working"]').exists()).toBe(true);
 
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
   await w.vm.$nextTick();
-  expect(w.find('[data-test="hud-quip"]').exists()).toBe(false); // chip unmounts when the turn ends
+  expect(w.find('[data-test="live-working"]').exists()).toBe(false);
   w.unmount();
-  expect(vi.getTimerCount()).toBe(0); // quip interval must not survive unmount
-  vi.useRealTimers();
 });
 
-it("re-picks the HUD quip and restarts the 20s cadence on busy→busy session switch", async () => {
-  vi.useFakeTimers();
+it("moves the thinking bubble to the newly selected busy session", async () => {
   const instances = useInstancesStore();
   instances.instances.push({
     id: "i1", name: "prod-box", online: true, lastSeenAt: null,
@@ -427,19 +412,11 @@ it("re-picks the HUD quip and restarts the 20s cadence on busy→busy session sw
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "frontend" } } as never);
   const w = mount(ChatPane);
   await w.vm.$nextTick();
+  expect(w.findAll('[data-test="live-working"]')).toHaveLength(1);
 
-  // A runs 19s, then the user switches to the already-busy B: B must re-pick
-  // and restart its own 20s cadence instead of inheriting A's deadline.
-  vi.advanceTimersByTime(19000);
-  await w.vm.$nextTick();
+  // Switching to the already-busy B renders B's own bubble — never both at once.
   chat.select("i1", "frontend");
   await w.vm.$nextTick();
-  const onB = w.find('[data-test="hud-quip"]').text();
-  expect(onB.length).toBeGreaterThan(1);
-
-  vi.advanceTimersByTime(1000);
-  await w.vm.$nextTick();
-  expect(w.find('[data-test="hud-quip"]').text()).toBe(onB);
+  expect(w.findAll('[data-test="live-working"]')).toHaveLength(1);
   w.unmount();
-  vi.useRealTimers();
 });

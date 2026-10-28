@@ -1964,7 +1964,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain("Looks good to me!");
     });
 
-    it("renders live turn with status HUD and stop button", async () => {
+    it("renders a streaming live turn without a status capsule or stop button", async () => {
       const activeRun: ConversationRunDto = {
         id: "run_1",
         conversationId: "c1",
@@ -1989,7 +1989,6 @@ describe("Direct Bot Components", () => {
           activeRun,
           activeMemberTurn: null,
           runParts: {},
-          stopAvailable: true,
           bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
         },
         global: {
@@ -1998,13 +1997,43 @@ describe("Direct Bot Components", () => {
       });
 
       expect(wrapper.find('[data-test="live-turn-container"]').exists()).toBe(true);
-      expect(wrapper.text()).toContain("Running");
       expect(wrapper.text()).toContain("Analyzing code...");
+      // The status capsule is gone: no lifecycle label, no stop action, no second
+      // liveness indicator. Streamed content is the whole signal; Stop is the
+      // composer's.
+      expect(wrapper.find('[data-test="run-status"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="run-empty-slot"]').exists()).toBe(false);
+    });
 
-      const stopBtn = wrapper.find('[data-test="run-stop-button"]');
-      expect(stopBtn.exists()).toBe(true);
-      await stopBtn.trigger("click");
-      expect(wrapper.emitted("cancelRun")).toBeTruthy();
+    it("shows the thinking bubble until the run produces output", () => {
+      const activeRun: ConversationRunDto = {
+        id: "run_think",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [],
+          liveTurn: null,
+          activeRun,
+          activeMemberTurn: null,
+          runParts: {},
+          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        },
+        global: { plugins: [i18n] },
+      });
+      const dots = wrapper.find('[data-test="run-empty-slot"]');
+      expect(dots.exists()).toBe(true);
+      expect(dots.attributes("role")).toBe("status");
+      expect(dots.element.children).toHaveLength(3);
+      expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
     });
 
     // The dot, not a colour tint on the label, is what separates the lifecycle states:
@@ -2038,8 +2067,8 @@ describe("Direct Bot Components", () => {
       expect(dot.classes()).not.toContain("pulse-dot");
       expect(dot.classes()).toContain("bg-warn");
       expect(chip.find('[data-test="hud-quip"]').text()).toBe("Waiting for human");
-      // The body never carries a second spinner while the chip already reports liveness.
-      expect(wrapper.find('[data-test="run-empty-slot"]').element.children).toHaveLength(0);
+      // A run blocked on the user is not thinking: the chip stands alone.
+      expect(wrapper.find('[data-test="run-empty-slot"]').exists()).toBe(false);
     });
 
     it("hides the HUD stop button for terminal runs so no second cancel fires", async () => {

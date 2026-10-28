@@ -104,9 +104,8 @@ watch(
   { immediate: true },
 );
 
-// Always-on 1 Hz clock. Feeds the booting "starting… Ns" readout above; the active
-// turn's rotating quip + elapsed now ride the sticky agent-icon (see MessageList /
-// useWorkingQuip), so the composer no longer carries a status HUD.
+// Always-on 1 Hz clock. Feeds the booting "starting… Ns" readout above. The live turn's
+// liveness signal is the ThinkingDots bubble in MessageList; no status HUD lives here.
 const nowMs = ref(Date.now());
 const timer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
 onUnmounted(() => clearInterval(timer));

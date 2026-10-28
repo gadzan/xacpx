@@ -79,18 +79,6 @@ const avatarActivityKey = computed(() => [
 ].join(":"));
 const observedCompletion = computed(() => !!directBotsStore.activeRun
   && directBotsStore.liveCompletedRunId === directBotsStore.activeRun.id);
-const stopAvailable = computed(() => {
-  const run = directBotsStore.activeRun;
-  return !!run
-    && !!directBotsStore.instanceId
-    && !!directBotsStore.selectedBotId
-    && directBotsStore.topicReady
-    && !directBotsStore.ownershipUncertain
-    && !directBotsStore.ownerUnconfirmed
-    && run.conversationId === directBotsStore.activeConversationId
-    && run.topicId === directBotsStore.activeTopicId
-    && directBotsStore.isRunActive;
-});
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
@@ -202,35 +190,38 @@ function openRemoval(): void {
 
 <template>
   <div class="flex h-full flex-col bg-bg text-fg">
-    <!-- Mobile single top bar (<lg): avatar + name, topic title as a tappable subtitle
-         (opens the topic sheet), and ⋯ for the entries the desktop header carries.
-         Desktop keeps the header below. -->
-    <div class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
+    <!-- Mobile single top bar (<lg): a centered glass avatar + name + role pinned at the
+         top, back and ⋯ at the sides, topic switcher as the subtitle. The transcript
+         never repeats the avatar in front of bubbles (TranscriptRow
+         hideIdentityOnMobile). Desktop keeps the header below. -->
+    <div class="relative flex shrink-0 flex-col items-center bg-surface px-2 pb-1.5 pt-[calc(0.5rem+env(safe-area-inset-top))] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+              class="absolute left-1 top-[calc(0.75rem+env(safe-area-inset-top))] grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
-      <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
-                 :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
-                 :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
-      <div class="flex min-w-0 flex-1 flex-col">
-        <span class="truncate text-sm font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
-        <TopicSwitcher
-          v-if="isMobile"
-          variant="direct"
-          :topics="directBotsStore.currentTopics"
-          :active-topic-id="directBotsStore.activeTopicId"
-          :preview-topic="previewTopic"
-          :rename-topic="renameTopic"
-          :archive-topic="archiveTopic"
-          :restore-topic="restoreTopic"
-          :teardown-topic="teardownTopic"
-          :clear-topic="clearTopic"
-          @select="directBotsStore.switchTopic"
-          @create="newTopicDialogOpen = true"
-        />
-      </div>
+      <span class="glass-avatar grid h-12 w-12 place-items-center rounded-full">
+        <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="44"
+                   :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
+                   :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
+      </span>
+      <span class="mt-1 max-w-full truncate text-sm font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
+      <p v-if="bot?.role" class="max-w-full truncate text-xs text-fg-muted">{{ bot.role }}</p>
+      <TopicSwitcher
+        v-if="isMobile"
+        class="mt-0.5"
+        variant="direct"
+        :topics="directBotsStore.currentTopics"
+        :active-topic-id="directBotsStore.activeTopicId"
+        :preview-topic="previewTopic"
+        :rename-topic="renameTopic"
+        :archive-topic="archiveTopic"
+        :restore-topic="restoreTopic"
+        :teardown-topic="teardownTopic"
+        :clear-topic="clearTopic"
+        @select="directBotsStore.switchTopic"
+        @create="newTopicDialogOpen = true"
+      />
       <button type="button" data-test="mobile-bot-more" :aria-label='$t("common.more")'
-              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="absolute right-1 top-[calc(0.75rem+env(safe-area-inset-top))] grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
     </div>
     <MobileConnStrip />
@@ -354,8 +345,6 @@ function openRemoval(): void {
       :empty-hint="emptyHint"
       :live-turn="directBotsStore.liveTurn"
       :active-run="directBotsStore.activeRun"
-      :stop-available="stopAvailable"
-      :cancelling-run-id="directBotsStore.cancellingRunId"
       :active-member-turn="directBotsStore.activeMemberTurn"
       :run-parts="directBotsStore.completeRunParts"
       :plan-entries="directBotsStore.planEntries"
@@ -369,7 +358,6 @@ function openRemoval(): void {
       :observed-avatar-completion="observedCompletion"
       :load-older="directBotsStore.loadOlder"
       @load-older="directBotsStore.loadOlder"
-      @cancel-run="directBotsStore.cancelCurrentRun"
       :pending-interaction="directBotsStore.pendingInteraction"
       @answer="(key: string, value: InteractionValueDto) => directBotsStore.setInteractionAnswer(key, value)"
       @submit-interaction="directBotsStore.submitInteraction('accept')"
@@ -464,3 +452,22 @@ function openRemoval(): void {
 
   </div>
 </template>
+
+<style scoped>
+/* Translucent glass disc under the pinned Bot avatar: a specular arc over a tinted
+   blur reads as glass on both themes. Deliberately scoped to the avatar itself — a
+   backdrop-filtered ANCESTOR would become the containing block for TopicSwitcher's
+   popover and sheets and trap them inside this bar. */
+.glass-avatar {
+  background:
+    radial-gradient(circle at 30% 16%, rgb(var(--c-fg) / 0.10), rgb(var(--c-fg) / 0) 60%),
+    rgb(var(--c-surface) / 0.55);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  backdrop-filter: blur(12px) saturate(180%);
+  border: 1px solid rgb(var(--c-border));
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.05),
+    0 4px 14px rgb(0 0 0 / 0.08),
+    inset 0 1px 0 rgb(255 255 255 / 0.30);
+}
+</style>

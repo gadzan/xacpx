@@ -121,8 +121,6 @@ export default {
     effort: "推理强度",
     effortSetFailed: "切换推理强度失败，请重试。",
     working: "Agent 正在工作…（按 Esc 停止）",
-    workingQuips:
-      "灵感加载中…\n正在敲键盘，火花四溅\n键盘冒烟中，请勿打扰\nCPU 微微出汗\n正在与 bug 斗智斗勇\n正在把需求翻译成代码\n一行一行搬砖中…\n正在翻文档第八十页\n咖啡续满，继续冲\n十指翻飞，代码狂飙\n大脑风扇全速运转\n神经元疯狂放电中\n在知识的海洋里狗刨\n正在拆需求盲盒\n拼图进行中，别催\n删删改改又一版\n正在憋大招\n齿轮咔咔转动中\n正在给代码注入灵魂\n字节在飞，bug 在逃",
     mentionSource: {
       worker: "Worker",
       weixin: "微信",
@@ -929,7 +927,7 @@ export default {
     chat: {
       emptyHint: "发送一条消息开始与该 Bot 对话。",
       emptyHintDisabled: "启用该 Bot 后即可开始对话。",
-      working: "正在运行",
+      working: "思考中",
     },
     run: {
       failed: "运行失败",
