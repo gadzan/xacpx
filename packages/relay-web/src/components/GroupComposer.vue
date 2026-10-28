@@ -23,7 +23,6 @@ import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown } from "../lib/use-dropdown";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
 import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
-import { mergeRecoveredDraft, sourceRunPrompt } from "../lib/composer-run-actions";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -61,11 +60,8 @@ let inFlightDraft: { key: string; text: string } | null = null;
 /** True while a Group/Topic switch swaps the textarea contents: those writes are
  *  not user edits and must not be persisted under the new key. */
 let swappingDraft = false;
-/** Stop / stop-restore / takeover share one fence: a second click while the
+/** Cancel fences on the store's cancellingRunId: a second click while the
  *  store reports the run as cancelling is a no-op, never a second RPC. */
-const actionBusy = ref(false);
-const actionError = ref<string | null>(null);
-const restoreNotice = ref<string | null>(null);
 interface EveryoneConfirmation {
   key: string;
   revision: number;
@@ -164,8 +160,6 @@ watch(promptText, (text) => {
   if (swappingDraft) return;
   saveDraft(draftKey.value, text);
   draftRevision.value += 1;
-  actionError.value = null;
-  restoreNotice.value = null;
   // A typed change invalidates a frozen everyone confirmation; the dialog must
   // refresh its recipient snapshot, never submit a stale list.
   if (everyoneConfirm.value && (everyoneConfirm.value.key !== draftKey.value || everyoneConfirm.value.text !== text)) {
@@ -188,8 +182,6 @@ watch(draftKey, (next, prev) => {
       saveDraft(prev, "");
     }
     clearSentDraft();
-    actionError.value = null;
-    restoreNotice.value = null;
     everyoneConfirm.value = null;
     unresolvedConfirm.value = null;
     promptText.value = loadDraft(next);
@@ -606,40 +598,9 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
 }
 
 async function handleCancel(): Promise<void> {
-  await runAction("stop");
-}
-
-async function runAction(action: "stop" | "restore" | "takeover"): Promise<void> {
   const run = groupsStore.activeRun;
-  const instanceId = groupsStore.instanceId;
-  if (!run || !instanceId || actionBusy.value || groupsStore.cancellingRunId) return;
-  const key = draftKey.value;
-  const groupId = groupsStore.selectedGroupId;
-  const text = promptText.value;
-  const revision = draftRevision.value;
-  if (action === "takeover" && !text.trim() && attachments.snapshot(attachKey.value).media.length === 0) return;
-  actionBusy.value = true;
-  actionError.value = null;
-  try {
-    const recovered = action === "restore" ? await sourceRunPrompt(instanceId, run, groupsStore.messages) : null;
-    if (key !== draftKey.value) return;
-    if (action === "restore" && recovered === null) { actionError.value = t("collaboration.promptUnavailable"); return; }
-    const outcome = await groupsStore.cancelCurrentRun({ runId: run.id });
-    if (key !== draftKey.value || outcome.scope?.instanceId !== instanceId
-      || outcome.scope.conversationId !== run.conversationId || outcome.scope.topicId !== run.topicId
-      || outcome.scope.groupId !== groupId || outcome.runId !== run.id) return;
-    if (outcome.status !== "cancelled" && outcome.status !== "terminal") { actionError.value = t("collaboration.stopUnconfirmed"); return; }
-    if (action === "restore" && recovered !== null) {
-      promptText.value = mergeRecoveredDraft(promptText.value, recovered);
-      restoreNotice.value = t("collaboration.restored");
-      await nextTick();
-      composer.value?.focus();
-    } else if (action === "takeover") {
-      if (promptText.value !== text || draftRevision.value !== revision) return;
-      await handleSend();
-    }
-  } catch { actionError.value = t("collaboration.stopUnconfirmed"); }
-  finally { actionBusy.value = false; }
+  if (!run || groupsStore.cancellingRunId) return;
+  await groupsStore.cancelCurrentRun({ runId: run.id });
 }
 
 async function onPaste(e: ClipboardEvent): Promise<void> {
@@ -699,13 +660,7 @@ function handleRetry(): void {
       </button>
     </div>
 
-    <p v-if="actionError" role="alert" class="mb-2 text-xs text-danger">{{ actionError }}</p>
-    <p v-if="restoreNotice" role="status" class="mb-2 text-xs text-fg-muted">{{ restoreNotice }}</p>
-    <div v-if="groupsStore.isRunActive" class="mb-2 flex items-center gap-2 text-xs">
-      <button type="button" class="min-h-11 rounded-lg px-2 text-danger hover:bg-raised disabled:opacity-50" :disabled="actionBusy || !!groupsStore.cancellingRunId" @click="runAction('stop')">{{ $t('group.detail.stopRun') }}</button>
-      <button type="button" class="min-h-11 rounded-lg px-2 hover:bg-raised disabled:opacity-50" :disabled="actionBusy || !!groupsStore.cancellingRunId" @click="runAction('restore')">{{ $t('collaboration.stopRestore') }}</button>
-      <button type="button" class="min-h-11 rounded-lg px-2 text-accent hover:bg-raised disabled:opacity-50" :title="$t('collaboration.takeoverHint')" :disabled="actionBusy || !!groupsStore.cancellingRunId || (!promptText.trim() && !readyMedia)" @click="runAction('takeover')">{{ $t('collaboration.takeover') }}</button>
-    </div>
+
     <ComposerConfirmDialog v-if="everyoneConfirm" :title="$t('group.confirmEveryone.title', { count: everyoneRecipients.length })" :confirm-label="$t('group.confirmEveryone.send')" :pending="sendBusy" @cancel="everyoneConfirm = null" @confirm="handleSend(everyoneConfirm ?? undefined)">
       <ul class="space-y-1">
         <li v-for="recipient in everyoneRecipients.slice(0, 5)" :key="recipient.id">{{ recipient.name }} <span v-if="recipient.lead" class="text-xs text-fg-muted">{{ $t('group.target.lead') }}</span></li>
@@ -783,7 +738,6 @@ function handleRetry(): void {
           </template>
         </DropdownPanel>
       </div>
-      <span class="hidden text-xs text-fg-muted sm:inline">{{ $t("group.target.hint") }}</span>
     </div>
 
     <ConversationComposer
@@ -792,8 +746,9 @@ function handleRetry(): void {
       :busy="groupsStore.isRunActive"
       :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
       :sending="groupsStore.promptInFlight"
-      :cancelling="actionBusy || !!groupsStore.cancellingRunId"
+      :cancelling="!!groupsStore.cancellingRunId"
       :send-disabled="!canSend"
+      :stop-while-busy="true"
       :has-attachments="readyMedia"
       :attachments-send-disabled="attachments.uploading"
       :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : $t('group.prompt.placeholder')"

@@ -2,14 +2,6 @@
 // Values here MUST match the original hardcoded English exactly so existing
 // test assertions on visible text keep passing.
 export default {
-  collaboration: {
-    stopRestore: "Stop & restore draft",
-    takeover: "Take over",
-    takeoverHint: "Stop the old run and send the new instruction",
-    restored: "Stopped. Draft restored to the input.",
-    promptUnavailable: "No recoverable prompt found.",
-    stopUnconfirmed: "Stop not confirmed.",
-  },
   common: {
     cancel: "Cancel",
     confirm: "Confirm",
@@ -1091,7 +1083,6 @@ export default {
       memberCount: "{count} selected",
       noEligible: "No enabled members in this group.",
       automatic: "Automatic collaboration",
-      hint: "{'@'}name adds a member · {'@'}everyone selects all",
       noRuntime: "No runtime",
     },
     confirmEveryone: {

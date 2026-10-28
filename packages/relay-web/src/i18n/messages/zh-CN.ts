@@ -1,13 +1,5 @@
 // Simplified-Chinese catalog. Mirror the key shape of en.ts exactly.
 export default {
-  collaboration: {
-    stopRestore: "停止并收回草稿",
-    takeover: "接管发送",
-    takeoverHint: "停止旧 run 并发送新指令",
-    restored: "已停止，草稿已回填输入框。",
-    promptUnavailable: "没有可恢复的提示。",
-    stopUnconfirmed: "停止未确认。",
-  },
   common: {
     cancel: "取消",
     confirm: "确认",
@@ -1088,7 +1080,6 @@ export default {
       memberCount: "已选 {count} 人",
       noEligible: "该群组暂无可用成员。",
       automatic: "自动协作",
-      hint: "{'@'}名称 添加成员 · {'@'}everyone 全选",
       noRuntime: "无运行环境",
     },
     confirmEveryone: {

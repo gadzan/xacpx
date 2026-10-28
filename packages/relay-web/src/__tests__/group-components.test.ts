@@ -95,7 +95,7 @@ describe("Group Components", () => {
   }
 
   describe("GroupComposer.vue", () => {
-    it("renders the @name and @everyone hints literally in both locales", async () => {
+    it("renders the composer placeholder in both locales", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -104,13 +104,10 @@ describe("Group Components", () => {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
-      const placeholder = () => wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder");
-      expect(wrapper.text()).toContain("@name adds a member · @everyone selects all");
-      expect(placeholder()).toBe("Message the selected members... (@name, @everyone)");
+      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("Message the selected members... (@name, @everyone)");
       i18n.global.locale.value = "zh-CN";
       await wrapper.vm.$nextTick();
-      expect(wrapper.text()).toContain("@名称 添加成员 · @everyone 全选");
-      expect(placeholder()).toBe("给所选成员发消息...（@名称、@everyone）");
+      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("给所选成员发消息...（@名称、@everyone）");
       i18n.global.locale.value = "en";
       const compileErrors = [...errors.mock.calls, ...warns.mock.calls]
         .filter((args) => String(args[0]).includes("compilation error"));
@@ -1926,7 +1923,7 @@ describe("Group Components", () => {
         expect(surface.classes()).toEqual(expect.arrayContaining(["opacity-60", "cursor-not-allowed"]));
         expect(surface.attributes("aria-disabled")).toBe("true");
         expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(false);
-        expect(wrapper.text()).not.toContain(i18n.global.t("group.target.hint"));
+        expect(wrapper.text()).not.toContain("@名称 添加成员");
         // The centre CTA stays the only primary action.
         expect(wrapper.find('[data-test="group-first-topic-button"]').exists()).toBe(true);
         wrapper.unmount();
