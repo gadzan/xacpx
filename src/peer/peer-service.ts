@@ -145,6 +145,34 @@ export class PeerService {
     this.createRequestId = deps.createRequestId ?? (() => randomUUID());
   }
 
+  /**
+   * Per-request mutation chains. Status transitions are check-then-write
+   * (read the record, verify its status, upsert the new status), and the
+   * file-backed store does not serialize reads against writes — so two
+   * concurrent transitions on one record (cancel racing a late backfill,
+   * approve racing cancel) could both read "running" and last-writer-wins
+   * into the wrong terminal state. Chained links run strictly sequentially
+   * per requestId; different requests stay parallel. Never held across the
+   * prompt await itself — only across the short check+write sections.
+   */
+  private readonly requestLocks = new Map<string, Promise<void>>();
+
+  private async withRequestLock<T>(requestId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.requestLocks.get(requestId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.requestLocks.set(requestId, gate);
+    await prev.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      if (this.requestLocks.get(requestId) === gate) this.requestLocks.delete(requestId);
+      release();
+    }
+  }
+
   async get(input: PeerGetInput): Promise<PeerRequest | null> {
     const record = await this.deps.store.get(input.requestId);
     if (!record) {
@@ -247,50 +275,56 @@ export class PeerService {
    * approver.
    */
   async approve(input: PeerApproveInput): Promise<PeerRequest> {
-    const record = await this.requireRequest(input.requestId);
-    if (record.status !== "needs_confirmation") {
-      throw new Error(
-        `peer request "${input.requestId}" is not awaiting approval (status=${record.status})`,
-      );
-    }
-    const approverAlias = input.approverAlias.trim();
-    if (!approverAlias) {
-      throw new Error("peer approve requires a binding-derived approver identity");
-    }
-    const coordinatorSession = input.coordinatorSession?.trim() ?? "";
-    if (!coordinatorSession) {
-      throw new Error("peer approve requires a binding-derived coordinatorSession");
-    }
-    if (approverAlias === record.target.alias) {
-      throw new Error(
-        `the target session cannot approve a delegation addressed to itself (target=${record.target.alias})`,
-      );
-    }
-    if (!record.coordinator) {
-      throw new Error(
-        `peer request "${input.requestId}" has no recorded coordinator; it cannot be approved (pre-wiring record — re-delegate with a new requestId)`,
-      );
-    }
-    if (!sameCoordinatorSession(approverAlias, record.coordinator)) {
-      throw new Error(
-        `only the record's coordinator can approve peer request "${input.requestId}" (coordinator=${record.coordinator})`,
-      );
-    }
-    if (!sameCoordinatorSession(coordinatorSession, record.coordinator)) {
-      throw new Error(
-        `only the record's coordinator can approve peer request "${input.requestId}" (coordinator=${record.coordinator})`,
-      );
-    }
-    const now = this.now().toISOString();
-    const running: PeerRequest = {
-      ...record,
-      status: "running",
-      approvedAt: now,
-      approvedBy: approverAlias,
-      startedAt: now,
-      updatedAt: now,
-    };
-    await this.deps.store.upsert(running);
+    // Check+write under the per-request lock so a cancel racing approve
+    // cannot slip between the status check and the upsert and be
+    // overwritten back to running. Execution itself stays outside the lock.
+    const running = await this.withRequestLock(input.requestId, async () => {
+      const record = await this.requireRequest(input.requestId);
+      if (record.status !== "needs_confirmation") {
+        throw new Error(
+          `peer request "${input.requestId}" is not awaiting approval (status=${record.status})`,
+        );
+      }
+      const approverAlias = input.approverAlias.trim();
+      if (!approverAlias) {
+        throw new Error("peer approve requires a binding-derived approver identity");
+      }
+      const coordinatorSession = input.coordinatorSession?.trim() ?? "";
+      if (!coordinatorSession) {
+        throw new Error("peer approve requires a binding-derived coordinatorSession");
+      }
+      if (approverAlias === record.target.alias) {
+        throw new Error(
+          `the target session cannot approve a delegation addressed to itself (target=${record.target.alias})`,
+        );
+      }
+      if (!record.coordinator) {
+        throw new Error(
+          `peer request "${input.requestId}" has no recorded coordinator; it cannot be approved (pre-wiring record — re-delegate with a new requestId)`,
+        );
+      }
+      if (!sameCoordinatorSession(approverAlias, record.coordinator)) {
+        throw new Error(
+          `only the record's coordinator can approve peer request "${input.requestId}" (coordinator=${record.coordinator})`,
+        );
+      }
+      if (!sameCoordinatorSession(coordinatorSession, record.coordinator)) {
+        throw new Error(
+          `only the record's coordinator can approve peer request "${input.requestId}" (coordinator=${record.coordinator})`,
+        );
+      }
+      const now = this.now().toISOString();
+      const next: PeerRequest = {
+        ...record,
+        status: "running",
+        approvedAt: now,
+        approvedBy: approverAlias,
+        startedAt: now,
+        updatedAt: now,
+      };
+      await this.deps.store.upsert(next);
+      return next;
+    });
     // Execution proceeds in the background: approve returns "running"
     // immediately and the caller observes completion via peer_watch.
     // runExecution persists its own terminal state on every path, so a
@@ -346,21 +380,23 @@ export class PeerService {
    * because it never executed. Terminal requests cannot be cancelled.
    */
   async cancel(input: PeerCancelInput): Promise<PeerRequest> {
-    const record = await this.requireRequest(input.requestId);
-    if (record.status !== "running" && record.status !== "needs_confirmation") {
-      throw new Error(
-        `only a running or unapproved peer request can be cancelled (status=${record.status})`,
-      );
-    }
-    if (record.originator.alias !== input.originatorAlias) {
-      throw new Error("only the originator can cancel a peer request");
-    }
-    const now = this.now().toISOString();
-    return await this.deps.store.upsert({
-      ...record,
-      status: "cancelled",
-      cancelledAt: now,
-      updatedAt: now,
+    return await this.withRequestLock(input.requestId, async () => {
+      const record = await this.requireRequest(input.requestId);
+      if (record.status !== "running" && record.status !== "needs_confirmation") {
+        throw new Error(
+          `only a running or unapproved peer request can be cancelled (status=${record.status})`,
+        );
+      }
+      if (record.originator.alias !== input.originatorAlias) {
+        throw new Error("only the originator can cancel a peer request");
+      }
+      const now = this.now().toISOString();
+      return await this.deps.store.upsert({
+        ...record,
+        status: "cancelled",
+        cancelledAt: now,
+        updatedAt: now,
+      });
     });
   }
 
@@ -427,30 +463,32 @@ export class PeerService {
     requestId: string,
     outcome: { result: string } | { error: string },
   ): Promise<PeerRequest> {
-    const record = await this.requireRequest(requestId);
-    if (record.status !== "running") {
-      throw new Error(
-        `peer request "${requestId}" is not running (status=${record.status}); refusing mismatched completion`,
-      );
-    }
-    const now = this.now().toISOString();
-    if ("result" in outcome) {
-      const bounded = boundPeerResult(outcome.result);
+    return await this.withRequestLock(requestId, async () => {
+      const record = await this.requireRequest(requestId);
+      if (record.status !== "running") {
+        throw new Error(
+          `peer request "${requestId}" is not running (status=${record.status}); refusing mismatched completion`,
+        );
+      }
+      const now = this.now().toISOString();
+      if ("result" in outcome) {
+        const bounded = boundPeerResult(outcome.result);
+        return await this.deps.store.upsert({
+          ...record,
+          status: "completed",
+          result: bounded,
+          resultTruncated: bounded !== outcome.result,
+          completedAt: now,
+          updatedAt: now,
+        });
+      }
       return await this.deps.store.upsert({
         ...record,
-        status: "completed",
-        result: bounded,
-        resultTruncated: bounded !== outcome.result,
+        status: "failed",
+        error: sanitizeCompletionError(outcome.error),
         completedAt: now,
         updatedAt: now,
       });
-    }
-    return await this.deps.store.upsert({
-      ...record,
-      status: "failed",
-      error: sanitizeCompletionError(outcome.error),
-      completedAt: now,
-      updatedAt: now,
     });
   }
 
@@ -479,11 +517,25 @@ export class PeerService {
     }
     // Resolve the transport name from state at execution time — never
     // compose it from workspace + alias (names may carry suffixes).
-    const executing: PeerRequest = {
-      ...current,
-      targetTransportSession: target.transportSession,
-    };
-    await this.deps.store.upsert(executing);
+    // Re-read under the per-request lock first: a cancel may have landed
+    // while resolveSession was in flight, and upserting the stale `current`
+    // snapshot here would resurrect a cancelled record back to running —
+    // the later backfill would then complete it. Only proceed while the
+    // record is still running, and persist the fresh snapshot.
+    const proceed = await this.withRequestLock(current.requestId, async () => {
+      const latest = await this.deps.store.get(current.requestId);
+      if (!latest || latest.status !== "running") {
+        return false;
+      }
+      await this.deps.store.upsert({
+        ...latest,
+        targetTransportSession: target.transportSession,
+      });
+      return true;
+    });
+    if (!proceed) {
+      return;
+    }
     const promptText =
       `Peer delegation from ${current.originator.alias} ` +
       `(request ${current.requestId}):\n\n${current.task}`;
@@ -498,22 +550,23 @@ export class PeerService {
   }
 
   /**
-   * Backfill only while the request is still running. A cancel that lands
-   * between the prompt finishing and this write must win: recordCompletion
-   * already refuses non-running records, so this re-read is what keeps a
-   * cancelled record from being overwritten by a late completion. (A
-   * residual race between this re-read and recordCompletion's own check
-   * surfaces as a refused completion inside runExecution's swallowed
-   * catch; the record stays cancelled either way.)
+   * Backfill only while the request is still running. recordCompletion
+   * performs its status check and write atomically under the per-request
+   * lock, so a cancel that lands before or during the backfill cannot be
+   * overwritten by a late completion: the completion is refused and this
+   * returns silently, leaving the record cancelled.
    */
   private async backfillIfRunning(
     requestId: string,
     outcome: { result: string } | { error: string },
   ): Promise<void> {
-    const current = await this.deps.store.get(requestId);
-    if (!current || current.status !== "running") {
-      return;
+    try {
+      await this.recordCompletion(requestId, outcome);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("is not running")) {
+        return;
+      }
+      throw error;
     }
-    await this.recordCompletion(requestId, outcome);
   }
 }

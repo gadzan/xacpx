@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 
 import { RuntimeEngine, findAcpxRecordIdFromDisk } from "../../../../../src/bridge/engine/runtime-engine";
 import { RuntimeWorkerFence } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
+import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
 import { physicalFenceKeyForSession } from "../../../../../src/bridge/engine/runtime/physical-session-identity";
 import type { RuntimeWorkerClientDeps } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
 
@@ -1067,8 +1068,62 @@ test("G4 barrier: no-record delete lifts a crashed tail barrier when no tombston
   }
 }, 20_000);
 
-test("G4 barrier: concurrent deletes serialize to exactly one executor", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "rt-del-dual-"));
+// The previous version of this test launched two full deleteSession calls
+// concurrently and demanded exactly one success. That assertion is only valid
+// while the two deletes overlap inside the barrier window — but nothing
+// forces the overlap: when one delete fully completes before the other
+// claims, the second legitimately succeeds (idempotent success for a gone
+// record, covered by the full-lifecycle test above). The result was a
+// timing-dependent test, green most runs and red when the two deletes
+// happened to serialize end-to-end. The serialization guarantee itself lives
+// in claimPhysicalDeletion (module-level claim chain + in-process mark +
+// O_EXCL fence file), so it is tested there directly and deterministically;
+// the deleteSession-level refusal over a live barrier is tested below with
+// a pre-standing deleting fence.
+test("G4 barrier: concurrent physical-deletion claims serialize to exactly one executor", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-claim-"));
+  const fenceDir = join(dir, "fences");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(fenceDir, { recursive: true });
+    const physical = physicalFenceKeyForSession({
+      agent: "codex",
+      cwd: "/repo",
+      name: "dual-session",
+      logicalSessionId: "lid-dual-a",
+    });
+    const managerA = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    const managerB = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    const [a, b] = await Promise.allSettled([
+      managerA.claimPhysicalDeletion(physical),
+      managerB.claimPhysicalDeletion(physical),
+    ]);
+    const succeeded = [a, b].filter((r) => r.status === "fulfilled");
+    const refused = [a, b].filter((r) => r.status === "rejected");
+    expect(succeeded).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    const loser = refused[0];
+    if (loser?.status === "rejected") {
+      expect(String((loser.reason as Error)?.message ?? loser.reason)).toMatch(
+        /already running in this process/,
+      );
+    }
+    // The winner holds the barrier; retire it so no state leaks.
+    const winner = succeeded[0];
+    if (winner?.status === "fulfilled" && winner.value) {
+      const winnerManager = a.status === "fulfilled" ? managerA : managerB;
+      await winnerManager.retirePhysicalDeletion(physical, winner.value.generation);
+    }
+    const fence = new RuntimeWorkerFence(fenceDir);
+    expect(await fence.read(physical)).toEqual({ kind: "absent" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("G4 barrier: deleteSession refuses while a live deleter's deleting fence stands", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-live-"));
   const sessionsDir = join(dir, ".acpx", "sessions");
   const fenceDir = join(dir, "fences");
   const queueDir = join(dir, "queue");
@@ -1076,46 +1131,56 @@ test("G4 barrier: concurrent deletes serialize to exactly one executor", async (
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
     await mkdir(sessionsDir, { recursive: true });
-    const recordId = "rec-dual-1";
+    const input = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "live-session",
+      logicalSessionId: "lid-live",
+    };
+    const recordId = "rec-live-1";
+    const recordFile = join(sessionsDir, `${recordId}.json`);
     await writeFile(
-      join(sessionsDir, `${recordId}.json`),
+      recordFile,
       JSON.stringify({
         schema: "acpx.session.v1",
         acpx_record_id: recordId,
-        name: "dual-session",
-        cwd: "/repo",
+        name: input.name,
+        cwd: input.cwd,
       }),
     );
-    const base = { agent: "codex", cwd: "/repo", name: "dual-session" };
-    const physical = physicalFenceKeyForSession({ ...base, logicalSessionId: "lid-dual-a" });
+    const physical = physicalFenceKeyForSession(input);
     const fence = new RuntimeWorkerFence(fenceDir);
-    const opts = {
+    await fence.claim({
+      kind: "runtime-worker-owner",
+      logicalSessionId: physical,
+      generation: "gen-live",
+      // Init pid: always alive and foreign to this process, so the claim
+      // below can neither take over (dead pid) nor treat it as self
+      // re-entry (own pid) — it must refuse.
+      pid: 1,
+      bootstrapVerified: false,
+      phase: "deleting",
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    });
+    const engine = new RuntimeEngine({
       workerEntryPath: entry,
       stateDir: sessionsDir,
       fenceDir,
       queueDir,
       durableRootDir: dir,
-      permissionMode: "approve-all" as const,
-    };
-    const engineA = new RuntimeEngine(opts);
-    const engineB = new RuntimeEngine(opts);
-    // Two live deleters, same physical target, no crash involved: exactly
-    // one may own the destructive window — the loser refuses instead of
-    // sharing the generation and retiring the barrier early.
-    const [a, b] = await Promise.allSettled([
-      engineA.deleteSession({ ...base, logicalSessionId: "lid-dual-a" }),
-      engineB.deleteSession({ ...base, logicalSessionId: "lid-dual-b" }),
-    ]);
-    const succeeded = [a, b].filter((r) => r.status === "fulfilled");
-    const refused = [a, b].filter((r) => r.status === "rejected");
-    expect(succeeded).toHaveLength(1);
-    expect(refused).toHaveLength(1);
-    // The record is gone exactly once, the barrier is retired, and a
-    // successor admission is free to proceed (no wedged fence).
-    await expect(access(join(sessionsDir, `${recordId}.json`))).rejects.toThrow();
-    expect(await fence.read(physical)).toEqual({ kind: "absent" });
-    await engineA.shutdown();
-    await engineB.shutdown();
+      permissionMode: "approve-all",
+    });
+    await expect(engine.deleteSession(input)).rejects.toThrow();
+    // Record untouched, barrier intact (not stolen by the refused deleter).
+    await access(recordFile);
+    const blocked = await fence.read(physical);
+    expect(blocked.kind).toBe("present");
+    if (blocked.kind === "present") {
+      expect(blocked.record.phase).toBe("deleting");
+      expect(blocked.record.generation).toBe("gen-live");
+    }
+    await engine.shutdown();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
