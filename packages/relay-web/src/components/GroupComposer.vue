@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AtSign, Bot, Check, ChevronDown, Users } from "lucide-vue-next";
-import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { completionKey, replaceRange, slashQuery } from "../lib/composer-completion";
 import {
   filterMentionMembers,
@@ -13,15 +13,16 @@ import {
   type MentionBinding,
 } from "../lib/group-mention";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
-import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
+import { useComposerStore } from "../stores/composer";
 import { useInstancesStore } from "../stores/instances";
+import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import BotAvatar from "./BotAvatar.vue";
 import ConversationComposer from "./ConversationComposer.vue";
+import ComposerAttachments from "./ComposerAttachments.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown } from "../lib/use-dropdown";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
 import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
-import { mergeRecoveredDraft, sourceRunPrompt } from "../lib/composer-run-actions";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -39,7 +40,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  send: [text: string];
+  send: [text: string, media: PromptAttachmentRef[]];
   cancel: [];
 }>();
 
@@ -59,11 +60,8 @@ let inFlightDraft: { key: string; text: string } | null = null;
 /** True while a Group/Topic switch swaps the textarea contents: those writes are
  *  not user edits and must not be persisted under the new key. */
 let swappingDraft = false;
-/** Stop / stop-restore / takeover share one fence: a second click while the
+/** Cancel fences on the store's cancellingRunId: a second click while the
  *  store reports the run as cancelling is a no-op, never a second RPC. */
-const actionBusy = ref(false);
-const actionError = ref<string | null>(null);
-const restoreNotice = ref<string | null>(null);
 interface EveryoneConfirmation {
   key: string;
   revision: number;
@@ -87,6 +85,17 @@ const mentionBindings = ref<MentionBinding[]>([]);
 const mentionOwned = ref(false);
 const unresolvedConfirm = ref<{ key: string; text: string; target: string } | null>(null);
 const sendBusy = ref(false);
+const attachments = useComposerStore();
+/** Attachment scope: one upload draft per instance + Group + Topic, namespaced
+ *  "group" so it never collides with the session chat or direct Bot scopes. */
+const attachKey = computed(() =>
+  JSON.stringify(["group", props.instanceId ?? groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId]),
+);
+watch(attachKey, () => {
+  const id = props.instanceId ?? groupsStore.instanceId;
+  if (id) attachments.bindInstance(id, attachKey.value);
+}, { immediate: true });
+const readyMedia = computed(() => attachments.pending.some((entry) => entry.status === "ready"));
 
 const selection = computed(() => groupsStore.targetSelection);
 const isEveryone = computed(() => selection.value?.mode === "everyone");
@@ -151,8 +160,6 @@ watch(promptText, (text) => {
   if (swappingDraft) return;
   saveDraft(draftKey.value, text);
   draftRevision.value += 1;
-  actionError.value = null;
-  restoreNotice.value = null;
   // A typed change invalidates a frozen everyone confirmation; the dialog must
   // refresh its recipient snapshot, never submit a stale list.
   if (everyoneConfirm.value && (everyoneConfirm.value.key !== draftKey.value || everyoneConfirm.value.text !== text)) {
@@ -175,8 +182,6 @@ watch(draftKey, (next, prev) => {
       saveDraft(prev, "");
     }
     clearSentDraft();
-    actionError.value = null;
-    restoreNotice.value = null;
     everyoneConfirm.value = null;
     unresolvedConfirm.value = null;
     promptText.value = loadDraft(next);
@@ -501,11 +506,12 @@ const baseCanSend = computed(() => !props.disabled
   // only way forward is replaying that prompt's frozen tuple.
   && !groupsStore.hasUncertainPrompt);
 
-/** Final send guard: evaluated after any pending mention has been committed. */
+/** Final send guard: evaluated after any pending mention has been committed.
+ *  Staged attachments make an empty text sendable. */
 const canSend = computed(() => baseCanSend.value
   && groupsStore.targetResolvable
   && !sendBusy.value
-  && promptText.value.trim().length > 0);
+  && (promptText.value.trim().length > 0 || readyMedia.value));
 
 async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnresolved = false): Promise<void> {
   if (sendBusy.value || !baseCanSend.value) {
@@ -519,7 +525,9 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
     || confirmedEveryone.text !== promptText.value || confirmedEveryone.revision !== draftRevision.value
     || !isEveryone.value)) { everyoneConfirm.value = null; return; }
   const text = promptText.value.trim();
-  if (!text) return;
+  const staged = attachments.snapshot(attachKey.value);
+  if (!text && staged.media.length === 0) return;
+  if (attachments.uploading) return;
   if (slashBroadcastBlocked(text)) {
     groupsStore.promptError = "slashSelectMember";
     groupsStore.promptErrorDetail = null;
@@ -560,7 +568,7 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
   // refusal has neither and must leave the typed text in place.
   const sent = { key: draftKey.value, text: promptText.value };
   inFlightDraft = sent;
-  emit("send", text);
+  emit("send", text, staged.media);
   if (props.sendOutcome) {
     // Textbook semantics: after a send the text no longer carries a mention, so
     // the derived state must reset or the next draft would inherit suppression.
@@ -575,6 +583,9 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
     // `rejected` keeps the same draft: no durable accept exists.
     // Only while still on the Group + Topic it was sent from.
     if ((outcome === "accepted" || outcome === "uncertain") && draftKey.value === sent.key) {
+      // The media travelled with the prompt (transcript, or the frozen retry
+      // tuple on uncertain), so the staged chips go with the text.
+      attachments.consume(attachKey.value, staged.ids);
       if (loadDraft(sent.key) === sent.text) saveDraft(sent.key, "");
       if (promptText.value === sent.text) clearSentDraft();
     }
@@ -582,44 +593,28 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
   }
   inFlightDraft = null;
   sendBusy.value = false;
+  attachments.consume(attachKey.value, staged.ids);
   clearSentDraft();
 }
 
 async function handleCancel(): Promise<void> {
-  await runAction("stop");
+  const run = groupsStore.activeRun;
+  if (!run || groupsStore.cancellingRunId) return;
+  await groupsStore.cancelCurrentRun({ runId: run.id });
 }
 
-async function runAction(action: "stop" | "restore" | "takeover"): Promise<void> {
-  const run = groupsStore.activeRun;
-  const instanceId = groupsStore.instanceId;
-  if (!run || !instanceId || actionBusy.value || groupsStore.cancellingRunId) return;
-  const key = draftKey.value;
-  const groupId = groupsStore.selectedGroupId;
-  const text = promptText.value;
-  const revision = draftRevision.value;
-  if (action === "takeover" && !text.trim()) return;
-  actionBusy.value = true;
-  actionError.value = null;
-  try {
-    const recovered = action === "restore" ? await sourceRunPrompt(instanceId, run, groupsStore.messages) : null;
-    if (key !== draftKey.value) return;
-    if (action === "restore" && recovered === null) { actionError.value = t("collaboration.promptUnavailable"); return; }
-    const outcome = await groupsStore.cancelCurrentRun({ runId: run.id });
-    if (key !== draftKey.value || outcome.scope?.instanceId !== instanceId
-      || outcome.scope.conversationId !== run.conversationId || outcome.scope.topicId !== run.topicId
-      || outcome.scope.groupId !== groupId || outcome.runId !== run.id) return;
-    if (outcome.status !== "cancelled" && outcome.status !== "terminal") { actionError.value = t("collaboration.stopUnconfirmed"); return; }
-    if (action === "restore" && recovered !== null) {
-      promptText.value = mergeRecoveredDraft(promptText.value, recovered);
-      restoreNotice.value = t("collaboration.restored");
-      await nextTick();
-      composer.value?.focus();
-    } else if (action === "takeover") {
-      if (promptText.value !== text || draftRevision.value !== revision) return;
-      await handleSend();
-    }
-  } catch { actionError.value = t("collaboration.stopUnconfirmed"); }
-  finally { actionBusy.value = false; }
+async function onPaste(e: ClipboardEvent): Promise<void> {
+  const files = Array.from(e.clipboardData?.files ?? []);
+  if (files.length === 0 || props.disabled || !groupsStore.topicReady || groupsStore.promptInFlight) return;
+  e.preventDefault();
+  await attachments.addFiles(files, attachKey.value);
+}
+
+async function onDrop(e: DragEvent): Promise<void> {
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  if (files.length === 0 || props.disabled || !groupsStore.topicReady || groupsStore.promptInFlight) return;
+  e.preventDefault();
+  await attachments.addFiles(files, attachKey.value);
 }
 
 function confirmUnresolved(): void {
@@ -665,13 +660,7 @@ function handleRetry(): void {
       </button>
     </div>
 
-    <p v-if="actionError" role="alert" class="mb-2 text-xs text-danger">{{ actionError }}</p>
-    <p v-if="restoreNotice" role="status" class="mb-2 text-xs text-fg-muted">{{ restoreNotice }}</p>
-    <div v-if="groupsStore.isRunActive" class="mb-2 flex items-center gap-2 text-xs">
-      <button type="button" class="min-h-11 rounded-lg px-2 text-danger hover:bg-raised disabled:opacity-50" :disabled="actionBusy || !!groupsStore.cancellingRunId" @click="runAction('stop')">{{ $t('group.detail.stopRun') }}</button>
-      <button type="button" class="min-h-11 rounded-lg px-2 hover:bg-raised disabled:opacity-50" :disabled="actionBusy || !!groupsStore.cancellingRunId" @click="runAction('restore')">{{ $t('collaboration.stopRestore') }}</button>
-      <button type="button" class="min-h-11 rounded-lg px-2 text-accent hover:bg-raised disabled:opacity-50" :title="$t('collaboration.takeoverHint')" :disabled="actionBusy || !!groupsStore.cancellingRunId || !promptText.trim()" @click="runAction('takeover')">{{ $t('collaboration.takeover') }}</button>
-    </div>
+
     <ComposerConfirmDialog v-if="everyoneConfirm" :title="$t('group.confirmEveryone.title', { count: everyoneRecipients.length })" :confirm-label="$t('group.confirmEveryone.send')" :pending="sendBusy" @cancel="everyoneConfirm = null" @confirm="handleSend(everyoneConfirm ?? undefined)">
       <ul class="space-y-1">
         <li v-for="recipient in everyoneRecipients.slice(0, 5)" :key="recipient.id">{{ recipient.name }} <span v-if="recipient.lead" class="text-xs text-fg-muted">{{ $t('group.target.lead') }}</span></li>
@@ -749,7 +738,6 @@ function handleRetry(): void {
           </template>
         </DropdownPanel>
       </div>
-      <span class="hidden text-xs text-fg-muted sm:inline">{{ $t("group.target.hint") }}</span>
     </div>
 
     <ConversationComposer
@@ -758,8 +746,11 @@ function handleRetry(): void {
       :busy="groupsStore.isRunActive"
       :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
       :sending="groupsStore.promptInFlight"
-      :cancelling="actionBusy || !!groupsStore.cancellingRunId"
+      :cancelling="!!groupsStore.cancellingRunId"
       :send-disabled="!canSend"
+      :stop-while-busy="true"
+      :has-attachments="readyMedia"
+      :attachments-send-disabled="attachments.uploading"
       :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : $t('group.prompt.placeholder')"
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
@@ -768,11 +759,21 @@ function handleRetry(): void {
       @cancel="handleCancel"
       @keydown="onKeydown"
       @input="onInput"
+      @paste="onPaste"
+      @drop="onDrop"
       @caret="onCaret"
       @compositionstart="composing = true"
       @compositionend="onCompositionEnd"
       @blur="commitMentionAtBoundary"
     >
+      <template #attachments>
+        <ComposerAttachments
+          v-if="props.instanceId ?? groupsStore.instanceId"
+          :scope-key="attachKey"
+          :instance-id="(props.instanceId ?? groupsStore.instanceId)!"
+          :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
+        />
+      </template>
       <template #menus>
         <div
           v-if="slashHint"

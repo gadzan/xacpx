@@ -283,7 +283,7 @@ Server side:
 - `BridgeServer.handleLine()`: one line of JSON in → one line of JSON out; on error, uniformly wraps it as `BridgeErrorResponse`: [bridge-server.ts](../src/bridge/bridge-server.ts#L47-L78)
 - session scoped scheduling:
   - Requests for `SESSION_SCOPED_METHODS` form a scheduleKey based on `[agentIdentity,cwd,name]`; the same key is serialized
-  - `cancel` goes through the `control` lane (higher priority): [bridge-server.ts](../src/bridge/bridge-server.ts#L81-L103)
+  - `cancel`/`isSessionWarm` and the read-only `getSessionModel`/`getSessionEffort` go through the `control` lane (preempts a running turn, which `prompt` occupies unboundedly); everything else — including mutating `setModel`/`setSessionEffort` — queues on the `normal` lane: [bridge-server.ts](../src/bridge/bridge-server.ts#L261-L286)
 
 ### 5.9 Daemon (src/daemon/*)
 

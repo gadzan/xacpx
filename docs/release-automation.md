@@ -185,12 +185,23 @@ can cost the eight minutes and can never block a release. The step is
 `continue-on-error`, so even a tree too old to contain this script (re-dispatching
 a tag from before it existed) produces no output and simply runs the suite.
 
-The gate does not wait for an in-flight run: waiting costs a single-package
-release more than running the suite, and only the later tags of a multi-package
-release can benefit from a skip. The other Test jobs (macOS, E2E, windows) are
-deliberately not consulted: they flake for their own reasons, and re-running the
-ubuntu suite because of them would trade a flake for eight minutes without
-proving anything new.
+The gate itself never waits for an in-flight run, because a publish job has
+nothing else to do meanwhile. `publish` does, and that is where the duplicate is
+removed: for a **multi-package** release it holds every tag until the release
+commit's Test run concludes (20-second polls, 15-minute cap), so each publish job
+finds the run already green and skips the suite. Measured on 0.24.10-beta.8, five
+publish jobs spent 43 min re-running a suite the 12-minute Test run had just
+covered; the hold replaces that with one wait.
+
+A **single-package** release does not hold: one duplicate suite is 8.6 min
+against a ~12 min run, so waiting would cost more than it saves. Red, missing,
+timed out and unreadable all fall through to tagging, where the publish jobs run
+the suite themselves — the behaviour that predates the hold — so a flaky Test run
+can still cost the eight minutes and can never block a release. `--skip-gates`
+skips the hold with the rest of the proof steps. The other Test jobs (macOS, E2E,
+windows) are deliberately not consulted: they flake for their own reasons, and
+re-running the ubuntu suite because of them would trade a flake for eight minutes
+without proving anything new.
 
 That stop is resumable by design. Tags are created only when their package is
 about to be pushed, so waves that never started remain in the pending set.

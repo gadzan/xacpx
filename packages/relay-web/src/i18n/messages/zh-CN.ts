@@ -1,13 +1,5 @@
 // Simplified-Chinese catalog. Mirror the key shape of en.ts exactly.
 export default {
-  collaboration: {
-    stopRestore: "停止并收回草稿",
-    takeover: "接管发送",
-    takeoverHint: "停止旧 run 并发送新指令",
-    restored: "已停止，草稿已回填输入框。",
-    promptUnavailable: "没有可恢复的提示。",
-    stopUnconfirmed: "停止未确认。",
-  },
   common: {
     cancel: "取消",
     confirm: "确认",
@@ -748,7 +740,7 @@ export default {
       editTitle: "编辑 Bot",
     },
     avatar: {
-      tabs: { label: "Bot 设置", basic: "基本设置", appearance: "头像外观" },
+      appearanceTitle: "头像外观",
       shape: "形状",
       color: "颜色",
       expression: "默认表情",
@@ -757,6 +749,8 @@ export default {
       selectedExpression: "已选择：{expression}",
       restoreDefault: "使用 Agent 默认图标",
       defaultNotice: "当前使用 Agent 默认图标。选择预设或任意外观选项即可创建动态角色。",
+      quickView: "查看头像",
+      editAppearance: "编辑头像外观",
       preview: {
         title: "实时预览",
         unnamed: "你的 Bot",
@@ -940,6 +934,7 @@ export default {
       waitingHuman: "等待人工确认",
     },
     interaction: {
+      waiting: "Agent 正在等待你的回答",
       title: "需要人工输入",
       submit: "提交",
       decline: "拒绝回答",
@@ -1083,7 +1078,6 @@ export default {
       memberCount: "已选 {count} 人",
       noEligible: "该群组暂无可用成员。",
       automatic: "自动协作",
-      hint: "{'@'}名称 添加成员 · {'@'}everyone 全选",
       noRuntime: "无运行环境",
     },
     confirmEveryone: {

@@ -1029,6 +1029,17 @@ export interface InteractionRequestDto {
   requestId: string;
   kind: InteractionKindDto;
   /**
+   * The connector's own session alias for the turn that opened this
+   * interaction, when that turn was a session turn rather than a Direct
+   * Conversation turn.
+   *
+   * ROUTING, not identity: the browser scopes a session-scoped form to the pane
+   * showing this alias, the way `conversation` scopes a Direct Bot form to its
+   * topic. Absent for a conversation-scoped interaction — `conversation` is
+   * authoritative there — and absent from a connector that predates the field.
+   */
+  sessionAlias?: string;
+  /**
    * Product identity for the web UI. Optional because an interaction on an
    * ordinary channel turn has no Conversation product row; a Direct Bot turn
    * does. Never a hidden `brt_*` session alias — those are runtime plumbing.

@@ -37,14 +37,14 @@ const plugin: XacpxPlugin = {
   apiVersion: 1,
   name: "@ganglion/xacpx-channel-relay",
   // Raised for the M3 elicitation chain: `channel.ts` statically imports
-  // `isDirectConversationChatKey` / `parseDirectConversationChatKey` — RUNTIME
-  // named exports from `xacpx/plugin-api` added after 0.24.6-beta.0. An ESM
+  // `parseDirectConversationChatKey` — a RUNTIME named export from
+  // `xacpx/plugin-api` added after 0.24.6-beta.0. An ESM
   // named-export resolution failure happens when the module is LINKED, before
   // the plugin's default export is ever evaluated, so `minXacpxVersion`'s
   // runtime check cannot guard it. The only protection is refusing to load on
   // an older core, which is what this floor and `peerDependencies.xacpx`
   // express together.
-  minXacpxVersion: "0.24.10-beta.7",
+  minXacpxVersion: "0.24.10-beta.8",
   channels: [
     {
       type: "relay",

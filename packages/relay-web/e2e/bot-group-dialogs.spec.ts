@@ -167,7 +167,8 @@ for (const kind of ["bot", "group"] as const) {
       else await expect(dialog.getByTestId("group-dialog-lead")).toBeInViewport();
     }
     if (kind === "bot") {
-      await dialog.getByRole("tab", { name: "Avatar appearance", exact: true }).click();
+      await dialog.getByTestId("bot-avatar-edit").click();
+      await expect(dialog.getByRole("heading", { name: "Avatar appearance", exact: true })).toBeVisible();
       await expectViewportLayout(dialog);
       await dialog.getByTestId("avatar-shape-nuage").click();
       await dialog.locator("form").evaluate((el) => { el.scrollTop = el.scrollHeight; });

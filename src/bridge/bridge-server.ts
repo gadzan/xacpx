@@ -278,7 +278,12 @@ export class BridgeServer {
       return await this.dispatch(requestId, method, params, writeLine);
     }
 
+    // Read-only adapter queries run on the control lane: they never mutate
+    // the session, and queueing them behind an unbounded prompt (no timeout)
+    // trips the 45s client-side backstop, breaking relay-web's mid-turn
+    // model/effort refresh. Mutating calls stay on the normal lane.
     const lane: BridgeRequestLane = method === "cancel" || method === "isSessionWarm"
+      || method === "getSessionModel" || method === "getSessionEffort"
       ? "control"
       : method === "injectMessage"
         ? "message"

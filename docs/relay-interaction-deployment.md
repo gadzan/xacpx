@@ -82,10 +82,29 @@ survive every refactor:
 
 ### 2.3 Routes
 
-An elicitation route is `bot:<conversation>:<topic>` — a product surface.
+An elicitation route has **two** shapes, and both are product surfaces:
+
+- `bot:<conversation>:<topic>` — a Direct Conversation turn. The form is mounted
+  by the Direct Bot pane from the interaction's `conversation` correlation.
+- the turn's ordinary ingress key (e.g. `relay:<accountId>`) on a turn whose
+  ingress reports `chatType: "direct"` — a **session** turn. The form is mounted
+  by the Sessions ChatPane, and it is placed by the interaction's `sessionAlias`,
+  which core pins to the exact turn and `channel-relay` copies onto the wire. That
+  alias is the **display** alias the dashboard lists and selects on
+  (`toDisplaySessionAlias`), not the stored internal one: a relay session record
+  `relay:demo` is the row `demo`, and a form stamped with the internal alias would
+  match no pane.
+
 A permission route is a **`permissionChatKey`** carried from trusted human ingress,
 deliberately **not** the product `bot:` key. Do not unify them; they answer
 different questions and belong to different trust domains.
+
+What both elicitation routes share is the fail-closed rule: `chatType` must be
+exactly `"direct"` (an unreported destination is not "direct"), the origin must be
+human with a trusted `senderId`, and the renderer must be able to PLACE the frame
+on a surface. A frame that belongs to no pane is refused before the hub is called —
+an invisible form is worse than a refusal, because the agent tells the user the
+human was asked while the question times out unseen.
 
 ### 2.4 The window
 
@@ -235,7 +254,17 @@ Where to look when a form does not appear, or an answer does not arrive:
 | Form reappears after a reconnect | replay-on-subscribe; if it is a form the hub already closed, the snapshot gap in §5 is the cause |
 
 The hub's own logs carry the open/close transitions; the interaction registry
-notifies a listener from **every** closer, so there is no silent path.
+notifies a listener from **every** closer, so there is no silent path — with one
+exception worth naming.
+
+**Mixed versions.** Session placement travels as `InteractionRequestDto.sessionAlias`,
+which is additive: a hub that predates it stores `""`, and a dashboard that predates
+it has no `pendingSessionInteractionFor`. A **session** form created against an old
+hub or viewed on an old dashboard therefore belongs to no pane and simply expires.
+The wire stays compatible — no handshake failure, no error — which is exactly why
+this failure is invisible rather than loud. Deploy the hub, `channel-relay` and
+`relay-web` together when session forms are in use. A Direct Conversation form is
+unaffected: it is placed by its `conversation` correlation.
 
 ---
 

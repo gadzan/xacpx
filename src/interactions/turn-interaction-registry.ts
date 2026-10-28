@@ -74,6 +74,15 @@ export interface TurnInteractionContext {
    * provably private.
    */
   chatType?: "direct" | "group";
+  /**
+   * The turn's own session alias, for a SESSION-scoped renderer.
+   *
+   * Routing, not identity: the relay dashboard mounts a form on the pane showing
+   * that alias, exactly as `conversation` mounts a Direct Bot form on its topic.
+   * Only a session turn (not a Direct Conversation turn) carries it — a `bot:`
+   * turn's alias is runtime plumbing and must never travel to a browser.
+   */
+  sessionAlias?: string;
 }
 
 export interface TurnInteractionRegistry {

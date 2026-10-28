@@ -328,6 +328,51 @@ test("a subscribed dashboard receives the form, with the opener's instanceId", a
   await hub.close();
 });
 
+test("a session-scoped form reaches the dashboard and resolves through it", async () => {
+  // The whole point of the session route: an agent talking to its operator
+  // through an ordinary session chat can ask a structured question. There is no
+  // `conversation` correlation on this turn, so the browser has exactly one
+  // placement key — the session alias — and it must survive every hop
+  // (core → connector → hub registry → live event → answer).
+  const hub = await makeHub();
+  await hub.startAndOpen();
+  const browser = await hub.connectBrowser();
+
+  const sessionRequest = {
+    ...hub.agentRequest,
+    requestId: "req-session-chain-1",
+    chatKey: "relay:relay-acct",
+    agent: { name: "codex", sessionAlias: "relay:demo" },
+  } as typeof hub.agentRequest;
+
+  const settled = hub.channel.requestElicitation(sessionRequest);
+  await waitFor(
+    () => browserEvents(hub.seen).some((e) => e.event.type === "interaction-opened"),
+    "session interaction-opened on a subscribed socket",
+  );
+  const opened = browserEvents(hub.seen).find((e) => e.event.type === "interaction-opened")!;
+  const openedEvent = opened.event as { sessionAlias: string; interaction: { conversation?: unknown; sessionAlias?: string } };
+  expect(openedEvent.sessionAlias).toBe("relay:demo");
+  expect(openedEvent.interaction.sessionAlias).toBe("relay:demo");
+  // No product row: the two placements are mutually exclusive by construction.
+  expect(openedEvent.interaction.conversation).toBeUndefined();
+
+  await hub.answer({
+    requestId: "req-session-chain-1",
+    kind: "elicitation",
+    action: "accept",
+    content: { region: "us-east" },
+  });
+  expect(await settled).toEqual({
+    action: "accept",
+    responderId: hub.hubAccountId,
+    content: { region: "us-east" },
+  });
+
+  browser.close();
+  await hub.close();
+});
+
 test("a withdrawal closes the form on a subscribed browser", async () => {
   const hub = await makeHub();
   await hub.startAndOpen();

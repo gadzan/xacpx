@@ -937,6 +937,10 @@ export class InstanceGateway {
         const accountId = authed.accountId;
         const chatKey = `relay:${accountId}`;
         const requestId = parsed.requestId;
+        // Session-scoped routing for a form the connector opened on a session
+        // turn. Absent for a conversation interaction (its `conversation`
+        // correlation places it) and for a connector that predates the field.
+        const sessionAlias = typeof parsed.sessionAlias === "string" ? parsed.sessionAlias : "";
         const now = Date.now();
         // The window that ended before the frame arrived cannot be opened: a
         // form nobody could legally answer would be put on screen.
@@ -961,7 +965,7 @@ export class InstanceGateway {
           kind: parsed.kind,
           expiresAt: parsed.expiresAt,
           chatKey,
-          sessionAlias: "",
+          sessionAlias,
           // The window alone drives the expiry timer; the reserve is only how
           // long the CALL stays open for a decision made in time to travel.
           answerWindowMs,
@@ -985,7 +989,7 @@ export class InstanceGateway {
         this.deps.broadcastControlEvent?.(accountId, {
           type: "interaction-opened",
           chatKey,
-          sessionAlias: "",
+          sessionAlias,
           instanceId,
           interaction: parsed,
         });

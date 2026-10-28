@@ -411,6 +411,32 @@ Jev 路由配置收拢在“Jev 路由”折叠区，包含 endpoint、API key�
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 
+## Agent 提问表单（elicitation）
+
+hub 的 `interaction-opened` / `interaction-snapshot` 是表单的唯一来源。前端按**放置键**分成两种互不借用的作用域：
+
+- **Direct Bot 表单**：靠 interaction 自带的 `conversation` 相关键（conversationId / topicId / botId / runId / memberTurnId）
+  落到对应话题的执行区。`stores/direct-bots.ts` 的 `pendingInteraction` 只认这一种：条目有 `conversation` 就永远按话题放置，
+  即使信封上还带着一个无关的 `sessionAlias`。
+- **会话表单**：靠 `sessionAlias`。这个别名由 core 钉在精确 turn 上（普通会话 turn 的 resolver 产出），
+  connector 抄到线上 `InteractionRequestDto.sessionAlias`，hub 原样存进 pending 记录、并随 live 事件与快照回放。
+  这里是**展示别名**，与会话列表选中用的那个是同一套：记录里存 `relay:demo`，列表与 `chat.sessionAlias` 都是 `demo`，
+  用内部别名去配会一个面板都配不上。`pendingSessionInteractionFor(instanceId, alias)` **同时**要求实例与别名精确匹配：
+  别名只在实例内唯一（克隆/还原出来的两个 daemon 会有同名会话），而作答会路由到条目自己的 `instanceId`，
+  只比别名会把 B 的问题答进 A。
+
+会话表单只在**所属会话自己的面板**里渲染，所以侧边栏另有一个注意力信号：该会话有待答表单时，
+`InstanceTree` 在会话名前显示 `data-attention="question"` 的琥珀色脉冲点（`bg-warn` + `pulse-dot`，
+提示文案 `bot.interaction.waiting`），优先级高于 `working` / `unread`——被表单挡住的那个 turn 比"在跑"和"有未读"都更该被点开。
+它读的是 `sessionQuestionPendingFor()`（**只**看仍打开的表单），不是 `pendingSessionInteractionFor()`：后者会把已结束的条目
+一并返回，好让面板继续显示结果说明；用它做信号会让点在答完之后继续显示"正在等待回答"，直到有人打开该会话把提示点掉。
+表单一旦关闭（答复、拒绝、超时、撤回），点立即消失，不需要切到那个会话。
+
+`ChatPane.vue` 把表单作为 composer 栈最上面的一层渲染（`ConversationInteractionForm`），复用 Direct Bot 的同一套渲染与校验：
+必填未答不可提交、`format` 无法本地复核时阻断提交、`pattern` 只展示不执行。作答走 `control.interaction.respond`，
+帧里**不带任何身份**——`responderId` 由 hub 用自己的登录会话盖章；表单收起只由 `interaction-closed` 决定，
+快照缺席一律记 `gone`，不推断"被谁关掉"。
+
 ## 流式 Markdown 渲染
 
 - `src/lib/render-markdown.ts` —— `renderMarkdown(text, { streaming })` 把 markdown 渲染成**已净化**的 HTML：
@@ -840,8 +866,12 @@ Relay-Web 支持双轨桌面系统通知，在任务或会话回合完成/失败
    - **统一 Tag 会话隔离**：使用与 Web Push 相同的 `xacpx-turn:${instanceId}:${sessionAlias}` tag，避免跨会话覆盖，并在多端/双轨下优雅合并。
    - **设计 spec**：`docs/superpowers/specs/2026-08-26-relay-web-local-notification-fallback.md`。
 ## 消息附件（图片 / 文件上传）
-用户可在 `PromptInput.vue` 随 prompt 一并发送图片或文件；附件经 `control.upload` RPC
-上传到 daemon，再随 `control.prompt` 的 `media` 字段转发给 agent。
+用户可在三条消息输入框随 prompt 一并发送图片或文件：会话聊天 `PromptInput.vue`、
+Bot 直聊 `ConversationPromptInput.vue`、群组 `GroupComposer.vue`。附件经 `control.upload` RPC
+上传到 daemon，再随对应 prompt RPC 的 `media` 字段转发给 agent（会话走 `control.prompt`，
+Bot 直聊与群组走 `control.conversation.prompt`）。三者共用 `stores/composer.ts`；会话输入框
+自带 chip 渲染，Bot 直聊与群组共用 `ComposerAttachments.vue`。上传草稿按 scope key 隔离
+（会话 `["session", …]`、Bot `["direct", …]`、群组 `["group", …]`），切换目标不会串草稿。
 
 ### 触发方式
 
@@ -870,8 +900,9 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 1. 选文件后，每个文件单独调用 `control.upload`（`UploadPayload`），
    daemon 返回 `UploadResult`（含服务器绝对路径 `path`）。
-2. 构造 `PromptAttachmentRef[]` 并附在 `control.prompt` 的 `media` 字段内发送。
+2. 构造 `PromptAttachmentRef[]` 并附在 prompt RPC 的 `media` 字段内发送。
 3. Hub 将 `attachments`（`AttachmentMetadata[]`）持久化到消息记录。
+4. 群组发送的 `media` 同时进入 uncertain prompt 的冻结 tuple，Retry 重放同一份附件。
 
 ### 渲染
 
@@ -923,7 +954,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 - **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots | Groups` 模式切换；切到 Bots 时展示 Bot 列表（名称、角色、agent、workspace 与启用状态），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
 - **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。新建时工作区默认选择「新建专属工作区」，由所选实例的 daemon 在 `~/.xacpx/bots/` 下创建并注册，也可选择实例已有工作区；自动选项在请求中省略 `workspace`。没有已注册工作区时仍可创建 Bot。编辑仅选择已注册工作区。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
-- **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatar.vue`）**：Bot 弹层分为基本设置与头像外观；支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，切换标签页不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
+- **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatarQuickView.vue` / `BotAvatar.vue`）**：Bot 弹层不再有「基本设置 / 头像外观」标签页；基本设置表单顶部直接展示头像。点击头像打开放大查看浮层（`BotAvatarQuickView.vue`，只读，不改变草稿）；该浮层是独立注册的一层（`useModalA11y`），Esc 或移动端返回只关闭浮层而不关弹层，焦点回到头像入口。头像右下角角标切到头像外观视图，标题栏返回按钮回到基本设置。外观视图支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，两个视图间切换不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。新建 Bot 时每次打开弹层随机生成一个角色头像（形状 / 颜色 / 表情），编辑沿用已保存配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
 - **头像状态与资源**：侧栏只展示身份，不聚合全局忙碌。Direct 按当前 Conversation / Topic / Run，Group 按精确 MemberTurn 与交互归属展示；完成动作只由已观察到的同任务完成事件授权，恢复快照与重连不回放。历史消息、选项、成员选择器和交接双头像静态渲染；可见动态头像共用一个帧时钟，离屏、隐藏、减少动态效果与卸载释放或暂停相应资源。普通 Session 与 Agent 品牌图标仍使用 `AgentIcon`。
 - **受控移除（`BotRemovalDialog.vue`）**：侧栏、Direct 页面和 Bot 对话框都能打开。先调用 `control.bots.remove.preview`，再由用户确认 `control.bots.remove`。文案说明群组历史保留，私聊历史是单独勾选。两人组成员关系会挡住确认，不会自动删群或踢掉另一名成员。清理失败或结果不确定时用同一个 `requestId` 重试。`lifecycle.operations.get` 可在刷新后查看这次清理。已移除 Bot 在列表和群组记录里显示为 removed bot，composer 不再发送。预览里带 `dedicatedWorkspace` 时，实例声明 `bots.dedicated-workspace-cleanup.v1` 才会多出一个「同时删除专属工作目录」的勾选；目录仍在使用（`inUse`）时不提供该勾选，只说明它会被保留。
 

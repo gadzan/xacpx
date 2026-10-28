@@ -2,14 +2,6 @@
 // Values here MUST match the original hardcoded English exactly so existing
 // test assertions on visible text keep passing.
 export default {
-  collaboration: {
-    stopRestore: "Stop & restore draft",
-    takeover: "Take over",
-    takeoverHint: "Stop the old run and send the new instruction",
-    restored: "Stopped. Draft restored to the input.",
-    promptUnavailable: "No recoverable prompt found.",
-    stopUnconfirmed: "Stop not confirmed.",
-  },
   common: {
     cancel: "Cancel",
     confirm: "Confirm",
@@ -750,7 +742,7 @@ export default {
       editTitle: "Edit Bot",
     },
     avatar: {
-      tabs: { label: "Bot settings", basic: "Basic settings", appearance: "Avatar appearance" },
+      appearanceTitle: "Avatar appearance",
       shape: "Shape",
       color: "Color",
       expression: "Default expression",
@@ -759,6 +751,8 @@ export default {
       selectedExpression: "Selected: {expression}",
       restoreDefault: "Use Agent default icon",
       defaultNotice: "Using the Agent default icon. Choose a preset or any appearance option to create a character.",
+      quickView: "View avatar",
+      editAppearance: "Edit avatar appearance",
       preview: {
         title: "Live preview",
         unnamed: "Your Bot",
@@ -942,6 +936,7 @@ export default {
       waitingHuman: "Waiting for human",
     },
     interaction: {
+      waiting: "Agent is waiting for an answer",
       title: "Input needed",
       submit: "Submit",
       decline: "Decline",
@@ -1085,7 +1080,6 @@ export default {
       memberCount: "{count} selected",
       noEligible: "No enabled members in this group.",
       automatic: "Automatic collaboration",
-      hint: "{'@'}name adds a member · {'@'}everyone selects all",
       noRuntime: "No runtime",
     },
     confirmEveryone: {

@@ -91,6 +91,11 @@ const TOOL_OWNED_PATHS = [
 const REGISTRY_ATTEMPTS = 24;
 const REGISTRY_POLL_TIMEOUT_MS = 6 * 60_000;
 const REGISTRY_REQUEST_TIMEOUT_MS = 10_000;
+// A release commit's Test run measured 12.3 min; the cap keeps a starved or
+// wedged run from holding the tags longer than the duplicate suite would cost.
+const TEST_RUN_WAIT_MS = 15 * 60_000;
+const TEST_RUN_WAIT_MINUTES = TEST_RUN_WAIT_MS / 60_000;
+const TEST_RUN_POLL_MS = 20_000;
 
 function git(args, { allowFailure = false } = {}) {
   try {
@@ -950,6 +955,64 @@ function buildPublishPlan() {
   return { releases, waves: publishWaves(releases.map((release) => release.id)) };
 }
 
+/**
+ * Wait for the Test run of the release commit before any tag is pushed.
+ *
+ * Every publish job runs `npm test` — 8.6 min measured — unless
+ * `scripts/ci-test-gate.mjs` can already see that this exact commit's suite is
+ * green, and the gate never waits for an in-flight run. Measured on
+ * 0.24.10-beta.8: the five publish jobs spent 43 min re-running a suite the
+ * 12-minute Test run had already covered. Holding the tags until that run
+ * concludes turns the duplicate into one wait.
+ *
+ * Only a multi-package release waits: 8.6 min of duplicate suite against a
+ * ~12 min Test run, so a single package is cheaper without the hold. Red,
+ * missing, timed out and unreadable runs all fall through to tagging, where the
+ * publish jobs run the suite themselves — what they did before this hold
+ * existed — so a flaky Test run can cost the duplicate and still cannot block a
+ * release.
+ */
+async function awaitTestRun(head) {
+  const attempts = Math.ceil(TEST_RUN_WAIT_MS / TEST_RUN_POLL_MS);
+  let run = null;
+  let queried = true;
+  console.log(`  holding tags until the Test run of ${head.slice(0, 7)} concludes`
+    + " (each publish job skips its own suite once it is green)");
+  for (let attempt = 0; attempt <= attempts; attempt += 1) {
+    try {
+      const raw = execFileSync("gh", [
+        "run", "list",
+        "--workflow", "test.yml",
+        "--commit", head,
+        "--event", "push",
+        "--branch", "main",
+        "--limit", "1",
+        "--json", "databaseId,status,conclusion",
+      ], { cwd: ROOT, encoding: "utf8" });
+      run = JSON.parse(raw || "[]")[0] ?? null;
+    } catch {
+      queried = false;
+      break;
+    }
+    if (run?.status === "completed") break;
+    if (attempt < attempts) await sleep(TEST_RUN_POLL_MS);
+  }
+  if (!queried) {
+    console.log("  (could not query Test runs; each publish job will run the suite itself)");
+  } else if (!run) {
+    console.log(`  no Test run found for ${head.slice(0, 7)} within ${TEST_RUN_WAIT_MINUTES} min;`
+      + " each publish job will run the suite itself");
+  } else if (run.conclusion === "success") {
+    console.log("  Test run concluded success: publish jobs will skip their own suite");
+  } else if (run.status === "completed") {
+    console.log(`  Test run concluded ${run.conclusion}; each publish job runs the suite`
+      + " unless its `test` job is green");
+  } else {
+    console.log(`  Test run still ${run.status} after ${TEST_RUN_WAIT_MINUTES} min;`
+      + " each publish job will run the suite itself");
+  }
+}
+
 /** Tag -> the publish workflow run it triggered, or null. */
 function findRunForTag(tag) {
   let runs;
@@ -1120,6 +1183,12 @@ async function cmdPublish(plan, options) {
   const head = git(["rev-parse", "HEAD"]);
   git(["push", "origin", "main"]);
   console.log(resuming ? `tagging the existing commit ${head}` : `committed ${head}`);
+
+  // Worth it only when more than one package ships: one duplicate suite is
+  // 8.6 min and the Test run is ~12, so a single package is cheaper without the
+  // hold. `--skip-gates` also skips it — the recovery path already assumes a
+  // proven tree.
+  if (!options.skipGates && plan.releases.length > 1) await awaitTestRun(head);
 
   // Wave by wave. Nothing in a later wave may be pushed before the earlier
   // wave's packages resolve from the registry, or its smoke steps fail with

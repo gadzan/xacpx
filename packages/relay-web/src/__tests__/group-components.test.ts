@@ -7,6 +7,7 @@ import { groupDraftKey, loadDraft } from "../lib/composer-drafts";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
+import { useComposerStore } from "../stores/composer";
 import { useInstancesStore } from "../stores/instances";
 import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 import GroupPane from "../components/GroupPane.vue";
@@ -94,7 +95,7 @@ describe("Group Components", () => {
   }
 
   describe("GroupComposer.vue", () => {
-    it("renders the @name and @everyone hints literally in both locales", async () => {
+    it("renders the composer placeholder in both locales", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -103,13 +104,10 @@ describe("Group Components", () => {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
-      const placeholder = () => wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder");
-      expect(wrapper.text()).toContain("@name adds a member · @everyone selects all");
-      expect(placeholder()).toBe("Message the selected members... (@name, @everyone)");
+      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("Message the selected members... (@name, @everyone)");
       i18n.global.locale.value = "zh-CN";
       await wrapper.vm.$nextTick();
-      expect(wrapper.text()).toContain("@名称 添加成员 · @everyone 全选");
-      expect(placeholder()).toBe("给所选成员发消息...（@名称、@everyone）");
+      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("给所选成员发消息...（@名称、@everyone）");
       i18n.global.locale.value = "en";
       const compileErrors = [...errors.mock.calls, ...warns.mock.calls]
         .filter((args) => String(args[0]).includes("compilation error"));
@@ -681,7 +679,39 @@ describe("Group Components", () => {
       // carries the typed text for the resolved target.
       (document.body.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
       await flushPromises();
-      expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review"]);
+      expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review", []]);
+      wrapper.unmount();
+    });
+
+    it("sends a staged image with empty text and clears the chip once the prompt is durable", async () => {
+      sessionStorage.clear();
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, sendOutcome: () => Promise.resolve("accepted" as GroupSendOutcome) },
+        global: { plugins: [i18n] },
+      });
+      const composer = useComposerStore();
+      composer.bindInstance("i1", JSON.stringify(["group", "i1", "conversation_g", "topic_1"]));
+      composer.pending.push({
+        id: "local-1",
+        uploadId: "u1",
+        filename: "shot.png",
+        mimeType: "image/png",
+        size: 3,
+        kind: "image",
+        filePath: "/uploads/u1/shot.png",
+        status: "ready",
+      });
+      await flushPromises();
+      const send = wrapper.find('[data-test="group-send-prompt-button"]');
+      expect(send.attributes("disabled")).toBeUndefined();
+      await send.trigger("click");
+      await flushPromises();
+      expect(wrapper.emitted("send")?.[0]).toEqual(["", [
+        expect.objectContaining({ id: "u1", filePath: "/uploads/u1/shot.png", kind: "image" }),
+      ]]);
+      expect(composer.pending).toHaveLength(0);
       wrapper.unmount();
     });
 
@@ -1893,7 +1923,7 @@ describe("Group Components", () => {
         expect(surface.classes()).toEqual(expect.arrayContaining(["opacity-60", "cursor-not-allowed"]));
         expect(surface.attributes("aria-disabled")).toBe("true");
         expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(false);
-        expect(wrapper.text()).not.toContain(i18n.global.t("group.target.hint"));
+        expect(wrapper.text()).not.toContain("@名称 添加成员");
         // The centre CTA stays the only primary action.
         expect(wrapper.find('[data-test="group-first-topic-button"]').exists()).toBe(true);
         wrapper.unmount();

@@ -4,15 +4,47 @@
 
 ### Added
 
-- Every Group member turn now carries the Group's title and description in its Bot-profile header (`You are collaborating in the Group "<title>".` / `Group description:`), so an agent working in a Group knows what the Group is for. Both are read live at execution time: an edit lands on the next turn without recreating the owned session, and neither joins the accepted profile snapshot, the sticky-identity check, the Router input or the public transcript. A Group with no title or description composes exactly as before.
+- Agents can ask structured questions through an ordinary session chat (`ask` / ACP form elicitation). Core now resolves an elicitation route for any turn whose ingress reports `chatType: "direct"`, not only for Direct Conversation turns: the relay dashboard mounts the form in the session's own pane, keyed by the interaction's `sessionAlias` (core pins it to the exact turn and stamps the display alias the session list selects on, `channel-relay` copies it onto `InteractionRequestDto.sessionAlias`, the hub keeps it on the pending entry and replays it in every snapshot). A session holding an unanswered question shows the question dot in the sidebar, so a form opened while you are looking at another session is not silent until it expires. A turn that cannot name a session or a conversation is still refused before the hub is called — an invisible form is worse than a refusal. Group and unreported destinations stay unroutable, and each renderer keeps its own `chatType` gate.
+
+## [relay 0.14.12-beta.12] - 2026-10-28
+
+### Added
+
+- 新建群组默认使用 per-member 工作区模式：每个成员留在自己的 Bot 工作区里并行执行，不再默认落到 shared 的单写者队列；编辑群组时该字段作为既定事实只读显示，旧内核仍隐藏该选择并保持 wire 上的 `shared` 默认值（#485）。执行过程浮层、浮窗、移动端面板与群组转录按 worktree / per-member / shared 三种模式分别表述，per-member Run 不再宣称串行写入（#485）。
 
 ### Fixed
 
-- Hard delete and soft close no longer refuse forever on a durable ownership fence left in `admitted` by a hard-killed host (group removal reported `worker ownership not quiesced`): the quiescence probe now discharges it on the same containment proof the fence's own recovery requires — supervisor provably gone, the generation's Job empty or absent, and the attested worker's birth gone. A live supervisor, a Job that still holds processes, an unverifiable identity, or a pid probe that cannot answer keeps refusing.
+- Direct Bot 的实时行只显示一次名字：转录行与内联各渲染一次的重复 span 已删除（#486）。
+- 自己的气泡改为 `break-word`，`D:\project\bot-xacpx-01` 这类长路径不再在 token 中间断开；Bot 气泡仍保留 `anywhere`（#486）。
 
 ### Changed
 
 - Relay Web 只向用户展示能据以行动的信息。群组顶栏去掉「运行 N/M · 排队 · 受阻」统计条与「路由 → 负责人」（编辑群组弹窗已有同一事实）；执行过程浮层去掉整个「本次协作信息」（指派 ID、依赖 ID、预算、路由状态、工作区说明、其他成员列表）和轨迹的 `completenessReason`，「已记录过程（完整）」不再占位；派发指令与成员任务（任务、期望输出）都改为默认折叠。零成员 Run 的路由气泡显示 Run 自身的终态，不再永远停在「选择成员中」；Router 的 `routingReason` 不再平铺在转录里。直接对话的失败横幅不再打印裸 token 形式的内核原因码，但保留提供方返回的成句错误；Bot 简介不再把系统提示词整段铺在空会话上；消息状态胶囊文案改为本地化（`agentMessage.*`）不再显示英文原文，`failureReason` 的记账类原因码、缺失 Bot 的原始 id 与 @ 候选里的 id 片段都不再出现在界面上。
+
+## [0.24.10-beta.8] - 2026-10-28
+
+### Added
+
+- Every Group member turn now carries the Group's title and description in its Bot-profile header (`You are collaborating in the Group "<title>".` / `Group description:`), so an agent working in a Group knows what the Group is for. Both are read live at execution time: an edit lands on the next turn without recreating the owned session, and neither joins the accepted profile snapshot, the sticky-identity check, the Router input or the public transcript. A Group with no title or description composes exactly as before (#484).
+- A Bot's dedicated workspace is now private to that Bot: a `dedicated` workspace is hidden from `xacpx workspace list`, refused by `xacpx workspace add`/`workspace remove` and by the WeChat `/workspace create`/`remove` handlers, and rejected as an explicit target for any other Bot or Group Topic (`workspace_dedicated`). The owning Bot still reaches it through its own stored default, so a rename- or enable-only update keeps working (#487).
+- Peer-to-peer session delegation (prototype): `peer_delegate`, `peer_approve`, `peer_watch`, `peer_confirm`, `peer_cancel`, `peer_list` and `peer_get` MCP tools over the new `peer.*` daemon RPCs — session A delegates straight to session B without a coordinator, observes it, and receives B's attributed result. An unapproved delegation never executes; the approver identity comes from the caller's binding, never a tool argument; `peer_watch` defaults to 60s (max 20min) and a timeout never resends; `peer_cancel` withdraws the record without interrupting the target's active turn; completion only fills the record, so the originator still validates it and calls `peer_confirm`. See `docs/peer-delegation.md` (#489).
+
+### Fixed
+
+- Hard delete and soft close no longer refuse forever on a durable ownership fence left in `admitted` by a hard-killed host (group removal reported `worker ownership not quiesced`): the quiescence probe now discharges it on the same containment proof the fence's own recovery requires — supervisor provably gone, the generation's Job empty or absent, and the attested worker's birth gone. A live supervisor, a Job that still holds processes, an unverifiable identity, or a pid probe that cannot answer keeps refusing (#483).
+- A Group or Direct Bot reply no longer persists the streamed text and the trailing response both: `dedupeStreamedSuffix` compares raw streamed chunks against the trailing response and appends only the unsent suffix, and `control-service`'s `executeCommand` reuses it, so readers see the process once (#486).
+
+## [channel-relay 0.7.8-beta.8] - 2026-10-28
+
+- Compatibility floor raised to `0.24.10-beta.8` with no channel behavior change.
+
+## [channel-feishu 0.8.7-beta.8] - 2026-10-28
+
+- Compatibility floor raised to `0.24.10-beta.8` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.8] - 2026-10-28
+
+- Compatibility floor raised to `0.24.10-beta.8` with no channel behavior change.
 
 ## [relay-protocol 0.6.4-beta.6] - 2026-10-27
 

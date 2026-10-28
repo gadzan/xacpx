@@ -32,12 +32,12 @@
     },
     "packages/channel-discord": {
       "name": "@ganglion/xacpx-channel-discord",
-      "version": "0.8.7-beta.7",
+      "version": "0.8.7-beta.8",
       "dependencies": {
         "discord.js": "^14.26.0",
       },
       "peerDependencies": {
-        "xacpx": ">=0.24.10-beta.7",
+        "xacpx": ">=0.24.10-beta.8",
       },
       "optionalPeers": [
         "xacpx",
@@ -45,12 +45,12 @@
     },
     "packages/channel-feishu": {
       "name": "@ganglion/xacpx-channel-feishu",
-      "version": "0.8.7-beta.7",
+      "version": "0.8.7-beta.8",
       "dependencies": {
         "@larksuiteoapi/node-sdk": "~1.60.0",
       },
       "peerDependencies": {
-        "xacpx": ">=0.24.10-beta.7",
+        "xacpx": ">=0.24.10-beta.8",
       },
       "optionalPeers": [
         "xacpx",
@@ -58,20 +58,20 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.7.8-beta.7",
+      "version": "0.7.8-beta.8",
       "dependencies": {
         "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.6",
         "ws": "^8.20.0",
       },
       "optionalDependencies": {
-        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.8-beta.7",
-        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.8-beta.7",
-        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.8-beta.7",
-        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.8-beta.7",
-        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.8-beta.7",
+        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.8-beta.8",
+        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.8-beta.8",
+        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.8-beta.8",
+        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.8-beta.8",
+        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.8-beta.8",
       },
       "peerDependencies": {
-        "xacpx": ">=0.24.10-beta.7",
+        "xacpx": ">=0.24.10-beta.8",
       },
       "optionalPeers": [
         "xacpx",
@@ -101,7 +101,7 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.14.12-beta.11",
+      "version": "0.14.12-beta.12",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },

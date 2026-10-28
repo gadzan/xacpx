@@ -1026,6 +1026,10 @@ export const validateInteractionRequest: Validator<InteractionRequestPayload> = 
   const kind = o.kind;
   if (typeof kind !== "string" || !(INTERACTION_KINDS as readonly string[]).includes(kind)) return null;
   if (!isTimestamp(o.expiresAt)) return null;
+  // Routing for a session-scoped form: a present value must be a real alias, not
+  // "", and an absent one stays absent (an older connector, or a conversation
+  // interaction whose `conversation` correlation is authoritative).
+  if (o.sessionAlias !== undefined && !isBoundedStr(o.sessionAlias, 200)) return null;
   if (!optObj(o.conversation)) return null;
   if (o.conversation !== undefined) {
     const c = o.conversation as Record<string, unknown>;

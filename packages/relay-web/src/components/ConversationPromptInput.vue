@@ -7,6 +7,7 @@ import {
   isErrorPayload,
   type AgentMention,
   type ConversationCompletions,
+  type PromptAttachmentRef,
 } from "@ganglion/xacpx-relay-protocol";
 import {
   completionKey,
@@ -19,22 +20,26 @@ import { api } from "../api/client";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useDirectComposerStore } from "../stores/direct-composer";
+import { useComposerStore } from "../stores/composer";
+import ComposerAttachments from "./ComposerAttachments.vue";
 import ConversationComposer from "./ConversationComposer.vue";
-import { mergeRecoveredDraft, sourceRunPrompt } from "../lib/composer-run-actions";
+
 const props = defineProps<{
   disabled?: boolean;
   deliver?: (
     text: string,
     mentions: AgentMention[],
+    media: PromptAttachmentRef[],
   ) => Promise<"accepted" | "rejected" | "uncertain" | "orphaned">;
 }>();
 const emit = defineEmits<{
-  send: [text: string, mentions?: AgentMention[]];
+  send: [text: string, mentions?: AgentMention[], media?: PromptAttachmentRef[]];
 }>();
 const { t } = useI18n();
 const directBotsStore = useDirectBotsStore(),
   commandStore = useConversationCommandsStore(),
   drafts = useDirectComposerStore();
+const attachments = useComposerStore();
 const composer = ref<InstanceType<typeof ConversationComposer> | null>(null);
 const composing = ref(false),
   caret = ref(0),
@@ -42,9 +47,6 @@ const composing = ref(false),
   cmdActiveIdx = ref(0),
   cmdDismissed = ref(false),
   page = ref(0);
-const actionBusy = ref(false);
-const actionError = ref<string | null>(null);
-const restoreNotice = ref<string | null>(null);
 const scope = computed(() =>
   JSON.stringify([
     directBotsStore.instanceId,
@@ -53,6 +55,16 @@ const scope = computed(() =>
     directBotsStore.selectedBotId,
   ]),
 );
+/** Attachment scope: one upload draft per instance + Bot conversation + Topic.
+ *  Namespaced with "direct" so it can never collide with the session chat or
+ *  Group composer scopes in the shared composer store. */
+const attachKey = computed(() =>
+  JSON.stringify(["direct", directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId, directBotsStore.selectedBotId]),
+);
+watch(attachKey, () => {
+  if (directBotsStore.instanceId) attachments.bindInstance(directBotsStore.instanceId, attachKey.value);
+}, { immediate: true });
+const readyMedia = computed(() => attachments.pending.some((entry) => entry.status === "ready"));
 const promptText = computed({
   get: () => drafts.get(scope.value).text,
   set: (text) => {
@@ -366,61 +378,52 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 async function handleSend(): Promise<void> {
-  if (blocked.value || actionBusy.value || isRunActive.value || !promptText.value.trim() || composing.value) return;
+  if (blocked.value || isRunActive.value || composing.value || attachments.uploading) return;
   const key = scope.value,
     text = promptText.value,
-    mentions = structuredClone(
-      drafts.get(key).mentions.map((m) => ({
-        range: [...m.range] as [number, number],
-        handle: m.handle,
-      })),
-    );
+    staged = attachments.snapshot(attachKey.value),
+    stagedScopeKey = attachKey.value;
+  if (!text.trim() && staged.media.length === 0) return;
+  const mentions = structuredClone(
+    drafts.get(key).mentions.map((m) => ({
+      range: [...m.range] as [number, number],
+      handle: m.handle,
+    })),
+  );
   if (props.deliver) {
-    const outcome = await props.deliver(text, mentions);
-    if (outcome === "accepted") drafts.clear(key, text, mentions);
-  } else emit("send", text, mentions);
+    const outcome = await props.deliver(text, mentions, staged.media);
+    // Accepted: the transcript owns the media. Uncertain keeps the chips so a
+    // resend replays the identical tuple (same requestId, server-deduped); a
+    // definitive refusal keeps them editable for a corrected resend.
+    if (outcome === "accepted") {
+      attachments.consume(stagedScopeKey, staged.ids);
+      drafts.clear(key, text, mentions);
+    }
+  } else {
+    emit("send", text, mentions, staged.media);
+    attachments.consume(stagedScopeKey, staged.ids);
+  }
   if (key === scope.value) {
     cmdDismissed.value = false;
   }
 }
+async function onPaste(e: ClipboardEvent): Promise<void> {
+  const files = Array.from(e.clipboardData?.files ?? []);
+  if (files.length === 0 || blocked.value) return;
+  e.preventDefault();
+  await attachments.addFiles(files, attachKey.value);
+}
+async function onDrop(e: DragEvent): Promise<void> {
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  if (files.length === 0 || blocked.value) return;
+  e.preventDefault();
+  await attachments.addFiles(files, attachKey.value);
+}
 async function handleCancel(): Promise<void> {
-  await runAction("stop");
-}
-
-async function runAction(action: "stop" | "restore" | "takeover"): Promise<void> {
   const run = directBotsStore.activeRun;
-  const instanceId = directBotsStore.instanceId;
-  const botId = directBotsStore.selectedBotId;
-  if (!run || !instanceId || actionBusy.value || isCancelling.value) return;
-  const key = scope.value;
-  const snapshot = drafts.get(key);
-  if (action === "takeover" && !snapshot.text.trim()) return;
-  actionBusy.value = true;
-  actionError.value = null;
-  try {
-    const recovered = action === "restore" ? await sourceRunPrompt(instanceId, run, directBotsStore.messages) : null;
-    if (key !== scope.value) return;
-    if (action === "restore" && recovered === null) { actionError.value = t("collaboration.promptUnavailable"); return; }
-    const outcome = await directBotsStore.cancelCurrentRun({ runId: run.id });
-    if (key !== scope.value || outcome.scope?.instanceId !== instanceId
-      || outcome.scope.conversationId !== run.conversationId || outcome.scope.topicId !== run.topicId
-      || outcome.scope.botId !== botId || outcome.runId !== run.id) return;
-    if (outcome.status !== "cancelled" && outcome.status !== "terminal") { actionError.value = t("collaboration.stopUnconfirmed"); return; }
-    if (action === "restore" && recovered !== null) {
-      promptText.value = mergeRecoveredDraft(promptText.value, recovered);
-      restoreNotice.value = t("collaboration.restored");
-      await nextTick();
-      composer.value?.focus();
-    } else if (action === "takeover") {
-      if (drafts.get(key) !== snapshot) return;
-      actionBusy.value = false;
-      await handleSend();
-    }
-  } catch { actionError.value = t("collaboration.stopUnconfirmed"); }
-  finally { actionBusy.value = false; }
+  if (!run || isCancelling.value) return;
+  await directBotsStore.cancelCurrentRun({ runId: run.id });
 }
-
-watch(scope, () => { actionError.value = null; restoreNotice.value = null; });
 function handleRetry(): void {
   void handleSend();
 }
@@ -474,20 +477,18 @@ function onInput(): void {
       </button>
     </div>
 
-    <p v-if="actionError" role="alert" class="mb-2 text-xs text-danger">{{ actionError }}</p>
-    <p v-if="restoreNotice" role="status" class="mb-2 text-xs text-fg-muted">{{ restoreNotice }}</p>
-    <div v-if="isRunActive" class="mb-2 flex items-center gap-2 text-xs">
-      <button type="button" class="min-h-11 rounded-lg px-2 text-danger hover:bg-raised disabled:opacity-50" :disabled="actionBusy || isCancelling" @click="runAction('stop')">{{ $t('group.detail.stopRun') }}</button>
-      <button type="button" class="min-h-11 rounded-lg px-2 hover:bg-raised disabled:opacity-50" :disabled="actionBusy || isCancelling" @click="runAction('restore')">{{ $t('collaboration.stopRestore') }}</button>
-      <button type="button" class="min-h-11 rounded-lg px-2 text-accent hover:bg-raised disabled:opacity-50" :title="$t('collaboration.takeoverHint')" :disabled="actionBusy || isCancelling || !promptText.trim()" @click="runAction('takeover')">{{ $t('collaboration.takeover') }}</button>
-    </div>
+
     <ConversationComposer
       ref="composer"
       v-model="promptText"
       :busy="isRunActive"
       :disabled="blocked"
       :sending="isPromptInFlight"
-      :cancelling="isCancelling || actionBusy"
+      :cancelling="isCancelling"
+      :stop-while-busy="true"
+      :has-attachments="readyMedia"
+      :attachments-send-disabled="attachments.uploading"
+      :send-disabled="isRunActive"
       :placeholder="composerPlaceholder"
       send-test-id="send-prompt-button"
       stop-test-id="stop-run-button"
@@ -499,6 +500,8 @@ function onInput(): void {
       @cancel="handleCancel"
       @keydown="onKeydown"
       @input="onInput"
+      @paste="onPaste"
+      @drop="onDrop"
       @caret="updateCaret"
       @compositionstart="composing = true"
       @compositionend="
@@ -506,6 +509,14 @@ function onInput(): void {
         onInput();
       "
     >
+      <template #attachments>
+        <ComposerAttachments
+          v-if="directBotsStore.instanceId"
+          :scope-key="attachKey"
+          :instance-id="directBotsStore.instanceId"
+          :disabled="blocked"
+        />
+      </template>
       <template #menus>
         <div
           v-if="menuOpen"
