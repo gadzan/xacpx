@@ -260,9 +260,12 @@ onUnmounted(() => clearInterval(timer));
         <!-- Agent question, as its own layer directly above the composer: the
              transcript has no interaction slot, and a form the user cannot see is
              worse than no form. Topmost layer so a blocking question wins over
-             plan/queue chrome. -->
+             plan/queue chrome. Height-bounded and internally scrollable like the
+             plan panel: this layer sits in a `shrink-0` footer, so an unbounded
+             list of fields would grow the footer until the composer left a phone
+             screen entirely. -->
         <ConversationInteractionForm v-if="sessionInteraction" key="interaction-layer"
-                                     class="stack-layer stack-layer--interaction relative z-40 mx-2 pb-[var(--stack-overlap)] sm:mx-3"
+                                     class="stack-layer stack-layer--interaction thin-scroll relative z-40 mx-2 max-h-[min(45vh,22rem)] overflow-y-auto pb-[var(--stack-overlap)] sm:mx-3"
                                      :request="sessionInteraction.request"
                                      :answers="sessionInteraction.answers"
                                      :submitting="sessionInteraction.submitting"
