@@ -20,6 +20,7 @@ import BotAvatar from "./BotAvatar.vue";
 import ConversationComposer from "./ConversationComposer.vue";
 import ComposerAttachments from "./ComposerAttachments.vue";
 import DropdownPanel from "./DropdownPanel.vue";
+import ComposerAttachPicker from "./ComposerAttachPicker.vue";
 import { useDropdown } from "../lib/use-dropdown";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
 import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
@@ -770,7 +771,13 @@ function handleRetry(): void {
         <ComposerAttachments
           v-if="props.instanceId ?? groupsStore.instanceId"
           :scope-key="attachKey"
-          :instance-id="(props.instanceId ?? groupsStore.instanceId)!"
+          :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
+        />
+      </template>
+      <template #actions>
+        <ComposerAttachPicker
+          v-if="props.instanceId ?? groupsStore.instanceId"
+          :scope-key="attachKey"
           :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
         />
       </template>

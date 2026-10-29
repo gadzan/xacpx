@@ -1,25 +1,17 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { FileText, Loader2, Paperclip, RotateCcw, X } from "lucide-vue-next";
+import { computed } from "vue";
+import { FileText, Loader2, RotateCcw, X } from "lucide-vue-next";
 import { useComposerStore } from "../stores/composer";
 
-const props = defineProps<{ scopeKey: string; instanceId: string; disabled?: boolean }>();
+const props = defineProps<{ scopeKey: string; disabled?: boolean }>();
 const composer = useComposerStore();
-const picker = ref<HTMLInputElement | null>(null);
-async function picked(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []);
-  input.value = "";
-  if (!props.disabled) await composer.addFiles(files, props.scopeKey);
-}
+/** Nothing staged and nothing rejected: render nothing, so the folded
+ *  attachments slot never adds height to an expanded-but-empty composer. */
+const visible = computed(() => composer.pending.length > 0 || composer.rejection !== null);
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-2 px-3 pt-2 pb-1" data-test="composer-attachments">
-    <input ref="picker" type="file" multiple class="hidden" data-test="attach-input" @change="picked" />
-    <button type="button" data-test="attach-btn" :aria-label="$t('chat.attach.add')" :title="$t('chat.attach.add')"
-      :disabled="disabled" class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted hover:bg-surface-2 disabled:opacity-40 lg:h-7 lg:w-7"
-      @click="picker?.click()"><Paperclip :size="16" /></button>
+  <div v-if="visible" class="flex flex-wrap items-center gap-2 px-3 pt-2 pb-1" data-test="composer-attachments">
     <div v-for="entry in composer.pending" :key="entry.id" data-test="attachment-chip"
       class="flex min-w-0 items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs">
       <img v-if="entry.previewUrl" :src="entry.previewUrl" :alt="entry.filename" class="h-8 w-8 rounded object-cover" />

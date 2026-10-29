@@ -22,6 +22,7 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { useDirectComposerStore } from "../stores/direct-composer";
 import { useComposerStore } from "../stores/composer";
 import ComposerAttachments from "./ComposerAttachments.vue";
+import ComposerAttachPicker from "./ComposerAttachPicker.vue";
 import ConversationComposer from "./ConversationComposer.vue";
 
 const props = defineProps<{
@@ -513,7 +514,13 @@ function onInput(): void {
         <ComposerAttachments
           v-if="directBotsStore.instanceId"
           :scope-key="attachKey"
-          :instance-id="directBotsStore.instanceId"
+          :disabled="blocked"
+        />
+      </template>
+      <template #actions>
+        <ComposerAttachPicker
+          v-if="directBotsStore.instanceId"
+          :scope-key="attachKey"
           :disabled="blocked"
         />
       </template>
