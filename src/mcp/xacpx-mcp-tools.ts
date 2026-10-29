@@ -129,7 +129,7 @@ export function buildXacpxMcpToolRegistry(input: {
   if (sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)) {
     return [{
       name: "group_send",
-      description: "Publicly assign a concrete task to another current Group Bot in this Run. Acceptance is durable; the filesystem scheduler decides when it starts. Dispatching does not end your turn: you may keep working, and once all assignments dispatched from this turn settle, the runtime wakes you in a followup turn. You may dispatch several assignments in one turn: assignments without dependsOn run in parallel in the same batch. dependsOn lists assignment ids of already-settled assignments in this Run that the new task builds on; an unknown, unsettled, duplicated, or cyclic entry is rejected, never silently dropped. In a followup turn, read every settled result with group_read_result before dispatching anything new. This tool grants no human permission authority.",
+      description: "Publicly assign a concrete task to another current Group Bot in this Run. Acceptance is durable; the filesystem scheduler decides when it starts. Dispatching does not end your turn: you may keep working, and once all assignments dispatched from this turn settle, the runtime wakes you in a followup turn. You may dispatch several assignments in one turn: assignments without dependsOn run in parallel in the same batch. dependsOn lists assignment ids in this Run that the new task builds on; an unsettled dependency is accepted and the new task waits until every dependency completes, and a failed or cancelled dependency blocks the downstream task (marked dependency-failed, no automatic degraded plan). An unknown, duplicated, or cyclic entry is rejected, never silently dropped. In a followup turn, read every settled result with group_read_result before dispatching anything new. This tool grants no human permission authority.",
       inputSchema: z.object({ to: z.string().min(1).max(128), task: z.string().min(1).max(MAX_GROUP_TASK_LENGTH),
         expectedOutput: z.string().min(1).max(MAX_GROUP_EXPECTED_OUTPUT_LENGTH).optional(),
         dependsOn: z.array(z.string().min(1).max(128)).max(64).optional() }).strict(),
@@ -140,13 +140,23 @@ export function buildXacpxMcpToolRegistry(input: {
       }),
     }, {
       name: "group_chat",
-      description: "Send an informal message to another current Group Bot in this Run: a question, a progress note, a discussion, a reminder. Chat creates no task, consumes no task budget, does not end your turn, does not trigger a wake, and never appears as a final answer on the main timeline; it is only recorded in the chat record. Provide replyTo when answering an earlier chat message. For work that needs a result back, use group_send instead.",
+      description: "Send an informal message to another current Group Bot in this Run: a question, a progress note, a discussion, a reminder. Chat creates no task, consumes no task budget, does not end your turn, does not trigger a wake, and never appears as a final answer on the main timeline. It is queued to the target's next turn (injected into that turn's context) and listed by group_chat_read; send success does NOT mean the target has received or read it, and it never interrupts the target's current execution. Provide replyTo when answering an earlier chat message. For work that needs a result back, use group_send instead.",
       inputSchema: z.object({ to: z.string().min(1).max(128), content: z.string().min(1).max(MAX_GROUP_CHAT_LENGTH),
         replyTo: z.string().min(1).max(128).optional() }).strict(),
       handler: async (args) => await asToolResult(async () => {
         if (!transport.groupChat) throw new Error("group_chat requires a bound runtime transport");
         const result = await transport.groupChat({ executionToken: sourceHandle, args });
-        return createSuccessResult("Group chat message recorded; it creates no task and does not end your turn.", result);
+        return createSuccessResult("Group chat message queued to the target's next turn; it creates no task and does not end your turn. Send success does not mean the target has read it.", result);
+      }),
+    }, {
+      name: "group_chat_read",
+      description: "List group-chat messages queued for you in this Run's topic, oldest first. Unread messages are also injected into your next turn's context, but listing them here does not mark them read unless markRead is true. Use markRead: true once you have processed the returned messages, so they stop being re-injected. This tool reads chat only; it creates no task and never appears as a final answer.",
+      inputSchema: z.object({ limit: z.number().int().min(1).max(100).optional(),
+        markRead: z.boolean().optional() }).strict(),
+      handler: async (args) => await asToolResult(async () => {
+        if (!transport.groupChatRead) throw new Error("group_chat_read requires a bound runtime transport");
+        const result = await transport.groupChatRead({ executionToken: sourceHandle, args });
+        return createSuccessResult("Unread group chat queued for you (oldest first).", result);
       }),
     }, {
       name: "group_read_result",

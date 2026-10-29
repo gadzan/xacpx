@@ -1000,6 +1000,18 @@ test("public Run DTO keeps indeterminate instead of mapping it to failed", async
   expect(dto.completionReason).toBe("unproven_side_effects");
 });
 
+test("Fix1-4: toConversationRun projects followupBudgetExhausted so Relay Web can show the missing-summary state", async () => {
+  const { toConversationRun } = await import("../../../src/control/conversation-control-dtos");
+  const base = {
+    id: "run_1", conversationId: "conversation_1", topicId: "topic_1", requestMessageId: "cmsg_1",
+    requestId: "req", mode: "explicit" as const, state: "completed" as const, generation: 1,
+    maxMemberTurns: 8, consumedMemberTurns: 8, failedBotIds: [], unavailableBotIds: [],
+    profileRevision: 1, createdAt: NOW,
+  };
+  expect(toConversationRun({ ...base, followupBudgetExhausted: true }).followupBudgetExhausted).toBe(true);
+  expect(toConversationRun(base).followupBudgetExhausted).toBeUndefined();
+});
+
 test("synthetic Conversation and Topic timestamps stay stable across clock advances", async () => {
   let current = Date.parse(NOW);
   const { control } = await wire({

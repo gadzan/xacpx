@@ -1008,6 +1008,8 @@ export default {
       stuck: "{count} 卡住",
       needsYou: "{count} 需要你",
       nothingNeedsYou: "今天没有需要你的事",
+      budgetExhausted: "任务已结算，但最终汇总因预算不足未执行",
+      budgetExhaustedAction: "请查看各成员的结论自行汇总，或发送一条新消息重新汇总。",
       idle: "空闲",
       finalAnswer: "最终答案（{name}）：{verdict}",
     },

@@ -238,6 +238,13 @@ export class OrchestrationClient {
     return await this.request("conversation.group_chat", input);
   }
 
+  async groupChatRead(input: import("../conversations/group-handoff").GroupChatReadInvocation): Promise<{
+    messages: Array<{ id: string; from: string; replyToId?: string; content: string; createdAt: string }>;
+    markedRead: string[];
+  }> {
+    return await this.request("conversation.group_chat_read", input);
+  }
+
   async groupReadResult(input: import("../conversations/group-handoff").GroupReadResultInvocation): Promise<import("../conversations/group-handoff").GroupResultPage> {
     return await this.request("conversation.group_read_result", input);
   }

@@ -562,6 +562,9 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     ...(run.mode === "automatic" && run.state === "waiting-human" && run.waitingQuestion !== undefined
       ? { waitingQuestion: run.waitingQuestion } : {}),
     ...(run.activeBatch !== undefined ? { activeBatch: run.activeBatch } : {}),
+    // Fix-round-1: project the persisted budget-exhaustion flag so Relay
+    // Web can tell "settled without a final summary" apart from "done".
+    ...(run.followupBudgetExhausted ? { followupBudgetExhausted: true } : {}),
     maxMemberTurns: run.maxMemberTurns,
     consumedMemberTurns: run.consumedMemberTurns,
     failedBotIds: [...run.failedBotIds],

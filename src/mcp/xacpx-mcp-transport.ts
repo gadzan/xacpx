@@ -161,6 +161,7 @@ export interface XacpxMcpTransport {
   groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: (input: GroupSendInvocation) => Promise<{ runId: string; assignmentId: string; memberTurnId: string; messageId: string }>;
   groupChat?: OrchestrationClient["groupChat"];
+  groupChatRead?: OrchestrationClient["groupChatRead"];
   delegateRequest: (input: XacpxMcpDelegateRequest) => Promise<RequestDelegateRpcResult>;
   createGroup: (input: XacpxMcpGroupNewArgs) => Promise<OrchestrationGroupRecord>;
   getTask: (input: XacpxMcpTaskIdArgs) => Promise<OrchestrationTaskRecord | null>;
@@ -206,6 +207,7 @@ interface OrchestrationClientLike {
   groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: OrchestrationClient["groupSend"];
   groupChat?: OrchestrationClient["groupChat"];
+  groupChatRead?: OrchestrationClient["groupChatRead"];
   registerExternalCoordinator?: OrchestrationClient["registerExternalCoordinator"];
   delegateRequest: OrchestrationClient["delegateRequest"];
   createGroup: OrchestrationClient["createGroup"];
@@ -250,6 +252,10 @@ export function createOrchestrationTransport(
     groupChat: async (input) => {
       if (!client.groupChat) throw new Error("Group chat transport is not configured");
       return await client.groupChat(input);
+    },
+    groupChatRead: async (input) => {
+      if (!client.groupChatRead) throw new Error("Group chat read transport is not configured");
+      return await client.groupChatRead(input);
     },
     delegateRequest: async (input) =>
       // For coordinator-side tool calls, coordinatorSession is the actual

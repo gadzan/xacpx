@@ -73,17 +73,19 @@ test("P5: parseGroupSend accepts dependsOn and rejects bad entries instead of dr
 });
 
 // ---------------------------------------------------------------- pure validation
-test("P5: validateGroupSendDependencies rejects unknown, unsettled, and cyclic entries", () => {
+test("P5: validateGroupSendDependencies rejects unknown, duplicate, and cyclic entries — unsettled is accepted (Fix1-6 dependency waiting)", () => {
   const settled = [fakeTurn("a_1", "completed"), fakeTurn("a_2", "failed")];
   expect(() => validateGroupSendDependencies(settled, ["a_1", "a_2"])).not.toThrow();
   expect(() => validateGroupSendDependencies(settled, ["missing"])).toThrow("names unknown assignment");
-  expect(() => validateGroupSendDependencies([...settled, fakeTurn("a_3", "running")], ["a_3"]))
-    .toThrow("names unsettled assignment");
-  expect(() => validateGroupSendDependencies([...settled, fakeTurn("a_3", "queued")], ["a_3"]))
-    .toThrow("names unsettled assignment");
+  // Unsettled dependencies are the normal "dispatch first, auto-wait" case.
+  expect(() => validateGroupSendDependencies([...settled, fakeTurn("a_3", "running")], ["a_3"])).not.toThrow();
+  expect(() => validateGroupSendDependencies([...settled, fakeTurn("a_3", "queued")], ["a_3"])).not.toThrow();
   expect(() => validateGroupSendDependencies(settled, ["a_1", "a_1"])).toThrow("repeats assignment");
   const cyclic = [fakeTurn("a_1", "completed", ["a_2"]), fakeTurn("a_2", "completed", ["a_1"])];
   expect(() => validateGroupSendDependencies(cyclic, ["a_1"])).toThrow("cycle through assignment");
+  // Cycle detection covers the pending graph too, not only settled turns.
+  const pendingCyclic = [fakeTurn("a_1", "queued", ["a_2"]), fakeTurn("a_2", "queued", ["a_1"])];
+  expect(() => validateGroupSendDependencies(pendingCyclic, ["a_1"])).toThrow("cycle through assignment");
 });
 
 // ---------------------------------------------------------------- store: parallel + dependent
@@ -132,7 +134,7 @@ test("P5: a followup dispatch on a settled assignment persists dependsOn and is 
   } finally { store.close(); }
 });
 
-test("P5: unknown or unsettled dependsOn is rejected and writes no turn", async () => {
+test("P5: unknown dependsOn is rejected and writes no turn", async () => {
   const store = await openStore();
   try {
     const { accepted, claim, leader } = acceptLeader(store);
@@ -141,12 +143,73 @@ test("P5: unknown or unsettled dependsOn is rejected and writes no turn", async 
     expect(() => dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
       "h-bad-1", "bot_b", "build on nothing", ["no_such_assignment"]))
       .toThrow("names unknown assignment");
-    const pending = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
+    expect(store.listMemberTurns(runId)).toHaveLength(before);
+  } finally { store.close(); }
+});
+
+test("Fix1-6: an unsettled dependency is accepted, blocks claiming until it completes, then releases", async () => {
+  const store = await openStore();
+  try {
+    const { accepted, claim, leader } = acceptLeader(store);
+    const runId = accepted.run.id;
+    const upstream = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
       "h-1", "bot_b", "work one").memberTurn;
-    expect(() => dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
-      "h-bad-2", "bot_c", "build on pending", [pending.assignmentId!]))
-      .toThrow("names unsettled assignment");
-    expect(store.listMemberTurns(runId)).toHaveLength(before + 1);
+    const downstream = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
+      "h-2", "bot_c", "build on work one", [upstream.assignmentId!]).memberTurn;
+    expect(downstream.state).toBe("queued");
+    // The fence serves the upstream turn first, never the waiting downstream.
+    const first = store.claimNextDispatch({ owner: "owner", now: NOW, leaseExpiresAt: LEASE })!;
+    expect(first.memberTurn.id).toBe(upstream.id);
+    // After the upstream completes, the downstream becomes claimable.
+    const startedUpstream = store.markExecutionStarted({ dispatchId: first.dispatch.id, owner: "owner",
+      generation: first.dispatch.generation, runId, memberTurnId: upstream.id,
+      sessionAlias: "session_b", logicalSessionId: "logical_session_b", sourceTurnId: "source_b", now: NOW });
+    expect(startedUpstream.id).toBe(upstream.id);
+    store.completeExecution({ runId, memberTurnId: upstream.id, content: "B done",
+      sourceTurn: { sessionAlias: "session_b", turnId: "source_b" }, now: NOW });
+    claimAndStart(store, runId, downstream, "session_c", "source_c");
+  } finally { store.close(); }
+});
+
+test("Fix1-6: a failed dependency blocks the downstream turn as dependency-failed, without quarantining its Bot", async () => {
+  const store = await openStore();
+  try {
+    const { accepted, claim, leader } = acceptLeader(store);
+    const runId = accepted.run.id;
+    const upstream = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
+      "h-1", "bot_b", "work one").memberTurn;
+    const downstream = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
+      "h-2", "bot_c", "build on work one", [upstream.assignmentId!]).memberTurn;
+    // The followup belongs to a completed sender, so complete the leader
+    // turn before its assignments settle (the leaderWake pattern).
+    store.completeExecution({ runId, memberTurnId: leader.id, content: "Leader dispatched",
+      sourceTurn: { sessionAlias: "session_a", turnId: "source_a" }, now: NOW });
+    const { started } = claimAndStart(store, runId, upstream, "session_b", "source_b");
+    store.failExecution({ runId, memberTurnId: started.id, now: NOW, reason: "build broke" });
+    const blocked = store.getMemberTurn(downstream.id)!;
+    expect(blocked.state).toBe("failed");
+    expect(blocked.failureReason).toBe(`dependency_failed: ${upstream.assignmentId} failed`);
+    // The downstream Bot never ran, so it is not quarantined for the Run.
+    expect(store.getRun(runId)?.quarantinedBotIds ?? []).not.toContain("bot_c");
+    // The leader's followup sees the blocked downstream as settled.
+    const wake = store.listMemberTurns(runId).find((turn) => turn.followupSenderMemberTurnId === leader.id);
+    expect(wake).toBeDefined();
+  } finally { store.close(); }
+});
+
+test("Fix1-6: a dependency that already failed at accept time blocks the new turn immediately", async () => {
+  const store = await openStore();
+  try {
+    const { accepted, claim, leader } = acceptLeader(store);
+    const runId = accepted.run.id;
+    const upstream = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
+      "h-1", "bot_b", "work one").memberTurn;
+    const { started } = claimAndStart(store, runId, upstream, "session_b", "source_b");
+    store.failExecution({ runId, memberTurnId: started.id, now: NOW, reason: "build broke" });
+    const receipt = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
+      "h-2", "bot_c", "build on failed work", [upstream.assignmentId!]);
+    expect(receipt.memberTurn.state).toBe("failed");
+    expect(receipt.memberTurn.failureReason).toBe(`dependency_failed: ${upstream.assignmentId} failed`);
   } finally { store.close(); }
 });
 

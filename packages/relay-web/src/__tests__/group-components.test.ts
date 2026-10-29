@@ -1076,6 +1076,50 @@ describe("Group Components", () => {
       expect(bubbles[1]!.classes()).toContain("is-running");
     });
 
+    it("Fix1-2: with two or more followups only the LAST followup stays expanded as the final answer", async () => {
+      const groups = seedGroupSelection();
+      const turns = [
+        { id: "turn_dev", botId: "bot_a", memberIndex: 0, origin: "human-explicit" as const, promptRequestId: "pr_dev", conclusion: "开发完成。" },
+        { id: "turn_follow1", botId: "bot_a", memberIndex: 1, origin: "followup" as const, promptRequestId: "pr_f1", conclusion: "第一次跟进：发现补丁需要改。" },
+        { id: "turn_follow2", botId: "bot_b", memberIndex: 2, origin: "followup" as const, promptRequestId: "pr_f2", conclusion: "第二次跟进：补丁已审查通过。" },
+        { id: "turn_summary", botId: "bot_a", memberIndex: 3, origin: "followup" as const, promptRequestId: "pr_sum", conclusion: "最终汇总：全部完成。" },
+      ];
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        ...turns.map((turn, i) => ({
+          id: `msg_${turn.id}`, conversationId: "conversation_g", topicId: "topic_1", seq: i + 2,
+          role: "bot" as const, senderBotId: turn.botId, content: `raw output ${turn.id}`,
+          timelineContent: turn.conclusion, runId: "run_1", promptRequestId: turn.promptRequestId, createdAt: "now",
+        })),
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = Object.fromEntries(turns.map((turn) => [turn.id, {
+        id: turn.id, runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: turn.botId, batch: 1, memberIndex: turn.memberIndex, attempt: 1, origin: turn.origin,
+        state: "completed", createdAt: "now", promptRequestId: turn.promptRequestId,
+        finalReportVerdict: "achieved" as const,
+      }]));
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const rows = wrapper.findAll('[data-test="agent-turn-row"]');
+      expect(rows).toHaveLength(4);
+      const folded = (row: typeof rows[number]) => row.find('[data-test="group-intermediate-conclusion"]').exists();
+      // The first followup conclusion is intermediate now, not the final answer.
+      expect(folded(rows[1]!)).toBe(true);
+      expect(folded(rows[2]!)).toBe(true);
+      expect(folded(rows[0]!)).toBe(true);
+      // Only the last followup (the real final summary) stays expanded.
+      expect(folded(rows[3]!)).toBe(false);
+      expect(rows[3]!.text()).toContain("最终汇总：全部完成。");
+    });
+
     it("opens the anchored detail popover from one bubble and stops the exact active run from it", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
@@ -1759,6 +1803,31 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-topic-pill"]').exists()).toBe(true);
       expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(true);
       expect(direct.isBotSelected).toBe(false);
+    });
+
+    it("Fix1-4: a budget-exhausted Run shows the missing-summary banner and no final answer", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now", followupBudgetExhausted: true,
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", createdAt: "now", finalReportVerdict: "achieved",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const banner = wrapper.find('[data-test="group-overview-budget-exhausted"]');
+      expect(banner.exists()).toBe(true);
+      expect(banner.text()).toContain("final summary was not run because the budget was exhausted");
+      // The member report must not silently stand in as the overall conclusion.
+      expect(wrapper.find('[data-test="group-overview-final-answer"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-overview"]').text()).not.toContain("今天没有需要你的事");
+      wrapper.unmount();
     });
 
     it("disables the composer and marks the pill on an archived Topic", async () => {

@@ -1922,6 +1922,7 @@ export async function buildApp(
       }),
       groupReadResult: async (invocation) => await conversations.withOperation(async () => conversations.handoffs.readResult(invocation)),
       groupChat: async (invocation) => await conversations.withOperation(async () => conversations.handoffs.chat(invocation)),
+      groupChatRead: async (invocation) => await conversations.withOperation(async () => conversations.handoffs.readChat(invocation)),
       agentMessaging: {
         listReachable: async binding => binding.sourceHandle?.startsWith('direct-execution:')
           ? conversations.withOperation(async () => conversations.directMessaging.listReachable(binding))

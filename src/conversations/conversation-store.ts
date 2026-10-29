@@ -387,6 +387,11 @@ export const MAX_AUTOMATIC_MEMBER_TURNS = 24;
  * chain always ends with a summary turn that escalates to the user instead
  * of silently dropping the last generation's results. Configurable per
  * store via SqliteConversationStoreOptions.followupChainDepthLimit.
+ *
+ * Fix-round-1, DECIDED (review answer accepted, do not change without a
+ * product decision): with the default limit 3, depth 1 and 2 may dispatch
+ * and depth 3 is summary-only. Guaranteeing a closing turn matters more
+ * than one more dispatch generation.
  */
 export const FOLLOWUP_CHAIN_DEPTH_LIMIT = 3;
 
@@ -406,6 +411,10 @@ export interface GroupChatMessage {
   replyToId?: string;
   content: string;
   createdAt: string;
+  /** Fix-round-1: set when the target Bot explicitly read this message
+   *  (group_chat_read with markRead). Absent = queued, not yet received
+   *  in the sense that matters: the target has not read it. */
+  readAt?: string;
 }
 
 export interface SendGroupChatInput {
@@ -453,7 +462,11 @@ export interface ConversationStore {
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
   /** Record that a member turn read a settled assignment's result (P4
-   *  read-before-dispatch). Catalog reads record every assignment listed. */
+   *  read-before-dispatch). Fix-round-1: a catalog listing records only
+   *  assignments with no result page (failed/cancelled/indeterminate);
+   *  a completed assignment is recorded only when its result page has
+   *  been read to the end (nextOffset null). Listing is discovery, not
+   *  evidence that the result was read. */
   recordGroupResultRead(memberTurnId: string, assignmentId: string): void;
   /** Assignment ids a member turn has read results for, in read order. */
   listGroupResultReads(memberTurnId: string): string[];
@@ -461,6 +474,14 @@ export interface ConversationStore {
   sendGroupChat(input: SendGroupChatInput): GroupChatMessage;
   /** Chat history for one topic, oldest first, bounded by limit. */
   listGroupChatMessages(conversationId: string, topicId: string, limit?: number): GroupChatMessage[];
+  /** Fix-round-1 receiving loop: unread chat addressed to one target Bot,
+   *  oldest first. Used both by the explicit read tool and by next-turn
+   *  context injection (which lists, never marks read). */
+  listUnreadGroupChatMessages(conversationId: string, topicId: string, targetBotId: string, limit?: number): GroupChatMessage[];
+  /** Mark named messages read for their target Bot. Returns the ids
+   *  actually marked (ids naming another target's messages are ignored,
+   *  never marked). */
+  markGroupChatMessagesRead(conversationId: string, topicId: string, targetBotId: string, messageIds: string[], now: string): string[];
   listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[];
   /** Exact public result join using the minted durable execution identity. */
   getMemberResult(turn: MemberTurnRecord): ConversationMessage | undefined;
@@ -701,13 +722,18 @@ export interface GroupSendInput {
   task: string;
   expectedOutput?: string;
   /**
-   * P5: assignment ids this dispatch depends on. Each entry must name an
-   * already-settled assignment of the SAME Run (see
-   * validateGroupSendDependencies). An unsettled, unknown, duplicated, or
-   * cyclic entry is rejected at accept time, never dropped silently: the
-   * claim fence in sqlite-conversation-store.ts is only a safety net for
-   * the settled-at-accept race, not a queue for unsettled dependencies.
-   * Absent/empty means independent: same-turn dispatches run in parallel.
+   * Fix-round-1 (dependency waiting): assignment ids this dispatch
+   * depends on, in the SAME Run (see validateGroupSendDependencies). An
+   * unsettled entry is ACCEPTED and stored: the scheduler does not claim
+   * or start the turn until every dependency has completed. If any
+   * dependency fails or is cancelled, the downstream turn never starts
+   * and is marked dependency-failed-blocked (failureReason
+   * `dependency_failed: <assignmentId> <state>`), visible to the followup
+   * turn, which (or the user) explicitly re-dispatches a degraded plan —
+   * there is no automatic degraded execution. Unknown, duplicated, or
+   * cyclic entries are still rejected at accept time, never dropped
+   * silently. Absent/empty means independent: same-turn dispatches run
+   * in parallel.
    */
   dependsOn?: string[];
 }
@@ -716,12 +742,15 @@ export interface GroupSendInput {
 export const GROUP_SEND_MAX_DEPENDENCIES = 64;
 
 /**
- * P5: validate a group_send dependsOn list against the Run's durable turns.
- * Rejects, in order: a non-array/oversized/empty/duplicate entry, an
- * assignment id with no turn in this Run, a turn that has not settled
- * (terminal states only: completed/failed/cancelled/indeterminate), and a
- * dependency cycle in the existing graph. Callers must pass only turns of
- * the same Run; a cross-Run id therefore reads as unknown, by construction.
+ * Fix-round-1 (dependency waiting): validate a group_send dependsOn list
+ * against the Run's durable turns. Rejects, in order: a non-array/
+ * oversized/empty/duplicate entry, an assignment id with no turn in this
+ * Run, and a dependency cycle in the existing graph — including the
+ * pending (unsettled) graph, since unsettled dependencies are now
+ * accepted and waited on. An unsettled entry is NOT rejected: it is the
+ * normal "dispatch first, auto-wait" case. Callers must pass only turns
+ * of the same Run; a cross-Run id therefore reads as unknown, by
+ * construction.
  */
 export function validateGroupSendDependencies(
   turns: readonly MemberTurnRecord[],
@@ -746,21 +775,20 @@ export function validateGroupSendDependencies(
   for (const turn of turns) {
     if (turn.assignmentId) byAssignment.set(turn.assignmentId, turn);
   }
-  const terminal = new Set(["completed", "failed", "cancelled", "indeterminate"]);
   for (const dep of dependsOn) {
     const turn = byAssignment.get(dep);
     if (!turn) {
       throw new ConversationError("handoff_dependency_unknown",
         `dependsOn names unknown assignment "${dep}": no such assignment in this Run`);
     }
-    if (!terminal.has(turn.state)) {
-      throw new ConversationError("handoff_dependency_unsettled",
-        `dependsOn names unsettled assignment "${dep}" (state ${turn.state}): point dependsOn at already-settled assignments only`);
-    }
+    // Fix-round-1: an unsettled dependency is accepted, not rejected.
+    // The claim fence holds the turn until it settles, and the
+    // dependency-failure cascade blocks it if it fails or is cancelled.
   }
-  // Cycle check over the existing (already-settled) graph. The new turn is
-  // not in the graph yet, so a cycle can only hide inside the named chains;
-  // checking it here keeps a corrupt durable graph from laundering a dep.
+  // Cycle check over the existing graph, settled AND pending. The new turn
+  // is not in the graph yet, so a cycle can only hide inside the named
+  // chains; checking it here keeps a corrupt durable graph from
+  // laundering a dep.
   const visiting = new Set<string>();
   const visited = new Set<string>();
   const visit = (assignmentId: string): void => {

@@ -137,10 +137,17 @@ const items = computed<GroupTranscriptItem[]>(() =>
 
 /**
  * Per run, the one member turn whose conclusion stays expanded: the
- * terminal followup (summary) turn when there is one, else the last
+ * LAST terminal followup (summary) turn when there is one, else the last
  * terminal member turn. Every other terminal member turn is an
  * intermediate conclusion and starts folded. The distinction is backend
  * turn identity (followup origin + terminal order), never text parsing.
+ *
+ * Fix-round-1 (PR #500 review): the previous code used `find`, which
+ * picked the FIRST followup. With two or more followups
+ * (develop -> patch -> review -> summary), the first followup's
+ * conclusion was expanded as the final answer and the real final summary
+ * was folded as an intermediate conclusion. `findLast` (with a reverse
+ * loop for environments without it) picks the last one.
  */
 const finalAnswerMemberTurnIds = computed<Set<string>>(() => {
   const ids = new Set<string>();
@@ -150,7 +157,15 @@ const finalAnswerMemberTurnIds = computed<Set<string>>(() => {
     if (terminal.length === 0) continue;
     const ordered = [...terminal].sort((a, b) => a.batch - b.batch
       || (a.memberIndex ?? 0) - (b.memberIndex ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const followup = ordered.find((turn) => turn.origin === "followup");
+    let followup: (typeof ordered)[number] | undefined;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      if (ordered[i]!.origin === "followup") { followup = ordered[i]; break; }
+    }
+    // Fix-round-1: when the budget ran out before a final summary turn
+    // could be created, there is NO overall conclusion to expand. Do not
+    // silently promote the last member turn into the final answer.
+    const hasFinalSummary = ordered.some((turn) => turn.origin === "followup" && turn.state === "completed");
+    if (record.run.followupBudgetExhausted && !hasFinalSummary) continue;
     ids.add((followup ?? ordered[ordered.length - 1]!).id);
   }
   return ids;

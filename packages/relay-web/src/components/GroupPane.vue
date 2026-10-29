@@ -142,8 +142,17 @@ const memberStatus = computed<MemberStatus | null>(() => {
  */
 const overview = computed(() => {
   const turns = groupsStore.memberTurns;
+  // Same counting rule as src/conversations/group-overview.ts — do not
+  // let the two drift. Run order is batch, memberIndex, id.
+  const ordered = [...turns].sort((a, b) => a.batch - b.batch
+    || (a.memberIndex ?? 0) - (b.memberIndex ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const inProgress = turns.filter((turn) => ["queued", "dispatched", "running"].includes(turn.state)).length;
-  const stuck = turns.filter((turn) => ["failed", "indeterminate"].includes(turn.state)).length;
+  // Fix-round-1: only currently unresolved failures count as stuck.
+  // A failed/indeterminate turn with a completed turn after it in Run
+  // order has recovered; history stays in the process detail, not here.
+  const lastCompletedPos = ordered.reduce((max, turn, i) => (turn.state === "completed" ? i : max), -1);
+  const stuck = ordered.filter((turn, i) =>
+    ["failed", "indeterminate"].includes(turn.state) && i > lastCompletedPos).length;
   const needsUser = stuck + (groupsStore.activeRun?.state === "waiting-human" ? 1 : 0);
   const latestByBot = new Map<string, (typeof turns)[number]>();
   for (const turn of turns) latestByBot.set(turn.botId, turn);
@@ -154,14 +163,34 @@ const overview = computed(() => {
       stateLabel: state === "idle" ? t("group.overview.idle") : t(`group.bubble.status.${state}`),
       task: turn?.task ? turn.task.slice(0, 120) : undefined };
   });
-  const finalAnswers = turns
-    .filter((turn) => turn.state === "completed" && turn.finalReportVerdict)
-    .map((turn) => ({ id: turn.id, botId: turn.botId,
-      name: memberBots.value.find((bot) => bot.id === turn.botId)?.name ?? turn.botId,
-      verdict: turn.finalReportVerdict === "achieved" ? t("group.bubble.finalVerdict.achieved")
-        : turn.finalReportVerdict === "not-achieved" ? t("group.bubble.finalVerdict.notAchieved")
-        : t("group.bubble.finalVerdict.interrupted") }));
-  return { inProgress, stuck, needsUser, members, finalAnswers,
+  // Fix-round-1: one final answer per Run, by the GroupTranscript rule —
+  // last terminal followup, else last terminal turn — included only when
+  // completed with a verdict. Earlier member conclusions are intermediate.
+  // When the budget ran out before a final summary could be created, there
+  // is NO overall conclusion: the last member report must not stand in.
+  const terminal = ordered.filter((turn) =>
+    ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
+  let finalTurn: (typeof terminal)[number] | undefined;
+  for (let i = terminal.length - 1; i >= 0; i--) {
+    if (terminal[i]!.origin === "followup") { finalTurn = terminal[i]; break; }
+  }
+  finalTurn ??= terminal[terminal.length - 1];
+  const hasFinalSummaryEarly = ordered.some((turn) => turn.origin === "followup" && turn.state === "completed");
+  const budgetExhaustedNoSummary = Boolean(groupsStore.activeRun?.followupBudgetExhausted) && !hasFinalSummaryEarly;
+  const finalAnswers = (!budgetExhaustedNoSummary && finalTurn && finalTurn.state === "completed" && finalTurn.finalReportVerdict)
+    ? [{ id: finalTurn.id, botId: finalTurn.botId,
+      name: memberBots.value.find((bot) => bot.id === finalTurn!.botId)?.name ?? finalTurn.botId,
+      verdict: finalTurn.finalReportVerdict === "achieved" ? t("group.bubble.finalVerdict.achieved")
+        : finalTurn.finalReportVerdict === "not-achieved" ? t("group.bubble.finalVerdict.notAchieved")
+        : t("group.bubble.finalVerdict.interrupted") }]
+    : [];
+  // Fix-round-1: budget exhaustion is visible, not silent. When the Run
+  // settled but no final summary turn could be created, the last member
+  // report must NOT stand in as the overall conclusion (finalAnswers
+  // above is already empty in that case, because there is no completed
+  // followup to promote), and the strip says so with a human next step.
+  const budgetExhausted = budgetExhaustedNoSummary;
+  return { inProgress, stuck, needsUser, members, finalAnswers, budgetExhausted,
     leadName: memberBots.value.find((bot) => bot.id === group.value?.leadBotId)?.name };
 });
 
@@ -296,7 +325,10 @@ const worktreeRunId = computed(() => {
       <p data-test="group-overview-head">
         <span v-if="overview.leadName">{{ $t("group.manage.lead") }}：{{ overview.leadName }} · </span>
         <span>{{ $t("group.overview.inProgress", { count: overview.inProgress }) }} · {{ $t("group.overview.stuck", { count: overview.stuck }) }} · {{ $t("group.overview.needsYou", { count: overview.needsUser }) }}</span>
-        <span v-if="overview.needsUser === 0"> · {{ $t("group.overview.nothingNeedsYou") }}</span>
+        <span v-if="overview.needsUser === 0 && !overview.budgetExhausted"> · {{ $t("group.overview.nothingNeedsYou") }}</span>
+      </p>
+      <p v-if="overview.budgetExhausted" data-test="group-overview-budget-exhausted">
+        {{ $t("group.overview.budgetExhausted") }}。{{ $t("group.overview.budgetExhaustedAction") }}
       </p>
       <p v-for="member in overview.members" :key="member.id" data-test="group-overview-member">
         {{ member.name }} · {{ member.stateLabel }}<span v-if="member.task"> · {{ member.task }}</span>

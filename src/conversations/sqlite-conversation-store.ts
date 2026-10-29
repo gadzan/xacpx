@@ -402,6 +402,16 @@ CREATE TABLE IF NOT EXISTS lifecycle_operations (
  * the gate rejects cyclic graphs. A dependency that exists but is not terminal
  * blocks; a dependency that never exists blocks forever, which is why the
  * routing gate resolves dependencies against durable assignments first.
+ *
+ * Fix-round-1 (dependency waiting): the fence is also the fail-closed
+ * safety net for a failed/cancelled/indeterminate dependency. Normally
+ * such a dependency is handled before the fence ever matters — failed/
+ * cancelled deps cascade the downstream turn to failed at settlement
+ * (cascadeDependencyFailures), and an indeterminate dep seals the Run —
+ * but if either path is missed, the downstream turn must still never
+ * start: it stays queued, visible as blocked, instead of running on a
+ * failed dependency's nonexistent result. Only a completed dependency
+ * lets the fence pass.
  */
 const SEQUENTIAL_DEPENDENCY_FENCE = `
            AND NOT EXISTS (
@@ -409,7 +419,7 @@ const SEQUENTIAL_DEPENDENCY_FENCE = `
              LEFT JOIN member_turns dep_turn
                ON dep_turn.run_id = m.run_id AND dep_turn.assignment_id = dep.value
              WHERE dep_turn.id IS NULL
-                OR dep_turn.state IN ('queued', 'dispatched', 'running')
+                OR dep_turn.state IN ('queued', 'dispatched', 'running', 'failed', 'cancelled', 'indeterminate')
            )`;
 
 function optionalString(value: string | null | undefined): string | undefined {
@@ -1197,8 +1207,9 @@ export class SqliteConversationStore implements ConversationStore {
         throw new ConversationError("handoff_quarantined_member", "target is unavailable for this Run");
       }
       const members = this.listMemberTurns(run.id);
-      // P5: unknown / unsettled / duplicated / cyclic dependsOn is rejected
+      // Fix-round-1: unknown / duplicated / cyclic dependsOn is rejected
       // here, before any durable row is written — never stored as [].
+      // Unsettled dependsOn is accepted (dependency waiting), not rejected.
       validateGroupSendDependencies(members, args.dependsOn);
       if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
         // Keep the active physical execution intact. The failed tool call is
@@ -1247,6 +1258,23 @@ export class SqliteConversationStore implements ConversationStore {
           args.expectedOutput ?? null, JSON.stringify(args.dependsOn ?? []), input.sourceTurnId, input.invocationId]);
       this.sqlite.run(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
         VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, memberTurnId, run.generation, input.now]);
+      // Fix-round-1: a dependency that ALREADY failed or was cancelled at
+      // accept time needs no settlement event to block on — mark the new
+      // turn dependency-failed immediately, or it would sit queued forever
+      // (the claim fence would never let it start, and no later aggregate
+      // would settle it for the sender's followup). Same no-quarantine
+      // rule as the settlement cascade: the Bot never ran.
+      const byAssignment = new Map(members.filter((turn) => turn.assignmentId).map((turn) => [turn.assignmentId!, turn]));
+      const badDep = (args.dependsOn ?? [])
+        .map((dep) => byAssignment.get(dep))
+        .find((depTurn) => depTurn && (depTurn.state === "failed" || depTurn.state === "cancelled"));
+      if (badDep) {
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'failed', failure_reason = ?, finished_at = ? WHERE id = ?`,
+          [`dependency_failed: ${badDep.assignmentId} ${badDep.state}`, input.now, memberTurnId]);
+        this.sqlite.run(`UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`, [run.id]);
+        this.finishDispatchForMemberTurn(memberTurnId, input.now);
+      }
       return { reused: false, run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(memberTurnId), message: this.requireMessage(messageId) };
     }) ?? (() => { throw new ConversationError("budget-exhausted", "Run work budget is exhausted"); })();
   }
@@ -3560,6 +3588,10 @@ export class SqliteConversationStore implements ConversationStore {
       sender_bot_id TEXT NOT NULL, sender_member_turn_id TEXT, target_bot_id TEXT NOT NULL,
       reply_to_id TEXT, content TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_group_chat_topic ON group_chat_messages (conversation_id, topic_id, created_at, id);`);
+    // Fix-round-1: read_at marks the receiving loop. It must run AFTER the
+    // CREATE TABLE above, because ensure() on a not-yet-created table
+    // would ALTER a missing table on fresh databases.
+    ensure("group_chat_messages", "read_at", "TEXT");
     this.sqlite.exec(`DROP INDEX IF EXISTS idx_handoff_followup_sender;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_followup_sender ON member_turns
         (followup_sender_member_turn_id, batch) WHERE followup_sender_member_turn_id IS NOT NULL;`);
@@ -3615,7 +3647,38 @@ export class SqliteConversationStore implements ConversationStore {
       ...(row.sender_member_turn_id ? { senderMemberTurnId: row.sender_member_turn_id } : {}),
       targetBotId: row.target_bot_id!, ...(row.reply_to_id ? { replyToId: row.reply_to_id } : {}),
       content: row.content!, createdAt: row.created_at!,
+      ...(row.read_at ? { readAt: row.read_at } : {}),
     }));
+  }
+
+  listUnreadGroupChatMessages(conversationId: string, topicId: string, targetBotId: string, limit = 100): GroupChatMessage[] {
+    const rows = this.sqlite.all<Record<string, string | null>>(
+      `SELECT * FROM group_chat_messages WHERE conversation_id = ? AND topic_id = ?
+       AND target_bot_id = ? AND read_at IS NULL
+       ORDER BY created_at ASC, id ASC LIMIT ?`, [conversationId, topicId, targetBotId, limit]);
+    return rows.map((row) => ({
+      id: row.id!, conversationId: row.conversation_id!, topicId: row.topic_id!,
+      ...(row.run_id ? { runId: row.run_id } : {}), senderBotId: row.sender_bot_id!,
+      ...(row.sender_member_turn_id ? { senderMemberTurnId: row.sender_member_turn_id } : {}),
+      targetBotId: row.target_bot_id!, ...(row.reply_to_id ? { replyToId: row.reply_to_id } : {}),
+      content: row.content!, createdAt: row.created_at!,
+    }));
+  }
+
+  markGroupChatMessagesRead(conversationId: string, topicId: string, targetBotId: string, messageIds: string[], now: string): string[] {
+    // SqlDriver.run returns void, so check-then-update: a row counts as
+    // marked only when it exists, belongs to this target, and is unread.
+    const marked: string[] = [];
+    for (const id of messageIds) {
+      const row = this.sqlite.get<{ id: string }>(
+        `SELECT id FROM group_chat_messages WHERE id = ? AND conversation_id = ?
+         AND topic_id = ? AND target_bot_id = ? AND read_at IS NULL`,
+        [id, conversationId, topicId, targetBotId]);
+      if (!row) continue;
+      this.sqlite.run(`UPDATE group_chat_messages SET read_at = ? WHERE id = ?`, [now, id]);
+      marked.push(id);
+    }
+    return marked;
   }
 
   /**
@@ -4397,6 +4460,46 @@ export class SqliteConversationStore implements ConversationStore {
    * failedBotIds; cancelled/indeterminate are read from MemberTurns.
    * unavailableBotIds is PR7+ reservation surface.
    */
+  /**
+   * Fix-round-1 (dependency waiting): when a dependency settles as failed
+   * or cancelled, every unstarted downstream turn in the Run that depends
+   * on it — directly or transitively — is marked failed with
+   * `dependency_failed: <assignmentId> <state>`, its dispatch finished,
+   * and its budget slot consumed, so the sender's followup turn sees it
+   * as settled and can explicitly re-dispatch a degraded plan. The
+   * downstream Bot is deliberately NOT added to failedBotIds or
+   * quarantined: it never ran, so it did not fail execution. Indeterminate
+   * dependencies are NOT cascaded here — they seal the Run through the
+   * indeterminate branch below, which settles every still-runnable
+   * sibling as indeterminate. Only unstarted turns (queued/dispatched
+   * with startedAt null) are cascaded; a turn that already started keeps
+   * its own outcome.
+   */
+  private cascadeDependencyFailures(runId: string, now: string): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const turns = this.listMemberTurns(runId);
+      const byAssignment = new Map<string, MemberTurnRecord>();
+      for (const turn of turns) {
+        if (turn.assignmentId) byAssignment.set(turn.assignmentId, turn);
+      }
+      for (const turn of turns) {
+        if (!((turn.state === "queued" || turn.state === "dispatched") && !turn.startedAt)) continue;
+        const bad = (turn.dependsOn ?? [])
+          .map((dep) => byAssignment.get(dep))
+          .find((depTurn) => depTurn && (depTurn.state === "failed" || depTurn.state === "cancelled"));
+        if (!bad) continue;
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'failed', failure_reason = ?, finished_at = ? WHERE id = ?`,
+          [`dependency_failed: ${bad.assignmentId} ${bad.state}`, now, turn.id]);
+        this.sqlite.run(`UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`, [runId]);
+        this.finishDispatchForMemberTurn(turn.id, now);
+        changed = true;
+      }
+    }
+  }
+
   private aggregateRunAfterMemberTerminal(
     runId: string,
     memberTurnId: string,
@@ -4408,6 +4511,11 @@ export class SqliteConversationStore implements ConversationStore {
     if (TERMINAL_RUN_STATES.includes(run.state)) {
       return run;
     }
+    // Fix-round-1: cascade FIRST, before followup derivation, so a
+    // followup enqueued in this same settlement sees dependency-failed
+    // downstream turns as settled instead of still-pending work that can
+    // never start (which would suppress the followup forever).
+    this.cascadeDependencyFailures(runId, now);
     // Wake derivation is per leader: enqueueSettledHandoffFollowups skips a
     // leader whose OWN assignment is indeterminate. A Run-level gate here
     // would also suppress every unrelated leader's wake in the same Run. A

@@ -59,7 +59,11 @@ function request(text = "work", messageId = "m1", chatKey = "discord:default:g:c
 
 async function group(current: Awaited<ReturnType<typeof compose>>, names = ["Reviewer", "Builder"]) {
   const bots = await Promise.all(names.map((name) => current.control.createBot({ name, agent: "codex", workspace: "backend" })));
-  const group = await current.control.createGroup({ title: "Bound", botIds: bots.map((bot) => bot.id), leadBotId: bots[0]!.id });
+  // Fix-round-1 (PR #500 CI): this helper creates shared-workspace Topics
+  // below, so the Group must explicitly opt into "shared". Omitting
+  // workspaceMode now defaults a new Group to per-member, and a per-member
+  // Group rejects a shared executionTarget with execution_target_unexpected.
+  const group = await current.control.createGroup({ title: "Bound", botIds: bots.map((bot) => bot.id), leadBotId: bots[0]!.id, workspaceMode: "shared" });
   const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
   await current.control.bindConversation({ chatKey: request().conversationId, conversationId: group.id, topicId: topic.id });
   return { group, topic, bots };

@@ -1395,7 +1395,7 @@ test("Direct launch exposes only truthful one-way messaging tools and preserves 
   for(const extra of [{mode:"interrupt"},{mode:"steer"},{completion:"result"},{completion:"notify"},{replyTo:"msg"},{selector:{agent:"codex"}},{sourceHandle:"spoofed"}]) {
     expect(send.inputSchema.safeParse({to:"agent:node:bot",message:"work",...extra}).success).toBe(false);
   }
-  expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send", "group_chat", "group_read_result"]);
+  expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send", "group_chat", "group_chat_read", "group_read_result"]);
 });
 
 test("Group handoff tools keep the turn alive after dispatch and preserve explicit result-read refusal", async () => {

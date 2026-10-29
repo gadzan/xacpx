@@ -528,6 +528,14 @@ export interface ConversationRunDto {
   routingReason?: string;
   /** Durable Router question while an automatic Run waits for human input. */
   waitingQuestion?: string;
+  /**
+   * Fix-round-1: true when the Run settled its work but could not create
+   * its final summary (followup) turn because the member-turn budget was
+   * exhausted. The Run is not failed, but it has NO synthesized final
+   * conclusion — the UI must say so explicitly and must not present the
+   * last member report as the overall conclusion.
+   */
+  followupBudgetExhausted?: boolean;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;

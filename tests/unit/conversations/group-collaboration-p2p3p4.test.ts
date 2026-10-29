@@ -352,8 +352,11 @@ async function chatHarness() {
   const handoffs = new GroupHandoffService({ store, bots, state, now: () => new Date(NOW), wake() {} });
   const capability = handoffs.bindExecution({ senderMemberTurnId: sender.id, sourceTurnId: "source",
     dispatchId: claim.dispatch.id, owner: "owner", generation: claim.dispatch.generation });
-  return { store, handoffs, sender, accepted, state,
-    chat: (args: unknown) => handoffs.chat({ executionToken: capability.token, args }) };
+  return { store, handoffs, sender, accepted, state, claim,
+    chat: (args: unknown) => handoffs.chat({ executionToken: capability.token, args }),
+    read: (args: unknown) => handoffs.readResult({ executionToken: capability.token, args }),
+    readChat: (args: unknown) => handoffs.readChat({ executionToken: capability.token, args }),
+    context: () => handoffs.memberContext(capability.token) };
 }
 
 test("P3: group chat records a threaded message without creating a turn, dispatch, or budget use", async () => {
@@ -386,5 +389,102 @@ test("P3: group chat refuses self-targets, disabled targets, and foreign replyTo
     h.state.bots.bot_b!.enabled = true;
     const ok = await h.chat({ to: "bot_b", content: "hello again" });
     expect(ok.messageId.length).toBeGreaterThan(0);
+  } finally { h.handoffs.close(); h.store.close(); }
+});
+
+// ---------------------------------------------------------------- Fix-round-1: read-before-dispatch (Fix 3)
+test("Fix1-3: listing the catalog does NOT count a completed result as read; reading it to the end does", async () => {
+  const h = await chatHarness();
+  try {
+    const runId = h.accepted.run.id;
+    const assignment = dispatch(h.store, h.sender, h.claim.dispatch.id, h.claim.dispatch.generation,
+      "fix3-handoff-1", "bot_b", "work for catalog test").memberTurn;
+    settle(h.store, runId, assignment, "session_b", "source_b", "B result content");
+    const catalog = h.read({});
+    expect(catalog.kind).toBe("catalog");
+    // Catalog listing alone must not satisfy the read-before-dispatch guard.
+    expect(h.store.listGroupResultReads(h.sender.id)).not.toContain(assignment.assignmentId);
+    const page = h.read({ assignmentId: assignment.assignmentId });
+    expect(page.kind).toBe("result");
+    if (page.kind === "result") expect(page.nextOffset).toBeNull();
+    expect(h.store.listGroupResultReads(h.sender.id)).toContain(assignment.assignmentId);
+  } finally { h.handoffs.close(); h.store.close(); }
+});
+
+test("Fix1-3: a partial result page does NOT count as read; the final page does", async () => {
+  const h = await chatHarness();
+  try {
+    const runId = h.accepted.run.id;
+    const assignment = dispatch(h.store, h.sender, h.claim.dispatch.id, h.claim.dispatch.generation,
+      "fix3-handoff-2", "bot_b", "work for paging test").memberTurn;
+    settle(h.store, runId, assignment, "session_b", "source_b", "0123456789ABCDEFGHIJ");
+    const first = h.read({ assignmentId: assignment.assignmentId, limit: 10 });
+    expect(first.kind).toBe("result");
+    if (first.kind === "result") expect(first.nextOffset).toBe(10);
+    expect(h.store.listGroupResultReads(h.sender.id)).not.toContain(assignment.assignmentId);
+    const rest = h.read({ assignmentId: assignment.assignmentId, offset: 10 });
+    expect(rest.kind).toBe("result");
+    if (rest.kind === "result") expect(rest.nextOffset).toBeNull();
+    expect(h.store.listGroupResultReads(h.sender.id)).toContain(assignment.assignmentId);
+  } finally { h.handoffs.close(); h.store.close(); }
+});
+
+test("Fix1-3: a failed assignment IS confirmed by the catalog entry, with its failure reason", async () => {
+  const h = await chatHarness();
+  try {
+    const runId = h.accepted.run.id;
+    const assignment = dispatch(h.store, h.sender, h.claim.dispatch.id, h.claim.dispatch.generation,
+      "fix3-handoff-3", "bot_b", "work that fails").memberTurn;
+    const { started } = claimAndStart(h.store, runId, assignment, "session_b", "source_b");
+    h.store.failExecution({ runId, memberTurnId: started.id, now: NOW, reason: "build broke" });
+    const catalog = h.read({});
+    expect(catalog.kind).toBe("catalog");
+    if (catalog.kind === "catalog") {
+      const entry = catalog.assignments.find((item) => item.assignmentId === assignment.assignmentId)!;
+      expect(entry.state).toBe("failed");
+      expect(entry.failureReason).toBe("build broke");
+    }
+    // Failed turns have no result page, so the catalog entry is their read.
+    expect(h.store.listGroupResultReads(h.sender.id)).toContain(assignment.assignmentId);
+  } finally { h.handoffs.close(); h.store.close(); }
+});
+
+// ---------------------------------------------------------------- Fix-round-1: group_chat receiving loop (Fix 5)
+test("Fix1-5: unread chat is listed by group_chat_read, marked only on explicit markRead, and injected into the next turn context", async () => {
+  const h = await chatHarness();
+  try {
+    // bot_a (sender) chats to bot_b; bot_b's next turn must see it.
+    await h.chat({ to: "bot_b", content: "heads up: the filter landed" });
+    // Build bot_b's own running turn via the store, then bind a second
+    // handoff execution for it and read its context.
+    const runId = h.accepted.run.id;
+    const assignment = dispatch(h.store, h.sender, h.claim.dispatch.id, h.claim.dispatch.generation,
+      "fix5-handoff-1", "bot_b", "do the review").memberTurn;
+    const { claim: claimB, started: startedB } = claimAndStart(h.store, runId, assignment, "session_b", "source_b");
+    h.state.sessions.session_b = { alias: "session_b", agent: "codex", workspace: "backend", transport_session: "transport_b",
+      logical_session_id: "logical_session_b", owner: { kind: "group-member", bindingId: "binding_b", botId: "bot_b",
+        conversationId: "group", topicId: "topic" }, created_at: NOW, last_used_at: NOW };
+    h.state.bot_runtime_bindings.binding_b = { id: "binding_b", scope: "group-member", botId: "bot_b", conversationId: "group",
+      topicId: "topic", sessionAlias: "session_b", logicalSessionId: "logical_session_b", createdAt: NOW, updatedAt: NOW };
+    const capabilityB = h.handoffs.bindExecution({ senderMemberTurnId: startedB.id, sourceTurnId: "source_b",
+      dispatchId: claimB.dispatch.id, owner: "owner", generation: claimB.dispatch.generation });
+    // Next-turn injection: the queued chat appears in bot_b's context.
+    expect(h.handoffs.memberContext(capabilityB.token)).toContain("heads up: the filter landed");
+    // Listing alone does not mark read.
+    const listed = h.handoffs.readChat({ executionToken: capabilityB.token, args: {} });
+    expect(listed.messages).toHaveLength(1);
+    expect(listed.messages[0]!.content).toBe("heads up: the filter landed");
+    expect(listed.markedRead).toEqual([]);
+    expect(h.store.listUnreadGroupChatMessages("group", "topic", "bot_b")).toHaveLength(1);
+    // Explicit markRead clears it, and it no longer injects.
+    const marked = h.handoffs.readChat({ executionToken: capabilityB.token, args: { markRead: true } });
+    expect(marked.markedRead).toHaveLength(1);
+    expect(h.store.listUnreadGroupChatMessages("group", "topic", "bot_b")).toHaveLength(0);
+    expect(h.handoffs.memberContext(capabilityB.token)).not.toContain("heads up: the filter landed");
+    // A message for another target is never marked by this reader.
+    await h.chat({ to: "bot_c", content: "for c only" });
+    const reread = h.handoffs.readChat({ executionToken: capabilityB.token, args: { markRead: true } });
+    expect(reread.messages).toHaveLength(0);
+    expect(h.store.listUnreadGroupChatMessages("group", "topic", "bot_c")).toHaveLength(1);
   } finally { h.handoffs.close(); h.store.close(); }
 });

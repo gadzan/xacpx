@@ -30,7 +30,8 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
   try {
     await server.connect(b); await client.connect(a);
     const list = await client.listTools();
-    expect(list.tools.map((tool) => tool.name)).toEqual(["group_send", "group_chat", "group_read_result"]);
+    // Fix1-5: group_chat_read is the recipient side of the chat loop.
+    expect(list.tools.map((tool) => tool.name)).toEqual(["group_send", "group_chat", "group_chat_read", "group_read_result"]);
     // P5: group_send gains the optional dependsOn contract (settled
     // assignment ids of the same Run); the tool list itself is unchanged.
     expect(Object.keys(list.tools[0]!.inputSchema.properties!)).toEqual(["to", "task", "expectedOutput", "dependsOn"]);
@@ -43,7 +44,8 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
     await expect(client.callTool({ name: "agent_send", arguments: { to: "any", message: "private" } })).rejects.toBeDefined();
     expect(JSON.stringify(result)).not.toContain(token);
     expect(Object.keys(list.tools[1]!.inputSchema.properties!)).toEqual(["to", "content", "replyTo"]);
-    expect(Object.keys(list.tools[2]!.inputSchema.properties!)).toEqual(["assignmentId", "offset", "limit"]);
+    expect(Object.keys(list.tools[2]!.inputSchema.properties!)).toEqual(["limit", "markRead"]);
+    expect(Object.keys(list.tools[3]!.inputSchema.properties!)).toEqual(["assignmentId", "offset", "limit"]);
     await expect(client.callTool({ name: "group_read_result", arguments: { runId: "foreign" } })).rejects.toBeDefined();
     await expect(client.callTool({ name: "group_read_result", arguments: { assignmentId: "assignment", limit: 4_001 } })).rejects.toBeDefined();
     expect(reads).toEqual([]);
