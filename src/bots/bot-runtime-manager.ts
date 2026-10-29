@@ -126,6 +126,17 @@ export class BotRuntimeManager {
     return { ...(title ? { title } : {}), ...(description ? { description } : {}) };
   }
 
+  /** Live display names of the Group's enabled members, for @mention matching.
+   *  Whole-name matching needs the current profile name, never a snapshot. */
+  groupMembers(conversationId: string): Array<{ botId: string; name: string }> {
+    const conversation = this.state.conversations[conversationId];
+    if (!conversation || conversation.kind !== "group") return [];
+    return conversation.botIds.flatMap((botId) => {
+      const bot = this.state.bots[botId];
+      return bot?.enabled ? [{ botId, name: bot.name }] : [];
+    });
+  }
+
   /** Durable Topic scheduling metadata; no live execution counter. */
   topicConcurrencyLimits(): Record<string, number> {
     const limits: Record<string, number> = {};

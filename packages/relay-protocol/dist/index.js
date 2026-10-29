@@ -379,11 +379,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded2 = new Uint8Array(binary.length);
+    const decoded = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded2[i] = binary.charCodeAt(i) & 255;
+      decoded[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded2;
+    return decoded;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -2993,8 +2993,8 @@ function toolUseEventToStepDto(event) {
   };
   if (event.isSubagent) {
     const prompt = asString(input.prompt) ?? asString(input.description) ?? asString(input.task) ?? asString(input.instructions) ?? event.summary ?? "";
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    const detail = { type: "text", text: cap(prompt), ...out2 ? { output: capTail(out2) } : {} };
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    const detail = { type: "text", text: cap(prompt), ...out ? { output: capTail(out) } : {} };
     return { ...base, title: fallbackTitle, detail };
   }
   if (event.kind === "edit") {
@@ -3021,10 +3021,10 @@ function toolUseEventToStepDto(event) {
     }
     const locPath = locationPath(event);
     const picked = locPath === undefined ? firstPresent(input, ["file_path", "path"]) : undefined;
-    const fields3 = primitiveFields(input).filter((f) => f.label !== picked?.key);
-    if (fields3.length === 0)
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    if (fields.length === 0)
       return { ...base, title };
-    return { ...base, title, detail: { type: "fields", fields: fields3 } };
+    return { ...base, title, detail: { type: "fields", fields } };
   }
   if (event.kind === "read") {
     const sourcePath = asString(input.file_path) ?? asString(input.path) ?? asString(pc?.name) ?? locationPath(event);
@@ -3041,14 +3041,14 @@ function toolUseEventToStepDto(event) {
   if (event.kind === "execute") {
     const command = asString(input.command) ?? asString(input.cmd) ?? asString(pc?.cmd) ?? fallbackTitle;
     const title = isDegradedTitle(fallbackTitle, event.toolName) ? command : fallbackTitle;
-    const out2 = asString(output.stdout) ?? terminalOut ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
+    const out = asString(output.stdout) ?? terminalOut ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
     const exitCode = typeof output.exitCode === "number" ? output.exitCode : typeof output.exit_code === "number" ? output.exit_code : undefined;
-    if (!out2 && exitCode === undefined)
+    if (!out && exitCode === undefined)
       return { ...base, title };
     const detail = {
       type: "command",
       command,
-      ...out2 ? { output: capTail(out2) } : {},
+      ...out ? { output: capTail(out) } : {},
       ...exitCode !== undefined ? { exitCode } : {},
       ...metaTruncated !== undefined ? { truncated: metaTruncated } : {}
     };
@@ -3061,13 +3061,13 @@ function toolUseEventToStepDto(event) {
     const pattern = asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd);
     const query = globPattern ? scope ? `${globPattern} in ${scope}` : globPattern : pattern ? scope ? `${pattern} in ${scope}` : pattern : fallbackTitle;
     const title = isDegradedTitle(fallbackTitle, event.toolName) ? query : fallbackTitle;
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
-    if (!out2 && metaCount === undefined && metaTruncated === undefined)
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
+    if (!out && metaCount === undefined && metaTruncated === undefined)
       return { ...base, title };
     const detail = {
       type: "search",
       query,
-      ...out2 ? { output: capTail(out2) } : {},
+      ...out ? { output: capTail(out) } : {},
       ...metaCount !== undefined ? { count: metaCount } : {},
       ...metaTruncated !== undefined ? { truncated: metaTruncated } : {}
     };
@@ -3084,11 +3084,11 @@ function toolUseEventToStepDto(event) {
   if (event.kind === "delete") {
     const picked = firstPresent(input, ["file_path", "path"]);
     const path = picked?.value ?? locationPath(event) ?? fallbackTitle;
-    const fields3 = primitiveFields(input).filter((f) => f.label !== picked?.key);
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    if (fields3.length === 0 && !out2)
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
       return { ...base, title: path };
-    return { ...base, title: path, detail: { type: "fields", fields: fields3, ...out2 ? { output: cap(out2) } : {} } };
+    return { ...base, title: path, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
   }
   if (event.kind === "move") {
     const fromPicked = firstPresent(input, ["from", "source", "src", "old_path", "oldPath"]);
@@ -3096,26 +3096,26 @@ function toolUseEventToStepDto(event) {
     const from = fromPicked?.value;
     const to = toPicked?.value;
     const title = from && to ? `${from} → ${to}` : from ?? to ?? locationPath(event) ?? fallbackTitle;
-    const fields3 = primitiveFields(input).filter((f) => f.label !== fromPicked?.key && f.label !== toPicked?.key);
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    if (fields3.length === 0 && !out2)
+    const fields = primitiveFields(input).filter((f) => f.label !== fromPicked?.key && f.label !== toPicked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
       return { ...base, title };
-    return { ...base, title, detail: { type: "fields", fields: fields3, ...out2 ? { output: cap(out2) } : {} } };
+    return { ...base, title, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
   }
   if (event.kind === "fetch") {
     const picked = firstPresent(input, ["url", "uri", "href"]);
     const url = picked?.value ?? fallbackTitle;
-    const fields3 = primitiveFields(input).filter((f) => f.label !== picked?.key);
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    if (fields3.length === 0 && !out2)
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
       return { ...base, title: url };
-    return { ...base, title: url, detail: { type: "fields", fields: fields3, ...out2 ? { output: cap(out2) } : {} } };
+    return { ...base, title: url, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
   }
   const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-  const fields2 = primitiveFields(input);
-  if (fields2.length === 0 && !out)
+  const fields = primitiveFields(input);
+  if (fields.length === 0 && !out)
     return { ...base, title: fallbackTitle };
-  return { ...base, title: fallbackTitle, detail: { type: "fields", fields: fields2, ...out ? { output: cap(out) } : {} } };
+  return { ...base, title: fallbackTitle, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
 }
 // packages/relay-protocol/src/workspace-name.ts
 function stableHash8(input) {

@@ -4,13 +4,13 @@ import { markCommandRevision, adapterFacingPrompt, isAdvertisedRuntimeCommand } 
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
-import { sessionMatchesExecution } from "../bots/bot-types";
+import { sessionMatchesExecution, snapshotBotProfile } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
 import type { LogicalSession } from "../state/types";
 import { ConversationError } from "./conversation-error";
 import { isRunCancelling, requireMemberResult } from "./conversation-store";
-import { GROUP_RESET_TRANSCRIPT_MESSAGES } from "./group-chat-wake";
+import { GROUP_RESET_TRANSCRIPT_MESSAGES, RELAY_CLOSING_HINT, RELAY_MAX_ROUNDS } from "./group-chat-wake";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import { publicMessageMatchesRunScope, requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
@@ -1929,6 +1929,16 @@ export class ConversationDispatcher {
         botId: work.memberTurn.botId,
         content: result.text ?? "",
         sourceTurn: { sessionAlias: started.sessionAlias ?? "", turnId: started.sourceTurnId },
+        // Group-chat turns carry a frozen seq; the roster decides who the reply
+        // wakes next, and carries each member's frozen execution identity.
+        ...(started.groupFrozenSeq !== undefined
+          ? {
+            groupMembers: this.runtime.groupMembers(work.run.conversationId).map((member) => ({
+              ...member,
+              profileSnapshot: snapshotBotProfile(this.runtime.getBot(member.botId), now),
+            })),
+          }
+          : {}),
         now,
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
@@ -2086,7 +2096,10 @@ export class ConversationDispatcher {
     // only plain group-chat turns read the shared log through the cursor.
     if (work.run.mode !== "automatic" && !work.memberTurn.assignmentId) {
       const { transcript, frozenSeq } = this.groupChatTranscript(work, contextGeneration);
-      return { prompt: transcript, frozenSeq };
+      // The relay counts rounds on the Run's active batch, so the final allowed
+      // round is the one whose prompt asks the bot to wrap up.
+      const closing = (work.memberTurn.batch ?? 1) >= RELAY_MAX_ROUNDS ? `\n\n${RELAY_CLOSING_HINT}` : "";
+      return { prompt: `${transcript}${closing}`, frozenSeq };
     }
     const context = this.frozenGroupTranscript(work);
     // Recovery changes execution provenance, not the durable assignment.

@@ -217,6 +217,8 @@ export interface CompleteExecutionInput {
   botId?: string;
   content: string;
   sourceTurn: { sessionAlias: string; turnId?: string };
+  /** Live Group roster for the relay. Present only on group-chat turns. */
+  groupMembers?: Array<{ botId: string; name: string; profileSnapshot: BotProfileSnapshot }>;
   now: string;
   completionReason?: string;
   /** Whole-Run human cancel path: settle the batch to its terminal outcome

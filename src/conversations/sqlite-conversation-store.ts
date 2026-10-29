@@ -73,7 +73,7 @@ import type {
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 import { parseGroupSend } from "./group-handoff";
-import { isSilenceReply, type GroupReadCursor } from "./group-chat-wake";
+import { isSilenceReply, parseMentions, RELAY_MAX_ROUNDS, type GroupReadCursor } from "./group-chat-wake";
 import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 
 export interface ConversationIdFactory {
@@ -110,6 +110,18 @@ export interface ExternalStopReceipt {
 export interface ExternalRejectionReceipt {
   code: string;
   message: string;
+}
+
+/** Everything the relay needs about the turn that just finished. */
+interface GroupRelayInput {
+  /** The bot that just spoke. Never woken by its own message. */
+  botId: string;
+  /** Live roster of wakeable members, with frozen execution identities. */
+  members: Array<{ botId: string; name: string; profileSnapshot: BotProfileSnapshot }>;
+  /** The stored reply, absent when the reply was silent. */
+  messageId?: string;
+  /** A wake that arrived while this bot was mid-turn. */
+  pendingWake: boolean;
 }
 
 interface MessageRow {
@@ -2340,23 +2352,28 @@ export class SqliteConversationStore implements ConversationStore {
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
         [input.now, member.id],
       );
-      this.sqlite.run(
-        `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
-        [run.id],
-      );
-      this.finishDispatchForMemberTurn(member.id, input.now);
       // Only a turn that actually completed advances the read cursor, and only
       // to the seq frozen when it started: messages that arrived mid-turn stay
-      // unread for the next wake.
+      // unread for the next wake. The wake flag is read before the advance
+      // clears it, so a wake that arrived mid-turn still gets its extra turn.
+      let groupRelay: GroupRelayInput | undefined;
       if (member.groupFrozenSeq !== undefined) {
+        groupRelay = {
+          botId: member.botId,
+          members: input.groupMembers ?? [],
+          pendingWake: this.getGroupReadCursor(run.topicId, member.botId)?.pendingWake ?? false,
+          ...(messageId !== undefined ? { messageId } : {}),
+        };
         this.advanceGroupReadCursor(run.topicId, member.botId, member.groupFrozenSeq, this.topicContextGeneration(run.topicId));
       }
+      this.finishDispatchForMemberTurn(member.id, input.now);
       const aggregated = this.aggregateRunAfterMemberTerminal(
         run.id,
         member.id,
         input.now,
         input.completionReason,
         input.forceRunTerminalOnSettle ?? false,
+        groupRelay,
       );
       return {
         run: aggregated,
@@ -4249,6 +4266,103 @@ export class SqliteConversationStore implements ConversationStore {
     }
   }
 
+  /** Live turn a bot holds in this topic, so a wake never doubles up. */
+  private groupBotLiveTurn(topicId: string, botId: string): "queued" | "running" | undefined {
+    const row = this.sqlite.get<{ state: string }>(
+      `SELECT state FROM member_turns
+       WHERE topic_id = ? AND bot_id = ? AND state IN ('queued', 'dispatched', 'running')
+       ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'dispatched' THEN 1 ELSE 2 END, created_at ASC
+       LIMIT 1`,
+      [topicId, botId],
+    );
+    if (row === undefined) return undefined;
+    return row.state === "running" ? "running" : "queued";
+  }
+
+  /** True when a newer Run in this topic still owns the conversation. A human
+   *  interjection starts a fresh round count, so the older Run stops relaying
+   *  while its running turns drain. */
+  private hasNewerActiveRun(run: ConversationRun): boolean {
+    const mine = this.sqlite.get<{ rowid: number }>("SELECT rowid FROM runs WHERE id = ?", [run.id]);
+    const newer = this.sqlite.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM runs
+       WHERE topic_id = ? AND id <> ? AND state IN ('queued', 'running', 'waiting-human') AND rowid > ?`,
+      [run.topicId, run.id, mine?.rowid ?? 0],
+    );
+    return Number(newer?.n ?? 0) > 0;
+  }
+
+  private nextGroupMemberIndex(runId: string, batch: number): number {
+    return Number(this.sqlite.get<{ n: number }>(
+      "SELECT COALESCE(MAX(member_index), -1) + 1 AS n FROM member_turns WHERE run_id = ? AND batch = ?",
+      [runId, batch],
+    )!.n);
+  }
+
+  /** Append one speaking turn for `botId` to the given relay round. */
+  private enqueueGroupRelayTurn(run: ConversationRun, botId: string, relay: GroupRelayInput, now: string): void {
+    const live = this.groupBotLiveTurn(run.topicId, botId);
+    if (live === "running") {
+      // Mid-turn: remember the wake, and honour it as one extra turn when this
+      // turn ends.
+      this.setGroupPendingWake(run.topicId, botId, true);
+      return;
+    }
+    // Already queued: that turn reads the whole cursor gap, so nothing to add.
+    if (live !== undefined) return;
+    const member = relay.members.find((candidate) => candidate.botId === botId);
+    if (member === undefined) return;
+    const round = run.activeBatch ?? 1;
+    const id = this.ids.memberTurnId();
+    this.sqlite.run(`INSERT INTO member_turns (id, run_id, conversation_id, topic_id, bot_id, batch, member_index,
+      attempt, origin, state, trigger_message_ids_json, profile_snapshot_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'relay', 'queued', ?, ?, ?)`,
+      [id, run.id, run.conversationId, run.topicId, botId, round, this.nextGroupMemberIndex(run.id, round),
+        JSON.stringify(relay.messageId === undefined ? [] : [relay.messageId]),
+        JSON.stringify(member.profileSnapshot), now]);
+    this.sqlite.run(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
+      VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, id, run.generation, now]);
+  }
+
+  /**
+   * Relay a stored group reply into the next round of the same Run. Mentions
+   * wake the bots they name; a reply with none wakes every other member. A bot
+   * is never woken by its own message, the round counter caps the chain, and a
+   * Run under cancel intent or superseded by a newer Run appends nothing.
+   */
+  private enqueueGroupRelay(run: ConversationRun, relay: GroupRelayInput, now: string): void {
+    if (isRunCancelling(run) || this.hasNewerActiveRun(run)) return;
+    if (this.allocatedWork(run.id) >= run.maxMemberTurns) return;
+    // The next round opens only once this one has nothing left to run. Opening
+    // it early would strand a queued sibling in a batch the aggregate has
+    // already moved past.
+    const runnable = this.sqlite.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM member_turns
+       WHERE run_id = ? AND batch = ? AND state IN ('queued', 'dispatched', 'running')`,
+      [run.id, run.activeBatch ?? 1],
+    );
+    if (Number(runnable?.n ?? 0) > 0) return;
+    const reply = this.getMessage(relay.messageId!);
+    if (reply === undefined) return;
+    const wake = parseMentions(reply.content, relay.members);
+    const woken = new Set<string>();
+    for (const botId of wake.mode === "members" ? wake.botIds : relay.members.map((member) => member.botId)) {
+      // A bot is never woken by its own message.
+      if (botId !== relay.botId) woken.add(botId);
+    }
+    // Only bots that will actually take a turn count against the round cap: a
+    // bot that is mid-turn takes a pending wake instead, and one that already
+    // has a queued turn reads the whole cursor gap on its own.
+    const ready = [...woken].filter((botId) => this.groupBotLiveTurn(run.topicId, botId) === undefined);
+    if (ready.length === 0) return;
+    const round = (run.activeBatch ?? 1) + 1;
+    if (round > RELAY_MAX_ROUNDS) return;
+    this.sqlite.run("UPDATE runs SET active_batch = ? WHERE id = ?", [round, run.id]);
+    const nextRound: ConversationRun = { ...run, activeBatch: round };
+    for (const botId of ready) {
+      this.enqueueGroupRelayTurn(nextRound, botId, relay, now);
+    }
+  }
   /**
    * Aggregate Run lifecycle after one MemberTurn reaches a terminal state.
    * Member completion terminals only the member; explicit Runs terminal when
@@ -4269,6 +4383,7 @@ export class SqliteConversationStore implements ConversationStore {
     now: string,
     memberReason?: string,
     forceRunTerminal = false,
+    groupRelay?: GroupRelayInput,
   ): ConversationRun {
     const run = this.requireRun(runId);
     if (TERMINAL_RUN_STATES.includes(run.state)) {
@@ -4282,8 +4397,20 @@ export class SqliteConversationStore implements ConversationStore {
     if (!forceRunTerminal) {
       this.enqueueSettledHandoffFollowups(run, now);
     }
+    // A wake that arrived while this bot was mid-turn is honoured exactly once,
+    // as one extra turn reading the whole cursor gap.
+    if (groupRelay?.pendingWake === true) {
+      this.enqueueGroupRelayTurn(run, groupRelay.botId, groupRelay, now);
+    }
+    // A stored reply relays to the bots it names, or to everyone else.
+    if (groupRelay?.messageId !== undefined) {
+      this.enqueueGroupRelay(run, groupRelay, now);
+    }
+    // The relay may have opened a new round, so re-read the Run before
+    // deriving which batch this settle belongs to.
+    const current = this.requireRun(runId);
     const members = this.listMemberTurns(runId);
-    const batch = run.activeBatch ?? 1;
+    const batch = current.activeBatch ?? 1;
     const batchMembers = members.filter((turn) => turn.batch === batch);
     const terminal = batchMembers.filter((turn) => TERMINAL_MEMBER_STATES.includes(turn.state));
     // Exact member that just terminalled: never re-derive by state lookup

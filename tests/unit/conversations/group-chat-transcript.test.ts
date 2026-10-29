@@ -127,9 +127,15 @@ async function drain(h: Pick<GroupChatHarness, "dispatcher" | "store">): Promise
   throw new Error("dispatcher never went idle");
 }
 
-function promptFor(h: Pick<GroupChatHarness, "runner">, botId: string, occurrence = -1): string {
-  const runs = h.runner.runs.filter((run) => run.botId === botId);
-  return runs.at(occurrence)!.text;
+/** The prompt of a specific run's first turn for a bot in a given round. */
+function promptFor(
+  h: Pick<GroupChatHarness, "runner" | "store">,
+  runId: string,
+  botId: string,
+  batch = 1,
+): string {
+  const turn = h.store.listMemberTurns(runId).find((candidate) => candidate.botId === botId && candidate.batch === batch)!;
+  return h.runner.runs.find((run) => run.memberTurnId === turn.id)!.text;
 }
 
 function snapshotFor(bot: BotProfile) {
@@ -145,13 +151,15 @@ test("a group turn reads only the messages after the bot's own cursor", async ()
   try {
     await h.service.acceptGroupPrompt({ conversationId: GROUP, topicId: TOPIC, requestId: "r1", text: "first question" });
     await drain(h);
-    expect(promptFor(h, "bot_a")).toContain("Human: first question");
+    const firstRun = h.store.listRuns(GROUP, TOPIC)[0]!.id;
+    expect(promptFor(h, firstRun, "bot_a")).toContain("Human: first question");
 
     await h.service.acceptGroupPrompt({ conversationId: GROUP, topicId: TOPIC, requestId: "r2", text: "second question" });
     await drain(h);
+    const secondRun = h.store.listRuns(GROUP, TOPIC).at(-1)!.id;
     // The first exchange is already consumed, so only the new request is replayed.
-    expect(promptFor(h, "bot_a")).toContain("Human: second question");
-    expect(promptFor(h, "bot_a")).not.toContain("first question");
+    expect(promptFor(h, secondRun, "bot_a")).toContain("Human: second question");
+    expect(promptFor(h, secondRun, "bot_a")).not.toContain("first question");
   } finally { h.store.close(); }
 });
 
@@ -173,7 +181,7 @@ test("a bot that has read the topic but lost its session replays the recent wind
     await h.service.acceptGroupPrompt({ conversationId: GROUP, topicId: TOPIC, requestId: "r1", text: "hello there",
       target: { mode: "members", botIds: ["bot_b"] } });
     await drain(h);
-    const prompt = promptFor(h, "bot_b");
+    const prompt = promptFor(h, h.store.listRuns(GROUP, TOPIC).at(-1)!.id, "bot_b");
     // The window is exactly the newest 30 rows, and the new human message is
     // one of them, so the oldest replayed seed is one newer than a bare 30.
     expect(prompt).toContain("seed message 39");
@@ -201,7 +209,8 @@ test("a cleared topic context replays the recent window under the new generation
 
     await h.service.acceptGroupPrompt({ conversationId: GROUP, topicId: TOPIC, requestId: "r2", text: "after clear" });
     await drain(h);
-    expect(promptFor(h, "bot_a")).toContain("after clear");
+    const secondRun = h.store.listRuns(GROUP, TOPIC).at(-1)!.id;
+    expect(promptFor(h, secondRun, "bot_a")).toContain("after clear");
     expect(h.store.getGroupReadCursor(TOPIC, "bot_a")?.contextGeneration).toBe(2);
   } finally { h.store.close(); }
 });
@@ -217,8 +226,13 @@ test("a silent reply stores no message and a reply merely containing the token d
     h.runner.result = { status: "completed", text: `先说结论 ${SILENCE_REPLY} 再说细节` };
     await h.service.acceptGroupPrompt({ conversationId: GROUP, topicId: TOPIC, requestId: "r2", text: "speak now" });
     await drain(h);
-    // The human row lands first, then each speaking bot's reply.
-    expect(contents(h)).toEqual(["quiet please", "speak now", `先说结论 ${SILENCE_REPLY} 再说细节`, `先说结论 ${SILENCE_REPLY} 再说细节`, `先说结论 ${SILENCE_REPLY} 再说细节`]);
+    // Every bot now speaks each round, so the human rows come first and then
+    // one reply per speaking turn. No row is ever the bare silence token.
+    const spoken = contents(h);
+    expect(spoken[0]).toBe("quiet please");
+    expect(spoken[1]).toBe("speak now");
+    expect(spoken.slice(2).every((content) => content === `先说结论 ${SILENCE_REPLY} 再说细节`)).toBe(true);
+    expect(spoken.some((content) => content.trim() === SILENCE_REPLY)).toBe(false);
   } finally { h.store.close(); }
 });
 

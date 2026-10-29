@@ -561,7 +561,7 @@ export interface MemberTurnSummaryDto {
   /** Durable accept order within the batch (0-based). Absent on older wire shapes. */
   memberIndex?: number;
   attempt: number;
-  origin: "human-explicit" | "human" | "router" | "handoff" | "followup" | "retry" | "recovery";
+  origin: "human-explicit" | "human" | "router" | "handoff" | "followup" | "retry" | "recovery" | "relay";
   state: "queued" | "dispatched" | "running" | "completed" | "failed" | "cancelled" | "indeterminate";
   promptRequestId?: string;
   createdAt: string;

@@ -73,7 +73,7 @@ export type ConversationRoutingState = "queued" | "routing" | "dispatching" | "d
  *  per-dispatch from authorityEpoch + human ingress. Fresh orchestration work
  *  (Router-selected, handoff, followup) is NEVER "recovery": recovery means a
  *  prior claim existed and is being redriven after failure/expiry. */
-export type MemberTurnOrigin = "human-explicit" | "router" | "handoff" | "followup" | "retry" | "recovery";
+export type MemberTurnOrigin = "human-explicit" | "router" | "handoff" | "followup" | "retry" | "recovery" | "relay";
 
 export type MemberTurnState =
   | "queued"
