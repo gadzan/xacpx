@@ -73,6 +73,7 @@ import type {
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 import { parseGroupSend } from "./group-handoff";
+import type { GroupReadCursor } from "./group-chat-wake";
 import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 
 export interface ConversationIdFactory {
@@ -772,6 +773,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureRunAggregateColumns();
     this.ensureMemberTurnBlockedColumn();
     this.ensureRoutingDecisionTable();
+    this.ensureGroupReadCursorTable();
     this.ensureWaitingQuestionColumn();
     this.ensureRoutingReasonColumn();
     this.ensureDispatchMultiMemberShape();
@@ -1237,6 +1239,39 @@ export class SqliteConversationStore implements ConversationStore {
     );
     const messages = rows.map(mapMessage);
     return orderDescending ? messages.reverse() : messages;
+  }
+
+  getGroupReadCursor(topicId: string, botId: string): GroupReadCursor | undefined {
+    const row = this.sqlite.get<{ last_seq: number; pending_wake: number }>(
+      "SELECT last_seq, pending_wake FROM group_read_cursor WHERE topic_id = ? AND bot_id = ?",
+      [topicId, botId],
+    );
+    return row ? { lastSeq: Number(row.last_seq), pendingWake: row.pending_wake === 1 } : undefined;
+  }
+
+  /** A turn that ended successfully has consumed everything it was shown, so
+   *  the cursor moves to the seq frozen at its start and any pending wake is
+   *  discharged. Failed and cancelled turns never call this. */
+  advanceGroupReadCursor(topicId: string, botId: string, lastSeq: number): void {
+    this.sqlite.run(
+      `INSERT INTO group_read_cursor (topic_id, bot_id, last_seq, pending_wake)
+       VALUES (?, ?, ?, 0)
+       ON CONFLICT(topic_id, bot_id) DO UPDATE SET last_seq = excluded.last_seq, pending_wake = 0`,
+      [topicId, botId, lastSeq],
+    );
+  }
+
+  setGroupPendingWake(topicId: string, botId: string, pending: boolean): void {
+    this.sqlite.run(
+      `INSERT INTO group_read_cursor (topic_id, bot_id, last_seq, pending_wake)
+       VALUES (?, ?, 0, ?)
+       ON CONFLICT(topic_id, bot_id) DO UPDATE SET pending_wake = excluded.pending_wake`,
+      [topicId, botId, pending ? 1 : 0],
+    );
+  }
+
+  clearTopicGroupPendingWake(topicId: string): void {
+    this.sqlite.run("UPDATE group_read_cursor SET pending_wake = 0 WHERE topic_id = ?", [topicId]);
   }
 
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined {
@@ -3579,6 +3614,17 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.exec(
       "CREATE INDEX IF NOT EXISTS idx_routing_decisions_run ON routing_decisions (run_id, created_at)",
     );
+  }
+
+  private ensureGroupReadCursorTable(): void {
+    this.sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS group_read_cursor (
+        topic_id TEXT NOT NULL,
+        bot_id TEXT NOT NULL,
+        last_seq INTEGER NOT NULL,
+        pending_wake INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (topic_id, bot_id)
+      )`);
   }
 
   private ensureDispatchMultiMemberShape(): void {

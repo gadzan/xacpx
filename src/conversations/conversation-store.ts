@@ -13,6 +13,7 @@ import type {
   PendingDispatch,
 } from "./conversation-types";
 import type { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
+import type { GroupReadCursor } from "./group-chat-wake";
 
 /** A completion reason on runnable work is durable cancel intent, not routing work. */
 export function isRunCancelling(run: ConversationRun): boolean {
@@ -408,6 +409,16 @@ export interface ConversationStore {
   listRuns(conversationId: string, topicId?: string): ConversationRun[];
   getMessage(messageId: string): ConversationMessage | undefined;
   listMessages(query: ListMessagesQuery): ConversationMessage[];
+  /** Per-bot read position in a Group topic's shared log. Absent means the bot
+   *  has never read this topic, which is treated as a fresh session. */
+  getGroupReadCursor(topicId: string, botId: string): GroupReadCursor | undefined;
+  /** Move a bot's cursor to the seq frozen when its turn started, discharging
+   *  any pending wake. Called only by a turn that ended successfully. */
+  advanceGroupReadCursor(topicId: string, botId: string, lastSeq: number): void;
+  /** Record or clear a wake that arrived while the bot was mid-turn. */
+  setGroupPendingWake(topicId: string, botId: string, pending: boolean): void;
+  /** Drop every pending wake in a topic. Used by topic-wide cancellation. */
+  clearTopicGroupPendingWake(topicId: string): void;
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
   listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[];
