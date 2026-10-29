@@ -1006,7 +1006,7 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.failedBotIds).toContain("bot_b");
   });
 
-  it("stops the exact active run by runId", async () => {
+  it("stops every unfinished run in the active topic", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
     store.selectedGroupId = "conversation_g";
@@ -1020,10 +1020,13 @@ describe("useGroupsStore", () => {
     };
     mockRpc.mockResolvedValueOnce({
       ok: true,
-      run: { ...store.activeRun, state: "cancelled" as const, memberTurns: [] },
+      runs: [{ ...store.activeRun, state: "cancelled" as const, memberTurns: [] }],
     });
     await store.cancelCurrentRun();
-    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_stop" });
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancelTopic", {
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+    });
     expect(store.activeRun?.state).toBe("cancelled");
   });
 

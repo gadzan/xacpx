@@ -497,11 +497,11 @@ function onKeydown(e: KeyboardEvent): void {
 
 /** Target-independent send guards. Checked first so the boundary mention can be
  *  committed before the target is re-evaluated — a mention is what makes an empty
- *  target valid for this very send. */
+ *  target valid for this very send. A run in progress does NOT block sending:
+ *  a message mid-Run is an interjection that starts a fresh Run. */
 const baseCanSend = computed(() => !props.disabled
   && !groupsStore.promptInFlight
   && !groupsStore.cancellingRunId
-  && !groupsStore.isRunActive
   && groupsStore.topicReady
   // A fresh send is refused while a previous prompt's outcome is unknown: the
   // only way forward is replaying that prompt's frozen tuple.

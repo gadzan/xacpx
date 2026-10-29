@@ -100,7 +100,6 @@ export type GroupErrorCode =
   | "ownershipUnconfirmed"
   | "ownershipChecking"
   | "topicRecovering"
-  | "runInProgress"
   | "topicQueueFull"
   | "targetTooLarge"
   | "promptPendingConfirmation"
@@ -2496,11 +2495,9 @@ export const useGroupsStore = defineStore("groups", () => {
       promptErrorDetail.value = null;
       return "uncertain";
     }
-    if (isRunActive.value) {
-      promptError.value = "runInProgress";
-      promptErrorDetail.value = null;
-      return "uncertain";
-    }
+    // A human message while bots run is an interjection, not a refusal: it
+    // starts a fresh Run whose round count restarts at zero, and the older Run
+    // stops relaying while its running turns drain. Sending stays usable.
     // Invariant: an uncertain prompt may only be resolved by replaying its own
     // tuple (or by durable reconciliation discovering it). Minting a fresh
     // requestId meanwhile would leave the original Run executing AND run the new
@@ -2713,9 +2710,6 @@ export const useGroupsStore = defineStore("groups", () => {
           promptError.value = err instanceof Error ? err.message : String(err);
           promptErrorDetail.value = promptError.value;
         }
-      } else if (isCurrent() && promptError.value === "runInProgress") {
-        promptError.value = null;
-        promptErrorDetail.value = null;
       }
       if (!isCurrent()) {
         // The selection moved (or the Topic was deleted) while the RPC was in
@@ -2908,29 +2902,33 @@ export const useGroupsStore = defineStore("groups", () => {
     cancellingRunId.value = runId;
 
     try {
+      // Topic-scoped stop: every unfinished Run in this topic, running and
+      // queued member turns alike. A human message mid-Run stays usable, so a
+      // new Run can appear while this one is still draining.
       const res = unwrapRpc(
-        await api.rpc<{ ok: boolean; run: ConversationRunDetailDto }>(
+        await api.rpc<{ runs: ConversationRunDetailDto[]; activeRunId?: string; activeRun?: ConversationRunDetailDto }>(
           targetInstId,
-          MSG.runsCancel,
-          { runId },
+          MSG.runsCancelTopic,
+          { conversationId: targetConvId, topicId: targetTopicId },
         ),
       );
       if (!isCurrent()) {
         return { status: "stale", scope, runId };
       }
-      if (res.run.id !== runId || res.run.conversationId !== targetConvId || res.run.topicId !== targetTopicId) {
+      const target = res.runs.find((run) => run.id === runId);
+      if (!target) {
         return { status: "unconfirmed", scope, runId };
       }
       const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
-      const merged = applyGroupCancelRun(res.run);
-      if (isTerminalRunState(merged.state)) {
+      for (const run of res.runs) applyGroupCancelRun(run);
+      if (res.runs.every((run) => isTerminalRunState(run.state))) {
         liveTurnsByMember.value = {};
         resolveCancelUncertainty(runId);
         if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
-          await rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, merged.id);
+          await rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, target.id);
         }
       }
-      return classifyGroupCancel(scope, runId, res.run);
+      return classifyGroupCancel(scope, runId, target);
     } catch (err: unknown) {
       console.warn("cancelCurrentRun error:", err);
       if (isCurrent() && activeRun.value && activeRun.value.id === runId) {
