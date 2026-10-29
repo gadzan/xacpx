@@ -1337,6 +1337,85 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("Fix6: an intermediate conclusion stays folded by default but expands when jumped to — and only that row", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        {
+          id: "handoff_2", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+          role: "system", senderBotId: "bot_a", runId: "run_1", createdAt: "now",
+          content: "Public handoff: Reviewer → Tester\nTask: Review patch\nExpected output: Findings",
+          handoff: {
+            senderMemberTurnId: "turn_a", to: "bot_b", assignmentId: "assignment_b",
+            memberTurnId: "turn_b", task: "Review patch", expectedOutput: "Findings",
+          },
+        },
+        { id: "reply_3", conversationId: "conversation_g", topicId: "topic_1", seq: 3, role: "bot", senderBotId: "bot_b", runId: "run_1", promptRequestId: "p_1", content: "Findings report", createdAt: "now" },
+        {
+          id: "handoff_4", conversationId: "conversation_g", topicId: "topic_1", seq: 4,
+          role: "system", senderBotId: "bot_a", runId: "run_1", createdAt: "now",
+          content: "Public handoff: Reviewer → Reviewer\nTask: Other patch\nExpected output: Other findings",
+          handoff: {
+            senderMemberTurnId: "turn_a", to: "bot_a", assignmentId: "assignment_c",
+            memberTurnId: "turn_c", task: "Other patch", expectedOutput: "Other findings",
+          },
+        },
+        { id: "reply_5", conversationId: "conversation_g", topicId: "topic_1", seq: 5, role: "bot", senderBotId: "bot_a", runId: "run_1", promptRequestId: "p_2", content: "Other findings report", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", createdAt: "now",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "handoff",
+          state: "completed", promptRequestId: "p_1", assignmentId: "assignment_b", createdAt: "now",
+        },
+        turn_c: {
+          id: "turn_c", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 2, attempt: 1, origin: "handoff",
+          state: "completed", promptRequestId: "p_2", assignmentId: "assignment_c", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+        attachTo: document.body,
+      });
+      await flushPromises();
+      const target = wrapper.get('[data-message-id="reply_3"]');
+      const other = wrapper.get('[data-message-id="reply_5"]');
+      // Both intermediate conclusions start folded: the <details> wrapper
+      // is present and the result text is inside it, not an open bubble.
+      expect(target.find('[data-test="group-intermediate-conclusion"]').exists()).toBe(true);
+      expect(other.find('[data-test="group-intermediate-conclusion"]').exists()).toBe(true);
+      const scroller = wrapper.get('[data-test="group-transcript-scroller"]').element as HTMLElement;
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({ top: 10 } as DOMRect);
+      vi.spyOn(target.element as HTMLElement, "getBoundingClientRect").mockReturnValue({ top: 210 } as DOMRect);
+      scroller.scrollTop = 25;
+      await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+      const members = wrapper.findAll('[data-test="group-dispatch-member"]');
+      const jumped = members.find((m) => m.attributes("data-member-turn-id") === "turn_b")!;
+      expect(jumped.exists()).toBe(true);
+      await jumped.trigger("click");
+      await flushPromises();
+      // Only the jumped row expands — reactively, so a re-render keeps it
+      // open — while the other intermediate conclusion stays folded.
+      expect(target.find('[data-test="group-intermediate-conclusion"]').exists()).toBe(false);
+      expect(target.text()).toContain("Findings report");
+      expect(other.find('[data-test="group-intermediate-conclusion"]').exists()).toBe(true);
+      expect(scroller.scrollTop).toBe(225);
+      expect(document.activeElement).toBe(target.element);
+      wrapper.unmount();
+    });
+
   });
 
   describe("GroupTranscript.vue scroll behavior", () => {
@@ -1915,6 +1994,118 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-overview-budget-exhausted"]').exists()).toBe(true);
       expect(wrapper.find('[data-test="group-overview-final-answer"]').exists()).toBe(false);
       expect(wrapper.find('[data-test="group-overview-no-overall-conclusion"]').exists()).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("Fix6: a followup with no verdict is not a final summary — budget banner, no overall conclusion, failure still stuck", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now", followupBudgetExhausted: true,
+      };
+      groups.memberTurnsById = {
+        turn_fail: {
+          id: "turn_fail", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "failed", createdAt: "now", task: "implement login",
+        },
+        turn_nr: {
+          id: "turn_nr", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "followup",
+          state: "completed", createdAt: "now", task: "followup without report",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      // No verdict means no structured report on the frontend DTO, so this
+      // followup must not close "no overall conclusion", clear the
+      // failure, or suppress the budget warning.
+      expect(wrapper.find('[data-test="group-overview-budget-exhausted"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="group-overview-final-answer"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-overview-no-overall-conclusion"]').exists()).toBe(true);
+      const head = wrapper.find('[data-test="group-overview-head"]').text();
+      expect(head).toContain("1 stuck");
+      expect(head).toContain("1 need you");
+      expect(wrapper.find('[data-test="group-overview"]').text()).not.toContain("Nothing needs you today");
+      wrapper.unmount();
+    });
+
+    it("Fix6: the same task completed but not achieved does not clear a failure", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_fail: {
+          id: "turn_fail", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "failed", createdAt: "now", task: "implement login",
+        },
+        turn_na: {
+          id: "turn_na", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "implement login", finalReportVerdict: "not-achieved",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const head = wrapper.find('[data-test="group-overview-head"]').text();
+      expect(head).toContain("1 stuck");
+      wrapper.unmount();
+    });
+
+    it("Fix6: the same task completed with no verdict does not clear a failure", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_fail: {
+          id: "turn_fail", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "failed", createdAt: "now", task: "implement login",
+        },
+        turn_nv: {
+          id: "turn_nv", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "implement login",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const head = wrapper.find('[data-test="group-overview-head"]').text();
+      expect(head).toContain("1 stuck");
+      wrapper.unmount();
+    });
+
+    it("Fix6: the same task completed and achieved still clears a failure", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_fail: {
+          id: "turn_fail", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "failed", createdAt: "now", task: "implement login",
+        },
+        turn_ok: {
+          id: "turn_ok", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "implement login", finalReportVerdict: "achieved",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const head = wrapper.find('[data-test="group-overview-head"]').text();
+      expect(head).toContain("0 stuck");
       wrapper.unmount();
     });
 

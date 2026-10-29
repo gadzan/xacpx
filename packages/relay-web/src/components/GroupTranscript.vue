@@ -152,6 +152,13 @@ const items = computed<GroupTranscriptItem[]>(() =>
  * followup ever existed"): a stage followup that dispatched a re-review
  * is not a final summary, and a budget-exhausted Run with an earlier
  * completed followup still has no final answer to expand.
+ * Fix-round-6: a followup that merely ended is not a summary. The
+ * frontend DTO carries no finalReport.summary field (the report text
+ * travels on the message's timelineContent, and the DTO comment states
+ * verdict presence means the turn HAS a report), so the frontend
+ * requires the verdict here — the same narrowing as GroupPane.vue, and
+ * the only intentional difference from the backend's verdict + summary
+ * rule. A followup with no verdict expands nothing.
  */
 const finalAnswerMemberTurnIds = computed<Set<string>>(() => {
   const ids = new Set<string>();
@@ -164,12 +171,22 @@ const finalAnswerMemberTurnIds = computed<Set<string>>(() => {
     const terminal = ordered.filter((turn) =>
       ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
     const last = terminal[terminal.length - 1];
-    if (last && last.origin === "followup" && last.state === "completed") {
+    if (last && last.origin === "followup" && last.state === "completed" && last.finalReportVerdict !== undefined) {
       ids.add(last.id);
     }
   }
   return ids;
 });
+
+/**
+ * Member turns the user explicitly jumped to from a dispatch card
+ * (fix-round-6). Intermediate conclusions stay folded by default, but a
+ * jump is an explicit "show me this result": the jumped turn renders
+ * expanded and stays expanded. This is reactive state, not a one-off DOM
+ * tweak — a re-render must not fold the jumped result again, or the
+ * dispatch-card jump regresses exactly as it did in fix-round-5.
+ */
+const jumpExpandedMemberTurnIds = ref<Set<string>>(new Set());
 
 /** Timeline projection for a bot message: report/stop notice when derived, raw otherwise. */
 function timelineMessage(message: ConversationMessageDto): ConversationMessageDto {
@@ -712,12 +729,34 @@ function scrollToBottom(): void {
   if (!el) return;
   el.scrollTop = el.scrollHeight - el.clientHeight;
 }
-function jumpToMessage(messageId: string): void {
+async function jumpToMessage(messageId: string): Promise<void> {
   const el = scroller.value;
   if (!el) return;
+  // Fix-round-6: a jumped intermediate conclusion must expand BEFORE the
+  // scroll/focus, or the row's folded height is what gets aligned and the
+  // result text stays hidden inside the closed <details>. Find the owning
+  // member turn from the transcript items (not from the DOM, which cannot
+  // tell a folded row from an expanded one), mark it jump-expanded, and
+  // wait for the re-render so the scroll is measured on the expanded row.
+  // The tab order after the jump is then the expanded row's own order —
+  // row, thinking bubble, Copy button — exactly what the dispatch E2E
+  // asserts for nearby and distant jumps.
+  // NB: narrowing inside the find predicate does not narrow the find
+  // result's union type, so resolve the member turn after the find.
+  const jumpedItem = items.value.find((item) => item.kind === "message"
+    && item.message.id === messageId);
+  const jumped = jumpedItem?.kind === "message" ? jumpedItem.memberTurn : undefined;
+  if (jumped && !jumpExpandedMemberTurnIds.value.has(jumped.id)) {
+    jumpExpandedMemberTurnIds.value = new Set([...jumpExpandedMemberTurnIds.value, jumped.id]);
+    await nextTick();
+  }
   const row = Array.from(el.querySelectorAll<HTMLElement>("[data-message-id]"))
     .find((candidate) => candidate.dataset["messageId"] === messageId);
   if (!row) return;
+  // Fallback when no transcript item matched (stale item list, unusual
+  // row shape): open any folded conclusion in the row directly, so the
+  // jump never lands on hidden text even if the reactive path missed.
+  row.querySelectorAll("details").forEach((detail) => { detail.open = true; });
   row.tabIndex = -1;
   row.focus({ preventScroll: true });
   el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top;
@@ -983,6 +1022,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           :disabled="item.memberTurn.botId ? botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false : false"
           :stopped="stoppedLeaderTurnIds.has(item.memberTurn.id)"
           :collapsed="['completed', 'failed', 'cancelled', 'indeterminate'].includes(item.memberTurn.state) && !finalAnswerMemberTurnIds.has(item.memberTurn.id)"
+          :force-expanded="jumpExpandedMemberTurnIds.has(item.memberTurn.id)"
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
         >
           </GroupAgentTurnRow>

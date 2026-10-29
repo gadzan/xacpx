@@ -49,6 +49,14 @@ const props = defineProps<{
    * finalReportVerdict / run-final computation, never from parsing text.
    */
   collapsed?: boolean;
+  /**
+   * Fix-round-6: the user explicitly jumped to this result from a
+   * dispatch card. It renders expanded even when `collapsed` is true,
+   * and stays expanded across re-renders: the jump is an explicit
+   * request to see this result, not a default to undo. Default folding
+   * is untouched for every turn the user did not jump to.
+   */
+  forceExpanded?: boolean;
 }>();
 
 const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
@@ -161,7 +169,7 @@ defineExpose({ bubbleStatus });
       @toggle="emit('toggle', $event)"
     />
     <template v-if="displayMessage">
-      <details v-if="collapsed" data-test="group-intermediate-conclusion">
+      <details v-if="collapsed && !forceExpanded" data-test="group-intermediate-conclusion">
         <summary class="cursor-pointer text-xs text-fg-muted">
           {{ t("group.bubble.intermediateSummary", { name }) }} — {{ verdictLabel }}
         </summary>

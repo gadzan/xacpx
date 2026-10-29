@@ -151,13 +151,24 @@ const overview = computed(() => {
   // builder — a completed followup that is the last terminal turn of a
   // terminal Run with nothing still in progress. Anything less is a stage
   // conclusion, never the Run's overall conclusion.
+  // Fix-round-6: a followup that merely ended is not a summary. The
+  // backend additionally requires a structured report (verdict +
+  // summary); the frontend DTO (MemberTurnSummaryDto) carries no
+  // finalReport.summary field — the report text travels on the message's
+  // timelineContent, and the DTO comment states verdict presence means
+  // the turn HAS a report — so the frontend requires the verdict here
+  // and treats verdict presence as its evidence of a structured report.
+  // That is the only intentional frontend/backend difference, and it is
+  // narrower than the old "any completed followup" rule: a followup with
+  // no verdict still counts as no summary everywhere.
   const terminalStates = ["completed", "failed", "cancelled", "indeterminate"];
   const runState = groupsStore.activeRun?.state;
   const isTerminalRun = !!runState && terminalStates.includes(runState);
   const terminal = ordered.filter((turn) => terminalStates.includes(turn.state));
   const lastTerminal = terminal[terminal.length - 1];
   const realFinalSummary = (isTerminalRun && inProgress === 0 && lastTerminal
-    && lastTerminal.origin === "followup" && lastTerminal.state === "completed")
+    && lastTerminal.origin === "followup" && lastTerminal.state === "completed"
+    && lastTerminal.finalReportVerdict !== undefined)
     ? lastTerminal : undefined;
   // Fix-round-5: recovery is task-bound, not order-bound. Only a later
   // completed turn for the SAME normalised task (trim, collapse
@@ -165,6 +176,11 @@ const overview = computed(() => {
   // resolves a stuck turn. An unrelated success never clears a failure:
   // prefer a false stuck over a hidden failure. A taskless failure can
   // only be cleared by a real final summary.
+  // Fix-round-6: "completed" alone is not recovery — a turn ending and a
+  // goal being achieved are different facts (state vs finalReportVerdict).
+  // Only a later same-task turn that completed AND reports "achieved"
+  // clears a failure; "not-achieved", "interrupted", or no verdict leaves
+  // it showing as awaiting confirmation.
   const normalizeTask = (task: string | undefined): string | undefined => {
     const normalized = task?.trim().replace(/\s+/g, " ");
     return normalized ? normalized : undefined;
@@ -175,7 +191,8 @@ const overview = computed(() => {
     const task = normalizeTask(turn.task);
     if (task === undefined) return true;
     return !ordered.slice(i + 1).some((later) =>
-      later.state === "completed" && normalizeTask(later.task) === task);
+      later.state === "completed" && later.finalReportVerdict === "achieved"
+      && normalizeTask(later.task) === task);
   }).length;
   const needsUser = stuck + (groupsStore.activeRun?.state === "waiting-human" ? 1 : 0);
   const latestByBot = new Map<string, (typeof turns)[number]>();

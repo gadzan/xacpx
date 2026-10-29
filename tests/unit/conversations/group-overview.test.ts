@@ -213,3 +213,70 @@ test("P5 overview: cancelled turns are a user stop, not stuck", () => {
   expect(overview.nothingNeedsUser).toBe(true);
   expect(overview.members[0]!.state).toBe("idle");
 });
+
+test("Fix6 overview: a followup turn that ended with no structured report is not a final summary", () => {
+  // The followup completed, but the model never emitted a verdict/summary:
+  // it must not close "no overall conclusion", must not clear the earlier
+  // failure under (b), and — with the budget exhausted — must leave the
+  // budget warning's precondition (no final answer) intact, never a
+  // "nothing needs you" header over an unconcluded Run.
+  const exhausted = run("run_norep", "completed") as ConversationRun & { followupBudgetExhausted?: boolean };
+  exhausted.followupBudgetExhausted = true;
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [exhausted],
+    memberTurns: [
+      turn("run_norep", "bot_a", "failed", "implement login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_norep", "bot_b", "completed", "followup without report", undefined, undefined, "handoff_nr", 1, 1, "t-nr", "followup"),
+    ] });
+  expect(overview.finalAnswers).toEqual([]);
+  expect(overview.noOverallConclusion).toBe(true);
+  expect(overview.nothingNeedsUser).toBe(false);
+  expect(overview.stuckCount).toBe(1);
+  expect(overview.needsUserCount).toBe(1);
+});
+
+test("Fix6 overview: a followup turn with a verdict but no summary text is not a final summary", () => {
+  // Verdict alone is not a structured report on the backend: the summary
+  // sentence is what the final answer renders, so both are required.
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a"],
+    runs: [run("run_verdict_only", "completed")],
+    memberTurns: [
+      turn("run_verdict_only", "bot_a", "completed", "followup verdict only", "achieved", undefined, "handoff_vo", 1, 0, "t-vo", "followup"),
+    ] });
+  expect(overview.finalAnswers).toEqual([]);
+  expect(overview.noOverallConclusion).toBe(true);
+});
+
+test("Fix6 overview: the same task completed but not achieved does not clear a failure", () => {
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_na", "running")],
+    memberTurns: [
+      turn("run_na", "bot_a", "failed", "implement login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_na", "bot_b", "completed", "implement login", "not-achieved", "登录仍未达成。", "handoff_na", 1, 1, "t-na"),
+    ] });
+  expect(overview.stuckCount).toBe(1);
+  expect(overview.needsUserCount).toBe(1);
+});
+
+test("Fix6 overview: the same task completed with no verdict does not clear a failure", () => {
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_nv", "running")],
+    memberTurns: [
+      turn("run_nv", "bot_a", "failed", "implement login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_nv", "bot_b", "completed", "implement login", undefined, "轮次结束了。", "handoff_nv", 1, 1, "t-nv"),
+    ] });
+  expect(overview.stuckCount).toBe(1);
+});
+
+test("Fix6 overview: the same task completed and achieved still clears a failure", () => {
+  // The fix-round-5 recovery path survives the fix-round-6 tightening:
+  // only the verdict requirement is new, and "achieved" satisfies it.
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_ok", "running")],
+    memberTurns: [
+      turn("run_ok", "bot_a", "failed", "implement login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_ok", "bot_b", "completed", "implement login", "achieved", "登录已完成。", "handoff_ok", 1, 1, "t-ok"),
+    ] });
+  expect(overview.stuckCount).toBe(0);
+  expect(overview.needsUserCount).toBe(0);
+});
