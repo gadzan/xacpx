@@ -1803,6 +1803,21 @@ export class ConversationRunService {
     this.trackReadyAutomaticRuns();
   }
 
+  /** Stop every unfinished Run in a topic: running and queued member turns
+   *  alike. Pending wakes are dropped, so a bot that was mid-turn when the stop
+   *  landed does not immediately start another one. */
+  async cancelTopic(conversationId: string, topicId: string): Promise<void> {
+    this.assertOpen();
+    const runs = this.store.listRuns(conversationId, topicId);
+    for (const run of runs) {
+      if (this.isUnsettledRun(run.state)) {
+        await this.cancelRunAndAbortRouting(run.id);
+      }
+    }
+    this.store.clearTopicGroupPendingWake(topicId);
+    this.trackReadyAutomaticRuns();
+  }
+
   private async cancelRunAndAbortRouting(runId: string): Promise<void> {
     // cancelRun seals durable state synchronously, then may await a dispatcher
     // wake. Abort the Router before that wake waits on a successor's provider.

@@ -2352,6 +2352,10 @@ export class SqliteConversationStore implements ConversationStore {
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
         [input.now, member.id],
       );
+      this.sqlite.run(
+        `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+        [run.id],
+      );
       // Only a turn that actually completed advances the read cursor, and only
       // to the seq frozen when it started: messages that arrived mid-turn stay
       // unread for the next wake. The wake flag is read before the advance

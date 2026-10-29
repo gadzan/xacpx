@@ -150,6 +150,7 @@ import {
   type GroupDetailDto,
   type GroupSummaryDto,
   type ExecutionTargetDto,
+  type ConversationRunDetailDto,
 } from "./conversation-control-dtos";
 
 const MODEL_SET_SETTLE_BUDGET_MS =
@@ -3273,6 +3274,23 @@ export class ControlService {
       await runtime.runs.cancelMemberTurn(runId, memberTurnId);
       const result = runtime.runs.getRun(runId);
       return toRunDetail(result.run, result.memberTurns);
+    });
+  }
+
+  async cancelTopic(conversationId: string, topicId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      if (runtime.runs.isPeerTopic(topicId)) throw new ConversationError("run_not_found", "private peer topic");
+      await runtime.runs.cancelTopic(conversationId, topicId);
+      const listed = runtime.runs.listTopicRuns(conversationId, topicId);
+      const detail = (runId: string): ConversationRunDetailDto => {
+        const result = runtime.runs.getRun(runId);
+        return toRunDetail(result.run, result.memberTurns);
+      };
+      return {
+        runs: listed.runs.map((run) => detail(run.id)),
+        ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),
+        ...(listed.activeRun ? { activeRun: detail(listed.activeRun.id) } : {}),
+      };
     });
   }
 }
