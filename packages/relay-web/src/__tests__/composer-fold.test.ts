@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineComponent, h, ref } from "vue";
 import { mount } from "@vue/test-utils";
 import ConversationComposer from "../components/ConversationComposer.vue";
@@ -23,7 +23,17 @@ const Host = defineComponent(() => {
     });
 });
 
+// Fold is a phone affordance only: jsdom's 1024px window is desktop, so each
+// case pins the width it means to exercise.
+function setWidth(width: number): void {
+  Object.defineProperty(window, "innerWidth", { value: width, configurable: true, writable: true });
+}
+
 describe("ConversationComposer fold", () => {
+  const deskWidth = window.innerWidth;
+  beforeEach(() => setWidth(390));
+  afterEach(() => setWidth(deskWidth));
+
   it("hides controls/actions until focused; content keeps them open after blur", async () => {
     const wrapper = mount(Host);
     const folded = () => {
@@ -53,6 +63,16 @@ describe("ConversationComposer fold", () => {
     await wrapper.find("textarea").setValue("");
     expect(folded()).toBe(true);
     expect(attachmentsFolded()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps the affordances visible at rest on desktop", () => {
+    setWidth(1280);
+    const wrapper = mount(Host);
+    const row = wrapper.find('[data-test="composer-affordances"]');
+    expect(row.classes()).not.toContain("max-h-0");
+    expect(row.classes()).not.toContain("invisible");
+    expect(wrapper.find('[data-test="slot-action"]').exists()).toBe(true);
     wrapper.unmount();
   });
 

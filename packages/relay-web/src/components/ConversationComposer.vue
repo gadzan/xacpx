@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, useSlots, watch } from "vue";
 import { ArrowUp, Loader2, Square } from "lucide-vue-next";
+import { useIsMobile } from "../lib/use-dropdown";
 
 /**
  * The composer card every pane shares: one rounded surface with a growing textarea,
@@ -98,12 +99,16 @@ function setSelectionRange(start: number, end: number): void {
 
 defineExpose({ focus, setSelectionRange });
 
-/** Empty and unfocused: one line. Focus, content or staged attachments: the
- *  familiar two-line card. Focus/blur drives it because a tap on the card is the
- *  intent to write, and content must never be clipped (values also arrive from
- *  send-clear, history recall and restored drafts). */
+/** Empty and unfocused on a phone: one line. Focus, content or staged
+ *  attachments: the familiar two-line card. Focus/blur drives it because a tap
+ *  on the card is the intent to write, and content must never be clipped (values
+ *  also arrive from send-clear, history recall and restored drafts).
+ *  Desktop never folds: there is room for the control row, so it stays put. */
 const focused = ref(false);
-const expanded = computed(() => focused.value || props.modelValue.length > 0 || props.hasAttachments === true || showStop.value);
+const isMobile = useIsMobile();
+const expanded = computed(
+  () => !isMobile.value || focused.value || props.modelValue.length > 0 || props.hasAttachments === true || showStop.value,
+);
 /** Off until the first apply: the initial rows=2 markup must not animate down. */
 const animateHeight = ref(false);
 /** Panes without any controls/actions slot (the direct Bot composer) render no
@@ -212,7 +217,7 @@ function onInput(event: Event): void {
           :aria-expanded="combobox ? comboboxExpanded : undefined"
           :aria-activedescendant="combobox ? comboboxActiveId : undefined"
           class="block w-full resize-none bg-transparent pl-3.5 pr-12 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
-          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', expanded ? 'pt-2.5 pb-1' : 'pt-[4.5px] pb-[7.5px]', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
+          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', expanded ? 'pt-2.5 pb-1' : 'pt-[7px] pb-[5px]', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
           :disabled="disabled"
           :style="height !== undefined ? { height: height + 'px' } : undefined"
           :placeholder="placeholder || $t('chat.message')"
