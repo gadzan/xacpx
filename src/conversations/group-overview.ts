@@ -1,5 +1,6 @@
 import type { ConversationRun, MemberTurnRecord } from "./conversation-types";
 import type { FinalReportVerdict } from "./final-report";
+import { normalizeGroupTaskText } from "./group-task-normalization";
 
 /**
  * P5 group overview (product §3.1 total only — NOT a task-board page and NOT
@@ -102,9 +103,10 @@ const STUCK = new Set(["failed", "indeterminate"]);
 const TERMINAL_RUN_STATES = new Set(["completed", "failed", "cancelled", "indeterminate"]);
 const TERMINAL_TURN_STATES = new Set(["completed", "failed", "cancelled", "indeterminate"]);
 
-/** Task identity for recovery: trim, collapse runs of whitespace to one space. Empty means no task. */
+/** Task identity for recovery. Same rule as the duplicate-dispatch check —
+ * see `normalizeGroupTaskText`. Empty means no task. */
 export function normalizeGroupTask(task: string | undefined): string | undefined {
-  const normalized = task?.trim().replace(/\s+/g, " ");
+  const normalized = task === undefined ? undefined : normalizeGroupTaskText(task);
   return normalized ? normalized : undefined;
 }
 

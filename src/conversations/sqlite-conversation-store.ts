@@ -76,6 +76,7 @@ import type {
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 import { parseGroupSend } from "./group-handoff";
+import { normalizeGroupTaskText } from "./group-task-normalization";
 import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 
 export interface ConversationIdFactory {
@@ -1196,10 +1197,15 @@ export class SqliteConversationStore implements ConversationStore {
       // is a repeat, not a retry. A retry must carry the failure reason and
       // a different method — i.e. different task text. Idempotent replays
       // with the same invocationId already returned above, before this.
-      const duplicates = this.sqlite.all<MemberTurnRow>(
-        `SELECT * FROM member_turns WHERE run_id = ? AND handoff_source_turn_id = ? AND bot_id = ? AND task = ?`,
-        [run.id, sender.sourceTurnId!, args.to, args.task]);
-      if (duplicates.length > 0) {
+      // Normalized in JS, not SQL: `task = ?` let a space, a line break,
+      // full-width punctuation or a different case bypass this guard. The
+      // candidate set is (run, sender turn, member) — bounded by the Run —
+      // and the stored task text is never rewritten.
+      const candidates = this.sqlite.all<MemberTurnRow>(
+        `SELECT * FROM member_turns WHERE run_id = ? AND handoff_source_turn_id = ? AND bot_id = ?`,
+        [run.id, sender.sourceTurnId!, args.to]);
+      if (candidates.some((row) => row.task !== null
+        && normalizeGroupTaskText(row.task) === normalizeGroupTaskText(args.task))) {
         throw new ConversationError("handoff_duplicate",
           "the same task was already dispatched to the same member in this turn; a retry must carry the failure reason and a different method, not the same task text");
       }
