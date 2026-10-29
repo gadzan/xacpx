@@ -26,7 +26,13 @@ async function gitFixture(options: Parameters<typeof harness>[0] = {}, refFormat
   await runWorkspaceGit(source, ["add", "."]);
   await runWorkspaceGit(source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base"]);
   const h = await harness({ ...options, workspaceCwd: source, worktreeRoot: options.worktreeRoot ?? join(dir, "managed") });
-  const g = await h.bots.createGroup({ title: "Worktrees", botIds: h.ids });
+  // Fix-round-2 (PR #500 CI run 40808890569): this fixture creates a Topic
+  // with a shared execution target below, so the Group must explicitly opt
+  // into "shared". Omitting workspaceMode now defaults to per-member, and a
+  // per-member Group rejects a supplied target with
+  // execution_target_unexpected at createGroupTopic. Locally this file was
+  // masked by the pty.node load error, so CI was the first place it surfaced.
+  const g = await h.bots.createGroup({ title: "Worktrees", botIds: h.ids, workspaceMode: "shared" });
   const topic = await h.service.createGroupTopic(g.id, "Isolated", { workspace: "backend", isolation: "worktree-per-member" }, { maxConcurrentMemberTurns: 2 });
   const accept = (id = "request", count = 2) => h.service.acceptGroupPrompt({ conversationId: g.id, topicId: topic.id, requestId: id,
     text: "modify independently", target: { mode: "members", botIds: h.ids.slice(0, count) }, humanIngress: HUMAN });
