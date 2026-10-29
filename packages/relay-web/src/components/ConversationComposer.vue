@@ -212,7 +212,7 @@ function onInput(event: Event): void {
           :aria-expanded="combobox ? comboboxExpanded : undefined"
           :aria-activedescendant="combobox ? comboboxActiveId : undefined"
           class="block w-full resize-none bg-transparent pl-3.5 pr-12 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
-          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', expanded ? 'pt-2.5 pb-1' : 'pt-1.5 pb-1.5', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
+          :class="[surfaceDisabled ? '' : 'disabled:opacity-50', expanded ? 'pt-2.5 pb-1' : 'pt-[4.5px] pb-[7.5px]', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
           :disabled="disabled"
           :style="height !== undefined ? { height: height + 'px' } : undefined"
           :placeholder="placeholder || $t('chat.message')"
