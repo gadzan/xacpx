@@ -241,11 +241,15 @@ function onInput(event: Event): void {
             :aria-label="$t('common.cancel')"
             :title="$t('common.cancel')"
             :disabled="cancelling"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-danger/15 text-danger transition-all hover:bg-danger/25 disabled:opacity-50"
+            class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center transition-all disabled:opacity-50"
             @click="emit('cancel')"
           >
-            <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
-            <Square v-else :size="10" fill="currentColor" />
+            <!-- 44px touch target on mobile (redesign PR4 §5.3); the visible disc
+                 stays 28px so it keeps fitting the 38px resting pill. -->
+            <span class="grid h-7 w-7 place-items-center rounded-full bg-danger/15 text-danger transition-colors hover:bg-danger/25">
+              <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
+              <Square v-else :size="10" fill="currentColor" />
+            </span>
           </button>
           <button
             v-else
@@ -254,11 +258,13 @@ function onInput(event: Event): void {
             :disabled="disabled || sending || sendDisabled || attachmentsSendDisabled || !hasSendable"
             :aria-label="$t('chat.send')"
             :title="$t('chat.send')"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted"
+            class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center transition-all"
             @click="emit('send')"
           >
-            <Loader2 v-if="sending" :size="12" class="animate-spin" />
-            <ArrowUp v-else :size="13" :stroke-width="2.5" />
+            <span class="grid h-7 w-7 place-items-center rounded-full bg-accent text-on-accent transition-colors hover:bg-accent-hover disabled:bg-fg/10 disabled:text-fg-muted">
+              <Loader2 v-if="sending" :size="12" class="animate-spin" />
+              <ArrowUp v-else :size="13" :stroke-width="2.5" />
+            </span>
           </button>
         </div>
       </div>
