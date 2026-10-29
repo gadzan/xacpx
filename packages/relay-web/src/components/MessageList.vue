@@ -8,11 +8,12 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
-import { AlertCircle, ArrowDown, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
+import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import LiveTurnAvatar from "./LiveTurnAvatar.vue";
-import { useWorkingQuip } from "../lib/use-working-quip";
+import ThinkingDots from "./ThinkingDots.vue";
+import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import { fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
@@ -23,13 +24,8 @@ import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
-// Rotating quip + elapsed clock that ride the sticky agent-icon as a speech bubble
-// while a turn is in progress (replaces the old composer-anchored turn HUD). The
-// bubble itself is rendered by LiveTurnAvatar inside the live row's avatar.
-const { status: quipStatus, elapsed: quipElapsed } = useWorkingQuip(
-  () => (props.liveTurn ? `${props.sessionKey ?? ""}\0${props.liveTurn.startedAt}` : null),
-  () => props.liveTurn?.startedAt ?? null,
-);
+// While a turn is in progress the live row body renders the ThinkingDots bubble
+// (the only liveness signal) until streamed content replaces it.
 
 function ensureFullOf(m: ChatMessage): (() => Promise<void>) | undefined {
   const id = m.id;
@@ -580,12 +576,11 @@ watch(
             :class="enterRowClass"
             :style="enterStyle(0)"
           >
-            <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
+            <LiveTurnAvatar class="hidden lg:block" :driver="driver" />
             <div data-test="msg-streaming" class="min-w-0 flex-1">
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-              <!-- The bubble on the avatar already carries liveness (status dot), so the
-                   body slot only reserves its height: no second, unrelated spinner. -->
-              <div v-else data-test="live-working" class="h-[22px]" />
+              <!-- Thinking bubble until content arrives; no second spinner once it does. -->
+              <ThinkingDots v-else data-test="live-working" />
             </div>
           </div>
           <!-- AGENT MESSAGE card (sender / receiver collaboration event). A sent card
@@ -598,32 +593,36 @@ watch(
             :style="enterStyle(i)"
           />
           <!-- USER row -->
-          <div v-else-if="m.direction === 'in' && !m.structured?.agentMessage" class="conversation-row group cv-row flex justify-end" :class="enterRowClass"
+          <div v-else-if="m.direction === 'in' && !m.structured?.agentMessage" class="conversation-row group cv-row flex flex-col items-end" :class="enterRowClass"
                :style="enterStyle(i)"
                :data-scheduled-task="schedOf(m)?.taskId">
             <!-- min-w-0: without it the flex item's min-width:auto tracks a wide <pre>/table
                  min-content and can defeat the max-w-[80%] cap. -->
-            <div class="flex min-w-0 max-w-[80%] flex-col items-end">
-              <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
-              <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
-                    class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent"
-                    :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
-                <Clock :size="11" />{{ $t("chat.scheduled") }}
-              </span>
-              <ConversationBubble :message="m" :attachments="m.attachments" own data-test="msg-in" :class="m.failed ? '!bg-danger/5' : ''" />
-              <ConversationMeta :message="m" />
-              <!-- Failed sends get a compact retry affordance on their own line below. -->
-              <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
-                <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
-                  <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
-                <button type="button" data-test="msg-resend"
-                        class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
-                        :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
+            <div class="flex w-full justify-end">
+              <div class="flex min-w-0 max-w-[80%] flex-col items-end">
+                <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
+                <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
+                      class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent"
+                      :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
+                  <Clock :size="11" />{{ $t("chat.scheduled") }}
+                </span>
+                <ConversationBubble :message="m" :attachments="m.attachments" own data-test="msg-in" :class="m.failed ? '!bg-danger/5' : ''" />
               </div>
+            </div>
+            <!-- Meta + retry live outside the max-w-[80%] column: iOS Safari paint-clips
+                 the column at its bubble width, cutting a wider time row. -->
+            <ConversationMeta :message="m" />
+            <!-- Failed sends get a compact retry affordance on their own line below. -->
+            <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
+              <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
+                <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
+              <button type="button" data-test="msg-resend"
+                      class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
+                      :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
             </div>
           </div>
           <!-- ASSISTANT row -->
-          <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" :class="enterRowClass" :style="enterStyle(i)">
+          <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" hide-identity-on-mobile :class="enterRowClass" :style="enterStyle(i)">
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
               <!-- Structured transcript: activity cards interleave with the Markdown
@@ -662,10 +661,10 @@ watch(
             :class="enterRowClass"
             :style="enterStyle(i + 1)"
           >
-            <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
+            <LiveTurnAvatar class="hidden lg:block" :driver="driver" />
             <div data-test="msg-streaming" class="min-w-0 flex-1">
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-              <div v-else data-test="live-working" class="h-[22px]" />
+              <ThinkingDots v-else data-test="live-working" />
             </div>
           </div>
         </template>
@@ -673,29 +672,18 @@ watch(
         <!-- live streaming assistant row when the transcript is empty (working spinner occupies the slot even with no parts yet) -->
         <div v-if="liveTurn && visibleMessages.length === 0" class="flex gap-3" :class="enterRowClass"
              :style="enterStyle(0)">
-          <LiveTurnAvatar :driver="driver" :status="quipStatus" :elapsed="quipElapsed" />
+          <LiveTurnAvatar class="hidden lg:block" :driver="driver" />
           <div data-test="msg-streaming" class="min-w-0 flex-1">
             <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
-            <div v-else data-test="live-working" class="h-[22px]" />
+            <ThinkingDots v-else data-test="live-working" />
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Bottom scrim (blur + fade to the page bg) lifts the jump-latest pill off the
-         transcript whenever the view is detached from the bottom. -->
-    <div v-show="!atBottom" aria-hidden="true" class="jump-scrim" />
-    <button
-      v-show="!atBottom"
-      data-test="jump-latest"
-      type="button"
-      :aria-label="$t('chat.jumpLatest')"
-      :title="$t('chat.jumpLatest')"
-      class="absolute bottom-3 left-1/2 z-10 grid h-7 w-7 -translate-x-1/2 place-items-center rounded-sm bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-colors hover:bg-surface"
-      @click="scrollToBottom(true)"
-    >
-      <ArrowDown :size="13" :stroke-width="2.5" />
-    </button>
+    <!-- Bottom scrim + jump-latest pill (shared component): the fade must reach
+         over the composer wrapper's pt-1.5 so it terminates at the input card. -->
+    <TranscriptJumpLatest :visible="!atBottom" @jump="scrollToBottom(true)" />
   </div>
 </template>
 
@@ -713,18 +701,6 @@ watch(
 }
 
 
-/* Gradient + progressive blur under the jump-latest pill (mask fades the backdrop
-   blur itself, so content blurs out toward the bottom edge instead of a hard band). */
-.jump-scrim {
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 4.5rem;
-  pointer-events: none;
-  background: linear-gradient(to top, rgb(var(--c-bg) / 0.9), rgb(var(--c-bg) / 0));
-  -webkit-mask-image: linear-gradient(to top, #000 30%, transparent);
-  mask-image: linear-gradient(to top, #000 30%, transparent);
-  backdrop-filter: blur(3px);
-}
 
 /* Entrance choreography (see enterPhase): HOLD keeps the transcript laid out but
    invisible while the scroller is being positioned — opacity (not display/visibility)

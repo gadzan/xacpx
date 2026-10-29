@@ -670,6 +670,25 @@ function scrollToBottom(): void {
   const el = scroller.value;
   if (!el) return;
   el.scrollTop = el.scrollHeight - el.clientHeight;
+  // content-visibility rows paint at the contain-intrinsic-size estimate, and late
+  // layout (fonts, avatars, code blocks) keeps growing the content after the first
+  // jump, so a fixed-frame re-pin lands short (iOS Safari is the worst). Keep
+  // re-pinning while the content keeps growing, and stop as soon as the reader
+  // drifts off the bottom; rAF absent (jsdom tests) is a no-op.
+  if (typeof requestAnimationFrame !== "function") return;
+  let pinnedHeight = el.scrollHeight;
+  let tries = 0;
+  const settle = (): void => {
+    const e = scroller.value;
+    if (!e) return;
+    if (pinnedHeight - e.scrollTop - e.clientHeight > THRESHOLD) return; // reader took over
+    if (e.scrollHeight !== pinnedHeight) {
+      pinnedHeight = e.scrollHeight;
+      e.scrollTop = e.scrollHeight - e.clientHeight;
+    }
+    if (++tries < 40) requestAnimationFrame(settle);
+  };
+  requestAnimationFrame(settle);
 }
 function jumpToMessage(messageId: string): void {
   const el = scroller.value;
@@ -842,20 +861,6 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
             </template>
             <template v-if="item.message.role === 'human'">
               <ConversationBubble :message="item.message" :attachments="item.message.attachments" own />
-              <ConversationMeta :message="item.message" />
-              <GroupDispatchRow
-                v-if="dispatchRows[item.message.id]"
-                :presentation="dispatchRows[item.message.id]!"
-                class="mt-2"
-                @jump="jumpToMessage"
-                @stop-member="handleStopMember"
-                @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
-              />
-              <GroupDispatchLeaderStop
-                v-if="leaderStopAnchorIds.has(item.message.id)"
-                :label="leaderStopLabel(dispatchRows[item.message.id]!)"
-                @stop="handleStopLeader(dispatchRows[item.message.id]!)"
-              />
             </template>
 
             <template v-else-if="item.message.role === 'bot'">
@@ -900,6 +905,23 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
             <template v-else>
               <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
               <ConversationMeta :message="item.message" />
+            </template>
+
+            <template v-if="item.message.role === 'human'" #meta>
+              <ConversationMeta :message="item.message" />
+              <GroupDispatchRow
+                v-if="dispatchRows[item.message.id]"
+                :presentation="dispatchRows[item.message.id]!"
+                class="mt-2"
+                @jump="jumpToMessage"
+                @stop-member="handleStopMember"
+                @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
+              />
+              <GroupDispatchLeaderStop
+                v-if="leaderStopAnchorIds.has(item.message.id)"
+                :label="leaderStopLabel(dispatchRows[item.message.id]!)"
+                @stop="handleStopLeader(dispatchRows[item.message.id]!)"
+              />
             </template>
           </TranscriptRow>
           <!-- Plain bot message that shares its member bubble with an earlier row.

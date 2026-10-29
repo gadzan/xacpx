@@ -145,9 +145,8 @@ watch(
   { immediate: true },
 );
 
-// Always-on 1 Hz clock. Feeds the booting "starting… Ns" readout above; the active
-// turn's rotating quip + elapsed now ride the sticky agent-icon (see MessageList /
-// useWorkingQuip), so the composer no longer carries a status HUD.
+// Always-on 1 Hz clock. Feeds the booting "starting… Ns" readout above. The live turn's
+// liveness signal is the ThinkingDots bubble in MessageList; no status HUD lives here.
 const nowMs = ref(Date.now());
 const timer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
 onUnmounted(() => clearInterval(timer));
@@ -234,7 +233,7 @@ onUnmounted(() => clearInterval(timer));
     <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator
          inset is applied ONCE here (the bottommost element) and never stacks on top of the
          composer's own padding — env() is 0 off-PWA, so desktop stays at 1rem. -->
-    <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
+    <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
          :style="keyboardInset ? { paddingBottom: '0.5rem' } : undefined"
          data-test="composer-area">
       <!-- Same centered 48rem column as the transcript rows (MessageList mx-auto

@@ -1951,6 +1951,8 @@ describe("Group Components", () => {
       expect(i18n.global.t("group.header.members", 2)).toBe("2 members");
     });
 
+
+
     it("mobile ⋯ sheet opens the group editor and ← emits back", async () => {
       seedGroupSelection();
       window.innerWidth = 500;

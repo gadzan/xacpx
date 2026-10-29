@@ -20,7 +20,11 @@ const dateTime = computed(() => {
 </script>
 
 <template>
-  <div data-test="msg-actions" class="conversation-meta flex min-h-[22px] max-w-full items-center gap-1.5 pt-0.5 text-fg-muted">
+  <!-- No max-w-full: capping the row at the sibling bubble's width squeezes the
+       shrink-0 time + copy past the column's right edge on narrow own bubbles,
+       clipping the copy button at the screen edge. Fit-content lets the own
+       column widen leftward instead; the bubble keeps its size and position. -->
+  <div data-test="msg-actions" class="conversation-meta flex min-h-[22px] items-center gap-1.5 pt-0.5 text-fg-muted">
     <time data-test="msg-time" class="shrink-0 whitespace-nowrap font-mono text-xs tabular-nums" :datetime="dateTime">{{ timestamp }}</time>
     <slot />
     <div class="conversation-operations flex shrink-0 items-center gap-1.5">

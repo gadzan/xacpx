@@ -22,6 +22,7 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { useDirectComposerStore } from "../stores/direct-composer";
 import { useComposerStore } from "../stores/composer";
 import ComposerAttachments from "./ComposerAttachments.vue";
+import ComposerAttachPicker from "./ComposerAttachPicker.vue";
 import ConversationComposer from "./ConversationComposer.vue";
 
 const props = defineProps<{
@@ -434,7 +435,7 @@ function onInput(): void {
 }
 </script>
 <template>
-  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <!-- Disabled bot warning -->
     <div
       v-if="isBotDisabled"
@@ -513,7 +514,13 @@ function onInput(): void {
         <ComposerAttachments
           v-if="directBotsStore.instanceId"
           :scope-key="attachKey"
-          :instance-id="directBotsStore.instanceId"
+          :disabled="blocked"
+        />
+      </template>
+      <template #actions>
+        <ComposerAttachPicker
+          v-if="directBotsStore.instanceId"
+          :scope-key="attachKey"
           :disabled="blocked"
         />
       </template>

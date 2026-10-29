@@ -20,6 +20,7 @@ import BotAvatar from "./BotAvatar.vue";
 import ConversationComposer from "./ConversationComposer.vue";
 import ComposerAttachments from "./ComposerAttachments.vue";
 import DropdownPanel from "./DropdownPanel.vue";
+import ComposerAttachPicker from "./ComposerAttachPicker.vue";
 import { useDropdown } from "../lib/use-dropdown";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
 import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
@@ -646,7 +647,7 @@ function handleRetry(): void {
 </script>
 
 <template>
-  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <div v-if="groupsStore.promptError" data-test="group-prompt-error" class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-danger/10 px-3 py-1.5 text-xs text-danger">
       <span class="truncate">{{ groupsStore.promptErrorDetail ?? $t(`bot.errors.${groupsStore.promptError}`) }}</span>
       <button
@@ -770,7 +771,13 @@ function handleRetry(): void {
         <ComposerAttachments
           v-if="props.instanceId ?? groupsStore.instanceId"
           :scope-key="attachKey"
-          :instance-id="(props.instanceId ?? groupsStore.instanceId)!"
+          :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
+        />
+      </template>
+      <template #actions>
+        <ComposerAttachPicker
+          v-if="props.instanceId ?? groupsStore.instanceId"
+          :scope-key="attachKey"
           :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
         />
       </template>

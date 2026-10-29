@@ -2011,7 +2011,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain("Looks good to me!");
     });
 
-    it("renders live turn with status HUD and stop button", async () => {
+    it("renders a streaming live turn without a status capsule or stop button", async () => {
       const activeRun: ConversationRunDto = {
         id: "run_1",
         conversationId: "c1",
@@ -2036,7 +2036,6 @@ describe("Direct Bot Components", () => {
           activeRun,
           activeMemberTurn: null,
           runParts: {},
-          stopAvailable: true,
           bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
         },
         global: {
@@ -2045,13 +2044,43 @@ describe("Direct Bot Components", () => {
       });
 
       expect(wrapper.find('[data-test="live-turn-container"]').exists()).toBe(true);
-      expect(wrapper.text()).toContain("Running");
       expect(wrapper.text()).toContain("Analyzing code...");
+      // The status capsule is gone: no lifecycle label, no stop action, no second
+      // liveness indicator. Streamed content is the whole signal; Stop is the
+      // composer's.
+      expect(wrapper.find('[data-test="run-status"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="run-empty-slot"]').exists()).toBe(false);
+    });
 
-      const stopBtn = wrapper.find('[data-test="run-stop-button"]');
-      expect(stopBtn.exists()).toBe(true);
-      await stopBtn.trigger("click");
-      expect(wrapper.emitted("cancelRun")).toBeTruthy();
+    it("shows the thinking bubble until the run produces output", () => {
+      const activeRun: ConversationRunDto = {
+        id: "run_think",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [],
+          liveTurn: null,
+          activeRun,
+          activeMemberTurn: null,
+          runParts: {},
+          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        },
+        global: { plugins: [i18n] },
+      });
+      const dots = wrapper.find('[data-test="run-empty-slot"]');
+      expect(dots.exists()).toBe(true);
+      expect(dots.attributes("role")).toBe("status");
+      expect(dots.element.children).toHaveLength(3);
+      expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
     });
 
     // The dot, not a colour tint on the label, is what separates the lifecycle states:
@@ -2085,8 +2114,8 @@ describe("Direct Bot Components", () => {
       expect(dot.classes()).not.toContain("pulse-dot");
       expect(dot.classes()).toContain("bg-warn");
       expect(chip.find('[data-test="hud-quip"]').text()).toBe("Waiting for human");
-      // The body never carries a second spinner while the chip already reports liveness.
-      expect(wrapper.find('[data-test="run-empty-slot"]').element.children).toHaveLength(0);
+      // A run blocked on the user is not thinking: the chip stands alone.
+      expect(wrapper.find('[data-test="run-empty-slot"]').exists()).toBe(false);
     });
 
     it("hides the HUD stop button for terminal runs so no second cancel fires", async () => {
@@ -2471,7 +2500,7 @@ describe("Direct Bot Components", () => {
       ];
     }
 
-    it("mobile bar uses TopicSwitcher: subtitle pill opens the shared sheet with search-free rows, ⋯ and new topic at the bottom", async () => {
+    it("mobile ⋯ sheet's topic row closes itself and opens the shared topic sheet", async () => {
       seedBot();
       const directBots = useDirectBotsStore();
       const switchTopicSpy = vi.spyOn(directBots, "switchTopic").mockResolvedValue();
@@ -2479,12 +2508,19 @@ describe("Direct Bot Components", () => {
       window.innerWidth = 500;
       try {
         const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
-        // Below lg only the mobile bar's pill is mounted; its label is the active topic.
-        const pills = wrapper.findAll('[data-test="topic-menu"]');
-        expect(pills).toHaveLength(1);
-        const pill = pills[0]!;
-        expect(pill.text()).toBe("Default");
-        await pill.trigger("click");
+        // Below lg the switcher is parked offscreen, never rendered in the header.
+        expect(wrapper.find('header [data-test="topic-menu"]').exists()).toBe(false);
+        const parked = wrapper.find('[data-test="topic-menu"]');
+        expect(parked.element.closest(".parked-topic")).not.toBeNull();
+        expect(parked.text()).toBe("Default");
+        await wrapper.find('[data-test="mobile-bot-more"]').trigger("click");
+        const topicRow = wrapper.find('[data-test="mobile-bot-more-sheet"] [data-test="sheet-bot-topic"]');
+        expect(topicRow.exists()).toBe(true);
+        expect(topicRow.text()).toContain("Default");
+        await topicRow.trigger("click");
+        await flushPromises();
+        // One sheet at a time: the ⋯ sheet yields to the shared topic sheet.
+        expect(wrapper.find('[data-test="mobile-bot-more-sheet"]').exists()).toBe(false);
         const sheet = wrapper.find('[data-test="bot-topic-sheet"]');
         expect(sheet.exists()).toBe(true);
         const rows = sheet.findAll('[data-test="topic-row"]');
@@ -2506,7 +2542,7 @@ describe("Direct Bot Components", () => {
       }
     });
 
-    it("mounts exactly one TopicSwitcher per breakpoint: the header's on desktop, the mobile bar's below lg", async () => {
+    it("mounts exactly one TopicSwitcher per breakpoint: in the header on desktop, parked below lg", async () => {
       seedBot();
       const prevWidth = window.innerWidth;
       try {
@@ -2519,6 +2555,7 @@ describe("Direct Bot Components", () => {
         const mobile = mount(DirectBotPane, { global: { plugins: [i18n] } });
         expect(mobile.findAll('[data-test="topic-menu"]')).toHaveLength(1);
         expect(mobile.find('header [data-test="topic-menu"]').exists()).toBe(false);
+        expect(mobile.find('[data-test="topic-menu"]').element.closest(".parked-topic")).not.toBeNull();
         mobile.unmount();
       } finally {
         window.innerWidth = prevWidth;
@@ -2537,13 +2574,14 @@ describe("Direct Bot Components", () => {
         await flushPromises();
         expect(wrapper.findAll('[data-test="topic-menu"]')).toHaveLength(1);
         expect(wrapper.find('header [data-test="topic-menu"]').exists()).toBe(false);
+        expect(wrapper.find('[data-test="topic-menu"]').element.closest(".parked-topic")).not.toBeNull();
         wrapper.unmount();
       } finally {
         window.innerWidth = prevWidth;
       }
     });
 
-    it("shows Default on both mobile and desktop when no topic is active (not the bot role)", async () => {
+    it("shows Default on both breakpoints when no topic is active (not the bot role)", async () => {
       seedBot();
       useDirectBotsStore().activeTopicId = null;
       const prevWidth = window.innerWidth;
