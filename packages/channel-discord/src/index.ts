@@ -17,7 +17,7 @@ const plugin: XacpxPlugin = {
   // default export is ever evaluated, so `minXacpxVersion`'s runtime check
   // cannot guard it. The only protection is refusing to load on an older core,
   // which is what this floor and `peerDependencies.xacpx` express together.
-  minXacpxVersion: "0.24.10-beta.8",
+  minXacpxVersion: "0.24.10-beta.9",
   channels: [
     {
       type: "discord",

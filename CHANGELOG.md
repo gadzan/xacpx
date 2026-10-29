@@ -1,10 +1,51 @@
 # Changelog
-
-## [Unreleased]
+## [relay-protocol 0.6.4-beta.7] - 2026-10-29
 
 ### Added
 
 - Agents can ask structured questions through an ordinary session chat (`ask` / ACP form elicitation). Core now resolves an elicitation route for any turn whose ingress reports `chatType: "direct"`, not only for Direct Conversation turns: the relay dashboard mounts the form in the session's own pane, keyed by the interaction's `sessionAlias` (core pins it to the exact turn and stamps the display alias the session list selects on, `channel-relay` copies it onto `InteractionRequestDto.sessionAlias`, the hub keeps it on the pending entry and replays it in every snapshot). A session holding an unanswered question shows the question dot in the sidebar, so a form opened while you are looking at another session is not silent until it expires. A turn that cannot name a session or a conversation is still refused before the hub is called — an invisible form is worse than a refusal. Group and unreported destinations stay unroutable, and each renderer keeps its own `chatType` gate.
+
+## [relay 0.14.12-beta.13] - 2026-10-29
+
+### Added
+
+- An agent's structured question now reaches an ordinary session chat: the dashboard renders the form as the top composer layer of the session's own `ChatPane`, keyed by `interactionId` and `sessionAlias`, and the sidebar marks a session holding an unanswered form with the question dot ahead of `working`/`unread` — so a question opened while you are looking at another session is not silent until it expires. Interaction actions carry an explicit target, so a session form never resolves through the Direct Bot pane's visible entry, and the answer is submitted to the entry's own `instanceId` (aliases are only unique inside one daemon). The form layer is height-capped and scrolls internally, so a long field list cannot push the composer off a phone screen (#493).
+- Bot 弹层改为单表单 + 头像直接交互：头像在基本设置表单顶部，点击打开只读放大浮层，右下角铅笔角标进入头像外观编辑视图；快速查看浮层自注册一层 modal（Esc / 移动端返回只关闭浮层，焦点回到入口，弹层内草稿不丢失），新建 Bot 每次打开随机生成角色头像，编辑则沿用已保存配置（#494）。
+- Bot 与群组输入框可以发图：两个 pane 都挂载了同一套 `ComposerAttachments`（按会话 / Bot / 群组命名空间隔离草稿）并把 `media` 随 prompt 送出，粘贴与拖拽同样生效；只有媒体没有文字的首条消息也能进入 Default Topic 创建流程。会话聊天的行为未变（#495）。
+- 运行中的状态胶囊换成共用的「•••」思考气泡（`ThinkingDots`），首个流式输出到达即让位给内容，Stop 只在 composer 上；移动端把 Bot 身份固定在顶栏的玻璃头像里，不再逐条气泡前重复头像与名字。`waiting-human` 仍保留警示胶囊且不显示气泡——被阻塞的运行不是「在思考」（#492）。
+
+### Changed
+
+- 群组与 Direct Bot 的 composer 不再显示运行期间的三按钮行（停止本次任务 / 停止并收回草稿 / 接管发送），改为发送位的按钮在整个运行期间保持 Stop；运行中带草稿点它只取消，草稿留在框里等取消落地后手动发送，运行中发送仍由既有发送守卫拒绝。会话聊天保持「忙碌时可排队发送」(#496)。
+
+### Fixed
+
+- 新建群组的成员候选只列出已启用的 Bot，目录刷新时把已选中的 Bot 禁用后会自动从选择里移除；编辑已有群组的成员展示不变（#497）。
+- 取消运行后横幅上的图标不再缺失（`CircleStop` 未导入）。
+
+## [channel-relay 0.7.8-beta.9] - 2026-10-29
+
+### Added
+
+- `requestElicitation` now accepts a second placeable route besides a conversation correlation: a direct session turn, carried by `InteractionRequestDto.sessionAlias`. A frame that names neither a conversation nor a session is still refused with `unsupported-route` **before** the hub round trip. Deploy the hub and the dashboard together — an old hub drops the alias and an old dashboard has no session scope, and either mismatch fails as an invisible expiry (#493).
+
+## [0.24.10-beta.9] - 2026-10-29
+
+### Added
+
+- `ask` (ACP form elicitation) works in an ordinary session turn, not just a Direct Conversation: `resolveSessionElicitationTurnRoute` binds a route for any turn whose ingress reports `chatType: "direct"` and whose key is not a `bot:` key (`resolveElicitationTurnRoute` still owns those), and the turn context stamps `sessionAlias` — the display alias the session list selects on — on the elicitation context only, so a `bot:` turn's `brt_*` plumbing alias never leaves the daemon. Fail-closed is unchanged: `chatType` must be exactly `"direct"`, the origin must be a human with a trusted `senderId`, and group or unreported destinations stay unroutable (#493).
+
+### Fixed
+
+- 运行中的会话刷新模型 / effort 芯片不再超时：只读的 `getSessionModel` / `getSessionEffort` 改走 bridge 的 control 通道，不再排在运行中 turn 的 normal 通道后面等 45s 报 `bridge request "getSessionModel" timed out`；`setModel` / `setSessionEffort` 仍留在 normal 通道串行执行，因此控制通道的读永远不会越过排队中的写（#491）。
+
+## [channel-feishu 0.8.7-beta.9] - 2026-10-29
+
+- Compatibility floor raised to `0.24.10-beta.9` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.9] - 2026-10-29
+
+- Compatibility floor raised to `0.24.10-beta.9` with no channel behavior change.
 
 ## [relay 0.14.12-beta.12] - 2026-10-28
 
