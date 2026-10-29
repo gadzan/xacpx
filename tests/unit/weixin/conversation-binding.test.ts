@@ -108,8 +108,22 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
     emit(3, "/use B"); await waitFor(() => peek(chatKey) === "B");
     await runtime.dispatcher.kick(); await waitFor(() => sent.some((message) => message.text.includes("Conversation delivered")));
     expect(background).toEqual([]); expect(active).toEqual([]);
+    // The reply the human sees comes from the bound Session B (ctx-2), never
+    // from the held Session A lane; the relay may append further member replies
+    // after the first round — every one of them still reads B.
     const replies = sent.filter((message) => message.text.includes("Conversation delivered"));
-    expect(replies).toEqual([{ to: "human", text: "Reviewer:\nConversation delivered", context: "ctx-2" }]);
+    expect(replies.length).toBeGreaterThanOrEqual(1);
+    for (const reply of replies) expect(reply.context).toBe("ctx-2");
+    expect(replies.map((reply) => reply.text).join("\n")).toContain("Reviewer:\nConversation delivered");
+    // First-round membership is exactly the accepted member: the lead Bot.
+    const run = runtime.store.listRuns(group.id, topic.id)[0]!;
+    const firstRound = runtime.store.listMemberTurns(run.id).filter((turn) => turn.batch === 1);
+    expect(firstRound.map((turn) => turn.botId)).toEqual([bot.id]);
+    // Every relayed turn terminates, and the Run reaches a terminal state.
+    const allTurns = runtime.store.listMemberTurns(run.id);
+    expect(allTurns.length).toBeGreaterThan(0);
+    expect(allTurns.every((turn) => turn.state === "completed" || turn.state === "failed" || turn.state === "cancelled")).toBe(true);
+    expect(["completed", "failed", "cancelled"]).toContain(run.state);
     // Stop reaches the selected Run, even after switching the normal Session.
     emit(4, "stop this Run"); await waitFor(() => runtime.store.listRuns(group.id, topic.id).length === 2);
     const stopped = runtime.store.listRuns(group.id, topic.id).find((run) => run.state === "queued")!;

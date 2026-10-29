@@ -95,6 +95,17 @@ function isOriginalSender(input: ConversationTurnRunInput, h: Harness): boolean 
   return input.botId === A && h.store.getMemberTurn(input.memberTurnId)?.followupSenderMemberTurnId === undefined;
 }
 
+/** A stored group reply relays to the members it names, so a batch that
+ *  drains does not end the Run: the relay keeps appending rounds until
+ *  RELAY_MAX_ROUNDS. A rejected handoff therefore shares its Run with relay
+ *  turns the members woke themselves, and the raw member-turn total is no
+ *  longer the count of turns the handoff itself created. These tests assert
+ *  "the rejection created no new durable work", which is exactly the turns
+ *  that are NOT relay rounds. */
+function nonRelayTurns(h: Harness, runId: string) {
+  return h.store.listMemberTurns(runId).filter((turn) => turn.origin !== "relay");
+}
+
 test("live members page exact public results without cross-Run or stale-token access", async () => {
   let h!: Harness, foreignAssignment = "", reads = 0;
   let finalToken = "";
@@ -306,7 +317,10 @@ test("handoff commit rejects a corrupted human request snapshot", async () => {
     h.store.directWriteForTest("messages", request, { role: "bot" });
     try { await expect(h.send(input)).rejects.toMatchObject({ code: "request_snapshot_mismatch" }); }
     finally { h.store.directWriteForTest("messages", request, { role: "human" }); }
-    expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
+    // Relay rounds are appended once this batch drains, so the Run's total is
+    // no longer 1: the subject is that the rejected commit created no work of
+    // its own, i.e. the sender's own human-batch turn is the only non-relay one.
+    expect(nonRelayTurns(h, input.runId).map((turn) => [turn.botId, turn.origin])).toEqual([[A, "human-explicit"]]);
   }); h.store.close();
 });
 
@@ -325,7 +339,11 @@ test("public handoff cannot bypass Run quarantine or change global Bot enabled s
   const { h } = await scenario(async (input, h) => {
     h.store.directWriteForTest("runs", input.runId, { quarantined_bot_ids_json: JSON.stringify([B]) });
     await expect(h.send(input)).rejects.toMatchObject({ code: "handoff_quarantined_member" });
-    expect(h.bots.getBot(B).enabled).toBe(true); expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
+    expect(h.bots.getBot(B).enabled).toBe(true);
+    // Relay rounds are appended once this batch drains, so the Run's total is
+    // no longer 1: the subject is that the rejected handoff published no work
+    // for its target, i.e. the only non-relay turn is the sender's own.
+    expect(nonRelayTurns(h, input.runId).map((turn) => [turn.botId, turn.origin])).toEqual([[A, "human-explicit"]]);
   }); h.store.close();
 });
 
@@ -336,7 +354,7 @@ for (const corrupt of ["{", "null", "{}", "true", '"bot_b"', '["bot_b",17]', "",
       h.store.directWriteForTest("runs", input.runId, { quarantined_bot_ids_json: corrupt });
       try { await expect(h.send(input)).rejects.toMatchObject({ code: "run_corrupt" }); }
       finally { h.store.directWriteForTest("runs", input.runId, { quarantined_bot_ids_json: JSON.stringify([B]) }); }
-      expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
+      expect(nonRelayTurns(h, input.runId)).toHaveLength(1);
       expect(h.store.getRun(input.runId)?.consumedMemberTurns).toBe(before.consumedMemberTurns);
       expect(h.bots.getBot(B).enabled).toBe(true);
       expect(h.store.listMessages({ conversationId: h.group.id, topicId: h.topic.id, limit: 100 }).filter((m) => m.handoff)).toHaveLength(0);
@@ -400,7 +418,7 @@ test("a missing target Bot cannot allocate a lifecycle gate through stale member
     delete h.state.bots[B];
     try {
       await expect(h.send(input)).rejects.toMatchObject({ code: "bot_not_found" });
-      expect(gate).not.toHaveBeenCalled(); expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
+      expect(gate).not.toHaveBeenCalled(); expect(nonRelayTurns(h, input.runId)).toHaveLength(1);
     } finally { h.state.bots[B] = target; gate.mockRestore(); }
   }); h.store.close();
 });
@@ -451,7 +469,10 @@ for (const race of ["nonmember", "removed", "disabled", "deleted", "topic-delete
       if (race === "binding") h.state.sessions[input.sessionAlias]!.owner!.botId = C;
       if (race === "cancel") h.store.cancelRun(input.runId, NOW);
       await expect(h.send(input, "call-1", args)).rejects.toBeDefined();
-      expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
+      // The relay appends rounds once the batch drains, so the raw total is no
+      // longer the count of turns this handoff created: the subject is that a
+      // rejected handoff published nothing, i.e. only the sender's own turn.
+      expect(nonRelayTurns(h, input.runId)).toHaveLength(1);
       expect(h.store.listMessages({ conversationId: h.group.id, topicId: h.topic.id, limit: 100 }).filter((m) => m.handoff)).toHaveLength(0);
     }, async () => {
       const h = hRef!;

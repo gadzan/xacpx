@@ -55,6 +55,13 @@ export class ControlledRunner implements ConversationTurnRunner {
   finish(index: number, result: ConversationTurnRunResult = { status: "completed", text: `result-${index}` }) {
     this.gates[index]!.resolve(result);
   }
+  /** Resolve every open gate. The relay appends a follow-on round once a batch
+   *  drains, so a test that only finished the batch's own indices would leave
+   *  those turns parked forever. Resolving an already-settled deferred is a
+   *  no-op, so this is safe to call on every settle pass. */
+  finishAll(result: ConversationTurnRunResult = { status: "completed", text: "settled" }) {
+    for (const gate of this.gates) gate.resolve(result);
+  }
   async cancel(input: ConversationTurnCancelInput) {
     const index = this.calls.findIndex((call) => call.promptRequestId === input.promptRequestId);
     if (index >= 0) { this.finish(index, { status: "cancelled" }); await this.done[index]; }
@@ -172,3 +179,6 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
   }
   return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; }, claimAttempts: () => claimCounter.attempts, claimScans: () => claimCounter.attempts + claimCounter.peeks };
 }
+
+/** The disposable world one concurrency test drives. */
+export type ConcurrencyHarness = Awaited<ReturnType<typeof harness>>;

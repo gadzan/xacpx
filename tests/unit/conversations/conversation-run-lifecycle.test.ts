@@ -3322,7 +3322,13 @@ for (const seam of ["afterClaim", "beforeRuntimeMaterialize", "beforeExecutionSt
       resume.resolve();
       await drain;
       await first.dispatcher.kick();
-      expect(fakeRunner(first.runner).runs.map((input) => input.memberTurnId)).toEqual([sibling.id]);
+      const admitted = fakeRunner(first.runner).runs.map((input) => input.memberTurnId);
+      // The cancelled member is never admitted; the surviving sibling runs and
+      // its reply relays the Run forward instead of ending it at the batch.
+      expect(admitted[0]).toBe(sibling.id);
+      expect(admitted).not.toContain(target.id);
+      expect(admitted.length).toBeGreaterThan(1);
+      expect(admitted.every((id) => first.store.getMemberTurn(id)?.state === "completed")).toBe(true);
       expect(first.store.getMemberTurn(sibling.id)?.state).toBe("completed");
       expect(first.store.getRun(accepted.run.id)?.cancellationReason).toBeUndefined();
     } finally {
@@ -3335,10 +3341,14 @@ for (const seam of ["afterClaim", "beforeRuntimeMaterialize", "beforeExecutionSt
 
 test("scoped running cancellation keeps intent through provider settlement without cancelling siblings", async () => {
   const providerStarted = deferred();
+  // Only the scoped-cancelled turn parks on the provider: the relay rounds its
+  // reply wakes must settle for the drain to finish.
+  let parked = false;
   const first = await createLifecycle({
     controlChat: async (request) => {
       providerStarted.resolve();
-      if (request.text.includes("Focus on races.")) {
+      if (!parked && request.text.includes("Focus on races.")) {
+        parked = true;
         await new Promise<void>((resolve) => request.abortSignal!.addEventListener("abort", () => resolve(), { once: true }));
       }
       return { text: "settled" };
@@ -3364,6 +3374,7 @@ test("scoped running cancellation keeps intent through provider settlement witho
     // existing policy keeps that evidence and retains the cancel intent.
     expect(first.store.getMemberTurn(target.id)).toMatchObject({ state: "completed", cancellationReason: "human-cancelled" });
     expect(first.store.getMemberTurn(sibling.id)?.state).toBe("completed");
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
     expect(first.store.getRun(accepted.run.id)?.cancellationReason).toBeUndefined();
   } finally {
     await first.dispatcher.shutdown();
@@ -6521,7 +6532,12 @@ test("PR7 scheduler: shared serializes unproven siblings like every other tree",
   expect(testerTurn.state).toBe("dispatched");
   hang.resolve();
   await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
-  expect(fakeRunner(first.runner).runs).toHaveLength(2);
+  // A settles, the held sibling is admitted in the same drain, and the reply
+  // relays the Run forward to the round cap instead of ending at the batch.
+  const admitted = fakeRunner(first.runner).runs.map((input) => input.memberTurnId);
+  expect(admitted[1]).toBe(testerTurn.id);
+  expect(admitted.length).toBeGreaterThan(2);
+  expect(admitted.every((id) => first.store.getMemberTurn(id)?.state === "completed")).toBe(true);
   first.store.close();
 });
 
@@ -6566,7 +6582,12 @@ test("PR7 scheduler: shared-single-writer serializes unknown-effect siblings", a
     // A settles, the held sibling runs in the same drain, and the Run
     // completes without any extra kick.
     await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
-    expect(fakeRunner(second.runner).runs).toHaveLength(2);
+    // A settles, the held sibling runs in the same drain, and the reply
+    // relays the Run forward to the round cap instead of ending at the batch.
+    const admitted = fakeRunner(second.runner).runs.map((input) => input.memberTurnId);
+    expect(admitted[1]).toBe(testerTurn.id);
+    expect(admitted.length).toBeGreaterThan(2);
+    expect(admitted.every((id) => second.store.getMemberTurn(id)?.state === "completed")).toBe(true);
     second.store.close();
   }
 });
@@ -6662,7 +6683,12 @@ test("PR7 scheduler: held writer-slot claim survives a lease boundary with prove
   await second.dispatcher.kick();
   hang.resolve();
   await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
-  expect(fakeRunner(second.runner).runs).toHaveLength(2);
+  // The held sibling executes with its original claim, and the reply relays
+  // the Run forward to the round cap instead of ending at the batch.
+  const admitted = fakeRunner(second.runner).runs.map((input) => input.memberTurnId);
+  expect(admitted[1]).toBe(testerTurn.id);
+  expect(admitted.length).toBeGreaterThan(2);
+  expect(admitted.every((id) => second.store.getMemberTurn(id)?.state === "completed")).toBe(true);
   const testerAfter = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
   expect(testerAfter.origin).toBe("human-explicit");
   expect(testerAfter.attempt).toBe(attemptBefore);
@@ -6800,8 +6826,12 @@ test("PR7 scheduler: shutdown retires held claims so a fast restart executes wit
     },
   );
   await reopenedDispatcher.kick();
-  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
   expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  // The retired claim executes first, and its reply relays the Run forward to
+  // the round cap in the same drain.
+  expect(reopenedRunner.runs.length).toBeGreaterThan(1);
+  expect(reopenedRunner.runs.every((input) =>
+    reopenedStore.getMemberTurn(input.memberTurnId)?.state === "completed")).toBe(true);
   await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
   const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
   expect(testerDone.origin).toBe("human-explicit");
@@ -6877,8 +6907,13 @@ test("PR7 scheduler: hold-time renewHeldClaim failure keeps the hold for the nex
   // and B executes with attempt and provenance intact.
   second.store.renewHeldClaim = realRenew;
   await second.dispatcher.kick();
-  await waitUntil(() => fakeRunner(second.runner).runs.length === 2);
   await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  // The still-registered hold executes B, and the reply relays the Run
+  // forward to the round cap instead of ending at the batch.
+  const admitted = fakeRunner(second.runner).runs.map((input) => input.memberTurnId);
+  expect(admitted[1]).toBe(testerTurn.id);
+  expect(admitted.length).toBeGreaterThan(2);
+  expect(admitted.every((id) => second.store.getMemberTurn(id)?.state === "completed")).toBe(true);
   const testerDone = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
   expect(testerDone.origin).toBe("human-explicit");
   expect(testerDone.attempt).toBe(attemptBefore);
@@ -6944,9 +6979,13 @@ test("PR7 scheduler: non-stale renewHeldClaim failure fails the drain without or
   // completed A — still correct, but the hang makes the ordering explicit.
   second.store.renewHeldClaim = realRenew;
   await second.dispatcher.kick();
-  await waitUntil(() => fakeRunner(second.runner).runs.length === 2);
   await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
-  expect(fakeRunner(second.runner).runs).toHaveLength(2);
+  // Recovery path still works after the visible failure: the held sibling
+  // executes, and the reply relays the Run forward to the round cap.
+  const admitted = fakeRunner(second.runner).runs.map((input) => input.memberTurnId);
+  expect(admitted[1]).toBe(testerTurn.id);
+  expect(admitted.length).toBeGreaterThan(2);
+  expect(admitted.every((id) => second.store.getMemberTurn(id)?.state === "completed")).toBe(true);
   second.store.close();
 });
 test("PR7 scheduler: failed shutdown retire keeps the hold for the next kick", async () => {
@@ -7018,8 +7057,12 @@ test("PR7 scheduler: failed shutdown retire keeps the hold for the next kick", a
     },
   );
   await reopenedService.activateAfterConsumerLock();
-  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
+  // The retired claim executes first, and its reply relays the Run forward to
+  // the round cap in the same drain.
   expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  expect(reopenedRunner.runs.length).toBeGreaterThan(1);
+  expect(reopenedRunner.runs.every((input) =>
+    reopenedStore.getMemberTurn(input.memberTurnId)?.state === "completed")).toBe(true);
   await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
   const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
   expect(testerDone.origin).toBe("human-explicit");
@@ -7141,8 +7184,12 @@ test("PR7 scheduler: activation executes a retired previous-owner claim with no 
     },
   );
   await reopenedService.activateAfterConsumerLock();
-  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
+  // Activation sweeps, the first drain executes B, and the reply relays the
+  // Run forward to the round cap in the same drain.
   expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  expect(reopenedRunner.runs.length).toBeGreaterThan(1);
+  expect(reopenedRunner.runs.every((input) =>
+    reopenedStore.getMemberTurn(input.memberTurnId)?.state === "completed")).toBe(true);
   await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
   const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
   expect(testerDone.origin).toBe("human-explicit");
@@ -7587,11 +7634,12 @@ test("PR7 scheduler: held handoff keeps cohort scope until the sibling settles",
   await tick();
   expect(fr.runs).toHaveLength(2);
   expect(first.store.getRun(acceptedC.run.id)?.state).toBe("queued");
-  // Settle B: only now may C start and finish.
+  // Settle B: only now may C start and finish — and only once the group
+  // Run's own relay chain has run to the round cap.
   hangB.resolve();
-  await waitUntil(() => fr.runs.length === 3, 4000);
-  expect(fr.runs[2]?.botId).toBe(thirdBot);
   await waitUntil(() => first.store.getRun(acceptedC.run.id)?.state === "completed", 4000);
+  expect(fr.runs.at(-1)?.botId).toBe(thirdBot);
+  expect(fr.runs.slice(0, -1).every((input) => input.botId !== thirdBot)).toBe(true);
   await waitUntil(() => first.store.getRun(acceptedGroup.run.id)?.state === "completed", 4000);
   first.store.close();
 });
@@ -8082,16 +8130,20 @@ test("PR7 dispatcher: Group dispatch materializes Group member sessions with fro
   });
   await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
   const runner = fakeRunner(first.runner);
-  expect(runner.runs).toHaveLength(2);
+  expect(runner.runs.length).toBeGreaterThan(2);
   const aliases = runner.runs.map((run) => run.sessionAlias);
   expect(new Set(aliases).size).toBe(2);
+  // Serial writers claim the second member only after the first replied, so
+  // the second member's prompt carries the sibling reply the first cannot
+  // see. Every member's opening prompt still carries the request.
+  const opened = new Set<string>();
   for (const run of runner.runs) {
+    if (opened.has(run.botId)) continue;
+    opened.add(run.botId);
     expect(run.text).toContain("ship it");
   }
-  // Each member reads the shared log from its own cursor. Serial writers claim
-  // the second member only after the first replied, so exactly one prompt
-  // carries a sibling reply and neither loses the request.
-  expect(runner.runs.filter((run) => run.text.includes("done"))).toHaveLength(1);
+  expect(runner.runs[0]?.text).not.toContain("done");
+  expect(runner.runs.slice(1).every((run) => run.text.includes("done"))).toBe(true);
   const directAliases = Object.values(first.state.sessions)
     .filter((session) => session.owner?.kind === "bot-direct")
     .map((session) => session.alias);
@@ -8170,14 +8222,24 @@ test("PR7 dispatcher: finishing sibling does not alter already-selected frozen i
   await first.service.activateAfterConsumerLock();
   await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
   const runner = fakeRunner(first.runner);
-  expect(runner.runs).toHaveLength(2);
+  // The relay keeps the Run alive for the round cap, so the two accepted
+  // members speak several times each.
+  expect(runner.runs.length).toBeGreaterThan(2);
   // The later member reads the shared log from its own cursor, so it sees the
-  // reply that already landed while the earlier member cannot.
-  expect(runner.runs.filter((run) => run.text.includes("done"))).toHaveLength(1);
+  // reply that already landed while the earlier member cannot. Each member's
+  // opening prompt still carries the request.
+  const opened = new Set<string>();
   for (const run of runner.runs) {
+    if (opened.has(run.botId)) continue;
+    opened.add(run.botId);
     expect(run.text).toContain("original ask");
   }
-  expect(seen).toHaveLength(1);
+  expect(runner.runs[0]?.text).not.toContain("done");
+  expect(runner.runs.slice(1).every((run) => run.text.includes("done"))).toBe(true);
+  // Exactly one materialization per TESTER_ID member turn the relay produced:
+  // no turn is materialized twice and none is skipped.
+  const testerTurns = runner.runs.filter((run) => run.botId === TESTER_ID).map((run) => run.memberTurnId);
+  expect([...seen].sort()).toEqual([...testerTurns].sort());
   first.store.close();
 });
 

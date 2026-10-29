@@ -10,6 +10,7 @@ import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
 import { ConversationError } from "../../../src/conversations/conversation-error";
 import { GroupHandoffService } from "../../../src/conversations/group-handoff";
+import { RELAY_MAX_ROUNDS } from "../../../src/conversations/group-chat-wake";
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
 import { ConversationRouterEngine } from "../../../src/conversations/conversation-router-engine";
 import { boundRoutingInput } from "../../../src/conversations/conversation-router-budget";
@@ -506,7 +507,12 @@ test("shutdown stops new dispatch when an already active member settles", async 
   expect(harness.runner.runs).toHaveLength(1);
   const reopened = await SqliteConversationStore.open(harness.path);
   try {
-    expect(reopened.getRun(active.run.id)?.state).toBe("completed");
+    // The settled reply relays a new round, and shutdown stops it from ever
+    // dispatching: no member turn beyond the first is started.
+    expect(reopened.getRun(active.run.id)?.state).toBe("running");
+    const relayed = reopened.listMemberTurns(active.run.id).filter((turn) => turn.origin === "relay");
+    expect(relayed.map((turn) => turn.botId).sort()).toEqual([BOT_ID, BUILDER_ID].sort());
+    expect(relayed.every((turn) => turn.startedAt === undefined)).toBe(true);
     expect(reopened.getRun(routing.run.id)).toMatchObject({ state: "running", routingState: "routing" });
     expect(reopened.getRun(queued.run.id)?.state).toBe("queued");
     expect(reopened.listMemberTurns(queued.run.id)[0]?.startedAt).toBeUndefined();
@@ -1876,11 +1882,14 @@ test("explicit Group turns carry the live Group title and description", async ()
     expect(text).toContain("Group description:\n维护 gadzan/xacpx 开源项目群。");
     // A live edit takes effect without a new Run: same accept path, new turn.
     await harness.bots.updateGroup(group.id, { description: "新版群说明。" });
-    await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    const second = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
       requestId: "group-scope-2", text: "do the review", target: { botId: BOT_ID } });
     await harness.dispatcher.kick();
-    expect(harness.runner.runs[1]!.text).toContain("Group description:\n新版群说明。");
-    expect(harness.runner.runs[1]!.text).not.toContain("维护 gadzan/xacpx");
+    // The first Run's reply relayed a turn for the other member, so pick the
+    // second Run's own turn out of the relay chain.
+    const secondTurn = harness.runner.runs.find((run) => run.runId === second.run.id)!;
+    expect(secondTurn.text).toContain("Group description:\n新版群说明。");
+    expect(secondTurn.text).not.toContain("维护 gadzan/xacpx");
   } finally {
     harness.store.close();
   }
@@ -2373,7 +2382,7 @@ test("blocked-step evidence persists on the automatic member turn", async () => 
 // Explicit behavior must never regress
 // ---------------------------------------------------------------------------
 
-test("explicit multi-member run has no continuation after members terminal", async () => {
+test("explicit multi-member run relays to the round cap after members terminal", async () => {
   const router = new RecordingRouter([{ type: "complete", reason: "unreachable" }]);
   const harness = await createHarness({ router });
   const { group, topic } = await createGroup(harness);
@@ -2383,10 +2392,19 @@ test("explicit multi-member run has no continuation after members terminal", asy
     humanIngress: { chatKey: "relay:acct", senderId: "acct", isOwner: true, chatType: "group" },
   });
   await harness.dispatcher.kick();
-  expect(harness.store.getRun(accepted.run.id)!.state).toBe("completed");
-  expect(harness.store.getRun(accepted.run.id)!.routingState).toBeUndefined();
+  const run = harness.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("completed");
+  expect(run.routingState).toBeUndefined();
   expect(router.inputs).toHaveLength(0);
-  expect(harness.store.listMemberTurns(accepted.run.id)).toHaveLength(2);
+  const turns = harness.store.listMemberTurns(accepted.run.id);
+  // The first round is exactly the accepted members; the relay then continues
+  // on the same Run until the round cap.
+  const firstRound = turns.filter((turn) => turn.batch === 1);
+  expect(firstRound.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID]);
+  expect(firstRound.every((turn) => turn.origin === "human-explicit")).toBe(true);
+  expect(turns.filter((turn) => turn.batch > 1).every((turn) => turn.origin === "relay")).toBe(true);
+  expect(turns.every((turn) => turn.state === "completed")).toBe(true);
+  expect(run.activeBatch).toBe(RELAY_MAX_ROUNDS);
   harness.store.close();
 });
 

@@ -5,8 +5,24 @@ import type { ConversationRouter, RoutingDecision } from "../../../src/conversat
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { GroupHandoffService } from "../../../src/conversations/group-handoff";
 import { ConversationBindingService } from "../../../src/conversations/conversation-bindings";
-import { harness, deferred, until, NOW } from "./fixtures/concurrency-harness";
+import { TERMINAL_RUN_STATES } from "../../../src/conversations/conversation-types";
+import { harness, deferred, until, NOW, type ConcurrencyHarness } from "./fixtures/concurrency-harness";
 
+/** A stored group reply relays to the bots it names, or to every other member,
+ *  so a batch that drains does not end the Run: the relay keeps appending
+ *  rounds until RELAY_MAX_ROUNDS. `await kick()` therefore never returns on
+ *  its own — drive the dispatcher until the Run is terminal, settling every
+ *  gate the relay opens along the way. */
+async function settle(h: ConcurrencyHarness, runId: string): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    await h.dispatcher.kick();
+    const state = h.store.getRun(runId)?.state;
+    if (state !== undefined && TERMINAL_RUN_STATES.includes(state)) return;
+    h.runner.finishAll();
+    await Promise.all(h.runner.done);
+  }
+  throw new Error("run never settled");
+}
 for (const limit of [undefined, 1, 2, 64]) {
   test(`physical cap ${limit ?? "omitted (legacy)"} preserves one parallel batch`, async () => {
     const h = await harness();
@@ -31,13 +47,19 @@ for (const limit of [undefined, 1, 2, 64]) {
       await until(() => h.runner.calls.length > i);
       h.runner.finish(i);
     }
-    await drain;
+    await settle(h, accepted.run.id);
     expect(h.runner.peak).toBe(firstWave);
     expect(h.store.getRun(accepted.run.id)?.state).toBe("completed");
     const final = h.store.listMemberTurns(accepted.run.id);
-    expect(final.map((m) => [m.id, m.batch, m.memberIndex])).toEqual(original.map((m) => [m.id, m.batch, m.memberIndex]));
-    expect(h.runner.calls.every((c) => c.executionOrigin === "human")).toBe(true);
-    for (const call of h.runner.calls) {
+    // The relay opens later rounds, so the whole Run holds more turns than the
+    // one parallel batch this test measures: compare that batch only.
+    expect(final.filter((m) => m.batch === 1).map((m) => [m.id, m.batch, m.memberIndex]))
+      .toEqual(original.map((m) => [m.id, m.batch, m.memberIndex]));
+    // Later rounds are relay turns the members woke themselves, so they carry
+    // orchestration authority rather than the human request's.
+    const batchCalls = h.runner.calls.filter((call) => h.store.getMemberTurn(call.memberTurnId)?.batch === 1);
+    expect(batchCalls.every((c) => c.executionOrigin === "human")).toBe(true);
+    for (const call of batchCalls) {
       const member = h.store.getMemberTurn(call.memberTurnId)!;
       expect(call.attempt).toBe(member.attempt);
       expect(call.sourceTurnId).toBe(member.sourceTurnId);
@@ -51,7 +73,7 @@ for (const limit of [undefined, 1, 2, 64]) {
     } else {
       expect(h.runner.calls[2]!.text).not.toContain("result-0");
     }
-    h.store.close();
+    await drain; h.store.close();
   });
 }
 
@@ -62,9 +84,15 @@ test("two simultaneous completions refill exactly two reservations", async () =>
   h.runner.finish(0); h.runner.finish(1);
   await until(() => h.runner.calls.length === 4);
   expect(h.runner.active).toBe(2); expect(h.runner.peak).toBe(2);
-  h.runner.finish(2); h.runner.finish(3); await drain;
-  expect(h.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(4);
-  h.store.close();
+  h.runner.finish(2); h.runner.finish(3);
+  await settle(h, accepted.run.id);
+  // The relay opens later rounds, so the Run as a whole consumes more turns
+  // than the request asked for. The refill evidence is the FIRST batch: the
+  // two freed reservations admitted exactly two more members — no third.
+  const firstBatch = h.store.listMemberTurns(accepted.run.id).filter((m) => m.batch === 1);
+  expect(firstBatch).toHaveLength(4);
+  expect(firstBatch.every((m) => m.state === "completed")).toBe(true);
+  await drain; h.store.close();
 });
 
 test("a free physical slot cannot bypass a dependency even with enforced read-only proof", async () => {
@@ -90,12 +118,13 @@ for (const isolation of ["shared", "shared-single-writer"] as const) {
       const h = await harness(); const { group, topic } = await h.group(8);
       topic.executionTarget!.isolation = isolation;
       h.state.conversation_topics[topic.id]!.executionTarget!.isolation = isolation;
-      h.accept(group.id, topic.id, 2, false, "writers", { effect });
+      const accepted = h.accept(group.id, topic.id, 2, false, "writers", { effect });
       const drain = h.dispatcher.kick(); await until(() => h.runner.calls.length === 1);
       await new Promise((r) => setTimeout(r, 10));
       expect(h.runner.active).toBe(1); expect(h.runner.calls).toHaveLength(1);
       h.runner.finish(0); await until(() => h.runner.calls.length === 2);
-      h.runner.finish(1); await drain; expect(h.runner.peak).toBe(1); h.store.close();
+      h.runner.finish(1); await settle(h, accepted.run.id);
+      expect(h.runner.peak).toBe(1); await drain; h.store.close();
     });
   }
 }
@@ -149,8 +178,9 @@ test("refill after a long sibling does not lease-recover a still-live execution"
   const a = h.store.getMemberTurn(accepted.memberTurns[0]!.id)!;
   expect(a.attempt).toBe(1); expect(a.state).toBe("running");
   expect(a.sourceTurnId).toBe(h.runner.calls[0]!.promptRequestId);
-  h.runner.finish(0); h.runner.finish(2); await drain;
-  expect(h.runner.peak).toBe(2); h.store.close();
+  h.runner.finish(0); h.runner.finish(2);
+  await settle(h, accepted.run.id);
+  expect(h.runner.peak).toBe(2); await drain; h.store.close();
 });
 
 for (const phase of ["before claim", "claimed before start", "started unknown", "started read-only"] as const) {
@@ -179,7 +209,9 @@ for (const phase of ["before claim", "claimed before start", "started unknown", 
       expect(h.runner.active).toBe(2);
       expect(h.store.getDispatchForMemberTurn(accepted.memberTurns[2]!.id)?.state).toBe("pending");
       h.runner.finish(0); await until(() => h.runner.calls.length === 3);
-      h.runner.finish(1); h.runner.finish(2); await activated;
+      h.runner.finish(1); h.runner.finish(2);
+      await settle(h, accepted.run.id);
+      await activated;
       expect(h.runner.peak).toBe(2);
       expect(h.runner.calls.every((c) => c.executionOrigin === "orchestration")).toBe(true);
       expect(h.store.getRun(accepted.run.id)?.state).toBe("completed");
@@ -199,7 +231,10 @@ test("shutdown at full capacity leaves the third member pending for the next con
   h.store.close();
   const next = await harness({ path: h.path, state: parseState(h.state, "state.json") });
   const activate = next.service.activateAfterConsumerLock(); await until(() => next.runner.calls.length === 1);
-  next.runner.finish(0); await activate; expect(next.runner.peak).toBe(1); next.store.close();
+  // The third member stays silent, so its reply wakes nobody: the Run ends
+  // with the batch the previous consumer left behind, exactly as before the
+  // relay existed.
+  next.runner.finish(0, { status: "completed", text: "[静默]" }); await activate; expect(next.runner.peak).toBe(1); next.store.close();
 });
 
 for (const value of [0, -1, 1.5, NaN, Infinity, 65, null, "2"]) {
@@ -248,7 +283,7 @@ test("independent Topics execute concurrently, each bounded by its own limit", a
   // still respects its own durable capacity limit and the process-wide ceiling.
   const h = await harness();
   const a = await h.group(1); const b = await h.group(2);
-  h.accept(a.group.id, a.topic.id, 2, true, "first");
+  const first = h.accept(a.group.id, a.topic.id, 2, true, "first");
   const drain = h.dispatcher.kick();
   // A's first member takes its Provider turn and HOLDS it (limit=1): this is the
   // long turn that used to block every other Topic.
@@ -257,7 +292,7 @@ test("independent Topics execute concurrently, each bounded by its own limit", a
   expect(h.runner.active).toBe(1);
   // B must be able to start — and fill its own limit of 2 — while A's turn is
   // still open. This is the overlap the old cohort boundary prevented.
-  h.accept(b.group.id, b.topic.id, 2, true, "other");
+  const second = h.accept(b.group.id, b.topic.id, 2, true, "other");
   void h.dispatcher.kick();
   await until(() => h.runner.calls.length === 3);
   expect(h.runner.calls.slice(1).every((c) => c.topicId === b.topic.id)).toBe(true);
@@ -272,6 +307,10 @@ test("independent Topics execute concurrently, each bounded by its own limit", a
   h.runner.finish(0);
   await until(() => h.runner.calls.filter((c) => c.topicId === a.topic.id).length === 2);
   for (let i = 0; i < h.runner.calls.length; i++) h.runner.finish(i);
+  // Both Runs relay their own replies into further rounds, so each has to be
+  // driven to a terminal state rather than merely drained once.
+  await settle(h, first.run.id);
+  await settle(h, second.run.id);
   await drain; h.store.close();
 });
 
