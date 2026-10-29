@@ -241,7 +241,7 @@ function onInput(event: Event): void {
             :aria-label="$t('common.cancel')"
             :title="$t('common.cancel')"
             :disabled="cancelling"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-danger text-on-danger transition-all hover:opacity-90 disabled:opacity-50"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-danger/15 text-danger transition-all hover:bg-danger/25 disabled:opacity-50"
             @click="emit('cancel')"
           >
             <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
