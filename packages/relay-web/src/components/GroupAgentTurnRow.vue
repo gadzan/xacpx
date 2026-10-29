@@ -181,7 +181,7 @@ defineExpose({ bubbleStatus });
         :trace-key="`group:${memberTurn.conversationId}:${memberTurn.runId}:${memberTurn.id}:${memberTurn.attempt}`"
         :data-final-verdict="memberTurn.finalReportVerdict ?? 'none'"
       />
-      <ConversationMeta :message="message" />
+      <ConversationMeta :message="displayMessage" />
     </template>
   </TranscriptRow>
 </template>
