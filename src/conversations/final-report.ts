@@ -1,4 +1,20 @@
 import type { MemberTurnState } from "./conversation-types";
+// Chinese protocol strings live in the repo's designated CJK home
+// (src/i18n/messages/zh/), not here: the no-hardcoded-cjk test enforces
+// that the rest of src/ contains no Han characters.
+import {
+  FINAL_REPORT_HEADER_LINE_RE,
+  FINAL_REPORT_LABELS_ZH,
+  NO_VERDICT_DISPLAY_ZH,
+  REASON_KEYS_ZH,
+  SECTION_KEYS_ZH,
+  STOP_NOTICE_ZH,
+  SUMMARY_KEYS_ZH,
+  TURN_STATE_REASON_ZH,
+  VERDICT_DISPLAY_ZH,
+  VERDICT_LINE_RE,
+  VERDICT_WORDS_ZH,
+} from "../i18n/messages/zh/group-final-report";
 
 /**
  * Structured final report: the ONLY thing a Group member's conclusion may
@@ -54,42 +70,29 @@ export interface PublishableMemberResult {
   hasReport: boolean;
 }
 
-export const NO_VERDICT_DISPLAY = "无结论";
+export const NO_VERDICT_DISPLAY = NO_VERDICT_DISPLAY_ZH;
 
-const VERDICT_DISPLAY: Record<FinalReportVerdict, string> = {
-  achieved: "目标已达成",
-  "not-achieved": "目标未达成",
-  interrupted: "已中断",
-};
+const VERDICT_DISPLAY: Record<FinalReportVerdict, string> = VERDICT_DISPLAY_ZH;
 
 const VERDICT_WORDS: Record<string, FinalReportVerdict> = {
   achieved: "achieved",
   "not-achieved": "not-achieved",
   "not achieved": "not-achieved",
   interrupted: "interrupted",
-  "目标已达成": "achieved",
-  "达成": "achieved",
-  "目标未达成": "not-achieved",
-  "未达成": "not-achieved",
-  "已中断": "interrupted",
-  "中断": "interrupted",
+  ...VERDICT_WORDS_ZH,
 };
 
 const SECTION_KEYS: Record<string, keyof Pick<FinalReport, "changes" | "testEvidence" | "leftovers" | "blockedAttempts">> = {
   changes: "changes",
-  "改动": "changes",
   "test evidence": "testEvidence",
   "tests": "testEvidence",
-  "测试证据": "testEvidence",
   leftovers: "leftovers",
-  "剩余项": "leftovers",
   "blocked attempts": "blockedAttempts",
-  "尝试过的阻塞": "blockedAttempts",
-  "阻塞尝试": "blockedAttempts",
+  ...SECTION_KEYS_ZH,
 };
 
 function parseVerdict(line: string): FinalReportVerdict | undefined {
-  const match = line.match(/^\s*(?:verdict|裁决)\s*[:：]\s*(.+?)\s*$/i);
+  const match = line.match(VERDICT_LINE_RE);
   if (!match) return undefined;
   return VERDICT_WORDS[match[1]!.trim().toLowerCase()];
 }
@@ -118,7 +121,7 @@ export function extractFinalReport(raw: string): FinalReport | null {
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.trim();
-    if (/^(final report|最终报告)\s*[:：]?\s*$/i.test(line) || parseVerdict(line) !== undefined) {
+    if (FINAL_REPORT_HEADER_LINE_RE.test(line) || parseVerdict(line) !== undefined) {
       start = i;
       break;
     }
@@ -140,7 +143,7 @@ export function extractFinalReport(raw: string): FinalReport | null {
     const line = lines[i]!;
     const trimmed = line.trim();
     if (!trimmed) { current = undefined; continue; }
-    if (i === start && /^(final report|最终报告)\s*[:：]?\s*$/i.test(trimmed)) continue;
+    if (i === start && FINAL_REPORT_HEADER_LINE_RE.test(trimmed)) continue;
     const verdictValue = parseVerdict(line);
     if (verdictValue !== undefined) { verdict = verdictValue; verdictAt = i; current = undefined; continue; }
     // A bullet is a list item even when it contains a colon (e.g. a file
@@ -161,12 +164,12 @@ export function extractFinalReport(raw: string): FinalReport | null {
     }
     const keyed = parseKeyedLine(line);
     if (keyed) {
-      if (keyed.key === "summary" || keyed.key === "结论" || keyed.key === "摘要") {
+      if (keyed.key === "summary" || SUMMARY_KEYS_ZH.includes(keyed.key)) {
         summary = keyed.value;
         current = undefined;
         continue;
       }
-      if (keyed.key === "reason" || keyed.key === "原因") {
+      if (keyed.key === "reason" || REASON_KEYS_ZH.includes(keyed.key)) {
         reason = keyed.value;
         current = undefined;
         continue;
@@ -217,22 +220,23 @@ export function extractFinalReport(raw: string): FinalReport | null {
  * line's whole claim, so it reads alone without the rest.
  */
 export function formatFinalReport(report: FinalReport): string {
-  const conclusion = `结论：${VERDICT_DISPLAY[report.verdict]} — ${report.summary}`
-    + (report.reason ? `（原因：${report.reason}）` : "");
+  const labels = FINAL_REPORT_LABELS_ZH;
+  const conclusion = `${labels.conclusion}：${VERDICT_DISPLAY[report.verdict]} — ${report.summary}`
+    + (report.reason ? `（${labels.reason}：${report.reason}）` : "");
   const evidenceLines = [
-    ...report.changes.map((item) => `改动：${item}`),
-    ...report.testEvidence.map((item) => `测试：${item}`),
+    ...report.changes.map((item) => `${labels.change}：${item}`),
+    ...report.testEvidence.map((item) => `${labels.test}：${item}`),
   ];
   const evidence = evidenceLines.length > 0
-    ? `证据：\n${evidenceLines.join("\n")}`
-    : "证据：本次未记录改动与测试证据。";
+    ? `${labels.evidence}：\n${evidenceLines.join("\n")}`
+    : labels.evidenceEmpty;
   const leftoverLines = [
-    ...report.leftovers.map((item) => `剩余：${item}`),
-    ...report.blockedAttempts.map((item) => `已尝试但受阻：${item}`),
+    ...report.leftovers.map((item) => `${labels.leftover}：${item}`),
+    ...report.blockedAttempts.map((item) => `${labels.blocked}：${item}`),
   ];
   const leftovers = leftoverLines.length > 0
-    ? `剩余项：\n${leftoverLines.join("\n")}`
-    : "剩余项：无。";
+    ? `${labels.leftovers}：\n${leftoverLines.join("\n")}`
+    : labels.leftoversEmpty;
   return `${conclusion}\n\n${evidence}\n\n${leftovers}`;
 }
 
@@ -244,18 +248,12 @@ export function formatFinalReport(report: FinalReport): string {
  */
 export function formatStopNotice(reason: string): string {
   const trimmed = reason.trim();
-  const why = trimmed ? `原因：${trimmed}。` : "";
-  return `已停止。${why}本次无结论。下一步：请重新派发，或由负责人汇总后升级给用户。`;
+  const why = trimmed ? `${FINAL_REPORT_LABELS_ZH.reason}：${trimmed}。` : "";
+  return `${STOP_NOTICE_ZH.stopped}${why}${STOP_NOTICE_ZH.noConclusion}`;
 }
 
 function stopReasonForState(turnState: MemberTurnState): string {
-  switch (turnState) {
-    case "failed": return "执行失败";
-    case "cancelled": return "已被取消";
-    case "indeterminate": return "结果未证实";
-    case "completed": return "已结束但未给出结构化结论";
-    default: return "未结束";
-  }
+  return TURN_STATE_REASON_ZH[turnState] ?? TURN_STATE_REASON_ZH.default!;
 }
 
 /**
