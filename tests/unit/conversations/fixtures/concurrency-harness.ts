@@ -149,7 +149,10 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
     const members = Object.values(state.bots)
       .filter((bot) => bot.workspace === workspace)
       .map((bot) => bot.id);
-    const g = await bots.createGroup({ title: "Limits", botIds: members });
+    // P6: this harness always binds the Topic to one shared workspace, so
+    // it must say "shared" explicitly now that createGroup defaults to
+    // per-member (whose Topics take no target at all).
+    const g = await bots.createGroup({ title: "Limits", botIds: members, workspaceMode: "shared" });
     const topic = await service.createGroupTopic(
       g.id,
       "Topic",

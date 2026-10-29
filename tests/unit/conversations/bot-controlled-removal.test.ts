@@ -161,7 +161,7 @@ test("direct chat stays unless the caller explicitly clears it, and group histor
       requestId: "direct-1",
       text: "private note",
     });
-    const group = await current.control.createGroup({ title: "Team", botIds: [speaker.id, partner.id, keeper.id] });
+    const group = await current.control.createGroup({ title: "Team", botIds: [speaker.id, partner.id, keeper.id] , workspaceMode: "shared" });
     const groupTopic = await current.control.createGroupTopic(group.id, "Sprint", {
       workspace: "backend",
       isolation: "shared",
@@ -203,7 +203,7 @@ test("clearing direct history does not erase group history", async () => {
       requestId: "direct-clear",
       text: "erase me",
     });
-    const group = await current.control.createGroup({ title: "Team", botIds: [speaker.id, partner.id, keeper.id] });
+    const group = await current.control.createGroup({ title: "Team", botIds: [speaker.id, partner.id, keeper.id] , workspaceMode: "shared" });
     const groupTopic = await current.control.createGroupTopic(group.id, "Sprint", {
       workspace: "backend",
       isolation: "shared",
@@ -231,7 +231,7 @@ test("a bot in a group is not removed, and a two-member group cannot drop one me
   try {
     const left = await bot(current, "Left");
     const right = await bot(current, "Right");
-    const group = await current.control.createGroup({ title: "Pair", botIds: [left.id, right.id] });
+    const group = await current.control.createGroup({ title: "Pair", botIds: [left.id, right.id] , workspaceMode: "shared" });
     const impact = await current.control.previewBotRemoval(left.id);
     expect(impact.groups).toEqual([{
       conversationId: group.id,
@@ -257,7 +257,7 @@ test("a departed member session is released and the group transcript stays", asy
     const left = await bot(current, "Left");
     const mid = await bot(current, "Mid");
     const right = await bot(current, "Right");
-    const group = await current.control.createGroup({ title: "Trio", botIds: [left.id, mid.id, right.id] });
+    const group = await current.control.createGroup({ title: "Trio", botIds: [left.id, mid.id, right.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Sprint", {
       workspace: "backend",
       isolation: "shared",
@@ -376,7 +376,7 @@ test("membership that changes after preview must be previewed again", async () =
     const left = await bot(current, "Left");
     const right = await bot(current, "Right");
     const impact = await current.control.previewBotRemoval(moving.id);
-    const group = await current.control.createGroup({ title: "Pair", botIds: [left.id, right.id] });
+    const group = await current.control.createGroup({ title: "Pair", botIds: [left.id, right.id] , workspaceMode: "shared" });
     await current.control.updateGroup(group.id, { botIds: [left.id, right.id, moving.id] });
     await expect(current.control.removeBot({
       botId: moving.id,
@@ -513,7 +513,7 @@ test("an indeterminate run keeps the barrier and does not look finished", async 
     await expect(current.control.createTopic(conversationId, "Nope")).rejects.toMatchObject({ code: "bot_removing" });
     const other = await bot(current, "Other");
     const third = await bot(current, "Third");
-    const group = await current.control.createGroup({ title: "Pair", botIds: [other.id, third.id] });
+    const group = await current.control.createGroup({ title: "Pair", botIds: [other.id, third.id] , workspaceMode: "shared" });
     await expect(current.control.updateGroup(group.id, { botIds: [other.id, third.id, created.id] }))
       .rejects.toMatchObject({ code: "bot_removing" });
     expect(current.control.getGroup(group.id).botIds).toEqual([other.id, third.id]);

@@ -191,7 +191,7 @@ for (const groupPrompt of [false, true]) {
     let topicId = createDirectTopicId(bot.id);
     if (groupPrompt) {
       const colleague = await first.control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
-      const group = await first.control.createGroup({ title: "Files", botIds: [bot.id, colleague.id] });
+      const group = await first.control.createGroup({ title: "Files", botIds: [bot.id, colleague.id] , workspaceMode: "shared" });
       conversationId = group.id;
       topicId = (await first.control.createGroupTopic(group.id, "Uploads", { workspace: "backend", isolation: "shared" })).id;
     }

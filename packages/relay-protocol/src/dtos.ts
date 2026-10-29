@@ -472,6 +472,8 @@ export interface ConversationMessageDto {
   role: "human" | "bot" | "system";
   senderBotId?: string;
   content: string;
+  /** Timeline projection (structured report or stop notice) when the store derived one. Raw output stays in `content`. */
+  timelineContent?: string;
   replyTo?: string;
   runId?: string;
   createdAt: string;
@@ -586,6 +588,15 @@ export interface MemberTurnSummaryDto {
    *  turn whose assignments this wake summarizes; absent on every other
    *  turn. */
   followupSenderMemberTurnId?: string;
+  /** Followup chain depth of a wake turn (1 = first wake). Absent otherwise. */
+  followupChainDepth?: number;
+  /**
+   * Verdict of the member's structured final report. Presence means the
+   * turn HAS a report; absence means "无结论" — never render the turn
+   * state as a verdict. The report text travels on the message's
+   * `timelineContent`.
+   */
+  finalReportVerdict?: "achieved" | "not-achieved" | "interrupted";
 }
 
 export interface ConversationRunDetailDto extends ConversationRunDto {

@@ -105,7 +105,7 @@ async function harness() {
     releaseOwnedSession,
     autoKick: false,
   });
-  const group = await bots.createGroup({ title: "Slash", botIds: ["bot_a", "bot_b"] });
+  const group = await bots.createGroup({ title: "Slash", botIds: ["bot_a", "bot_b"] , workspaceMode: "shared" });
   const topic = await runs.createGroupTopic(group.id, "Public", { workspace: "backend", isolation: "shared-single-writer" });
   return { store, calls, dispatcher, runs, group, topic, bots };
 }

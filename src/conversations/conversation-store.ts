@@ -378,6 +378,48 @@ export const MAX_QUEUED_RUNS_PER_TOPIC = 64;
  */
 export const MAX_AUTOMATIC_MEMBER_TURNS = 24;
 
+/**
+ * Followup (wake) chain-depth limit, group-collaboration P4. A wake turn's
+ * `followupChainDepth` is 1 for the first wake after the original sender's
+ * assignments settle, +1 per further wake. Wakes with depth < this limit
+ * may dispatch; a wake AT this limit is summary-only and its dispatch
+ * attempts are refused with `handoff_followup_chain_depth_exceeded`, so the
+ * chain always ends with a summary turn that escalates to the user instead
+ * of silently dropping the last generation's results. Configurable per
+ * store via SqliteConversationStoreOptions.followupChainDepthLimit.
+ */
+export const FOLLOWUP_CHAIN_DEPTH_LIMIT = 3;
+
+/** Maximum characters of one group_chat message (informal chat, not a task). */
+export const MAX_GROUP_CHAT_LENGTH = 8_000;
+
+/** One informal group-chat message. Never a member turn, never a task. */
+export interface GroupChatMessage {
+  id: string;
+  conversationId: string;
+  topicId: string;
+  runId?: string;
+  senderBotId: string;
+  senderMemberTurnId?: string;
+  targetBotId: string;
+  /** Id of the group-chat message this replies to, within the same topic. */
+  replyToId?: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface SendGroupChatInput {
+  conversationId: string;
+  topicId: string;
+  runId?: string;
+  senderBotId: string;
+  senderMemberTurnId?: string;
+  targetBotId: string;
+  replyToId?: string;
+  content: string;
+  now: string;
+}
+
 /** Result of routing a late provider settlement into the store (§14.3):
  *  `reconciled` is true when proven evidence persisted — either by
  *  reclassifying an indeterminate seal (member + Run) or by recording member
@@ -410,6 +452,15 @@ export interface ConversationStore {
   listMessages(query: ListMessagesQuery): ConversationMessage[];
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
+  /** Record that a member turn read a settled assignment's result (P4
+   *  read-before-dispatch). Catalog reads record every assignment listed. */
+  recordGroupResultRead(memberTurnId: string, assignmentId: string): void;
+  /** Assignment ids a member turn has read results for, in read order. */
+  listGroupResultReads(memberTurnId: string): string[];
+  /** Persist one informal group-chat message (P3). No turn, no dispatch. */
+  sendGroupChat(input: SendGroupChatInput): GroupChatMessage;
+  /** Chat history for one topic, oldest first, bounded by limit. */
+  listGroupChatMessages(conversationId: string, topicId: string, limit?: number): GroupChatMessage[];
   listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[];
   /** Exact public result join using the minted durable execution identity. */
   getMemberResult(turn: MemberTurnRecord): ConversationMessage | undefined;
@@ -649,6 +700,81 @@ export interface GroupSendInput {
   to: string;
   task: string;
   expectedOutput?: string;
+  /**
+   * P5: assignment ids this dispatch depends on. Each entry must name an
+   * already-settled assignment of the SAME Run (see
+   * validateGroupSendDependencies). An unsettled, unknown, duplicated, or
+   * cyclic entry is rejected at accept time, never dropped silently: the
+   * claim fence in sqlite-conversation-store.ts is only a safety net for
+   * the settled-at-accept race, not a queue for unsettled dependencies.
+   * Absent/empty means independent: same-turn dispatches run in parallel.
+   */
+  dependsOn?: string[];
+}
+
+/** P5: cap aligned with the Router's MAX_ROUTER_DEPENDENCIES. */
+export const GROUP_SEND_MAX_DEPENDENCIES = 64;
+
+/**
+ * P5: validate a group_send dependsOn list against the Run's durable turns.
+ * Rejects, in order: a non-array/oversized/empty/duplicate entry, an
+ * assignment id with no turn in this Run, a turn that has not settled
+ * (terminal states only: completed/failed/cancelled/indeterminate), and a
+ * dependency cycle in the existing graph. Callers must pass only turns of
+ * the same Run; a cross-Run id therefore reads as unknown, by construction.
+ */
+export function validateGroupSendDependencies(
+  turns: readonly MemberTurnRecord[],
+  dependsOn: readonly string[] | undefined,
+): void {
+  if (dependsOn === undefined) return;
+  if (!Array.isArray(dependsOn) || dependsOn.length > GROUP_SEND_MAX_DEPENDENCIES) {
+    throw new ConversationError("invalid_group_send",
+      `dependsOn must be an array of at most ${GROUP_SEND_MAX_DEPENDENCIES} assignment ids`);
+  }
+  const seen = new Set<string>();
+  for (const dep of dependsOn) {
+    if (typeof dep !== "string" || !dep.trim() || dep.length > 128 || dep.includes("\0")) {
+      throw new ConversationError("invalid_group_send", "dependsOn entries must be nonempty bounded assignment ids");
+    }
+    if (seen.has(dep)) {
+      throw new ConversationError("handoff_dependency_duplicate", `dependsOn repeats assignment "${dep}"`);
+    }
+    seen.add(dep);
+  }
+  const byAssignment = new Map<string, MemberTurnRecord>();
+  for (const turn of turns) {
+    if (turn.assignmentId) byAssignment.set(turn.assignmentId, turn);
+  }
+  const terminal = new Set(["completed", "failed", "cancelled", "indeterminate"]);
+  for (const dep of dependsOn) {
+    const turn = byAssignment.get(dep);
+    if (!turn) {
+      throw new ConversationError("handoff_dependency_unknown",
+        `dependsOn names unknown assignment "${dep}": no such assignment in this Run`);
+    }
+    if (!terminal.has(turn.state)) {
+      throw new ConversationError("handoff_dependency_unsettled",
+        `dependsOn names unsettled assignment "${dep}" (state ${turn.state}): point dependsOn at already-settled assignments only`);
+    }
+  }
+  // Cycle check over the existing (already-settled) graph. The new turn is
+  // not in the graph yet, so a cycle can only hide inside the named chains;
+  // checking it here keeps a corrupt durable graph from laundering a dep.
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (assignmentId: string): void => {
+    if (visited.has(assignmentId)) return;
+    if (visiting.has(assignmentId)) {
+      throw new ConversationError("handoff_dependency_cycle",
+        `dependsOn cycle through assignment "${assignmentId}"`);
+    }
+    visiting.add(assignmentId);
+    for (const next of byAssignment.get(assignmentId)?.dependsOn ?? []) visit(next);
+    visiting.delete(assignmentId);
+    visited.add(assignmentId);
+  };
+  for (const dep of dependsOn) visit(dep);
 }
 
 export interface AcceptPublicHandoffInput {

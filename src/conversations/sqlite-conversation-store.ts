@@ -50,8 +50,11 @@ import type {
   TopicOperationKind,
   TopicOperationReceipt,
   TopicTeardownRetirement,
+  GroupChatMessage,
+  SendGroupChatInput,
 } from "./conversation-store";
-import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, isRunCancelling, publicMessageMatchesRunScope, requestSnapshotMatches } from "./conversation-store";
+import { FOLLOWUP_CHAIN_DEPTH_LIMIT, MAX_AUTOMATIC_MEMBER_TURNS, MAX_GROUP_CHAT_LENGTH, MAX_QUEUED_RUNS_PER_TOPIC, isRunCancelling, publicMessageMatchesRunScope, requestSnapshotMatches, validateGroupSendDependencies } from "./conversation-store";
+import { extractFinalReport, publishableMemberResult } from "./final-report";
 import {
   conversationExecutionOrigin,
   parseHumanIngress,
@@ -84,6 +87,8 @@ export interface ConversationIdFactory {
 
 export interface SqliteConversationStoreOptions {
   ids?: ConversationIdFactory;
+  /** Followup chain-depth limit (P4). Defaults to FOLLOWUP_CHAIN_DEPTH_LIMIT (3). */
+  followupChainDepthLimit?: number;
   beforeAcceptCommit?: () => void;
   /** Fault-injection seam for migration crash tests. Throwing inside aborts
    *  the dispatch table rebuild before it commits. */
@@ -115,6 +120,7 @@ interface MessageRow {
   media_json?: string | null;
   input_metadata_json?: string | null;
   handoff_json?: string | null;
+  timeline_content?: string | null;
   id: string;
   conversation_id: string;
   topic_id: string;
@@ -145,6 +151,7 @@ interface RunRow {
   active_batch: number | null;
   max_member_turns: number;
   consumed_member_turns: number;
+  followup_budget_exhausted?: number | null;
   failed_bot_ids_json: string | null;
   unavailable_bot_ids_json: string | null;
   profile_revision: number;
@@ -188,6 +195,9 @@ interface MemberTurnRow {
   blocked_reason?: string | null;
   cancellation_reason?: "human-cancelled" | null;
   followup_sender_member_turn_id?: string | null;
+  followup_chain_depth?: number | null;
+  final_report_json?: string | null;
+  final_report_verdict?: string | null;
 }
 
 interface DispatchRow {
@@ -524,6 +534,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
     role: row.role as ConversationMessage["role"],
     ...(optionalString(row.sender_bot_id) ? { senderBotId: row.sender_bot_id as string } : {}),
     content: row.content,
+    ...(optionalString(row.timeline_content) ? { timelineContent: row.timeline_content as string } : {}),
     ...(media?.length ? { media } : {}),
     ...(row.input_metadata_json !== null && row.input_metadata_json !== undefined ? { inputMetadata: parseDirectInputMetadata(row.content, JSON.parse(row.input_metadata_json)) } : {}),
     ...(row.handoff_json ? { handoff: JSON.parse(row.handoff_json) as ConversationMessage["handoff"] } : {}),
@@ -567,6 +578,7 @@ function mapRun(row: RunRow): ConversationRun {
       : {}),
     maxMemberTurns: Number(row.max_member_turns),
     consumedMemberTurns: Number(row.consumed_member_turns),
+    ...(row.followup_budget_exhausted ? { followupBudgetExhausted: true } : {}),
     failedBotIds: parseBotIds(row.failed_bot_ids_json),
     unavailableBotIds: parseBotIds(row.unavailable_bot_ids_json),
     ...(quarantinedBotIds.length > 0 ? { quarantinedBotIds } : {}),
@@ -606,6 +618,23 @@ function parseQuarantinedBotIds(json: string | null | undefined): string[] {
     throw new ConversationError("run_corrupt", "Run has malformed quarantine state");
   }
   return parsed;
+}
+
+/**
+ * Parse a stored final report. Corrupt or incomplete JSON is NOT a report:
+ * it reads as absent ("无结论") rather than throwing, so an old or damaged
+ * row can never break listing member turns.
+ */
+function parseFinalReport(json: string | null | undefined): MemberTurnRecord["finalReport"] {
+  if (!json) return undefined;
+  try {
+    const parsed = JSON.parse(json) as MemberTurnRecord["finalReport"];
+    if (!parsed || !["achieved", "not-achieved", "interrupted"].includes(parsed.verdict as string)
+      || typeof parsed.summary !== "string" || !parsed.summary) return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseDependsOn(json: string | null | undefined): string[] {
@@ -703,6 +732,17 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     ...(optionalString(row.followup_sender_member_turn_id)
       ? { followupSenderMemberTurnId: row.followup_sender_member_turn_id as string }
       : {}),
+    ...(row.followup_chain_depth !== null && row.followup_chain_depth !== undefined
+      ? { followupChainDepth: Number(row.followup_chain_depth) }
+      : {}),
+    ...(parseFinalReport(row.final_report_json)
+      ? { finalReport: parseFinalReport(row.final_report_json)! }
+      : {}),
+    // A verdict without a parseable report is not a verdict: corrupt JSON
+    // reads as no report at all, never as a dangling verdict.
+    ...(parseFinalReport(row.final_report_json) && optionalString(row.final_report_verdict)
+      ? { finalReportVerdict: row.final_report_verdict as MemberTurnRecord["finalReportVerdict"] }
+      : {}),
     ...(isMemberTurnEffect(row.effect) && row.effect !== "unknown" ? { effect: row.effect } : {}),
     ...(optionalString(row.effect_provenance) ? { effectProvenance: row.effect_provenance as MemberTurnRecord["effectProvenance"] } : {}),
     ...(optionalString(row.assignment_id) ? { assignmentId: row.assignment_id as string } : {}),
@@ -749,6 +789,7 @@ export class SqliteConversationStore implements ConversationStore {
   readonly worktrees: import("./conversation-worktree-store").ConversationWorktreeStore;
   readonly traces: SqliteMemberTurnTraceStore;
   private readonly ids: ConversationIdFactory;
+  private readonly followupChainDepthLimit: number;
   private readonly beforeAcceptCommit?: () => void;
   private readonly beforeDispatchMigrationCommit?: () => void;
   private readonly beforeLeaseRenewal?: () => void;
@@ -760,6 +801,7 @@ export class SqliteConversationStore implements ConversationStore {
     options?: SqliteConversationStoreOptions,
   ) {
     this.ids = options?.ids ?? defaultIds();
+    this.followupChainDepthLimit = options?.followupChainDepthLimit ?? FOLLOWUP_CHAIN_DEPTH_LIMIT;
     this.beforeAcceptCommit = options?.beforeAcceptCommit;
     this.beforeDispatchMigrationCommit = options?.beforeDispatchMigrationCommit;
     this.beforeLeaseRenewal = options?.beforeLeaseRenewal;
@@ -776,6 +818,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureRoutingReasonColumn();
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
+    this.ensureGroupCollaborationColumns();
     this.ensureExternalStopIngress();
     this.ensureLifecycleWorkspaceCleanupColumn();
     if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)").some(c => c.name === "input_metadata_json")) {
@@ -1063,7 +1106,11 @@ export class SqliteConversationStore implements ConversationStore {
       "SELECT * FROM member_turns WHERE handoff_source_turn_id = ? AND handoff_invocation_id = ?", [sourceTurnId, invocationId]);
     if (!row) return undefined;
     const memberTurn = mapMemberTurn(row);
-    if (memberTurn.botId !== args.to || memberTurn.task !== args.task || memberTurn.expectedOutput !== args.expectedOutput) {
+    if (memberTurn.botId !== args.to || memberTurn.task !== args.task || memberTurn.expectedOutput !== args.expectedOutput
+      // P5: only enforced when the replay explicitly carries dependsOn, so
+      // pre-P5 rows (whose stored depends_on was the sender's own list)
+      // still replay instead of failing a new comparison they never made.
+      || (args.dependsOn !== undefined && JSON.stringify(memberTurn.dependsOn ?? []) !== JSON.stringify(args.dependsOn))) {
       throw new ConversationError("handoff_idempotency_conflict", "runtime invocation was already committed with different arguments");
     }
     const message = this.sqlite.get<MessageRow>(
@@ -1101,19 +1148,58 @@ export class SqliteConversationStore implements ConversationStore {
         throw new ConversationError("stale_group_execution", "handoff sender is no longer the live execution");
       }
       if (sender.followupSenderMemberTurnId !== undefined) {
-        // The wake turn summarizes settled assignments; it never dispatches
-        // new ones. Allowing it would chain wake -> dispatch -> wake without
-        // bound and burn the Run budget on summary turns.
-        throw new ConversationError("handoff_from_followup_refused",
-          "a followup wake turn cannot dispatch new assignments");
+        // P4: followup wake turns MAY dispatch, but only inside four
+        // guardrails — depth, no-duplicate, read-before-dispatch, budget
+        // reserve. Removing the old hard refusal without them would chain
+        // wake -> dispatch -> wake without bound, burn the Run budget on
+        // summary turns, and dispatch on unread/unproven results.
+        const senderDepth = sender.followupChainDepth ?? 1;
+        if (senderDepth >= this.followupChainDepthLimit) {
+          throw new ConversationError("handoff_followup_chain_depth_exceeded",
+            `followup chain depth limit (${this.followupChainDepthLimit}) reached: summarize the settled results and escalate any unfinished work to the user instead of dispatching new assignments`);
+        }
+        const parent = this.requireMemberTurn(sender.followupSenderMemberTurnId);
+        const settledAssignments = this.sqlite.all<MemberTurnRow>(
+          `SELECT * FROM member_turns WHERE run_id = ? AND handoff_source_turn_id = ?
+           AND state IN ('completed', 'failed', 'cancelled') ORDER BY batch, member_index`,
+          [run.id, parent.sourceTurnId!]);
+        const read = new Set(this.listGroupResultReads(sender.id));
+        const unread = settledAssignments
+          .filter((turn) => turn.assignment_id && !read.has(turn.assignment_id))
+          .map((turn) => turn.assignment_id!);
+        if (unread.length > 0) {
+          throw new ConversationError("handoff_followup_unread_results",
+            `read every settled result with group_read_result before dispatching: unread assignments: ${unread.join(", ")}`);
+        }
+        // Budget reserve: a followup dispatch must leave room for its own
+        // followup turn, or the chain dies silently one generation later.
+        if (this.allocatedWork(run.id) >= run.maxMemberTurns - 1) {
+          throw new ConversationError("budget-exhausted",
+            "Run work budget is exhausted: a followup dispatch must reserve one followup turn, and no room is left");
+        }
       }
       if (run.state !== "running" || isRunCancelling(run)) {
         throw new ConversationError("run_not_runnable", "Run cannot accept handoff work");
+      }
+      // P4 duplicate guard, for every sender (not only followups): the same
+      // sender turn dispatching the same task text to the same member twice
+      // is a repeat, not a retry. A retry must carry the failure reason and
+      // a different method — i.e. different task text. Idempotent replays
+      // with the same invocationId already returned above, before this.
+      const duplicates = this.sqlite.all<MemberTurnRow>(
+        `SELECT * FROM member_turns WHERE run_id = ? AND handoff_source_turn_id = ? AND bot_id = ? AND task = ?`,
+        [run.id, sender.sourceTurnId!, args.to, args.task]);
+      if (duplicates.length > 0) {
+        throw new ConversationError("handoff_duplicate",
+          "the same task was already dispatched to the same member in this turn; a retry must carry the failure reason and a different method, not the same task text");
       }
       if (run.quarantinedBotIds?.includes(args.to)) {
         throw new ConversationError("handoff_quarantined_member", "target is unavailable for this Run");
       }
       const members = this.listMemberTurns(run.id);
+      // P5: unknown / unsettled / duplicated / cyclic dependsOn is rejected
+      // here, before any durable row is written — never stored as [].
+      validateGroupSendDependencies(members, args.dependsOn);
       if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
         // Keep the active physical execution intact. The failed tool call is
         // durable Run intent; settlement gives budget exhaustion a stable reason.
@@ -1146,7 +1232,8 @@ export class SqliteConversationStore implements ConversationStore {
       triggerIds.add(messageId);
       const seq = this.allocateSeq(run.conversationId, run.topicId);
       const content = `Public handoff: ${sender.botId} → ${args.to}\nRun: ${run.id}\nTask:\n${args.task}`
-        + (args.expectedOutput === undefined ? "" : `\nExpected output:\n${args.expectedOutput}`);
+        + (args.expectedOutput === undefined ? "" : `\nExpected output:\n${args.expectedOutput}`)
+        + (args.dependsOn && args.dependsOn.length > 0 ? `\nDepends on:\n${args.dependsOn.join(", ")}` : "");
       this.sqlite.run(`INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, handoff_json)
         VALUES (?, ?, ?, ?, 'system', ?, ?, ?, ?, ?)`,
         [messageId, run.conversationId, run.topicId, seq, sender.botId, content, run.id, input.now, JSON.stringify(envelope)]);
@@ -1157,7 +1244,7 @@ export class SqliteConversationStore implements ConversationStore {
         [memberTurnId, run.id, run.conversationId, run.topicId, args.to, run.activeBatch ?? 1,
           Math.max(-1, ...members.filter((turn) => turn.batch === (run.activeBatch ?? 1)).map((turn) => turn.memberIndex)) + 1,
           JSON.stringify([...triggerIds]), JSON.stringify(input.profileSnapshot), input.now, assignmentId, args.task,
-          args.expectedOutput ?? null, JSON.stringify(sender.dependsOn ?? []), input.sourceTurnId, input.invocationId]);
+          args.expectedOutput ?? null, JSON.stringify(args.dependsOn ?? []), input.sourceTurnId, input.invocationId]);
       this.sqlite.run(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
         VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, memberTurnId, run.generation, input.now]);
       return { reused: false, run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(memberTurnId), message: this.requireMessage(messageId) };
@@ -2285,6 +2372,9 @@ export class SqliteConversationStore implements ConversationStore {
           input.now,
         ],
       );
+      // P2: the raw row above stays whole; only its timeline projection
+      // and the member's report fields are derived from it.
+      this.projectMemberCompletion(member.id, messageId, input.content, "completed");
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
         [input.now, member.id],
@@ -2354,6 +2444,7 @@ export class SqliteConversationStore implements ConversationStore {
           input.now,
         ],
       );
+      this.projectMemberCompletion(member.id, messageId, input.content ?? "", "completed");
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
         [member.id],
@@ -2500,6 +2591,7 @@ export class SqliteConversationStore implements ConversationStore {
             [run.id],
           );
           this.finishDispatchForMemberTurn(member.id, input.now);
+          this.projectMemberCompletion(member.id, messageId, entry.content ?? "", "completed");
           settled.push({
             member: this.requireMemberTurn(member.id),
             outcome: entry.outcome,
@@ -3443,6 +3535,108 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   /**
+   * Group-collaboration P2/P3/P4 columns, all additive and nullable so old
+   * databases read as "no report / no chat / depth unknown" instead of
+   * failing. The followup unique index is rebuilt per (sender, batch):
+   * CREATE INDEX IF NOT EXISTS cannot change an existing index's columns,
+   * so the old single-column index is dropped first.
+   */
+  private ensureGroupCollaborationColumns(): void {
+    const ensure = (table: string, name: string, sqlType: string): void => {
+      if (!this.sqlite.all<{ name: string }>(`PRAGMA table_info(${table})`).some((column) => column.name === name)) {
+        this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${sqlType}`);
+      }
+    };
+    ensure("member_turns", "final_report_json", "TEXT");
+    ensure("member_turns", "final_report_verdict", "TEXT");
+    ensure("member_turns", "followup_chain_depth", "INTEGER");
+    ensure("runs", "followup_budget_exhausted", "INTEGER NOT NULL DEFAULT 0");
+    ensure("messages", "timeline_content", "TEXT");
+    this.sqlite.exec(`CREATE TABLE IF NOT EXISTS group_result_reads (
+      member_turn_id TEXT NOT NULL, assignment_id TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY(member_turn_id, assignment_id));
+      CREATE TABLE IF NOT EXISTS group_chat_messages (
+      id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, topic_id TEXT NOT NULL, run_id TEXT,
+      sender_bot_id TEXT NOT NULL, sender_member_turn_id TEXT, target_bot_id TEXT NOT NULL,
+      reply_to_id TEXT, content TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS idx_group_chat_topic ON group_chat_messages (conversation_id, topic_id, created_at, id);`);
+    this.sqlite.exec(`DROP INDEX IF EXISTS idx_handoff_followup_sender;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_followup_sender ON member_turns
+        (followup_sender_member_turn_id, batch) WHERE followup_sender_member_turn_id IS NOT NULL;`);
+  }
+
+  /** P4 read-before-dispatch evidence: one row per (reader turn, assignment). */
+  recordGroupResultRead(memberTurnId: string, assignmentId: string): void {
+    this.sqlite.run(`INSERT OR IGNORE INTO group_result_reads (member_turn_id, assignment_id, created_at)
+      VALUES (?, ?, ?)`, [memberTurnId, assignmentId, new Date().toISOString()]);
+  }
+
+  listGroupResultReads(memberTurnId: string): string[] {
+    return this.sqlite.all<{ assignment_id: string }>(
+      `SELECT assignment_id FROM group_result_reads WHERE member_turn_id = ? ORDER BY created_at, assignment_id`,
+      [memberTurnId]).map((row) => row.assignment_id);
+  }
+
+  /** P3 informal chat: validated here, but never a turn, dispatch, or budget use. */
+  sendGroupChat(input: SendGroupChatInput): GroupChatMessage {
+    if (!input.content.trim() || input.content.length > MAX_GROUP_CHAT_LENGTH || input.content.includes("\0")) {
+      throw new ConversationError("invalid_group_chat", "group_chat content must be a nonempty bounded string");
+    }
+    if (input.targetBotId === input.senderBotId) {
+      throw new ConversationError("invalid_group_chat", "group_chat requires another Group member as target");
+    }
+    if (input.replyToId !== undefined) {
+      const parent = this.sqlite.get<{ conversation_id: string; topic_id: string }>(
+        `SELECT conversation_id, topic_id FROM group_chat_messages WHERE id = ?`, [input.replyToId]);
+      if (!parent || parent.conversation_id !== input.conversationId || parent.topic_id !== input.topicId) {
+        throw new ConversationError("invalid_group_chat", "group_chat replyTo must name a chat message in the same topic");
+      }
+    }
+    const id = this.ids.messageId();
+    this.sqlite.run(`INSERT INTO group_chat_messages (id, conversation_id, topic_id, run_id, sender_bot_id,
+      sender_member_turn_id, target_bot_id, reply_to_id, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.conversationId, input.topicId, input.runId ?? null, input.senderBotId,
+        input.senderMemberTurnId ?? null, input.targetBotId, input.replyToId ?? null, input.content, input.now]);
+    return { id, conversationId: input.conversationId, topicId: input.topicId,
+      ...(input.runId ? { runId: input.runId } : {}), senderBotId: input.senderBotId,
+      ...(input.senderMemberTurnId ? { senderMemberTurnId: input.senderMemberTurnId } : {}),
+      targetBotId: input.targetBotId, ...(input.replyToId ? { replyToId: input.replyToId } : {}),
+      content: input.content, createdAt: input.now };
+  }
+
+  listGroupChatMessages(conversationId: string, topicId: string, limit = 100): GroupChatMessage[] {
+    const rows = this.sqlite.all<Record<string, string | null>>(
+      `SELECT * FROM group_chat_messages WHERE conversation_id = ? AND topic_id = ?
+       ORDER BY created_at ASC, id ASC LIMIT ?`, [conversationId, topicId, limit]);
+    return rows.map((row) => ({
+      id: row.id!, conversationId: row.conversation_id!, topicId: row.topic_id!,
+      ...(row.run_id ? { runId: row.run_id } : {}), senderBotId: row.sender_bot_id!,
+      ...(row.sender_member_turn_id ? { senderMemberTurnId: row.sender_member_turn_id } : {}),
+      targetBotId: row.target_bot_id!, ...(row.reply_to_id ? { replyToId: row.reply_to_id } : {}),
+      content: row.content!, createdAt: row.created_at!,
+    }));
+  }
+
+  /**
+   * P2 projection for one completed member output. The raw output stays
+   * whole in the bot message row (`content`) and in group_read_result;
+   * this writes only the timeline projection onto that row plus the
+   * structured report onto the member turn. A turn with no complete report
+   * gets a stop notice on the timeline and NO report fields — old rows
+   * and no-report rows both read as "无结论".
+   */
+  private projectMemberCompletion(memberTurnId: string, messageId: string, raw: string, turnState: "completed"): void {
+    const publishable = publishableMemberResult(raw, turnState);
+    this.sqlite.run(`UPDATE messages SET timeline_content = ? WHERE id = ?`, [publishable.text, messageId]);
+    const report = extractFinalReport(raw);
+    if (report) {
+      this.sqlite.run(`UPDATE member_turns SET final_report_json = ?, final_report_verdict = ? WHERE id = ?`,
+        [JSON.stringify(report), report.verdict, memberTurnId]);
+    }
+  }
+
+  /**
    * PR6 multi-member durable shape (§9.3 + §9.4): assignment/task/expected
    * output/dependencies land on member_turns, and one Run may own many
    * pending dispatches — one per MemberTurn. Older databases created before
@@ -4107,25 +4301,29 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   /**
-   * Insert the ONE wake turn a leader member turn earns once every public
-   * handoff it sent has settled.
+   * Insert the wake turn a member turn earns once every public handoff it
+   * sent has settled. Any sender qualifies, not only the leader.
    *
    * The wake is derived from durable state on every settle, so a crash or a
    * restart re-derives it instead of losing it: the unique index on
-   * `followup_sender_member_turn_id` makes the insert idempotent, and the
-   * `NOT EXISTS` guard means it is never inserted twice.
+   * (followup_sender_member_turn_id, batch) and the matching `NOT EXISTS`
+   * guard give each sender one wake per batch, never two in one batch, and
+   * a later batch still earns its own wake.
    *
-   * A leader whose turn was scoped-cancelled by the user never gets a wake:
+   * A sender whose turn was scoped-cancelled by the user never gets a wake:
    * its assignments still settle, but the user asked for that work to stop.
+   * An indeterminate assignment likewise blocks the wake, and a wake at the
+   * chain-depth limit is summary-only (see FOLLOWUP_CHAIN_DEPTH_LIMIT).
    */
   private enqueueSettledHandoffFollowups(run: ConversationRun, now: string): void {
     if (isRunCancelling(run)) return;
+    const waveBatch = run.activeBatch ?? 1;
     const groups = this.sqlite.all<{ sender_id: string }>(`SELECT DISTINCT sender.id AS sender_id FROM member_turns sender
       JOIN member_turns child ON child.handoff_source_turn_id = sender.source_turn_id AND child.run_id = sender.run_id
       WHERE sender.run_id = ? AND sender.state = 'completed'
         AND sender.cancellation_reason IS NULL AND sender.source_turn_id IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM member_turns followup WHERE followup.followup_sender_member_turn_id = sender.id)
-      ORDER BY sender.member_index`, [run.id]);
+        AND NOT EXISTS (SELECT 1 FROM member_turns followup WHERE followup.followup_sender_member_turn_id = sender.id AND followup.batch = ?)
+      ORDER BY sender.member_index`, [run.id, waveBatch]);
     for (const group of groups) {
       const sender = this.requireMemberTurn(group.sender_id);
       const assignments = this.sqlite.all<MemberTurnRow>(`SELECT * FROM member_turns
@@ -4135,11 +4333,22 @@ export class SqliteConversationStore implements ConversationStore {
       // indeterminate assignment is an unknown outcome: the wake would
       // summarize a result nobody can prove, so no wake is inserted.
       if (assignments.some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state) || turn.state === "indeterminate")) continue;
+      // P4 chain depth: the wake's depth is the sender's depth + 1 (an
+      // original sender is depth 0). A wake at the limit is still created:
+      // it is the summary-only generation that escalates to the user, and
+      // its own dispatches are refused by acceptPublicHandoff. Past the
+      // limit nothing is created — the chain has ended with a summary.
+      const senderDepth = sender.followupChainDepth ?? (sender.followupSenderMemberTurnId !== undefined ? 1 : 0);
+      const wakeDepth = senderDepth + 1;
+      if (wakeDepth > this.followupChainDepthLimit) continue;
       if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
         // Budget exhausted: the wake is NOT inserted, but the Run must still
         // reach a terminal state and the sub-task results stay persisted. The
         // wake is a summary convenience, not the work itself — marking the
         // Run budget-exhausted here would report successful work as failed.
+        // P4 change: the skip is no longer silent — the durable flag below
+        // is the explicit budget-exhaustion report.
+        this.sqlite.run(`UPDATE runs SET followup_budget_exhausted = 1 WHERE id = ?`, [run.id]);
         continue;
       }
       // The wake carries a compact manifest, never member output: untrusted
@@ -4163,12 +4372,12 @@ export class SqliteConversationStore implements ConversationStore {
       const memberIndex = Number(this.sqlite.get<{ n: number }>(
         "SELECT COALESCE(MAX(member_index), -1) + 1 AS n FROM member_turns WHERE run_id = ? AND batch = ?",
         [run.id, run.activeBatch ?? 1])!.n);
-      const task = `All assignments sent by your member turn ${sender.id} have settled. Read each result with group_read_result using its assignmentId, then summarize all results for the user.\n${JSON.stringify(results)}`;
+      const task = `All assignments sent by your member turn ${sender.id} have settled. This is followup ${wakeDepth} of ${this.followupChainDepthLimit} in the chain. Read each result with group_read_result using its assignmentId, then summarize all results for the user. You must read every settled result before dispatching any new assignment.${wakeDepth >= this.followupChainDepthLimit ? " This is the final followup in the chain: do not dispatch new assignments; summarize the settled results and escalate any unfinished work to the user." : " If followup work is needed, you may dispatch it with group_send; its results will wake you again, subject to the chain-depth limit."}\n${JSON.stringify(results)}`;
       this.sqlite.run(`INSERT INTO member_turns (id, run_id, conversation_id, topic_id, bot_id, batch, member_index,
-        attempt, origin, state, trigger_message_ids_json, profile_snapshot_json, created_at, task, effect, followup_sender_member_turn_id, assignment_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'followup', 'queued', ?, ?, ?, ?, 'unknown', ?, ?)`,
+        attempt, origin, state, trigger_message_ids_json, profile_snapshot_json, created_at, task, effect, followup_sender_member_turn_id, assignment_id, followup_chain_depth)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'followup', 'queued', ?, ?, ?, ?, 'unknown', ?, ?, ?)`,
         [id, run.id, run.conversationId, run.topicId, sender.botId, run.activeBatch ?? 1, memberIndex,
-          JSON.stringify([...triggers]), JSON.stringify(sender.profileSnapshot ?? run.profileSnapshot), now, task, sender.id, `followup_${id}`]);
+          JSON.stringify([...triggers]), JSON.stringify(sender.profileSnapshot ?? run.profileSnapshot), now, task, sender.id, `followup_${id}`, wakeDepth]);
       this.sqlite.run(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
         VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, id, run.generation, now]);
     }

@@ -100,7 +100,9 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
     expect(active).toEqual(["A"]); active.length = 0; const readsBeforeConversation = sessionReads;
     const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const sibling = await control.createBot({ name: "Builder", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "Bound", botIds: [bot.id, sibling.id], leadBotId: bot.id });
+    // P6: this helper binds a shared Topic target, so it must say "shared"
+    // explicitly now that createGroup defaults to per-member.
+    const group = await control.createGroup({ title: "Bound", botIds: [bot.id, sibling.id], leadBotId: bot.id, workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     await control.bindConversation({ chatKey, conversationId: group.id, topicId: topic.id });
     emit(2, "work"); await waitFor(() => runtime.store.listRuns(group.id, topic.id).length === 1);

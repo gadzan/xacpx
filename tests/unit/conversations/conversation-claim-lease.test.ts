@@ -354,7 +354,7 @@ test("live renewal keeps a Direct turn and a capped Topic turn leased across 30s
       requestId: "req-direct-long",
       content: "hold",
     });
-    const group = await harness.bots.createGroup({ title: "Team", botIds: [harness.reviewer.id, harness.tester.id] });
+    const group = await harness.bots.createGroup({ title: "Team", botIds: [harness.reviewer.id, harness.tester.id] , workspaceMode: "shared" });
     const busy = await harness.service.createGroupTopic(group.id, "Busy", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -455,7 +455,7 @@ test("teardown of an unrelated topic does not seal a live turn whose lease clock
   const hang = deferred();
   harness.runner.hang = hang;
   try {
-    const group = await harness.bots.createGroup({ title: "Team", botIds: [harness.reviewer.id, harness.tester.id] });
+    const group = await harness.bots.createGroup({ title: "Team", botIds: [harness.reviewer.id, harness.tester.id] , workspaceMode: "shared" });
     const busy = await harness.service.createGroupTopic(group.id, "Busy", {
       workspace: "backend",
       isolation: "shared",

@@ -656,7 +656,7 @@ test("a dedicated workspace cannot become another Bot or a Topic target", async 
   const w = await wire();
   const owner = await w.control.createBot({ name: "Reviewer", agent: "codex" });
   const other = await w.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-  const group = await w.control.createGroup({ title: "G", botIds: [owner.id, other.id] });
+  const group = await w.control.createGroup({ title: "G", botIds: [owner.id, other.id] , workspaceMode: "shared" });
 
   await expect(w.control.createBot({ name: "Squatter", agent: "codex", workspace: "Reviewer" }))
     .rejects.toMatchObject({ code: "workspace_dedicated" });

@@ -1003,6 +1003,14 @@ export default {
     header: {
       members: "{count} 名成员",
     },
+    overview: {
+      inProgress: "{count} 进行中",
+      stuck: "{count} 卡住",
+      needsYou: "{count} 需要你",
+      nothingNeedsYou: "今天没有需要你的事",
+      idle: "空闲",
+      finalAnswer: "最终答案（{name}）：{verdict}",
+    },
     members: {
       disabled: "已禁用的成员：{names}。他们仍在群组中，重新启用前不会接收新工作。",
       leadDisabled: "负责人 {lead} 已禁用。新消息默认发给 {fallback}。",
@@ -1103,6 +1111,13 @@ export default {
     bubble: {
       openDetail: "查看 {name} 的执行过程",
       routingLabel: "查看路由详情",
+      intermediateSummary: "{name}的中间结论",
+      finalVerdict: {
+        achieved: "目标已达成",
+        notAchieved: "目标未达成",
+        interrupted: "已中断",
+        none: "无结论",
+      },
       status: {
         queued: "排队中",
         running: "执行中",
@@ -1159,6 +1174,7 @@ export default {
       },
       sentTo: "派发给 {n} 个 Bot",
       sentToOne: "派发给{name}",
+      fromSender: "由{name}派发",
       running: "{n} 执行中",
       queued: "{n} 排队中",
       done: "{n} 个已完成",

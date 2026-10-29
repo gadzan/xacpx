@@ -232,6 +232,12 @@ export class OrchestrationClient {
     return await this.request("conversation.group_send", input);
   }
 
+  async groupChat(input: import("../conversations/group-handoff").GroupChatInvocation): Promise<{
+    messageId: string;
+  }> {
+    return await this.request("conversation.group_chat", input);
+  }
+
   async groupReadResult(input: import("../conversations/group-handoff").GroupReadResultInvocation): Promise<import("../conversations/group-handoff").GroupResultPage> {
     return await this.request("conversation.group_read_result", input);
   }

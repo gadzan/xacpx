@@ -54,7 +54,7 @@ async function harness(hooks?: ConversationDispatcherHooks) {
     { stateMutex, releaseOwnedSession, autoKick: false });
   handoffs = new GroupHandoffService({ store, bots, state, now: () => new Date(NOW), wake: () => { void dispatcher.kick(); } });
   dispatcher.setHandoffService(handoffs);
-  const group = await bots.createGroup({ title: "Start fences", botIds: [A, B, C] });
+  const group = await bots.createGroup({ title: "Start fences", botIds: [A, B, C] , workspaceMode: "shared" });
   const topic = await runs.createGroupTopic(group.id, "Public", { workspace: "backend", isolation: "shared-single-writer" });
   const accept = () => runs.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
     requestId: "request", text: "public request", target: { botId: A } });

@@ -192,7 +192,7 @@ test("Control Topic creation persists and projects optional concurrency without 
   const { control, runtime, state } = await wire({ autoKick: false });
   const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
   const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+  const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared"});
   const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" }, { maxConcurrentMemberTurns: 2 });
   expect(topic.maxConcurrentMemberTurns).toBe(2);
   expect(control.getGroup(group.id).topics.find((t) => t.id === topic.id)?.maxConcurrentMemberTurns).toBe(2);
@@ -211,7 +211,7 @@ test("Control group topic isolation switches in place and reports why it refuses
   const { control, runtime, state } = await wire({ autoKick: false });
   const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
   const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+  const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared"});
   const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared-single-writer" });
   const switched = await control.setGroupTopicIsolation(group.id, topic.id, "shared");
   expect(switched.executionTarget).toEqual({ workspace: "backend", isolation: "shared" });
@@ -238,7 +238,7 @@ test("historical batch details omit private profile fields and preserve Topic ow
   try {
     const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const otherBot = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "Trace team", botIds: [bot.id, otherBot.id] });
+    const group = await control.createGroup({ title: "Trace team", botIds: [bot.id, otherBot.id] , workspaceMode: "shared"});
     const topic = await control.createGroupTopic(group.id, "Trace history", { workspace: "backend", isolation: "shared" });
     const conversationId = group.id;
     const topicId = topic.id;
@@ -258,7 +258,7 @@ test("historical batch details omit private profile fields and preserve Topic ow
     expect(() => control.getRunDetailsBatch({ conversationId, topicId, runIds: [] })).toThrow();
     expect(() => control.getRunDetailsBatch({ conversationId, topicId, runIds: [accepted.run.id, accepted.run.id] })).toThrow();
     const otherSubject = await control.createBot({ name: "Second", agent: "codex", workspace: "backend" });
-    const otherGroup = await control.createGroup({ title: "Other", botIds: [bot.id, otherSubject.id] });
+    const otherGroup = await control.createGroup({ title: "Other", botIds: [bot.id, otherSubject.id] , workspaceMode: "shared"});
     const other = await control.createGroupTopic(otherGroup.id, "Other", { workspace: "backend", isolation: "shared" });
     expect(() => control.getRunDetailsBatch({ conversationId, topicId: other.id, runIds: [accepted.run.id] })).toThrow();
     expect(() => control.getRunDetailsBatch({ conversationId, topicId: "topic_peer_secret", runIds: [accepted.run.id] })).toThrow();
@@ -270,7 +270,7 @@ test("legacy trace reads report unavailable and reject foreign member and scope 
   try {
     const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const otherBot = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "Trace team", botIds: [bot.id, otherBot.id] });
+    const group = await control.createGroup({ title: "Trace team", botIds: [bot.id, otherBot.id] , workspaceMode: "shared"});
     const topic = await control.createGroupTopic(group.id, "Trace history", { workspace: "backend", isolation: "shared" });
     const conversationId = group.id;
     const topicId = topic.id;
@@ -287,7 +287,7 @@ test("legacy trace reads report unavailable and reject foreign member and scope 
     expect(() => control.getRunTrace({ ...input, afterSeq: -1 })).toThrow();
     expect(() => control.getRunTrace({ ...input, topicId: "topic_peer_secret" })).toThrow();
     const otherSubject = await control.createBot({ name: "Second", agent: "codex", workspace: "backend" });
-    const otherGroup = await control.createGroup({ title: "Other", botIds: [bot.id, otherSubject.id] });
+    const otherGroup = await control.createGroup({ title: "Other", botIds: [bot.id, otherSubject.id] , workspaceMode: "shared"});
     const other = await control.createGroupTopic(otherGroup.id, "Other", { workspace: "backend", isolation: "shared" });
     expect(() => control.getRunTrace({ ...input, topicId: other.id })).toThrow();
     const direct = await control.promptConversation({ conversationId: createDirectConversationId(bot.id),
@@ -346,7 +346,7 @@ for (const groupPrompt of [false, true]) {
       let topicId = createDirectTopicId(bot.id);
       if (groupPrompt) {
         const other = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
-        const group = await control.createGroup({ title: "Media", botIds: [bot.id, other.id] });
+        const group = await control.createGroup({ title: "Media", botIds: [bot.id, other.id] , workspaceMode: "shared"});
         conversationId = group.id;
         topicId = (await control.createGroupTopic(group.id, "Uploads", { workspace: "backend", isolation: "shared" })).id;
       }
@@ -672,7 +672,7 @@ test("PublicControlService cancels one member, validates its Run, and preserves 
     const publicControl = asPublicControl(control);
     const leader = await publicControl.createBot({ name: "Leader", agent: "codex", workspace: "backend" });
     const worker = await publicControl.createBot({ name: "Worker", agent: "codex", workspace: "backend" });
-    const group = await publicControl.createGroup({ title: "Scoped cancellation", botIds: [leader.id, worker.id] });
+    const group = await publicControl.createGroup({ title: "Scoped cancellation", botIds: [leader.id, worker.id] , workspaceMode: "shared"});
     const topic = await publicControl.createGroupTopic(group.id, "Review", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await publicControl.promptConversation({
       conversationId: group.id, topicId: topic.id, requestId: "scoped-public", text: "review",
@@ -764,7 +764,7 @@ test("public Control facade rejects a malformed target instead of silently rewri
   // A Group conversation gets the same typed refusal from the sanitizer —
   // it must not degrade to target_required either.
   const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "Team", botIds: [bot.id, botB.id], leadBotId: bot.id });
+  const group = await control.createGroup({ title: "Team", botIds: [bot.id, botB.id], leadBotId: bot.id , workspaceMode: "shared"});
   const topic = await control.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -1412,7 +1412,7 @@ test("group CRUD, topic lifecycle, and teardown flow through public Control", as
   const { control, runtime } = await wire({ autoKick: false });
   const botA = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "Release Team", botIds: [botA.id, botB.id], leadBotId: botA.id });
+  const group = await control.createGroup({ title: "Release Team", botIds: [botA.id, botB.id], leadBotId: botA.id , workspaceMode: "shared"});
   expect(group.kind).toBe("group");
   expect(group.botIds).toEqual([botA.id, botB.id]);
   expect(group.leadBotId).toBe(botA.id);
@@ -1537,7 +1537,7 @@ test("PR7 control: Group prompt accepts structured target and projects plural me
   const { control } = await wire({ autoKick: false });
   const botA = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "Team", botIds: [botA.id, botB.id], leadBotId: botA.id });
+  const group = await control.createGroup({ title: "Team", botIds: [botA.id, botB.id], leadBotId: botA.id , workspaceMode: "shared"});
   const topic = await control.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -1636,7 +1636,7 @@ test("deleted or changed referenced targets fail closed before provider executio
   await w.control.updateBot(b.id,{enabled:false});await w.runtime.dispatcher.kick();expect(chats).toBe(0);expect(w.runtime.store.getRun(accepted.run.id)?.state).toBe("failed");
   const raw=await w.control.promptConversation({...scope,requestId:"raw-ref",text:"@B"});expect(w.runtime.store.getMessage(raw.message.id)?.inputMetadata).toBeUndefined();
   await w.runtime.dispatcher.kick();expect(chats).toBe(1);
-  const group=await w.control.createGroup({title:"G",botIds:[a.id,b.id]}),topic=await w.control.createGroupTopic(group.id,"T",{workspace:"backend",isolation:"shared"});
+  const group=await w.control.createGroup({title:"G",botIds:[a.id,b.id],workspaceMode:"shared"}),topic=await w.control.createGroupTopic(group.id,"T",{workspace:"backend",isolation:"shared"});
   await expect(w.control.promptConversation({conversationId:group.id,topicId:topic.id,requestId:"group-ref",text:"@B",target:{botId:a.id},agentMentions:[{range:[0,2],handle:"fake"}]})).rejects.toMatchObject({code:"invalid-agent-mentions"});
  }finally{await w.runtime.shutdown();}
 });

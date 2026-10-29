@@ -1,5 +1,6 @@
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { BotProfileSnapshot } from "../bots/bot-types";
+import type { FinalReport, FinalReportVerdict } from "./final-report";
 
 export type ConversationKind = "bot" | "group";
 export type ConversationLifecycle = "active" | "deleting";
@@ -157,6 +158,15 @@ export interface ConversationMessage {
   handoff?: PublicHandoffEnvelope;
   replyTo?: string;
   runId?: string;
+  /**
+   * Timeline projection of a member's raw output (structured final report,
+   * or a short stop notice when there is none). The raw output stays whole
+   * in `content` — the execution-detail record — and in
+   * `group_read_result`; only the timeline rendering prefers this field.
+   * Absent on pre-projection rows and on non-member messages: readers fall
+   * back to `content`.
+   */
+  timelineContent?: string;
   createdAt: string;
   sourceTurn?: {
     sessionAlias: string;
@@ -199,6 +209,13 @@ export interface ConversationRun {
   routingReason?: string;
   /** Currently executing batch. Absent (direct legacy) means batch 1. */
   activeBatch?: number;
+  /**
+   * True when a followup wake was skipped solely because the Run budget had
+   * no room left for it. The settled work itself is NOT failed by this:
+   * the flag is the explicit budget-exhaustion report that a silent skip
+   * would have hidden. Absent/false means no wake was budget-skipped.
+   */
+  followupBudgetExhausted?: boolean;
   maxMemberTurns: number;
   consumedMemberTurns: number;
   /** Member Bot ids that failed in the current batch (aggregate progress). */
@@ -259,6 +276,23 @@ export interface MemberTurnRecord {
    *  other turn — including ordinary orchestration-accepted members, whose
    *  `followup` origin does NOT identify a handoff wake. */
   followupSenderMemberTurnId?: string;
+  /**
+   * Followup chain depth of a wake turn: 1 for the first wake after the
+   * original sender's assignments settle, +1 per further wake in the chain.
+   * Absent on non-wake turns. A wake at the chain-depth limit is
+   * summary-only: it may not dispatch new assignments (see
+   * FOLLOWUP_CHAIN_DEPTH_LIMIT in conversation-store.ts).
+   */
+  followupChainDepth?: number;
+  /**
+   * Structured final report parsed from this member's raw output at
+   * completion (see final-report.ts). Absent on old rows and on turns whose
+   * output carried no complete report — those read as "无结论", never as a
+   * guessed verdict. The raw output itself is untouched.
+   */
+  finalReport?: FinalReport;
+  /** Verdict of `finalReport`, duplicated for cheap distinction without parsing JSON. */
+  finalReportVerdict?: FinalReportVerdict;
   /** Declared side-effect capability for scheduling. Persisted at durable
    *  accept from AcceptMemberInput.effect; absent (pre-effect rows) reads as
    *  `unknown`. PR7 always persists `unknown`: no read-only capability is

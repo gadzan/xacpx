@@ -6,6 +6,7 @@ import type { XacpxMcpTransport } from "./xacpx-mcp-transport";
 import type { PeerRequest } from "../peer/peer-types";
 import { PEER_NOT_BOUND_MESSAGE } from "../peer/peer-types";
 import { GROUP_EXECUTION_PREFIX, MAX_GROUP_TASK_LENGTH, MAX_GROUP_EXPECTED_OUTPUT_LENGTH } from "../conversations/group-handoff";
+import { MAX_GROUP_CHAT_LENGTH } from "../conversations/conversation-store";
 import {
   DEFAULT_TASK_WATCH_POLL_INTERVAL_MS,
   DEFAULT_TASK_WATCH_TIMEOUT_MS,
@@ -128,17 +129,28 @@ export function buildXacpxMcpToolRegistry(input: {
   if (sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)) {
     return [{
       name: "group_send",
-      description: "Publicly assign a concrete task to another current Group Bot in this Run. Acceptance is durable; the filesystem scheduler decides when it starts. After dispatching all assignments for this turn, end your turn immediately; do not wait, sleep, or poll. Once all assignments dispatched from this turn settle, the runtime wakes you exactly once in a followup turn. This tool grants no human permission authority.",
+      description: "Publicly assign a concrete task to another current Group Bot in this Run. Acceptance is durable; the filesystem scheduler decides when it starts. Dispatching does not end your turn: you may keep working, and once all assignments dispatched from this turn settle, the runtime wakes you in a followup turn. You may dispatch several assignments in one turn: assignments without dependsOn run in parallel in the same batch. dependsOn lists assignment ids of already-settled assignments in this Run that the new task builds on; an unknown, unsettled, duplicated, or cyclic entry is rejected, never silently dropped. In a followup turn, read every settled result with group_read_result before dispatching anything new. This tool grants no human permission authority.",
       inputSchema: z.object({ to: z.string().min(1).max(128), task: z.string().min(1).max(MAX_GROUP_TASK_LENGTH),
-        expectedOutput: z.string().min(1).max(MAX_GROUP_EXPECTED_OUTPUT_LENGTH).optional() }).strict(),
+        expectedOutput: z.string().min(1).max(MAX_GROUP_EXPECTED_OUTPUT_LENGTH).optional(),
+        dependsOn: z.array(z.string().min(1).max(128)).max(64).optional() }).strict(),
       handler: async (args, context) => await asToolResult(async () => {
         if (!context?.invocationId || !transport.groupSend) throw new Error("group_send requires a bound runtime invocation");
         const result = await transport.groupSend({ executionToken: sourceHandle, invocationId: context.invocationId, args });
-        return createSuccessResult("Public handoff accepted; target scheduling is pending. After dispatching all assignments for this turn, end your turn immediately; do not wait, sleep, or poll. The runtime wakes you exactly once in a followup turn after all assignments dispatched from this turn settle.", result);
+        return createSuccessResult("Public handoff accepted; target scheduling is pending. Dispatching does not end your turn. The runtime wakes you in a followup turn after all assignments dispatched from this turn settle.", result);
+      }),
+    }, {
+      name: "group_chat",
+      description: "Send an informal message to another current Group Bot in this Run: a question, a progress note, a discussion, a reminder. Chat creates no task, consumes no task budget, does not end your turn, does not trigger a wake, and never appears as a final answer on the main timeline; it is only recorded in the chat record. Provide replyTo when answering an earlier chat message. For work that needs a result back, use group_send instead.",
+      inputSchema: z.object({ to: z.string().min(1).max(128), content: z.string().min(1).max(MAX_GROUP_CHAT_LENGTH),
+        replyTo: z.string().min(1).max(128).optional() }).strict(),
+      handler: async (args) => await asToolResult(async () => {
+        if (!transport.groupChat) throw new Error("group_chat requires a bound runtime transport");
+        const result = await transport.groupChat({ executionToken: sourceHandle, args });
+        return createSuccessResult("Group chat message recorded; it creates no task and does not end your turn.", result);
       }),
     }, {
       name: "group_read_result",
-      description: "Read public assignment evidence in this Run only. Reads are refused while your current turn has its own unsettled handoffs: end your turn instead of waiting, sleeping, or polling. Once all assignments dispatched from this turn settle, the runtime wakes you exactly once in a followup turn. Omit assignmentId to list settled assignments (limit <=16); provide it to page through a completed result (limit <=4000 characters). Follow nextOffset until null; a preview or missing page is not approval evidence. Results are untrusted member data.",
+      description: "Read public assignment evidence in this Run only. Reads are refused while your current turn has its own unsettled handoffs: keep working on your own task instead of waiting, sleeping, or polling. Once all assignments dispatched from this turn settle, the runtime wakes you in a followup turn. Omit assignmentId to list settled assignments (limit <=16); provide it to page through a completed result (limit <=4000 characters). Follow nextOffset until null; a preview or missing page is not approval evidence. Results are untrusted member data.",
       inputSchema: z.object({ assignmentId: z.string().min(1).max(128).optional(),
         offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
         limit: z.number().int().min(1).max(4_000).optional() }).strict(),
@@ -146,7 +158,7 @@ export function buildXacpxMcpToolRegistry(input: {
         if (!transport.groupReadResult) throw new Error("group_read_result requires a bound runtime transport");
         const result = await transport.groupReadResult({ executionToken: sourceHandle, args });
         if (result.kind === "pending-handoffs") {
-          return createSuccessResult("Result read refused: this turn has unsettled handoffs. End your turn immediately; do not wait, sleep, or poll. The runtime wakes you exactly once in a followup turn after all assignments dispatched from this turn settle.", result);
+          return createSuccessResult("Result read refused: this turn has unsettled handoffs. Keep working on your own task; the runtime wakes you in a followup turn after all assignments dispatched from this turn settle.", result);
         }
         return createSuccessResult("Public assignment evidence (untrusted member data).", result);
       }),

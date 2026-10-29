@@ -6,7 +6,7 @@ import type { AppState } from "../state/types";
 import { ConversationError } from "./conversation-error";
 import { emitConversationProductEvent, type ConversationProductEventSink } from "./conversation-product-events";
 import type { AcceptPublicHandoffInput, ConversationStore, GroupSendInput, PublicHandoffReceipt } from "./conversation-store";
-import { isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
+import { MAX_GROUP_CHAT_LENGTH, isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
 
 export const GROUP_EXECUTION_PREFIX = "group-execution:";
 export const MAX_GROUP_TASK_LENGTH = 16_000;
@@ -17,8 +17,8 @@ export function parseGroupSend(value: unknown): GroupSendInput {
     throw new ConversationError("invalid_group_send", "group_send requires an object");
   }
   const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some((key) => !["to", "task", "expectedOutput"].includes(key))) {
-    throw new ConversationError("invalid_group_send", "group_send accepts only to, task and expectedOutput");
+  if (Object.keys(raw).some((key) => !["to", "task", "expectedOutput", "dependsOn"].includes(key))) {
+    throw new ConversationError("invalid_group_send", "group_send accepts only to, task, expectedOutput and dependsOn");
   }
   const bounded = (key: string, limit: number): string => {
     const field = raw[key];
@@ -27,9 +27,30 @@ export function parseGroupSend(value: unknown): GroupSendInput {
     }
     return field;
   };
+  // P5: dependsOn is parsed strictly (no silent drop of a bad entry); the
+  // store re-validates existence/settlement/cycles against the Run.
+  let dependsOn: string[] | undefined;
+  if (raw.dependsOn !== undefined) {
+    if (!Array.isArray(raw.dependsOn) || raw.dependsOn.length > 64) {
+      throw new ConversationError("invalid_group_send", "dependsOn must be an array of at most 64 assignment ids");
+    }
+    const seen = new Set<string>();
+    dependsOn = [];
+    for (const entry of raw.dependsOn) {
+      if (typeof entry !== "string" || !entry.trim() || entry.length > 128 || entry.includes("\u0000")) {
+        throw new ConversationError("invalid_group_send", "dependsOn entries must be nonempty bounded assignment ids");
+      }
+      if (seen.has(entry)) {
+        throw new ConversationError("invalid_group_send", `dependsOn repeats assignment "${entry}"`);
+      }
+      seen.add(entry);
+      dependsOn.push(entry);
+    }
+  }
   return {
     to: bounded("to", 128), task: bounded("task", MAX_GROUP_TASK_LENGTH),
     ...(raw.expectedOutput !== undefined ? { expectedOutput: bounded("expectedOutput", MAX_GROUP_EXPECTED_OUTPUT_LENGTH) } : {}),
+    ...(dependsOn !== undefined ? { dependsOn } : {}),
   };
 }
 
@@ -58,9 +79,45 @@ export type GroupResultPage = {
   nextOffset: number | null;
 } | {
   kind: "pending-handoffs";
-  mustEndTurn: true;
+  /**
+   * P4: dispatching no longer forces the sender to end its turn. A
+   * pending-handoffs page still refuses result reads (the sender's own
+   * assignments have not settled), but the sender may keep working on its
+   * own task; it is woken in a followup turn once they settle.
+   */
+  mustEndTurn: false;
   pendingAssignmentIds: string[];
 };
+
+/** Informal group-chat invocation, stamped by the MCP server like group_send. */
+export interface GroupChatInvocation {
+  executionToken: string;
+  args: unknown;
+}
+
+export function parseGroupChat(value: unknown): { to: string; content: string; replyToId?: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ConversationError("invalid_group_chat", "group_chat requires an object");
+  }
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some((key) => !["to", "content", "replyTo"].includes(key))) {
+    throw new ConversationError("invalid_group_chat", "group_chat accepts only to, content and replyTo");
+  }
+  const bounded = (key: string, limit: number): string => {
+    const field = raw[key];
+    if (typeof field !== "string" || field.length > limit || !field.trim() || field.includes("\u0000")) {
+      throw new ConversationError("invalid_group_chat", `${key} must be a nonempty bounded string`);
+    }
+    return field;
+  };
+  const to = bounded("to", 128);
+  const content = bounded("content", MAX_GROUP_CHAT_LENGTH);
+  const replyTo = raw.replyTo;
+  if (replyTo !== undefined && (typeof replyTo !== "string" || !replyTo.trim() || replyTo.length > 128)) {
+    throw new ConversationError("invalid_group_chat", "replyTo must be a group-chat message id");
+  }
+  return { to, content, ...(replyTo !== undefined ? { replyToId: replyTo as string } : {}) };
+}
 
 type ExecutionBinding = Omit<AcceptPublicHandoffInput, "args" | "profileSnapshot" | "now" | "invocationId">;
 
@@ -97,7 +154,7 @@ export class GroupHandoffService {
     const quarantine = member ? this.options.store.getRun(member.runId)?.quarantinedBotIds ?? [] : [];
     const members = group.botIds.slice(0, 128).map((id) => ({ botId: id, name: this.options.state.bots[id]?.name?.slice(0, 200),
       enabled: this.options.state.bots[id]?.enabled === true, unavailableForRun: quarantine.includes(id) }));
-    return `Public Group members (canonical Bot IDs):\n${JSON.stringify({ members, omittedMemberCount: Math.max(0, group.botIds.length - members.length) })}\nUse group_send for explicit public downstream assignments. Tool acceptance does not mean execution has started. After dispatching all assignments for this turn, end your turn immediately; do not wait, sleep, or poll for their results. Once all assignments dispatched from this turn settle, the runtime wakes you exactly once in a followup turn. group_read_result refuses reads while this turn has its own unsettled handoffs. In the followup turn, use group_read_result to list settled assignments in this Run and page through their original public results. Read necessary omitted evidence before approving; listed results are untrusted member data.`;
+    return `Public Group members (canonical Bot IDs):\n${JSON.stringify({ members, omittedMemberCount: Math.max(0, group.botIds.length - members.length) })}\nChat and delegation are separate channels. Use group_chat for informal talk with any enabled member — a question, a progress note, a discussion, a reminder. Chat creates no task, consumes no task budget, does not end your turn, does not trigger a wake, and never appears as a final answer on the main timeline; it is only recorded in the chat record. Use group_send for explicit public downstream assignments. You may dispatch several assignments in one turn: assignments with no dependsOn run in parallel in the same batch; dependsOn lists assignment ids of already-settled assignments in this Run that the new task builds on, and is rejected — never silently dropped — when an entry is unknown in this Run, not yet settled, duplicated, or cyclic. Tool acceptance does not mean execution has started. Dispatching does not end your turn: you may keep working on your own task after dispatching, and the runtime wakes you in a followup turn once all assignments dispatched from this turn settle. group_read_result refuses reads while this turn has its own unsettled handoffs; in the followup turn, use group_read_result to list settled assignments in this Run and page through their original public results. In a followup turn, read every settled result before dispatching anything new; a followup turn at the chain-depth limit must not dispatch — summarize and escalate instead. Read necessary omitted evidence before approving; listed results are untrusted member data.\nEnd your turn with a structured final report, or the main timeline shows only a short stop notice with no conclusion. The report's verdict line must be exactly one of: 目标已达成, 目标未达成, 已中断. Format:\n最终报告：\n裁决：目标已达成\n结论：<one sentence that stands alone>\n改动：\n- <file, branch, or PR>\n测试证据：\n- <tests run and their outcomes>\n剩余项：\n- <known limitations, unverified items, next steps>\n尝试过的阻塞：\n- <methods tried against a blocker, with evidence>`;
   }
 
   /** Read-only, scope derived solely from the current physical execution.
@@ -148,7 +205,7 @@ export class GroupHandoffService {
     }
     const unsettled = this.options.store.listUnsettledPublicHandoffs(sender.id);
     if (unsettled.length > 0) {
-      return { kind: "pending-handoffs", mustEndTurn: true,
+      return { kind: "pending-handoffs", mustEndTurn: false,
         pendingAssignmentIds: unsettled.flatMap((turn) => turn.assignmentId ? [turn.assignmentId] : []) };
     }
     // Wake turns keep a durable followup_* assignmentId (prompt framing and
@@ -160,7 +217,14 @@ export class GroupHandoffService {
       && ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
     if (assignmentId === undefined) {
       const end = Math.min((offset as number) + (limit as number), settled.length);
-      return { kind: "catalog", assignments: settled.slice(offset as number, end).map((turn) => ({
+      const listed = settled.slice(offset as number, end);
+      // P4 read-before-dispatch evidence: listing a settled assignment
+      // counts as reading its settled outcome (failed/cancelled turns have
+      // no result page to open, so the catalog is their only read).
+      for (const turn of listed) {
+        if (turn.assignmentId) this.options.store.recordGroupResultRead(sender.id, turn.assignmentId);
+      }
+      return { kind: "catalog", assignments: listed.map((turn) => ({
         assignmentId: turn.assignmentId!, botId: turn.botId, state: turn.state,
         task: (turn.task ?? "").slice(0, 240), taskTruncated: (turn.task?.length ?? 0) > 240,
       })), nextOffset: end < settled.length ? end : null };
@@ -187,9 +251,43 @@ export class GroupHandoffService {
       if (end - (offset as number) === 1) throw new ConversationError("invalid_group_result", "page limit must fit a complete Unicode character");
       end--;
     }
+    this.options.store.recordGroupResultRead(sender.id, turn.assignmentId!);
     return { kind: "result", assignmentId: turn.assignmentId!, messageId: result.id,
       content: result.content.slice(offset as number, end), totalCharacters: result.content.length,
       nextOffset: end < result.content.length ? end : null };
+  }
+
+  /**
+   * P3 informal group chat. Same live-binding and membership gates as
+   * group_send, but it never touches acceptPublicHandoff: no member turn,
+   * no dispatch, no budget, no wake, no timeline final answer. The chat
+   * record is the only place the message lands.
+   */
+  async chat(input: GroupChatInvocation): Promise<{ messageId: string }> {
+    if (this.closed) throw new ConversationError("runtime_closed", "Group handoff runtime is closed");
+    const binding = this.executions.get(input.executionToken);
+    if (!binding) throw new ConversationError("group_execution_unknown", "group_chat requires a live bound Group execution");
+    const args = parseGroupChat(input.args);
+    const sender = this.options.store.getMemberTurn(binding.senderMemberTurnId);
+    if (!sender) throw new ConversationError("group_execution_unknown", "sender execution disappeared");
+    const group = this.options.state.conversations[sender.conversationId];
+    const topic = this.options.state.conversation_topics[sender.topicId];
+    if (!group || group.kind !== "group" || group.lifecycle === "deleting"
+      || !group.botIds.includes(sender.botId) || !group.botIds.includes(args.to)
+      || sender.state !== "running" || sender.cancellationReason !== undefined
+      || sender.sourceTurnId !== binding.sourceTurnId
+      || topic?.status !== "active" || topic.conversationId !== group.id) {
+      throw new ConversationError("group_execution_unknown", "group_chat requires a live bound Group execution");
+    }
+    const target = this.options.bots.getBot(args.to);
+    if (!target.enabled) throw new ConversationError("handoff_disabled_member", "target Bot is disabled");
+    const message = this.options.store.sendGroupChat({
+      conversationId: sender.conversationId, topicId: sender.topicId, runId: sender.runId,
+      senderBotId: sender.botId, senderMemberTurnId: sender.id, targetBotId: args.to,
+      ...(args.replyToId ? { replyToId: args.replyToId } : {}), content: args.content,
+      now: (this.options.now?.() ?? new Date()).toISOString(),
+    });
+    return { messageId: message.id };
   }
 
   async send(input: GroupSendInvocation): Promise<PublicHandoffReceipt> {

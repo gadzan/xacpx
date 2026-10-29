@@ -15,7 +15,7 @@ async function fixture(isolation: "shared" | "shared-single-writer" | "worktree-
   await runWorkspaceGit(source, ["add", "."]);
   await runWorkspaceGit(source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base"]);
   const h = await harness({ workspaceCwd: source, worktreeRoot: join(dir, "managed") });
-  const g = await h.bots.createGroup({ title: "Isolation", botIds: h.ids });
+  const g = await h.bots.createGroup({ title: "Isolation", botIds: h.ids , workspaceMode: "shared" });
   const topic = await h.service.createGroupTopic(g.id, "Round", { workspace: "backend", isolation }, { maxConcurrentMemberTurns: 4 });
   const accept = (id = "request", count = 2) => h.service.acceptGroupPrompt({ conversationId: g.id, topicId: topic.id,
     requestId: id, text: "work independently", target: { mode: "members", botIds: h.ids.slice(0, count) }, humanIngress: HUMAN });
@@ -117,7 +117,7 @@ test("a deleting topic refuses the switch even when the policy already matches",
 test("worktree isolation stays unavailable without a provisioning manager", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-isolation-nowt-"));
   const h = await harness({ workspaceCwd: dir });
-  const g = await h.bots.createGroup({ title: "No worktrees", botIds: h.ids });
+  const g = await h.bots.createGroup({ title: "No worktrees", botIds: h.ids , workspaceMode: "shared" });
   const topic = await h.service.createGroupTopic(g.id, "Round", { workspace: "backend", isolation: "shared-single-writer" });
   await expect(h.service.setGroupTopicIsolation(g.id, topic.id, "worktree-per-member"))
     .rejects.toMatchObject({ code: "worktree_unprovisioned" });

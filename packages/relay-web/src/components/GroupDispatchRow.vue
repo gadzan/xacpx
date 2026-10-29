@@ -54,6 +54,10 @@ const summary = computed(() => props.presentation.summary);
 const titleText = computed(() => total.value === 1
   ? t("group.dispatch.sentToOne", { name: spaceNameForCjk(props.presentation.members[0]?.name ?? "", locale.value, "before") })
   : t("group.dispatch.sentTo", { n: total.value }));
+/** The dispatch sender, from the presentation's leader — never parsed out
+ *  of the handoff body text. The leader bot id is the durable sender; the
+ *  name is display only and falls back to the id in the presentation. */
+const senderText = computed(() => t("group.dispatch.fromSender", { name: spaceNameForCjk(props.presentation.leader.name ?? "", locale.value, "before") }));
 /** Whether the row's detail surface — desktop card or mobile sheet — is open. */
 const detailsOpen = computed(() => (isMobile.value ? sheetOpen.value : expanded.value));
 const isRunning = computed(() => summary.value === "running");
@@ -312,6 +316,9 @@ const STACK_ICON_SIZE = 14;
       <span v-else data-test="group-dispatch-title" class="shrink-0 text-xs font-medium text-fg">
         {{ titleText }}
       </span>
+      <span v-if="!isMobile" data-test="group-dispatch-sender" class="shrink-0 text-xs text-fg-muted">
+        {{ senderText }}
+      </span>
       <span v-if="!isMobile" data-test="group-dispatch-status" class="flex min-w-0 flex-wrap items-center gap-x-1 text-xs">
         <template v-if="isRunning">
           <Loader2 :size="12" class="shrink-0 animate-spin text-accent" aria-hidden="true" />
@@ -355,6 +362,7 @@ const STACK_ICON_SIZE = 14;
       class="mt-2 max-w-[560px] rounded-xl bg-surface p-3 text-xs"
       @keydown.esc="onEscapeKeydown"
     >
+      <p data-test="group-dispatch-card-sender" class="mt-1 text-fg-muted">{{ senderText }}</p>
       <details data-test="group-dispatch-brief" class="mt-1">
         <summary class="cursor-pointer rounded-md py-1 text-fg-muted">
           <span data-test="group-dispatch-instructions-label">{{ t("group.dispatch.instructions") }}</span>
@@ -422,6 +430,7 @@ const STACK_ICON_SIZE = 14;
       :title="titleText"
       @close="sheetOpen = false"
     >
+      <p data-test="group-dispatch-sheet-sender" class="mt-1 px-2 text-xs text-fg-muted">{{ senderText }}</p>
       <details class="mt-1 px-2">
         <summary class="cursor-pointer rounded-md py-1 text-xs text-fg-muted">
           <span data-test="group-dispatch-sheet-instructions-label">{{ t("group.dispatch.instructions") }}</span>

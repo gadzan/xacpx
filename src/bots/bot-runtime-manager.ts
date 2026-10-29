@@ -113,17 +113,24 @@ export class BotRuntimeManager {
     return this.state.conversations[conversationId]?.kind;
   }
 
-  /** Live Group scope for prompt composition: presentation only (title /
-   *  description), never execution identity. Returns undefined for unknown
-   *  or non-Group Conversations so the dispatcher never substitutes a stale
-   *  or foreign record. The dispatcher reads it at each turn, so a Group
-   *  rename/description edit takes effect on the next turn without a new Run. */
-  getGroupScope(conversationId: string): { title?: string; description?: string } | undefined {
+  /** Live Group scope for prompt composition. Title/description are
+   *  presentation only, never execution identity; `leadBotId` is the durable
+   *  lead-seat assignment, carried so the dispatcher can inject the seat
+   *  layer for the current lead without the caller copying it anywhere.
+   *  Returns undefined for unknown or non-Group Conversations so the
+   *  dispatcher never substitutes a stale or foreign record. The dispatcher
+   *  reads it at each turn, so a Group rename, description edit, or lead
+   *  change takes effect on the next turn without a new Run. */
+  getGroupScope(conversationId: string): { title?: string; description?: string; leadBotId?: string } | undefined {
     const conversation = this.state.conversations[conversationId];
     if (!conversation || conversation.kind !== "group") return undefined;
     const title = conversation.title.trim();
     const description = conversation.description?.trim();
-    return { ...(title ? { title } : {}), ...(description ? { description } : {}) };
+    return {
+      ...(title ? { title } : {}),
+      ...(description ? { description } : {}),
+      ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
+    };
   }
 
   /** Durable Topic scheduling metadata; no live execution counter. */

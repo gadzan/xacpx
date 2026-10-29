@@ -1724,8 +1724,17 @@ export class ConversationDispatcher {
       if(!isGroup)markCommandRevision(commandIdentity,String(snapshot.revision)+":"+(binding.contextGeneration ?? 1));
       const rawCommand = isAdvertisedRuntimeCommand(commandIdentity, userText);
       const group = isGroup ? this.runtime.getGroupScope(work.run.conversationId) : undefined;
+      // Lead-seat check, read live per turn: the executing Bot is the
+      // Group's current lead AND this is a lead turn. A dispatched
+      // assignment (assignmentId present) is member work even when the
+      // lead Bot executes it, so it never gets the seat layer. The one
+      // exception is the followup wake turn, which exists to summarise the
+      // lead's own settled dispatches — that is seat work, not member work.
+      const isLeadTurn = group?.leadBotId !== undefined
+        && work.memberTurn.botId === group.leadBotId
+        && (work.memberTurn.assignmentId === undefined || work.memberTurn.followupSenderMemberTurnId !== undefined);
       const wrapped = isGroup
-        ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!, group)
+        ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!, group, { botId: work.memberTurn.botId, isLeadTurn })
         : composeBotTurnPromptFromSnapshot(snapshot, userText);
       const text = adapterFacingPrompt(commandIdentity, userText, wrapped);
       const directExecution = !isGroup && started.effect !== "read-only" ? this.directMessaging?.bindExecution({ memberTurnId: started.id, sourceTurnId, dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;

@@ -1880,7 +1880,7 @@ test("group topic lifecycle validates target, archives, and rejects direct paths
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID], leadBotId: reviewer.id });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID], leadBotId: reviewer.id , workspaceMode: "shared" });
   // Unknown workspace and isolation fail closed.
   await expect(
     first.service.createGroupTopic(group.id, "Bad ws", { workspace: "nope", isolation: "shared" }),
@@ -1914,7 +1914,7 @@ test("archive refuses a Topic with nonterminal runs and races safely with materi
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -1978,7 +1978,7 @@ test("archive retries when membership widens mid-gate instead of stranding a lat
     createdAt: NOW,
     updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2018,7 +2018,7 @@ test("group topic teardown releases member bindings and rows, retryable on relea
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2052,7 +2052,7 @@ test("deleteGroup fails closed while topics, bindings, or durable rows exist", a
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2087,7 +2087,7 @@ test("group member session runs on the Topic workspace, not the Bot default", as
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Frontend work", {
     workspace: "frontend",
     isolation: "shared-single-writer",
@@ -2107,7 +2107,7 @@ test("group topic teardown releases a binding-less crash-window member session",
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2138,7 +2138,7 @@ test("group topic teardown fails closed when alias and logical id disagree", asy
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2175,7 +2175,7 @@ test("group delete marks the barrier first: concurrent topic create fails closed
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topicA = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2206,7 +2206,7 @@ test("group delete keeps the record when store row cleanup throws, retryable", a
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2238,7 +2238,7 @@ test("group delete keeps the record when store row cleanup throws, retryable", a
 test("group topic teardown linearizes with a late member materializer instead of deadlocking", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2278,7 +2278,7 @@ test("group topic teardown linearizes with a late member materializer instead of
 test("topic teardown never releases another topic's session via a partial legacy owner", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topicA = await first.service.createGroupTopic(group.id, "A", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2305,7 +2305,7 @@ test("topic teardown never releases another topic's session via a partial legacy
 test("multi-member accept persists one run with N turns and N dispatches across reopen", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2355,7 +2355,7 @@ test("multi-member accept persists one run with N turns and N dispatches across 
 test("binding-less group session pins agent identity across updateBot and recovery", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2387,7 +2387,7 @@ test("binding-less group session pins agent identity across updateBot and recove
 test("group member materialize without an execution target fails closed", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topicId = "topic_no_target_1";
   first.state.conversation_topics[topicId] = {
     id: topicId,
@@ -2406,7 +2406,7 @@ test("group member materialize without an execution target fails closed", async 
 test("second member dispatches against its own execution snapshot, not the first member's", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2460,7 +2460,7 @@ test("second member dispatches against its own execution snapshot, not the first
 test("explicit run aggregates: first completion leaves the run non-terminal until all members finish", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2519,7 +2519,7 @@ test("explicit run aggregates: first completion leaves the run non-terminal unti
 test("failed member accumulates failedBotIds; run fails only after the batch settles", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2556,7 +2556,7 @@ test("failed+failed accumulates both bots; failed+indeterminate yields indetermi
   const setup = async (requestId: string) => {
     const first = await createLifecycle();
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "Sprint", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -2609,7 +2609,7 @@ test("failed+failed accumulates both bots; failed+indeterminate yields indetermi
 test("failed+cancelled aggregates to failed with a derived reason, not the last event's", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2642,7 +2642,7 @@ test("failed+cancelled aggregates to failed with a derived reason, not the last 
 test("replayed member completion is idempotent: no second message, no double progress", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2692,7 +2692,7 @@ test("replayed member completion is idempotent: no second message, no double pro
 test("automatic run stays routing-eligible after the batch settles completed", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2758,7 +2758,7 @@ test("dispatch migration crash before commit keeps the old table intact", async 
 test("group topic with a non-empty cwd fails closed instead of persisting a silent no-op", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   await expect(first.service.createGroupTopic(group.id, "Subdir", {
     workspace: "backend", cwd: "/tmp/backend/subdir", isolation: "shared-single-writer",
   })).rejects.toMatchObject({ code: "cwd_unsupported" });
@@ -2769,7 +2769,7 @@ test("group topic with a non-empty cwd fails closed instead of persisting a sile
 test("persisted topic cwd fails closed at member materialize", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2845,7 +2845,7 @@ test("teardownGroupTopic emits conversations-changed once on success", async () 
   });
   const created = [await bots.createBot({ name: "A", agent: "codex", workspace: "backend" }),
     await bots.createBot({ name: "B", agent: "codex", workspace: "backend" })];
-  const group = await bots.createGroup({ title: "Team", botIds: created.map((b) => b.id) });
+  const group = await bots.createGroup({ title: "Team", botIds: created.map((b) => b.id) , workspaceMode: "shared" });
   const topic = await service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend", isolation: "shared-single-writer",
   });
@@ -2859,7 +2859,7 @@ test("teardownGroupTopic emits conversations-changed once on success", async () 
 test("legacy human origin row normalizes to human-explicit on read", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2890,7 +2890,7 @@ test("legacy human origin row normalizes to human-explicit on read", async () =>
 test("primaryMember overlay carries assignment and provenance for members[0]", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2940,7 +2940,7 @@ test("primaryMember overlay carries assignment and provenance for members[0]", a
 test("claim order follows durable member_index within a Run", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -2972,7 +2972,7 @@ test("claim order follows durable member_index within a Run", async () => {
 test("cancel targets the actually-started member, not members[0]", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3016,7 +3016,7 @@ test("cancel targets the actually-started member, not members[0]", async () => {
 test("recovery of one sibling never resets a running run to queued", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3088,7 +3088,7 @@ test("unknown settlement and lease recovery converge on the same indeterminate s
   const setup = async (requestId: string, mode: "explicit" | "automatic") => {
     const first = await createLifecycle();
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "Sprint", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -3148,7 +3148,7 @@ test("unknown settlement and lease recovery converge on the same indeterminate s
 test("teardown fails closed while a multi-member run still has live work", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3197,7 +3197,7 @@ test("teardown fails closed while a multi-member run still has live work", async
 test("teardown still refuses while a run is genuinely routable", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3242,7 +3242,7 @@ test("teardown aborts when physical cancel throws, keeping barrier and runtime",
     hooks: { failRuntimeMaterialize: true },
   });
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3303,7 +3303,7 @@ for (const seam of ["afterClaim", "beforeRuntimeMaterialize", "beforeExecutionSt
     });
     try {
       seedTesterBot(first.state);
-      const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+      const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
       const topic = await first.service.createGroupTopic(group.id, "Scoped admission", {
         workspace: "backend", isolation: "shared-single-writer",
       });
@@ -3346,7 +3346,7 @@ test("scoped running cancellation keeps intent through provider settlement witho
   });
   try {
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "Scoped running", {
       workspace: "backend", isolation: "shared-single-writer",
     });
@@ -3411,7 +3411,7 @@ test("dispatcher cancelRun cancels every started member exactly", async () => {
     },
   });
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3462,7 +3462,7 @@ test("dispatcher cancelRun cancels every started member exactly", async () => {
 test("late completion landing mid-cancel-fan-out survives batch settlement", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3556,7 +3556,7 @@ test("late completion landing mid-cancel-fan-out survives batch settlement", asy
 test("late failure landing mid-cancel-fan-out records finished_at", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3636,7 +3636,7 @@ test("late failure landing mid-cancel-fan-out records finished_at", async () => 
 test("unknown on first active member never skips the second physical cancel", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3699,7 +3699,7 @@ test("unknown + proven sibling preserves evidence in both orders", async () => {
     for (const unknownFirst of [true, false]) {
       const first = await createLifecycle();
       seedTesterBot(first.state);
-      const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+      const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
       const topic = await first.service.createGroupTopic(group.id, "Sprint", {
         workspace: "backend",
         isolation: "shared-single-writer",
@@ -3776,7 +3776,7 @@ test("automatic cancel that races a member completion still terminals the run", 
   for (const outcome of ["completed", "failed"] as const) {
     const first = await createLifecycle();
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "Sprint", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -3846,7 +3846,7 @@ test("compositions without a worktree manager reject new worktree work and termi
   const first = await createLifecycle({ autoKick: false });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   // Manager-less fixtures cannot provision a worktree, so creation fails closed.
   await expect(first.service.createGroupTopic(group.id, "WT", {
     workspace: "backend",
@@ -3894,7 +3894,7 @@ test("compositions without a worktree manager reject new worktree work and termi
 test("maxMemberTurns below the accepted member count rejects before any row", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -3958,7 +3958,7 @@ test("single-member cancel preserves the failed and unknown diagnostic reasons",
 test("partial fan-out persists fulfilled evidence, then throws for retry", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4031,7 +4031,7 @@ test("partial fan-out persists fulfilled evidence, then throws for retry", async
 test("human Stop over completed+queued members classifies cancelled, never failed", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4100,7 +4100,7 @@ test("membership removal waits for the removed member's nonterminal work", async
     id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
     profileRevision: 1, createdAt: NOW, updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4135,7 +4135,7 @@ test("membership removal waits for the removed member's nonterminal work", async
 test("activation fails closed when nonterminal work loses its authority root", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4179,7 +4179,7 @@ test("activation passes with a healthy direct queued run (authority intact)", as
 test("topic queue cap bounds nonterminal runs; idempotent replay bypasses the cap", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4217,7 +4217,7 @@ test("topic queue cap bounds nonterminal runs; idempotent replay bypasses the ca
 test("automatic Run budget defaults to the 24 guardrail; explicit Runs are not capped", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4256,7 +4256,7 @@ test("automatic Run budget defaults to the 24 guardrail; explicit Runs are not c
 test("cross-run settlement fails closed with zero writes on both sides", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4307,7 +4307,7 @@ test("cross-run settlement fails closed with zero writes on both sides", async (
 test("unstarted member completion accepts any sourceTurn (no execution identity yet)", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4337,7 +4337,7 @@ test("unstarted member completion accepts any sourceTurn (no execution identity 
 test("settlement cross-product fails closed: wrong run, wrong source, zero writes", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4424,7 +4424,7 @@ test("provisional controller residue blocks verified group delete, never orphans
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4481,7 +4481,7 @@ test("controller binding row alone fences verified group delete", async () => {
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   // No session at all: the binding row alone must still block the delete.
   first.state.bot_runtime_bindings.controller_only = {
     id: "controller_only",
@@ -4506,7 +4506,7 @@ test("controller partial owner via live topicId blocks group delete pre-destruct
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4536,7 +4536,7 @@ test("controller partial owner via live topicId blocks topic teardown pre-destru
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4581,7 +4581,7 @@ test("duplicated logical id on a ghost binding fails closed, never releases", as
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4612,7 +4612,7 @@ test("ghost-topic runtime blocks group delete; verified teardown releases it", a
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4639,7 +4639,7 @@ test("ghost-topic group teardown keeps durable history when physical release fai
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4695,7 +4695,7 @@ test("bindingId-only partial with missing axes fails group delete before any mut
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4738,7 +4738,7 @@ test("live primary plus hidden secondary owner fails group delete with zero rele
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4780,7 +4780,7 @@ test("key-alias mismatch fails group delete with zero release, retryable after r
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4821,7 +4821,7 @@ test("binding-less exact owner under a mismatched key fails closed, never releas
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4858,7 +4858,7 @@ test("unattributable member blocks group delete before any topic is destroyed", 
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4907,7 +4907,7 @@ test("ghost binding with an alias/id mismatch fails group delete closed, never o
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -4944,7 +4944,7 @@ test("ghost binding with an alias/id mismatch fails group delete closed, never o
 test("activation releases a rootless canonical group-member session and unlocks the Bot", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5082,7 +5082,7 @@ test("activation fails closed on ambiguous group-member ownership (actionable re
 test("terminal settleCancelBatch with a foreign member fails closed (no mismatched pair)", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5127,7 +5127,7 @@ test("terminal settleCancelBatch with a foreign member fails closed (no mismatch
 test("settleCancelBatch rejects a duplicate memberTurnId with zero writes", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5377,7 +5377,7 @@ test("load keeps a synthetic Direct custom Topic so activation fails closed on i
 test("missing-topic durable run is cancelled and reconciled, never row-deleted live", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5408,7 +5408,7 @@ test("missing-topic durable run is cancelled and reconciled, never row-deleted l
 test("createGroupTopic racing metadata deleteGroup fails instead of orphaning a Topic", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   // Freeze the metadata delete inside its mutex at persist time: the live
   // state still shows G while delete holds the shared stateMutex.
   const gate = deferred();
@@ -5443,7 +5443,7 @@ test("createGroupTopic racing metadata deleteGroup fails instead of orphaning a 
 test("createGroupTopic after create still lets deleteGroup fail closed on the new Topic", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5645,7 +5645,7 @@ test("binding-less exact owner with no topic blocks delete; teardown releases it
   const bots = first.bots;
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
-  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5672,7 +5672,7 @@ test("membership removal during teardown cannot orphan a late session", async ()
   {
     const first = await createLifecycle();
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const timestamp = new Date().toISOString();
     first.store.markConversationDeleting(group.id, timestamp);
     first.state.conversations[group.id] = {
@@ -5702,7 +5702,7 @@ test("membership removal during teardown cannot orphan a late session", async ()
     createdAt: NOW,
     updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5736,7 +5736,7 @@ test("removed member runtime is still swept; removed member cannot rematerialize
     createdAt: NOW,
     updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5770,7 +5770,7 @@ test("concurrent membership updates cannot drop a just-added member without its 
   }
   const botC = "bot_carol";
   const botD = "bot_dan";
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   // U2 starts first and probes the stale [A,B] membership; its gate
   // acquisition pauses until U1 has committed [A,C].
   let u1Committed = false;
@@ -5815,7 +5815,7 @@ test("removed member binding-less session blocks deleteBot; teardown releases it
     createdAt: NOW,
     updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5843,7 +5843,7 @@ test("removed member binding-less session blocks deleteBot; teardown releases it
 test("corrupt per-member snapshot fails closed instead of falling back", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5883,7 +5883,7 @@ test("structurally invalid snapshot and trigger ids fail closed as corrupt", asy
   // the next claim still hits the earliest corrupt row deterministically.
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5921,7 +5921,7 @@ test("structurally invalid snapshot and trigger ids fail closed as corrupt", asy
   // land on an earlier corrupt snapshot row from the cases above.
   const second = await createLifecycle();
   seedTesterBot(second.state);
-  const group2 = await second.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group2 = await second.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic2 = await second.service.createGroupTopic(group2.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5951,7 +5951,7 @@ test("structurally invalid snapshot and trigger ids fail closed as corrupt", asy
 test("PR7 group accept: structured members target creates one explicit Run with per-member Topic snapshots", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -5986,7 +5986,7 @@ test("PR7 group accept: structured members target creates one explicit Run with 
 test("PR7 group accept: an oversized members target is refused before any lifecycle gate", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6008,7 +6008,7 @@ test("PR7 group accept: an oversized members target is refused before any lifecy
 test("PR7 group accept: non-member ids are refused before any lifecycle gate is taken", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6060,7 +6060,7 @@ test("PR7 group accept: members and everyone share one mutual-exclusion budget",
       profileRevision: 1, createdAt: NOW, updatedAt: NOW,
     };
   }
-  const group = await first.bots.createGroup({ title: "Big", botIds: [BOT_ID, ...big] });
+  const group = await first.bots.createGroup({ title: "Big", botIds: [BOT_ID, ...big] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6116,7 +6116,7 @@ test("PR7 everyone: disabled members do not consume the mutual-exclusion budget"
       profileRevision: 1, createdAt: NOW, updatedAt: NOW,
     };
   }
-  const group = await first.bots.createGroup({ title: "Mostly Off", botIds: [BOT_ID, ...extra] });
+  const group = await first.bots.createGroup({ title: "Mostly Off", botIds: [BOT_ID, ...extra] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6156,7 +6156,7 @@ test("PR7 everyone: a member enabled mid-accept retries and joins the Run", asyn
     id: EXTRA_ID, name: "Extra", agent: "codex", workspace: "backend", enabled: false,
     profileRevision: 1, createdAt: NOW, updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Flipping", botIds: [BOT_ID, TESTER_ID, EXTRA_ID] });
+  const group = await first.bots.createGroup({ title: "Flipping", botIds: [BOT_ID, TESTER_ID, EXTRA_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6182,7 +6182,7 @@ test("PR7 everyone: removed-member runtime residue does not consume the accept b
       profileRevision: 1, createdAt: NOW, updatedAt: NOW,
     };
   }
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, ...removed] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, ...removed] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6215,7 +6215,7 @@ test("PR7 everyone: removed-member runtime residue does not consume the accept b
 test("PR7 group accept: duplicate IDs reject, everyone expands, empty/unknown/disabled reject", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6297,7 +6297,7 @@ test("PR7 group accept: removed member rejects and targeted member races concurr
     id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
     profileRevision: 1, createdAt: NOW, updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6331,7 +6331,7 @@ test("PR7 group accept: removed member rejects and targeted member races concurr
     id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
     profileRevision: 1, createdAt: NOW, updatedAt: NOW,
   };
-  const racedGroup = await raced.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const racedGroup = await raced.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] , workspaceMode: "shared" });
   const racedTopic = await raced.service.createGroupTopic(racedGroup.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6361,7 +6361,7 @@ test("PR7 group accept: requestId retry returns the durable Run after membership
     id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
     profileRevision: 1, createdAt: NOW, updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6397,7 +6397,7 @@ test("PR7 group accept: requestId retry returns the durable Run after membership
 test("PR7 group accept: requestId retry survives member disabled after settle", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6423,7 +6423,7 @@ test("PR7 group accept: requestId retry survives member disabled after settle", 
 test("PR7 group accept: requestId retry survives archived Topic", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6465,7 +6465,7 @@ test("PR7 group accept: everyone retries when membership widens mid-acquire", as
     id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
     profileRevision: 1, createdAt: NOW, updatedAt: NOW,
   };
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6496,7 +6496,7 @@ test("PR7 scheduler: shared serializes unproven siblings like every other tree",
   const first = await createLifecycle({ autoKick: false });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Shared", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Shared", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared",
@@ -6531,7 +6531,7 @@ test("PR7 scheduler: shared-single-writer serializes unknown-effect siblings", a
     const second = await createLifecycle({ autoKick: false });
     await second.service.activateAfterConsumerLock();
     seedTesterBot(second.state);
-    const group = await second.bots.createGroup({ title: "Serial", botIds: [BOT_ID, TESTER_ID] });
+    const group = await second.bots.createGroup({ title: "Serial", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await second.service.createGroupTopic(group.id, "S", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -6578,7 +6578,7 @@ test("PR7 scheduler: shutdown never starts a held sibling, it retires it", async
   const second = await createLifecycle({ autoKick: false });
   await second.service.activateAfterConsumerLock();
   seedTesterBot(second.state);
-  const group = await second.bots.createGroup({ title: "ShutdownHold", botIds: [BOT_ID, TESTER_ID] });
+  const group = await second.bots.createGroup({ title: "ShutdownHold", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await second.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6627,7 +6627,7 @@ test("PR7 scheduler: held writer-slot claim survives a lease boundary with prove
   const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
   await second.service.activateAfterConsumerLock();
   seedTesterBot(second.state);
-  const group = await second.bots.createGroup({ title: "Lease", botIds: [BOT_ID, TESTER_ID] });
+  const group = await second.bots.createGroup({ title: "Lease", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await second.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6680,7 +6680,7 @@ test("a real stale held-claim fence still settles the in-flight member without a
   const first = await createLifecycle({ autoKick: false, leaseMs: 30_000 });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "StaleFence", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "StaleFence", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6733,7 +6733,7 @@ test("PR7 scheduler: shutdown retires held claims so a fast restart executes wit
   const second = await createLifecycle({ autoKick: false, leaseMs: 30_000 });
   await second.service.activateAfterConsumerLock();
   seedTesterBot(second.state);
-  const group = await second.bots.createGroup({ title: "Restart", botIds: [BOT_ID, TESTER_ID] });
+  const group = await second.bots.createGroup({ title: "Restart", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await second.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6823,7 +6823,7 @@ test("PR7 scheduler: hold-time renewHeldClaim failure keeps the hold for the nex
   const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
   await second.service.activateAfterConsumerLock();
   seedTesterBot(second.state);
-  const group = await second.bots.createGroup({ title: "HoldFail", botIds: [BOT_ID, TESTER_ID] });
+  const group = await second.bots.createGroup({ title: "HoldFail", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await second.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6895,7 +6895,7 @@ test("PR7 scheduler: non-stale renewHeldClaim failure fails the drain without or
   const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
   await second.service.activateAfterConsumerLock();
   seedTesterBot(second.state);
-  const group = await second.bots.createGroup({ title: "RenewFail", botIds: [BOT_ID, TESTER_ID] });
+  const group = await second.bots.createGroup({ title: "RenewFail", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await second.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -6957,7 +6957,7 @@ test("PR7 scheduler: failed shutdown retire keeps the hold for the next kick", a
   const second = await createLifecycle({ autoKick: false, leaseMs: 30_000 });
   await second.service.activateAfterConsumerLock();
   seedTesterBot(second.state);
-  const group = await second.bots.createGroup({ title: "RetireFail", botIds: [BOT_ID, TESTER_ID] });
+  const group = await second.bots.createGroup({ title: "RetireFail", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await second.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -7037,7 +7037,7 @@ test("PR7 scheduler: retirePreviousOwnerClaims retires foreign live claims with 
   const first = await createLifecycle({ autoKick: false, leaseMs: 30_000, ownerId: "dispatcher-old" });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Orphan", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Orphan", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -7096,7 +7096,7 @@ test("PR7 scheduler: activation executes a retired previous-owner claim with no 
   });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Orphan2", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Orphan2", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -7220,7 +7220,7 @@ test("PR7 scheduler: activation seals explicit two-member run when a started sib
   const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "SealPair", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "SealPair", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -7294,7 +7294,7 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling complet
   const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old", enforcedReaders: true });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "SealEvidence", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "SealEvidence", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared",
@@ -7370,7 +7370,7 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling failure
   const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old", enforcedReaders: true });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "SealEvidenceFail", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "SealEvidenceFail", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared",
@@ -7504,7 +7504,7 @@ test("PR7 scheduler: held handoff failure rejects activation without unhandled r
       },
     });
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "HeldHandoff", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "HeldHandoff", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "S", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -7544,7 +7544,7 @@ test("PR7 scheduler: held handoff keeps cohort scope until the sibling settles",
     profileRevision: 1, createdAt: NOW, updatedAt: NOW,
   };
   await first.service.activateAfterConsumerLock();
-  const group = await first.bots.createGroup({ title: "HeldScope", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "HeldScope", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -7623,7 +7623,7 @@ test("PR7 scheduler: multi-failure cohort rejects with the first-launched error,
       },
     });
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "OrderCohort", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "OrderCohort", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "S", {
       workspace: "backend",
       isolation: "shared",
@@ -7658,7 +7658,7 @@ test("PR7 accept: duplicate members target rejects invalid-target with no durabl
   const first = await createLifecycle({ autoKick: false });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "DupTarget", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "DupTarget", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -7685,7 +7685,7 @@ test("PR7 accept: cross-variant target keys fail closed instead of picking a var
   const first = await createLifecycle({ autoKick: false });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Mixed", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Mixed", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -7727,7 +7727,7 @@ test("PR7 accept: everyone beyond the member budget refuses before any durable w
     all.push(id);
   }
   expect(all).toHaveLength(65);
-  const group = await first.bots.createGroup({ title: "Bulk", botIds: all });
+  const group = await first.bots.createGroup({ title: "Bulk", botIds: all , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared",
@@ -7758,7 +7758,7 @@ test("PR7 dispatcher: corrupted request reference fails the Group claim terminal
     const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
     await first.service.activateAfterConsumerLock();
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "NoSnapshot", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "NoSnapshot", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "S", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -7937,7 +7937,7 @@ test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through reco
   const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
   await second.service.activateAfterConsumerLock();
   seedTesterBot(second.state);
-  const group = await second.bots.createGroup({ title: "StaleHold", botIds: [BOT_ID, TESTER_ID] });
+  const group = await second.bots.createGroup({ title: "StaleHold", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await second.service.createGroupTopic(group.id, "S", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -7980,7 +7980,7 @@ test("PR7 scheduler: bare read-only without proof stays serialized, proven read-
   {
     const first = await createLifecycle();
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "Norm", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "Norm", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "S", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -8023,7 +8023,7 @@ test("PR7 scheduler: bare read-only without proof stays serialized, proven read-
     const first = await createLifecycle({ autoKick: false, enforcedReaders: true });
     await first.service.activateAfterConsumerLock();
     seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "Overlap", botIds: [BOT_ID, TESTER_ID] });
+    const group = await first.bots.createGroup({ title: "Overlap", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
     const topic = await first.service.createGroupTopic(group.id, "S", {
       workspace: "backend",
       isolation: "shared-single-writer",
@@ -8068,7 +8068,7 @@ test("PR7 dispatcher: Group dispatch materializes Group member sessions with fro
   const first = await createLifecycle({ autoKick: true });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -8105,8 +8105,8 @@ test("PR7 dispatcher: Group member sessions isolate across groups, topics, and D
   const first = await createLifecycle({ autoKick: true });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
-  const groupA = await first.bots.createGroup({ title: "A", botIds: [BOT_ID, TESTER_ID] });
-  const groupB = await first.bots.createGroup({ title: "B", botIds: [BOT_ID, TESTER_ID] });
+  const groupA = await first.bots.createGroup({ title: "A", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
+  const groupB = await first.bots.createGroup({ title: "B", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topicA = await first.service.createGroupTopic(groupA.id, "TA", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -8153,7 +8153,7 @@ test("PR7 dispatcher: finishing sibling does not alter already-selected frozen i
     },
   });
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -8183,7 +8183,7 @@ test("PR7 transcript: Group member input excludes Direct and other-Topic history
   seedTesterBot(first.state);
   const direct = await first.service.acceptDirectPrompt({ botId: BOT_ID, requestId: "req-direct", content: "direct secret" });
   expect(direct.run.id).toBeDefined();
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topicA = await first.service.createGroupTopic(group.id, "A", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -8217,7 +8217,7 @@ test("PR7 transcript: Group member input excludes Direct and other-Topic history
 test("PR7 transcript: long Topic hands members the newest window before the request boundary", async () => {
   const first = await createLifecycle({ autoKick: false });
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "A", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -8257,7 +8257,7 @@ test("PR7 transcript: long Topic hands members the newest window before the requ
 test("PR7 provenance: trusted human Group accept mints human origin, public accept stays orchestration", async () => {
   const first = await createLifecycle({ autoKick: false });
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",
@@ -8291,7 +8291,7 @@ test("PR7 provenance: trusted human Group accept mints human origin, public acce
 test("PR7 cancel: whole-Run cancel suppresses not-yet-started sibling and wins exact runId", async () => {
   const first = await createLifecycle({ autoKick: false });
   seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const topic = await first.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
     isolation: "shared-single-writer",

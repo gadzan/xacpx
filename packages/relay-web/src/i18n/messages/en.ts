@@ -1006,6 +1006,14 @@ export default {
     header: {
       members: "{count} member | {count} members",
     },
+    overview: {
+      inProgress: "{count} in progress",
+      stuck: "{count} stuck",
+      needsYou: "{count} need you",
+      nothingNeedsYou: "Nothing needs you today",
+      idle: "Idle",
+      finalAnswer: "Final answer from {name}: {verdict}",
+    },
     members: {
       disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",
       leadDisabled: "The Lead, {lead}, is disabled. New messages go to {fallback} by default.",
@@ -1106,6 +1114,13 @@ export default {
     bubble: {
       openDetail: "Open process for {name}",
       routingLabel: "Open routing detail",
+      intermediateSummary: "Intermediate conclusion from {name}",
+      finalVerdict: {
+        achieved: "Goal achieved",
+        notAchieved: "Goal not achieved",
+        interrupted: "Interrupted",
+        none: "No conclusion",
+      },
       status: {
         queued: "Queued",
         running: "Working",
@@ -1162,6 +1177,7 @@ export default {
       },
       sentTo: "Sent to {n} bots",
       sentToOne: "Sent to {name}",
+      fromSender: "from {name}",
       running: "{n} running",
       queued: "{n} queued",
       done: "{n} done",

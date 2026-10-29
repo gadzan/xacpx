@@ -73,7 +73,7 @@ async function harness(options: { onRun?: (input: ConversationTurnRunInput) => P
     onProductEvent: (event) => events.push(event), wake: () => { void dispatcher.kick(); } });
   dispatcher.setHandoffService(handoffs);
   dispatcher.setAutomaticRoutingHandler((id) => service.trackAutomaticRouting(id));
-  const group = await bots.createGroup({ title: "PR9", botIds: [A, B, C] });
+  const group = await bots.createGroup({ title: "PR9", botIds: [A, B, C] , workspaceMode: "shared" });
   if (options.pr8Fixture) {
     delete state.conversations[group.id]; group.id = "conversation_pr8_explicit"; state.conversations[group.id] = group;
   }

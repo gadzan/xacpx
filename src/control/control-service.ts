@@ -120,6 +120,7 @@ import {
 import type { AppLogger } from "../logging/app-logger";
 import type { ConversationRuntime } from "../conversations/conversation-composition";
 import { ConversationError } from "../conversations/conversation-error";
+import { buildGroupOverview, type GroupOverview } from "../conversations/group-overview";
 import { lifecycleOperationId, transitionLifecycleOperation, type LifecycleOperation } from "../conversations/lifecycle-operation";
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
@@ -2888,6 +2889,30 @@ export class ControlService {
   listGroups(): GroupSummaryDto[] {
     const runtime = this.requireConversations();
     return runtime.runs.listGroups().map((group) => toGroupSummary(group));
+  }
+
+  /**
+   * P5 group header total (product §3.1). Pure read-model over the topic's
+   * latest Run; no new RPC route is registered for it in this change — the
+   * relay-web header renders from the Run/member-turn data it already
+   * receives, and this method is the backend query a future route would
+   * call. It never creates a task-board or activity page.
+   */
+  getGroupOverview(conversationId: string, topicId?: string): GroupOverview {
+    const runtime = this.requireConversations();
+    const group = runtime.bots.getGroup(conversationId);
+    const topics = runtime.runs.listTopics(conversationId);
+    const topic = topicId ? topics.find((item) => item.id === topicId) : topics[0];
+    if (topicId && !topic) throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+    if (!topic) {
+      return buildGroupOverview({ conversationId, memberBotIds: group.botIds,
+        ...(group.leadBotId ? { leadBotId: group.leadBotId } : {}), runs: [], memberTurns: [] });
+    }
+    const listed = runtime.runs.listTopicRuns(conversationId, topic.id);
+    const latest = listed.runs[listed.runs.length - 1];
+    const memberTurns = latest ? runtime.runs.getRun(latest.id).memberTurns : [];
+    return buildGroupOverview({ conversationId, topicId: topic.id, memberBotIds: group.botIds,
+      ...(group.leadBotId ? { leadBotId: group.leadBotId } : {}), runs: listed.runs, memberTurns });
   }
   async createGroupTopic(
     conversationId: string,

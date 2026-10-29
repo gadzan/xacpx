@@ -25,7 +25,7 @@ const emit = defineEmits<{
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
-const { locale } = useI18n();
+const { t, locale } = useI18n();
 
 const newTopicDialogOpen = ref(false);
 const groupDialogOpen = ref(false);
@@ -130,6 +130,39 @@ const memberStatus = computed<MemberStatus | null>(() => {
     lead: disabled.find((b) => b.id === current.leadBotId)?.name,
     fallback: memberBots.value.find((b) => b.id === target.botIds[0])?.name,
   };
+});
+
+/**
+ * P5 group header total (product §3.1), derived ONLY from data the store
+ * already receives (active Run + its member turns). No new RPC route, no
+ * task-board page, no activity page: the backend builder in
+ * src/conversations/group-overview.ts is the same counting rule, and this
+ * strip is its minimal rendering. When there is no active Run, the counts
+ * read 0 and the strip reads as "nothing needs you".
+ */
+const overview = computed(() => {
+  const turns = groupsStore.memberTurns;
+  const inProgress = turns.filter((turn) => ["queued", "dispatched", "running"].includes(turn.state)).length;
+  const stuck = turns.filter((turn) => ["failed", "indeterminate"].includes(turn.state)).length;
+  const needsUser = stuck + (groupsStore.activeRun?.state === "waiting-human" ? 1 : 0);
+  const latestByBot = new Map<string, (typeof turns)[number]>();
+  for (const turn of turns) latestByBot.set(turn.botId, turn);
+  const members = memberBots.value.map((bot) => {
+    const turn = latestByBot.get(bot.id);
+    const state = !turn ? "idle" : turn.state === "completed" ? "done" : turn.state === "dispatched" ? "running" : turn.state;
+    return { id: bot.id, name: bot.name, state,
+      stateLabel: state === "idle" ? t("group.overview.idle") : t(`group.bubble.status.${state}`),
+      task: turn?.task ? turn.task.slice(0, 120) : undefined };
+  });
+  const finalAnswers = turns
+    .filter((turn) => turn.state === "completed" && turn.finalReportVerdict)
+    .map((turn) => ({ id: turn.id, botId: turn.botId,
+      name: memberBots.value.find((bot) => bot.id === turn.botId)?.name ?? turn.botId,
+      verdict: turn.finalReportVerdict === "achieved" ? t("group.bubble.finalVerdict.achieved")
+        : turn.finalReportVerdict === "not-achieved" ? t("group.bubble.finalVerdict.notAchieved")
+        : t("group.bubble.finalVerdict.interrupted") }));
+  return { inProgress, stuck, needsUser, members, finalAnswers,
+    leadName: memberBots.value.find((bot) => bot.id === group.value?.leadBotId)?.name };
 });
 
 /** Resolves once the current send attempt finishes, so the composer can keep the
@@ -256,6 +289,21 @@ const worktreeRunId = computed(() => {
           {{ $t("group.members.leadDisabled", { lead: memberStatus.lead, fallback: memberStatus.fallback }) }}
         </p>
       </template>
+    </div>
+
+    <div v-if="group && groupsStore.activeTopicId" data-test="group-overview"
+         class="space-y-0.5 bg-surface px-3 lg:px-5 py-1.5 text-xs text-fg">
+      <p data-test="group-overview-head">
+        <span v-if="overview.leadName">{{ $t("group.manage.lead") }}：{{ overview.leadName }} · </span>
+        <span>{{ $t("group.overview.inProgress", { count: overview.inProgress }) }} · {{ $t("group.overview.stuck", { count: overview.stuck }) }} · {{ $t("group.overview.needsYou", { count: overview.needsUser }) }}</span>
+        <span v-if="overview.needsUser === 0"> · {{ $t("group.overview.nothingNeedsYou") }}</span>
+      </p>
+      <p v-for="member in overview.members" :key="member.id" data-test="group-overview-member">
+        {{ member.name }} · {{ member.stateLabel }}<span v-if="member.task"> · {{ member.task }}</span>
+      </p>
+      <p v-for="answer in overview.finalAnswers" :key="answer.id" data-test="group-overview-final-answer">
+        {{ $t("group.overview.finalAnswer", { name: answer.name, verdict: answer.verdict }) }}
+      </p>
     </div>
 
     <div v-if="needsFirstTopic"

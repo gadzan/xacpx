@@ -589,7 +589,15 @@ export class BotService {
       const leadBotId = this.requireGroupLead(input.leadBotId, membership);
       const title = this.requireGroupTitle(input.title);
       const description = this.optionalGroupDescription(input.description);
-      const workspaceMode = this.requireGroupWorkspaceMode(input.workspaceMode);
+      // P6: a new Group defaults to per-member workspaces (each member in
+      // its own Bot workspace, no shared group target). An explicit
+      // "shared" still opts into one shared Topic target. This changes ONLY
+      // the default for groups created from here on: stored records keep
+      // whatever workspaceMode they already carry (absent still reads as
+      // "shared" via groupWorkspaceMode), and no migration touches them.
+      const workspaceMode = input.workspaceMode === undefined
+        ? "per-member"
+        : this.requireGroupWorkspaceMode(input.workspaceMode);
       const timestamp = this.now().toISOString();
       const id = createConversationId();
       const record: ConversationRecord = {

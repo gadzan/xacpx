@@ -893,7 +893,7 @@ test("a large Group exposes a bounded enabled-first candidate snapshot without r
     harness.state.bots[id] = { ...harness.bots.getBot(BOT_ID), id, enabled: i % 3 !== 0 };
     ids.push(id);
   }
-  const group = await harness.bots.createGroup({ title: "Large team", botIds: ids });
+  const group = await harness.bots.createGroup({ title: "Large team", botIds: ids , workspaceMode: "shared" });
   const topic = await harness.service.createGroupTopic(group.id, "Budget", { workspace: "backend", isolation: "shared-single-writer" });
   const accepted = await acceptAutomatic(harness, group.id, topic.id, "metadata-budget");
   const input = harness.router!.inputs[0]!;
@@ -1221,6 +1221,7 @@ async function createGroup(harness: Harness) {
   const group = await harness.bots.createGroup({
     title: "Team",
     botIds: [BOT_ID, TESTER_ID, BUILDER_ID],
+    workspaceMode: "shared",
   });
   const topic = await harness.service.createGroupTopic(group.id, "Sprint", {
     workspace: "backend",
@@ -1390,7 +1391,7 @@ test("router input contains no direct, private, or other-topic state", async () 
   await harness.service.acceptDirectPrompt({ botId: BOT_ID, requestId: "req-direct-1", content: "DIRECT SECRET" });
   await harness.service.acceptDirectPrompt({ botId: TESTER_ID, requestId: "req-direct-2", content: "DIRECT TESTER SECRET" });
   // (b) A second Group conversation with overlapping bots.
-  const otherGroup = await harness.bots.createGroup({ title: "Other", botIds: [BOT_ID, TESTER_ID] });
+  const otherGroup = await harness.bots.createGroup({ title: "Other", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   const otherTopic = await harness.service.createGroupTopic(otherGroup.id, "OtherTopic", {
     workspace: "backend", isolation: "shared-single-writer",
   });
@@ -1863,6 +1864,7 @@ test("explicit Group turns carry the live Group title and description", async ()
       title: "Team",
       description: "维护 gadzan/xacpx 开源项目群。",
       botIds: [BOT_ID, TESTER_ID],
+      workspaceMode: "shared",
     });
     const topic = await harness.service.createGroupTopic(group.id, "Sprint", {
       workspace: "backend",
@@ -1945,7 +1947,7 @@ for (const concurrentEnable of [false, true]) {
         enabled: !concurrentEnable || i !== 64 };
       ids.push(id);
     }
-    const group = await harness.bots.createGroup({ title: "Large team", botIds: ids });
+    const group = await harness.bots.createGroup({ title: "Large team", botIds: ids , workspaceMode: "shared" });
     const topic = await harness.service.createGroupTopic(group.id, "Review", {
       workspace: "backend", isolation: "shared-single-writer",
     });
@@ -2315,7 +2317,7 @@ test("direct conversations are untouched by routing", async () => {
 
 test("automatic accept on a group with no eligible member is refused", async () => {
   const harness = await createHarness({ router: new RecordingRouter() });
-  const group = await harness.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const group = await harness.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] , workspaceMode: "shared" });
   // Disable every member: admission must refuse rather than admit a Run the
   // Router could never populate.
   harness.state.bots[BOT_ID]!.enabled = false;

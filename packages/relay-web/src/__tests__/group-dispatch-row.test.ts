@@ -169,6 +169,12 @@ describe("GroupDispatchRow", () => {
     i18n.global.locale.value = "en";
   });
 
+  it("names the dispatch sender from the presentation leader, not the handoff text", async () => {
+    const wrapper = row(["running", "running", "queued", "queued"]);
+    expect(wrapper.get('[data-test="group-dispatch-sender"]').text()).toBe("from Leader");
+    wrapper.unmount();
+  });
+
   it("reports running members with a spinner", async () => {
     const wrapper = row(["running", "running", "queued", "queued"]);
     expect(wrapper.get('[data-test="group-dispatch-title"]').text()).toBe("Sent to 4 bots");

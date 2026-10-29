@@ -226,6 +226,9 @@ export interface ConversationMessageDto {
   role: ConversationMessage["role"];
   senderBotId?: string;
   content: string;
+  /** Timeline projection (structured report or stop notice) when the store
+   *  derived one for this member message. The raw output stays in `content`. */
+  timelineContent?: string;
   replyTo?: string;
   runId?: string;
   createdAt: string;
@@ -319,6 +322,15 @@ export interface MemberTurnSummaryDto {
    *  turn whose own public handoffs have all settled. Names the leader turn
    *  whose assignments this wake summarizes; absent on every other turn. */
   followupSenderMemberTurnId?: MemberTurnRecord["followupSenderMemberTurnId"];
+  /** Followup chain depth of a wake turn (1 = first wake). Absent otherwise. */
+  followupChainDepth?: MemberTurnRecord["followupChainDepth"];
+  /**
+   * Verdict of the member's structured final report. Presence means the
+   * turn HAS a report; absence means "无结论" — never render the turn
+   * state as a verdict. The report's formatted text travels on the
+   * message's `timelineContent`.
+   */
+  finalReportVerdict?: MemberTurnRecord["finalReportVerdict"];
 }
 
 /** Explicit Group routing target. IDs are authority; display names are
@@ -499,6 +511,7 @@ export function toConversationMessage(message: ConversationMessage): Conversatio
     seq: message.seq,
     role: message.role,
     content: message.content,
+    ...(message.timelineContent ? { timelineContent: message.timelineContent } : {}),
     ...(message.handoff ? { handoff: { ...message.handoff } } : {}),
     createdAt: message.createdAt,
     ...(message.senderBotId ? { senderBotId: message.senderBotId } : {}),
@@ -590,6 +603,8 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     // Run's aggregate state.
     ...(turn.cancellationReason ? { cancellationReason: turn.cancellationReason } : {}),
     ...(turn.followupSenderMemberTurnId ? { followupSenderMemberTurnId: turn.followupSenderMemberTurnId } : {}),
+    ...(turn.followupChainDepth !== undefined ? { followupChainDepth: turn.followupChainDepth } : {}),
+    ...(turn.finalReportVerdict ? { finalReportVerdict: turn.finalReportVerdict } : {}),
   };
 }
 

@@ -29,6 +29,7 @@ import type { AgentMessagingErrorCode } from "./agent-messaging-error";
 
 export type OrchestrationRpcMethod =
   | "conversation.group_send"
+  | "conversation.group_chat"
   | "conversation.group_read_result"
   | "agent.list"
   | "agent.send"

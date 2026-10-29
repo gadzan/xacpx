@@ -61,8 +61,8 @@ test("a shared Group still stamps the Topic workspace onto every member", async 
   const { h, backend, cleanup } = await splitHarness();
   try {
     const members = [backend[0]!, backend[1]!];
-    const group = await h.bots.createGroup({ title: "Shared", botIds: members });
-    expect(group.workspaceMode).toBeUndefined();
+    const group = await h.bots.createGroup({ title: "Shared", botIds: members, workspaceMode: "shared" });
+    expect(group.workspaceMode).toBe("shared");
     const topic = await h.service.createGroupTopic(group.id, "Topic", { workspace: "alt", isolation: "shared-single-writer" });
     const accepted = await h.service.acceptGroupPrompt({
       conversationId: group.id,
@@ -130,7 +130,7 @@ test("Group Topic creation follows the Group's workspace mode", async () => {
     await expect(h.service.createGroupTopic(perMember.id, "Topic", { workspace: "backend", isolation: "shared" }))
       .rejects.toMatchObject({ code: "execution_target_unexpected" });
 
-    const shared = await h.bots.createGroup({ title: "Shared", botIds: members });
+    const shared = await h.bots.createGroup({ title: "Shared", botIds: members, workspaceMode: "shared" });
     await expect(h.service.createGroupTopic(shared.id, "Topic"))
       .rejects.toMatchObject({ code: "execution_target_missing" });
 
@@ -153,7 +153,7 @@ test("a leftover Topic target on a per-member Group is inert for scheduling", as
     h.state.conversation_topics[topic.id]!.executionTarget = { workspace: "backend", isolation: "worktree-per-member" };
     expect(h.runtime.groupTopicIsolation(perMember.id, topic.id)).toBe("shared-single-writer");
 
-    const shared = await h.bots.createGroup({ title: "Shared", botIds: members });
+    const shared = await h.bots.createGroup({ title: "Shared", botIds: members, workspaceMode: "shared" });
     const sharedTopic = await h.service.createGroupTopic(shared.id, "Topic", { workspace: "backend", isolation: "shared" });
     expect(h.runtime.groupTopicIsolation(shared.id, sharedTopic.id)).toBe("shared");
   } finally {

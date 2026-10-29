@@ -88,7 +88,9 @@ async function fixture() {
   const restartRuntime = async () => { await runtime.shutdown(); runtime = await createRuntime(); observeRuntime(); };
   const bot = await control.createBot({ name: "Bot", agent: "codex", workspace: "backend" });
   const sibling = await control.createBot({ name: "Other", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "Bound", botIds: [bot.id, sibling.id], leadBotId: bot.id });
+  // P6: this helper binds a shared Topic target, so it must say "shared"
+  // explicitly now that createGroup defaults to per-member.
+  const group = await control.createGroup({ title: "Bound", botIds: [bot.id, sibling.id], leadBotId: bot.id, workspaceMode: "shared" });
   const topic = await control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
   const chatKey = "weixin:default:human"; await control.bindConversation({ chatKey, conversationId: group.id, topicId: topic.id });
   const channel = new WeixinChannel(); const registry = new MessageChannelRegistry([channel]); const daemon = new AbortController();

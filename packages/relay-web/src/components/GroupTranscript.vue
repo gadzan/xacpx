@@ -135,6 +135,32 @@ const items = computed<GroupTranscriptItem[]>(() =>
   }),
 );
 
+/**
+ * Per run, the one member turn whose conclusion stays expanded: the
+ * terminal followup (summary) turn when there is one, else the last
+ * terminal member turn. Every other terminal member turn is an
+ * intermediate conclusion and starts folded. The distinction is backend
+ * turn identity (followup origin + terminal order), never text parsing.
+ */
+const finalAnswerMemberTurnIds = computed<Set<string>>(() => {
+  const ids = new Set<string>();
+  for (const record of Object.values(runRecords.value)) {
+    const terminal = record.memberTurns.filter((turn) =>
+      ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
+    if (terminal.length === 0) continue;
+    const ordered = [...terminal].sort((a, b) => a.batch - b.batch
+      || (a.memberIndex ?? 0) - (b.memberIndex ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const followup = ordered.find((turn) => turn.origin === "followup");
+    ids.add((followup ?? ordered[ordered.length - 1]!).id);
+  }
+  return ids;
+});
+
+/** Timeline projection for a bot message: report/stop notice when derived, raw otherwise. */
+function timelineMessage(message: ConversationMessageDto): ConversationMessageDto {
+  return message.timelineContent ? { ...message, content: message.timelineContent } : message;
+}
+
 /** The core can cancel ONE member turn of a Run: the per-row ■ and the
  *  leader pill scope their stop to that member. An older core has no scoped
  *  cancellation, so only the confirmed round-level stop is offered there. */
@@ -859,7 +885,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
             </template>
 
             <template v-else-if="item.message.role === 'bot'">
-              <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
+              <ConversationBubble :message="timelineMessage(item.message)" :attachments="item.message.attachments" />
               <ConversationMeta :message="item.message" />
               <GroupDispatchRow
                 v-if="dispatchRows[item.message.id]"
@@ -921,7 +947,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
                          :name="senderName(item.message.senderBotId)" :size="32" static
                          :retired="item.message.senderBotId ? botById[item.message.senderBotId]?.retired : false" />
             </template>
-            <ConversationBubble :message="item.message" :attachments="item.message.attachments" />
+            <ConversationBubble :message="timelineMessage(item.message)" :attachments="item.message.attachments" />
             <ConversationMeta :message="item.message" />
           </TranscriptRow>
         </template>
@@ -941,6 +967,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
           :disabled="item.memberTurn.botId ? botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false : false"
           :stopped="stoppedLeaderTurnIds.has(item.memberTurn.id)"
+          :collapsed="['completed', 'failed', 'cancelled', 'indeterminate'].includes(item.memberTurn.state) && !finalAnswerMemberTurnIds.has(item.memberTurn.id)"
           @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
         >
           </GroupAgentTurnRow>

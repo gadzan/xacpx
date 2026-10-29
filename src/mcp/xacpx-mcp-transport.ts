@@ -160,6 +160,7 @@ export interface XacpxMcpPeerWatchArgs {
 export interface XacpxMcpTransport {
   groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: (input: GroupSendInvocation) => Promise<{ runId: string; assignmentId: string; memberTurnId: string; messageId: string }>;
+  groupChat?: OrchestrationClient["groupChat"];
   delegateRequest: (input: XacpxMcpDelegateRequest) => Promise<RequestDelegateRpcResult>;
   createGroup: (input: XacpxMcpGroupNewArgs) => Promise<OrchestrationGroupRecord>;
   getTask: (input: XacpxMcpTaskIdArgs) => Promise<OrchestrationTaskRecord | null>;
@@ -204,6 +205,7 @@ export interface XacpxMcpTransport {
 interface OrchestrationClientLike {
   groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: OrchestrationClient["groupSend"];
+  groupChat?: OrchestrationClient["groupChat"];
   registerExternalCoordinator?: OrchestrationClient["registerExternalCoordinator"];
   delegateRequest: OrchestrationClient["delegateRequest"];
   createGroup: OrchestrationClient["createGroup"];
@@ -244,6 +246,10 @@ export function createOrchestrationTransport(
     groupSend: async (input) => {
       if (!client.groupSend) throw new Error("Group handoff transport is not configured");
       return await client.groupSend(input);
+    },
+    groupChat: async (input) => {
+      if (!client.groupChat) throw new Error("Group chat transport is not configured");
+      return await client.groupChat(input);
     },
     delegateRequest: async (input) =>
       // For coordinator-side tool calls, coordinatorSession is the actual

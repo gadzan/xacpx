@@ -79,6 +79,7 @@ const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
 interface OrchestrationServerDeps {
   groupReadResult?: (input: import("../conversations/group-handoff").GroupReadResultInvocation) => Promise<unknown>;
   groupSend?: (input: import("../conversations/group-handoff").GroupSendInvocation) => Promise<unknown>;
+  groupChat?: (input: import("../conversations/group-handoff").GroupChatInvocation) => Promise<unknown>;
   createServer?: typeof createServer;
   removeFile?: (path: string) => Promise<void>;
   chmodFile?: (path: string, mode: number) => Promise<void>;
@@ -234,6 +235,13 @@ export class OrchestrationServer {
         if (executionToken.length > 128 || invocationId.length > 128) throw new OrchestrationInvalidRequestError("Group execution identity is too large");
         if (!this.deps.groupSend) throw new OrchestrationInvalidRequestError("Group handoff is unavailable");
         return await this.deps.groupSend({ executionToken, invocationId, args: params.args });
+      }
+      case "conversation.group_chat": {
+        requireOnlyKeys(params, ["executionToken", "args"], "params");
+        const executionToken = requireString(params, "executionToken");
+        if (executionToken.length > 128) throw new OrchestrationInvalidRequestError("Group execution identity is too large");
+        if (!this.deps.groupChat) throw new OrchestrationInvalidRequestError("Group chat is unavailable");
+        return await this.deps.groupChat({ executionToken, args: params.args });
       }
       case "agent.list": {
         requireOnlyKeys(params, ["coordinatorSession", "sourceHandle"], "params");

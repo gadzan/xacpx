@@ -44,13 +44,16 @@ async function harness() {
   return { store, handoffs, sender, accepted, send, read, context: () => handoffs.memberContext(capability.token) };
 }
 
-test("member instructions require ending the dispatch turn and promise one wake for all its assignments", async () => {
+test("member instructions split chat from delegation, keep the turn alive after dispatch, and require a final report", async () => {
   const h = await harness();
   try {
-    expect(h.context()).toContain("After dispatching all assignments for this turn, end your turn immediately");
-    expect(h.context()).toContain("do not wait, sleep, or poll");
-    expect(h.context()).toContain("Once all assignments dispatched from this turn settle, the runtime wakes you exactly once");
+    expect(h.context()).toContain("Dispatching does not end your turn");
+    expect(h.context()).toContain("Use group_chat for informal talk");
+    expect(h.context()).toContain("the runtime wakes you in a followup turn");
     expect(h.context()).toContain("group_read_result refuses reads while this turn has its own unsettled handoffs");
+    expect(h.context()).toContain("read every settled result before dispatching anything new");
+    expect(h.context()).toContain("最终报告");
+    expect(h.context()).toContain("裁决：目标已达成");
   } finally { h.handoffs.close(); h.store.close(); }
 });
 
@@ -62,12 +65,12 @@ test("result reads refuse every page while the bound turn has its own DB-persist
     for (const state of ["queued", "dispatched", "running"]) {
       h.store.directWriteForTest("member_turns", first.memberTurn.id, { state });
       for (const args of [{}, { assignmentId: "unrelated-result", offset: 0, limit: 1 }]) {
-        expect(h.read(args)).toEqual({ kind: "pending-handoffs", mustEndTurn: true,
+        expect(h.read(args)).toEqual({ kind: "pending-handoffs", mustEndTurn: false,
           pendingAssignmentIds: [first.memberTurn.assignmentId!, second.memberTurn.assignmentId!] });
       }
     }
     h.store.directWriteForTest("member_turns", first.memberTurn.id, { state: "completed" });
-    expect(h.read()).toEqual({ kind: "pending-handoffs", mustEndTurn: true,
+    expect(h.read()).toEqual({ kind: "pending-handoffs", mustEndTurn: false,
       pendingAssignmentIds: [second.memberTurn.assignmentId!] });
     h.store.directWriteForTest("member_turns", second.memberTurn.id, { state: "failed" });
     expect(h.read()).toMatchObject({ kind: "catalog", assignments: [

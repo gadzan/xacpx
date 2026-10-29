@@ -42,11 +42,39 @@ const props = defineProps<{
   /** True when the user stopped this member: the bubble names the stop
    *  instead of the member's own durable state. */
   stopped?: boolean;
+  /**
+   * True when this terminal turn is an intermediate conclusion, not the
+   * run's final answer: its bubble starts folded, with only the verdict
+   * line as the summary. The distinction comes from the backend's
+   * finalReportVerdict / run-final computation, never from parsing text.
+   */
+  collapsed?: boolean;
 }>();
 
 const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
 
 const { t } = useI18n();
+
+/**
+ * Timeline projection: when the store derived a structured report or a
+ * stop notice for this message, the timeline shows that projection. The
+ * raw output stays in `message.content` and in the execution detail; this
+ * only chooses which text the timeline bubble renders.
+ */
+const displayMessage = computed(() =>
+  props.message && props.message.timelineContent
+    ? { ...props.message, content: props.message.timelineContent }
+    : props.message,
+);
+
+/** Verdict line for a folded intermediate conclusion; never the turn state. */
+const verdictLabel = computed(() => {
+  const verdict = props.memberTurn.finalReportVerdict;
+  if (verdict === "achieved") return t("group.bubble.finalVerdict.achieved");
+  if (verdict === "not-achieved") return t("group.bubble.finalVerdict.notAchieved");
+  if (verdict === "interrupted") return t("group.bubble.finalVerdict.interrupted");
+  return t("group.bubble.finalVerdict.none");
+});
 
 const bubbleStatus = computed<BubbleStatus>(() => {
   if (props.singleMember && props.runState === "waiting-human") return "waiting";
@@ -132,12 +160,26 @@ defineExpose({ bubbleStatus });
       :stopped="stopped === true"
       @toggle="emit('toggle', $event)"
     />
-    <template v-if="message">
+    <template v-if="displayMessage">
+      <details v-if="collapsed" data-test="group-intermediate-conclusion">
+        <summary class="cursor-pointer text-xs text-fg-muted">
+          {{ t("group.bubble.intermediateSummary", { name }) }} — {{ verdictLabel }}
+        </summary>
+        <ConversationBubble
+          :message="displayMessage"
+          :attachments="displayMessage.attachments"
+          :collapse-trace="true"
+          :trace-key="`group:${memberTurn.conversationId}:${memberTurn.runId}:${memberTurn.id}:${memberTurn.attempt}`"
+          :data-final-verdict="memberTurn.finalReportVerdict ?? 'none'"
+        />
+      </details>
       <ConversationBubble
-        :message="message"
-        :attachments="message.attachments"
+        v-else
+        :message="displayMessage"
+        :attachments="displayMessage.attachments"
         :collapse-trace="true"
         :trace-key="`group:${memberTurn.conversationId}:${memberTurn.runId}:${memberTurn.id}:${memberTurn.attempt}`"
+        :data-final-verdict="memberTurn.finalReportVerdict ?? 'none'"
       />
       <ConversationMeta :message="message" />
     </template>

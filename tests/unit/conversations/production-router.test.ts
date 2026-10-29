@@ -251,7 +251,7 @@ test("omitted config stays disabled and refuses automatic collaboration", async 
     });
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     await expect(runtime.runs.acceptGroupPrompt({
       conversationId: group.id, topicId: topic.id, requestId: "off", text: "go", target: { mode: "automatic" },
@@ -272,7 +272,7 @@ test("an unproven probe never starts a decision and automatic accept is refused"
     expect(await readLog(router.log)).toEqual(["--capabilities"]);
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     await expect(runtime.runs.acceptGroupPrompt({
       conversationId: group.id, topicId: topic.id, requestId: "tools", text: "go", target: { mode: "automatic" },
@@ -312,7 +312,7 @@ test("a restricted probe routes through the production resolver without a tool p
     expect(control.getConversationRouterAvailability().status).toBe("ready");
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     const accepted = await conversationKernel(control).promptConversationFromHumanIngress({
       conversationId: group.id, topicId: topic.id, requestId: "auto-1", text: "review the patch",
@@ -356,7 +356,7 @@ test("a hung decision fails with the engine timeout", async () => {
     });
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     const accepted = await runtime.runs.acceptGroupPrompt({
       conversationId: group.id, topicId: topic.id, requestId: "slow", text: "go", target: { mode: "automatic" },
@@ -378,7 +378,7 @@ test("cancel during a decision seals the run and creates no member turn", async 
     });
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     const accepted = await runtime.runs.acceptGroupPrompt({
       conversationId: group.id, topicId: topic.id, requestId: "cancel-me", text: "go", target: { mode: "automatic" },
@@ -406,7 +406,7 @@ test("waiting for a human survives a new runtime and does not resume", async () 
     const first = await wire({ dir, command: router.command, env: router.env, sqlitePath });
     const a = await first.control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await first.control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await first.control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await first.control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await first.control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     const accepted = await first.runtime.runs.acceptGroupPrompt({
       conversationId: group.id, topicId: topic.id, requestId: "ask", text: "go", target: { mode: "automatic" },
@@ -437,7 +437,7 @@ test("a decision larger than the remaining budget fails closed", async () => {
       const bot = await control.createBot({ name: `Bot ${i}`, agent: "codex", workspace: "backend" });
       ids.push(bot.id);
     }
-    const group = await control.createGroup({ title: "G", botIds: ids });
+    const group = await control.createGroup({ title: "G", botIds: ids , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     const accepted = await runtime.runs.acceptGroupPrompt({
       conversationId: group.id, topicId: topic.id, requestId: "budget", text: "go", target: { mode: "automatic" },
@@ -484,7 +484,7 @@ test("the runtime switch turns automatic collaboration on without a restart", as
     expect(control.getConversationRouterAvailability().status).toBe("disabled-by-config");
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     await expect(runtime.runs.acceptGroupPrompt({
       conversationId: group.id, topicId: topic.id, requestId: "before", text: "go", target: { mode: "automatic" },
@@ -523,7 +523,7 @@ test("the runtime switch turns automatic collaboration off and refuses the next 
     expect(control.getConversationRouterAvailability().status).toBe("ready");
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
 
     runtime.applyRouterResolution(await resolveProductionRouter({ config: createConfig(), env: router.env }));
@@ -550,7 +550,7 @@ test("an in-flight decision finishes on the engine it captured when the switch f
     });
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
     const accepted = await runtime.runs.acceptGroupPrompt({
       conversationId: group.id, topicId: topic.id, requestId: "inflight", text: "go", target: { mode: "automatic" },

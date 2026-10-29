@@ -30,8 +30,10 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
   try {
     await server.connect(b); await client.connect(a);
     const list = await client.listTools();
-    expect(list.tools.map((tool) => tool.name)).toEqual(["group_send", "group_read_result"]);
-    expect(Object.keys(list.tools[0]!.inputSchema.properties!)).toEqual(["to", "task", "expectedOutput"]);
+    expect(list.tools.map((tool) => tool.name)).toEqual(["group_send", "group_chat", "group_read_result"]);
+    // P5: group_send gains the optional dependsOn contract (settled
+    // assignment ids of the same Run); the tool list itself is unchanged.
+    expect(Object.keys(list.tools[0]!.inputSchema.properties!)).toEqual(["to", "task", "expectedOutput", "dependsOn"]);
     expect(list.tools[0]!.inputSchema.additionalProperties).toBe(false);
     await expect(client.callTool({ name: "group_send", arguments: { to: "bot_b", task: "task", from: "bot_spoof" } })).rejects.toBeDefined();
     expect(calls).toHaveLength(0);
@@ -40,7 +42,8 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
     expect(calls).toEqual([{ executionToken: token, invocationId: expect.stringMatching(/^number:\d+$/), args: { to: "bot_b", task: "task", expectedOutput: "output" } }]);
     await expect(client.callTool({ name: "agent_send", arguments: { to: "any", message: "private" } })).rejects.toBeDefined();
     expect(JSON.stringify(result)).not.toContain(token);
-    expect(Object.keys(list.tools[1]!.inputSchema.properties!)).toEqual(["assignmentId", "offset", "limit"]);
+    expect(Object.keys(list.tools[1]!.inputSchema.properties!)).toEqual(["to", "content", "replyTo"]);
+    expect(Object.keys(list.tools[2]!.inputSchema.properties!)).toEqual(["assignmentId", "offset", "limit"]);
     await expect(client.callTool({ name: "group_read_result", arguments: { runId: "foreign" } })).rejects.toBeDefined();
     await expect(client.callTool({ name: "group_read_result", arguments: { assignmentId: "assignment", limit: 4_001 } })).rejects.toBeDefined();
     expect(reads).toEqual([]);
@@ -52,19 +55,19 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
   } finally { await client.close(); await server.close(); }
 });
 
-test("Group MCP server instructions require ending the dispatch turn and render the read refusal", async () => {
+test("Group MCP server instructions keep the turn alive after dispatch and render the read refusal", async () => {
   const token = "group-execution:trusted-launch";
   const transport = createMemoryTransport(async () => { throw new Error("Group cannot delegate"); });
-  transport.groupReadResult = async () => ({ kind: "pending-handoffs" as const, mustEndTurn: true as const, pendingAssignmentIds: ["assignment"] });
+  transport.groupReadResult = async () => ({ kind: "pending-handoffs" as const, mustEndTurn: false as const, pendingAssignmentIds: ["assignment"] });
   const server = createXacpxMcpServer({ transport, coordinatorSession: token, sourceHandle: token });
   const client = new Client({ name: "group-test", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   try {
     await server.connect(b); await client.connect(a);
     const instructions = client.getInstructions() ?? "";
-    expect(instructions).toContain("end your turn immediately");
-    expect(instructions).toContain("do not wait, sleep, or poll");
-    expect(instructions).toContain("wakes you exactly once in a followup turn");
+    expect(instructions).toContain("Dispatching does not end your turn");
+    expect(instructions).toContain("group_chat for informal talk");
+    expect(instructions).toContain("wakes you in a followup turn");
     expect(instructions).toContain("reads are refused");
     const refused = await client.callTool({ name: "group_read_result", arguments: {} });
     expect(refused.isError).not.toBe(true);

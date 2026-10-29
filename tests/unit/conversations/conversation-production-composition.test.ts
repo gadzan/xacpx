@@ -63,7 +63,7 @@ test("actual ConsoleAgent and CommandRouter reach transport on the exact trusted
   try {
     const a = await current.control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" }); targetId = b.id;
-    const group = await current.control.createGroup({ title: "Transport", botIds: [a.id, b.id] });
+    const group = await current.control.createGroup({ title: "Transport", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "real-console", text: "public work", target: { botId: a.id } });
@@ -118,7 +118,7 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
   try {
     const a = await current.control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" }); targetId = b.id;
-    const group = await current.control.createGroup({ title: "Physical", botIds: [a.id, b.id] });
+    const group = await current.control.createGroup({ title: "Physical", botIds: [a.id, b.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "physical-outcome", text: "work", target: { botId: a.id } });
@@ -199,7 +199,7 @@ test(`real ${mode} budget rejection then typed cancellation preserves ${humanSto
   try {
     senderId = (await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" })).id;
     targetId = (await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" })).id;
-    const group = await current.control.createGroup({ title: "Budget cancellation priority", botIds: [senderId, targetId] });
+    const group = await current.control.createGroup({ title: "Budget cancellation priority", botIds: [senderId, targetId] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "budget-runtime-cancellation", text: "work", target: mode === "automatic" ? { mode: "automatic" } : { botId: senderId } });
@@ -286,7 +286,7 @@ test(`real automatic typed cancellation is durable with ${cancelledFirst ? "canc
   try {
     cancelledBot = (await current.control.createBot({ name: "A", agent: "codex", workspace: "backend" })).id;
     completedBot = (await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" })).id;
-    const group = await current.control.createGroup({ title: "Cancellation order", botIds: [cancelledBot, completedBot] });
+    const group = await current.control.createGroup({ title: "Cancellation order", botIds: [cancelledBot, completedBot] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "typed-cancel-order", text: "work", target: { mode: "automatic" } });
@@ -369,7 +369,7 @@ test("real automatic typed cancellation cancels unstarted writer siblings withou
   try {
     cancelledBot = (await current.control.createBot({ name: "A", agent: "codex", workspace: "backend" })).id;
     pendingBot = (await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" })).id;
-    const group = await current.control.createGroup({ title: "Writer cancellation", botIds: [cancelledBot, pendingBot] });
+    const group = await current.control.createGroup({ title: "Writer cancellation", botIds: [cancelledBot, pendingBot] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "typed-cancel-writers", text: "work", target: { mode: "automatic" } });
@@ -431,7 +431,7 @@ test(`real ${mode} execution cancellation settles a durable-started sibling befo
   try {
     cancelledBot = (await current.control.createBot({ name: "A", agent: "codex", workspace: "backend" })).id;
     siblingBot = (await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" })).id;
-    const group = await current.control.createGroup({ title: "Provider admission gap", botIds: [cancelledBot, siblingBot] });
+    const group = await current.control.createGroup({ title: "Provider admission gap", botIds: [cancelledBot, siblingBot] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "pre-provider-cancellation", text: "work", target: mode === "automatic" ? { mode: "automatic" } : { mode: "everyone" } });
@@ -514,7 +514,7 @@ test("production public handoff carries private launch capability through Contro
   try {
     const sender = await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" });
     const target = await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" }); targetId = target.id;
-    const group = await current.control.createGroup({ title: "Public Group", botIds: [sender.id, target.id] });
+    const group = await current.control.createGroup({ title: "Public Group", botIds: [sender.id, target.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "production-handoff", text: "work", target: { botId: sender.id } });
@@ -656,7 +656,7 @@ test("real Control automatic prompt returns zero members and same requestId repl
   const unsubscribe = events.subscribe((event) => { observed.push(event); });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
   const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
   const request = { conversationId: group.id, topicId: topic.id, requestId: "automatic-api", text: "review", target: { mode: "automatic" as const } };
   const accepted = await control.promptConversation(request);
@@ -697,7 +697,7 @@ test("legacy audit-only waiting question is available through Control after rest
   const first = await compose(stateStore, { router });
   const bot = await first.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const helper = await first.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-  const group = await first.control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+  const group = await first.control.createGroup({ title: "Team", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
   const topic = await first.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
   const accepted = await first.control.promptConversation({ conversationId: group.id, topicId: topic.id,
     requestId: "legacy-waiting", text: "ship", target: { mode: "automatic" } });
@@ -734,7 +734,7 @@ for (const recovered of [false, true]) {
     });
     const bot = await control.createBot({ name: "Writer", agent: "codex", workspace: "backend" });
     const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await control.promptConversation({ conversationId: group.id, topicId: topic.id, requestId: "blocked-api", text: "write", target: { mode: "automatic" } });
     await runtime.runs.awaitRouting();
@@ -771,7 +771,7 @@ for (const lateOutput of ["resolve", "reject"] as const) {
     const { control, runtime, sqlitePath, state } = await compose(stateStore, { router });
     const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
     const request = { conversationId: group.id, topicId: topic.id, text: "review", target: { mode: "automatic" as const } };
     const first = await control.promptConversation({ ...request, requestId: "cancel-hung-provider" });
@@ -855,7 +855,7 @@ test("remove then delete during production routing fails durably and releases th
     const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
     const builder = await control.createBot({ name: "Builder", agent: "codex", workspace: "backend" });
-    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id, builder.id] });
+    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id, builder.id] , workspaceMode: "shared" });
     const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "remove-delete-router", text: "review", target: { mode: "automatic" } });
@@ -995,7 +995,7 @@ test("shutdown lets an entered group_send commit through a real Bot lifecycle ga
   try {
     const sender = await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" });
     const target = await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" });
-    const group = await current.control.createGroup({ title: "Shutdown lease", botIds: [sender.id, target.id] });
+    const group = await current.control.createGroup({ title: "Shutdown lease", botIds: [sender.id, target.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "shutdown-handoff", text: "work", target: { botId: sender.id } });
@@ -1070,7 +1070,7 @@ test("shutdown between durable execution-start and capability bind does not manu
   try {
     const sender = await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" });
     const target = await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" });
-    const group = await current.control.createGroup({ title: "Start-bind shutdown", botIds: [sender.id, target.id] });
+    const group = await current.control.createGroup({ title: "Start-bind shutdown", botIds: [sender.id, target.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
       requestId: "shutdown-start-bind", text: "work", target: { botId: sender.id } });
@@ -1279,7 +1279,7 @@ test("production lease renewal I/O failure fail-closes accept and still closes S
   try {
     const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-    const group = await current.control.createGroup({ title: "Lease", botIds: [bot.id, helper.id] });
+    const group = await current.control.createGroup({ title: "Lease", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
     await current.runtime.activateAfterConsumerLock();
     expect(current.runtime.runs.isConsumerActivated()).toBe(true);
@@ -1358,7 +1358,7 @@ test("production claimNextDispatch failure fail-closes accept without an unhandl
   try {
     const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-    const group = await current.control.createGroup({ title: "Claim", botIds: [bot.id, helper.id] });
+    const group = await current.control.createGroup({ title: "Claim", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
     await current.runtime.activateAfterConsumerLock();
     armed = true;
@@ -1459,7 +1459,7 @@ test("production scheduling failure records a thrown undefined value", async () 
   try {
     const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-    const group = await current.control.createGroup({ title: "Undefined", botIds: [bot.id, helper.id] });
+    const group = await current.control.createGroup({ title: "Undefined", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
     await current.runtime.activateAfterConsumerLock();
     const accepted = await current.control.promptConversation({
@@ -1506,7 +1506,7 @@ test("autoKick false still drains through wakePendingWork", async () => {
   try {
     const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-    const group = await current.control.createGroup({ title: "Wake", botIds: [bot.id, helper.id] });
+    const group = await current.control.createGroup({ title: "Wake", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
     await current.runtime.activateAfterConsumerLock();
     const accepted = await current.control.promptConversation({
@@ -1548,7 +1548,7 @@ test("a stale claim fence from kick does not fail-close accept", async () => {
   try {
     const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-    const group = await current.control.createGroup({ title: "Stale", botIds: [bot.id, helper.id] });
+    const group = await current.control.createGroup({ title: "Stale", botIds: [bot.id, helper.id] , workspaceMode: "shared" });
     const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
     await current.runtime.activateAfterConsumerLock();
     armed = true;

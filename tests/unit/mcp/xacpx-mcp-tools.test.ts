@@ -1395,13 +1395,13 @@ test("Direct launch exposes only truthful one-way messaging tools and preserves 
   for(const extra of [{mode:"interrupt"},{mode:"steer"},{completion:"result"},{completion:"notify"},{replyTo:"msg"},{selector:{agent:"codex"}},{sourceHandle:"spoofed"}]) {
     expect(send.inputSchema.safeParse({to:"agent:node:bot",message:"work",...extra}).success).toBe(false);
   }
-  expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send", "group_read_result"]);
+  expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send", "group_chat", "group_read_result"]);
 });
 
-test("Group handoff tools require ending dispatch turn and preserve explicit result-read refusal", async () => {
+test("Group handoff tools keep the turn alive after dispatch and preserve explicit result-read refusal", async () => {
   const calls: unknown[] = [];
   const receipt = { runId: "run", assignmentId: "assignment", memberTurnId: "member", messageId: "message" };
-  const pending = { kind: "pending-handoffs" as const, mustEndTurn: true as const, pendingAssignmentIds: ["assignment"] };
+  const pending = { kind: "pending-handoffs" as const, mustEndTurn: false as const, pendingAssignmentIds: ["assignment"] };
   const transport = {
     ...createMemoryTransport(async () => ({ taskId: "unused", status: "running" })),
     async groupSend(input: unknown) { calls.push(input); return receipt; },
@@ -1410,20 +1410,41 @@ test("Group handoff tools require ending dispatch turn and preserve explicit res
   const registry = buildXacpxMcpToolRegistry({ transport, coordinatorSession: "group-execution:live", sourceHandle: "group-execution:live" });
   const send = registry.find((tool) => tool.name === "group_send")!;
   const read = registry.find((tool) => tool.name === "group_read_result")!;
+  expect(send.description).toContain("does not end your turn");
+  expect(read.description).toContain("keep working on your own task");
   for (const tool of [send, read]) {
-    expect(tool.description).toContain("end your turn");
     expect(tool.description).toContain("all assignments dispatched from this turn settle");
-    expect(tool.description).toContain("wakes you exactly once in a followup turn");
+    expect(tool.description).toContain("wakes you in a followup turn");
   }
   const sent = await send.handler({ to: "bot_b", task: "Collect evidence" }, { invocationId: "call" });
   expect(sent.structuredContent).toEqual(receipt);
-  expect(JSON.stringify(sent.content)).toContain("end your turn immediately; do not wait, sleep, or poll");
+  expect(JSON.stringify(sent.content)).toContain("Dispatching does not end your turn");
   const refused = await read.handler({ assignmentId: "older-assignment", offset: 10 });
   expect(refused.structuredContent).toEqual(pending);
   expect(JSON.stringify(refused.content)).toContain("Result read refused");
-  expect(JSON.stringify(refused.content)).toContain("End your turn immediately; do not wait, sleep, or poll");
+  expect(JSON.stringify(refused.content)).toContain("Keep working on your own task");
   expect(calls).toEqual([
     { executionToken: "group-execution:live", invocationId: "call", args: { to: "bot_b", task: "Collect evidence" } },
     { executionToken: "group-execution:live", args: { assignmentId: "older-assignment", offset: 10 } },
+  ]);
+});
+
+test("Group chat tool records an informal message and advertises no task semantics", async () => {
+  const calls: unknown[] = [];
+  const transport = {
+    ...createMemoryTransport(async () => ({ taskId: "unused", status: "running" })),
+    async groupChat(input: unknown) { calls.push(input); return { messageId: "chat-1" }; },
+  };
+  const registry = buildXacpxMcpToolRegistry({ transport, coordinatorSession: "group-execution:live", sourceHandle: "group-execution:live" });
+  const chat = registry.find((tool) => tool.name === "group_chat")!;
+  expect(chat.description).toContain("creates no task");
+  expect(chat.description).toContain("does not end your turn");
+  expect(chat.inputSchema.safeParse({ to: "bot_b", content: "hi", replyTo: "chat-0" }).success).toBe(true);
+  expect(chat.inputSchema.safeParse({ to: "bot_b", content: "hi", task: "work" }).success).toBe(false);
+  const sent = await chat.handler({ to: "bot_b", content: "hi", replyTo: "chat-0" });
+  expect(sent.structuredContent).toEqual({ messageId: "chat-1" });
+  expect(JSON.stringify(sent.content)).toContain("creates no task");
+  expect(calls).toEqual([
+    { executionToken: "group-execution:live", args: { to: "bot_b", content: "hi", replyTo: "chat-0" } },
   ]);
 });
