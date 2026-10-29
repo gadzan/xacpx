@@ -55,6 +55,14 @@ test("a lead turn injects the versioned seat layer before personal instructions"
   expect(fromSnapshot).toContain(LEAD_SEAT_PROMPT);
 });
 
+test("Fix5: lead seat v2 requires an independent review before any final summary", () => {
+  expect(LEAD_SEAT_PROMPT_VERSION).toBe(2);
+  const prompt = composeBotTurnPrompt(bot, "coordinate the group",
+    { title: "Dev", leadBotId: "bot_a" }, { botId: "bot_a", isLeadTurn: true });
+  expect(prompt).toContain("dispatch an independent review to a member other than the implementer");
+  expect(prompt).toContain("never summarise as achieved after a re-review that did not pass");
+});
+
 test("a non-lead bot never receives the seat layer", () => {
   const prompt = composeBotTurnPrompt(bot, "do the review",
     { title: "Dev", leadBotId: "bot_b" }, { botId: "bot_a", isLeadTurn: true });

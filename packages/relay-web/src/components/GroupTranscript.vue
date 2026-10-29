@@ -136,37 +136,37 @@ const items = computed<GroupTranscriptItem[]>(() =>
 );
 
 /**
- * Per run, the one member turn whose conclusion stays expanded: the
- * LAST terminal followup (summary) turn when there is one, else the last
- * terminal member turn. Every other terminal member turn is an
- * intermediate conclusion and starts folded. The distinction is backend
- * turn identity (followup origin + terminal order), never text parsing.
+ * Per run, the one member turn whose conclusion stays expanded: ONLY the
+ * Run's real final summary, by the same definition as
+ * src/conversations/group-overview.ts and GroupPane.vue — a completed
+ * followup turn that is the last terminal turn in Run order, with no
+ * queued/dispatched/running turn anywhere in the Run, and a terminal Run
+ * state (completed/failed/cancelled/indeterminate, never
+ * queued/running/waiting-human). Every other terminal member turn is an
+ * intermediate conclusion and starts folded, including while the Run is
+ * still running, while it waits for a human, and when it ended with no
+ * summary at all. Nothing is promoted into an overall conclusion.
  *
- * Fix-round-1 (PR #500 review): the previous code used `find`, which
- * picked the FIRST followup. With two or more followups
- * (develop -> patch -> review -> summary), the first followup's
- * conclusion was expanded as the final answer and the real final summary
- * was folded as an intermediate conclusion. `findLast` (with a reverse
- * loop for environments without it) picks the last one.
+ * Fix-round-5 replaces the fix-round-1 rule ("last terminal followup,
+ * else last terminal turn; budget-exhausted only when no completed
+ * followup ever existed"): a stage followup that dispatched a re-review
+ * is not a final summary, and a budget-exhausted Run with an earlier
+ * completed followup still has no final answer to expand.
  */
 const finalAnswerMemberTurnIds = computed<Set<string>>(() => {
   const ids = new Set<string>();
   for (const record of Object.values(runRecords.value)) {
-    const terminal = record.memberTurns.filter((turn) =>
-      ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
-    if (terminal.length === 0) continue;
-    const ordered = [...terminal].sort((a, b) => a.batch - b.batch
+    const ordered = [...record.memberTurns].sort((a, b) => a.batch - b.batch
       || (a.memberIndex ?? 0) - (b.memberIndex ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    let followup: (typeof ordered)[number] | undefined;
-    for (let i = ordered.length - 1; i >= 0; i--) {
-      if (ordered[i]!.origin === "followup") { followup = ordered[i]; break; }
+    const isTerminalRun = ["completed", "failed", "cancelled", "indeterminate"].includes(record.run.state);
+    if (!isTerminalRun) continue;
+    if (ordered.some((turn) => ["queued", "dispatched", "running"].includes(turn.state))) continue;
+    const terminal = ordered.filter((turn) =>
+      ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
+    const last = terminal[terminal.length - 1];
+    if (last && last.origin === "followup" && last.state === "completed") {
+      ids.add(last.id);
     }
-    // Fix-round-1: when the budget ran out before a final summary turn
-    // could be created, there is NO overall conclusion to expand. Do not
-    // silently promote the last member turn into the final answer.
-    const hasFinalSummary = ordered.some((turn) => turn.origin === "followup" && turn.state === "completed");
-    if (record.run.followupBudgetExhausted && !hasFinalSummary) continue;
-    ids.add((followup ?? ordered[ordered.length - 1]!).id);
   }
   return ids;
 });

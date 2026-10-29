@@ -6,7 +6,7 @@ import type { BotProfile, BotProfileSnapshot } from "./bot-types";
  * Bump this when the seat wording changes so a prompt can be told apart
  * from an older seat layer at a glance, without re-reading the code.
  */
-export const LEAD_SEAT_PROMPT_VERSION = 1;
+export const LEAD_SEAT_PROMPT_VERSION = 2;
 
 /**
  * The lead-seat layer, verbatim. It is a code constant, never a line copied
@@ -22,6 +22,9 @@ export const LEAD_SEAT_PROMPT =
   `As lead, discover the other members and their current work, dispatch independent tasks in parallel rather than one by one, ` +
   `connect unclaimed or stuck work with a member who can take it, summarise each settled result as a conclusion, ` +
   `and turn anything left unfinished into an explicit follow-up task instead of dropping it. ` +
+  `After implementation completes, before any final summary, dispatch an independent review to a member other than the implementer; ` +
+  `if the review finds problems, dispatch the fix and a re-review, and never summarise as achieved after a re-review that did not pass — ` +
+  `carry the failure as a leftover instead. ` +
   `When you are working as an ordinary member, this layer does not apply and your professional capability leads.`;
 
 /** Group scope for prompt composition. `leadBotId` is the durable seat

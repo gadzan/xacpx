@@ -58,6 +58,72 @@ function report(summary: string, verdict: "目标已达成" | "目标未达成" 
 const wakesFor = (store: SqliteConversationStore, runId: string, senderId: string) =>
   store.listMemberTurns(runId).filter((turn) => turn.followupSenderMemberTurnId === senderId);
 
+// ---------------------------------------------------------------- Fix-round-5 item 4: fake-runner auto-review chain
+// Store/dispatcher-level only, like Fix1-9 above: no agent model executes
+// any turn here, and the lead-seat review sentence is a prompt, not a
+// guarantee. Real-model verification (a real model autonomously inviting
+// an independent reviewer, fixing, and re-reviewing) remains unverified.
+test("Fix5: builder -> independent reviewer (dependsOn dev) -> fix -> same reviewer re-review -> lead final summary", async () => {
+  const store = await openStore();
+  try {
+    const { accepted, claim, leader } = acceptLeader(store);
+    const runId = accepted.run.id;
+    const builder = "bot_b";
+    const reviewer = "bot_c";
+    expect(reviewer).not.toBe(builder);
+
+    const dev = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
+      "fix5-1", builder, "implement login").memberTurn;
+    const review = dispatch(store, leader, claim.dispatch.id, claim.dispatch.generation,
+      "fix5-2", reviewer, "review login implementation", [dev.assignmentId!]).memberTurn;
+    expect(review.dependsOn).toContain(dev.assignmentId!);
+    const { started: devStarted } = claimAndStart(store, runId, dev, "session_b", "source_b");
+    complete(store, runId, devStarted, "session_b", "source_b", report("登录实现完成。"));
+    const { started: reviewStarted } = claimAndStart(store, runId, review, "session_c", "source_c");
+    complete(store, runId, reviewStarted, "session_c", "source_c",
+      report("审查发现问题：密码未做长度校验。", "目标未达成"));
+    complete(store, runId, leader, "session_a", "source_a", "Leader dispatched");
+
+    const wake1 = wakesFor(store, runId, leader.id)[0]!;
+    const { claim: wake1Claim, started: wake1Started } = claimAndStart(store, runId, wake1, "session_a", "source_wake1");
+    store.recordGroupResultRead(wake1Started.id, dev.assignmentId!);
+    store.recordGroupResultRead(wake1Started.id, review.assignmentId!);
+    const fix = dispatch(store, wake1Started, wake1Claim.dispatch.id, wake1Claim.dispatch.generation,
+      "fix5-3", builder, "add password length validation").memberTurn;
+    const rereview = dispatch(store, wake1Started, wake1Claim.dispatch.id, wake1Claim.dispatch.generation,
+      "fix5-4", reviewer, "re-review login implementation", [fix.assignmentId!]).memberTurn;
+    expect(rereview.botId).toBe(reviewer);
+    const { started: fixStarted } = claimAndStart(store, runId, fix, "session_b", "source_b2");
+    complete(store, runId, fixStarted, "session_b", "source_b2", report("长度校验已补。"));
+    const { started: rereviewStarted } = claimAndStart(store, runId, rereview, "session_c", "source_c2");
+    complete(store, runId, rereviewStarted, "session_c", "source_c2", report("复审通过。"));
+    complete(store, runId, wake1Started, "session_a", "source_wake1", "Followup 1 dispatched fix and re-review");
+
+    const wake2 = wakesFor(store, runId, wake1.id)[0]!;
+    const { started: wake2Started } = claimAndStart(store, runId, wake2, "session_a", "source_wake2");
+    store.recordGroupResultRead(wake2Started.id, fix.assignmentId!);
+    store.recordGroupResultRead(wake2Started.id, rereview.assignmentId!);
+    complete(store, runId, wake2Started, "session_a", "source_wake2", report("最终汇总：登录已实现并通过独立复审。"));
+
+    const turns = store.listMemberTurns(runId);
+    expect(store.getRun(runId)?.state).toBe("completed");
+    const ordered = [...turns].sort((a, b) => a.batch - b.batch
+      || (a.memberIndex ?? 0) - (b.memberIndex ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const terminal = ordered.filter((t) => ["completed", "failed", "cancelled", "indeterminate"].includes(t.state));
+    expect(terminal[terminal.length - 1]!.id).toBe(wake2.id);
+    expect(wake2.origin).toBe("followup");
+    const overview = buildGroupOverview({ conversationId: "conversation_group", topicId: "topic_group",
+      leadBotId: "bot_a", memberBotIds: ["bot_a", "bot_b", "bot_c"],
+      runs: [store.getRun(runId)!], memberTurns: turns });
+    expect(overview.finalAnswers).toHaveLength(1);
+    expect(overview.finalAnswers[0]).toMatchObject({ botId: "bot_a", verdict: "achieved", conclusion: "最终汇总：登录已实现并通过独立复审。" });
+    expect(overview.stuckCount).toBe(0);
+    expect(overview.needsUserCount).toBe(0);
+    expect(overview.noOverallConclusion).toBe(false);
+    expect(overview.nothingNeedsUser).toBe(true);
+  } finally { store.close(); }
+});
+
 // ---------------------------------------------------------------- Fix-round-1 item 9: fake-runner end-to-end
 // This is a store/dispatcher-level fake-runner scenario, NOT a real-model
 // end-to-end run: no agent model executes any turn here. Real-model

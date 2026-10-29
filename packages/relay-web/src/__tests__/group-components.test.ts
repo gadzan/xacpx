@@ -1830,6 +1830,120 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("Fix5: an unrelated success does not clear a failure in the overview strip", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_fail: {
+          id: "turn_fail", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "failed", createdAt: "now", task: "implement login",
+        },
+        turn_ok: {
+          id: "turn_ok", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "restyle page", finalReportVerdict: "achieved",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const head = wrapper.find('[data-test="group-overview-head"]').text();
+      expect(head).toContain("1 stuck");
+      expect(head).toContain("1 need you");
+      expect(wrapper.find('[data-test="group-overview-final-answer"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("Fix5: a terminal Run with no real summary shows no overall conclusion, never nothing-needs-you", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "dev done", finalReportVerdict: "achieved",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "other work", finalReportVerdict: "achieved",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-overview-no-overall-conclusion"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="group-overview-no-overall-conclusion"]').text()).toContain("No overall conclusion formed");
+      expect(wrapper.find('[data-test="group-overview"]').text()).not.toContain("Nothing needs you today");
+      expect(wrapper.find('[data-test="group-overview-final-answer"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("Fix5: budget exhaustion after a stage followup still shows the banner and no final answer", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now", followupBudgetExhausted: true,
+      };
+      groups.memberTurnsById = {
+        turn_dev: {
+          id: "turn_dev", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "dev done", finalReportVerdict: "achieved",
+        },
+        turn_stage: {
+          id: "turn_stage", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 2, memberIndex: 0, attempt: 1, origin: "followup",
+          state: "completed", createdAt: "now", task: "stage summary", finalReportVerdict: "achieved",
+        },
+        turn_fix: {
+          id: "turn_fix", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 3, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "re-review fix", finalReportVerdict: "achieved",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-overview-budget-exhausted"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="group-overview-final-answer"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-overview-no-overall-conclusion"]').exists()).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("Fix5: a real final summary is the only final answer in the overview strip", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_dev: {
+          id: "turn_dev", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now", task: "dev done", finalReportVerdict: "achieved",
+        },
+        turn_sum: {
+          id: "turn_sum", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 2, memberIndex: 0, attempt: 1, origin: "followup",
+          state: "completed", createdAt: "now", task: "final summary", finalReportVerdict: "achieved",
+        },
+      };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.findAll('[data-test="group-overview-final-answer"]')).toHaveLength(1);
+      expect(wrapper.find('[data-test="group-overview-no-overall-conclusion"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
     it("disables the composer and marks the pill on an archived Topic", async () => {
       seedGroupSelection();
       const groups = useGroupsStore();

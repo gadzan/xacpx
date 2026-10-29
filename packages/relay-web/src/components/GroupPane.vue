@@ -147,12 +147,36 @@ const overview = computed(() => {
   const ordered = [...turns].sort((a, b) => a.batch - b.batch
     || (a.memberIndex ?? 0) - (b.memberIndex ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const inProgress = turns.filter((turn) => ["queued", "dispatched", "running"].includes(turn.state)).length;
-  // Fix-round-1: only currently unresolved failures count as stuck.
-  // A failed/indeterminate turn with a completed turn after it in Run
-  // order has recovered; history stays in the process detail, not here.
-  const lastCompletedPos = ordered.reduce((max, turn, i) => (turn.state === "completed" ? i : max), -1);
-  const stuck = ordered.filter((turn, i) =>
-    ["failed", "indeterminate"].includes(turn.state) && i > lastCompletedPos).length;
+  // Fix-round-5: the real final summary, same definition as the backend
+  // builder — a completed followup that is the last terminal turn of a
+  // terminal Run with nothing still in progress. Anything less is a stage
+  // conclusion, never the Run's overall conclusion.
+  const terminalStates = ["completed", "failed", "cancelled", "indeterminate"];
+  const runState = groupsStore.activeRun?.state;
+  const isTerminalRun = !!runState && terminalStates.includes(runState);
+  const terminal = ordered.filter((turn) => terminalStates.includes(turn.state));
+  const lastTerminal = terminal[terminal.length - 1];
+  const realFinalSummary = (isTerminalRun && inProgress === 0 && lastTerminal
+    && lastTerminal.origin === "followup" && lastTerminal.state === "completed")
+    ? lastTerminal : undefined;
+  // Fix-round-5: recovery is task-bound, not order-bound. Only a later
+  // completed turn for the SAME normalised task (trim, collapse
+  // whitespace), or a real final summary accounting for the failure,
+  // resolves a stuck turn. An unrelated success never clears a failure:
+  // prefer a false stuck over a hidden failure. A taskless failure can
+  // only be cleared by a real final summary.
+  const normalizeTask = (task: string | undefined): string | undefined => {
+    const normalized = task?.trim().replace(/\s+/g, " ");
+    return normalized ? normalized : undefined;
+  };
+  const stuck = ordered.filter((turn, i) => {
+    if (!["failed", "indeterminate"].includes(turn.state)) return false;
+    if (realFinalSummary !== undefined) return false;
+    const task = normalizeTask(turn.task);
+    if (task === undefined) return true;
+    return !ordered.slice(i + 1).some((later) =>
+      later.state === "completed" && normalizeTask(later.task) === task);
+  }).length;
   const needsUser = stuck + (groupsStore.activeRun?.state === "waiting-human" ? 1 : 0);
   const latestByBot = new Map<string, (typeof turns)[number]>();
   for (const turn of turns) latestByBot.set(turn.botId, turn);
@@ -163,34 +187,29 @@ const overview = computed(() => {
       stateLabel: state === "idle" ? t("group.overview.idle") : t(`group.bubble.status.${state}`),
       task: turn?.task ? turn.task.slice(0, 120) : undefined };
   });
-  // Fix-round-1: one final answer per Run, by the GroupTranscript rule —
-  // last terminal followup, else last terminal turn — included only when
-  // completed with a verdict. Earlier member conclusions are intermediate.
-  // When the budget ran out before a final summary could be created, there
-  // is NO overall conclusion: the last member report must not stand in.
-  const terminal = ordered.filter((turn) =>
-    ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
-  let finalTurn: (typeof terminal)[number] | undefined;
-  for (let i = terminal.length - 1; i >= 0; i--) {
-    if (terminal[i]!.origin === "followup") { finalTurn = terminal[i]; break; }
-  }
-  finalTurn ??= terminal[terminal.length - 1];
-  const hasFinalSummaryEarly = ordered.some((turn) => turn.origin === "followup" && turn.state === "completed");
-  const budgetExhaustedNoSummary = Boolean(groupsStore.activeRun?.followupBudgetExhausted) && !hasFinalSummaryEarly;
-  const finalAnswers = (!budgetExhaustedNoSummary && finalTurn && finalTurn.state === "completed" && finalTurn.finalReportVerdict)
+  // Fix-round-5: only the real final summary (defined above) may be a
+  // final answer, included only when completed with a verdict. A running
+  // Run, a waiting-human Run, or a terminal Run with no such summary has
+  // no final answer — member conclusions stay intermediate.
+  const finalTurn = realFinalSummary;
+  const finalAnswers = (finalTurn && finalTurn.finalReportVerdict)
     ? [{ id: finalTurn.id, botId: finalTurn.botId,
       name: memberBots.value.find((bot) => bot.id === finalTurn!.botId)?.name ?? finalTurn.botId,
       verdict: finalTurn.finalReportVerdict === "achieved" ? t("group.bubble.finalVerdict.achieved")
         : finalTurn.finalReportVerdict === "not-achieved" ? t("group.bubble.finalVerdict.notAchieved")
         : t("group.bubble.finalVerdict.interrupted") }]
     : [];
-  // Fix-round-1: budget exhaustion is visible, not silent. When the Run
-  // settled but no final summary turn could be created, the last member
-  // report must NOT stand in as the overall conclusion (finalAnswers
-  // above is already empty in that case, because there is no completed
-  // followup to promote), and the strip says so with a human next step.
-  const budgetExhausted = budgetExhaustedNoSummary;
-  return { inProgress, stuck, needsUser, members, finalAnswers, budgetExhausted,
+  // Fix-round-5: budget exhaustion uses the same real-summary definition,
+  // not "any completed followup ever existed": a stage followup that
+  // dispatched a re-review, followed by budget exhaustion before the next
+  // summary, must leave the budget warning visible and finalAnswers empty.
+  const budgetExhausted = Boolean(groupsStore.activeRun?.followupBudgetExhausted) && realFinalSummary === undefined;
+  // A terminal Run with no real final summary and at least one completed
+  // member turn ended without an overall conclusion: say so, and never
+  // show "nothing needs you" for it.
+  const noOverallConclusion = isTerminalRun && realFinalSummary === undefined
+    && ordered.some((turn) => turn.state === "completed");
+  return { inProgress, stuck, needsUser, members, finalAnswers, budgetExhausted, noOverallConclusion,
     leadName: memberBots.value.find((bot) => bot.id === group.value?.leadBotId)?.name };
 });
 
@@ -325,7 +344,10 @@ const worktreeRunId = computed(() => {
       <p data-test="group-overview-head">
         <span v-if="overview.leadName">{{ $t("group.manage.lead") }}：{{ overview.leadName }} · </span>
         <span>{{ $t("group.overview.inProgress", { count: overview.inProgress }) }} · {{ $t("group.overview.stuck", { count: overview.stuck }) }} · {{ $t("group.overview.needsYou", { count: overview.needsUser }) }}</span>
-        <span v-if="overview.needsUser === 0 && !overview.budgetExhausted"> · {{ $t("group.overview.nothingNeedsYou") }}</span>
+        <span v-if="overview.needsUser === 0 && !overview.budgetExhausted && !overview.noOverallConclusion"> · {{ $t("group.overview.nothingNeedsYou") }}</span>
+      </p>
+      <p v-if="overview.noOverallConclusion" data-test="group-overview-no-overall-conclusion">
+        {{ $t("group.overview.noOverallConclusion") }}
       </p>
       <p v-if="overview.budgetExhausted" data-test="group-overview-budget-exhausted">
         {{ $t("group.overview.budgetExhausted") }}。{{ $t("group.overview.budgetExhaustedAction") }}

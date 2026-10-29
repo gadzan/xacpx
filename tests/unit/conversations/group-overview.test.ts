@@ -52,19 +52,122 @@ test("Fix1-2 overview: only the Run's final answer is listed, not every member c
   ]);
 });
 
-test("Fix1-7 overview: a failure followed by a completed turn in the same Run no longer counts as needs-you", () => {
+test("Fix5 overview: a failure followed by a completed turn on a DIFFERENT task still counts as needs-you", () => {
+  // Fix-round-5 replaces Fix1-7: an unrelated success is not a remedy.
+  // A login failure is not cleared by a styling success that merely
+  // sorts after it, even though the Run itself is completed.
   const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
     runs: [run("run_r", "completed")],
     memberTurns: [
-      turn("run_r", "bot_a", "failed", "build crashed", undefined, undefined, undefined, 1, 0, "t-fail"),
-      turn("run_r", "bot_b", "completed", "recovered step", "achieved", "已恢复完成。", "handoff_r", 1, 1, "t-ok"),
+      turn("run_r", "bot_a", "failed", "implement login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_r", "bot_b", "completed", "restyle page", "achieved", "已恢复完成。", "handoff_r", 1, 1, "t-ok"),
+    ] });
+  expect(overview.stuckCount).toBe(1);
+  expect(overview.needsUserCount).toBe(1);
+  expect(overview.nothingNeedsUser).toBe(false);
+  expect(overview.noOverallConclusion).toBe(true);
+  expect(overview.finalAnswers).toEqual([]);
+  expect(overview.members.map((m) => `${m.botId}:${m.state}`)).toEqual(["bot_a:stuck", "bot_b:done"]);
+});
+
+test("Fix5 overview: the same task completed later — by another bot — clears the failure", () => {
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_s", "running")],
+    memberTurns: [
+      turn("run_s", "bot_a", "failed", "implement login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_s", "bot_b", "completed", "implement login", "achieved", "登录已完成。", "handoff_s", 1, 1, "t-ok"),
     ] });
   expect(overview.stuckCount).toBe(0);
   expect(overview.needsUserCount).toBe(0);
   expect(overview.nothingNeedsUser).toBe(true);
-  expect(overview.members.map((m) => `${m.botId}:${m.state}`)).toEqual(["bot_a:stuck", "bot_b:done"]);
-  // Note: per-bot state keeps bot_a stuck (its own turn never recovered);
-  // the Run-level needs-you count is what clears, because the Run moved on.
+  expect(overview.noOverallConclusion).toBe(false);
+});
+
+test("Fix5 overview: whitespace-only task differences still count as the same task; rewording does not", () => {
+  const recovered = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_w", "running")],
+    memberTurns: [
+      turn("run_w", "bot_a", "failed", "implement   login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_w", "bot_b", "completed", " implement login ", "achieved", "登录已完成。", "handoff_w", 1, 1, "t-ok"),
+    ] });
+  expect(recovered.stuckCount).toBe(0);
+  const reworded = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_w2", "running")],
+    memberTurns: [
+      turn("run_w2", "bot_a", "failed", "implement login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_w2", "bot_b", "completed", "implement login page", "achieved", "登录页已完成。", "handoff_w2", 1, 1, "t-ok"),
+    ] });
+  expect(reworded.stuckCount).toBe(1);
+  expect(reworded.needsUserCount).toBe(1);
+});
+
+test("Fix5 overview: a taskless failure is never cleared by a later completed turn", () => {
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_n", "running")],
+    memberTurns: [
+      turn("run_n", "bot_a", "failed", undefined, undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_n", "bot_b", "completed", "anything at all", "achieved", "已完成。", "handoff_n", 1, 1, "t-ok"),
+    ] });
+  expect(overview.stuckCount).toBe(1);
+});
+
+test("Fix5 overview: a real final summary closes earlier failures and is the only final answer", () => {
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_sum", "completed")],
+    memberTurns: [
+      turn("run_sum", "bot_a", "failed", "implement login", undefined, undefined, undefined, 1, 0, "t-fail"),
+      turn("run_sum", "bot_b", "completed", "final summary", "achieved", "全部完成，失败已在剩余项交代。", "handoff_sum", 1, 1, "t-sum", "followup"),
+    ] });
+  expect(overview.stuckCount).toBe(0);
+  expect(overview.needsUserCount).toBe(0);
+  expect(overview.noOverallConclusion).toBe(false);
+  expect(overview.nothingNeedsUser).toBe(true);
+  expect(overview.finalAnswers).toEqual([
+    { runId: "run_sum", assignmentId: "handoff_sum", botId: "bot_b", verdict: "achieved", conclusion: "全部完成，失败已在剩余项交代。" },
+  ]);
+});
+
+test("Fix5 overview: a running Run whose last terminal turn failed has no final answer", () => {
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_run", "running")],
+    memberTurns: [
+      turn("run_run", "bot_a", "completed", "dev done", "achieved", "开发完成。", "handoff_d", 1, 0, "t-d"),
+      turn("run_run", "bot_b", "failed", "review crashed", undefined, undefined, undefined, 1, 1, "t-f"),
+    ] });
+  expect(overview.finalAnswers).toEqual([]);
+  expect(overview.stuckCount).toBe(1);
+  expect(overview.noOverallConclusion).toBe(false);
+});
+
+test("Fix5 overview: budget exhaustion after a stage followup leaves no final answer and no overall conclusion", () => {
+  // Stage followup completed, then a re-review fix completed, but the
+  // budget ran out before the next summary could be created. The old
+  // "any completed followup" check would have hidden the budget warning
+  // and promoted the stage conclusion; the real-summary check does not.
+  const exhausted = run("run_b", "completed") as ConversationRun & { followupBudgetExhausted?: boolean };
+  exhausted.followupBudgetExhausted = true;
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [exhausted],
+    memberTurns: [
+      turn("run_b", "bot_a", "completed", "dev done", "achieved", "开发完成。", "handoff_d", 1, 0, "t-d"),
+      turn("run_b", "bot_b", "completed", "stage summary", "achieved", "阶段汇总。", "handoff_s", 2, 0, "t-s", "followup"),
+      turn("run_b", "bot_a", "completed", "re-review fix", "achieved", "修复完成。", "handoff_f", 3, 0, "t-f"),
+    ] });
+  expect(overview.finalAnswers).toEqual([]);
+  expect(overview.noOverallConclusion).toBe(true);
+  expect(overview.nothingNeedsUser).toBe(false);
+});
+
+test("Fix5 overview: a terminal Run with completed members but no summary reports no overall conclusion", () => {
+  const overview = buildGroupOverview({ conversationId: "conversation_group", memberBotIds: ["bot_a", "bot_b"],
+    runs: [run("run_nosum", "completed")],
+    memberTurns: [
+      turn("run_nosum", "bot_a", "completed", "dev done", "achieved", "开发完成。", "handoff_d", 1, 0, "t-d"),
+      turn("run_nosum", "bot_b", "completed", "other work", "achieved", "其他完成。", "handoff_o", 1, 1, "t-o"),
+    ] });
+  expect(overview.finalAnswers).toEqual([]);
+  expect(overview.noOverallConclusion).toBe(true);
+  expect(overview.nothingNeedsUser).toBe(false);
 });
 
 test("Fix1-4 overview: a budget-exhausted Run with no final summary lists no final answer", () => {

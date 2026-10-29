@@ -1011,6 +1011,7 @@ export default {
       stuck: "{count} stuck",
       needsYou: "{count} need you",
       nothingNeedsYou: "Nothing needs you today",
+      noOverallConclusion: "No overall conclusion formed",
       budgetExhausted: "Work settled, but the final summary was not run because the budget was exhausted",
       budgetExhaustedAction: "Review each member's conclusion to summarize yourself, or send a new message to re-summarize.",
       idle: "Idle",
