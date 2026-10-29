@@ -110,6 +110,26 @@ function scrollToBottom(smooth = false): void {
     top: el.scrollHeight,
     behavior: smooth ? "smooth" : "auto",
   });
+  // content-visibility rows paint at the contain-intrinsic-size estimate, and late
+  // layout (fonts, avatars, code blocks) keeps growing the content after the first
+  // jump, so a fixed-frame re-pin lands short (iOS Safari is the worst). Keep
+  // re-pinning while the content keeps growing, and stop as soon as the reader
+  // drifts off the bottom. Skipped for smooth (the ↓ Latest jump) so we don't
+  // fight the animation, and where rAF is unavailable (jsdom tests).
+  if (smooth || typeof requestAnimationFrame !== "function") return;
+  let pinnedHeight = el.scrollHeight;
+  let tries = 0;
+  const settle = (): void => {
+    const e = scroller.value;
+    if (!e) return;
+    if (pinnedHeight - e.scrollTop - e.clientHeight > THRESHOLD) return; // reader took over
+    if (e.scrollHeight !== pinnedHeight) {
+      pinnedHeight = e.scrollHeight;
+      e.scrollTop = e.scrollHeight;
+    }
+    if (++tries < 40) requestAnimationFrame(settle);
+  };
+  requestAnimationFrame(settle);
 }
 
 // Keep scroll at bottom on incoming streaming output or new messages,
@@ -224,7 +244,9 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         <!-- Human Message -->
         <TranscriptRow v-if="m.role === 'human'" own :row-id="m.id">
           <ConversationBubble :message="m" :attachments="m.attachments" own />
-          <ConversationMeta :message="m" />
+          <template #meta>
+            <ConversationMeta :message="m" />
+          </template>
         </TranscriptRow>
 
         <!-- Bot Message -->

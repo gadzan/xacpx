@@ -593,28 +593,32 @@ watch(
             :style="enterStyle(i)"
           />
           <!-- USER row -->
-          <div v-else-if="m.direction === 'in' && !m.structured?.agentMessage" class="conversation-row group cv-row flex justify-end" :class="enterRowClass"
+          <div v-else-if="m.direction === 'in' && !m.structured?.agentMessage" class="conversation-row group cv-row flex flex-col items-end" :class="enterRowClass"
                :style="enterStyle(i)"
                :data-scheduled-task="schedOf(m)?.taskId">
             <!-- min-w-0: without it the flex item's min-width:auto tracks a wide <pre>/table
                  min-content and can defeat the max-w-[80%] cap. -->
-            <div class="flex min-w-0 max-w-[80%] flex-col items-end">
-              <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
-              <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
-                    class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent"
-                    :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
-                <Clock :size="11" />{{ $t("chat.scheduled") }}
-              </span>
-              <ConversationBubble :message="m" :attachments="m.attachments" own data-test="msg-in" :class="m.failed ? '!bg-danger/5' : ''" />
-              <ConversationMeta :message="m" />
-              <!-- Failed sends get a compact retry affordance on their own line below. -->
-              <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
-                <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
-                  <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
-                <button type="button" data-test="msg-resend"
-                        class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
-                        :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
+            <div class="flex w-full justify-end">
+              <div class="flex min-w-0 max-w-[80%] flex-col items-end">
+                <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
+                <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
+                      class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent"
+                      :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
+                  <Clock :size="11" />{{ $t("chat.scheduled") }}
+                </span>
+                <ConversationBubble :message="m" :attachments="m.attachments" own data-test="msg-in" :class="m.failed ? '!bg-danger/5' : ''" />
               </div>
+            </div>
+            <!-- Meta + retry live outside the max-w-[80%] column: iOS Safari paint-clips
+                 the column at its bubble width, cutting a wider time row. -->
+            <ConversationMeta :message="m" />
+            <!-- Failed sends get a compact retry affordance on their own line below. -->
+            <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
+              <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
+                <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
+              <button type="button" data-test="msg-resend"
+                      class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
+                      :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
             </div>
           </div>
           <!-- ASSISTANT row -->
