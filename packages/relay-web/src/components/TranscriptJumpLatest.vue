@@ -28,10 +28,14 @@ const emit = defineEmits<{ jump: [] }>();
    edge instead of ending at a hard band. */
 .jump-scrim {
   position: absolute;
-  inset: auto 0 0 0;
+  /* The composer wrapper (pt-1.5 + a top-transparent gradient) sits between the
+     transcript bottom and the input card; without reaching over it the fade
+     stops 6px short and content ghosts through right above the card. The
+     wrapper paints later but its top is transparent, so the extension shows. */
+  inset: auto 0 -0.375rem 0;
   height: 4.5rem;
   pointer-events: none;
-  background: linear-gradient(to top, rgb(var(--c-bg) / 0.9), rgb(var(--c-bg) / 0));
+  background: linear-gradient(to top, rgb(var(--c-bg) / 1), rgb(var(--c-bg) / 0));
   -webkit-mask-image: linear-gradient(to top, #000 30%, transparent);
   mask-image: linear-gradient(to top, #000 30%, transparent);
   backdrop-filter: blur(3px);

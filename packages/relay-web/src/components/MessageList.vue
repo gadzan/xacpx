@@ -8,11 +8,12 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
-import { AlertCircle, ArrowDown, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
+import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import LiveTurnAvatar from "./LiveTurnAvatar.vue";
 import ThinkingDots from "./ThinkingDots.vue";
+import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import { fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
@@ -676,20 +677,9 @@ watch(
       </div>
     </div>
 
-    <!-- Bottom scrim (blur + fade to the page bg) lifts the jump-latest pill off the
-         transcript whenever the view is detached from the bottom. -->
-    <div v-show="!atBottom" aria-hidden="true" class="jump-scrim" />
-    <button
-      v-show="!atBottom"
-      data-test="jump-latest"
-      type="button"
-      :aria-label="$t('chat.jumpLatest')"
-      :title="$t('chat.jumpLatest')"
-      class="absolute bottom-3 left-1/2 z-10 grid h-7 w-7 -translate-x-1/2 place-items-center rounded-sm bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-colors hover:bg-surface"
-      @click="scrollToBottom(true)"
-    >
-      <ArrowDown :size="13" :stroke-width="2.5" />
-    </button>
+    <!-- Bottom scrim + jump-latest pill (shared component): the fade must reach
+         over the composer wrapper's pt-1.5 so it terminates at the input card. -->
+    <TranscriptJumpLatest :visible="!atBottom" @jump="scrollToBottom(true)" />
   </div>
 </template>
 
@@ -707,18 +697,6 @@ watch(
 }
 
 
-/* Gradient + progressive blur under the jump-latest pill (mask fades the backdrop
-   blur itself, so content blurs out toward the bottom edge instead of a hard band). */
-.jump-scrim {
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 4.5rem;
-  pointer-events: none;
-  background: linear-gradient(to top, rgb(var(--c-bg) / 0.9), rgb(var(--c-bg) / 0));
-  -webkit-mask-image: linear-gradient(to top, #000 30%, transparent);
-  mask-image: linear-gradient(to top, #000 30%, transparent);
-  backdrop-filter: blur(3px);
-}
 
 /* Entrance choreography (see enterPhase): HOLD keeps the transcript laid out but
    invisible while the scroller is being positioned — opacity (not display/visibility)
