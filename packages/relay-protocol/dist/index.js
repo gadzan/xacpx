@@ -224,6 +224,7 @@ var MSG = {
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
   runsCancelMember: "control.runs.cancelMember",
+  runsCancelTopic: "control.runs.cancelTopic",
   interactionRequest: "control.interaction.request",
   interactionRespond: "control.interaction.respond",
   interactionWithdraw: "control.interaction.withdraw"
@@ -1998,6 +1999,12 @@ var validateRunsCancelMember = (p) => {
     return null;
   return traceProductId(o.runId) && traceProductId(o.memberTurnId) ? o : null;
 };
+var validateRunsCancelTopic = (p) => {
+  const o = fields(p);
+  if (!o || !hasOnlyKeys(o, { conversationId: true, topicId: true }))
+    return null;
+  return traceProductId(o.conversationId) && traceProductId(o.topicId) ? o : null;
+};
 var optObj = (v) => v === undefined || isObj(v);
 var isTimestamp = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 var INTERACTION_KINDS = ["permission", "elicitation"];
@@ -2332,6 +2339,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
   [MSG.runsCancelMember]: validateRunsCancelMember,
+  [MSG.runsCancelTopic]: validateRunsCancelTopic,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
   [MSG.interactionWithdraw]: validateInteractionWithdraw

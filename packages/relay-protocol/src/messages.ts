@@ -200,6 +200,7 @@ export const MSG = {
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
   runsCancelMember: "control.runs.cancelMember",
+  runsCancelTopic: "control.runs.cancelTopic",
   /**
    * Connector -> hub: OPEN one interaction. Core's broker is the only production
    * caller (`RelayChannel.requestElicitation`), so the direction is dial-out:
@@ -802,6 +803,15 @@ export interface RunsCancelMemberPayload {
 }
 export interface RunsCancelMemberResult {
   run: ConversationRunDetailDto;
+}
+export interface RunsCancelTopicPayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface RunsCancelTopicResult {
+  runs: ConversationRunDetailDto[];
+  activeRunId?: string;
+  activeRun?: ConversationRunDetailDto;
 }
 
 export interface OkResult {

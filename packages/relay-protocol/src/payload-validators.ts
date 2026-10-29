@@ -70,6 +70,7 @@ import {
   type QueueCancelPayload,
   type RunsCancelPayload,
   type RunsCancelMemberPayload,
+  type RunsCancelTopicPayload,
   type RunsGetPayload,
   type RunsDetailsBatchPayload,
   type RunsTraceGetPayload,
@@ -872,6 +873,13 @@ const validateRunsCancelMember: Validator<RunsCancelMemberPayload> = (p) => {
     ? o as unknown as RunsCancelMemberPayload : null;
 };
 
+const validateRunsCancelTopic: Validator<RunsCancelTopicPayload> = (p) => {
+  const o = fields(p);
+  if (!o || !hasOnlyKeys(o, { conversationId: true, topicId: true })) return null;
+  return traceProductId(o.conversationId) && traceProductId(o.topicId)
+    ? o as unknown as RunsCancelTopicPayload : null;
+};
+
 /* --- relay interaction transport (shared by permission + elicitation) --- */
 
 /** Optional present-tense object field: absent or a plain object. */
@@ -1212,7 +1220,7 @@ export type ControlRpcType =
   | typeof MSG.conversationPrompt | typeof MSG.conversationPromptWithPolicy | typeof MSG.conversationHistory
   | typeof MSG.conversationWorktree
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
-  | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel | typeof MSG.runsCancelMember
+  | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel | typeof MSG.runsCancelMember | typeof MSG.runsCancelTopic
   | typeof MSG.runsDetailsBatch | typeof MSG.runsTraceGet
   | typeof MSG.interactionRequest | typeof MSG.interactionRespond
   | typeof MSG.interactionWithdraw;
@@ -1326,6 +1334,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
   [MSG.runsCancelMember]: validateRunsCancelMember,
+  [MSG.runsCancelTopic]: validateRunsCancelTopic,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
   [MSG.interactionWithdraw]: validateInteractionWithdraw,

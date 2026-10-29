@@ -15,10 +15,11 @@ import { parseControlPayload } from "../../../../packages/relay-protocol/src/pay
 import type { AgentCatalogEntryDto } from "../../../../packages/relay-protocol/src/dtos";
 
 /**
- * Wire names are lowercase dotted strings. The scoped MemberTurn cancel arm is
- * the one exception: its wire name is fixed by the protocol design.
+ * Wire names are lowercase dotted strings. The scoped MemberTurn cancel arm and
+ * the topic-scoped cancel arm are the exceptions: their wire names are fixed by
+ * the protocol design.
  */
-const NON_LOWERCASE_MESSAGE_TYPES: readonly string[] = ["control.runs.cancelMember"];
+const NON_LOWERCASE_MESSAGE_TYPES: readonly string[] = ["control.runs.cancelMember", "control.runs.cancelTopic"];
 
 test("message type constants are namespaced and unique", () => {
   const values = Object.values(MSG);
