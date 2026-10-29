@@ -73,7 +73,7 @@ import type {
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 import { parseGroupSend } from "./group-handoff";
-import type { GroupReadCursor } from "./group-chat-wake";
+import { isSilenceReply, type GroupReadCursor } from "./group-chat-wake";
 import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 
 export interface ConversationIdFactory {
@@ -189,6 +189,7 @@ interface MemberTurnRow {
   blocked_reason?: string | null;
   cancellation_reason?: "human-cancelled" | null;
   followup_sender_member_turn_id?: string | null;
+  group_frozen_seq?: number | null;
 }
 
 interface DispatchRow {
@@ -713,6 +714,9 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     ...(optionalString(row.blocked_reason)
       ? { blockedReason: row.blocked_reason as MemberTurnRecord["blockedReason"] }
       : {}),
+    ...(row.group_frozen_seq === null || row.group_frozen_seq === undefined
+      ? {}
+      : { groupFrozenSeq: Number(row.group_frozen_seq) }),
     createdAt: row.created_at,
   };
 }
@@ -1242,22 +1246,24 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   getGroupReadCursor(topicId: string, botId: string): GroupReadCursor | undefined {
-    const row = this.sqlite.get<{ last_seq: number; pending_wake: number }>(
-      "SELECT last_seq, pending_wake FROM group_read_cursor WHERE topic_id = ? AND bot_id = ?",
+    const row = this.sqlite.get<{ last_seq: number; pending_wake: number; context_generation: number }>(
+      "SELECT last_seq, pending_wake, context_generation FROM group_read_cursor WHERE topic_id = ? AND bot_id = ?",
       [topicId, botId],
     );
-    return row ? { lastSeq: Number(row.last_seq), pendingWake: row.pending_wake === 1 } : undefined;
+    return row
+      ? { lastSeq: Number(row.last_seq), pendingWake: row.pending_wake === 1, contextGeneration: Number(row.context_generation) }
+      : undefined;
   }
 
   /** A turn that ended successfully has consumed everything it was shown, so
    *  the cursor moves to the seq frozen at its start and any pending wake is
    *  discharged. Failed and cancelled turns never call this. */
-  advanceGroupReadCursor(topicId: string, botId: string, lastSeq: number): void {
+  advanceGroupReadCursor(topicId: string, botId: string, lastSeq: number, contextGeneration: number): void {
     this.sqlite.run(
-      `INSERT INTO group_read_cursor (topic_id, bot_id, last_seq, pending_wake)
-       VALUES (?, ?, ?, 0)
-       ON CONFLICT(topic_id, bot_id) DO UPDATE SET last_seq = excluded.last_seq, pending_wake = 0`,
-      [topicId, botId, lastSeq],
+      `INSERT INTO group_read_cursor (topic_id, bot_id, last_seq, pending_wake, context_generation)
+       VALUES (?, ?, ?, 0, ?)
+       ON CONFLICT(topic_id, bot_id) DO UPDATE SET last_seq = excluded.last_seq, pending_wake = 0, context_generation = excluded.context_generation`,
+      [topicId, botId, lastSeq, contextGeneration],
     );
   }
 
@@ -2162,6 +2168,7 @@ export class SqliteConversationStore implements ConversationStore {
              logical_session_id = ?,
              source_turn_id = ?,
              queue_item_id = COALESCE(?, queue_item_id),
+             group_frozen_seq = ?,
              started_at = ?
          WHERE id = ? AND started_at IS NULL`,
         [
@@ -2169,6 +2176,7 @@ export class SqliteConversationStore implements ConversationStore {
           input.logicalSessionId,
           input.sourceTurnId,
           input.queueItemId ?? null,
+          input.groupFrozenSeq ?? null,
           input.now,
           input.memberTurnId,
         ],
@@ -2299,27 +2307,35 @@ export class SqliteConversationStore implements ConversationStore {
         // no double progress count; the Run aggregate already observed it.
         return { run, memberTurn: member, resurrected: false };
       }
-      const seq = this.allocateSeq(run.conversationId, run.topicId);
-      const messageId = this.ids.messageId();
-      this.sqlite.run(
-        `INSERT INTO messages (
-           id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-         ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
-        [
-          messageId,
-          run.conversationId,
-          run.topicId,
-          seq,
-          // Sender derives from the member turn itself, never from a
-          // caller-supplied botId: a mismatched caller value cannot
-          // misattribute the transcript.
-          member.botId,
-          input.content,
-          run.id,
-          JSON.stringify(input.sourceTurn),
-          input.now,
-        ],
-      );
+      // A silent reply speaks to nobody: no transcript row, no wake. The turn
+      // still completes and still advances the cursor. Only group-chat turns
+      // carry a frozen seq, so bundled assignments keep their contract that an
+      // empty result is valid dependency evidence.
+      const groupChat = member.groupFrozenSeq !== undefined;
+      const silent = groupChat && isSilenceReply(input.content);
+      const seq = silent ? 0 : this.allocateSeq(run.conversationId, run.topicId);
+      const messageId = silent ? undefined : this.ids.messageId();
+      if (messageId !== undefined) {
+        this.sqlite.run(
+          `INSERT INTO messages (
+             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+          [
+            messageId,
+            run.conversationId,
+            run.topicId,
+            seq,
+            // Sender derives from the member turn itself, never from a
+            // caller-supplied botId: a mismatched caller value cannot
+            // misattribute the transcript.
+            member.botId,
+            input.content,
+            run.id,
+            JSON.stringify(input.sourceTurn),
+            input.now,
+          ],
+        );
+      }
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
         [input.now, member.id],
@@ -2329,6 +2345,12 @@ export class SqliteConversationStore implements ConversationStore {
         [run.id],
       );
       this.finishDispatchForMemberTurn(member.id, input.now);
+      // Only a turn that actually completed advances the read cursor, and only
+      // to the seq frozen when it started: messages that arrived mid-turn stay
+      // unread for the next wake.
+      if (member.groupFrozenSeq !== undefined) {
+        this.advanceGroupReadCursor(run.topicId, member.botId, member.groupFrozenSeq, this.topicContextGeneration(run.topicId));
+      }
       const aggregated = this.aggregateRunAfterMemberTerminal(
         run.id,
         member.id,
@@ -2339,7 +2361,7 @@ export class SqliteConversationStore implements ConversationStore {
       return {
         run: aggregated,
         memberTurn: this.requireMemberTurn(member.id),
-        assistantMessage: this.getMessage(messageId),
+        ...(messageId !== undefined ? { assistantMessage: this.getMessage(messageId) } : {}),
         resurrected: false,
       };
     });
@@ -3557,6 +3579,9 @@ export class SqliteConversationStore implements ConversationStore {
     if (!names.has("blocked_reason")) {
       this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN blocked_reason TEXT");
     }
+    if (!names.has("group_frozen_seq")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN group_frozen_seq INTEGER");
+    }
   }
 
   /**
@@ -3623,8 +3648,12 @@ export class SqliteConversationStore implements ConversationStore {
         bot_id TEXT NOT NULL,
         last_seq INTEGER NOT NULL,
         pending_wake INTEGER NOT NULL DEFAULT 0,
+        context_generation INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (topic_id, bot_id)
       )`);
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_group_read_cursor_topic ON group_read_cursor (topic_id)",
+    );
   }
 
   private ensureDispatchMultiMemberShape(): void {

@@ -276,6 +276,10 @@ export interface MemberTurnRecord {
    * orchestration origin and the human creates a NEW explicit request.
    * Absent means the turn is not permission-blocked. */
   blockedReason?: "human-authority-required" | "human-authority-unknown";
+  /** Highest shared-log seq this group turn was shown, frozen at prompt build.
+   *  Present only for group-chat turns; a successful completion advances the
+   *  bot's read cursor to it. */
+  groupFrozenSeq?: number;
 }
 
 /** Server-derived authenticated human ingress. Clients cannot mint this. */

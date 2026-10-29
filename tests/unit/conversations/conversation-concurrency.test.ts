@@ -44,7 +44,13 @@ for (const limit of [undefined, 1, 2, 64]) {
       expect(call.sourceTurnId).toBe(call.promptRequestId);
       expect(call.sourceTurnId).toBeDefined();
     }
-    expect(h.runner.calls[2]!.text).not.toContain("result-0");
+    // Members claimed together see only the request. A member claimed after a
+    // sibling already spoke reads that reply from the shared log.
+    if (firstWave < 3) {
+      expect(h.runner.calls[2]!.text).toContain("result-0");
+    } else {
+      expect(h.runner.calls[2]!.text).not.toContain("result-0");
+    }
     h.store.close();
   });
 }

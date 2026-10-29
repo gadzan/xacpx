@@ -10,6 +10,7 @@ import type { SessionService } from "../sessions/session-service";
 import type { LogicalSession } from "../state/types";
 import { ConversationError } from "./conversation-error";
 import { isRunCancelling, requireMemberResult } from "./conversation-store";
+import { GROUP_RESET_TRANSCRIPT_MESSAGES } from "./group-chat-wake";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import { publicMessageMatchesRunScope, requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
@@ -1667,7 +1668,9 @@ export class ConversationDispatcher {
       }
       // Re-read exact dependency evidence after async materialization/hooks,
       // immediately before start; corruption cannot invalidate a cached prompt.
-      const groupPrompt = isGroup ? this.groupTurnPrompt(work) : undefined;
+      const groupPrompt = isGroup
+        ? this.groupTurnPrompt(work, binding.contextGeneration ?? 1)
+        : undefined;
       const sourceTurnId = createSourceTurnId();
       try {
         started = this.store.markExecutionStarted({
@@ -1679,6 +1682,7 @@ export class ConversationDispatcher {
           sessionAlias: binding.sessionAlias,
           logicalSessionId: binding.logicalSessionId,
           sourceTurnId,
+          ...(groupPrompt?.frozenSeq !== undefined ? { groupFrozenSeq: groupPrompt.frozenSeq } : {}),
           now: this.now().toISOString(),
         });
       } catch (error) {
@@ -1725,7 +1729,7 @@ export class ConversationDispatcher {
       const rawCommand = isAdvertisedRuntimeCommand(commandIdentity, userText);
       const group = isGroup ? this.runtime.getGroupScope(work.run.conversationId) : undefined;
       const wrapped = isGroup
-        ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!, group)
+        ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!.prompt, group)
         : composeBotTurnPromptFromSnapshot(snapshot, userText);
       const text = adapterFacingPrompt(commandIdentity, userText, wrapped);
       const directExecution = !isGroup && started.effect !== "read-only" ? this.directMessaging?.bindExecution({ memberTurnId: started.id, sourceTurnId, dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
@@ -2077,15 +2081,20 @@ export class ConversationDispatcher {
     return this.store.getMessage(messageId)?.content ?? "";
   }
 
-  private groupTurnPrompt(work: ClaimedWork): string {
+  private groupTurnPrompt(work: ClaimedWork, contextGeneration: number): { prompt: string; frozenSeq?: number } {
+    // Bundled assignments and the Router keep the frozen pre-request baseline;
+    // only plain group-chat turns read the shared log through the cursor.
+    if (work.run.mode !== "automatic" && !work.memberTurn.assignmentId) {
+      const { transcript, frozenSeq } = this.groupChatTranscript(work, contextGeneration);
+      return { prompt: transcript, frozenSeq };
+    }
     const context = this.frozenGroupTranscript(work);
-    if (work.run.mode !== "automatic" && !work.memberTurn.assignmentId) return context;
     // Recovery changes execution provenance, not the durable assignment.
     // Assignment instructions are per-member execution input, separate from
     // the frozen public transcript shared by parallel siblings.
     const expected = work.memberTurn.expectedOutput === undefined
       ? "" : `\n\nExpected output:\n${work.memberTurn.expectedOutput}`;
-    return `Group assignment:\nTask:\n${work.memberTurn.task}${expected}\n\nPublic Group context:\n${context}`;
+    return { prompt: `Group assignment:\nTask:\n${work.memberTurn.task}${expected}\n\nPublic Group context:\n${context}` };
   }
 
   /**
@@ -2149,6 +2158,53 @@ export class ConversationDispatcher {
       return requestText;
     }
     return `${lines.join("\n\n")}\n\nHuman: ${requestText}`;
+  }
+
+  /**
+   * Group-chat transcript: everything this bot has not read yet in the topic's
+   * shared log, plus a recent window when its session is new or was reset.
+   *
+   * The read cursor is per bot, so a bot that missed a round still sees exactly
+   * the messages it never read. A cleared topic context is detected by the
+   * generation stamped on the cursor, and replayed from the recent window
+   * instead of silently resumed against a retired session.
+   */
+  private groupChatTranscript(
+    work: ClaimedWork,
+    contextGeneration: number,
+  ): { transcript: string; frozenSeq: number } {
+    const request = this.store.getMessage(work.run.requestMessageId);
+    if (request === undefined || !requestSnapshotMatches(request, work.run)) {
+      throw new ConversationError("request_snapshot_mismatch", `run "${work.run.id}" lost its request snapshot`);
+    }
+    const cursor = this.store.getGroupReadCursor(work.run.topicId, work.memberTurn.botId);
+    const continuing = cursor !== undefined && cursor.contextGeneration === contextGeneration;
+    const unread = this.store.listMessages({
+      conversationId: work.run.conversationId,
+      topicId: work.run.topicId,
+      ...(cursor ? { afterSeq: cursor.lastSeq } : {}),
+      limit: Number.MAX_SAFE_INTEGER,
+    });
+    const recent = continuing
+      ? []
+      : this.store.listMessages({
+        conversationId: work.run.conversationId,
+        topicId: work.run.topicId,
+        limit: GROUP_RESET_TRANSCRIPT_MESSAGES,
+        direction: "newest-first",
+      });
+    const allowed = new Map(unread.map((message) => [message.id, message]));
+    for (const message of recent) allowed.set(message.id, message);
+    const transcript = [...allowed.values()].sort((a, b) => a.seq - b.seq);
+    const frozenSeq = transcript.reduce((highest, message) => Math.max(highest, message.seq), cursor?.lastSeq ?? 0);
+    if (transcript.length === 0) {
+      return { transcript: request.content, frozenSeq };
+    }
+    const lines = transcript.map((message) =>
+      message.role === "human"
+        ? `Human: ${message.content}`
+        : `Bot ${message.senderBotId ?? ""}: ${message.content}`);
+    return { transcript: lines.join("\n\n"), frozenSeq };
   }
 
   /**

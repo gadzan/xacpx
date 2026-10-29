@@ -202,6 +202,10 @@ export interface MarkExecutionStartedInput {
   logicalSessionId: string;
   sourceTurnId: string;
   queueItemId?: string;
+  /** Highest shared-log seq this turn was shown, frozen when its prompt was
+   *  built. A successful completion advances the bot's read cursor to it, so
+   *  messages that arrive mid-turn stay unread for the next wake. */
+  groupFrozenSeq?: number;
   now: string;
 }
 
@@ -414,7 +418,7 @@ export interface ConversationStore {
   getGroupReadCursor(topicId: string, botId: string): GroupReadCursor | undefined;
   /** Move a bot's cursor to the seq frozen when its turn started, discharging
    *  any pending wake. Called only by a turn that ended successfully. */
-  advanceGroupReadCursor(topicId: string, botId: string, lastSeq: number): void;
+  advanceGroupReadCursor(topicId: string, botId: string, lastSeq: number, contextGeneration: number): void;
   /** Record or clear a wake that arrived while the bot was mid-turn. */
   setGroupPendingWake(topicId: string, botId: string, pending: boolean): void;
   /** Drop every pending wake in a topic. Used by topic-wide cancellation. */

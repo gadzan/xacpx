@@ -76,6 +76,7 @@ import type {
   WorkspaceIsolationPolicy,
 } from "./conversation-types";
 import { groupWorkspaceMode, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
+import { parseMentions, type GroupWakeMember } from "./group-chat-wake";
 
 export interface ConversationRunServiceOptions {
   worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
@@ -477,7 +478,7 @@ export class ConversationRunService {
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
     }
-    const parsed = this.parseGroupTarget(input.target, conversation);
+    const parsed = this.parseGroupTarget(input.target, conversation, input.text);
     if (memberPolicies && parsed.kind === "automatic") throw new ConversationError("invalid-effect-policy", "effect policy requires explicit members");
     // PR8 capability gate, BEFORE any durable write: automatic mode requires
     // a Router that can prove its capability restriction up front. An
@@ -1543,9 +1544,13 @@ export class ConversationRunService {
   private parseGroupTarget(
     target: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | undefined,
     conversation: ConversationRecord,
+    text: string,
   ): { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" } {
     if (!target) {
-      throw new ConversationError("target_required", "explicit Group prompt requires a target");
+      // No explicit selection: the message text decides. Mentions wake the
+      // named bots; a message with none wakes everyone.
+      const wake = parseMentions(text, this.groupWakeMembers(conversation));
+      return wake.mode === "members" ? { kind: "members", botIds: wake.botIds } : { kind: "everyone" };
     }
     // The variants are a mutually exclusive union: mixed shapes are
     // ambiguous input and fail closed — never silently interpreted as
@@ -1590,6 +1595,16 @@ export class ConversationRunService {
       return { kind: "automatic" };
     }
     throw new ConversationError("automatic_unsupported", "automatic Group routing is not available in this release");
+  }
+
+  /** Live display names of the bots that may be woken in this Group. Names are
+   *  matched whole, so the roster must come from live profiles rather than a
+   *  stored snapshot. */
+  private groupWakeMembers(conversation: ConversationRecord): GroupWakeMember[] {
+    return conversation.botIds.flatMap((botId) => {
+      const bot = this.state.bots[botId];
+      return bot?.enabled ? [{ botId, name: bot.name }] : [];
+    });
   }
 
   /** Gate-set probe for accept linearization. Targeted mode probes selected

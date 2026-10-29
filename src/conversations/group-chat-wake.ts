@@ -75,8 +75,11 @@ export function parseMentions(text: string, members: readonly GroupWakeMember[])
 
 /** Durable per-bot read position in one topic's shared log. `pendingWake` is a
  *  wake that arrived while the bot was mid-turn; it is consumed by exactly one
- *  extra turn when that turn ends. */
+ *  extra turn when that turn ends. `contextGeneration` records the topic
+ *  generation the bot last read under, so a cleared context is detected as a
+ *  reset and replayed instead of silently resumed. */
 export interface GroupReadCursor {
   lastSeq: number;
   pendingWake: boolean;
+  contextGeneration: number;
 }
