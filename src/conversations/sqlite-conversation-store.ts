@@ -35,6 +35,7 @@ import type {
   FailExecutionInput,
   ListMessagesQuery,
   MarkExecutionStartedInput,
+  MemberAvailabilityFact,
   ApplyRoutingDecisionInput,
   ApplyRoutingDecisionResult,
   ClaimRecoveryScope,
@@ -372,6 +373,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_topic_state ON runs (topic_id, state, create
 CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state);
 CREATE INDEX IF NOT EXISTS idx_member_turns_run ON member_turns (run_id);
+CREATE INDEX IF NOT EXISTS idx_runs_conversation_state ON runs (conversation_id, state);
 
 CREATE TABLE IF NOT EXISTS bot_removal_barrier (
   bot_id TEXT PRIMARY KEY,
@@ -1303,6 +1305,29 @@ export class SqliteConversationStore implements ConversationStore {
       "SELECT * FROM member_turns WHERE run_id = ? ORDER BY batch ASC, member_index ASC, id ASC",
       [runId],
     ).map(mapMemberTurn);
+  }
+
+  listMemberAvailabilityFacts(conversationId: string): MemberAvailabilityFact[] {
+    // Only non-terminal Runs are current work; a settled Run's turns are
+    // history and must not inflate the Router's bounded snapshot. `rowid`
+    // preserves durable insertion order when created_at ties.
+    return this.sqlite.all<{
+      bot_id: string;
+      state: MemberTurnState;
+      run_state: ConversationRunState;
+      handoff_sender_bot_id: string | null;
+    }>(`SELECT mt.bot_id, mt.state, r.state AS run_state, sender.bot_id AS handoff_sender_bot_id
+        FROM member_turns mt
+        JOIN runs r ON r.id = mt.run_id
+        LEFT JOIN member_turns sender
+          ON sender.source_turn_id = mt.handoff_source_turn_id AND sender.run_id = mt.run_id
+        WHERE mt.conversation_id = ? AND r.state IN ('queued', 'running', 'waiting-human')
+        ORDER BY mt.created_at, mt.rowid`, [conversationId]).map((row) => ({
+      botId: row.bot_id,
+      state: row.state,
+      runState: row.run_state,
+      ...(row.handoff_sender_bot_id ? { handoffSenderBotId: row.handoff_sender_bot_id } : {}),
+    }));
   }
 
   getMemberResult(turn: MemberTurnRecord): ConversationMessage | undefined {

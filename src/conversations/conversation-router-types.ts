@@ -159,6 +159,34 @@ export interface DurableCollaborationFacts {
   recoveryExhausted: boolean;
 }
 
+/** Why a member is or is not immediately available (design §8.3). `working`
+ *  covers in-flight AND queued work: a member with a queued assignment is not
+ *  idle, and the counts below distinguish executing from waiting. */
+export type MemberAvailabilityState = "idle" | "working" | "waiting-children" | "waiting-human" | "unavailable";
+
+/**
+ * One member's availability, sampled by the RUNTIME from durable store facts.
+ * Never model-authored, never client-supplied.
+ *
+ * ADVICE ONLY (design §8.3): busy is not undispatchable, so a legal task may
+ * still queue behind it. This snapshot is never an execution authorization and
+ * no admission gate may read it: lifecycle, permission, single-writer and
+ * capacity checks re-run against durable rows when the task actually claims or
+ * starts. A snapshot may also be stale by the time the Router answers.
+ */
+export interface MemberAvailability {
+  botId: string;
+  state: MemberAvailabilityState;
+  /** MemberTurns dispatched or running for this Bot. */
+  activeAssignments: number;
+  /** MemberTurns accepted but not yet dispatched (queued behind capacity). */
+  pendingAssignments: number;
+  /** Durable Run-local quarantine (design §8.3), independent of current work. */
+  quarantinedForRun: boolean;
+  /** When the runtime read these facts; one sample time per snapshot. */
+  sampledAt: string;
+}
+
 /**
  * Everything a Router call may consume, from one explicit snapshot.
  *
@@ -221,6 +249,13 @@ export interface RoutingInput {
   /** The Topic's group work target. Absent for a `per-member` Group, which
    *  has no group workspace: each member runs in its own Bot workspace. */
   executionTarget?: RoutingExecutionTarget;
+  /** Bounded per-member availability sampled by the runtime from store facts
+   *  (design §8.3). Advice only: no admission gate reads it, and busy members
+   *  stay dispatchable. See `MemberAvailability`. */
+  availability?: MemberAvailability[];
+  /** Members the fixed availability caps left out. Their durable work still
+   *  exists; absence from this snapshot proves nothing about them. */
+  omittedAvailabilityCount?: number;
 }
 
 /**
@@ -267,6 +302,11 @@ export const MAX_ROUTER_MEMBER_METADATA = 128;
 export const MAX_ROUTER_REQUEST_LENGTH = 16_000;
 export const MAX_ROUTER_TRANSCRIPT_CHARACTERS = 32_000;
 export const MAX_ROUTER_RESULT_CHARACTERS = 32_000;
+
+/** Fixed caps on the availability section: member count and its serialized
+ *  size. Both cuts are disclosed through `omittedAvailabilityCount`. */
+export const MAX_ROUTER_AVAILABILITY_MEMBERS = 64;
+export const MAX_ROUTER_AVAILABILITY_CHARACTERS = 12_000;
 
 export class RoutingDecisionError extends Error {
   constructor(readonly code: string, message: string, readonly details?: unknown) {

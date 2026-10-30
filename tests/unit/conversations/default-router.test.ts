@@ -7,6 +7,7 @@ import {
   isRouterCapabilityRestricted,
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_ASSIGNMENT_ID_LENGTH,
+  MAX_ROUTER_AVAILABILITY_MEMBERS,
   MAX_ROUTER_INPUT_CHARACTERS,
   MAX_ROUTER_REASON_LENGTH,
   MAX_ROUTER_TASK_LENGTH,
@@ -281,6 +282,36 @@ test("JSON that is not a RoutingInput fails closed too", async () => {
   expect(await runDefaultRouterCli(capture.io)).toBe(1);
   expect(capture.stdout).toEqual([]);
   expect(capture.stderr[0]).toStartWith("[xacpx-default-router] ");
+});
+
+test("a bounded availability sample is decoded and does not change the fan-out", async () => {
+  const availability = [{
+    botId: "bot_reviewer", state: "working" as const, activeAssignments: 2, pendingAssignments: 1,
+    quarantinedForRun: false, sampledAt: "2026-09-15T12:00:00.000Z",
+  }];
+  const capture = cliIo(["--decide"], JSON.stringify({ ...routingInput(), availability, omittedAvailabilityCount: 3 }));
+  expect(await runDefaultRouterCli(capture.io)).toBe(0);
+  expect(capture.stderr).toEqual([]);
+  expect(JSON.parse(capture.stdout.join(""))).toMatchObject({ type: "dispatch", mode: "parallel" });
+});
+
+test("a malformed availability sample fails the CLI shut", async () => {
+  const valid = {
+    botId: "bot_reviewer", state: "working", activeAssignments: 1, pendingAssignments: 0,
+    quarantinedForRun: false, sampledAt: "2026-09-15T12:00:00.000Z",
+  };
+  for (const availability of [
+    [{ ...valid, state: "sleeping" }],
+    [{ ...valid, activeAssignments: -1 }],
+    [{ ...valid, quarantinedForRun: "yes" }],
+    [{ ...valid, sampledAt: "" }],
+    Array.from({ length: MAX_ROUTER_AVAILABILITY_MEMBERS + 1 }, () => valid),
+  ]) {
+    const capture = cliIo(["--decide"], JSON.stringify({ ...routingInput(), availability }));
+    expect(await runDefaultRouterCli(capture.io)).toBe(1);
+    expect(capture.stdout).toEqual([]);
+    expect(capture.stderr[0]).toStartWith("[xacpx-default-router] ");
+  }
 });
 
 test("an unknown, missing, or duplicated flag prints usage and exits 2", async () => {

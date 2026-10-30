@@ -2067,6 +2067,57 @@ for (const concurrentEnable of [false, true]) {
   });
 }
 
+// §8.3 — availability is advice: a busy member's legal assignment queues.
+test("a busy member still gets a legal assignment admitted as queued work", async () => {
+  const release = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  const router = new RecordingRouter([
+    { type: "dispatch", mode: "single", assignments: [{ id: "first", botId: BOT_ID, task: "long review", triggerMessageIds: [] }] },
+    { type: "dispatch", mode: "single", assignments: [{ id: "second", botId: BOT_ID, task: "queued review", triggerMessageIds: [] }] },
+    { type: "complete", reason: "done" },
+  ]);
+  const harness = await createHarness({ autoKick: false, router, executionRunner: {
+    async run() {
+      started.resolve();
+      await release.promise;
+      return { status: "completed" as const, text: "done" };
+    },
+    async cancel() { return { outcome: "cancelled" as const }; },
+  } });
+  let drain: Promise<void> | undefined;
+  try {
+    const { group, topic } = await createGroup(harness);
+    const secondTopic = await harness.service.createGroupTopic(group.id, "Sprint 2", {
+      workspace: "backend", isolation: "shared-single-writer",
+    });
+    const first = await acceptAutomatic(harness, group.id, topic.id, "busy-first");
+    drain = harness.dispatcher.kick();
+    await started.promise;
+    expect(harness.store.listMemberTurns(first.run.id)[0]?.state).toBe("running");
+
+    // A second Run in the same Group routes while the member is still busy.
+    const busy = await acceptAutomatic(harness, group.id, secondTopic.id, "busy-second");
+    expect(router.inputs.at(-1)?.availability?.find((row) => row.botId === BOT_ID)).toMatchObject({
+      state: "working", activeAssignments: 1, pendingAssignments: 0, quarantinedForRun: false,
+    });
+    // Busy is not undispatchable: the assignment became queued work, not a refusal.
+    expect(harness.store.getRun(busy.run.id)?.state).toBe("running");
+    expect(harness.store.listMemberTurns(busy.run.id)).toMatchObject([
+      { botId: BOT_ID, state: "queued", assignmentId: "second" },
+    ]);
+    expect(harness.store.listDispatchesForRun(busy.run.id).map((dispatch) => dispatch.state)).toEqual(["pending"]);
+
+    release.resolve();
+    await drain;
+    await harness.dispatcher.kick();
+    await harness.service.awaitRouting();
+  } finally {
+    release.resolve();
+    await drain?.catch(() => undefined);
+    harness.store.close();
+  }
+});
+
 // §13.1 — parallel batch uses one identical frozen public snapshot
 // ---------------------------------------------------------------------------
 
