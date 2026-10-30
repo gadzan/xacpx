@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArrowLeft, MessageSquare, MoreHorizontal, Pencil, Plus, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
@@ -106,6 +106,20 @@ const bots = computed<BotSummaryDto[]>(() => {
   if (!instId) return [];
   return directBotsStore.botsByInstance[instId] ?? [];
 });
+// The pane renders member names itself, so it loads the catalog for the
+// instance it shows. The target selector no longer consults it, but display
+// still must distinguish a disabled lead from an enabled one.
+const paneCatalogReady = ref(false);
+watch(() => groupsStore.instanceId, loadPaneCatalog, { immediate: true });
+async function loadPaneCatalog(): Promise<void> {
+  const instId = groupsStore.instanceId;
+  paneCatalogReady.value = false;
+  if (!instId) return;
+  const loaded = await directBotsStore.loadBots(instId).then(() => true, () => false);
+  // A failed refresh leaves stale rows behind; reading them would claim every
+  // member is disabled, so the pane stays unconfirmed and shows no status.
+  paneCatalogReady.value = loaded;
+}
 const memberBots = computed<BotSummaryDto[]>(() => {
   const ids = new Set(group.value?.botIds ?? []);
   return bots.value.filter((b) => ids.has(b.id));
@@ -119,7 +133,7 @@ type MemberStatus =
 // display only: routing is the server's rule and the send may still be refused.
 const memberStatus = computed<MemberStatus | null>(() => {
   const current = group.value;
-  if (!current || !groupsStore.botCatalogKnown) return null;
+  if (!current || !paneCatalogReady.value) return null;
   const disabled = memberBots.value.filter((b) => !b.enabled);
   if (disabled.length === 0) return null;
   const enabled = memberBots.value.filter((b) => b.enabled);

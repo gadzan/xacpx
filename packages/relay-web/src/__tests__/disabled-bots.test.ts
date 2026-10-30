@@ -74,6 +74,9 @@ function seedBots(bots: BotSummaryDto[]): void {
   const direct = useDirectBotsStore();
   direct.botsByInstance["i1"] = bots;
   direct.botsLoaded["i1"] = true;
+  // The pane loads the catalog for the instance it shows, so the seeded rows
+  // must also be the answer its own refresh receives.
+  routes.set("control.bots.list", () => ({ bots }));
 }
 
 function seedGroup(group: GroupSummaryDto): void {
@@ -355,10 +358,14 @@ describe("Disabled Bots", () => {
       );
     });
 
-    it("shows no member status while the Bot catalog is unconfirmed", async () => {
-      seedBots([REVIEWER, TESTER, SLEEPER]);
-      useDirectBotsStore().botsLoaded["i1"] = false;
+    it("shows no member status when the pane's own catalog load fails", async () => {
+      seedBots([{ ...REVIEWER, enabled: false }, { ...TESTER, enabled: false }]);
       seedGroup(GROUP);
+      // A failed refresh leaves stale rows cached. They must not be read as
+      // "every member disabled", so the status stays hidden.
+      routes.set("control.bots.list", () => {
+        throw new Error("bots.list unavailable");
+      });
       const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
       await flushPromises();
 

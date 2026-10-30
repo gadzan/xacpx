@@ -2238,9 +2238,9 @@ export const useGroupsStore = defineStore("groups", () => {
       // The default target names the lead (or the first member by stable ID)
       // without consulting the Bot catalog: eligibility is the server's rule,
       // so a read-only listing failure must never widen routing.
-      // Fence BEFORE the write, not after: the slower Group's loadBots can
-      // settle after the user has already opened another Group, and writing
-      // here would overwrite that Group's target with the stale one's member.
+      // Fence BEFORE the write, not after: a slower Group selection can settle
+      // after the user has already opened another Group, and writing here would
+      // overwrite that Group's target with the stale one's member.
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }

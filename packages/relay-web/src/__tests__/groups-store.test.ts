@@ -207,23 +207,24 @@ describe("useGroupsStore", () => {
     const store = useGroupsStore();
     const groupA: GroupSummaryDto = { ...GROUP, id: "conversation_a", title: "A", leadBotId: "bot_a", botIds: ["bot_a"] };
     const groupB: GroupSummaryDto = { ...GROUP, id: "conversation_b", title: "B", leadBotId: "bot_b", botIds: ["bot_b"] };
-    // Group A's bots.list hangs until the test releases it.
+    // Group A's topics.list hangs until the test releases it. The default
+    // target no longer reads the Bot catalog, so a parked topics response is
+    // the race that the selection must survive.
     let releaseA!: () => void;
     const aHang = new Promise<void>((resolve) => { releaseA = resolve; });
-    let aBotsRequested = false;
-    mockRpc.mockImplementation(async (inst: string, type: string, payload?: unknown) => {
+    let aTopicsRequested = false;
+    mockRpc.mockImplementation(async (inst: string, type: string, payload?: { conversationId: string }) => {
       if (type === "control.groups.list") return { groups: [groupA, groupB] };
+      if (type === "control.topics.list" && payload?.conversationId === "conversation_a" && !aTopicsRequested) {
+        aTopicsRequested = true;
+        await aHang;
+      }
       if (type === "control.topics.list") {
-        const conversationId = (payload as { conversationId: string }).conversationId;
+        const conversationId = payload?.conversationId ?? "conversation_a";
         return { topics: [{ id: `topic_${conversationId}`, conversationId, title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
       }
       if (type === "control.bots.list") {
-        if (!aBotsRequested) {
-          aBotsRequested = true;
-          await aHang;
-          return { bots: [{ id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] };
-        }
-        return { bots: [{ id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] };
+        return { bots: [{ id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] };
       }
       if (type === "control.conversation.history") return historyWith([]);
       if (type === "control.runs.list") {
@@ -231,10 +232,10 @@ describe("useGroupsStore", () => {
       }
       throw new Error(`unexpected ${type}`);
     });
-    // Select A (its bots request parks), then complete the selection of B.
+    // Select A (its topics request parks), then complete the selection of B.
     const selectingA = store.selectGroup("inst_1", "conversation_a");
     await flushPromises();
-    expect(aBotsRequested).toBe(true);
+    expect(aTopicsRequested).toBe(true);
     await store.selectGroup("inst_1", "conversation_b");
     // Now let A's slow response land: it must not touch B's selection.
     releaseA();
@@ -2404,18 +2405,16 @@ describe("useGroupsStore", () => {
     expect(listRequests).toBe(2);
   });
 
-  it("does not derive eligibility from a stale cache after a failed refresh", async () => {
+  it("ignores a stale disabled cache when deriving the Group default target", async () => {
     const store = useGroupsStore();
     const direct = useDirectBotsStore();
-    // A previous catalog refresh succeeded and cached every member as disabled.
+    // A previous catalog refresh cached every member as disabled. The default
+    // target never reads the catalog, so a failed refresh cannot reroute it.
     direct.botsLoaded["inst_1"] = true;
     direct.botsByInstance["inst_1"] = [
       { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: false, updatedAt: "now" },
       { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: false, updatedAt: "now" },
     ];
-    // Now bots.list fails AND the newest refresh marks the catalog unconfirmed,
-    // while the stale rows remain cached. A non-empty cache is not evidence of
-    // freshness.
     mockRpc.mockImplementation(async (inst: string, type: string) => {
       if (type === "control.groups.list") return { groups: [GROUP] };
       if (type === "control.topics.list") {
@@ -2427,11 +2426,9 @@ describe("useGroupsStore", () => {
       throw new Error(`unexpected ${type}`);
     });
     await store.selectGroup("inst_1", "conversation_g");
-    // Stale all-disabled cache must NOT be treated as confirmed eligibility:
-    // the default stays a single member and never widens to everyone.
+    // Stale all-disabled cache must NOT reroute the default: the target still
+    // names the lead, and the backend refuses with its own code.
     expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-    // The composer's own authority agrees.
-    expect(store.botCatalogKnown).toBe(false);
   });
 
   it("never widens the default target to everyone when the bot catalog is unconfirmed", async () => {
