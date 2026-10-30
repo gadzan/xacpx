@@ -1535,17 +1535,19 @@ export class ConversationRunService {
     };
   }
 
-  /** Normalize the wire target into an explicit selection. Legacy Direct
-   *  `{ botId }` on a Group path selects that single member. `automatic`
-   *  selects nobody: the Router decides the first batch, so the parsed target
-   *  carries no members (and the accept path requires a capability-restricted
-   *  Router before admitting it). */
+  /** Normalize the wire target into an explicit selection. An absent target is
+   *  the Group's configured lead Bot — the single place the implicit lead rule
+   *  is resolved, so Control and the frontend selector are never load bearing.
+   *  Legacy Direct `{ botId }` on a Group path selects that single member.
+   *  `automatic` selects nobody: the Router decides the first batch, so the
+   *  parsed target carries no members (and the accept path requires a
+   *  capability-restricted Router before admitting it). */
   private parseGroupTarget(
     target: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | undefined,
     conversation: ConversationRecord,
   ): { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" } {
     if (!target) {
-      throw new ConversationError("target_required", "explicit Group prompt requires a target");
+      return { kind: "members", botIds: [this.groupLeadBotId(conversation)] };
     }
     // The variants are a mutually exclusive union: mixed shapes are
     // ambiguous input and fail closed — never silently interpreted as
@@ -1590,6 +1592,20 @@ export class ConversationRunService {
       return { kind: "automatic" };
     }
     throw new ConversationError("automatic_unsupported", "automatic Group routing is not available in this release");
+  }
+
+  /** The implicit target of a plain Group prompt. A lead that is disabled or no
+   *  longer a member is refused by the same enabled/membership gates an
+   *  explicit target passes, so no path ever substitutes another member. */
+  private groupLeadBotId(conversation: ConversationRecord): string {
+    const leadBotId = conversation.leadBotId;
+    if (!leadBotId) {
+      throw new ConversationError(
+        "target_required",
+        `Group "${conversation.id}" has no lead Bot; a plain prompt requires a target`,
+      );
+    }
+    return leadBotId;
   }
 
   /** Gate-set probe for accept linearization. Targeted mode probes selected
