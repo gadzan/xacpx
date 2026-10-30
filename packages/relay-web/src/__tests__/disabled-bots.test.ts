@@ -340,7 +340,7 @@ describe("Disabled Bots", () => {
         "Disabled members: Reviewer and Sleeper. They stay in the Group and take no new work until enabled again.",
       );
       expect(wrapper.find('[data-test="group-lead-disabled"]').text()).toBe(
-        "The Lead, Reviewer, is disabled. New messages go to Tester by default.",
+        "The Lead, Reviewer, is disabled. Tester is enabled and can take over explicit sends.",
       );
     });
 
@@ -375,7 +375,7 @@ describe("Disabled Bots", () => {
       expect(wrapper.find('[data-test="group-disabled-members"]').text()).toBe(
         "已禁用的成员：Reviewer和Sleeper。他们仍在群组中，重新启用前不会接收新工作。",
       );
-      expect(wrapper.find('[data-test="group-lead-disabled"]').text()).toBe("负责人 Reviewer 已禁用。新消息默认发给 Tester。");
+      expect(wrapper.find('[data-test="group-lead-disabled"]').text()).toBe("负责人 Reviewer 已禁用。Tester 仍可用，可由显式指定接手发送。");
     });
   });
 });

@@ -1038,10 +1038,6 @@ export const useGroupsStore = defineStore("groups", () => {
   });
   const liveTurns = computed<Record<string, GroupLiveTurn>>(() => liveTurnsByMember.value);
 
-  /** Default target for a freshly opened Group: the enabled lead if the lead is
-   *  still executable, else the first enabled member in stable ID order, else
-   *  everyone (which itself expands to the eligible set). A disabled lead must
-   *  never become a default that the first send cannot execute. */
   /** Default target for a freshly opened Group.
    *
    *  The server owns the implicit-lead rule: it resolves an absent target to
@@ -2239,17 +2235,9 @@ export const useGroupsStore = defineStore("groups", () => {
         return;
       }
       activeConversationId.value = group.id;
-      // The default target prefers an executable member, which needs the Bot
-      // catalog's enabled flags. Freshness has exactly one authority — the Direct
-      // store's botsLoaded, set by the newest loadBots() outcome. A NON-EMPTY
-      // cached list is not evidence of freshness: loadBots() keeps the previous
-      // rows when a later refresh fails, so treating a stale cache as confirmed
-      // would let a failed read-only listing widen routing from the lead Bot to
-      // the whole Group.
-      const bots = await directBotsStore.loadBots(targetInstanceId).catch(() => null);
-      const cachedBots = directBotsStore.botsByInstance[targetInstanceId];
-      const catalogKnown = botCatalogKnown.value;
-      const catalogBots = bots ?? cachedBots ?? [];
+      // The default target names the lead (or the first member by stable ID)
+      // without consulting the Bot catalog: eligibility is the server's rule,
+      // so a read-only listing failure must never widen routing.
       // Fence BEFORE the write, not after: the slower Group's loadBots can
       // settle after the user has already opened another Group, and writing
       // here would overwrite that Group's target with the stale one's member.

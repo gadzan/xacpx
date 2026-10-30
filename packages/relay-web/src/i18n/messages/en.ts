@@ -1005,7 +1005,7 @@ export default {
     },
     members: {
       disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",
-      leadDisabled: "The Lead, {lead}, is disabled. New messages go to {fallback} by default.",
+      leadDisabled: "The Lead, {lead}, is disabled. {fallback} is enabled and can take over explicit sends.",
       noneEnabled: "Every member of this Group is disabled. Enable one to send new work.",
     },
     manage: {

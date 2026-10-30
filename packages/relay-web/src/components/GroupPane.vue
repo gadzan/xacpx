@@ -114,21 +114,21 @@ const memberBots = computed<BotSummaryDto[]>(() => {
 type MemberStatus =
   | { kind: "none-enabled" }
   | { kind: "some-disabled"; names: string; lead?: string; fallback?: string };
-// An unconfirmed catalog would read as "every member disabled", so the
-// status waits for it. The fallback comes from the same resolver the
-// composer uses to pick the default target.
+// An unconfirmed catalog would read as "every member disabled", so the status
+// waits for it. The fallback is the first enabled member by stable ID, which is
+// display only: routing is the server's rule and the send may still be refused.
 const memberStatus = computed<MemberStatus | null>(() => {
   const current = group.value;
   if (!current || !groupsStore.botCatalogKnown) return null;
   const disabled = memberBots.value.filter((b) => !b.enabled);
   if (disabled.length === 0) return null;
-  const target = groupsStore.defaultTargetFor(current);
-  if (target.mode !== "members") return { kind: "none-enabled" };
+  const enabled = memberBots.value.filter((b) => b.enabled);
+  if (enabled.length === 0) return { kind: "none-enabled" };
   return {
     kind: "some-disabled",
     names: new Intl.ListFormat(locale.value, { type: "conjunction" }).format(disabled.map((b) => b.name)),
     lead: disabled.find((b) => b.id === current.leadBotId)?.name,
-    fallback: memberBots.value.find((b) => b.id === target.botIds[0])?.name,
+    fallback: [...enabled].sort((a, b) => a.id.localeCompare(b.id))[0]?.name,
   };
 });
 
