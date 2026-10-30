@@ -22,7 +22,9 @@ const A = "bot_a", B = "bot_b", C = "bot_c";
 
 async function harness(hooks?: ConversationDispatcherHooks) {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-quarantine-start-")), "conversations.sqlite");
-  const store = await SqliteConversationStore.open(path);
+  // P0-B1 completion rule: a failed assignment handed back by a completed
+  // wake no longer forces the Run to `failed` (V2 §4.4).
+  const store = await SqliteConversationStore.open(path, { followupRedispatch: true });
   const state = createEmptyState();
   const stateStore = { async save(_state: AppState) {}, async saveNow(_state: AppState) {} };
   const stateMutex = new AsyncMutex();
@@ -118,7 +120,9 @@ for (const phase of ["beforeRuntimeMaterialize", "beforeExecutionStart"] as cons
       expect(members[2]).toMatchObject({ botId: A, origin: "followup", state: "completed" });
       expect(members[2]?.followupSenderMemberTurnId).toBe(members[0]?.id);
       expect(h.store.getDispatchForMemberTurn(members[1]!.id)?.state).toBe("completed");
-      expect(h.store.getRun(accepted.run.id)).toMatchObject({ state: "failed", consumedMemberTurns: 3, quarantinedBotIds: [B] });
+      // V2 §4.4 changed rule: the completed wake handed the failed assignment
+      // back, so the Run reports its last normal decision — not `failed`.
+      expect(h.store.getRun(accepted.run.id)).toMatchObject({ state: "completed", consumedMemberTurns: 3, quarantinedBotIds: [B] });
       expect(h.store.getMemberResult(members[0]!)?.content).toBe("healthy bot_a");
       expect(Object.values(h.state.sessions).filter((session) => session.owner?.botId === B))
         .toHaveLength(phase === "beforeRuntimeMaterialize" ? 0 : 1);
@@ -126,7 +130,7 @@ for (const phase of ["beforeRuntimeMaterialize", "beforeExecutionStart"] as cons
       expect(h.calls.map((input) => input.botId)).toEqual([A, A]);
       const reopened = await SqliteConversationStore.open(h.path);
       try {
-        expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "failed", consumedMemberTurns: 3, quarantinedBotIds: [B] });
+        expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "completed", consumedMemberTurns: 3, quarantinedBotIds: [B] });
         expect(reopened.getDispatchForMemberTurn(members[1]!.id)?.state).toBe("completed");
       } finally { reopened.close(); }
     } finally { h.handoffs.close(); h.store.close(); }
