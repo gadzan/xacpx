@@ -1,11 +1,14 @@
 import {
+  MAX_DURABLE_UNRESOLVED_ISSUES,
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_AVAILABILITY_MEMBERS,
   MAX_ROUTER_INPUT_CHARACTERS,
   MAX_ROUTER_TASK_LENGTH,
   type DurableCollaborationFacts,
+  type DurableProgressReduction,
   type RoutingAssignmentRecord,
   type RoutingDecision,
+  type UnresolvedIssue,
 } from "./conversation-router-types";
 import { MAX_JEV_CHOICES, redactJevSecrets, type JevAskResult } from "./jev-client";
 import type { DefaultRouterDecisionInput, JevAskFn, JevRouterDecisionInput } from "./default-router";
@@ -132,12 +135,27 @@ function admissibleActions(history: RoutingAssignmentRecord[], omitted: boolean)
   return ["verify", "revise", "execute", "analyze", "need-human"];
 }
 
+/** Latest successful production batch: the current artifact version. */
+function artifactVersionOf(history: RoutingAssignmentRecord[]): number {
+  return history.reduce((batch, row) => isProduction(row) && row.outcome === "completed" ? Math.max(batch, row.batch) : batch, 0);
+}
+
+/** Latest independent verification of a given artifact version, or 0. A
+ *  producer approving its own artifact is not coverage for earlier failures. */
+function verifiedVersionOf(history: RoutingAssignmentRecord[], artifactVersion: number, producerBotIds: readonly string[]): number {
+  // No recorded artifact version means the verification names nothing, so it
+  //  cannot cover an earlier failure.
+  if (artifactVersion === 0) return 0;
+  const producers = new Set(producerBotIds);
+  return history.reduce((batch, row) => row.batch > artifactVersion && actionOf(row) === "verify"
+    && row.outcome === "completed" && !producers.has(row.botId) ? Math.max(batch, row.batch) : batch, 0);
+}
+
 /** Producers of the current artifact version. This is cumulative accounting:
  *  the production batch may sit outside the evidence window, so callers derive
  *  it from the full durable history rather than from the clipped rows. */
-function producersOf(history: RoutingAssignmentRecord[]): string[] {
-  const productionBatch = history.reduce((batch, row) => isProduction(row) ? Math.max(batch, row.batch) : batch, 0);
-  const latestVerification = history.findLastIndex((row) => row.batch < productionBatch
+function producersOf(history: RoutingAssignmentRecord[], artifactVersion = artifactVersionOf(history)): string[] {
+  const latestVerification = history.findLastIndex((row) => row.batch < artifactVersion
     && actionOf(row) === "verify" && row.outcome === "completed");
   return history.slice(latestVerification + 1).filter(isProduction).map((row) => row.botId);
 }
@@ -146,6 +164,82 @@ function producersOf(history: RoutingAssignmentRecord[]): string[] {
  *  history before any evidence window is applied. */
 export function durableCollaborationFacts(history: RoutingAssignmentRecord[]): DurableCollaborationFacts {
   return { producerBotIds: [...new Set(producersOf(history))], recoveryExhausted: recoveryExhausted(history) };
+}
+
+/** Durable identity of the work one assignment was asked to do: its action plus
+ *  the task text. Two rows are the same work when both match, which is what a
+ *  cross-member redo of one instruction looks like. A router-minted retry after
+ *  a failure cannot occur — the policy refuses to redispatch a Run that still
+ *  owes work — so the failure excerpt it would append never has to be
+ *  normalized away here. */
+function sameWorkScope(left: RoutingAssignmentRecord, right: RoutingAssignmentRecord): boolean {
+  const action = (row: RoutingAssignmentRecord) => /^jev-v2-\d+-([a-z-]+)$/.exec(row.id)?.[1] ?? "";
+  return action(left) === action(right) && left.task.trim() === right.task.trim();
+}
+
+/** Work the Run's durable rows prove is not finished: a started attempt that
+ *  ended `failed` and that no later successful evidence covers. Coverage is a
+ *  durable fact — a later success for the SAME work by any member, or an
+ *  independent verification at or after the failed attempt's version — never
+ *  the presence or absence of the row inside a bounded evidence window. An
+ *  attempt that never started produced no work, so it raises nothing.
+ *
+ * Computed from the FULL history, so it is identical at routing time and after
+ *  a store reopen, and bounded the way the evidence window is bounded. */
+export function durableProgressReduction(history: RoutingAssignmentRecord[]): DurableProgressReduction {
+  const artifactVersion = artifactVersionOf(history);
+  const producerBotIds = [...new Set(producersOf(history, artifactVersion))];
+  const verifiedVersion = verifiedVersionOf(history, artifactVersion, producerBotIds);
+  const unresolved: UnresolvedIssue[] = [];
+  for (const row of history) {
+    // An attempt that never executed left no unfinished work behind.
+    if (row.outcome !== "failed" || row.started === false) continue;
+    // A different member redoing the same work settles it; an unrelated later
+    //  task by the same member does not.
+    const redone = history.some((other) => other.batch > row.batch && other.outcome === "completed" && sameWorkScope(other, row));
+    if (redone || verifiedVersion > row.batch) continue;
+    unresolved.push({
+      assignmentId: row.id,
+      botId: row.botId,
+      batch: row.batch,
+      ...(row.failureReason !== undefined ? { failureReason: row.failureReason } : {}),
+    });
+  }
+  // Newest first, like the evidence window: the most recent failures are the
+  //  ones the next decision has to act on.
+  const issues = unresolved.reverse().slice(0, MAX_DURABLE_UNRESOLVED_ISSUES);
+  return {
+    issues,
+    total: unresolved.length,
+    ...(unresolved.length > issues.length ? { omittedIssueCount: unresolved.length - issues.length } : {}),
+    artifactVersion,
+    producerBotIds: [...new Set(producersOf(history, artifactVersion))],
+    verifiedVersion,
+  };
+}
+
+/** True when the durable reduction still proves unfinished work. A clipped
+ *  reduction never reads as empty: `total` is the durable Run count. */
+export function hasUnresolvedWork(reduction: DurableProgressReduction | undefined): boolean {
+  return reduction !== undefined && reduction.total > 0;
+}
+
+/** Bounded reduction for the Router snapshot. An already-reduced snapshot is
+ *  re-derived from its own `issues`, so repeated bounding is idempotent and
+ *  the durable total plus its disclosed omission survive. */
+export function boundDurableProgress(reduction: DurableProgressReduction | undefined): DurableProgressReduction | undefined {
+  if (reduction === undefined) return undefined;
+  if (reduction.issues.length <= MAX_DURABLE_UNRESOLVED_ISSUES) return reduction;
+  const issues = reduction.issues.slice(0, MAX_DURABLE_UNRESOLVED_ISSUES);
+  const total = Math.max(reduction.total, issues.length);
+  return {
+    issues,
+    total,
+    omittedIssueCount: total - issues.length,
+    artifactVersion: reduction.artifactVersion,
+    producerBotIds: reduction.producerBotIds,
+    verifiedVersion: reduction.verifiedVersion,
+  };
 }
 
 function hasFullResult(row: RoutingAssignmentRecord): boolean {
@@ -278,6 +372,13 @@ export async function decideCollaboration(input: JevRouterDecisionInput, ask: Je
   const durable = input.durableCollaboration;
   if (durable?.recoveryExhausted ?? recoveryExhausted(history)) return paused("verification evidence remains incomplete after two reports for the same production version; full results remain available for inspection");
   if (hasRepeatedResult(history)) return paused("a member repeated the same result without progress");
+  // The durable reduction, not the window, says what is still unfinished: a
+  //  failure that left the window stays unfinished until durable evidence
+  //  covers it, so completion is not offered over proven unresolved work.
+  const progress = input.durableProgress;
+  if (hasUnresolvedWork(progress)) {
+    return paused(`unresolved work remains: ${progress!.issues.map((issue) => issue.assignmentId).join(", ")}${progress!.omittedIssueCount ? ` and ${progress!.omittedIssueCount} older` : ""}`);
+  }
   const message = context(input, history);
   const fallback = (cause: string): RoutingDecision => {
     cause = redactJevSecrets(cause, { proxyUrls: [input.jev.proxyUrl, process.env.HTTPS_PROXY, process.env.https_proxy], apiKey: input.jev.apiKey });

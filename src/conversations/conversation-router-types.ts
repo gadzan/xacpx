@@ -131,6 +131,11 @@ export interface RoutingAssignmentRecord {
   resultCharacters?: number;
   /** Whether the original durable result contains non-whitespace text. */
   resultHasContent?: boolean;
+  /** Whether the member turn actually started executing. `false` marks a
+   *  pre-execution rejection, which produced no work and therefore no
+   *  unfinished work for the Run's durable progress reduction. Absent on
+   *  legacy rows, which read as started. */
+  started?: boolean;
 }
 
 /** Current Run state projected for the Router: everything it may reason with,
@@ -187,6 +192,47 @@ export interface MemberAvailability {
   sampledAt: string;
 }
 
+/** One piece of work the Run's durable rows prove is not finished: a started
+ *  assignment that ended `failed` and that no later successful evidence
+ *  covers. Absence from the Router's evidence window is never coverage —
+ *  coverage is a durable fact, so this identity survives every reopen. */
+export interface UnresolvedIssue {
+  /** Durable identity of the assignment whose attempt failed. */
+  assignmentId: string;
+  botId: string;
+  batch: number;
+  /** Machine-readable terminal failure reason, when the row carries one. */
+  failureReason?: string;
+}
+
+/** Hard bound on the reduction the Router sees, the same bound the evidence
+ *  window uses. `total` stays the durable Run count, so clipping the array
+ *  discloses the omission instead of hiding unresolved work. */
+export const MAX_DURABLE_UNRESOLVED_ISSUES = 64;
+
+/** Trustworthy progress reduction of a Run: the work still unfinished, the
+ *  current artifact version and who produced it (design §9). `completedAssignments`
+ *  is only a recency window, so a row that left it must never be read as
+ *  resolved: this reduction is computed from the Run's full durable history
+ *  and carried into the snapshot explicitly. */
+export interface DurableProgressReduction {
+  /** Newest-first, bounded by MAX_DURABLE_UNRESOLVED_ISSUES. */
+  issues: UnresolvedIssue[];
+  /** Durable count of unresolved issues; larger than `issues.length` exactly
+   *  when the reduction was clipped. */
+  total: number;
+  /** Unresolved issues the bound left out. Their durable evidence exists, so
+   *  a decision cannot treat the omission as resolution. */
+  omittedIssueCount?: number;
+  /** Latest successful production batch, or 0 when nothing was produced yet. */
+  artifactVersion: number;
+  /** Bots that produced the current artifact version. */
+  producerBotIds: string[];
+  /** Latest batch that verified the current artifact version, or 0 when the
+   *  current version has never been verified. */
+  verifiedVersion: number;
+}
+
 /**
  * Everything a Router call may consume, from one explicit snapshot.
  *
@@ -239,6 +285,11 @@ export interface RoutingInput {
   /** Durable accounting over the full history; `completedAssignments` above is
    *  only a window, so independence and recovery must not be derived from it. */
   durableCollaboration?: DurableCollaborationFacts;
+  /** Trustworthy progress reduction (design §9): the Run's still-unfinished
+   *  work, the current artifact version and its producers. Derived from the
+   *  Run's full durable history before the evidence window is applied, so a
+   *  row that left `completedAssignments` is never read as resolved. */
+  durableProgress?: DurableProgressReduction;
   /** Durable Run-scoped monotonic sequence for minting assignment ids. It is
    *  greater than every ordinal already used by this Run's assignment ids, so
    *  two different windows can never mint the same id. */

@@ -2,9 +2,9 @@ import { ConversationError } from "./conversation-error";
 import { gateRoutingDecision } from "./conversation-router-gate";
 import { boundRoutingInput } from "./conversation-router-budget";
 import { sampleMemberAvailability } from "./conversation-member-availability";
-import { nextAssignmentSequence } from "./collaboration-policy";
+import { durableProgressReduction, nextAssignmentSequence } from "./collaboration-policy";
+import { assignmentOutcomeOf, isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
 import type { ApplyRoutingDecisionInput } from "./conversation-store";
-import { isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
 import {
   isRouterCapabilityRestricted,
   MAX_ROUTER_MEMBER_METADATA,
@@ -58,22 +58,6 @@ export interface RoutingAttemptOutcome {
   memberTurns?: MemberTurnRecord[];
 }
 
-/** Only terminal MemberTurns constitute assignment outcomes. Never turn a
- *  still-running assignment or unknown side effects into a guessed outcome. */
-function routingOutcomeOf(turn: MemberTurnRecord): RoutingAssignmentRecord["outcome"] {
-  switch (turn.state) {
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    case "indeterminate":
-      return "indeterminate";
-    default:
-      throw new ConversationError("routing_batch_active", `member turn "${turn.id}" is not settled`);
-  }
-}
 
 function isRouterShutdown(signal?: AbortSignal): signal is AbortSignal & { readonly reason: ConversationError } {
   return signal?.aborted === true && signal.reason instanceof ConversationError && signal.reason.code === "router_shutdown";
@@ -395,9 +379,10 @@ export class ConversationRouterEngine {
         task: turn.task ?? "",
         dependsOn: turn.dependsOn ?? [],
         triggerMessageIds: turn.triggerMessageIds,
-        outcome: routingOutcomeOf(turn),
+        outcome: assignmentOutcomeOf(turn),
         attempt: turn.attempt,
         batch: turn.batch,
+        ...(turn.startedAt === undefined ? { started: false } : {}),
       };
       if (turn.expectedOutput !== undefined) {
         assignment.expectedOutput = turn.expectedOutput;
@@ -447,6 +432,10 @@ export class ConversationRouterEngine {
       completedAssignments,
       completedAssignmentTotal: completedAssignments.length,
       assignmentSequence: nextAssignmentSequence(completedAssignments.map((assignment) => assignment.id), completedAssignments.length),
+      // Derived from the Run's full durable history before the window is
+      //  applied: a row that later leaves the window must never be read as
+      //  resolved, and a store reopen re-derives the same reduction.
+      durableProgress: durableProgressReduction(completedAssignments),
       remainingBudget: run.maxMemberTurns - run.consumedMemberTurns,
       ...(executionTarget ? { executionTarget } : {}),
     });

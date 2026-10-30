@@ -16,6 +16,7 @@ import type {
 } from "./conversation-types";
 import type { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 import type { RunWorkOutcome } from "./conversation-work-graph";
+import type { RoutingAssignmentRecord } from "./conversation-router-types";
 
 /** A completion reason on runnable work is durable cancel intent, not routing work. */
 export function isRunCancelling(run: ConversationRun): boolean {
@@ -34,6 +35,25 @@ export function requireMemberResult(store: Pick<ConversationStore, "getMemberRes
     throw new ConversationError("member_result_missing", `completed member turn "${turn.id}" lost its exact public result`);
   }
   return result;
+}
+
+/** Only terminal MemberTurns constitute assignment outcomes. Never turn a
+ *  still-running assignment or unknown side effects into a guessed outcome.
+ *  Shared so the Router snapshot and the durable completion gate read one
+ *  derivation of the same rows. */
+export function assignmentOutcomeOf(turn: MemberTurnRecord): RoutingAssignmentRecord["outcome"] {
+  switch (turn.state) {
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "indeterminate":
+      return "indeterminate";
+    default:
+      throw new ConversationError("routing_batch_active", `member turn "${turn.id}" is not settled`);
+  }
 }
 
 export interface ListMessagesQuery {

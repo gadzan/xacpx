@@ -1217,7 +1217,13 @@ for (const recovery of ["pre-start retry", "expired claim"] as const) {
         const durable = reopened.getMemberTurn(recovered.id)!;
         expect(durable.origin).toBe("recovery");
         expect(toMemberTurnSummary(durable).blockedReason).toBe(outcome === "blocked" ? "human-authority-unknown" : undefined);
-        expect(reopened.getRun(accepted.run.id)?.state).toBe("completed");
+        // A `complete` decision over an unresolved failure is refused by the
+        //  durable gate (design §9/§4.4): the member that actually ran and
+        //  failed leaves unfinished work, while a pre-execution rejection
+        //  produced none. Assignment and permission semantics are unchanged.
+        expect(reopened.getRun(accepted.run.id)).toMatchObject(outcome === "blocked"
+          ? { state: "failed", completionReason: "router_unresolved_work" }
+          : { state: "completed" });
       } finally { reopened.close(); }
     });
   }
@@ -1867,6 +1873,145 @@ for (const totalTurns of [128, 256] as const) {
     } finally { await harness.service.awaitRouting(); harness.store.close(); }
   }, 120_000);
 }
+
+// ---------------------------------------------------------------------------
+// §9 / §4.4 — unresolved work survives the assignment window
+// ---------------------------------------------------------------------------
+
+/** More settled assignments than the evidence window holds, so the oldest
+ *  rows — including an unresolved issue — fall outside it. */
+const UNRESOLVED_RUN_TURNS = MAX_ROUTER_ASSIGNMENTS_PER_DECISION + 2;
+
+test("an unresolved issue older than the assignment window refuses a complete decision", async () => {
+  const inputs: RoutingInput[] = [];
+  let store: SqliteConversationStore | undefined;
+  let calls = 0;
+  const router: ConversationRouter = {
+    capabilityRestriction: RESTRICTED,
+    async decide(input) {
+      inputs.push(structuredClone(input));
+      const settled = store!.listMemberTurns(input.runState.runId).length;
+      if (settled >= UNRESOLVED_RUN_TURNS) return { type: "complete", reason: "all assignments settled" };
+      return { type: "dispatch", mode: "single",
+        assignments: [{ id: `jev-v2-${input.assignmentSequence}-execute`,
+          botId: settled === 0 ? BOT_ID : TESTER_ID, task: `work ${settled}`, triggerMessageIds: [] }] };
+    },
+  };
+  const harness = await createHarness({ autoKick: false, router,
+    executionRunner: { async run() {
+      calls++;
+      // The first attempt really ran and failed; every later one succeeded.
+      return calls === 1 ? { status: "failed", error: "artifact build failed" }
+        : { status: "completed", text: `evidence ${calls}` };
+    }, async cancel() { return { outcome: "cancelled" }; } },
+  });
+  store = harness.store;
+  try {
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, "unresolved-window");
+    // Admission caps automatic Runs at 24 turns; this Run is the long-history
+    //  case under test, so its durable budget is widened through the store's
+    //  test seam. One slot stays free so the final decision still routes.
+    harness.store.directWriteForTest("runs", accepted.run.id, { max_member_turns: String(UNRESOLVED_RUN_TURNS + 1) });
+    for (let step = 0; step < UNRESOLVED_RUN_TURNS + 2 && harness.store.getRun(accepted.run.id)?.state === "running"; step++) {
+      await harness.dispatcher.kick(); await harness.service.awaitRouting();
+    }
+    // The window rolled past the failure, yet the Run is not completed.
+    const run = harness.store.getRun(accepted.run.id)!;
+    expect(run).toMatchObject({ state: "failed", completionReason: "router_unresolved_work" });
+    expect(harness.store.listMemberTurns(run.id)).toHaveLength(UNRESOLVED_RUN_TURNS);
+    const last = inputs.at(-1)!;
+    expect(last.completedAssignmentTotal).toBe(UNRESOLVED_RUN_TURNS);
+    expect(last.completedAssignments).toHaveLength(MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+    expect(last.omittedAssignmentCount).toBe(UNRESOLVED_RUN_TURNS - MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+    // The clipped window holds no failure at all...
+    expect(last.completedAssignments.some((row) => row.outcome === "failed")).toBe(false);
+    // ...while the durable reduction still names the unfinished work.
+    expect(last.durableProgress).toMatchObject({
+      total: 1, issues: [{ assignmentId: "jev-v2-0-execute", botId: BOT_ID, batch: 1 }],
+      artifactVersion: UNRESOLVED_RUN_TURNS,
+    });
+    // The reduction is derived from store facts, so it survives the reopen.
+    harness.store.close();
+    const reopened = await SqliteConversationStore.open(harness.path);
+    try {
+      expect(reopened.getRun(run.id)).toMatchObject({ state: "failed", completionReason: "router_unresolved_work" });
+      const engine = new ConversationRouterEngine(bindRouter(new RecordingRouter()), {
+        store: reopened,
+        readGroup: (id) => harness.state.conversations[id],
+        readTopic: (_id, topicId) => harness.state.conversation_topics[topicId],
+        readBot: (botId) => harness.bots.getBot(botId),
+        runLifecycleAll: (ids, critical) => harness.bots.runLifecycleAll(ids, critical),
+        now: () => new Date(NOW),
+      });
+      expect(engine.buildRoutingInput(reopened.getRun(run.id)!).durableProgress).toMatchObject({
+        total: 1, issues: [{ assignmentId: "jev-v2-0-execute", botId: BOT_ID, batch: 1 }],
+      });
+    } finally { reopened.close(); }
+  } finally { await harness.service.awaitRouting(); harness.store.close(); }
+}, 120_000);
+
+test("covering the issue lets the same Run complete, and the reduction survives the reopen", async () => {
+  const inputs: RoutingInput[] = [];
+  let store: SqliteConversationStore | undefined;
+  let calls = 0;
+  const router: ConversationRouter = {
+    capabilityRestriction: RESTRICTED,
+    async decide(input) {
+      inputs.push(structuredClone(input));
+      const settled = store!.listMemberTurns(input.runState.runId).length;
+      // The issue is covered by a verification of the current artifact
+      //  version; only then may the Run claim completion.
+      if (settled >= UNRESOLVED_RUN_TURNS + 1) return { type: "complete", reason: "verified" };
+      if (settled >= UNRESOLVED_RUN_TURNS) {
+        return { type: "dispatch", mode: "single", assignments: [{ id: `jev-v2-${settled}-verify`,
+          botId: BUILDER_ID, task: "verify", triggerMessageIds: [] }] };
+      }
+      return { type: "dispatch", mode: "single",
+        assignments: [{ id: `jev-v2-${input.assignmentSequence}-execute`,
+          botId: settled === 0 ? BOT_ID : TESTER_ID, task: `work ${settled}`, triggerMessageIds: [] }] };
+    },
+  };
+  const harness = await createHarness({ autoKick: false, router,
+    executionRunner: { async run() {
+      calls++;
+      return calls === 1 ? { status: "failed", error: "artifact build failed" }
+        : { status: "completed", text: `evidence ${calls}` };
+    }, async cancel() { return { outcome: "cancelled" }; } },
+  });
+  store = harness.store;
+  try {
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, "resolved-window");
+    harness.store.directWriteForTest("runs", accepted.run.id, { max_member_turns: String(UNRESOLVED_RUN_TURNS + 3) });
+    for (let step = 0; step < UNRESOLVED_RUN_TURNS + 4 && harness.store.getRun(accepted.run.id)?.state === "running"; step++) {
+      await harness.dispatcher.kick(); await harness.service.awaitRouting();
+    }
+    // Before the verification the reduction named the work; after it, empty.
+    expect(inputs.at(-2)?.durableProgress).toMatchObject({
+      total: 1, issues: [{ assignmentId: "jev-v2-0-execute" }],
+    });
+    expect(inputs.at(-1)?.durableProgress).toMatchObject({ total: 0, issues: [] });
+    const run = harness.store.getRun(accepted.run.id)!;
+    expect(run).toMatchObject({ state: "completed", completionReason: "verified" });
+    expect(harness.store.listMemberTurns(run.id)).toHaveLength(UNRESOLVED_RUN_TURNS + 1);
+    harness.store.close();
+    const reopened = await SqliteConversationStore.open(harness.path);
+    try {
+      expect(reopened.getRun(run.id)).toMatchObject({ state: "completed", completionReason: "verified" });
+      const engine = new ConversationRouterEngine(bindRouter(new RecordingRouter()), {
+        store: reopened,
+        readGroup: (id) => harness.state.conversations[id],
+        readTopic: (_id, topicId) => harness.state.conversation_topics[topicId],
+        readBot: (botId) => harness.bots.getBot(botId),
+        runLifecycleAll: (ids, critical) => harness.bots.runLifecycleAll(ids, critical),
+        now: () => new Date(NOW),
+      });
+      // The reduction is re-derived from durable rows, not from any window.
+      expect(engine.buildRoutingInput(reopened.getRun(run.id)!).durableProgress).toMatchObject({ total: 0, issues: [] });
+    } finally { reopened.close(); }
+  } finally { await harness.service.awaitRouting(); harness.store.close(); }
+}, 120_000);
 
 // ---------------------------------------------------------------------------
 // §11.5 / acceptance 10 — completion semantics
@@ -2895,6 +3040,9 @@ test("a new automatic batch resets current aggregates while retaining failed ass
   const router = new RecordingRouter([
     { type: "dispatch", mode: "single", assignments: [{ id: "failed-review", botId: BOT_ID, task: "review", triggerMessageIds: [] }] },
     { type: "dispatch", mode: "single", assignments: [{ id: "retry-review", botId: TESTER_ID, task: "retry review", triggerMessageIds: [] }] },
+    // An independent verification (not the producer) is what durably covers the
+    //  `complete` below is refused while that work stays unresolved.
+    { type: "dispatch", mode: "single", assignments: [{ id: "jev-v2-2-verify", botId: BUILDER_ID, task: "verify", triggerMessageIds: [] }] },
     { type: "complete", reason: "retry succeeded" },
   ]);
   const harness = await createHarness({ autoKick: false, router });
@@ -2907,6 +3055,8 @@ test("a new automatic batch resets current aggregates while retaining failed ass
   await harness.dispatcher.kick(); await harness.service.awaitRouting();
   expect(router.inputs[1]?.runState.failedBotIds).toEqual([BOT_ID]);
   expect(router.inputs[1]?.completedAssignments[0]).toMatchObject({ id: "failed-review", outcome: "failed", failureReason: "first assignment failed" });
+  // The durable reduction names the unfinished work while nothing covers it.
+  expect(router.inputs[1]?.durableProgress).toMatchObject({ total: 1, issues: [{ assignmentId: "failed-review" }] });
   expect(harness.store.getRun(accepted.run.id)).toMatchObject({ activeBatch: 2, consumedMemberTurns: 1, failedBotIds: [], unavailableBotIds: [] });
   harness.runner.result = { status: "completed", text: "retry succeeded" };
   await harness.dispatcher.kick(); await harness.service.awaitRouting();
@@ -2915,12 +3065,19 @@ test("a new automatic batch resets current aggregates while retaining failed ass
     { id: "failed-review", batch: 1, outcome: "failed" }, { id: "retry-review", batch: 2, outcome: "completed" },
   ]);
   expect(router.inputs[2]?.completedAssignments[1]?.result).toBe("retry succeeded");
+  // A later success does not resolve another member's failure: the reduction
+  //  still carries it, so the clipped window alone is never resolution evidence.
+  expect(router.inputs[2]?.durableProgress).toMatchObject({ total: 1, artifactVersion: 2 });
+  harness.runner.result = { status: "completed", text: "verified retry" };
+  await harness.dispatcher.kick(); await harness.service.awaitRouting();
+  expect(router.inputs[3]?.durableProgress).toMatchObject({ total: 0, verifiedVersion: 3 });
+  expect(harness.store.getRun(accepted.run.id)?.state).toBe("completed");
   harness.store.close();
   const reopened = await SqliteConversationStore.open(harness.path);
   try {
-    expect(toConversationRun(reopened.getRun(accepted.run.id)!)).toMatchObject({ state: "completed", activeBatch: 2,
-      consumedMemberTurns: 2, failedBotIds: [], unavailableBotIds: [] });
-    expect(reopened.listMemberTurns(accepted.run.id).map(({ state }) => state)).toEqual(["failed", "completed"]);
+    expect(toConversationRun(reopened.getRun(accepted.run.id)!)).toMatchObject({ state: "completed", activeBatch: 3,
+      consumedMemberTurns: 3, failedBotIds: [], unavailableBotIds: [] });
+    expect(reopened.listMemberTurns(accepted.run.id).map(({ state }) => state)).toEqual(["failed", "completed", "completed"]);
   } finally { reopened.close(); }
 });
 

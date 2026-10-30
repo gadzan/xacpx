@@ -1,4 +1,4 @@
-import { durableCollaborationFacts } from "./collaboration-policy";
+import { boundDurableProgress, durableCollaborationFacts, durableProgressReduction } from "./collaboration-policy";
 import { ConversationError } from "./conversation-error";
 import {
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION, MAX_ROUTER_AVAILABILITY_CHARACTERS, MAX_ROUTER_AVAILABILITY_MEMBERS,
@@ -7,6 +7,7 @@ import {
   MAX_ROUTER_TRANSCRIPT_CHARACTERS, MAX_ROUTER_TRIGGER_MESSAGE_IDS,
   type MemberAvailability,
   type RoutingInput,
+  type DurableProgressReduction,
 } from "./conversation-router-types";
 
 /** Prefix truncation is deterministic and keeps Unicode surrogate pairs intact. */
@@ -100,9 +101,16 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
   const omittedMemberCount = (input.omittedMemberCount ?? 0) + input.memberMetadata.length - memberMetadata.length;
   const boundedAvailability = boundAvailability(input.availability);
   const omittedAvailabilityCount = (input.omittedAvailabilityCount ?? 0) + boundedAvailability.omitted;
+  // Independence, recovery and progress are cumulative Run facts. Derive them
+  // from the full history here, before the window and the character budget drop
+  // rows: afterwards a producer could verify its own artifact, recovery would
+  // reset, and an unresolved failure would vanish with its row. An
+  // already-bounded snapshot keeps its own verdict.
+  let durableProgress = boundDurableProgress(input.durableProgress ?? durableProgressReduction(history));
   const snapshot = (): RoutingInput => ({ ...input, request, publicTranscript, completedAssignments, memberMetadata,
     durableCollaboration,
     ...(boundedAvailability.availability !== undefined ? { availability: boundedAvailability.availability } : {}),
+    ...(durableProgress !== undefined ? { durableProgress } : {}),
     ...(request !== input.request ? { requestTruncated: true } : {}),
     ...(omittedMemberCount > 0 ? { omittedMemberCount } : {}),
     ...(omittedAvailabilityCount > 0 ? { omittedAvailabilityCount } : {}),
@@ -113,12 +121,20 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
   // History length never fails a routing attempt on its own: when the fixed
   // evidence still exceeds the serialized budget, the oldest window rows leave
   // it first, and their removal stays disclosed through the omitted count.
-  while (size > MAX_ROUTER_INPUT_CHARACTERS && completedAssignments.length > 0) {
-    // The oldest batch leaves first; ties keep the earliest member position.
-    const oldest = completedAssignments.reduce((drop, row, position) =>
-      row.batch < completedAssignments[drop]!.batch ? position : drop, 0);
-    completedAssignments = completedAssignments.toSpliced(oldest, 1);
-    omittedAssignmentCount++;
+  while (size > MAX_ROUTER_INPUT_CHARACTERS && (completedAssignments.length > 0 || durableProgress?.issues.length)) {
+    if (completedAssignments.length > 0) {
+      // The oldest batch leaves first; ties keep the earliest member position.
+      const oldest = completedAssignments.reduce((drop, row, position) =>
+        row.batch < completedAssignments[drop]!.batch ? position : drop, 0);
+      completedAssignments = completedAssignments.toSpliced(oldest, 1);
+      omittedAssignmentCount++;
+    }
+    if (durableProgress !== undefined && durableProgress.issues.length > 0) {
+      // The oldest disclosed issue leaves too, and joins the omitted count:
+      //  the durable total keeps proving the work is unfinished.
+      const issues = durableProgress.issues.slice(0, -1);
+      durableProgress = { ...durableProgress, issues, omittedIssueCount: durableProgress.total - issues.length };
+    }
     bounded = snapshot();
     size = JSON.stringify(bounded).length;
   }

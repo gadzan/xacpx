@@ -55,7 +55,8 @@ import type {
   TopicOperationReceipt,
   TopicTeardownRetirement,
 } from "./conversation-store";
-import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, isRunCancelling, publicMessageMatchesRunScope, requestSnapshotMatches } from "./conversation-store";
+import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, assignmentOutcomeOf, isRunCancelling, publicMessageMatchesRunScope, requestSnapshotMatches } from "./conversation-store";
+import type { RoutingAssignmentRecord } from "./conversation-router-types";
 import {
   conversationExecutionOrigin,
   parseHumanIngress,
@@ -87,6 +88,7 @@ import {
   type RunWaitingGraph,
   type RunWorkOutcome,
 } from "./conversation-work-graph";
+import { durableProgressReduction } from "./collaboration-policy";
 
 export interface ConversationIdFactory {
   messageId: () => string;
@@ -1238,6 +1240,24 @@ export class SqliteConversationStore implements ConversationStore {
     const run = this.getRun(runId);
     if (!run) return undefined;
     return projectWorkOutcome(this.buildRunWaitingGraph(run, this.listMemberTurns(runId)));
+  }
+
+  /** The Run's settled assignments as Router evidence. The same rows the
+   *  engine projects, so the durable progress reduction a Router saw and the
+   *  one the completion gate reads are derived identically and survive reopen. */
+  private assignmentEvidence(members: readonly MemberTurnRecord[]): RoutingAssignmentRecord[] {
+    return members.map((turn) => ({
+      id: turn.assignmentId ?? turn.id,
+      botId: turn.botId,
+      task: turn.task ?? "",
+      dependsOn: turn.dependsOn ?? [],
+      triggerMessageIds: turn.triggerMessageIds,
+      outcome: assignmentOutcomeOf(turn),
+      attempt: turn.attempt,
+      batch: turn.batch,
+      ...(turn.startedAt === undefined ? { started: false } : {}),
+      ...(turn.failureReason !== undefined ? { failureReason: turn.failureReason } : {}),
+    }));
   }
 
   private buildRunWaitingGraph(run: ConversationRun, turns: readonly MemberTurnRecord[]): RunWaitingGraph {
@@ -3223,6 +3243,17 @@ export class SqliteConversationStore implements ConversationStore {
         );
         this.writeRoutingDecisionRow(run.id, input.decision, input.now);
         return { run: this.requireRun(run.id), memberTurns: [], dispatches: [], terminal: "waiting-human" };
+      }
+      // §9/§4.4: the durable reduction — never the evidence window — decides
+      //  whether work is still unfinished, so a decision that claims
+      //  completion over proven unresolved work is refused with the work named.
+      const progress = durableProgressReduction(this.assignmentEvidence(members));
+      if (progress.total > 0) {
+        throw new ConversationError(
+          "router_unresolved_work",
+          `run "${run.id}" cannot complete: ${progress.total} unresolved assignment${progress.total === 1 ? "" : "s"} remain (${progress.issues.map((issue) => issue.assignmentId).join(", ")}${progress.omittedIssueCount ? `, +${progress.omittedIssueCount} older` : ""})`,
+          { unresolved: progress.total, assignmentIds: progress.issues.map((issue) => issue.assignmentId) },
+        );
       }
       if (this.followupRedispatch) {
         const verdict = decideRunCompletion(

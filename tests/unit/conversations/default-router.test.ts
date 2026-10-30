@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 
 import { gateRoutingDecision } from "../../../src/conversations/conversation-router-gate";
 import { boundRoutingInput } from "../../../src/conversations/conversation-router-budget";
-import { nextAssignmentSequence, readCollaborationHistory } from "../../../src/conversations/collaboration-policy";
+import { boundDurableProgress, durableProgressReduction, hasUnresolvedWork, nextAssignmentSequence, readCollaborationHistory } from "../../../src/conversations/collaboration-policy";
 import {
   isRouterCapabilityRestricted,
-  MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_ASSIGNMENT_ID_LENGTH,
+  MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
+  MAX_DURABLE_UNRESOLVED_ISSUES,
   MAX_ROUTER_AVAILABILITY_MEMBERS,
   MAX_ROUTER_INPUT_CHARACTERS,
   MAX_ROUTER_REASON_LENGTH,
@@ -1080,4 +1081,200 @@ test("recovery exhaustion survives its reports leaving the window", async () => 
       type: "need-human", question: expect.stringContaining("two reports"),
     });
   } finally { jev.stop(); }
+});
+
+// ---------------------------------------------------------------------------
+// Durable progress reduction (design §9): unfinished work survives the window
+// ---------------------------------------------------------------------------
+
+test("an unresolved issue older than the window survives it and blocks completion", async () => {
+  // A started attempt that failed in batch 1 and was never covered: 70 later
+  //  successful assignments push it far outside the evidence window.
+  const history: RoutingAssignmentRecord[] = [{
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed", attempt: 1, batch: 1, failureReason: "artifact build failed",
+  }];
+  for (let index = 1; index <= 70; index++) {
+    history.push({
+      id: `jev-v2-${index}-execute`, botId: "bot_b", task: `step ${index}`, dependsOn: [], triggerMessageIds: [],
+      outcome: "completed", attempt: 1, batch: index + 1, result: `Evidence ${index}`,
+    });
+  }
+  const window = boundRoutingInput({ ...routingInput(), completedAssignments: history,
+    completedAssignmentTotal: history.length, assignmentSequence: history.length });
+  // The window itself holds only the newest rows: the failure is invisible in it.
+  expect(window.completedAssignments.some((row) => row.outcome === "failed")).toBe(false);
+  expect(window.completedAssignments.at(-1)?.batch).toBe(71);
+  // The reduction still proves the work is unfinished and names it.
+  expect(window.durableProgress).toMatchObject({
+    total: 1, issues: [{ assignmentId: "jev-v2-0-execute", botId: "bot_a", batch: 1 }],
+    artifactVersion: 71,
+  });
+  expect(window.durableProgress?.omittedIssueCount).toBeUndefined();
+  // The policy never even offers `complete` over durable unresolved work.
+  const next = scriptedAsk("complete");
+  expect(await decideJevRouterAssignment(
+    jevInput(window.completedAssignments, { completedAssignmentTotal: window.completedAssignmentTotal,
+      omittedAssignmentCount: window.omittedAssignmentCount, assignmentSequence: window.assignmentSequence,
+      durableProgress: window.durableProgress }),
+    next.ask)).toMatchObject({ type: "need-human", question: expect.stringContaining("jev-v2-0-execute") });
+  expect(next.calls).toEqual([]);
+});
+
+test("a later verification of the current artifact version resolves the issue", async () => {
+  const failure = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
+  };
+  const production = {
+    id: "jev-v2-1-execute", botId: "bot_b", task: "produce v2", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 2, result: "artifact v2",
+  };
+  // Independent of the producer: bot_b produced the version, so it may not be
+  //  the one whose verification clears the earlier failure.
+  const verification = {
+    id: "jev-v2-2-verify", botId: "bot_c", task: "verify", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 3, result: "verified artifact v2",
+  };
+  const unresolved = durableProgressReduction([failure, production]);
+  expect(unresolved).toMatchObject({ total: 1, artifactVersion: 2, verifiedVersion: 0 });
+  // Verification of the current version is the durable coverage that clears it.
+  expect(durableProgressReduction([failure, production, verification])).toMatchObject({
+    total: 0, issues: [], artifactVersion: 2, verifiedVersion: 3,
+  });
+  const next = scriptedAsk("complete");
+  expect((await decideJevRouterAssignment(
+    jevInput([failure, production, verification], { durableProgress: durableProgressReduction([failure, production, verification]) }),
+    next.ask)).type).toBe("complete");
+});
+
+test("a clipped reduction never reads as empty work", () => {
+  const failures = Array.from({ length: 70 }, (_, index) => ({
+    id: `jev-v2-${index}-execute`, botId: "bot_a", task: "produce", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: index + 1, failureReason: "artifact build failed",
+  }));
+  const reduction = durableProgressReduction(failures);
+  expect(reduction.total).toBe(70);
+  expect(reduction.issues).toHaveLength(MAX_DURABLE_UNRESOLVED_ISSUES);
+  expect(reduction.omittedIssueCount).toBe(70 - MAX_DURABLE_UNRESOLVED_ISSUES);
+  // Newest first: the failures the next decision must act on come first.
+  expect(reduction.issues[0]?.assignmentId).toBe("jev-v2-69-execute");
+  expect(hasUnresolvedWork(reduction)).toBe(true);
+  // Bounding an already-bounded reduction keeps the durable total and its
+  //  disclosed omission, so repeated bounding cannot hide the work.
+  expect(boundDurableProgress(reduction)).toEqual(reduction);
+  expect(hasUnresolvedWork(boundDurableProgress({ ...reduction, issues: [] }))).toBe(true);
+});
+
+test("the CLI refuses a malformed durable progress reduction instead of defaulting it empty", async () => {
+  for (const durableProgress of [
+    { issues: [], total: -1, artifactVersion: 0, producerBotIds: [], verifiedVersion: 0 },
+    { issues: [{ assignmentId: "", botId: "bot_a", batch: 1 }], total: 1, artifactVersion: 0, producerBotIds: [], verifiedVersion: 0 },
+    { issues: [{ assignmentId: "a", botId: "bot_a", batch: 0 }], total: 1, artifactVersion: 0, producerBotIds: [], verifiedVersion: 0 },
+    { issues: [], total: 1, artifactVersion: 0, producerBotIds: [], verifiedVersion: "3" },
+  ]) {
+    const capture = cliIo(["--decide"], JSON.stringify({ ...routingInput(), durableProgress }));
+    expect(await runDefaultRouterCli(capture.io)).toBe(1);
+    expect(capture.stdout).toEqual([]);
+  }
+  // A well-formed reduction crosses the boundary instead of failing shut. The
+  //  legacy fan-out ignores it; the durable store gate is its backstop.
+  const reduction = durableProgressReduction([{
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed", attempt: 1, batch: 1, failureReason: "artifact build failed",
+  }]);
+  const capture = cliIo(["--decide"], JSON.stringify({ ...routingInput(), durableProgress: reduction }));
+  expect(await runDefaultRouterCli(capture.io)).toBe(0);
+  expect(JSON.parse(capture.stdout.join(""))).toMatchObject({ type: "dispatch" });
+});
+
+test("an unresolved issue that never started raises no unfinished work", () => {
+  const preStart = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "runtime_revision_mismatch", started: false,
+  };
+  expect(durableProgressReduction([preStart])).toMatchObject({ total: 0, issues: [] });
+  // The same row without the flag is unknown, so it stays conservative.
+  const { started: _started, ...legacy } = preStart;
+  expect(durableProgressReduction([legacy])).toMatchObject({ total: 1 });
+});
+
+test("a retry by the same member covers its own failure", () => {
+  const failure = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "transient",
+  };
+  const retry = {
+    id: "jev-v2-1-execute", botId: "bot_a", task: "produce", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 2, batch: 2, result: "artifact v1",
+  };
+  expect(durableProgressReduction([failure])).toMatchObject({ total: 1 });
+  expect(durableProgressReduction([failure, retry])).toMatchObject({ total: 0, artifactVersion: 2 });
+});
+
+test("an unrelated later task by the same member does not clear the failure", () => {
+  const failure = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
+  };
+  // Same member, settled success, but a different logical task: not a redo.
+  const unrelated = {
+    id: "jev-v2-1-answer", botId: "bot_a", task: "answer a side question", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 2, result: "the answer",
+  };
+  expect(durableProgressReduction([failure, unrelated])).toMatchObject({
+    total: 1, issues: [{ assignmentId: "jev-v2-0-execute" }],
+  });
+});
+
+test("a producer verifying its own artifact does not clear an earlier failure", () => {
+  const failure = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
+  };
+  const production = {
+    id: "jev-v2-1-execute", botId: "bot_b", task: "produce a different artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 2, result: "artifact v1",
+  };
+  // bot_b produced batch 2, so its own verification of that version is not
+  //  independent evidence for the failure bot_a left behind.
+  const selfVerification = {
+    id: "jev-v2-2-verify", botId: "bot_b", task: "verify", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 3, result: "verified artifact v1",
+  };
+  expect(durableProgressReduction([failure, production, selfVerification])).toMatchObject({
+    total: 1, issues: [{ assignmentId: "jev-v2-0-execute" }], artifactVersion: 2, verifiedVersion: 0,
+  });
+  // An independent verifier of the same version does cover it.
+  const independent = { ...selfVerification, botId: "bot_c" };
+  expect(durableProgressReduction([failure, production, independent])).toMatchObject({
+    total: 0, issues: [], artifactVersion: 2, verifiedVersion: 3,
+  });
+});
+
+test("a cross-member redo of the minted instruction clears the failure", async () => {
+  const first = expectDispatch(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask)).assignments[0]!;
+  const second = expectDispatch(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_b").ask)).assignments[0]!;
+  const failure = { ...first, dependsOn: first.dependsOn ?? [], outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed" };
+  const redo = { ...second, dependsOn: second.dependsOn ?? [], outcome: "completed" as const, attempt: 1, batch: 2, result: "artifact v1" };
+  expect(durableProgressReduction([failure, redo])).toMatchObject({ total: 0, issues: [] });
+});
+
+test("a Run that still owes work is never re-dispatched, so a minted retry cannot out-scope its failure", async () => {
+  const first = expectDispatch(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask)).assignments[0]!;
+  const failure = { ...first, dependsOn: first.dependsOn ?? [], outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed" };
+  const next = await decideJevRouterAssignment(jevInput([failure], { durableProgress: durableProgressReduction([failure]) }), scriptedAsk().ask);
+  expect(next.type).toBe("need-human");
+});
+
+test("a different action never counts as a redo of the same work", () => {
+  const failure = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
+  };
+  const answer = {
+    id: "jev-v2-1-answer", botId: "bot_b", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 2, result: "here is an answer",
+  };
+  expect(durableProgressReduction([failure, answer]).total).toBe(1);
 });
