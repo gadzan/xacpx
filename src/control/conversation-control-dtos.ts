@@ -273,6 +273,8 @@ export interface ConversationRunDto {
   pausedAt?: string;
   waitingQuestion?: string;
   maxMemberTurns: number;
+  /** V2 §6.3 work-window renewal counter; one audit row exists per epoch. */
+  budgetEpoch: number;
   consumedMemberTurns: number;
   failedBotIds: string[];
   unavailableBotIds: string[];
@@ -576,6 +578,7 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
       ? { waitingQuestion: run.waitingQuestion } : {}),
     ...(run.activeBatch !== undefined ? { activeBatch: run.activeBatch } : {}),
     maxMemberTurns: run.maxMemberTurns,
+    budgetEpoch: run.budgetEpoch,
     consumedMemberTurns: run.consumedMemberTurns,
     failedBotIds: [...run.failedBotIds],
     unavailableBotIds: [...run.unavailableBotIds],

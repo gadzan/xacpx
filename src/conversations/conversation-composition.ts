@@ -88,7 +88,7 @@ export interface ConversationRuntime {
 
 export interface CreateConversationRuntimeInput {
   messagingNodeId?: string;
-  config: Pick<AppConfig, "agents" | "workspaces"> & Partial<Pick<AppConfig, "channel" | "channels">>;
+  config: Pick<AppConfig, "agents" | "workspaces"> & Partial<Pick<AppConfig, "channel" | "channels" | "conversations">>;
   state: AppState;
   stateStore: Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
   sessions: SessionService;
@@ -141,6 +141,9 @@ export async function createConversationRuntime(
 ): Promise<ConversationRuntime> {
   const store = await SqliteConversationStore.open(input.sqlitePath, {
     ...(input.beforeLeaseRenewal ? { beforeLeaseRenewal: input.beforeLeaseRenewal } : {}),
+    // V2 P0-B is the production behavior (design §4.2/§6). The config key is
+    // an operator rollback to the pre-P0-B1 batch semantics, not an opt-in.
+    followupRedispatch: input.config.conversations?.followupRedispatch !== false,
   });
   const traceRecorder = input.controlEvents ? new GroupMemberTraceRecorder({
     store, state: input.state, events: input.controlEvents,

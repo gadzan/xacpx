@@ -231,6 +231,9 @@ export interface ConversationRun {
   controlRevision: number;
   /** Durable progress counter for stale-async fences (claim/settle). */
   progressRevision: number;
+  /** V2 §6.3 work-window renewal counter. Every granted renewal increments it
+   *  and writes exactly one `run_budget_decisions` audit row for that epoch. */
+  budgetEpoch: number;
   finishedAt?: string;
 }
 

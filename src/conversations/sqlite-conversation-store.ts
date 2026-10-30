@@ -36,7 +36,10 @@ import type {
   ConversationStore,
   FailClaimBeforeStartInput,
   FailExecutionInput,
+  FollowupReservationRecord,
   ListMessagesQuery,
+  RunBudgetDecisionRecord,
+  RunWorkCapacity,
   MarkExecutionStartedInput,
   MemberAvailabilityFact,
   ApplyRoutingDecisionInput,
@@ -107,12 +110,22 @@ export interface SqliteConversationStoreOptions {
    *  transaction before lease_expires_at changes. Not a closed database. */
   beforeLeaseRenewal?: () => void;
   /**
-   * V2 P0-B1 rollout gate (default off until P0-B2 lands): a followup wake may
-   * dispatch new assignments, and Run completion reads the whole-Run waiting
-   * graph instead of the active batch. Off keeps the pre-P0-B1 semantics
-   * byte for byte, including the wake task text.
+   * V2 P0-B behavior: a followup wake may dispatch new assignments, work
+   * capacity renews instead of failing the Run, a returning wake is reserved
+   * at dispatch time, and Run completion reads the whole-Run waiting graph
+   * instead of the active batch. Production enables this through
+   * `conversations.followupRedispatch` (default on); the raw store keeps
+   * `false` unless asked, so a direct-store caller says what it means. `false`
+   * keeps the pre-P0-B1 semantics byte for byte, including the wake task text.
    */
   followupRedispatch?: boolean;
+}
+
+/** Admission refusal carrying durable intent (a pause request or the legacy
+ *  budget marker). It is returned from the admission transaction and thrown
+ *  after it commits, so refusing work can never roll the intent back. */
+interface HandoffRefusal {
+  refusal: ConversationError;
 }
 
 export interface ExternalStopRequest {
@@ -174,6 +187,7 @@ interface RunRow {
   paused_at?: string | null;
   control_revision?: number;
   progress_revision?: number;
+  budget_epoch?: number;
   last_control_request_id?: string | null;
   profile_revision: number;
   profile_snapshot_json: string;
@@ -334,6 +348,7 @@ CREATE TABLE IF NOT EXISTS runs (
   paused_at TEXT,
   control_revision INTEGER NOT NULL DEFAULT 0,
   progress_revision INTEGER NOT NULL DEFAULT 0,
+  budget_epoch INTEGER NOT NULL DEFAULT 0,
   last_control_request_id TEXT,
   profile_revision INTEGER NOT NULL,
   profile_snapshot_json TEXT NOT NULL,
@@ -412,6 +427,40 @@ CREATE TABLE IF NOT EXISTS lifecycle_operations (
   updated_at TEXT NOT NULL,
   UNIQUE (kind, request_id)
 );
+
+-- V2 §6.3: one audit row per granted work-window renewal. The budget write,
+-- the audit row and the work admission share a transaction, so an epoch can
+-- never exist without the slots it granted, nor slots without an audit row.
+CREATE TABLE IF NOT EXISTS run_budget_decisions (
+  run_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  previous_limit INTEGER NOT NULL,
+  requested_delta INTEGER NOT NULL,
+  granted_delta INTEGER NOT NULL,
+  new_limit INTEGER NOT NULL,
+  resource_grant_revision INTEGER NOT NULL,
+  progress_revision INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, epoch)
+);
+
+-- V2 §6.2: one returning wake reserved per sender MemberTurn the first time it
+-- dispatches. The primary key makes a double reservation impossible, so the
+-- wake is counted exactly once — never lost, never charged twice.
+CREATE TABLE IF NOT EXISTS followup_reservations (
+  run_id TEXT NOT NULL,
+  sender_member_turn_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  member_turn_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, sender_member_turn_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_followup_reservations_status
+  ON followup_reservations (run_id, status);
 `;
 
 /**
@@ -614,6 +663,7 @@ function mapRun(row: RunRow): ConversationRun {
     ...(optionalString(row.paused_at) ? { pausedAt: row.paused_at as string } : {}),
     controlRevision: Number(row.control_revision ?? 0),
     progressRevision: Number(row.progress_revision ?? 0),
+    budgetEpoch: Number(row.budget_epoch ?? 0),
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
   };
@@ -1133,7 +1183,10 @@ export class SqliteConversationStore implements ConversationStore {
 
   acceptPublicHandoff(input: AcceptPublicHandoffInput): PublicHandoffReceipt {
     const args = parseGroupSend(input.args);
-    return this.sqlite.transaction(() => {
+    // A refusal is durable intent (a pause request, a legacy budget marker) and
+    // must COMMIT, so it is returned from the transaction and thrown after it,
+    // never thrown inside it.
+    const outcome = this.sqlite.transaction((): PublicHandoffReceipt | HandoffRefusal => {
       const prior = this.getPublicHandoff(input.sourceTurnId, input.invocationId, args);
       if (prior) return prior;
       const sender = this.requireMemberTurn(input.senderMemberTurnId);
@@ -1172,11 +1225,38 @@ export class SqliteConversationStore implements ConversationStore {
       if (run.quarantinedBotIds?.includes(args.to)) {
         throw new ConversationError("handoff_quarantined_member", "target is unavailable for this Run");
       }
-      if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
+      // §6.3 resource shortfall (not a budget shortfall): the Run holds no
+      // execution grant for this target right now. Refuse the new work — no
+      // member turn, no reservation, no invented task — and park the Run in a
+      // recoverable pause so the same durable request can be made after
+      // `resume`. A quarantined target is a hard failure and already refused
+      // above; this is the availability fence.
+      if (this.followupRedispatch && run.unavailableBotIds.includes(args.to)) {
+        this.requestResourcePause(run.id, "member-unavailable", input.now);
+        return { refusal: new ConversationError("work_capacity_refused",
+          "Run has no execution grant for this work; it is paused and can be resumed", { reason: "member-unavailable" }) };
+      }
+      // V2 §6.1/§6.3 admission, in this transaction: one slot for the new
+      // member turn, plus the sender's returning wake reserved on its first
+      // dispatch. A short window renews deterministically instead of failing
+      // the Run; an ungrantable one refuses and pauses recoverably.
+      const reserveWake = this.followupRedispatch && !this.hasFollowupReservation(run.id, sender.id);
+      if (this.followupRedispatch) {
+        const capacity = this.ensureWorkCapacity({
+          runId: run.id,
+          requiredSlots: reserveWake ? 2 : 1,
+          source: sender.followupSenderMemberTurnId !== undefined ? "followup" : "handoff",
+          now: input.now,
+        });
+        if (!capacity.granted) {
+          return { refusal: new ConversationError("work_capacity_refused",
+            "Run work window cannot be extended; it is paused and can be resumed", { reason: "work-window" }) };
+        }
+      } else if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
         // Keep the active physical execution intact. The failed tool call is
         // durable Run intent; settlement gives budget exhaustion a stable reason.
         this.sqlite.run("UPDATE runs SET budget_exhausted = 1 WHERE id = ?", [run.id]);
-        return undefined;
+        return { refusal: new ConversationError("budget-exhausted", "Run work budget is exhausted") };
       }
       const memberTurnId = this.ids.memberTurnId();
       const assignmentId = `handoff_${memberTurnId}`;
@@ -1218,8 +1298,13 @@ export class SqliteConversationStore implements ConversationStore {
           args.expectedOutput ?? null, JSON.stringify(sender.dependsOn ?? []), input.sourceTurnId, input.invocationId]);
       this.sqlite.run(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
         VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, memberTurnId, run.generation, input.now]);
+      // Same transaction as the work: the slot charged above becomes this
+      // sender's durable one-and-only returning wake (§6.2).
+      if (reserveWake) this.reserveFollowupWake(run.id, sender.id, input.now);
       return { reused: false, run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(memberTurnId), message: this.requireMessage(messageId) };
-    }) ?? (() => { throw new ConversationError("budget-exhausted", "Run work budget is exhausted"); })();
+    });
+    if ("refusal" in outcome) throw outcome.refusal;
+    return outcome;
   }
 
   listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[] {
@@ -1232,6 +1317,145 @@ export class SqliteConversationStore implements ConversationStore {
   private allocatedWork(runId: string): number {
     return this.listMemberTurns(runId).length + Number(this.sqlite.get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM recovery_attempts WHERE run_id = ?", [runId])?.n ?? 0);
+  }
+
+  /** Reserved returning wakes are spendable capacity: charged once when
+   *  reserved, then again only as the wake's own member turn after fulfilment. */
+  private outstandingReservations(runId: string): number {
+    return Number(this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM followup_reservations WHERE run_id = ? AND status = 'reserved'", [runId])?.n ?? 0);
+  }
+
+  /** V2 §6.1 admission quantity: `MemberTurnCount + RecoveryAttemptCount +
+   *  OutstandingFutureFollowupReservationCount`. */
+  private occupiedWork(runId: string): number {
+    return this.allocatedWork(runId) + this.outstandingReservations(runId);
+  }
+
+  /** Any reservation for this sender turn, whatever its status: a fulfilled or
+   *  released wake must never be reserved a second time. */
+  private hasFollowupReservation(runId: string, senderMemberTurnId: string): boolean {
+    return Boolean(this.sqlite.get(
+      "SELECT 1 FROM followup_reservations WHERE run_id = ? AND sender_member_turn_id = ?",
+      [runId, senderMemberTurnId]));
+  }
+
+  /** A sender's FIRST successful dispatch reserves exactly one returning wake;
+   *  the primary key makes a second reservation for the same turn impossible,
+   *  so one wake can never be charged twice. */
+  private reserveFollowupWake(runId: string, senderMemberTurnId: string, now: string): void {
+    this.sqlite.run(`INSERT OR IGNORE INTO followup_reservations
+      (run_id, sender_member_turn_id, status, member_turn_id, created_at, updated_at)
+      VALUES (?, ?, 'reserved', NULL, ?, ?)`, [runId, senderMemberTurnId, now, now]);
+  }
+
+  private fulfilFollowupWake(runId: string, senderMemberTurnId: string, memberTurnId: string, now: string): void {
+    this.sqlite.run(`UPDATE followup_reservations SET status = 'fulfilled', member_turn_id = ?, updated_at = ?
+      WHERE run_id = ? AND sender_member_turn_id = ? AND status = 'reserved'`,
+      [memberTurnId, now, runId, senderMemberTurnId]);
+  }
+
+  /** A sealed Run owes no wake, so open reservations stop consuming capacity. */
+  private releaseFollowupReservations(runId: string, now: string): void {
+    this.sqlite.run(`UPDATE followup_reservations SET status = 'released', updated_at = ?
+      WHERE run_id = ? AND status = 'reserved'`, [now, runId]);
+  }
+
+  /**
+   * V2 §6.3: make room for legitimate work instead of failing the Run on
+   * budget. Inside the caller's transaction, read the latest Run and its
+   * allocation, then — only when the slots are short — raise the window
+   * deterministically by `max(8, shortage)` and audit the new `budgetEpoch`.
+   * Renewal never creates a task: the caller's own admitted request is the only
+   * work that becomes possible by it.
+   *
+   * Refusal is a resource shortfall, not a budget failure: the request is
+   * refused, the Run parks in a recoverable pause, and nothing is terminalized.
+   */
+  private ensureWorkCapacity(input: {
+    runId: string;
+    requiredSlots: number;
+    source: RunBudgetDecisionRecord["source"];
+    now: string;
+  }): { granted: boolean; run: ConversationRun } {
+    const run = this.requireRun(input.runId);
+    const shortage = this.occupiedWork(run.id) + input.requiredSlots - run.maxMemberTurns;
+    if (shortage <= 0) return { granted: true, run };
+    const granted = Math.max(8, shortage);
+    const newLimit = run.maxMemberTurns + granted;
+    if (!Number.isSafeInteger(newLimit) || !Number.isSafeInteger(granted)) {
+      // 64-bit-safe integer boundary (design §12.2): the window cannot grow,
+      // so the request is refused and the Run parks recoverably.
+      this.requestResourcePause(run.id, "work-window-unrepresentable", input.now);
+      return { granted: false, run: this.requireRun(run.id) };
+    }
+    const epoch = run.budgetEpoch + 1;
+    this.sqlite.run("UPDATE runs SET max_member_turns = ?, budget_epoch = ?, progress_revision = progress_revision + 1 WHERE id = ?",
+      [newLimit, epoch, run.id]);
+    const updated = this.requireRun(run.id);
+    this.sqlite.run(`INSERT INTO run_budget_decisions (run_id, epoch, source, previous_limit, requested_delta,
+      granted_delta, new_limit, resource_grant_revision, progress_revision, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      [run.id, epoch, input.source, run.maxMemberTurns, shortage, granted, newLimit,
+        updated.progressRevision, `${input.source}:short-by-${shortage}`, input.now]);
+    return { granted: true, run: updated };
+  }
+
+  /**
+   * §6.3 resource shortfall: the Run has no grant for the work that was
+   * requested, so the request creates nothing and the Run parks in a
+   * RECOVERABLE pause — resume re-derives the same durable work once the
+   * resource is back. This is explicitly not a budget failure: the window and
+   * every settled result stay exactly as they were.
+   */
+  private requestResourcePause(runId: string, reason: string, now: string): void {
+    this.sqlite.run(`UPDATE runs SET pause_requested_at = COALESCE(pause_requested_at, ?),
+      pause_reason = COALESCE(pause_reason, ?), progress_revision = progress_revision + 1 WHERE id = ?`,
+      [now, reason, runId]);
+  }
+
+  getRunWorkCapacity(runId: string): RunWorkCapacity | undefined {
+    const run = this.getRun(runId);
+    if (!run) return undefined;
+    const occurred = this.allocatedWork(runId);
+    const reserved = this.outstandingReservations(runId);
+    return { runId, window: run.maxMemberTurns, occurred, reserved, occupied: occurred + reserved,
+      budgetEpoch: run.budgetEpoch };
+  }
+
+  listRunBudgetDecisions(runId: string): RunBudgetDecisionRecord[] {
+    return this.sqlite.all<{
+      run_id: string; epoch: number; source: string; previous_limit: number; requested_delta: number;
+      granted_delta: number; new_limit: number; resource_grant_revision: number; progress_revision: number;
+      reason: string; created_at: string;
+    }>("SELECT * FROM run_budget_decisions WHERE run_id = ? ORDER BY epoch ASC", [runId]).map((row) => ({
+      runId: row.run_id,
+      epoch: Number(row.epoch),
+      source: row.source as RunBudgetDecisionRecord["source"],
+      previousLimit: Number(row.previous_limit),
+      requestedDelta: Number(row.requested_delta),
+      grantedDelta: Number(row.granted_delta),
+      newLimit: Number(row.new_limit),
+      resourceGrantRevision: Number(row.resource_grant_revision),
+      progressRevision: Number(row.progress_revision),
+      reason: row.reason,
+      at: row.created_at,
+    }));
+  }
+
+  listFollowupReservations(runId: string): FollowupReservationRecord[] {
+    return this.sqlite.all<{
+      run_id: string; sender_member_turn_id: string; status: string; member_turn_id: string | null;
+      created_at: string; updated_at: string;
+    }>("SELECT * FROM followup_reservations WHERE run_id = ? ORDER BY created_at ASC, sender_member_turn_id ASC", [runId])
+      .map((row) => ({
+        runId: row.run_id,
+        senderMemberTurnId: row.sender_member_turn_id,
+        status: row.status as FollowupReservationRecord["status"],
+        ...(optionalString(row.member_turn_id) ? { memberTurnId: row.member_turn_id as string } : {}),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
   }
 
   /** Read-only logical-work projection (V2 §4.4). Never the authority: the
@@ -1263,10 +1487,16 @@ export class SqliteConversationStore implements ConversationStore {
   private buildRunWaitingGraph(run: ConversationRun, turns: readonly MemberTurnRecord[]): RunWaitingGraph {
     const intent = this.sqlite.get<{ budget_exhausted: number; cancellation_reason: string | null }>(
       "SELECT budget_exhausted, cancellation_reason FROM runs WHERE id = ?", [run.id]);
+    // A reserved wake is owed work, not spare capacity (V2 §4.4 check 3): the
+    // graph must keep the Run open until it is materialized.
+    const reservedWakeTurnIds = new Set(this.sqlite.all<{ sender_member_turn_id: string }>(
+      "SELECT sender_member_turn_id FROM followup_reservations WHERE run_id = ? AND status = 'reserved'",
+      [run.id]).map((row) => row.sender_member_turn_id));
     return buildWaitingGraph(run, turns, {
       allocationUsed: this.allocatedWork(run.id),
       runCancelling: isRunCancelling(run),
       budgetExhausted: Number(intent?.budget_exhausted ?? 0) === 1,
+      ...(reservedWakeTurnIds.size > 0 ? { reservedWakeTurnIds } : {}),
       ...(intent?.cancellation_reason
         ? { runCancellationReason: intent.cancellation_reason as "human-cancelled" | "execution-cancelled" }
         : {}),
@@ -2968,7 +3198,14 @@ export class SqliteConversationStore implements ConversationStore {
       if (updated.controlRevision !== run.controlRevision + 1) {
         throw new ConversationError("stale_control_revision", `run "${run.id}" control revision changed concurrently`);
       }
-      return { run: updated, changed: true };
+      // A pause holds owed wakes as durable reservations instead of
+      // materializing them. Resume is where that owed report becomes a real
+      // wake again — derived from the same rows, so a crash cannot lose it and
+      // a second resume cannot double it (the wake is unique per sender).
+      if (this.followupRedispatch) {
+        this.enqueueSettledHandoffFollowups(updated, input.now);
+      }
+      return { run: this.requireRun(run.id), changed: true };
     });
   }
 
@@ -3145,19 +3382,34 @@ export class SqliteConversationStore implements ConversationStore {
       }
       const batch = Math.max(0, ...members.map((turn) => turn.batch));
       if (input.decision.type === "dispatch") {
-        // Budget guardrail (design §14.2): a Router decision may never push
-        // the Run past its member-turn budget. Budget exhaustion is an
-        // explicit completion reason, not a silent truncation.
-        const consumed = this.allocatedWork(run.id) + input.decision.assignments.length;
-        if (consumed > run.maxMemberTurns) {
-          this.sqlite.run(
-            `UPDATE runs SET state = 'failed', completion_reason = 'budget-exhausted',
-             finished_at = COALESCE(finished_at, ?), routing_state = 'done'
-             WHERE id = ?`,
-            [input.now, run.id],
-          );
-          this.writeRoutingDecisionRow(run.id, input.decision, input.now);
-          return { run: this.requireRun(run.id), memberTurns: [], dispatches: [], terminal: "failed" };
+        // V2 §6.3: a Router dispatch is a legitimate work request, so a full
+        // window renews deterministically instead of failing the Run. The
+        // legacy §14.2 guardrail (a Router may never push past the budget)
+        // stays intact behind the rollback flag.
+        if (this.followupRedispatch) {
+          const capacity = this.ensureWorkCapacity({
+            runId: run.id, requiredSlots: input.decision.assignments.length, source: "router", now: input.now,
+          });
+          if (!capacity.granted) {
+            // Nothing executes here (routing requires settled members), so the
+            // recoverable pause completes immediately instead of waiting for a
+            // settlement that will never come.
+            this.writeRoutingDecisionRow(run.id, input.decision, input.now);
+            const paused = this.settlePauseIfDrained(run.id, input.now);
+            return { run: paused ?? this.requireRun(run.id), memberTurns: [], dispatches: [] };
+          }
+        } else {
+          const consumed = this.allocatedWork(run.id) + input.decision.assignments.length;
+          if (consumed > run.maxMemberTurns) {
+            this.sqlite.run(
+              `UPDATE runs SET state = 'failed', completion_reason = 'budget-exhausted',
+               finished_at = COALESCE(finished_at, ?), routing_state = 'done'
+               WHERE id = ?`,
+              [input.now, run.id],
+            );
+            this.writeRoutingDecisionRow(run.id, input.decision, input.now);
+            return { run: this.requireRun(run.id), memberTurns: [], dispatches: [], terminal: "failed" };
+          }
         }
         // Domain fence (defence in depth — the gate already ran): every
         // assignment must map onto this Run's public transcript. `triggerMessageIds`
@@ -3268,8 +3520,14 @@ export class SqliteConversationStore implements ConversationStore {
           return { run: this.requireRun(run.id), memberTurns: [], dispatches: [] };
         }
         this.writeRoutingDecisionRow(run.id, input.decision, input.now);
+        // A clean completion keeps the Router's own rationale (the human-facing
+        // reason for the decision); a failure/unknown classification keeps the
+        // derived reason, which is evidence rather than a model's claim.
+        const outcome = verdict.state === "completed" && input.decision.reason
+          ? { ...verdict, reason: input.decision.reason }
+          : verdict;
         return {
-          run: this.writeRunOutcome(run.id, verdict, input.now),
+          run: this.writeRunOutcome(run.id, outcome, input.now),
           memberTurns: [],
           dispatches: [],
           terminal: verdict.state,
@@ -3867,6 +4125,11 @@ export class SqliteConversationStore implements ConversationStore {
     }
     if (!names.has("routing_generation")) {
       this.sqlite.exec("ALTER TABLE runs ADD COLUMN routing_generation INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!names.has("budget_epoch")) {
+      // V2 §6.3 work-window renewal counter. Legacy Runs start at epoch 0: no
+      // renewal has been granted yet, which is exactly their durable truth.
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN budget_epoch INTEGER NOT NULL DEFAULT 0");
     }
   }
 
@@ -4540,11 +4803,20 @@ export class SqliteConversationStore implements ConversationStore {
       // indeterminate assignment is an unknown outcome: the wake would
       // summarize a result nobody can prove, so no wake is inserted.
       if (assignments.some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state) || turn.state === "indeterminate")) continue;
-      if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
-        // Budget exhausted: the wake is NOT inserted, but the Run must still
-        // reach a terminal state and the sub-task results stay persisted. The
-        // wake is a summary convenience, not the work itself — marking the
-        // Run budget-exhausted here would report successful work as failed.
+      const reservedWake = this.hasFollowupReservation(run.id, sender.id);
+      if (this.followupRedispatch) {
+        // The wake is owed work (V2 §6.2), never a capacity casualty: a
+        // reserved wake already holds its slot, so it needs no new one, and an
+        // unreserved legacy sender renews the window rather than being dropped.
+        // A resource shortfall keeps the reservation open — the Run then stays
+        // non-terminal with that report still owed (§4.4 check 3).
+        const capacity = this.ensureWorkCapacity({
+          runId: run.id, requiredSlots: reservedWake ? 0 : 1, source: "followup", now,
+        });
+        if (!capacity.granted) continue;
+      } else if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
+        // Legacy flag-off semantics, byte for byte: budget exhausted, the wake
+        // is not inserted, and settlement still derives the Run's outcome.
         continue;
       }
       // The wake carries a compact manifest, never member output: untrusted
@@ -4578,6 +4850,9 @@ export class SqliteConversationStore implements ConversationStore {
           JSON.stringify([...triggers]), JSON.stringify(sender.profileSnapshot ?? run.profileSnapshot), now, task, sender.id, `followup_${id}`]);
       this.sqlite.run(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
         VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, id, run.generation, now]);
+      // Fulfilment and materialization are one write: the reservation stops
+      // counting and the wake starts counting, never both (§6.2).
+      this.fulfilFollowupWake(run.id, sender.id, id, now);
     }
   }
 
@@ -4635,7 +4910,13 @@ export class SqliteConversationStore implements ConversationStore {
         this.sqlite.run("UPDATE runs SET quarantined_bot_ids_json = ? WHERE id = ?", [JSON.stringify([...quarantine]), runId]);
       }
     }
-    if (this.followupRedispatch) return this.aggregateRunOnWorkGraph(run, members, memberTurnId, now, memberReason);
+    // §4.4 governs the EXPLICIT Run's terminal derivation: its batch settling
+    // says nothing about the Run's work. An automatic Run's next step belongs
+    // to the Router (P0-A), whose own `complete` decision is graph-gated in
+    // applyRoutingDecision, so this settlement keeps awaiting routing.
+    if (this.followupRedispatch && run.mode === "explicit") {
+      return this.aggregateRunOnWorkGraph(run, members, memberTurnId, now, memberReason);
+    }
     const batchIndeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
     if (batchIndeterminate.length > 0) {
       // Unknown side effects seal the Run immediately, in either mode, even
@@ -4762,6 +5043,7 @@ export class SqliteConversationStore implements ConversationStore {
        WHERE id = ?`,
       [verdict.state, verdict.reason, now, runId],
     );
+    this.releaseFollowupReservations(runId, now);
     return this.requireRun(runId);
   }
 

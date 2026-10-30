@@ -126,11 +126,16 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
     const detail = await current.control.getRun(accepted.run.id);
     const expectedState = outcome === "runtime-cancelled" ? "cancelled"
       : outcome === "permission-denied" || outcome === "runtime-failed" ? "failed" : "indeterminate";
-    // A proven terminal target earns the leader ONE wake turn to summarize.
-    // An indeterminate target proves nothing, so no wake is inserted.
+    // A proven terminal target earns the leader ONE wake turn. An
+    // indeterminate target proves nothing, so no wake is inserted.
     const wakeExpected = outcome === "permission-denied" || outcome === "runtime-failed";
+    // V2 §4.4: the failed target is evidence handed back to the lead, not the
+    // Run's verdict. The wake decides on the latest causal frontier, so the
+    // Run settles on that decision instead of staying batch-scoped.
+    const runState = wakeExpected ? "completed" : expectedState;
     expect(starts).toBe(wakeExpected ? 3 : 2);
-    expect(detail.state).toBe(expectedState);
+    expect(detail.state).toBe(runState);
+    if (wakeExpected) expect(detail.completionReason).toBe("members-completed");
     expect(detail.memberTurns[0]?.state).toBe("completed");
     expect(detail.memberTurns[1]?.state).toBe(expectedState);
     if (outcome === "runtime-cancelled") expect(detail.completionReason).toBe("execution-cancelled");
@@ -148,7 +153,7 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
       expect(current.runtime.store.getDispatchForMemberTurn(detail.memberTurns[1]!.id)?.state).toBe("completed");
       const reopened = await SqliteConversationStore.open(current.sqlitePath);
       try {
-        expect(reopened.getRun(accepted.run.id)?.state).toBe(expectedState);
+        expect(reopened.getRun(accepted.run.id)?.state).toBe(runState);
         expect(reopened.getMemberTurn(detail.memberTurns[1]!.id)?.state).toBe(expectedState);
       } finally { reopened.close(); }
     }
@@ -159,8 +164,8 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
 
 for (const mode of ["automatic", "explicit"] as const) {
 for (const humanStop of [false, true]) {
-test(`real ${mode} budget rejection then typed cancellation preserves ${humanStop ? "live human Stop" : "budget failure"}`, async () => {
-  const budgetRejected = shutdownBarrier(), releaseProvider = shutdownBarrier(), cancelEntered = shutdownBarrier();
+test(`real ${mode} handoffs renew the work window instead of failing the Run${humanStop ? " with a live human Stop" : ""}`, async () => {
+  const handoffsAccepted = shutdownBarrier(), releaseProvider = shutdownBarrier(), cancelEntered = shutdownBarrier();
   let consoleAgent!: ConsoleAgent, senderId = "", targetId = "", runId = "", routerCalls = 0, starts = 0;
   let signal: AbortSignal | undefined;
   const current = await compose(new BarrierStateStore(), {
@@ -168,7 +173,7 @@ test(`real ${mode} budget rejection then typed cancellation preserves ${humanSto
     router: { capabilityRestriction: RESTRICTED, async decide() {
       if (++routerCalls > 1) return { type: "complete", reason: "unexpected continuation" };
       return { type: "dispatch", mode: "single", assignments: [
-        { id: "budget-sender", botId: senderId, task: "exhaust handoff budget", triggerMessageIds: [] },
+        { id: "renewal-sender", botId: senderId, task: "drive the work window", triggerMessageIds: [] },
       ] };
     } },
   });
@@ -177,17 +182,20 @@ test(`real ${mode} budget rejection then typed cancellation preserves ${humanSto
     expect(starts).toBe(1);
     expect(session.mcpSourceHandle).toMatch(/^group-execution:/);
     try {
-      const limit = current.runtime.store.getRun(runId)!.maxMemberTurns;
-      expect(limit).toBe(24);
-      // Fill the real production budget with accepted public handoffs. No SQL
-      // budget override or model-supplied capability is needed for this case.
-      for (let index = 1; index < limit; index++) {
-        await current.runtime.handoffs.send({ executionToken: session.mcpSourceHandle!, invocationId: `budget-${index}`,
+      const initialWindow = current.runtime.store.getRun(runId)!.maxMemberTurns;
+      expect(initialWindow).toBe(24);
+      // Drive PAST the initial window with real accepted public handoffs. The
+      // window renews deterministically instead of rejecting work, and nothing
+      // but the requested assignments is created.
+      for (let index = 1; index <= 24; index++) {
+        await current.runtime.handoffs.send({ executionToken: session.mcpSourceHandle!, invocationId: `renewal-${index}`,
           args: { to: targetId, task: `accepted downstream work ${index}` } });
       }
-      await expect(current.runtime.handoffs.send({ executionToken: session.mcpSourceHandle!, invocationId: "budget-rejected",
-        args: { to: targetId, task: "must exceed durable work budget" } })).rejects.toMatchObject({ code: "budget-exhausted" });
-    } finally { budgetRejected.resolve(); }
+      const capacity = current.runtime.store.getRunWorkCapacity(runId)!;
+      expect(capacity.window).toBeGreaterThan(initialWindow);
+      expect(capacity.budgetEpoch).toBe(1);
+      expect(current.runtime.store.listRunBudgetDecisions(runId)).toHaveLength(1);
+    } finally { handoffsAccepted.resolve(); }
     await releaseProvider.promise;
     throw Object.assign(new Error("provider terminal evidence"), { code: "RUNTIME_TURN_CANCELLED" });
   }, cancel: async () => {
@@ -199,29 +207,37 @@ test(`real ${mode} budget rejection then typed cancellation preserves ${humanSto
   try {
     senderId = (await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" })).id;
     targetId = (await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" })).id;
-    const group = await current.control.createGroup({ title: "Budget cancellation priority", botIds: [senderId, targetId] });
+    const group = await current.control.createGroup({ title: "Work window renewal", botIds: [senderId, targetId] });
     const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
     const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
-      requestId: "budget-runtime-cancellation", text: "work", target: mode === "automatic" ? { mode: "automatic" } : { botId: senderId } });
+      requestId: "renewal-runtime-cancellation", text: "work", target: mode === "automatic" ? { mode: "automatic" } : { botId: senderId } });
     runId = accepted.run.id;
     await current.runtime.runs.awaitRouting();
     drain = current.runtime.dispatcher.kick();
-    await budgetRejected.promise;
-    expect(current.runtime.store.listMemberTurns(runId)).toHaveLength(24);
+    await handoffsAccepted.promise;
+    // 24 admitted assignments plus the sender: renewal invented no task.
+    expect(current.runtime.store.listMemberTurns(runId)).toHaveLength(25);
+    const decisions = current.runtime.store.listRunBudgetDecisions(runId);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ epoch: 1, source: "handoff", previousLimit: 24, requestedDelta: 1,
+      grantedDelta: 8, newLimit: 32, reason: "handoff:short-by-1" });
     const sql = await createSqlDriver(current.sqlitePath);
-    try { expect(sql.get("SELECT budget_exhausted, cancellation_reason FROM runs WHERE id = ?", [runId]))
-      .toMatchObject({ budget_exhausted: 1, cancellation_reason: null }); }
-    finally { sql.close(); }
+    try {
+      expect(sql.get("SELECT budget_exhausted, max_member_turns, budget_epoch FROM runs WHERE id = ?", [runId]))
+        .toMatchObject({ budget_exhausted: 0, max_member_turns: 32, budget_epoch: 1 });
+      expect(sql.all("SELECT epoch FROM run_budget_decisions WHERE run_id = ?", [runId])).toHaveLength(1);
+    } finally { sql.close(); }
     if (humanStop) { cancellation = current.control.cancelRun(runId); await cancelEntered.promise; }
     expect(signal?.aborted).toBe(humanStop);
     releaseProvider.resolve();
     await Promise.all([drain, cancellation]);
     await current.runtime.runs.awaitRouting();
-    const expected = { state: humanStop ? "cancelled" : "failed",
-      completionReason: humanStop ? "human-cancelled" : "budget-exhausted", consumedMemberTurns: 1 };
+    // Cancellation is the Run's verdict; capacity never defines failure.
+    const expected = { state: "cancelled",
+      completionReason: humanStop ? "human-cancelled" : "execution-cancelled", consumedMemberTurns: 1 };
     const detail = await current.control.getRun(runId);
     expect(detail).toMatchObject(expected);
-    expect(detail.memberTurns).toHaveLength(24);
+    expect(detail.memberTurns).toHaveLength(25);
     expect(detail.memberTurns.every((turn) => turn.state === "cancelled")).toBe(true);
     expect(detail.memberTurns.filter((turn) => turn.startedAt)).toHaveLength(1);
     expect(detail.quarantinedBotIds ?? []).toEqual([]);
@@ -234,7 +250,7 @@ test(`real ${mode} budget rejection then typed cancellation preserves ${humanSto
       expect(reopened.getRun(runId)).toMatchObject(expected);
       expect(reopened.automaticRunsAwaitingRouting()).toEqual([]);
       expect(reopened.recoverExpiredClaims("2026-10-07T00:00:00.000Z")).toEqual([]);
-      expect(reopened.listMemberTurns(runId)).toHaveLength(24);
+      expect(reopened.listMemberTurns(runId)).toHaveLength(25);
     } finally { reopened.close(); }
   } finally {
     releaseProvider.resolve();

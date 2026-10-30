@@ -369,6 +369,48 @@ export interface RunControlResult {
   changed: boolean;
 }
 
+/**
+ * V2 §6.1 accounting: the work window is the granted capacity an admission
+ * must fit inside, never a Run lifetime cap. `occurred` is member turns plus
+ * retired recovery attempts; `reserved` is one pending returning wake per
+ * sender that has dispatched. A reservation is charged once at reservation
+ * time and, after fulfilment, once as the wake's own member turn.
+ */
+export interface RunWorkCapacity {
+  runId: string;
+  window: number;
+  occurred: number;
+  reserved: number;
+  occupied: number;
+  budgetEpoch: number;
+}
+
+/** One granted work-window renewal (V2 §6.3 audit row). */
+export interface RunBudgetDecisionRecord {
+  runId: string;
+  epoch: number;
+  source: "handoff" | "followup" | "router" | "recovery";
+  previousLimit: number;
+  requestedDelta: number;
+  grantedDelta: number;
+  newLimit: number;
+  resourceGrantRevision: number;
+  progressRevision: number;
+  reason: string;
+  at: string;
+}
+
+/** One returning-wake reservation (V2 §6.2). `memberTurnId` is set exactly
+ *  when the wake was materialized, so `fulfilled` always names its wake. */
+export interface FollowupReservationRecord {
+  runId: string;
+  senderMemberTurnId: string;
+  status: "reserved" | "fulfilled" | "released";
+  memberTurnId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** One validated Router assignment, as committed durably by
  *  `applyRoutingDecision`. Structure was validated by the Router gate;
  *  membership/dependency/budget were validated against the live Run state. */
@@ -473,6 +515,17 @@ export interface ConversationStore {
    * decided from these durable facts, never from the active batch.
    */
   getRunWorkOutcome(runId: string): RunWorkOutcome | undefined;
+  /**
+   * Work-window accounting for a Run (V2 §6.1): the granted window, the
+   * member turns plus recovery attempts it is spent on, the returning wakes
+   * still reserved, and their sum. Reservations are counted exactly once, so
+   * admission never charges a reserved wake twice.
+   */
+  getRunWorkCapacity(runId: string): RunWorkCapacity | undefined;
+  /** Ordered work-window renewal audit for a Run (V2 §6.3). */
+  listRunBudgetDecisions(runId: string): RunBudgetDecisionRecord[];
+  /** Durable returning-wake reservations for a Run (V2 §6.2). */
+  listFollowupReservations(runId: string): FollowupReservationRecord[];
   getRunByRequestId(conversationId: string, topicId: string, requestId: string): ConversationRun | undefined;
   getAcceptedRequest(conversationId: string, topicId: string, requestId: string): AcceptRequestResult | undefined;
   listRuns(conversationId: string, topicId?: string): ConversationRun[];

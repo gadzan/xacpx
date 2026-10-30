@@ -182,7 +182,14 @@ export interface ConversationRouterConfigPatch {
 }
 
 export interface ConversationsConfig {
-  router: ConversationRouterConfig;
+  router?: ConversationRouterConfig;
+  /**
+   * V2 P0-B multi-round handoff (design §4.2). On by default: a followup wake
+   * may dispatch new assignments, work capacity renews instead of failing a
+   * Run, and completion reads the whole-Run waiting graph. `false` restores the
+   * pre-P0-B1 batch-scoped semantics byte for byte.
+   */
+  followupRedispatch?: boolean;
 }
 
 export interface ChannelRuntimeConfig {

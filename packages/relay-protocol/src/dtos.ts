@@ -507,6 +507,9 @@ export interface ConversationRunDto {
   activeBatch?: number;
   /** Guardrail cap; absent on older wire shapes (direct legacy default 1). */
   maxMemberTurns?: number;
+  /** V2 §6.3 work-window renewal counter; one audit row exists per epoch.
+   *  Absent on older wire shapes (default 0). */
+  budgetEpoch?: number;
   /** Progress counter; absent on older wire shapes (direct legacy default 0). */
   consumedMemberTurns?: number;
   /** Members that failed in the current batch; absent on older wire shapes. */
