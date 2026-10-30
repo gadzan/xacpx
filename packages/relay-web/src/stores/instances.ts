@@ -168,6 +168,16 @@ export function supportsRunsCancelMember(instance: { capabilities?: string[] | n
 }
 
 /**
+ * True when the instance's core can pause/resume a Run
+ * (`control.runs.pause` / `control.runs.resume`). An older core answers
+ * `unsupported-rpc`, which is not something the user can act on, so the web
+ * must not offer the control there — a paused Run still renders its state.
+ */
+export function supportsRunsPause(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.runsPauseV1);
+}
+
+/**
  * True when the instance's core can rewrite a Group Topic's isolation
  * (`control.group.topics.set-isolation`). An older core answers `unknown-type`,
  * which the user cannot act on, so the web must not offer the switch there.

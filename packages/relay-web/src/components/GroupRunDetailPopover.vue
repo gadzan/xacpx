@@ -33,6 +33,8 @@ const props = defineProps<{
   traceStreaming?: boolean;
   stopAvailable?: boolean;
   stopPending?: boolean;
+  pauseAvailable?: boolean;
+  pausePending?: boolean;
   traceFailure?: string;
   /** Read position per member/attempt, owned by the transcript. */
   scrollMemory?: Map<string, number>;
@@ -41,6 +43,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   stop: [];
+  pause: [];
   attempt: [attempt: number];
   loadMore: [];
   loadEarlier: [];
@@ -198,7 +201,8 @@ const style = computed(() => ({
           variant="popover"
           :run="run" :member-turn="memberTurn" :member-name="memberName" :topic-title="topicTitle"
           :attempt="attempt" :attempts="attempts" :stop-available="stopAvailable" :stop-pending="stopPending"
-          @close="closeWithFocus" @stop="emit('stop')" @attempt="emit('attempt', $event)"
+          :pause-available="pauseAvailable" :pause-pending="pausePending"
+          @close="closeWithFocus" @stop="emit('stop')" @pause="emit('pause')" @attempt="emit('attempt', $event)"
         />
         <div ref="scrollEl" class="group-detail-scroll detail-scroll thin-scroll px-4 py-3" @scroll.passive="memoizeScroll">
           <div ref="contentEl">

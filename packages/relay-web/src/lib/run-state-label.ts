@@ -23,6 +23,7 @@ export function runStateKey(state: ConversationRunState): string {
     case "queued": return "bot.run.queued";
     case "running": return "bot.run.running";
     case "waiting-human": return "bot.run.waitingHuman";
+    case "paused": return "bot.run.paused";
     case "completed": return "group.run.memberCompleted";
     case "failed": return "bot.run.failed";
     case "cancelled": return "bot.run.cancelled";
@@ -52,6 +53,7 @@ export function runStateTone(state: ConversationRunState): StateTone {
     case "completed": return "done";
     case "failed": return "failed";
     case "waiting-human":
+    case "paused":
     case "indeterminate": return "waiting";
     case "queued":
     case "cancelled": return "idle";

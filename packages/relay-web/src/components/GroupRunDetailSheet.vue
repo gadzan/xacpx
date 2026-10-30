@@ -29,11 +29,13 @@ const props = defineProps<{
   traceStreaming?: boolean;
   stopAvailable?: boolean;
   stopPending?: boolean;
+  pauseAvailable?: boolean;
+  pausePending?: boolean;
   traceFailure?: string;
   scrollMemory?: Map<string, number>;
 }>();
 const emit = defineEmits<{
-  close: []; stop: []; attempt: [attempt: number];
+  close: []; stop: []; pause: []; attempt: [attempt: number];
   loadMore: []; loadEarlier: []; retryTrace: [];
 }>();
 const sheet = ref<InstanceType<typeof MobileSheet> | null>(null);
@@ -67,7 +69,8 @@ function close(): void {
           class="max-h-[45dvh] shrink-0 overflow-y-auto border-b border-fg/5"
           variant="sheet" :run="run" :member-turn="memberTurn" :member-name="memberName" :topic-title="topicTitle"
           :attempt="attempt" :attempts="attempts" :stop-available="stopAvailable" :stop-pending="stopPending"
-          @close="navigateBack" @stop="emit('stop')" @attempt="emit('attempt', $event)"
+          :pause-available="pauseAvailable" :pause-pending="pausePending"
+          @close="navigateBack" @stop="emit('stop')" @pause="emit('pause')" @attempt="emit('attempt', $event)"
         />
       </template>
       <GroupRunDetailContent

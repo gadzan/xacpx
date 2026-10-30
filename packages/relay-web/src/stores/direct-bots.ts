@@ -262,6 +262,7 @@ const RUN_STATE_PRECEDENCE: Record<ConversationRunStateDto, number> = {
   queued: 1,
   "waiting-human": 2,
   running: 2,
+  paused: 2,
   completed: 3,
   failed: 3,
   cancelled: 3,
@@ -293,12 +294,16 @@ async function listOwnedInstances(): Promise<Array<{ id: string }>> {
 }
 
 function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
-  return state === "queued" || state === "running" || state === "waiting-human";
+  return state === "queued" || state === "running" || state === "waiting-human" || state === "paused";
 }
 
 function shouldUpdateRunState(current: ConversationRunStateDto | undefined, incoming: ConversationRunStateDto): boolean {
   if (!current) return true;
   if (isTerminalRunState(current)) return false;
+  // Pause is a user intent: entering it is forward, and leaving it requires a
+  // real resume snapshot (the server emits queued/running after resume).
+  if (incoming === "paused") return true;
+  if (current === "paused") return true;
   return RUN_STATE_PRECEDENCE[incoming] >= RUN_STATE_PRECEDENCE[current];
 }
 
