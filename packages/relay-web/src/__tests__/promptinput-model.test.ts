@@ -212,3 +212,39 @@ it("a deferred model set followed by a session switch leaves the new session's c
 
   expect((w.get('[data-test="model-chip"]').element as HTMLButtonElement).disabled).toBe(false);
 });
+
+it("a phone tap on the model chip keeps the composer open and shows the sheet", async () => {
+  const prevWidth = window.innerWidth;
+  window.innerWidth = 390;
+  try {
+    rpc.mockImplementation(async (_instanceId: string, type: string) => {
+      if (type === "control.session.model.get") return { current: "gpt-5.2", available: ["gpt-5.2", "gpt-5.1"] };
+      if (type === "control.session.effort.get") return { current: "medium", available: ["medium", "high"] };
+      return {};
+    });
+    const w = mount(PromptInput, {
+      props: { instanceId: "i1", sessionAlias: "backend" },
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flush();
+    await w.vm.$nextTick();
+
+    const textarea = w.get("textarea");
+    await textarea.trigger("focus");
+    // A phone tap blurs the textarea before the chip's own click is dispatched:
+    // folding there would hide the control row and the sheet it opens.
+    const chip = w.get('[data-test="model-chip"]');
+    chip.element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await textarea.trigger("blur");
+    await chip.trigger("click");
+    await w.vm.$nextTick();
+
+    expect(w.get('[data-test="composer-affordances"]').classes()).not.toContain("invisible");
+    expect(w.find('[data-test="model-menu"]').exists()).toBe(true);
+    w.unmount();
+  } finally {
+    window.innerWidth = prevWidth;
+    document.body.innerHTML = "";
+  }
+});

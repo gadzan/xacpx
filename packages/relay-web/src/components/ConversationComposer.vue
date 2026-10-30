@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, useSlots, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useSlots, watch } from "vue";
 import { ArrowUp, Loader2, Square } from "lucide-vue-next";
 import { useIsMobile } from "../lib/use-dropdown";
 
@@ -47,8 +47,11 @@ const props = withDefaults(
     comboboxExpanded?: boolean;
     /** Id of the active option, when a completion menu is open. */
     comboboxActiveId?: string;
+    /** A layer the card owns (dropdown, sheet, popover) is open: the fold must
+     *  never hide it, including when a pane opens it from outside the card. */
+    pinExpanded?: boolean;
   }>(),
-  { busy: false, disabled: false, sending: false, cancelling: false },
+  { busy: false, disabled: false, sending: false, cancelling: false, pinExpanded: false },
 );
 
 const emit = defineEmits<{
@@ -106,8 +109,20 @@ defineExpose({ focus, setSelectionRange });
  *  Desktop never folds: there is room for the control row, so it stays put. */
 const focused = ref(false);
 const isMobile = useIsMobile();
+/** The last press landed inside this card. A tap on the control row blurs the
+ *  textarea before that tap's own click is dispatched, so folding on the blur
+ *  would clip the row to zero height mid-gesture: the chip never receives the
+ *  click, and the sheet it would open renders inside a hidden row. Holding the
+ *  card open until a press lands outside it (the "tap away to rest" gesture)
+ *  keeps every control in the row reachable with an empty draft. */
+const engaged = ref(false);
+const surface = ref<HTMLElement | null>(null);
+function onDocumentPointerDown(event: PointerEvent): void {
+  const target = event.target as Node | null;
+  engaged.value = !!surface.value && !!target && surface.value.contains(target);
+}
 const expanded = computed(
-  () => !isMobile.value || focused.value || props.modelValue.length > 0 || props.hasAttachments === true || showStop.value,
+  () => !isMobile.value || props.pinExpanded || focused.value || engaged.value || props.modelValue.length > 0 || props.hasAttachments === true || showStop.value,
 );
 /** Off until the first apply: the initial rows=2 markup must not animate down. */
 const animateHeight = ref(false);
@@ -148,9 +163,11 @@ function applyHeight(): void {
 
 onMounted(() => {
   applyHeight();
+  document.addEventListener("pointerdown", onDocumentPointerDown, true);
   // One frame later: from here on the height change is animated.
   requestAnimationFrame(() => { animateHeight.value = true; });
 });
+onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocumentPointerDown, true));
 
 function onFocus(): void {
   focused.value = true;
@@ -180,6 +197,7 @@ function onInput(event: Event): void {
        soft on the expanded card. -->
   <form class="relative mx-auto w-full max-w-3xl px-0" @submit.prevent="emit('send')" @dragover.prevent @drop="emit('drop', $event)">
     <div
+      ref="surface"
       data-test="composer-surface"
       class="relative bg-surface transition-[background-color,border-radius] duration-200 ease-out focus-within:ring-2 focus-within:ring-accent"
       :class="[expanded ? 'rounded-2xl' : 'rounded-3xl', surfaceDisabled ? 'cursor-not-allowed opacity-60' : '']"
