@@ -626,10 +626,14 @@ function parseConversationsConfig(raw: unknown): ConversationsConfig | undefined
   if ("followupRedispatch" in raw && typeof raw.followupRedispatch !== "boolean") {
     throw new Error("conversations.followupRedispatch must be boolean");
   }
-  // The V2 multi-round handoff is the production behavior; the key exists so
-  // an operator can roll back to the pre-P0-B1 batch semantics.
-  const followupRedispatch = raw.followupRedispatch === false ? false : true;
-  if (raw.router === undefined) return { followupRedispatch };
+  // The V2 multi-round handoff is the production default; only an explicit
+  // `false` is recorded, so the parsed section stays exactly what the operator
+  // configured and consumers read "absent means on".
+  const followupRedispatch = raw.followupRedispatch === false ? false : undefined;
+  const followupKey = followupRedispatch === undefined ? {} : { followupRedispatch };
+  if (raw.router === undefined) {
+    return followupRedispatch === undefined ? undefined : followupKey;
+  }
   if (!isRecord(raw.router) || Array.isArray(raw.router)) throw new Error("conversations.router must be an object");
   const router = raw.router;
   if ("enabled" in router && typeof router.enabled !== "boolean") {
@@ -655,7 +659,7 @@ function parseConversationsConfig(raw: unknown): ConversationsConfig | undefined
       ...(command ? { command } : {}),
       ...(authEnv ? { authEnv } : {}),
     },
-    followupRedispatch,
+    ...followupKey,
   };
 }
 
