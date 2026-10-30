@@ -791,6 +791,7 @@ function onKeydown(e: KeyboardEvent) {
     <ConversationComposer
       ref="composerCard"
       v-model="text"
+      :pin-expanded="modelDd.open || effortDd.open || usageOpen"
       :busy="busy"
       :disabled="false"
       :send-disabled="composer.uploading"

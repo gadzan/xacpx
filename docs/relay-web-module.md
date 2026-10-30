@@ -525,6 +525,13 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   `selectionStart` / `selectionEnd`，改听 `caret` 事件。该事件在 input、keyup、click、select 以及
   外部值变更（发送清空、历史召回填充）时都会发出，所以面板不会读到过期 caret。`onInput` 在 jsdom 下
   （`setValue` 不移动选区）按值长度推导 caret。
+- **Composer 的手机折叠契约**（`ConversationComposer.vue`）：`<lg` 且草稿为空、textarea 未聚焦时，
+  输入卡片收成一行，控制行（model/effort chip、模型刷新、附件）随之折叠。折叠**不能**在用户正操作卡片时发生：
+  最后一次按下落在卡片内部（`engaged`，监听 `document` 的 `pointerdown`）或卡片自己打开的浮层仍在
+  （`pinExpanded`，会话面板传 `modelDd.open || effortDd.open || usageOpen`）时一律保持展开。原因：手指点 chip 时
+  textarea 先 blur，若此刻折叠，控制行会被裁到 0 高并 `visibility: hidden`——chip 收不到自己那次 click，
+  它要打开的 bottom sheet 也会渲染在隐藏行内（同一条路径也覆盖从 composer 外触发的「选择模型」恢复按钮）。
+  只有点卡片外部（"tap away"）才回到一行。
 
 ### 桌面空状态与右栏折叠
 
