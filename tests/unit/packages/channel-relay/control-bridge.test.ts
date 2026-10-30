@@ -1966,6 +1966,51 @@ test("scoped member cancellation reports unsupported-rpc on older cores", async 
   });
 });
 
+test("pause and resume dispatch their CAS payload and preserve the Run response", async () => {
+  const calls: unknown[] = [];
+  const run = { id: "run_1", state: "paused", controlRevision: 4, memberTurns: [] };
+  const { control } = makeFakeControl({
+    pauseRun: async (input: unknown) => {
+      calls.push(["pause", input]);
+      return { changed: true, run };
+    },
+    resumeRun: async (input: unknown) => {
+      calls.push(["resume", input]);
+      return { changed: true, run: { ...run, state: "running" } };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.runsPause, {
+    runId: "run_1", requestId: "ctl_1", controlRevision: 3,
+  }))).toEqual({ changed: true, run });
+  expect(await dispatch(bridge, req(MSG.runsResume, {
+    runId: "run_1", requestId: "ctl_2", controlRevision: 4,
+  }))).toEqual({ changed: true, run: { ...run, state: "running" } });
+  expect(calls).toEqual([
+    ["pause", { runId: "run_1", requestId: "ctl_1", controlRevision: 3 }],
+    ["resume", { runId: "run_1", requestId: "ctl_2", controlRevision: 4 }],
+  ]);
+  for (const payload of [
+    { runId: "run_1", requestId: "ctl_3" },
+    { runId: "run_1", requestId: "ctl_3", controlRevision: -1 },
+    { runId: "run_1", requestId: "ctl_3", controlRevision: 1, extra: true },
+  ]) {
+    expect(await dispatch(bridge, req(MSG.runsPause, payload))).toMatchObject({ error: { code: "invalid-payload" } });
+  }
+  expect(calls).toHaveLength(2);
+});
+
+test("pause and resume report unsupported-rpc on older cores instead of a silent no-op", async () => {
+  const { control } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.runsPause, {
+    runId: "run_1", requestId: "ctl_1", controlRevision: 0,
+  }))).toMatchObject({ error: { code: "unsupported-rpc" } });
+  expect(await dispatch(bridge, req(MSG.runsResume, {
+    runId: "run_1", requestId: "ctl_2", controlRevision: 0,
+  }))).toMatchObject({ error: { code: "unsupported-rpc" } });
+});
+
 test("conversation history direction and topic runs list dispatch with product IDs", async () => {
   const history: unknown[] = [];
   const { control } = makeFakeControl({

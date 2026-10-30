@@ -212,6 +212,7 @@ const RUN_STATE_PRECEDENCE: Record<ConversationRunStateDto, number> = {
   queued: 1,
   "waiting-human": 2,
   running: 2,
+  paused: 2,
   completed: 3,
   failed: 3,
   cancelled: 3,
@@ -223,7 +224,9 @@ function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean
 }
 
 function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
-  return state === "queued" || state === "running" || state === "waiting-human";
+  // A paused Run still owns the Topic and its queued work: the composer must
+  // stay closed until the user resumes or stops it, exactly like a running one.
+  return state === "queued" || state === "running" || state === "waiting-human" || state === "paused";
 }
 
 /** Mirrors the backend's group_member_has_work probe, which looks only at the
@@ -248,6 +251,11 @@ function shouldUpdateRunState(current: ConversationRunStateDto | undefined, inco
   if (current === incoming) return true;
   // PR8 waiting-human has no same-Run resume; delayed running reads are stale.
   if (current === "waiting-human" && incoming === "running") return false;
+  // Pause is a user intent: entering it is always forward, and only a real
+  // resume snapshot (which the server emits as queued/running) leaves it. A
+  // delayed pre-pause snapshot therefore cannot silently unpause the card.
+  if (incoming === "paused") return true;
+  if (current === "paused") return incoming !== "waiting-human";
   // Proven terminals are evidence-final. Indeterminate is terminal for
   // SCHEDULING only — post-seal proof may still refine it (below).
   if (current === "completed" || current === "failed" || current === "cancelled") return false;
@@ -561,6 +569,8 @@ export const useGroupsStore = defineStore("groups", () => {
     return planByRunId.value[currentId] ?? [];
   });
   const cancellingRunId = ref<string | null>(null);
+  /** Run whose pause/resume RPC is in flight; disables the control meanwhile. */
+  const runControlPending = ref<string | null>(null);
 
   const runParts = ref<Record<string, TurnPartDto[]>>({});
   const runPartsComplete = ref<Record<string, true>>({});
@@ -1027,7 +1037,7 @@ export const useGroupsStore = defineStore("groups", () => {
   });
   const isRunActive = computed(() => {
     const s = activeRun.value?.state;
-    return s === "queued" || s === "running" || s === "waiting-human";
+    return isActiveRunState(s);
   });
   const memberTurns = computed<MemberTurnSummaryDto[]>(() => {
     const runId = activeRun.value?.id;
@@ -1313,6 +1323,37 @@ export const useGroupsStore = defineStore("groups", () => {
     unwrapRpc(
       await api.rpc<{ run: ConversationRunDetailDto }>(targetInstanceId, MSG.runsCancelMember, { runId, memberTurnId }),
     );
+  }
+
+  /**
+   * Pause or resume the active Run. The server owns the state machine: a Run
+   * with an attempt still executing reports `running` with a drain intent
+   * until that attempt settles, then `paused`. `controlRevision` is the CAS
+   * token the caller read; the request id makes a retry idempotent.
+   */
+  async function setCurrentRunPaused(paused: boolean): Promise<boolean> {
+    const active = activeRun.value;
+    if (!instanceId.value || !active || active.controlRevision === undefined) return false;
+    if (runControlPending.value) return false;
+    runControlPending.value = active.id;
+    try {
+      const res = unwrapRpc(
+        await api.rpc<{ changed: boolean; run: ConversationRunDetailDto }>(
+          instanceId.value,
+          paused ? MSG.runsPause : MSG.runsResume,
+          { runId: active.id, requestId: mintRequestId(), controlRevision: active.controlRevision },
+        ),
+      );
+      if (activeRun.value?.id === res.run.id) {
+        activeRun.value = mergeRun(activeRun.value, res.run);
+      }
+      return true;
+    } catch (err: unknown) {
+      console.warn("setCurrentRunPaused error:", err);
+      return false;
+    } finally {
+      if (runControlPending.value === active.id) runControlPending.value = null;
+    }
   }
 
   /** The single way a wholesale Topic snapshot reaches the cache. Any writer
@@ -3569,6 +3610,7 @@ export const useGroupsStore = defineStore("groups", () => {
     planEntries,
     planByRunId,
     cancellingRunId,
+    runControlPending,
     runHistoryDetails,
     runHistoryDetailRevision,
     tracePages,
@@ -3619,6 +3661,7 @@ export const useGroupsStore = defineStore("groups", () => {
     findMemberWork,
     cancelRun,
     cancelMember,
+    setCurrentRunPaused,
     loadTopics,
     createGroupTopic,
     setGroupTopicIsolation,

@@ -261,6 +261,16 @@ export interface ConversationRunDto {
    * Absent on explicit Runs and older wire shapes.
    */
   routingReason?: string;
+  /** CAS token for Run pause/resume; echo it back on the next control call. */
+  controlRevision: number;
+  /** Bumped on durable work progress (claim/settle); stale advice is fenced. */
+  progressRevision: number;
+  /** Why the Run was paused (default `human-paused`). */
+  pauseReason?: string;
+  /** When the pause intent landed; without `pausedAt` the Run is draining. */
+  pauseRequestedAt?: string;
+  /** When the Run actually became non-claimable. */
+  pausedAt?: string;
   waitingQuestion?: string;
   maxMemberTurns: number;
   consumedMemberTurns: number;
@@ -371,6 +381,22 @@ export interface ConversationPromptResponseDto {
    *  as unconfirmed and re-run discovery before cancelling it. */
   activeRunId?: string;
   activeRun?: ConversationRunDto;
+}
+
+/** Authenticated Pause/Resume input. `requestId` makes a retry idempotent and
+ *  `controlRevision` is the CAS token the caller read from the Run. */
+export interface RunControlRequestDto {
+  runId: string;
+  requestId: string;
+  controlRevision: number;
+  /** Pause only; defaults to `human-paused` in the store. */
+  reason?: string;
+}
+
+export interface RunControlResultDto {
+  /** False when the request was a replay/no-op: no second state change. */
+  changed: boolean;
+  run: ConversationRunDetailDto;
 }
 
 /** A distinct operation is required: old daemons must reject, never ignore a safety request. */
@@ -554,6 +580,14 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     failedBotIds: [...run.failedBotIds],
     unavailableBotIds: [...run.unavailableBotIds],
     ...(run.quarantinedBotIds ? { quarantinedBotIds: [...run.quarantinedBotIds] } : {}),
+    // Durable pause surface: the state, why, since when, and the CAS token a
+    // client must echo to pause/resume. `pauseRequestedAt` without `pausedAt`
+    // is the drain window, which the UI renders as "pausing".
+    controlRevision: run.controlRevision,
+    progressRevision: run.progressRevision,
+    ...(run.pauseReason ? { pauseReason: run.pauseReason } : {}),
+    ...(run.pauseRequestedAt ? { pauseRequestedAt: run.pauseRequestedAt } : {}),
+    ...(run.pausedAt ? { pausedAt: run.pausedAt } : {}),
     createdAt: run.createdAt,
     ...(run.completionReason ? { completionReason: run.completionReason } : {}),
     ...(run.startedAt ? { startedAt: run.startedAt } : {}),

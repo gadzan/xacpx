@@ -70,6 +70,8 @@ import {
   type QueueCancelPayload,
   type RunsCancelPayload,
   type RunsCancelMemberPayload,
+  type RunsPausePayload,
+  type RunsResumePayload,
   type RunsGetPayload,
   type RunsDetailsBatchPayload,
   type RunsTraceGetPayload,
@@ -872,6 +874,21 @@ const validateRunsCancelMember: Validator<RunsCancelMemberPayload> = (p) => {
     ? o as unknown as RunsCancelMemberPayload : null;
 };
 
+const controlRevision = (v: unknown): v is number => traceInteger(v, 0);
+const validateRunsPause: Validator<RunsPausePayload> = (p) => {
+  const o = fields(p);
+  if (!o || !hasOnlyKeys(o, { runId: true, requestId: true, controlRevision: true, reason: true })) return null;
+  return traceProductId(o.runId) && traceProductId(o.requestId) && controlRevision(o.controlRevision)
+    && (o.reason === undefined || (typeof o.reason === "string" && o.reason.length > 0 && o.reason.length <= 128))
+    ? o as unknown as RunsPausePayload : null;
+};
+const validateRunsResume: Validator<RunsResumePayload> = (p) => {
+  const o = fields(p);
+  if (!o || !hasOnlyKeys(o, { runId: true, requestId: true, controlRevision: true })) return null;
+  return traceProductId(o.runId) && traceProductId(o.requestId) && controlRevision(o.controlRevision)
+    ? o as unknown as RunsResumePayload : null;
+};
+
 /* --- relay interaction transport (shared by permission + elicitation) --- */
 
 /** Optional present-tense object field: absent or a plain object. */
@@ -1213,6 +1230,7 @@ export type ControlRpcType =
   | typeof MSG.conversationWorktree
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel | typeof MSG.runsCancelMember
+  | typeof MSG.runsPause | typeof MSG.runsResume
   | typeof MSG.runsDetailsBatch | typeof MSG.runsTraceGet
   | typeof MSG.interactionRequest | typeof MSG.interactionRespond
   | typeof MSG.interactionWithdraw;
@@ -1326,6 +1344,8 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
   [MSG.runsCancelMember]: validateRunsCancelMember,
+  [MSG.runsPause]: validateRunsPause,
+  [MSG.runsResume]: validateRunsResume,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
   [MSG.interactionWithdraw]: validateInteractionWithdraw,

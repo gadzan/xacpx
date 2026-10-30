@@ -22,6 +22,11 @@ export function isRunCancelling(run: ConversationRun): boolean {
   return (run.state === "queued" || run.state === "running") && run.completionReason !== undefined;
 }
 
+/** A paused Run is non-terminal: it owns its Topic but starts no work. */
+export function isRunPaused(run: ConversationRun): boolean {
+  return run.state === "paused";
+}
+
 /** A completed assignment's successful evidence must exist; empty content is valid. */
 export function requireMemberResult(store: Pick<ConversationStore, "getMemberResult">, turn: MemberTurnRecord): ConversationMessage {
   const result = store.getMemberResult(turn);
@@ -322,6 +327,28 @@ export interface CancelRunResult {
   activeMembers: MemberTurnRecord[];
 }
 
+
+/** Shared CAS + idempotency envelope for Run control mutations. */
+export interface RunControlInput {
+  runId: string;
+  /** Client-minted idempotency key: a replay returns the durable receipt
+   *  without a second state change or revision bump. */
+  requestId: string;
+  /** The controlRevision the caller observed. A mismatch is a stale request. */
+  expectedControlRevision: number;
+  now: string;
+}
+
+export interface PauseRunInput extends RunControlInput {
+  reason?: string;
+}
+
+export interface RunControlResult {
+  run: ConversationRun;
+  /** False when this exact request was already applied (replay or no-op). */
+  changed: boolean;
+}
+
 /** One validated Router assignment, as committed durably by
  *  `applyRoutingDecision`. Structure was validated by the Router gate;
  *  membership/dependency/budget were validated against the live Run state. */
@@ -596,6 +623,29 @@ export interface ConversationStore {
    *  cancels never-started siblings atomically; admitted siblings drain their
    *  evidence without resuming automatic routing. Unknown always seals. */
   completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean, forceRunTerminal?: boolean, sourceTurnId?: string): ConversationRun;
+  /**
+   * Durable human pause. A running Run drains: `pauseRequestedAt` is
+   * recorded and no new dispatch is claimable, but the Run stays `running`
+   * until every started attempt settles, then becomes `paused`. Nothing
+   * executing means the Run is paused immediately. Repeating the same
+   * request (or pausing an already paused/intent Run) returns the current
+   * state without a second revision bump.
+   */
+  pauseRun(input: PauseRunInput): RunControlResult;
+  /**
+   * Authorized resume of a paused Run, CAS'd on `controlRevision`. Revalidates
+   * that the Conversation/Topic are still live and that no other Run holds
+   * the Topic before any new claim can happen. The Run returns to `queued`
+   * (never started) or `running` (already started); queued work becomes
+   * claimable again.
+   */
+  resumeRun(input: RunControlInput): RunControlResult;
+  /**
+   * Converts a drained pause intent into `paused` from durable rows alone, so
+   * a crash between "last attempt settled" and "Run entered paused" cannot
+   * leave a Run stuck `running` with nothing executing. Called at activation.
+   */
+  reconcilePauseIntents(now: string): ConversationRun[];
   /** Two-phase cancel settlement: persist every member's observed physical
    *  cancel outcome as member evidence first (completed evidence, failed
    *  state, cancelled, unknown), then aggregate the Run once. Proven member

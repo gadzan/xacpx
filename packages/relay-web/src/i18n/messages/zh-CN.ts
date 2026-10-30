@@ -932,6 +932,7 @@ export default {
       queued: "排队中",
       running: "运行中",
       waitingHuman: "等待人工确认",
+      paused: "已暂停",
     },
     interaction: {
       waiting: "Agent 正在等待你的回答",
@@ -1127,6 +1128,9 @@ export default {
       hideEarlierSteps: "收起之前的步骤",
       stopRun: "停止本次任务",
       stoppedNote: "本次任务已停止。发送新消息即可开始新一轮任务。",
+      pause: "暂停",
+      resume: "继续",
+      pausedNote: "本次运行已暂停。它仍占有当前话题与排队中的工作；点击继续即可从停下的位置接着执行。",
       recording: {
         recording: "正在记录",
         interrupted: "已记录过程不完整（被中断）",

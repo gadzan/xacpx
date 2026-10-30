@@ -209,6 +209,18 @@ export function supportsRunsCancelMember(control: unknown): boolean {
   return parseControlPayload(MSG.runsCancelMember, { runId: "probe", memberTurnId: "probe" }) !== null;
 }
 /**
+ * True when this instance can pause and resume a Run: the core must expose
+ * both control methods AND this connector's validator must accept both
+ * payloads. Either half missing keeps the capability off, so the Web never
+ * offers an action an older core would answer with `unsupported-rpc`.
+ */
+export function supportsRunsPause(control: unknown): boolean {
+  const candidate = control as { pauseRun?: unknown; resumeRun?: unknown } | null;
+  if (typeof candidate?.pauseRun !== "function" || typeof candidate?.resumeRun !== "function") return false;
+  return parseControlPayload(MSG.runsPause, { runId: "probe", requestId: "probe", controlRevision: 0 }) !== null
+    && parseControlPayload(MSG.runsResume, { runId: "probe", requestId: "probe", controlRevision: 0 }) !== null;
+}
+/**
  * True when this instance can create a Group with a chosen workspace mode: the
  * core must say so (older cores drop the field and always build a `shared`
  * Group) AND the relay-protocol validator this connector resolved must accept
@@ -359,6 +371,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsRunsCancelMember(control)) {
       capabilities.push(RELAY_CAPABILITIES.runsCancelMemberV1);
+    }
+    if (supportsRunsPause(control)) {
+      capabilities.push(RELAY_CAPABILITIES.runsPauseV1);
     }
     if (supportsGroupTopicIsolation(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupTopicIsolationV1);

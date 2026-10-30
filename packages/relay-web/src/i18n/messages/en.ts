@@ -934,6 +934,7 @@ export default {
       queued: "Queued",
       running: "Running",
       waitingHuman: "Waiting for human",
+      paused: "Paused",
     },
     interaction: {
       waiting: "Agent is waiting for an answer",
@@ -1129,6 +1130,9 @@ export default {
       hideEarlierSteps: "Hide earlier steps",
       stopRun: "Stop this run",
       stoppedNote: "Run stopped. Sending a new message starts a fresh run.",
+      pause: "Pause",
+      resume: "Resume",
+      pausedNote: "Run paused. It keeps its topic and its queued work; Resume continues where it stopped.",
       recording: {
         recording: "Recording now",
         interrupted: "Recorded process is incomplete (interrupted)",

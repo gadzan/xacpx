@@ -19,7 +19,7 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
-import { supportsRunsCancelMember, useInstancesStore } from "../stores/instances";
+import { supportsRunsCancelMember, supportsRunsPause, useInstancesStore } from "../stores/instances";
 import { useConnectionStore } from "../stores/connection";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
@@ -572,6 +572,28 @@ function handleStop(): void {
   if (stopAvailable.value && !stopPending.value) void groupsStore.cancelCurrentRun();
 }
 
+/** The core advertises durable Run pause/resume. An older core answers
+ *  `unsupported-rpc`, so the control is hidden rather than shown broken. */
+const supportsPause = computed(() => {
+  const instanceId = groupsStore.instanceId;
+  if (!instanceId) return false;
+  return supportsRunsPause(instancesStore.byId(instanceId));
+});
+const pauseAvailable = computed(() => {
+  const detail = openDetail.value;
+  return supportsPause.value && !!detail && !detail.identityUncertain && canStopRun(detail.run);
+});
+const pausePending = computed(() => {
+  const detail = openDetail.value;
+  if (!detail) return false;
+  return groupsStore.runControlPending === detail.run.id;
+});
+function handlePause(): void {
+  if (!pauseAvailable.value || pausePending.value) return;
+  const run = openDetail.value?.run;
+  void groupsStore.setCurrentRunPaused(run?.state !== "paused");
+}
+
 /** Stop one dispatched member of a round. The request carries the durable
  *  run and member turn, so the leader and the other members keep running. */
 async function handleStopMember(payload: { runId: string; memberTurnId: string }): Promise<void> {
@@ -1073,9 +1095,12 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
     :trace-failure="detailTraceFailure"
     :stop-available="stopAvailable"
     :stop-pending="stopPending"
+    :pause-available="pauseAvailable"
+    :pause-pending="pausePending"
     :scroll-memory="detailScrollMemory"
     @close="closeDetail"
     @stop="handleStop"
+    @pause="handlePause"
     @attempt="changeAttempt"
     @load-more="loadTrace()"
     @load-earlier="loadTrace(0)"

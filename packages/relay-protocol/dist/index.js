@@ -224,6 +224,8 @@ var MSG = {
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
   runsCancelMember: "control.runs.cancelMember",
+  runsPause: "control.runs.pause",
+  runsResume: "control.runs.resume",
   interactionRequest: "control.interaction.request",
   interactionRespond: "control.interaction.respond",
   interactionWithdraw: "control.interaction.withdraw"
@@ -266,6 +268,7 @@ var RELAY_CAPABILITIES = {
   botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
   botsDedicatedWorkspaceCleanupV1: "bots.dedicated-workspace-cleanup.v1",
   runsCancelMemberV1: "runs.cancel-member.v1",
+  runsPauseV1: "runs.pause.v1",
   groupTopicIsolationV1: "group.topics.isolation.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1"
 };
@@ -379,11 +382,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded2 = new Uint8Array(binary.length);
+    const decoded = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded2[i] = binary.charCodeAt(i) & 255;
+      decoded[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded2;
+    return decoded;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -825,7 +828,7 @@ function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && (c.worktree === undefined || isConversationWorktreeStatus(c.worktree)) && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.routingReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
+  return typeof c.id === "string" && (c.worktree === undefined || isConversationWorktreeStatus(c.worktree)) && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "paused" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.routingReason) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.pauseReason) && optStr(c.pauseRequestedAt) && optStr(c.pausedAt) && (c.controlRevision === undefined || typeof c.controlRevision === "number" && Number.isSafeInteger(c.controlRevision) && c.controlRevision >= 0) && (c.progressRevision === undefined || typeof c.progressRevision === "number" && Number.isSafeInteger(c.progressRevision) && c.progressRevision >= 0) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
 }
 function isConversationWorktreeStatus(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -891,6 +894,11 @@ var historyRunKeys = [
   "createdAt",
   "startedAt",
   "finishedAt",
+  "controlRevision",
+  "progressRevision",
+  "pauseReason",
+  "pauseRequestedAt",
+  "pausedAt",
   "memberTurns",
   "profileSnapshot",
   "worktree"
@@ -1998,6 +2006,19 @@ var validateRunsCancelMember = (p) => {
     return null;
   return traceProductId(o.runId) && traceProductId(o.memberTurnId) ? o : null;
 };
+var controlRevision = (v) => traceInteger(v, 0);
+var validateRunsPause = (p) => {
+  const o = fields(p);
+  if (!o || !hasOnlyKeys(o, { runId: true, requestId: true, controlRevision: true, reason: true }))
+    return null;
+  return traceProductId(o.runId) && traceProductId(o.requestId) && controlRevision(o.controlRevision) && (o.reason === undefined || typeof o.reason === "string" && o.reason.length > 0 && o.reason.length <= 128) ? o : null;
+};
+var validateRunsResume = (p) => {
+  const o = fields(p);
+  if (!o || !hasOnlyKeys(o, { runId: true, requestId: true, controlRevision: true }))
+    return null;
+  return traceProductId(o.runId) && traceProductId(o.requestId) && controlRevision(o.controlRevision) ? o : null;
+};
 var optObj = (v) => v === undefined || isObj(v);
 var isTimestamp = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 var INTERACTION_KINDS = ["permission", "elicitation"];
@@ -2332,6 +2353,8 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
   [MSG.runsCancelMember]: validateRunsCancelMember,
+  [MSG.runsPause]: validateRunsPause,
+  [MSG.runsResume]: validateRunsResume,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
   [MSG.interactionWithdraw]: validateInteractionWithdraw
@@ -2993,8 +3016,8 @@ function toolUseEventToStepDto(event) {
   };
   if (event.isSubagent) {
     const prompt = asString(input.prompt) ?? asString(input.description) ?? asString(input.task) ?? asString(input.instructions) ?? event.summary ?? "";
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    const detail = { type: "text", text: cap(prompt), ...out2 ? { output: capTail(out2) } : {} };
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    const detail = { type: "text", text: cap(prompt), ...out ? { output: capTail(out) } : {} };
     return { ...base, title: fallbackTitle, detail };
   }
   if (event.kind === "edit") {
@@ -3021,10 +3044,10 @@ function toolUseEventToStepDto(event) {
     }
     const locPath = locationPath(event);
     const picked = locPath === undefined ? firstPresent(input, ["file_path", "path"]) : undefined;
-    const fields3 = primitiveFields(input).filter((f) => f.label !== picked?.key);
-    if (fields3.length === 0)
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    if (fields.length === 0)
       return { ...base, title };
-    return { ...base, title, detail: { type: "fields", fields: fields3 } };
+    return { ...base, title, detail: { type: "fields", fields } };
   }
   if (event.kind === "read") {
     const sourcePath = asString(input.file_path) ?? asString(input.path) ?? asString(pc?.name) ?? locationPath(event);
@@ -3041,14 +3064,14 @@ function toolUseEventToStepDto(event) {
   if (event.kind === "execute") {
     const command = asString(input.command) ?? asString(input.cmd) ?? asString(pc?.cmd) ?? fallbackTitle;
     const title = isDegradedTitle(fallbackTitle, event.toolName) ? command : fallbackTitle;
-    const out2 = asString(output.stdout) ?? terminalOut ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
+    const out = asString(output.stdout) ?? terminalOut ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
     const exitCode = typeof output.exitCode === "number" ? output.exitCode : typeof output.exit_code === "number" ? output.exit_code : undefined;
-    if (!out2 && exitCode === undefined)
+    if (!out && exitCode === undefined)
       return { ...base, title };
     const detail = {
       type: "command",
       command,
-      ...out2 ? { output: capTail(out2) } : {},
+      ...out ? { output: capTail(out) } : {},
       ...exitCode !== undefined ? { exitCode } : {},
       ...metaTruncated !== undefined ? { truncated: metaTruncated } : {}
     };
@@ -3061,13 +3084,13 @@ function toolUseEventToStepDto(event) {
     const pattern = asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd);
     const query = globPattern ? scope ? `${globPattern} in ${scope}` : globPattern : pattern ? scope ? `${pattern} in ${scope}` : pattern : fallbackTitle;
     const title = isDegradedTitle(fallbackTitle, event.toolName) ? query : fallbackTitle;
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
-    if (!out2 && metaCount === undefined && metaTruncated === undefined)
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
+    if (!out && metaCount === undefined && metaTruncated === undefined)
       return { ...base, title };
     const detail = {
       type: "search",
       query,
-      ...out2 ? { output: capTail(out2) } : {},
+      ...out ? { output: capTail(out) } : {},
       ...metaCount !== undefined ? { count: metaCount } : {},
       ...metaTruncated !== undefined ? { truncated: metaTruncated } : {}
     };
@@ -3084,11 +3107,11 @@ function toolUseEventToStepDto(event) {
   if (event.kind === "delete") {
     const picked = firstPresent(input, ["file_path", "path"]);
     const path = picked?.value ?? locationPath(event) ?? fallbackTitle;
-    const fields3 = primitiveFields(input).filter((f) => f.label !== picked?.key);
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    if (fields3.length === 0 && !out2)
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
       return { ...base, title: path };
-    return { ...base, title: path, detail: { type: "fields", fields: fields3, ...out2 ? { output: cap(out2) } : {} } };
+    return { ...base, title: path, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
   }
   if (event.kind === "move") {
     const fromPicked = firstPresent(input, ["from", "source", "src", "old_path", "oldPath"]);
@@ -3096,26 +3119,26 @@ function toolUseEventToStepDto(event) {
     const from = fromPicked?.value;
     const to = toPicked?.value;
     const title = from && to ? `${from} → ${to}` : from ?? to ?? locationPath(event) ?? fallbackTitle;
-    const fields3 = primitiveFields(input).filter((f) => f.label !== fromPicked?.key && f.label !== toPicked?.key);
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    if (fields3.length === 0 && !out2)
+    const fields = primitiveFields(input).filter((f) => f.label !== fromPicked?.key && f.label !== toPicked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
       return { ...base, title };
-    return { ...base, title, detail: { type: "fields", fields: fields3, ...out2 ? { output: cap(out2) } : {} } };
+    return { ...base, title, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
   }
   if (event.kind === "fetch") {
     const picked = firstPresent(input, ["url", "uri", "href"]);
     const url = picked?.value ?? fallbackTitle;
-    const fields3 = primitiveFields(input).filter((f) => f.label !== picked?.key);
-    const out2 = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-    if (fields3.length === 0 && !out2)
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out)
       return { ...base, title: url };
-    return { ...base, title: url, detail: { type: "fields", fields: fields3, ...out2 ? { output: cap(out2) } : {} } };
+    return { ...base, title: url, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
   }
   const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
-  const fields2 = primitiveFields(input);
-  if (fields2.length === 0 && !out)
+  const fields = primitiveFields(input);
+  if (fields.length === 0 && !out)
     return { ...base, title: fallbackTitle };
-  return { ...base, title: fallbackTitle, detail: { type: "fields", fields: fields2, ...out ? { output: cap(out) } : {} } };
+  return { ...base, title: fallbackTitle, detail: { type: "fields", fields, ...out ? { output: cap(out) } : {} } };
 }
 // packages/relay-protocol/src/workspace-name.ts
 function stableHash8(input) {

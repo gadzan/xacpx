@@ -21,11 +21,14 @@ const props = defineProps<{
   attempts?: number[];
   stopAvailable?: boolean;
   stopPending?: boolean;
+  /** Core advertises pause/resume and this Run is the exact current owner. */
+  pauseAvailable?: boolean;
+  pausePending?: boolean;
   /** `sheet` reads as a document header, `popover` as a compact card header. */
   variant: "sheet" | "popover";
 }>();
 
-const emit = defineEmits<{ close: []; stop: []; attempt: [attempt: number] }>();
+const emit = defineEmits<{ close: []; stop: []; pause: []; attempt: [attempt: number] }>();
 const { t } = useI18n();
 
 const historicalAttempt = computed(() => props.memberTurn && props.attempt !== undefined && props.attempt !== props.memberTurn.attempt);
@@ -71,6 +74,9 @@ const meta = computed(() => {
 
 const dense = computed(() => props.variant === "popover");
 
+const paused = computed(() => props.run.state === "paused");
+const pauseLabel = computed(() => paused.value ? t("group.detail.resume") : t("group.detail.pause"));
+
 const ariaLabel = computed(() =>
   props.memberName ? `${props.memberName} · ${t(stateKey.value)}` : t(stateKey.value),
 );
@@ -93,6 +99,20 @@ const ariaLabel = computed(() =>
         role="status"
       >{{ $t(stateKey) }}</span>
       <div class="ml-auto flex shrink-0 items-center gap-2">
+        <button
+          v-if="pauseAvailable"
+          type="button"
+          data-test="group-pause-run-button"
+          :data-paused="paused ? 'true' : 'false'"
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-surface-2 font-medium text-fg transition-colors hover:bg-fg/10 disabled:opacity-60"
+          :class="dense ? 'h-7 px-2 text-xs' : 'min-h-11 px-3 text-sm'"
+          :disabled="pausePending === true"
+          @click.stop="emit('pause')"
+        >
+          <Play v-if="paused" :size="dense ? 12 : 14" />
+          <Pause v-else :size="dense ? 12 : 14" />
+          <span>{{ pauseLabel }}</span>
+        </button>
         <button
           v-if="stopAvailable"
           type="button"

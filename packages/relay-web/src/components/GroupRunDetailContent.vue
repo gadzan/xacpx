@@ -97,6 +97,11 @@ const duration = useLiveDuration(() => props.memberTurn
       {{ $t("group.detail.stoppedNote") }}
     </p>
 
+    <p v-if="run.state === 'paused'" data-test="group-detail-paused"
+       class="rounded-lg bg-warning/10 px-2.5 py-2 text-xs leading-relaxed text-fg">
+      {{ $t("group.detail.pausedNote") }}
+    </p>
+
     <div v-if="run.state === 'waiting-human'" data-test="group-waiting-human"
          class="rounded-lg bg-warning/10 px-2.5 py-2 text-xs leading-relaxed text-fg">
       <p v-if="run.waitingQuestion" data-test="group-waiting-question">{{ run.waitingQuestion }}</p>
