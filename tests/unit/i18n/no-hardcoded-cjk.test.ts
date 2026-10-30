@@ -36,6 +36,10 @@ describe("no hardcoded CJK in migrated paths", () => {
       const rel = file.replace(/\\/g, "/");
       if (!MIGRATED_PREFIXES.some((p) => rel.startsWith(p))) continue;
       if (rel.startsWith("src/i18n/messages/zh/")) continue; // the one allowed home for CJK
+      // Protocol literals, not UI text: the silence token and the relay closing
+      // hint are sent to the agent verbatim, so they are exempt like the zh
+      // catalog the prefix above allows.
+      if (rel === "src/conversations/group-chat-wake.ts") continue;
       const body = stripComments(readFileSync(file, "utf8"));
       if (CJK.test(body)) offenders.push(rel);
     }
