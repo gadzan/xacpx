@@ -18,6 +18,7 @@ import { SessionService } from "../../../../src/sessions/session-service";
 import { createStrictOwnedSessionRelease } from "../../../../src/sessions/owned-session-release";
 import { createEmptyState, type AppState } from "../../../../src/state/types";
 import { AsyncMutex } from "../../../../src/orchestration/async-mutex";
+import { SILENCE_REPLY } from "../../../../src/conversations/group-chat-wake";
 import { ConversationWorktreeManager, type WorktreeManagerHooks } from "../../../../src/conversations/conversation-worktree-manager";
 import { WorktreeIntegrationService } from "../../../../src/conversations/worktree-integration-service";
 import { ENFORCED_READ_ONLY_EXECUTOR_VERSION } from "../../../../src/adapters/conversation-effect-policy";
@@ -37,6 +38,8 @@ export async function until(check: () => boolean) {
   }
 }
 export class ControlledRunner implements ConversationTurnRunner {
+  /** Live display name per Bot, so a default reply can name only its sender. */
+  constructor(private readonly displayName: (botId: string) => string | undefined) {}
   calls: ConversationTurnRunInput[] = [];
   active = 0;
   peak = 0;
@@ -52,15 +55,27 @@ export class ControlledRunner implements ConversationTurnRunner {
     this.done.push(done);
     return done;
   }
-  finish(index: number, result: ConversationTurnRunResult = { status: "completed", text: `result-${index}` }) {
+  // The fake agent answers visibly, but names only its own sender. A stored
+  // group reply relays to the members it names, so a reply that stayed silent
+  // would strip the public evidence a handoff requires, and one that named
+  // nobody would wake every other member and append relay rounds (up to
+  // RELAY_MAX_ROUNDS) to every Run, changing the call counts of tests that
+  // measure scheduling. Tests that exercise the relay itself pass their own
+  // result text.
+  private replyText(index: number, botId: string): string {
+    const name = this.displayName(botId);
+    return name === undefined ? SILENCE_REPLY : `@${name} result-${index}`;
+  }
+  finish(index: number, result: ConversationTurnRunResult = { status: "completed", text: this.replyText(index, this.calls[index]?.botId ?? "") }) {
     this.gates[index]!.resolve(result);
   }
-  /** Resolve every open gate. The relay appends a follow-on round once a batch
-   *  drains, so a test that only finished the batch's own indices would leave
-   *  those turns parked forever. Resolving an already-settled deferred is a
-   *  no-op, so this is safe to call on every settle pass. */
-  finishAll(result: ConversationTurnRunResult = { status: "completed", text: "settled" }) {
-    for (const gate of this.gates) gate.resolve(result);
+  /** Resolve every open gate, self-naming by default for the same reason as
+   *  `finish`: a follow-on round the relay opens on a reply that named nobody
+   *  would park a test that only finished the batch's own indices. Resolving
+   *  an already-settled deferred is a no-op, so this is safe on every settle
+   *  pass. */
+  finishAll(result?: ConversationTurnRunResult) {
+    this.gates.forEach((gate, index) => gate.resolve(result ?? { status: "completed", text: this.replyText(index, this.calls[index]?.botId ?? "") }));
   }
   async cancel(input: ConversationTurnCancelInput) {
     const index = this.calls.findIndex((call) => call.promptRequestId === input.promptRequestId);
@@ -117,7 +132,7 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
     }
   }
   const runtime = new BotRuntimeManager(bots, sessions, state, stateStore, { stateMutex, releaseOwnedSession });
-  const runner = new ControlledRunner();
+  const runner = new ControlledRunner((botId) => bots.getBot(botId)?.name);
   let clock = Date.parse(NOW);
   const now = () => new Date(clock++);
   const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, { now, hooks: options.hooks, ownerId: options.ownerId,
