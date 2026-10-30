@@ -777,13 +777,16 @@ test("quarantined automatic member fails over through the existing stateless Rou
       expect(input.completedAssignments[0]?.outcome).toBe("failed");
       return { type: "dispatch", mode: "single", assignments: [{ id: "B", botId: B, task: "recover", expectedOutput: "safe result", triggerMessageIds: [] }] };
     }
+    if (calls === 3) return { type: "dispatch", mode: "single", assignments: [{ id: "jev-v2-2-verify", botId: B, task: "verify the recovered work", triggerMessageIds: [] }] };
+    // A verification of the recovered work is what durably covers the
+    //  quarantined member's failure; only then may the Run complete.
     return { type: "complete", reason: "recovered" };
   } };
   const h = await harness({ router, onRun: async (input) => input.botId === A ? { status: "failed", error: "failed A" } : { status: "completed", text: "healthy B" } });
   try {
     const accepted = await h.service.acceptGroupPrompt({ conversationId: h.group.id, topicId: h.topic.id, requestId: "automatic", text: "human", target: { mode: "automatic" } });
-    await h.service.awaitRouting(); await h.dispatcher.kick(); await h.service.awaitRouting(); await h.dispatcher.kick(); await h.service.awaitRouting();
-    expect(h.store.getRun(accepted.run.id)).toMatchObject({ state: "completed", quarantinedBotIds: [A], consumedMemberTurns: 2 });
+    await h.service.awaitRouting(); await h.dispatcher.kick(); await h.service.awaitRouting(); await h.dispatcher.kick(); await h.service.awaitRouting(); await h.dispatcher.kick(); await h.service.awaitRouting();
+    expect(h.store.getRun(accepted.run.id)).toMatchObject({ state: "completed", quarantinedBotIds: [A], consumedMemberTurns: 3 });
     expect(h.store.listMemberTurns(accepted.run.id)[1]).toMatchObject({ origin: "recovery", task: "recover", expectedOutput: "safe result" });
     expect(h.bots.getBot(A).enabled).toBe(true);
   } finally { h.store.close(); }
