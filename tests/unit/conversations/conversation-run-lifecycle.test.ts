@@ -8314,3 +8314,62 @@ test("PR7 cancel: whole-Run cancel suppresses not-yet-started sibling and wins e
   expect(first.store.getRun(accepted.run.id)?.state).toBe("cancelled");
   first.store.close();
 });
+
+test("a woken sender's prompt names the assignments that settled", async () => {
+  let store!: SqliteConversationStore;
+  const first = await createLifecycle({
+    hooks: {
+      // The leader dispatches one public assignment while its own turn is live,
+      // exactly as group_send does; the wake then has a real settled child.
+      beforeResultPersist: async (work) => {
+        if (work.memberTurn.botId !== BOT_ID || work.memberTurn.followupSenderMemberTurnId !== undefined) return;
+        const sender = store.getMemberTurn(work.memberTurn.id)!;
+        const dispatch = store.getDispatchForMemberTurn(sender.id)!;
+        store.acceptPublicHandoff({
+          senderMemberTurnId: sender.id,
+          sourceTurnId: sender.sourceTurnId!,
+          dispatchId: dispatch.id,
+          owner: dispatch.owner!,
+          generation: dispatch.generation,
+          invocationId: "wake-snapshot-1",
+          args: { to: TESTER_ID, task: "collect evidence" },
+          profileSnapshot: sender.profileSnapshot!,
+          now: NOW,
+        });
+      },
+    },
+  });
+  store = first.store;
+  try {
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID], leadBotId: BOT_ID });
+    const topic = await first.service.createGroupTopic(group.id, "Wake", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const accepted = await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-wake-snapshot",
+      text: "review the lock path",
+      target: { mode: "members", botIds: [BOT_ID] },
+    });
+    await first.service.activateAfterConsumerLock();
+    await first.dispatcher.kick();
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+
+    const turns = first.store.listMemberTurns(accepted.run.id);
+    const wake = turns.find((turn) => turn.followupSenderMemberTurnId !== undefined)!;
+    const child = turns.find((turn) => turn.assignmentId !== undefined
+      && turn.followupSenderMemberTurnId === undefined)!;
+    const input = fakeRunner(first.runner).runs.find((candidate) => candidate.memberTurnId === wake.id);
+    expect(input).toBeDefined();
+    expect(input!.text).toContain(`Settled assignment ids: ${child.assignmentId}`);
+    expect(input!.text).toContain("Wake reason: child-results-settled");
+    expect(input!.text).toContain("Pending assignment ids: none");
+    // The wake's own runtime summary id is never reported as pending work.
+    expect(input!.text).not.toContain(wake.assignmentId!);
+  } finally {
+    first.store.close();
+  }
+});
