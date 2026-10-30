@@ -140,11 +140,15 @@ function artifactVersionOf(history: RoutingAssignmentRecord[]): number {
   return history.reduce((batch, row) => isProduction(row) && row.outcome === "completed" ? Math.max(batch, row.batch) : batch, 0);
 }
 
-/** Latest successful verification of a given artifact version, or 0. */
-function verifiedVersionOf(history: RoutingAssignmentRecord[], artifactVersion: number): number {
+/** Latest independent verification of a given artifact version, or 0. A
+ *  producer approving its own artifact is not coverage for earlier failures. */
+function verifiedVersionOf(history: RoutingAssignmentRecord[], artifactVersion: number, producerBotIds: readonly string[]): number {
+  // No recorded artifact version means the verification names nothing, so it
+  //  cannot cover an earlier failure.
   if (artifactVersion === 0) return 0;
-  return history.reduce((batch, row) => row.batch > artifactVersion
-    && actionOf(row) === "verify" && row.outcome === "completed" ? Math.max(batch, row.batch) : batch, 0);
+  const producers = new Set(producerBotIds);
+  return history.reduce((batch, row) => row.batch > artifactVersion && actionOf(row) === "verify"
+    && row.outcome === "completed" && !producers.has(row.botId) ? Math.max(batch, row.batch) : batch, 0);
 }
 
 /** Producers of the current artifact version. This is cumulative accounting:
@@ -162,24 +166,34 @@ export function durableCollaborationFacts(history: RoutingAssignmentRecord[]): D
   return { producerBotIds: [...new Set(producersOf(history))], recoveryExhausted: recoveryExhausted(history) };
 }
 
+/** Durable identity of the work one assignment was asked to do. A redo of the
+ *  same work — by any member — carries the same instruction, which is the only
+ *  logical task identity a settled row preserves. */
+function sameWorkScope(left: RoutingAssignmentRecord, right: RoutingAssignmentRecord): boolean {
+  return left.task.trim() === right.task.trim();
+}
+
 /** Work the Run's durable rows prove is not finished: a started attempt that
  *  ended `failed` and that no later successful evidence covers. Coverage is a
- *  durable fact — a later successful attempt by the same member, or a later
- *  successful verification of the current artifact version — never the
- *  presence or absence of the row inside a bounded evidence window. An attempt
- *  that never started produced no work, so it raises nothing.
+ *  durable fact — a later success for the SAME work by any member, or an
+ *  independent verification at or after the failed attempt's version — never
+ *  the presence or absence of the row inside a bounded evidence window. An
+ *  attempt that never started produced no work, so it raises nothing.
  *
  * Computed from the FULL history, so it is identical at routing time and after
  *  a store reopen, and bounded the way the evidence window is bounded. */
 export function durableProgressReduction(history: RoutingAssignmentRecord[]): DurableProgressReduction {
   const artifactVersion = artifactVersionOf(history);
-  const verifiedVersion = verifiedVersionOf(history, artifactVersion);
+  const producerBotIds = [...new Set(producersOf(history, artifactVersion))];
+  const verifiedVersion = verifiedVersionOf(history, artifactVersion, producerBotIds);
   const unresolved: UnresolvedIssue[] = [];
   for (const row of history) {
     // An attempt that never executed left no unfinished work behind.
     if (row.outcome !== "failed" || row.started === false) continue;
-    const retried = history.some((other) => other.botId === row.botId && other.batch > row.batch && other.outcome === "completed");
-    if (retried || verifiedVersion > row.batch) continue;
+    // A different member redoing the same work settles it; an unrelated later
+    //  task by the same member does not.
+    const redone = history.some((other) => other.batch > row.batch && other.outcome === "completed" && sameWorkScope(other, row));
+    if (redone || verifiedVersion > row.batch) continue;
     unresolved.push({
       assignmentId: row.id,
       botId: row.botId,

@@ -1127,11 +1127,13 @@ test("a later verification of the current artifact version resolves the issue", 
     outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
   };
   const production = {
-    id: "jev-v2-1-execute", botId: "bot_b", task: "produce", dependsOn: [], triggerMessageIds: [],
+    id: "jev-v2-1-execute", botId: "bot_b", task: "produce v2", dependsOn: [], triggerMessageIds: [],
     outcome: "completed" as const, attempt: 1, batch: 2, result: "artifact v2",
   };
+  // Independent of the producer: bot_b produced the version, so it may not be
+  //  the one whose verification clears the earlier failure.
   const verification = {
-    id: "jev-v2-2-verify", botId: "bot_b", task: "verify", dependsOn: [], triggerMessageIds: [],
+    id: "jev-v2-2-verify", botId: "bot_c", task: "verify", dependsOn: [], triggerMessageIds: [],
     outcome: "completed" as const, attempt: 1, batch: 3, result: "verified artifact v2",
   };
   const unresolved = durableProgressReduction([failure, production]);
@@ -1208,4 +1210,56 @@ test("a retry by the same member covers its own failure", () => {
   };
   expect(durableProgressReduction([failure])).toMatchObject({ total: 1 });
   expect(durableProgressReduction([failure, retry])).toMatchObject({ total: 0, artifactVersion: 2 });
+});
+
+test("an unrelated later task by the same member does not clear the failure", () => {
+  const failure = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
+  };
+  // Same member, settled success, but a different logical task: not a redo.
+  const unrelated = {
+    id: "jev-v2-1-answer", botId: "bot_a", task: "answer a side question", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 2, result: "the answer",
+  };
+  expect(durableProgressReduction([failure, unrelated])).toMatchObject({
+    total: 1, issues: [{ assignmentId: "jev-v2-0-execute" }],
+  });
+});
+
+test("a producer verifying its own artifact does not clear an earlier failure", () => {
+  const failure = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
+  };
+  const production = {
+    id: "jev-v2-1-execute", botId: "bot_b", task: "produce a different artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 2, result: "artifact v1",
+  };
+  // bot_b produced batch 2, so its own verification of that version is not
+  //  independent evidence for the failure bot_a left behind.
+  const selfVerification = {
+    id: "jev-v2-2-verify", botId: "bot_b", task: "verify", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 3, result: "verified artifact v1",
+  };
+  expect(durableProgressReduction([failure, production, selfVerification])).toMatchObject({
+    total: 1, issues: [{ assignmentId: "jev-v2-0-execute" }], artifactVersion: 2, verifiedVersion: 0,
+  });
+  // An independent verifier of the same version does cover it.
+  const independent = { ...selfVerification, botId: "bot_c" };
+  expect(durableProgressReduction([failure, production, independent])).toMatchObject({
+    total: 0, issues: [], artifactVersion: 2, verifiedVersion: 3,
+  });
+});
+
+test("a cross-member redo of the same work clears the failure", () => {
+  const failure = {
+    id: "jev-v2-0-execute", botId: "bot_a", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
+  };
+  const redo = {
+    id: "jev-v2-1-execute", botId: "bot_b", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 2, result: "artifact v1",
+  };
+  expect(durableProgressReduction([failure, redo])).toMatchObject({ total: 0, issues: [] });
 });

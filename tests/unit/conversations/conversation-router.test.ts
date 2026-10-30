@@ -3040,9 +3040,9 @@ test("a new automatic batch resets current aggregates while retaining failed ass
   const router = new RecordingRouter([
     { type: "dispatch", mode: "single", assignments: [{ id: "failed-review", botId: BOT_ID, task: "review", triggerMessageIds: [] }] },
     { type: "dispatch", mode: "single", assignments: [{ id: "retry-review", botId: TESTER_ID, task: "retry review", triggerMessageIds: [] }] },
-    // A verification is what durably covers the earlier failure; the bare
+    // An independent verification (not the producer) is what durably covers the
     //  `complete` below is refused while that work stays unresolved.
-    { type: "dispatch", mode: "single", assignments: [{ id: "jev-v2-2-verify", botId: TESTER_ID, task: "verify", triggerMessageIds: [] }] },
+    { type: "dispatch", mode: "single", assignments: [{ id: "jev-v2-2-verify", botId: BUILDER_ID, task: "verify", triggerMessageIds: [] }] },
     { type: "complete", reason: "retry succeeded" },
   ]);
   const harness = await createHarness({ autoKick: false, router });

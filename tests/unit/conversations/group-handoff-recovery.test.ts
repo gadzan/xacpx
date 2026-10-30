@@ -777,8 +777,8 @@ test("quarantined automatic member fails over through the existing stateless Rou
       expect(input.completedAssignments[0]?.outcome).toBe("failed");
       return { type: "dispatch", mode: "single", assignments: [{ id: "B", botId: B, task: "recover", expectedOutput: "safe result", triggerMessageIds: [] }] };
     }
-    if (calls === 3) return { type: "dispatch", mode: "single", assignments: [{ id: "jev-v2-2-verify", botId: B, task: "verify the recovered work", triggerMessageIds: [] }] };
-    // A verification of the recovered work is what durably covers the
+    if (calls === 3) return { type: "dispatch", mode: "single", assignments: [{ id: "jev-v2-2-verify", botId: C, task: "verify the recovered work", triggerMessageIds: [] }] };
+    // An independent verification (C produced nothing) durably covers the
     //  quarantined member's failure; only then may the Run complete.
     return { type: "complete", reason: "recovered" };
   } };
