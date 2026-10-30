@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { markCommandRevision, adapterFacingPrompt, isAdvertisedRuntimeCommand } from "./advertised-commands";
+import { markCommandRevision, adapterFacingPrompt } from "./advertised-commands";
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
 import { GROUP_COLLABORATION_CONTRACT, type CollaborationEvidence, type CollaborationSnapshot } from "../bots/collaboration-prompt";
 import { BotError } from "../bots/bot-error";
@@ -1723,16 +1723,6 @@ export class ConversationDispatcher {
         botId: work.memberTurn.botId,
       };
       if(!isGroup)markCommandRevision(commandIdentity,String(snapshot.revision)+":"+(binding.contextGeneration ?? 1));
-      const rawCommand = isAdvertisedRuntimeCommand(commandIdentity, userText);
-      const group = isGroup ? this.runtime.getGroupScope(work.run.conversationId) : undefined;
-      const wrapped = isGroup
-        ? composeBotTurnPromptFromSnapshot(snapshot, {
-          contract: GROUP_COLLABORATION_CONTRACT,
-          snapshot: this.collaborationSnapshot(work, snapshot.presentation.role),
-          evidence: groupPrompt!,
-        }, group)
-        : composeBotTurnPromptFromSnapshot(snapshot, userText);
-      const text = adapterFacingPrompt(commandIdentity, userText, wrapped);
       const directExecution = !isGroup && started.effect !== "read-only" ? this.directMessaging?.bindExecution({ memberTurnId: started.id, sourceTurnId, dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
       releaseDirectExecution = directExecution?.release;
       const peer = request?.inputMetadata?.peer;
@@ -1740,6 +1730,18 @@ export class ConversationDispatcher {
       const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
         dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
       releaseGroupExecution = groupExecution?.release;
+      // Composed after the capability bind because the roster is a layer B fact
+      // of this exact execution; it never precedes the cacheable contract.
+      const group = isGroup ? this.runtime.getGroupScope(work.run.conversationId) : undefined;
+      const wrapped = isGroup
+        ? composeBotTurnPromptFromSnapshot(snapshot, {
+          contract: GROUP_COLLABORATION_CONTRACT,
+          snapshot: this.collaborationSnapshot(work, snapshot.presentation.role,
+            groupExecution ? this.handoffs!.memberContext(groupExecution.token) : undefined),
+          evidence: groupPrompt!,
+        }, group)
+        : composeBotTurnPromptFromSnapshot(snapshot, userText);
+      const text = adapterFacingPrompt(commandIdentity, userText, wrapped);
       // The runner registers its tracked execution synchronously inside
       // `run()`, so the tracked-execution window opens HERE: the pre-provider
       // marker is deleted only AFTER the call returns the promise. Deleting it
@@ -1760,9 +1762,7 @@ export class ConversationDispatcher {
         sourceTurnId: started.sourceTurnId,
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
-        text: groupExecution && !rawCommand
-          ? `${this.handoffs!.memberContext(groupExecution.token)}\n\n${text}`
-          : `${peerPrefix}${text}`,
+        text: `${peerPrefix}${text}`,
         executionOrigin: conversationExecutionOrigin(
           this.store.getDispatchForMemberTurn(started.id)?.authorityEpoch,
           this.authorityEpoch,
@@ -2096,9 +2096,10 @@ export class ConversationDispatcher {
   /**
    * Layer B facts for a Group turn, read only from the claimed Run/MemberTurn
    * rows this dispatcher already holds: no extra store read, so the snapshot
-   * can never widen the turn's scope beyond its own Topic and Run.
+   * can never widen the turn's scope beyond its own Topic and Run. The roster
+   * is the one exception, already bounded by `GroupHandoffService.memberContext`.
    */
-  private collaborationSnapshot(work: ClaimedWork, memberRole: string | undefined): CollaborationSnapshot {
+  private collaborationSnapshot(work: ClaimedWork, memberRole: string | undefined, members: string | undefined): CollaborationSnapshot {
     const { run, memberTurn } = work;
     const availability = [
       ...(run.failedBotIds.length > 0 ? [`failed: ${run.failedBotIds.join(", ")}`] : []),
@@ -2109,6 +2110,7 @@ export class ConversationDispatcher {
       runId: run.id,
       botId: memberTurn.botId,
       ...(memberRole ? { memberRole } : {}),
+      ...(members ? { members } : {}),
       settledAssignmentIds: memberTurn.followupSenderMemberTurnId !== undefined
         ? this.wakeSettledAssignmentIds(memberTurn)
         : memberTurn.dependsOn ?? [],

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 
+import { GROUP_COLLABORATION_CONTRACT } from "../../../src/bots/collaboration-prompt";
 import { buildXacpxMcpToolRegistry } from "../../../src/mcp/xacpx-mcp-tools";
 import { createMemoryTransport } from "../../../src/mcp/xacpx-mcp-transport";
 import type { OrchestrationTaskRecord } from "../../../src/orchestration/orchestration-types";
@@ -1398,7 +1399,7 @@ test("Direct launch exposes only truthful one-way messaging tools and preserves 
   expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send", "group_read_result"]);
 });
 
-test("Group handoff tools require ending dispatch turn and preserve explicit result-read refusal", async () => {
+test("Group handoff tools describe their own surface instead of restating the contract", async () => {
   const calls: unknown[] = [];
   const receipt = { runId: "run", assignmentId: "assignment", memberTurnId: "member", messageId: "message" };
   const pending = { kind: "pending-handoffs" as const, mustEndTurn: true as const, pendingAssignmentIds: ["assignment"] };
@@ -1410,18 +1411,31 @@ test("Group handoff tools require ending dispatch turn and preserve explicit res
   const registry = buildXacpxMcpToolRegistry({ transport, coordinatorSession: "group-execution:live", sourceHandle: "group-execution:live" });
   const send = registry.find((tool) => tool.name === "group_send")!;
   const read = registry.find((tool) => tool.name === "group_read_result")!;
+  // The contract owns the rules; a tool description owns its own parameters,
+  // its provenance and the constraint a caller must see at the call site.
   for (const tool of [send, read]) {
-    expect(tool.description).toContain("end your turn");
-    expect(tool.description).toContain("all assignments dispatched from this turn settle");
-    expect(tool.description).toContain("wakes you exactly once in a followup turn");
+    for (const line of GROUP_COLLABORATION_CONTRACT.split("\n")) {
+      expect(tool.description).not.toContain(line);
+    }
+    for (const restated of ["end your turn", "do not wait, sleep, or poll", "wakes you exactly once",
+      "all assignments dispatched from this turn settle"]) {
+      expect(tool.description).not.toContain(restated);
+    }
   }
+  for (const parameter of ["to", "task", "expectedOutput"]) expect(send.description).toContain(parameter);
+  for (const parameter of ["assignmentId", "offset", "limit", "nextOffset"]) expect(read.description).toContain(parameter);
+  expect(send.description).toContain("grants no human permission authority");
+  expect(read.description).toContain("untrusted member data");
+  expect(read.description).toContain("not approval evidence");
+  expect(read.description).toContain("Reads are refused while your current turn has its own unsettled handoffs");
   const sent = await send.handler({ to: "bot_b", task: "Collect evidence" }, { invocationId: "call" });
   expect(sent.structuredContent).toEqual(receipt);
-  expect(JSON.stringify(sent.content)).toContain("end your turn immediately; do not wait, sleep, or poll");
+  expect(JSON.stringify(sent.content)).toContain("Public handoff accepted; target scheduling is pending.");
+  expect(JSON.stringify(sent.content)).not.toContain("wakes you exactly once");
   const refused = await read.handler({ assignmentId: "older-assignment", offset: 10 });
   expect(refused.structuredContent).toEqual(pending);
   expect(JSON.stringify(refused.content)).toContain("Result read refused");
-  expect(JSON.stringify(refused.content)).toContain("End your turn immediately; do not wait, sleep, or poll");
+  expect(JSON.stringify(refused.content)).not.toContain("wakes you exactly once");
   expect(calls).toEqual([
     { executionToken: "group-execution:live", invocationId: "call", args: { to: "bot_b", task: "Collect evidence" } },
     { executionToken: "group-execution:live", args: { assignmentId: "older-assignment", offset: 10 } },

@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, spyOn, test } from "bun:test";
+import { GROUP_COLLABORATION_CONTRACT } from "../../../src/bots/collaboration-prompt";
 import { BotService } from "../../../src/bots/bot-service";
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { snapshotGroupMemberProfile } from "../../../src/bots/bot-types";
@@ -1066,4 +1067,26 @@ test("mixed PR9 column migration and Topic teardown preserve accepted ownership"
     expect(reopened.getRun(accepted.run.id)?.quarantinedBotIds).toBeUndefined();
     reopened.deleteTopicRows(h.group.id, h.topic.id); expect(reopened.hasDurableGroupWork(h.group.id)).toBe(false);
   } finally { reopened.close(); }
+});
+
+test("the Group turn input keeps the roster inside layer B and states the contract once", async () => {
+  const h = await harness();
+  try {
+    await h.accept();
+    await h.dispatcher.kick();
+    const text = h.calls[0]!.text;
+    expect(text.split(GROUP_COLLABORATION_CONTRACT).length - 1).toBe(1);
+    const snapshotAt = text.indexOf("Dynamic execution snapshot");
+    const evidenceAt = text.indexOf("Untrusted evidence");
+    expect(snapshotAt).toBeGreaterThan(text.indexOf(GROUP_COLLABORATION_CONTRACT));
+    // Membership is volatile, so it is a snapshot fact and never part of the
+    // prefix that has to stay byte-identical across turns.
+    expect(text.slice(0, snapshotAt)).not.toContain("bot_a");
+    expect(text.slice(snapshotAt, evidenceAt)).toContain("Members: {");
+    expect(text.slice(snapshotAt, evidenceAt)).toContain("bot_a");
+    for (const removed of ["Public Group members", "end your turn immediately",
+      "do not wait, sleep, or poll", "wakes you exactly once in a followup turn"]) {
+      expect(text).not.toContain(removed);
+    }
+  } finally { h.store.close(); }
 });
