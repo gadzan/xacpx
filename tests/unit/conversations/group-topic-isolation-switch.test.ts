@@ -94,11 +94,10 @@ test("leaving worktree mode is refused while its worktrees are unintegrated", as
   await h.accept("leave-wt", 2);
   void h.dispatcher.kick();
   await wait(() => h.runner.calls.length === 2);
-  // Silent replies: a stored group reply relays to the other members, which
-  // would park the Run in a round this test never finishes. The subject is the
-  // settled-but-unintegrated worktree, not the relay.
-  h.runner.finish(0, { status: "completed", text: "[静默]" });
-  h.runner.finish(1, { status: "completed", text: "[静默]" });
+  // The fixture reply names only its sender, so the stored replies wake no
+  // other member and the Run settles on the batch this test left behind.
+  h.runner.finish(0);
+  h.runner.finish(1);
   await wait(() => h.store.listRuns(h.g.id, h.topic.id).every((run) => run.state === "completed"));
   // Settled but not integrated: the worktree panel is mounted off the live
   // isolation, so a downgrade would hide the only way to integrate them.

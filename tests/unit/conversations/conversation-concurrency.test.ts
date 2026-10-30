@@ -231,10 +231,9 @@ test("shutdown at full capacity leaves the third member pending for the next con
   h.store.close();
   const next = await harness({ path: h.path, state: parseState(h.state, "state.json") });
   const activate = next.service.activateAfterConsumerLock(); await until(() => next.runner.calls.length === 1);
-  // The third member stays silent, so its reply wakes nobody: the Run ends
-  // with the batch the previous consumer left behind, exactly as before the
-  // relay existed.
-  next.runner.finish(0, { status: "completed", text: "[静默]" }); await activate; expect(next.runner.peak).toBe(1); next.store.close();
+  // The fixture reply names only its sender, so the Run ends with the batch
+  // the previous consumer left behind.
+  next.runner.finish(0); await activate; expect(next.runner.peak).toBe(1); next.store.close();
 });
 
 for (const value of [0, -1, 1.5, NaN, Infinity, 65, null, "2"]) {
