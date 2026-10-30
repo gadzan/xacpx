@@ -3930,6 +3930,14 @@ export class SqliteConversationStore implements ConversationStore {
       [conversationId, topicId],
     );
     this.sqlite.run(
+      "DELETE FROM followup_reservations WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM run_budget_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
       "DELETE FROM member_turns WHERE conversation_id = ? AND topic_id = ?",
       [conversationId, topicId],
     );
@@ -3963,6 +3971,8 @@ export class SqliteConversationStore implements ConversationStore {
         "DELETE FROM pending_dispatches WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)",
         [conversationId],
       );
+      this.sqlite.run("DELETE FROM followup_reservations WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
+      this.sqlite.run("DELETE FROM run_budget_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM member_turns WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
