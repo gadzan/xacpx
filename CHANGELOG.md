@@ -1,4 +1,11 @@
 # Changelog
+## [Unreleased]
+
+### Changed
+
+- 群组多轮交接（V2 P0-B）成为默认行为，`conversations.followupRedispatch: false` 可回滚。交接唤醒现在可以继续派活，完成判定改为读取整个 Run 的等待图而不是当前 batch；工作窗口不再以固定 24 轮判失败，而是按 `max(8, shortage)` 确定性续期并写入 `run_budget_decisions` 审计（`runs.budget_epoch`），续期本身不会凭空创建任务；发送者第一次派活时在同一事务内预留一次返回唤醒（`followup_reservations`），容量不足时唤醒保持欠付并在 resume 时恰好兑现一次。资源不足（成员不可用、窗口无法表示）不再伪装成预算失败，而是拒绝该次派活并让 Run 进入可恢复的暂停。
+
+
 ## [relay-protocol 0.6.4-beta.7] - 2026-10-29
 
 ### Added

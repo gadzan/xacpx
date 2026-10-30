@@ -118,6 +118,12 @@ export interface RunGraphOptions {
   allocationUsed: number;
   runCancelling: boolean;
   budgetExhausted: boolean;
+  /**
+   * Sender member turns whose returning wake is durably reserved (§6.2). A
+   * reserved wake is owed work even when the current window is fully spent, so
+   * the node stays `wake-pending` instead of closing on a legacy budget skip.
+   */
+  reservedWakeTurnIds?: ReadonlySet<string>;
   runCancellationReason?: "human-cancelled" | "execution-cancelled";
 }
 
@@ -347,7 +353,11 @@ function classifyPhase(
   if (frontier.frontierState === "completed") {
     // A cancelling Run owes no new wake; a scoped-stop sender never earned one.
     if (entries.length > 0 && frontier.frontierCancellationReason === undefined && !options.runCancelling) {
-      return options.allocationUsed < run.maxMemberTurns
+      // An explicitly reserved wake is owed work even when the window is spent
+      // (V2 §6.2): only a legacy sender without a reservation can still be
+      // closed by the pre-reservation budget skip.
+      const reserved = options.reservedWakeTurnIds?.has(frontier.frontierMemberTurnId) === true;
+      return reserved || options.allocationUsed < run.maxMemberTurns
         ? { phase: "wake-pending", wakeSuppressedByBudget: false }
         : { phase: "wake-pending", wakeSuppressedByBudget: true };
     }

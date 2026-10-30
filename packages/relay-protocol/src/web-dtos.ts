@@ -752,6 +752,8 @@ function validConversationRun(value: unknown): boolean {
       || c.state === "indeterminate")
     && typeof c.profileRevision === "number"
     && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number")
+    && (c.budgetEpoch === undefined
+      || (typeof c.budgetEpoch === "number" && Number.isSafeInteger(c.budgetEpoch) && c.budgetEpoch >= 0))
     && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number")
     && (c.failedBotIds === undefined
       || (Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")))
@@ -857,8 +859,9 @@ export function isPublicPlanEntriesDto(value: unknown): value is PlanEntryDto[] 
 
 const historyRunKeys = [
   "id", "conversationId", "topicId", "requestMessageId", "requestId", "mode", "state", "completionReason",
-  "profileRevision", "activeBatch", "maxMemberTurns", "consumedMemberTurns", "failedBotIds", "unavailableBotIds",
-  "quarantinedBotIds", "routingState", "routingReason", "waitingQuestion", "createdAt", "startedAt", "finishedAt",
+  "profileRevision", "activeBatch", "maxMemberTurns", "budgetEpoch", "consumedMemberTurns", "failedBotIds",
+  "unavailableBotIds", "quarantinedBotIds", "routingState", "routingReason", "waitingQuestion", "createdAt",
+  "startedAt", "finishedAt",
   "controlRevision", "progressRevision", "pauseReason", "pauseRequestedAt", "pausedAt",
   "memberTurns", "profileSnapshot", "worktree",
 ] as const satisfies readonly (keyof ConversationRunHistoryDetailDto)[];

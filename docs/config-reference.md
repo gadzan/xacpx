@@ -827,6 +827,18 @@ File tree operations configuration for relay-web file browser.
 }
 ```
 
+## `conversations.followupRedispatch`
+
+Multi-round Group handoff, on by default. A followup wake may dispatch new assignments, a Run's work window renews by `max(8, shortage)` (audited once per `budgetEpoch`) instead of failing on budget, the sender's returning wake is reserved when it dispatches, and an explicit Run completes only when the whole-Run waiting graph owes nothing. Set `false` to restore the pre-V2 batch-scoped behavior byte for byte.
+
+```json
+{
+  "conversations": {
+    "followupRedispatch": true
+  }
+}
+```
+
 ---
 
 ## `conversations.router`

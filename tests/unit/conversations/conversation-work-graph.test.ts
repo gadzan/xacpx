@@ -57,6 +57,7 @@ function runFixture(overrides: Partial<ConversationRun> = {}): ConversationRun {
     generation: 1,
     maxMemberTurns: 8,
     consumedMemberTurns: 0,
+    budgetEpoch: 0,
     failedBotIds: [],
     unavailableBotIds: [],
     profileRevision: 1,
@@ -141,6 +142,19 @@ test("a capacity-skipped wake still lets completed work report completed", () =>
     allocationUsed: 2, runCancelling: false, budgetExhausted: false,
   });
   expect(decideRunCompletion(skipped, "b")).toMatchObject({ kind: "terminal", state: "completed" });
+});
+
+test("a reserved returning wake is an owed report, so the Run never seals", () => {
+  // Same full window as the legacy skip above, but this sender reserved its
+  // wake when it dispatched (§6.2): the report is owed, not spare capacity.
+  const owed = buildWaitingGraph(runFixture({ maxMemberTurns: 2 }), [leader, childB], {
+    allocationUsed: 2, runCancelling: false, budgetExhausted: false,
+    reservedWakeTurnIds: new Set(["a"]),
+  });
+  expect(owed.byWorkId.get("a")!.wakeSuppressedByBudget).toBe(false);
+  expect(owed.wakeOwedWorkIds).toEqual(["a"]);
+  expect(owed.closed).toBe(false);
+  expect(decideRunCompletion(owed, "b")).toMatchObject({ kind: "open", reason: "wake-pending", checks: [3] });
 });
 
 test("unknown results seal the Run and budget failure outranks completed unless the human stopped it", () => {
