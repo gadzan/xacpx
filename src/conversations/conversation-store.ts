@@ -13,6 +13,7 @@ import type {
   PendingDispatch,
 } from "./conversation-types";
 import type { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
+import type { RunWorkOutcome } from "./conversation-work-graph";
 
 /** A completion reason on runnable work is durable cancel intent, not routing work. */
 export function isRunCancelling(run: ConversationRun): boolean {
@@ -403,6 +404,12 @@ export interface ConversationStore {
   getPublicHandoff(sourceTurnId: string, invocationId: string, args: GroupSendInput): PublicHandoffReceipt | undefined;
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult;
   getRun(runId: string): ConversationRun | undefined;
+  /**
+   * Read-only logical-work projection for a Run (V2 §4.4): the waiting
+   * frontier, followup wakes owed/deciding and lifecycle fences. Completion is
+   * decided from these durable facts, never from the active batch.
+   */
+  getRunWorkOutcome(runId: string): RunWorkOutcome | undefined;
   getRunByRequestId(conversationId: string, topicId: string, requestId: string): ConversationRun | undefined;
   getAcceptedRequest(conversationId: string, topicId: string, requestId: string): AcceptRequestResult | undefined;
   listRuns(conversationId: string, topicId?: string): ConversationRun[];

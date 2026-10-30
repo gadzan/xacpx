@@ -259,6 +259,10 @@ export interface MemberTurnRecord {
    *  other turn — including ordinary orchestration-accepted members, whose
    *  `followup` origin does NOT identify a handoff wake. */
   followupSenderMemberTurnId?: string;
+  /** Durable causal edge for a public handoff child: the sender's physical
+   *  execution identity when it dispatched this assignment. The logical work
+   *  parent is derived from it; it is never model- or client-supplied. */
+  handoffSourceTurnId?: string;
   /** Declared side-effect capability for scheduling. Persisted at durable
    *  accept from AcceptMemberInput.effect; absent (pre-effect rows) reads as
    *  `unknown`. PR7 always persists `unknown`: no read-only capability is
