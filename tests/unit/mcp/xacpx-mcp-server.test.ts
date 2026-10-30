@@ -52,7 +52,7 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
   } finally { await client.close(); await server.close(); }
 });
 
-test("Group MCP server instructions require ending the dispatch turn and render the read refusal", async () => {
+test("Group MCP server instructions name the tools and the runtime-bound provenance", async () => {
   const token = "group-execution:trusted-launch";
   const transport = createMemoryTransport(async () => { throw new Error("Group cannot delegate"); });
   transport.groupReadResult = async () => ({ kind: "pending-handoffs" as const, mustEndTurn: true as const, pendingAssignmentIds: ["assignment"] });
@@ -62,10 +62,15 @@ test("Group MCP server instructions require ending the dispatch turn and render 
   try {
     await server.connect(b); await client.connect(a);
     const instructions = client.getInstructions() ?? "";
-    expect(instructions).toContain("end your turn immediately");
-    expect(instructions).toContain("do not wait, sleep, or poll");
-    expect(instructions).toContain("wakes you exactly once in a followup turn");
-    expect(instructions).toContain("reads are refused");
+    // Discovery and provenance only: the collaboration rules live in the prompt
+    // contract, so the instructions must not restate them.
+    expect(instructions).toContain("group_send");
+    expect(instructions).toContain("group_read_result");
+    expect(instructions).toContain("provenance are bound by the runtime");
+    for (const restated of ["end your turn", "do not wait, sleep, or poll", "wakes you exactly once",
+      "reads are refused", "clipped preview", "filesystem scheduler"]) {
+      expect(instructions).not.toContain(restated);
+    }
     const refused = await client.callTool({ name: "group_read_result", arguments: {} });
     expect(refused.isError).not.toBe(true);
     expect(JSON.stringify(refused)).toContain("Result read refused");
@@ -131,6 +136,58 @@ test("lists 20 MCP tools and hides coordinator/source identity from input schema
     expect(agentSend?.inputSchema.properties).not.toHaveProperty("from");
     expect(agentSend?.inputSchema.properties).not.toHaveProperty("coordinatorSession");
     expect(agentSend?.inputSchema.properties).not.toHaveProperty("sourceHandle");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("every advertised tool still documents its own parameters", async () => {
+  const transport = createMemoryTransport(async () => ({ taskId: "task-1", status: "running" }), {
+    getTask: async () => null,
+    listTasks: async () => [],
+    approveTask: async () => { throw new Error("unused"); },
+    cancelTask: async () => { throw new Error("unused"); },
+  });
+  const server = createXacpxMcpServer({ transport, coordinatorSession: "backend:main", sourceHandle: "backend:main:worker" });
+  const client = new Client({ name: "weacpx-test-client", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const list = await client.listTools();
+    expect(list.tools.length).toBeGreaterThan(0);
+    for (const tool of list.tools) {
+      // The schema is the parameter contract: a trim of the prose must never
+      // leave an advertised parameter undocumented.
+      expect(tool.description?.trim()).toBeTruthy();
+      expect(tool.inputSchema.type).toBe("object");
+      for (const [name, property] of Object.entries(tool.inputSchema.properties ?? {})) {
+        expect(name.trim()).not.toBe("");
+        expect(typeof (property as { type?: unknown }).type).toBe("string");
+      }
+    }
+    // The Group surface names each argument in its description, so trimming
+    // the duplicated rules there cannot leave a parameter unexplained.
+    const groupServer = createXacpxMcpServer({ transport, coordinatorSession: "group-execution:live", sourceHandle: "group-execution:live" });
+    const groupClient = new Client({ name: "weacpx-test-client", version: "1.0.0" });
+    const [groupClientTransport, groupServerTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await groupServer.connect(groupServerTransport);
+      await groupClient.connect(groupClientTransport);
+      const groupTools = (await groupClient.listTools()).tools;
+      expect(groupTools.map((tool) => tool.name)).toEqual(["group_send", "group_read_result"]);
+      for (const tool of groupTools) {
+        const parameters = Object.keys(tool.inputSchema.properties ?? {});
+        expect(parameters.length).toBeGreaterThan(0);
+        for (const parameter of parameters) {
+          expect(tool.description).toContain(parameter);
+        }
+      }
+    } finally {
+      await groupClient.close();
+      await groupServer.close();
+    }
   } finally {
     await client.close();
     await server.close();

@@ -2,8 +2,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
+import { GROUP_COLLABORATION_CONTRACT } from "../../../src/bots/collaboration-prompt";
 import { BotService } from "../../../src/bots/bot-service";
-import { GroupHandoffService } from "../../../src/conversations/group-handoff";
+import { GroupHandoffService, MAX_MEMBER_ROSTER_CHARS } from "../../../src/conversations/group-handoff";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { createEmptyState } from "../../../src/state/types";
 
@@ -41,16 +42,40 @@ async function harness() {
   const send = async (invocationId: string, to = "bot_b") => await handoffs.send({ executionToken: capability.token,
     invocationId, args: { to, task: "Collect evidence" } });
   const read = (args: unknown = {}) => handoffs.readResult({ executionToken: capability.token, args });
-  return { store, handoffs, sender, accepted, send, read, context: () => handoffs.memberContext(capability.token) };
+  return { store, state, handoffs, sender, accepted, send, read, context: () => handoffs.memberContext(capability.token) };
 }
 
-test("member instructions require ending the dispatch turn and promise one wake for all its assignments", async () => {
+test("member context is the layer B roster only, never a second copy of the collaboration contract", async () => {
   const h = await harness();
   try {
-    expect(h.context()).toContain("After dispatching all assignments for this turn, end your turn immediately");
-    expect(h.context()).toContain("do not wait, sleep, or poll");
-    expect(h.context()).toContain("Once all assignments dispatched from this turn settle, the runtime wakes you exactly once");
-    expect(h.context()).toContain("group_read_result refuses reads while this turn has its own unsettled handoffs");
+    const roster = JSON.parse(h.context()) as { members: Array<{ botId: string; enabled: boolean }>; omittedMemberCount: number };
+    expect(roster.members.map((member) => member.botId)).toEqual(["bot_a", "bot_b", "bot_c"]);
+    expect(roster.omittedMemberCount).toBe(0);
+    for (const line of GROUP_COLLABORATION_CONTRACT.split("\n")) {
+      expect(h.context()).not.toContain(line);
+    }
+    for (const restated of ["Public Group members", "end your turn", "do not wait, sleep, or poll",
+      "wakes you exactly once", "group_read_result refuses reads", "untrusted member data"]) {
+      expect(h.context()).not.toContain(restated);
+    }
+  } finally { h.handoffs.close(); h.store.close(); }
+});
+
+test("a wide Group roster stops at its layer B budget and discloses the omitted members", async () => {
+  const h = await harness();
+  try {
+    const ids = Array.from({ length: 60 }, (_, index) => `bot_member_${index}`);
+    for (const id of ids) {
+      h.state.bots[id] = { id, name: `Member ${id}`, agent: "codex", workspace: "backend", enabled: true,
+        profileRevision: 1, createdAt: NOW, updatedAt: NOW };
+    }
+    h.state.conversations.group!.botIds = ["bot_a", ...ids];
+    const roster = JSON.parse(h.context()) as { members: Array<{ botId: string }>; omittedMemberCount: number };
+    expect(roster.members[0]?.botId).toBe("bot_a");
+    expect(roster.members.length).toBeLessThan(61);
+    expect(roster.omittedMemberCount).toBe(61 - roster.members.length);
+    // The roster shares layer B with the Run facts, so it must not eat the bound.
+    expect(h.context().length).toBeLessThanOrEqual(MAX_MEMBER_ROSTER_CHARS + 64);
   } finally { h.handoffs.close(); h.store.close(); }
 });
 

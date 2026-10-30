@@ -236,3 +236,44 @@ test("a snapshot cut never ends on a lone UTF-16 surrogate", () => {
     expect(LONE_SURROGATE.test(layerB)).toBe(false);
   }
 });
+
+test("the contract is stated once, in layer A, and never restated in the snapshot or evidence", () => {
+  const prompt = buildCollaborationPrompt({
+    ...firstTurn,
+    snapshot: { ...firstTurn.snapshot, members: '{"members":[{"botId":"bot_builder"}],"omittedMemberCount":0}' },
+  });
+  const contractAt = prompt.indexOf(GROUP_COLLABORATION_CONTRACT);
+  expect(contractAt).toBeGreaterThanOrEqual(0);
+  expect(prompt.indexOf(GROUP_COLLABORATION_CONTRACT, contractAt + 1)).toBe(-1);
+  for (const line of GROUP_COLLABORATION_CONTRACT.split("\n")) {
+    expect(prompt.split(line).length - 1).toBe(1);
+  }
+});
+
+test("the cacheable prefix carries no member list and no other volatile turn fact", () => {
+  const prefix = (input: CollaborationPromptInput) => {
+    const prompt = buildCollaborationPrompt(input);
+    return prompt.slice(0, prompt.indexOf(SNAPSHOT_HEADER));
+  };
+  const roster = (botId: string) => `{"members":[{"botId":"${botId}","enabled":true}],"omittedMemberCount":0}`;
+  const withRoster = { ...firstTurn, snapshot: { ...firstTurn.snapshot, members: roster("bot_builder") } };
+  const otherRoster = { ...secondTurn, snapshot: { ...secondTurn.snapshot, members: roster("bot_reviewer") } };
+  // Byte-identical prefixes across turns with different rosters and Runs are
+  // what makes the contract cacheable at all.
+  expect(prefix(withRoster)).toBe(prefix(otherRoster));
+  expect(prefix(withRoster)).toContain(GROUP_COLLABORATION_CONTRACT);
+  expect(prefix(withRoster)).not.toContain("bot_builder");
+  expect(prefix(withRoster)).not.toContain("run_1");
+});
+
+test("the member roster renders as a layer B fact after the contract", () => {
+  const prompt = buildCollaborationPrompt({
+    ...firstTurn,
+    snapshot: { ...firstTurn.snapshot, members: '{"members":[{"botId":"bot_builder","enabled":true}],"omittedMemberCount":0}' },
+  });
+  const snapshotAt = prompt.indexOf(SNAPSHOT_HEADER);
+  const evidenceAt = prompt.indexOf(EVIDENCE_HEADER);
+  expect(prompt.slice(snapshotAt, evidenceAt)).toContain("Members: {");
+  expect(prompt.slice(snapshotAt, evidenceAt)).toContain("bot_builder");
+  expect(prompt.slice(0, snapshotAt)).not.toContain("bot_builder");
+});
