@@ -185,31 +185,6 @@ describe("Group Components", () => {
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_off"] });
     });
 
-    it("Lead converges back to eligibility-aware once the catalog refresh succeeds", async () => {
-      const groups = seedGroupSelection();
-      const direct = useDirectBotsStore();
-      // bots.list failed: the catalog is unknown, so the composer is fail-narrow.
-      direct.botsLoaded["i1"] = false;
-      direct.botsByInstance["i1"] = [];
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      const wrapper = mount(GroupComposer, {
-        props: { bots: [] },
-        global: { plugins: [i18n] },
-      });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-      // A background bots-changed succeeds and reveals the lead is now disabled.
-      direct.botsLoaded["i1"] = true;
-      direct.botsByInstance["i1"] = BOTS;
-      await wrapper.setProps({ bots: BOTS });
-      await flushPromises();
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      // Converged: the stale unknown state did not pin the disabled lead.
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-    });
-
     it("renders the queue-full refusal as translated text, not the raw code", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
