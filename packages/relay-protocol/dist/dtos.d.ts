@@ -481,7 +481,7 @@ export interface ConversationMessageDto {
     /** Safe display metadata only; never carries daemon filePath. Omitted when the message has no attachments. */
     attachments?: AttachmentMetadata[];
 }
-export type ConversationRunStateDto = "queued" | "running" | "waiting-human" | "completed" | "failed" | "cancelled" | "indeterminate";
+export type ConversationRunStateDto = "queued" | "running" | "waiting-human" | "paused" | "completed" | "failed" | "cancelled" | "indeterminate";
 export interface ConversationRunDto {
     worktree?: ConversationWorktreeStatusDto;
     /** Run-local quarantine; does not disable the global Bot profile. */
@@ -519,6 +519,20 @@ export interface ConversationRunDto {
     routingReason?: string;
     /** Durable Router question while an automatic Run waits for human input. */
     waitingQuestion?: string;
+    /**
+     * CAS token for `control.runs.pause` / `control.runs.resume`. Absent on
+     * older cores that predate Run pausing (they never advertise
+     * `runs.pause.v1` either, so the Web hides the controls).
+     */
+    controlRevision?: number;
+    /** Durable work-progress counter; absent on older cores. */
+    progressRevision?: number;
+    /** Why the Run was paused. */
+    pauseReason?: string;
+    /** Present while a pause intent drains: no new claims, Run still active. */
+    pauseRequestedAt?: string;
+    /** Present once the Run is actually `paused`. */
+    pausedAt?: string;
     createdAt: string;
     startedAt?: string;
     finishedAt?: string;

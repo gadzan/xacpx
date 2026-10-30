@@ -270,6 +270,10 @@ export class ConversationRunService {
       // effects — never re-executed); terminal-run rows finish their
       // dispatch. The lock is stronger death evidence than lease expiry.
       this.store.convergePreviousOwnerClaims(this.dispatcher.ownerId, this.now().toISOString());
+      // A pause intent whose last attempt settled before the crash must
+      // reopen as `paused`, not as a `running` Run with nothing to do and
+      // nothing to replay.
+      this.store.reconcilePauseIntents(this.now().toISOString());
       await this.dispatcher.kick();
       // PR8 crash recovery for automatic Runs: a Run that died between
       // "Router asked" and "decision committed" restarts with a durable
@@ -880,7 +884,9 @@ export class ConversationRunService {
     // full durable set: paging bounds the `runs` transport payload, never the
     // active identity. The owner is always returned (even outside the page) so
     // refresh/reconnect recovery cannot lose the executing or next-up Run.
-    const executing = all.find((run) => run.state === "running" || run.state === "waiting-human");
+    // A paused Run still owns the Topic (design §7): the owner is reported so
+    // reconnect/restart shows the held Run with its Resume affordance.
+    const executing = all.find((run) => run.state === "running" || run.state === "waiting-human" || run.state === "paused");
     const nextQueued = all.find((run) => run.state === "queued");
     const active = executing ?? nextQueued;
     const runs = all.slice(-limit);
@@ -1831,6 +1837,43 @@ export class ConversationRunService {
     this.assertOpen();
     await this.dispatcher.cancelMemberTurn(runId, memberTurnId);
     this.trackReadyAutomaticRuns();
+  }
+
+  /**
+   * Authorized Pause. The store owns the state machine: a Run with nothing
+   * executing pauses immediately, otherwise it drains until its last claimed
+   * attempt settles and only then becomes `paused`. No dispatcher action is
+   * needed — the claim fence already refuses new work for a pause intent.
+   */
+  pauseRun(input: { runId: string; requestId: string; controlRevision: number; reason?: string }): { run: ConversationRun; changed: boolean } {
+    this.assertOpen();
+    return this.store.pauseRun({
+      runId: input.runId,
+      requestId: input.requestId,
+      expectedControlRevision: input.controlRevision,
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      now: this.now().toISOString(),
+    });
+  }
+
+  /**
+   * Authorized Resume. The store revalidates the Conversation/Topic and Topic
+   * ownership before the Run becomes claimable again; the caller re-drives
+   * automatic routing and the dispatcher afterwards.
+   */
+  resumeRun(input: { runId: string; requestId: string; controlRevision: number }): { run: ConversationRun; changed: boolean } {
+    this.assertOpen();
+    const result = this.store.resumeRun({
+      runId: input.runId,
+      requestId: input.requestId,
+      expectedControlRevision: input.controlRevision,
+      now: this.now().toISOString(),
+    });
+    if (result.changed) {
+      if (result.run.mode === "automatic") this.trackReadyAutomaticRuns();
+      this.kickInBackground();
+    }
+    return result;
   }
 
   private async cancelRunAndAbortRouting(runId: string): Promise<void> {
@@ -3362,7 +3405,9 @@ export class ConversationRunService {
   }
 
   private isUnsettledRun(state: ConversationRun["state"]): boolean {
-    return state === "queued" || state === "running" || state === "waiting-human";
+    // `paused` still owns its Topic and may resume into more work, so a
+    // teardown/clear must see it exactly like a queued or running Run.
+    return state === "queued" || state === "running" || state === "waiting-human" || state === "paused";
   }
 
   private assertTopicHasNoIndeterminate(conversationId: string, topicId: string): void {

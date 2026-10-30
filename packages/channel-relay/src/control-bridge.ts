@@ -1395,6 +1395,18 @@ async function dispatchControlRequest(
       if (typeof control.cancelMemberTurn !== "function") return errorPayload("unsupported-rpc", "daemon does not support scoped MemberTurn cancellation");
       return { run: await control.cancelMemberTurn(input.runId, input.memberTurnId) };
     }
+    case MSG.runsPause: {
+      const input = parseControlPayload(MSG.runsPause, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsPause}: malformed payload`);
+      if (typeof control.pauseRun !== "function") return errorPayload("unsupported-rpc", "daemon does not support pausing Runs");
+      return control.pauseRun(input);
+    }
+    case MSG.runsResume: {
+      const input = parseControlPayload(MSG.runsResume, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsResume}: malformed payload`);
+      if (typeof control.resumeRun !== "function") return errorPayload("unsupported-rpc", "daemon does not support resuming Runs");
+      return control.resumeRun(input);
+    }
     default:
       return errorPayload(
         "unknown-type",

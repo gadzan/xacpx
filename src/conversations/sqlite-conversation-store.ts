@@ -30,6 +30,9 @@ import type {
   ClaimNextDispatchInput,
   CompleteExecutionInput,
   CompleteExecutionResult,
+  RunControlInput,
+  RunControlResult,
+  PauseRunInput,
   ConversationStore,
   FailClaimBeforeStartInput,
   FailExecutionInput,
@@ -163,6 +166,12 @@ interface RunRow {
   consumed_member_turns: number;
   failed_bot_ids_json: string | null;
   unavailable_bot_ids_json: string | null;
+  pause_reason?: string | null;
+  pause_requested_at?: string | null;
+  paused_at?: string | null;
+  control_revision?: number;
+  progress_revision?: number;
+  last_control_request_id?: string | null;
   profile_revision: number;
   profile_snapshot_json: string;
   created_at: string;
@@ -317,6 +326,12 @@ CREATE TABLE IF NOT EXISTS runs (
   consumed_member_turns INTEGER NOT NULL,
   failed_bot_ids_json TEXT NOT NULL DEFAULT '[]',
   unavailable_bot_ids_json TEXT NOT NULL DEFAULT '[]',
+  pause_reason TEXT,
+  pause_requested_at TEXT,
+  paused_at TEXT,
+  control_revision INTEGER NOT NULL DEFAULT 0,
+  progress_revision INTEGER NOT NULL DEFAULT 0,
+  last_control_request_id TEXT,
   profile_revision INTEGER NOT NULL,
   profile_snapshot_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -590,6 +605,11 @@ function mapRun(row: RunRow): ConversationRun {
     profileRevision: Number(row.profile_revision),
     profileSnapshot: parseSnapshot(row.profile_snapshot_json),
     createdAt: row.created_at,
+    ...(optionalString(row.pause_requested_at) ? { pauseRequestedAt: row.pause_requested_at as string } : {}),
+    ...(optionalString(row.pause_reason) ? { pauseReason: row.pause_reason as string } : {}),
+    ...(optionalString(row.paused_at) ? { pausedAt: row.paused_at as string } : {}),
+    controlRevision: Number(row.control_revision ?? 0),
+    progressRevision: Number(row.progress_revision ?? 0),
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
   };
@@ -793,6 +813,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureMemberTurnSnapshotColumn();
     this.ensureRunAggregateColumns();
     this.ensureMemberTurnBlockedColumn();
+    this.ensureRunControlColumns();
     this.ensureRoutingDecisionTable();
     this.ensureWaitingQuestionColumn();
     this.ensureRoutingReasonColumn();
@@ -1562,6 +1583,12 @@ export class SqliteConversationStore implements ConversationStore {
     if (TERMINAL_RUN_STATES.includes(run.state)) {
       return;
     }
+    if (run.pauseRequestedAt !== undefined) {
+      // A drained pause never re-enters scheduling: losing the last active
+      // dispatch is exactly the moment the Run becomes `paused`.
+      this.settlePauseIfDrained(runId, now);
+      return;
+    }
     const members = this.listMemberTurns(runId);
     const anyStarted = members.some((turn) => Boolean(turn.startedAt));
     if (anyStarted) {
@@ -1633,6 +1660,7 @@ export class SqliteConversationStore implements ConversationStore {
     const where = `WHERE d.state = 'pending'
            AND r.state IN ('queued', 'running')
            AND r.completion_reason IS NULL
+           AND r.pause_requested_at IS NULL
            AND m.started_at IS NULL
            AND m.state IN ('queued', 'dispatched')
            AND NOT EXISTS (
@@ -1666,6 +1694,12 @@ export class SqliteConversationStore implements ConversationStore {
                AND active.id <> r.id
                AND active.state IN ('running', 'waiting-human')
            )
+           AND NOT EXISTS (
+            SELECT 1 FROM runs paused_owner
+            WHERE paused_owner.topic_id = r.topic_id
+              AND paused_owner.id <> r.id
+              AND paused_owner.state = 'paused'
+          )
            AND NOT EXISTS (
              SELECT 1 FROM runs earlier JOIN messages request ON request.id = earlier.request_message_id
              WHERE earlier.topic_id = r.topic_id AND earlier.id <> r.id
@@ -1725,6 +1759,8 @@ export class SqliteConversationStore implements ConversationStore {
           [row.id],
         );
       }
+      // Claiming is durable progress: stale async advice is fenced by it.
+      this.sqlite.run("UPDATE runs SET progress_revision = progress_revision + 1 WHERE id = ?", [row.run_id]);
       return {
         dispatch: this.requireDispatch(row.id),
         run: this.requireRun(row.run_id),
@@ -2786,6 +2822,170 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
+  pauseRun(input: PauseRunInput): RunControlResult {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(input.runId);
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        throw new ConversationError("run_terminal", `run "${run.id}" is ${run.state}; it cannot be paused`);
+      }
+      // Stop outranks pause: a Run already heading for cancellation must not
+      // be diverted into a resumable state.
+      if (isRunCancelling(run)) {
+        throw new ConversationError("run_cancelling", `run "${run.id}" has durable cancel intent`);
+      }
+      if (this.lastControlRequestId(run.id) === input.requestId) {
+        return { run, changed: false };
+      }
+      if (run.state === "paused" || run.pauseRequestedAt !== undefined) {
+        // Idempotent: one durable state change and one revision bump.
+        return { run, changed: false };
+      }
+      if (input.expectedControlRevision !== run.controlRevision) {
+        throw new ConversationError(
+          "stale_control_revision",
+          `run "${run.id}" control revision is ${run.controlRevision}, not ${input.expectedControlRevision}`,
+        );
+      }
+      // A Run with nothing executing is paused immediately. Otherwise the
+      // intent is durable and the Run keeps running until the last attempt
+      // settles (see settlePauseIfDrained), so Topic ownership and evidence
+      // stay intact through the drain.
+      const drained = !this.runHasActiveExecution(run.id);
+      this.sqlite.run(
+        `UPDATE runs SET pause_requested_at = ?, pause_reason = ?, paused_at = ?,
+           state = ?, control_revision = control_revision + 1, progress_revision = progress_revision + 1,
+           last_control_request_id = ?
+         WHERE id = ? AND control_revision = ? AND state IN ('queued', 'running', 'waiting-human')
+           AND pause_requested_at IS NULL`,
+        [
+          input.now,
+          input.reason ?? "human-paused",
+          drained ? input.now : null,
+          drained ? "paused" : run.state,
+          input.requestId,
+          run.id,
+          input.expectedControlRevision,
+        ],
+      );
+      const updated = this.requireRun(run.id);
+      if (updated.controlRevision !== run.controlRevision + 1) {
+        throw new ConversationError("stale_control_revision", `run "${run.id}" control revision changed concurrently`);
+      }
+      return { run: updated, changed: true };
+    });
+  }
+
+  resumeRun(input: RunControlInput): RunControlResult {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(input.runId);
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        throw new ConversationError("run_terminal", `run "${run.id}" is ${run.state}; a paused state cannot be resumed`);
+      }
+      if (isRunCancelling(run)) {
+        throw new ConversationError("run_cancelling", `run "${run.id}" has durable cancel intent`);
+      }
+      if (this.lastControlRequestId(run.id) === input.requestId) {
+        return { run, changed: false };
+      }
+      if (run.state !== "paused" && run.pauseRequestedAt === undefined) {
+        throw new ConversationError("run_not_paused", `run "${run.id}" is ${run.state}, not paused`);
+      }
+      if (input.expectedControlRevision !== run.controlRevision) {
+        throw new ConversationError(
+          "stale_control_revision",
+          `run "${run.id}" control revision is ${run.controlRevision}, not ${input.expectedControlRevision}`,
+        );
+      }
+      // Revalidation before any new claim: the Conversation and Topic must
+      // still be live and no other Run may hold the Topic. Bot-removal,
+      // capacity and per-Bot fences are rechecked by the claim predicate at
+      // claim time, so a resumed Run can never start work into a resource
+      // that stopped being available while it was paused.
+      if (this.isConversationDeleting(run.conversationId) || this.isTopicDeleting(run.topicId)) {
+        throw new ConversationError("conversation_deleting", `run "${run.id}" cannot resume into a deleting resource`);
+      }
+      if (this.sqlite.get(
+        `SELECT 1 AS ok FROM runs other WHERE other.topic_id = ? AND other.id <> ?
+           AND other.state IN ('running', 'waiting-human') LIMIT 1`,
+        [run.topicId, run.id],
+      )) {
+        throw new ConversationError("topic_busy", `topic "${run.topicId}" already has another active Run`);
+      }
+      this.sqlite.run(
+        `UPDATE runs SET state = CASE WHEN started_at IS NULL THEN 'queued' ELSE 'running' END,
+           pause_requested_at = NULL, pause_reason = NULL, paused_at = NULL,
+           control_revision = control_revision + 1, progress_revision = progress_revision + 1,
+           last_control_request_id = ?
+         WHERE id = ? AND control_revision = ? AND (state = 'paused' OR pause_requested_at IS NOT NULL)`,
+        [input.requestId, run.id, input.expectedControlRevision],
+      );
+      const updated = this.requireRun(run.id);
+      if (updated.controlRevision !== run.controlRevision + 1) {
+        throw new ConversationError("stale_control_revision", `run "${run.id}" control revision changed concurrently`);
+      }
+      return { run: updated, changed: true };
+    });
+  }
+
+  reconcilePauseIntents(now: string): ConversationRun[] {
+    return this.sqlite.transaction(() => {
+      const rows = this.sqlite.all<RunRow>(
+        `SELECT * FROM runs
+         WHERE pause_requested_at IS NOT NULL AND state IN ('queued', 'running', 'waiting-human')
+           AND completion_reason IS NULL`,
+      );
+      const settled: ConversationRun[] = [];
+      for (const row of rows) {
+        const run = mapRun(row);
+        if (isRunCancelling(run)) continue;
+        const paused = this.settlePauseIfDrained(run.id, now);
+        if (paused) settled.push(paused);
+      }
+      return settled;
+    });
+  }
+
+  /** True while any physical attempt of this Run is claimed or executing. */
+  private runHasActiveExecution(runId: string): boolean {
+    return Boolean(this.sqlite.get(
+      `SELECT 1 AS ok FROM pending_dispatches WHERE run_id = ? AND state = 'claimed'
+       UNION ALL
+       SELECT 1 FROM member_turns WHERE run_id = ? AND state IN ('dispatched', 'running')
+       LIMIT 1`,
+      [runId, runId],
+    ));
+  }
+
+  /**
+   * Drain settlement: once a paused Run has no claimed/executing attempt it
+   * becomes `paused` from durable rows alone. Queued work stays queued (and
+   * unclaimable) so a resume continues exactly where it stopped.
+   */
+  private settlePauseIfDrained(runId: string, now: string): ConversationRun | undefined {
+    const run = this.requireRun(runId);
+    if (run.state === "paused" || run.pauseRequestedAt === undefined) return undefined;
+    if (TERMINAL_RUN_STATES.includes(run.state) || isRunCancelling(run)) return undefined;
+    if (this.runHasActiveExecution(runId)) return undefined;
+    // No control-revision bump: the pause request owns that one bump, and a
+    // client still holding the paused request's revision can resume.
+    this.sqlite.run(
+      `UPDATE runs SET state = 'paused', paused_at = COALESCE(paused_at, ?), progress_revision = progress_revision + 1
+       WHERE id = ? AND pause_requested_at IS NOT NULL AND state IN ('queued', 'running', 'waiting-human')`,
+      [now, runId],
+    );
+    return this.requireRun(runId);
+  }
+
+  /** Durable idempotency receipt for control mutations (single slot: a replay
+   *  can only follow the operation it retries). */
+  private lastControlRequestId(runId: string): string | undefined {
+    const row = this.sqlite.get<{ last_control_request_id: string | null }>(
+      "SELECT last_control_request_id FROM runs WHERE id = ?",
+      [runId],
+    );
+    return optionalString(row?.last_control_request_id) ? (row?.last_control_request_id as string) : undefined;
+  }
+
   failRun(runId: string, reason: string, state: "failed", now: string, routingGeneration?: number): ConversationRun {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(runId);
@@ -2837,6 +3037,9 @@ export class SqliteConversationStore implements ConversationStore {
       if (isRunCancelling(run)) {
         throw new ConversationError("run_cancelling", `run "${runId}" has durable cancel intent`);
       }
+      if (run.state === "paused" || run.pauseRequestedAt !== undefined) {
+        throw new ConversationError("run_paused", `run "${runId}" is paused; routing cannot create work`);
+      }
       if (run.state === "waiting-human") {
         throw new ConversationError("routing_invalid_transition", "waiting-human requires a new human request");
       }
@@ -2880,6 +3083,9 @@ export class SqliteConversationStore implements ConversationStore {
       }
       if (isRunCancelling(run)) {
         throw new ConversationError("run_cancelling", `run "${run.id}" has durable cancel intent`);
+      }
+      if (run.state === "paused" || run.pauseRequestedAt !== undefined) {
+        throw new ConversationError("run_paused", `run "${run.id}" is paused; routing cannot create work`);
       }
       if (run.routingState !== "routing" || run.routingGeneration !== input.routingGeneration) {
         throw new ConversationError("stale_routing_attempt", `run "${run.id}" routing ownership changed`);
@@ -3089,7 +3295,7 @@ export class SqliteConversationStore implements ConversationStore {
     return Boolean(this.sqlite.get(
       `SELECT active.id FROM runs active LEFT JOIN messages prior ON prior.id = active.request_message_id
        WHERE active.topic_id = ? AND active.id <> ?
-         AND (active.state IN ('running', 'waiting-human')
+         AND (active.state IN ('running', 'waiting-human', 'paused')
            OR (active.state = 'queued' AND prior.seq < ?)) LIMIT 1`,
       [run.topicId, run.id, request!.seq],
     ));
@@ -3657,6 +3863,35 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   /**
+   * PR6 durable pause (design §12.1). `paused` is a new non-terminal Run
+   * state; the revisions are CAS/idempotency tokens for control mutations and
+   * progress fences. Pre-PR6 rows read as revision 0 with no pause intent, so
+   * an existing database never gains a paused Run by migration alone.
+   */
+  private ensureRunControlColumns(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)");
+    const names = new Set(cols.map((col) => col.name));
+    if (!names.has("pause_reason")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN pause_reason TEXT");
+    }
+    if (!names.has("pause_requested_at")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN pause_requested_at TEXT");
+    }
+    if (!names.has("paused_at")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN paused_at TEXT");
+    }
+    if (!names.has("control_revision")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN control_revision INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!names.has("progress_revision")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN progress_revision INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!names.has("last_control_request_id")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN last_control_request_id TEXT");
+    }
+  }
+
+  /**
    * PR8 durable Router decision audit (plan §11.4). Append-only: one row per
    * committed decision. Scheduling NEVER reads it — it is audit/reconciliation
    * evidence, so a torn history can never resurrect or drop a routing step.
@@ -3808,6 +4043,23 @@ export class SqliteConversationStore implements ConversationStore {
 
   private assertAcceptable(conversationId: string, topicId: string): void {
     this.assertLifecycleAcceptable(conversationId, topicId);
+    // A paused Run keeps its Topic (design §7): new work may not silently
+    // queue behind it and start when the pause lifts, and no user message may
+    // quietly edit the same workspace while the Run is held. The caller gets
+    // an explicit answer: resume or stop that Run first.
+    const paused = this.sqlite.get<{ id: string }>(
+      `SELECT id FROM runs
+       WHERE conversation_id = ? AND topic_id = ?
+         AND (state = 'paused' OR pause_requested_at IS NOT NULL)
+       LIMIT 1`,
+      [conversationId, topicId],
+    );
+    if (paused) {
+      throw new ConversationError(
+        "topic_paused",
+        `topic "${topicId}" is held by paused run "${paused.id}"; resume or stop it first`,
+      );
+    }
     // §21 bounded queue: nonterminal Runs (active + queued) per Topic are
     // capped so a public Conversation cannot grow SQLite unboundedly with
     // fresh requestIds. One-active-Run-per-Topic dispatch serialization is
@@ -3815,7 +4067,7 @@ export class SqliteConversationStore implements ConversationStore {
     const counted = this.sqlite.get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM runs
        WHERE conversation_id = ? AND topic_id = ?
-         AND state IN ('queued', 'running', 'waiting-human')`,
+         AND state IN ('queued', 'running', 'waiting-human', 'paused')`,
       [conversationId, topicId],
     );
     const nonterminal = Number(counted?.n ?? 0);
@@ -4298,12 +4550,16 @@ export class SqliteConversationStore implements ConversationStore {
     if (TERMINAL_RUN_STATES.includes(run.state)) {
       return run;
     }
+    this.sqlite.run("UPDATE runs SET progress_revision = progress_revision + 1 WHERE id = ?", [runId]);
     // Wake derivation is per leader: enqueueSettledHandoffFollowups skips a
     // leader whose OWN assignment is indeterminate. A Run-level gate here
     // would also suppress every unrelated leader's wake in the same Run. A
     // wake inserted just before an unknown seal is inert durable state — the
     // claim fence only serves queued/running Runs, so it is never executed.
-    if (!forceRunTerminal) {
+    // A paused Run must not materialize new wakes either: the pause is the
+    // user's answer to "do more work", so the wake stays a durable
+    // reservation and is served after resume.
+    if (!forceRunTerminal && run.pauseRequestedAt === undefined) {
       this.enqueueSettledHandoffFollowups(run, now);
     }
     const members = this.listMemberTurns(runId);
@@ -4353,6 +4609,12 @@ export class SqliteConversationStore implements ConversationStore {
         [reason, now, runId],
       );
       return this.requireRun(runId);
+    }
+    // Durable pause: with nothing executing, the Run settles into `paused`
+    // instead of completing or routing. Stop/cancel intent outranks it.
+    if (!forceRunTerminal && !isRunCancelling(run)) {
+      const paused = this.settlePauseIfDrained(runId, now);
+      if (paused) return paused;
     }
     const terminal = batchMembers.filter((turn) => TERMINAL_MEMBER_STATES.includes(turn.state));
     if (terminal.length < batchMembers.length) {
@@ -4408,6 +4670,12 @@ export class SqliteConversationStore implements ConversationStore {
         throw new ConversationError("run_corrupt", "unknown side effects must seal the Run as indeterminate");
       }
       return this.writeRunOutcome(run.id, verdict, now);
+    }
+    // Durable pause: once nothing executes, the Run becomes `paused` before
+    // the waiting graph can report an owed wake or a terminal outcome.
+    if (!isRunCancelling(run)) {
+      const paused = this.settlePauseIfDrained(run.id, now);
+      if (paused) return paused;
     }
     const verdict = decideRunCompletion(graph, anchorMemberTurnId, memberReason);
     return verdict.kind === "open"

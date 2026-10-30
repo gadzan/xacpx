@@ -124,7 +124,7 @@ import { lifecycleOperationId, transitionLifecycleOperation, type LifecycleOpera
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
-import type { GroupWorkspaceMode, HumanIngressContext } from "../conversations/conversation-types";
+import type { ConversationRun, GroupWorkspaceMode, HumanIngressContext } from "../conversations/conversation-types";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import { isHiddenProductSessionOwner } from "../state/types";
 import {
@@ -150,6 +150,7 @@ import {
   type GroupDetailDto,
   type GroupSummaryDto,
   type ExecutionTargetDto,
+  type RunControlRequestDto,
 } from "./conversation-control-dtos";
 
 const MODEL_SET_SETTLE_BUDGET_MS =
@@ -3265,6 +3266,43 @@ export class ControlService {
       const result = runtime.runs.getRun(runId);
       return toRunDetail(result.run, result.memberTurns);
     });
+  }
+
+  /**
+   * Authenticated human Pause (design §12.4). Idempotent per `requestId` and
+   * CAS'd on the Run's `controlRevision`; a running Run drains before it is
+   * reported `paused`. Old cores never reach this method — the connector's
+   * capability gate keeps the action off and an older daemon answers the RPC
+   * with `unsupported-rpc`.
+   */
+  async pauseRun(input: RunControlRequestDto) {
+    return this.runConversationMutation(async (runtime) => {
+      if (runtime.runs.isPeerTopic(runtime.runs.getRun(input.runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
+      const result = runtime.runs.pauseRun({
+        runId: input.runId,
+        requestId: input.requestId,
+        controlRevision: input.controlRevision,
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      });
+      return this.toRunControlResult(runtime, result);
+    });
+  }
+
+  async resumeRun(input: RunControlRequestDto) {
+    return this.runConversationMutation(async (runtime) => {
+      if (runtime.runs.isPeerTopic(runtime.runs.getRun(input.runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
+      const result = runtime.runs.resumeRun({
+        runId: input.runId,
+        requestId: input.requestId,
+        controlRevision: input.controlRevision,
+      });
+      return this.toRunControlResult(runtime, result);
+    });
+  }
+
+  private toRunControlResult(runtime: ConversationRuntime, result: { run: ConversationRun; changed: boolean }) {
+    const detail = runtime.runs.getRun(result.run.id);
+    return { changed: result.changed, run: toRunDetail(detail.run, detail.memberTurns) };
   }
 
   async cancelMemberTurn(runId: string, memberTurnId: string) {

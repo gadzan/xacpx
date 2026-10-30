@@ -200,6 +200,8 @@ export const MSG = {
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
   runsCancelMember: "control.runs.cancelMember",
+  runsPause: "control.runs.pause",
+  runsResume: "control.runs.resume",
   /**
    * Connector -> hub: OPEN one interaction. Core's broker is the only production
    * caller (`RelayChannel.requestElicitation`), so the direction is dial-out:
@@ -804,6 +806,31 @@ export interface RunsCancelMemberResult {
   run: ConversationRunDetailDto;
 }
 
+/**
+ * Authenticated Run pause/resume. `requestId` makes a retried call idempotent
+ * (one durable state change, one revision bump) and `controlRevision` is the
+ * CAS token read from the Run: a mismatch is `stale_control_revision`, never a
+ * silent success.
+ */
+export interface RunsPausePayload {
+  runId: string;
+  requestId: string;
+  controlRevision: number;
+  reason?: string;
+}
+export interface RunsResumePayload {
+  runId: string;
+  requestId: string;
+  controlRevision: number;
+}
+export interface RunsControlResult {
+  /** False when the call was a replay/no-op. */
+  changed: boolean;
+  run: ConversationRunDetailDto;
+}
+export type RunsPauseResult = RunsControlResult;
+export type RunsResumeResult = RunsControlResult;
+
 export interface OkResult {
   ok: true;
 }
@@ -1390,6 +1417,11 @@ export const RELAY_CAPABILITIES = {
   /** Scoped MemberTurn cancellation, advertised only when the connector and
    *  core both support `control.runs.cancelMember`. */
   runsCancelMemberV1: "runs.cancel-member.v1",
+  /** Durable Run pause/resume, advertised only when the connector and core
+   *  both support `control.runs.pause` / `control.runs.resume`. An older core
+   *  answers `unsupported-rpc`, which is not an actionable answer, so the Web
+   *  must not offer the action at all. */
+  runsPauseV1: "runs.pause.v1",
   /** `control.group.topics.set-isolation` exists on both ends, so the web may
    *  offer the Group topic isolation switch. An older core has no such RPC and
    *  would answer `unknown-type`, which is not a failure a user can act on. */

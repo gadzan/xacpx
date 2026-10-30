@@ -44,6 +44,12 @@ export type ConversationRunState =
   | "queued"
   | "running"
   | "waiting-human"
+  /**
+   * Durable human pause. A paused Run keeps its Topic and its queued work but
+   * claims nothing: only an authorized resume makes it runnable again. It is
+   * non-terminal — never sealed, never replayed.
+   */
+  | "paused"
   | "completed"
   | "failed"
   | "cancelled"
@@ -211,6 +217,20 @@ export interface ConversationRun {
   profileSnapshot: BotProfileSnapshot;
   createdAt: string;
   startedAt?: string;
+  /**
+   * Durable pause intent. Set while physical attempts from the running Run are
+   * still settling (design §7 drain): the Run stays `running`, but no new work
+   * is claimed. The Run becomes `paused` once every started attempt settled.
+   */
+  pauseRequestedAt?: string;
+  pauseReason?: string;
+  /** Set when the Run actually entered `paused`; absent during drain. */
+  pausedAt?: string;
+  /** CAS token for control mutations (pause/resume). Bumped once per applied
+   *  control request, never by drain settlement. */
+  controlRevision: number;
+  /** Durable progress counter for stale-async fences (claim/settle). */
+  progressRevision: number;
   finishedAt?: string;
 }
 

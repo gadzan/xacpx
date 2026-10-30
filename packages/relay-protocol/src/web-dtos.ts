@@ -747,6 +747,7 @@ function validConversationRun(value: unknown): boolean {
     && typeof c.requestId === "string"
     && (c.mode === "explicit" || c.mode === "automatic")
     && (c.state === "queued" || c.state === "running" || c.state === "waiting-human"
+      || c.state === "paused"
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
       || c.state === "indeterminate")
     && typeof c.profileRevision === "number"
@@ -760,6 +761,9 @@ function validConversationRun(value: unknown): boolean {
       || (Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))))
     && typeof c.createdAt === "string"
     && optStr(c.completionReason) && optStr(c.routingReason) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && optStr(c.pauseReason) && optStr(c.pauseRequestedAt) && optStr(c.pausedAt)
+    && (c.controlRevision === undefined || (typeof c.controlRevision === "number" && Number.isSafeInteger(c.controlRevision) && c.controlRevision >= 0))
+    && (c.progressRevision === undefined || (typeof c.progressRevision === "number" && Number.isSafeInteger(c.progressRevision) && c.progressRevision >= 0))
     && (c.waitingQuestion === undefined || (c.mode === "automatic" && c.state === "waiting-human"
       && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0))
     && (c.activeBatch === undefined || typeof c.activeBatch === "number")
@@ -855,6 +859,7 @@ const historyRunKeys = [
   "id", "conversationId", "topicId", "requestMessageId", "requestId", "mode", "state", "completionReason",
   "profileRevision", "activeBatch", "maxMemberTurns", "consumedMemberTurns", "failedBotIds", "unavailableBotIds",
   "quarantinedBotIds", "routingState", "routingReason", "waitingQuestion", "createdAt", "startedAt", "finishedAt",
+  "controlRevision", "progressRevision", "pauseReason", "pauseRequestedAt", "pausedAt",
   "memberTurns", "profileSnapshot", "worktree",
 ] as const satisfies readonly (keyof ConversationRunHistoryDetailDto)[];
 const historyMemberKeys = [
