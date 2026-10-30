@@ -92,7 +92,11 @@ type Harness = Awaited<ReturnType<typeof harness>>;
  *  `followupSenderMemberTurnId`, NOT by origin: orchestration-accepted
  *  members share the `followup` origin without being a wake. */
 function isOriginalSender(input: ConversationTurnRunInput, h: Harness): boolean {
-  return input.botId === A && h.store.getMemberTurn(input.memberTurnId)?.followupSenderMemberTurnId === undefined;
+  const turn = h.store.getMemberTurn(input.memberTurnId);
+  // A relay round is the group reply being forwarded to a named bot, not the
+  // sender acting again: re-running a scenario body on it would re-issue the
+  // body's side effects (new prompts, new handoffs) on every round forever.
+  return input.botId === A && turn?.followupSenderMemberTurnId === undefined && turn?.origin !== "relay";
 }
 
 /** A stored group reply relays to the members it names, so a batch that
