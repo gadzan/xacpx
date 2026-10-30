@@ -203,7 +203,11 @@ export class ConversationRouterEngine {
     if (isRouterShutdown(signal)) {
       return { run: store.getRun(runId) ?? run, outcome: "skipped", reason: "router_shutdown" };
     }
-    const gate = gateRoutingDecision(raw, input);
+    // The snapshot's history is a window, so dependencies resolve against the
+    // Run's full settled id set: an older assignment stays a legal dependency
+    // after it leaves the window, and only truly unknown ids are rejected.
+    const durableAssignmentIds = new Set(store.listMemberTurns(runId).map((turn) => turn.assignmentId ?? turn.id));
+    const gate = gateRoutingDecision(raw, input, durableAssignmentIds);
     if (gate.kind === "rejected") {
       // Malformed/unsafe decisions fail closed BEFORE any durable MemberTurn
       // is created: the Run fails with the machine-readable gate code.

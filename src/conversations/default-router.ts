@@ -4,7 +4,9 @@ import { decideCollaboration, readCollaborationHistory } from "./collaboration-p
 import {
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_ASSIGNMENT_ID_LENGTH,
+  MAX_ROUTER_MEMBER_METADATA,
   MAX_ROUTER_TASK_LENGTH,
+  type DurableCollaborationFacts,
   type RouterCapabilityRestriction,
   type RoutingDecision,
   type RoutingMember,
@@ -49,6 +51,9 @@ export interface DefaultRouterDecisionInput {
   omittedAssignmentCount?: number;
   /** Durable Run-scoped sequence for minting assignment ids. */
   assignmentSequence: number;
+  /** Durable accounting from the full history; the window above cannot
+   *  reconstruct it once its rows are omitted. */
+  durableCollaboration?: DurableCollaborationFacts;
   /** Recency window of durable results, retained for the adaptive Jev policy. */
   completedAssignments?: readonly RoutingAssignmentRecord[];
   remainingBudget: number;
@@ -274,12 +279,14 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     completedAssignmentTotal,
     omittedAssignmentCount,
     assignmentSequence,
+    durableCollaboration,
     remainingBudget,
     leadBotId,
     publicTranscript,
   } = value as Record<
     "request" | "requestMessageId" | "memberMetadata" | "completedAssignments" | "completedAssignmentTotal"
-      | "omittedAssignmentCount" | "assignmentSequence" | "remainingBudget" | "leadBotId" | "publicTranscript",
+      | "omittedAssignmentCount" | "assignmentSequence" | "durableCollaboration" | "remainingBudget"
+      | "leadBotId" | "publicTranscript",
     unknown
   >;
   if (typeof request !== "string") {
@@ -310,6 +317,7 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     throw new Error("routing input memberMetadata must be an array");
   }
   const members: unknown[] = memberMetadata;
+  const durable = readDurableCollaboration(durableCollaboration);
   return {
     request,
     ...((value as { requestTruncated?: unknown }).requestTruncated === true ? { requestTruncated: true as const } : {}),
@@ -318,6 +326,7 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     completedAssignmentTotal,
     ...(omittedAssignmentCount !== undefined ? { omittedAssignmentCount } : {}),
     assignmentSequence,
+    ...(durable !== undefined ? { durableCollaboration: durable } : {}),
     completedAssignments: readCollaborationHistory(completedAssignments),
     remainingBudget,
     ...(typeof leadBotId === "string" && leadBotId.trim().length > 0 ? { leadBotId } : {}),
@@ -325,6 +334,24 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
       ? { publicTranscript: publicTranscript.map((entry) => readTranscriptRow(entry)) }
       : {}),
   };
+}
+
+/** Durable accounting crosses the process boundary too: a malformed verdict
+ *  would silently re-enable self-verification, so it is decoded field by field. */
+function readDurableCollaboration(value: unknown): DurableCollaborationFacts | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("routing input durableCollaboration must be an object");
+  }
+  const facts = value as Record<string, unknown>;
+  if (!Array.isArray(facts.producerBotIds) || facts.producerBotIds.length > MAX_ROUTER_MEMBER_METADATA
+    || facts.producerBotIds.some((botId) => typeof botId !== "string" || botId.trim().length === 0)) {
+    throw new Error("routing input durableCollaboration.producerBotIds must be member ids");
+  }
+  if (typeof facts.recoveryExhausted !== "boolean") {
+    throw new Error("routing input durableCollaboration.recoveryExhausted must be a boolean");
+  }
+  return { producerBotIds: facts.producerBotIds as string[], recoveryExhausted: facts.recoveryExhausted };
 }
 
 /** The Jev policy reads role/sender/content only; a row missing any of them is

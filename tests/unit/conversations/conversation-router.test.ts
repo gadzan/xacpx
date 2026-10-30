@@ -1773,6 +1773,31 @@ test("a clean router decision passes the gate", () => {
   expect(gate.kind).toBe("decision");
 });
 
+test("a dependency on a durable assignment outside the evidence window stays legal", () => {
+  const windowed = baseInput({
+    completedAssignments: [{ id: "jev-v2-9-analyze", botId: BOT_ID, task: "work", dependsOn: [], triggerMessageIds: [],
+      outcome: "completed", attempt: 1, batch: 10, result: "current evidence" }],
+    completedAssignmentTotal: 11,
+    omittedAssignmentCount: 10,
+  });
+  const durable = ["jev-v2-0-execute", "jev-v2-9-analyze"];
+  const decision = {
+    type: "dispatch" as const, mode: "sequential" as const,
+    assignments: [{ id: "jev-v2-11-verify", botId: BOT_ID, task: "verify", triggerMessageIds: ["cmsg_1"],
+      dependsOn: ["jev-v2-0-execute"] }],
+  };
+  // The window no longer holds the dependency, but the Run's durable history
+  // does: only genuinely unknown ids are rejected.
+  expect(gateRoutingDecision(decision, windowed)).toEqual({
+    kind: "rejected", code: "router_assignment_dependency_unknown", message: expect.any(String),
+  });
+  expect(gateRoutingDecision(decision, windowed, durable)).toEqual({ kind: "decision", decision: parseRoutingDecision(decision) });
+  const unknown = { ...decision, assignments: [{ ...decision.assignments[0]!, dependsOn: ["jev-v2-404-missing"] }] };
+  expect(gateRoutingDecision(unknown, windowed, durable)).toEqual({
+    kind: "rejected", code: "router_assignment_dependency_unknown", message: expect.any(String),
+  });
+});
+
 // ---------------------------------------------------------------------------
 // §11.5 / acceptance 10 — completion semantics
 // ---------------------------------------------------------------------------

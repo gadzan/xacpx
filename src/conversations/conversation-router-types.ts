@@ -147,6 +147,18 @@ export interface RoutingRunState {
   failedBotIds: string[];
 }
 
+/** Run facts that a bounded evidence window cannot reconstruct once it drops
+ *  rows. The producer and recovery accounting below is cumulative, so it is
+ *  computed from the Run's full durable history before the window is applied. */
+export interface DurableCollaborationFacts {
+  /** Bots that produced the current artifact version. A verifier must not be
+   *  one of them, even when its production batch left the window. */
+  producerBotIds: string[];
+  /** Two incomplete verification reports were already spent on the current
+   *  production version. */
+  recoveryExhausted: boolean;
+}
+
 /**
  * Everything a Router call may consume, from one explicit snapshot.
  *
@@ -196,6 +208,9 @@ export interface RoutingInput {
   /** Settled assignments the recency window left out. Their durable evidence
    *  still exists: absence from this snapshot proves nothing was resolved. */
   omittedAssignmentCount?: number;
+  /** Durable accounting over the full history; `completedAssignments` above is
+   *  only a window, so independence and recovery must not be derived from it. */
+  durableCollaboration?: DurableCollaborationFacts;
   /** Durable Run-scoped monotonic sequence for minting assignment ids. It is
    *  greater than every ordinal already used by this Run's assignment ids, so
    *  two different windows can never mint the same id. */

@@ -1,3 +1,4 @@
+import { durableCollaborationFacts } from "./collaboration-policy";
 import { ConversationError } from "./conversation-error";
 import {
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION, MAX_ROUTER_DEPENDENCIES, MAX_ROUTER_INPUT_CHARACTERS,
@@ -39,6 +40,11 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
     .sort((a, b) => a.index - b.index).map(({ assignment }) => assignment);
   let omittedAssignmentCount = (input.omittedAssignmentCount ?? 0) + history.length - windowed.length;
   let completedAssignments = windowed;
+  // Independence and recovery are cumulative Run facts. Derive them from the
+  // full history here, before the window and the character budget drop rows:
+  // afterwards a producer could verify its own artifact and recovery would
+  // reset. An already-bounded snapshot keeps its own verdict.
+  const durableCollaboration = input.durableCollaboration ?? durableCollaborationFacts(history);
   // Latest batches receive evidence first; retain the caller's history order.
   const newestAssignments = completedAssignments.map((assignment, index) => ({ assignment, index }))
     .sort((a, b) => b.assignment.batch - a.assignment.batch || a.index - b.index);
@@ -74,6 +80,7 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
   });
   const omittedMemberCount = (input.omittedMemberCount ?? 0) + input.memberMetadata.length - memberMetadata.length;
   const snapshot = (): RoutingInput => ({ ...input, request, publicTranscript, completedAssignments, memberMetadata,
+    durableCollaboration,
     ...(request !== input.request ? { requestTruncated: true } : {}),
     ...(omittedMemberCount > 0 ? { omittedMemberCount } : {}),
     ...(omittedAssignmentCount > 0 ? { omittedAssignmentCount } : {}),
