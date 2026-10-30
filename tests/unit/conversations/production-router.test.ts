@@ -619,6 +619,8 @@ function routingInputForDecide(): RoutingInput {
       failedBotIds: [],
     },
     completedAssignments: [],
+    completedAssignmentTotal: 0,
+    assignmentSequence: 0,
     remainingBudget: 24,
     executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
   };
@@ -654,6 +656,9 @@ test("bundled subprocess advances from production to independent verification an
       expect(assignment.botId).toBe(batch === 1 ? "bot_a" : "bot_b");
       input.completedAssignments.push({ ...assignment, dependsOn: assignment.dependsOn ?? [], outcome: "completed", attempt: 1, batch,
         result: batch === 1 ? "Artifact v1 is available for inspection" : "Inspected artifact v1; all requested goals verified, no blockers" });
+      // The fake daemon mirrors the store's durable facts as the batch settles.
+      input.completedAssignmentTotal = batch;
+      input.assignmentSequence = batch;
       input.remainingBudget--;
     }
     expect(choices).toEqual([]);

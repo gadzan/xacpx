@@ -71,7 +71,8 @@ test("bundled collaboration policy drives a durable multi-member refinement loop
       inputs.push(structuredClone(input));
       return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
         members: input.memberMetadata, completedAssignments: input.completedAssignments,
-        completedAssignmentCount: input.completedAssignments.length, remainingBudget: input.remainingBudget,
+        completedAssignmentTotal: input.completedAssignmentTotal, omittedAssignmentCount: input.omittedAssignmentCount,
+        assignmentSequence: input.assignmentSequence, remainingBudget: input.remainingBudget,
         publicTranscript: input.publicTranscript,
         jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } }, async (question) => {
           const choice = script.shift();
@@ -137,7 +138,8 @@ for (const scenario of ["long-history", "oversized-evidence"] as const) {
         inputs.push(structuredClone(input));
         return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
           members: input.memberMetadata, completedAssignments: input.completedAssignments,
-          completedAssignmentCount: input.completedAssignments.length, remainingBudget: input.remainingBudget,
+          completedAssignmentTotal: input.completedAssignmentTotal, omittedAssignmentCount: input.omittedAssignmentCount,
+          assignmentSequence: input.assignmentSequence, remainingBudget: input.remainingBudget,
           jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } }, async (question) => {
             const choice = sequence.shift();
             expect(question.choices.some((candidate) => candidate.key === choice)).toBe(true);
@@ -178,7 +180,8 @@ test("cancelling a pending bundled collaboration assignment never starts or rout
   let calls = 0;
   const harness = await createHarness({ autoKick: false, router: { capabilityRestriction: RESTRICTED, async decide(input) {
     return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
-      members: input.memberMetadata, completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+      members: input.memberMetadata, completedAssignments: input.completedAssignments, completedAssignmentTotal: input.completedAssignmentTotal,
+      omittedAssignmentCount: input.omittedAssignmentCount, assignmentSequence: input.assignmentSequence,
       remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
       async () => ({ ok: true, choice: ++calls === 1 ? "execute" : BUILDER_ID, confidence: 0.9, latencyMs: 1 }));
   } } });
@@ -213,7 +216,8 @@ for (const scenario of ["oversized", "blank", "failed-revision"] as const) {
       }, async cancel() { return { outcome: "cancelled" }; } },
       router: { capabilityRestriction: RESTRICTED, async decide(input) {
         return decideJevRouterAssignment({ request: input.request, members: input.memberMetadata,
-          completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+          completedAssignments: input.completedAssignments, completedAssignmentTotal: input.completedAssignmentTotal,
+          omittedAssignmentCount: input.omittedAssignmentCount, assignmentSequence: input.assignmentSequence,
           remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
           async (question) => {
             const choice = choices.shift();
@@ -264,7 +268,8 @@ test("bundled verification caps parallel dependency previews and keeps full resu
       })) };
       const choices = input.completedAssignments.length === 5 ? ["verify", TESTER_ID] : ["complete"];
       return decideJevRouterAssignment({ request: input.request, members: input.memberMetadata,
-        completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+        completedAssignments: input.completedAssignments, completedAssignmentTotal: input.completedAssignmentTotal,
+        omittedAssignmentCount: input.omittedAssignmentCount, assignmentSequence: input.assignmentSequence,
         remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
         async (question) => {
           const choice = choices.shift()!;
@@ -1649,6 +1654,8 @@ function baseInput(overrides: Partial<RoutingInput> = {}): RoutingInput {
       failedBotIds: [],
     },
     completedAssignments: [],
+    completedAssignmentTotal: 0,
+    assignmentSequence: 0,
     remainingBudget: 24,
     executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
     ...overrides,
