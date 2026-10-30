@@ -158,17 +158,29 @@ test("unknown results seal the Run and budget failure outranks completed unless 
   expect(decideRunCompletion(humanStop, "a")).toMatchObject({ kind: "terminal", state: "cancelled" });
 });
 
-test("a waiting cycle names the open ancestor, and a settled ancestor is legal", () => {
-  const running = turn({ id: "a", state: "running", sourceTurnId: "source_a" });
+test("a cycle is only a target that still waits on the sender's own line", () => {
   const b = turn({ id: "b", botId: "bot_b", memberIndex: 1, handoffSourceTurnId: "source_a", sourceTurnId: "source_b" });
   const c = turn({ id: "c", botId: "bot_c", memberIndex: 2, handoffSourceTurnId: "source_b", sourceTurnId: "source_c" });
-  const open = graph([running, b, c]);
-  expect(waitingCyclePath(open, "c", "bot_a")).toEqual(["a", "b", "c"]);
-  expect(waitingCyclePath(open, "c", "bot_b")).toEqual(["b", "c"]);
-  expect(waitingCyclePath(open, "c", "bot_d")).toBeUndefined();
-  // The same Bot is legal re-engagement once its work item is closed (its
-  // wake has decided, so nothing is owed anymore).
-  const settledWake = turn({ ...{ id: "wake_a", memberIndex: 2, followupSenderMemberTurnId: "a" }, state: "completed" });
+
+  // A is merely executing: it waits on nothing in B's line, so the leaf would
+  // queue and drain. Shared-Bot re-engagement is legal (§4.5).
+  const executing = graph([turn({ id: "a", state: "running", sourceTurnId: "source_a" }), b, c]);
+  expect(waitingCyclePath(executing, "c", "bot_a")).toBeUndefined();
+  expect(waitingCyclePath(executing, "c", "bot_b")).toBeUndefined();
+  expect(waitingCyclePath(executing, "c", "bot_d")).toBeUndefined();
+
+  // A's own undelivered child is B, the branch C sits on: C waiting on A would
+  // make A wait on its own unfinished result.
+  const waiting = graph([turn({ id: "a", sourceTurnId: "source_a" }), turn({ ...b, state: "running" }), c]);
+  expect(waitingCyclePath(waiting, "c", "bot_a")).toEqual(["a", "b", "c"]);
+
+  // A waits on a sibling branch instead: its result does not depend on C.
+  const sibling = turn({ id: "b2", botId: "bot_b2", memberIndex: 3, handoffSourceTurnId: "source_a", sourceTurnId: "source_b2", state: "running" });
+  const parallel = graph([turn({ id: "a", sourceTurnId: "source_a" }), b, c, sibling]);
+  expect(waitingCyclePath(parallel, "c", "bot_a")).toBeUndefined();
+
+  // A settled ancestor is legal re-engagement: nothing is owed anymore.
+  const settledWake = turn({ ...{ id: "wake_a", memberIndex: 4, followupSenderMemberTurnId: "a" }, state: "completed" });
   const closed = graph([leader, settledWake, b, c]);
   expect(waitingCyclePath(closed, "c", "bot_a")).toBeUndefined();
   expect(projectWorkOutcome(closed)).not.toHaveProperty("nodes");

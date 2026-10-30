@@ -176,40 +176,86 @@ test("a wake that dispatches and then fails leaves the Run failed", async () => 
   } finally { store.close(); }
 });
 
-test("a wake dispatching to an open ancestor is refused with handoff_waiting_cycle", async () => {
+test("a wake may redispatch to an open ancestor that is not waiting on it, but not into its own unresolved result", async () => {
   const store = await openFlagged();
   try {
-    const accepted = store.acceptRequest({ conversationId: "conversation_group", topicId: "topic_group",
-      botId: "bot_a", requestId: "p0b1-cycle", content: "human request", profileSnapshot: snapshot, maxMemberTurns: 8, now: NOW });
-    const runId = accepted.run.id;
-    const claim = store.claimNextDispatch({ owner: "owner", now: NOW, leaseExpiresAt: LEASE })!;
-    const leader = store.markExecutionStarted({ dispatchId: claim.dispatch.id, owner: "owner",
-      generation: claim.dispatch.generation, runId, memberTurnId: claim.memberTurn.id,
+    // ALLOWED: A is still executing; it waits on nothing in B's line, so the
+    // new leaf simply queues behind A's current turn (§4.5 shared-Bot queue).
+    const allowedRun = store.acceptRequest({ conversationId: "conversation_group", topicId: "topic_group",
+      botId: "bot_a", requestId: "p0b1-cycle-allowed", content: "human request", profileSnapshot: snapshot, maxMemberTurns: 12, now: NOW });
+    const allowedId = allowedRun.run.id;
+    const firstClaim = store.claimNextDispatch({ owner: "owner", now: NOW, leaseExpiresAt: LEASE })!;
+    const runningA = store.markExecutionStarted({ dispatchId: firstClaim.dispatch.id, owner: "owner",
+      generation: firstClaim.dispatch.generation, runId: allowedId, memberTurnId: firstClaim.memberTurn.id,
       sessionAlias: "session_a", logicalSessionId: "logical_a", sourceTurnId: "source_a", now: NOW });
-    const toB = store.acceptPublicHandoff({ senderMemberTurnId: leader.id, sourceTurnId: "source_a",
-      dispatchId: claim.dispatch.id, owner: "owner", generation: claim.dispatch.generation,
+    const toB = store.acceptPublicHandoff({ senderMemberTurnId: runningA.id, sourceTurnId: "source_a",
+      dispatchId: firstClaim.dispatch.id, owner: "owner", generation: firstClaim.dispatch.generation,
       invocationId: "to-b", args: { to: "bot_b", task: "work" }, profileSnapshot: snapshot, now: NOW });
-    const bStarted = claimAs(store, runId, toB.memberTurn.id, "session_b", "source_b");
+    const bStarted = claimAs(store, allowedId, toB.memberTurn.id, "session_b", "source_b");
     const bDispatch = store.getDispatchForMemberTurn(bStarted.id)!;
     const toC = store.acceptPublicHandoff({ senderMemberTurnId: bStarted.id, sourceTurnId: "source_b",
       dispatchId: bDispatch.id, owner: "owner", generation: bDispatch.generation,
       invocationId: "to-c", args: { to: "bot_c", task: "nested" }, profileSnapshot: snapshot, now: NOW });
-    store.completeExecution({ runId, memberTurnId: bStarted.id, content: "B dispatched",
+    store.completeExecution({ runId: allowedId, memberTurnId: bStarted.id, content: "B dispatched",
       sourceTurn: { sessionAlias: "session_b", turnId: "source_b" }, now: NOW });
-    // A is still running, so A's work item is open while B's work returns.
-    settleChild(store, runId, toC.memberTurn.id, "C done", "source_c");
-    const wakeB = wakeFor(store, runId, bStarted.id)!;
-    const wokenB = claimAs(store, runId, wakeB.id, "session_b", "source_wake_b");
-    const before = store.listMemberTurns(runId).length;
-    let thrown: unknown;
+    settleChild(store, allowedId, toC.memberTurn.id, "C done", "source_c");
+    const wakeB = wakeFor(store, allowedId, bStarted.id)!;
+    const wokenB = claimAs(store, allowedId, wakeB.id, "session_b", "source_wake_b");
+    const allowed = store.acceptPublicHandoff({ senderMemberTurnId: wokenB.id, sourceTurnId: "source_wake_b",
+      dispatchId: store.getDispatchForMemberTurn(wokenB.id)!.id, owner: "owner",
+      generation: store.getDispatchForMemberTurn(wokenB.id)!.generation, invocationId: "leaf",
+      args: { to: "bot_a", task: "verify the result" }, profileSnapshot: snapshot, now: NOW });
+    expect(allowed.reused).toBe(false);
+    expect(store.getMemberTurn(allowed.memberTurn.id)).toMatchObject({ botId: "bot_a", state: "queued" });
+    expect(store.getRun(allowedId)?.state).toBe("running");
+
+    // REFUSED: A waits on its own undelivered child B, the branch the sender's
+    // line sits on. A would depend on its own unfinished result. A separate
+    // store keeps the first Run from holding this Topic.
+    const other = await openFlagged();
     try {
-      store.acceptPublicHandoff({ senderMemberTurnId: wokenB.id, sourceTurnId: "source_wake_b",
-        dispatchId: store.getDispatchForMemberTurn(wokenB.id)!.id, owner: "owner",
-        generation: store.getDispatchForMemberTurn(wokenB.id)!.generation, invocationId: "cycle",
-        args: { to: "bot_a", task: "cycle" }, profileSnapshot: snapshot, now: NOW });
-    } catch (error) { thrown = error; }
-    expect(thrown).toMatchObject({ code: "handoff_waiting_cycle" });
-    expect(store.listMemberTurns(runId)).toHaveLength(before);
+      const refusedRun = other.acceptRequest({ conversationId: "conversation_group", topicId: "topic_group",
+        botId: "bot_a", requestId: "p0b1-cycle-refused", content: "human request", profileSnapshot: snapshot, maxMemberTurns: 12, now: NOW });
+      const refusedId = refusedRun.run.id;
+      const claimA = other.claimNextDispatch({ owner: "owner", now: NOW, leaseExpiresAt: LEASE })!;
+      const waitingA = other.markExecutionStarted({ dispatchId: claimA.dispatch.id, owner: "owner",
+        generation: claimA.dispatch.generation, runId: refusedId, memberTurnId: claimA.memberTurn.id,
+        sessionAlias: "session_a", logicalSessionId: "logical_a", sourceTurnId: "source_a", now: NOW });
+      const refusedB = other.acceptPublicHandoff({ senderMemberTurnId: waitingA.id, sourceTurnId: "source_a",
+        dispatchId: claimA.dispatch.id, owner: "owner", generation: claimA.dispatch.generation,
+        invocationId: "to-b", args: { to: "bot_b", task: "work" }, profileSnapshot: snapshot, now: NOW });
+      // A finished its turn but still waits on B's undelivered result.
+      other.completeExecution({ runId: refusedId, memberTurnId: waitingA.id, content: "A dispatched",
+        sourceTurn: { sessionAlias: "session_a", turnId: "source_a" }, now: NOW });
+      const runningB = claimAs(other, refusedId, refusedB.memberTurn.id, "session_b", "source_b");
+      const refusedBDispatch = other.getDispatchForMemberTurn(runningB.id)!;
+      const refusedC = other.acceptPublicHandoff({ senderMemberTurnId: runningB.id, sourceTurnId: "source_b",
+        dispatchId: refusedBDispatch.id, owner: "owner", generation: refusedBDispatch.generation,
+        invocationId: "to-c", args: { to: "bot_c", task: "nested" }, profileSnapshot: snapshot, now: NOW });
+      const runningC = claimAs(other, refusedId, refusedC.memberTurn.id, "session_c", "source_c");
+      const refusedCDispatch = other.getDispatchForMemberTurn(runningC.id)!;
+      const refusedD = other.acceptPublicHandoff({ senderMemberTurnId: runningC.id, sourceTurnId: "source_c",
+        dispatchId: refusedCDispatch.id, owner: "owner", generation: refusedCDispatch.generation,
+        invocationId: "to-d", args: { to: "bot_d", task: "leaf" }, profileSnapshot: snapshot, now: NOW });
+      other.completeExecution({ runId: refusedId, memberTurnId: runningC.id, content: "C dispatched",
+        sourceTurn: { sessionAlias: "session_c", turnId: "source_c" }, now: NOW });
+      settleChild(other, refusedId, refusedD.memberTurn.id, "D done", "source_d");
+      const wakeC = wakeFor(other, refusedId, runningC.id)!;
+      const wokenC = claimAs(other, refusedId, wakeC.id, "session_c", "source_wake_c");
+      const before = other.listMemberTurns(refusedId).length;
+      let thrown: unknown;
+      try {
+        other.acceptPublicHandoff({ senderMemberTurnId: wokenC.id, sourceTurnId: "source_wake_c",
+          dispatchId: other.getDispatchForMemberTurn(wokenC.id)!.id, owner: "owner",
+          generation: other.getDispatchForMemberTurn(wokenC.id)!.generation, invocationId: "cycle",
+          args: { to: "bot_a", task: "cycle" }, profileSnapshot: snapshot, now: NOW });
+      } catch (error) { thrown = error; }
+      expect(thrown).toMatchObject({
+        code: "handoff_waiting_cycle",
+        details: { path: [waitingA.id, refusedB.memberTurn.id, runningC.id] },
+      });
+      expect(other.listMemberTurns(refusedId)).toHaveLength(before);
+    } finally { other.close(); }
   } finally { store.close(); }
 });
 

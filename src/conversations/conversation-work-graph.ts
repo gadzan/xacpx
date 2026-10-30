@@ -513,8 +513,12 @@ export function decideRunCompletion(
 }
 
 /**
- * Open ancestor work owned by `targetBotId`, named from that ancestor down to
- * the sender. A dispatch that would wait on it closes a provable cycle.
+ * The provable cycle a dispatch would close: an open ancestor work item owned
+ * by `targetBotId` that is **still waiting on this sender's own line**. Merely
+ * owning open work elsewhere in the Run is not a cycle — that leaf would queue
+ * and drain. The refusal is the design's literal "target would depend on its
+ * own unfinished result": the ancestor's undelivered frontier child is the
+ * branch the sender sits on, so its closure depends on the sender finishing.
  */
 export function waitingCyclePath(
   graph: RunWaitingGraph,
@@ -534,6 +538,10 @@ export function waitingCyclePath(
   }
   for (const [index, ancestor] of chain.entries()) {
     if (ancestor.ownerBotId !== targetBotId || nodeClosed(ancestor)) continue;
+    const next = chain[index + 1] ?? sender;
+    if (ancestor.phase !== "waiting-children"
+      || !ancestor.frontierChildWorkIds.includes(next.workId)
+      || TERMINAL_TURN_STATES.includes(next.entryState)) continue;
     return [...chain.slice(index).map((node) => node.workId), sender.workId];
   }
   return undefined;
