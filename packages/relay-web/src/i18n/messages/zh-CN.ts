@@ -1028,7 +1028,7 @@ export default {
       needBots: "群组至少需要两个 Bot，该实例目前有 {count} 个。",
       lead: "负责人",
       noLead: "不设负责人",
-      leadHint: "新消息默认发给负责人；不设负责人时发给第一个已启用的成员。",
+      leadHint: "新消息默认发给负责人；不设负责人时，普通消息会被拒绝，需先指定成员。",
       leadReassigned: "{previous} 已不是成员，负责人改为 {next}。",
       leadCleared: "{previous} 已不是成员，群组暂无负责人。",
       memberWorkLoading: "正在查找未完成的任务…",

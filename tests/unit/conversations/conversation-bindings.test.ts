@@ -201,6 +201,28 @@ test("name-addressed acceptance rejects sibling ambiguity introduced during its 
     expect(current.runtime.store.listRuns(g.id)).toHaveLength(1);
   } finally { resume.resolve(); await current.close(); }
 });
+test("a Lead retarget between the ingress read and the accept gates runs the new Lead", async () => {
+  const current = await compose(); const entered = Promise.withResolvers<void>(); const resume = Promise.withResolvers<void>();
+  try {
+    const { group: g, bots } = await group(current);
+    // Test-only hook the runtime installs for exactly this window; the runtime
+    // type does not declare it.
+    const runsHook = current.runtime.runs as unknown as { beforeGroupAcceptGatesAcquired?: () => Promise<void> };
+    runsHook.beforeGroupAcceptGatesAcquired = async () => { entered.resolve(); await resume.promise; };
+    const input = request("plain group message");
+    const result = current.route(input)!.prepareConversation!(input); result.catch(() => {});
+    await entered.promise;
+    await current.control.updateGroup(g.id, { leadBotId: bots[1]!.id });
+    resume.resolve();
+    await result;
+    const runs = current.runtime.store.listRuns(g.id);
+    expect(runs).toHaveLength(1);
+    // The ingress must not carry a Lead it read before the gates: a materialized
+    // target would run the replaced Lead here.
+    expect(current.runtime.store.listMemberTurns(runs[0]!.id).map((turn) => turn.botId)).toEqual([bots[1]!.id]);
+  } finally { resume.resolve(); await current.close(); }
+});
+
 
 for (const platform of ["discord", "feishu"] as const) {
   test(`actual ${platform} configured ownerIds enrich bound group authority before acceptance`, async () => {
