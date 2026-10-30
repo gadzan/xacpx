@@ -1,9 +1,11 @@
 import { durableCollaborationFacts } from "./collaboration-policy";
 import { ConversationError } from "./conversation-error";
 import {
-  MAX_ROUTER_ASSIGNMENTS_PER_DECISION, MAX_ROUTER_DEPENDENCIES, MAX_ROUTER_INPUT_CHARACTERS,
+  MAX_ROUTER_ASSIGNMENTS_PER_DECISION, MAX_ROUTER_AVAILABILITY_CHARACTERS, MAX_ROUTER_AVAILABILITY_MEMBERS,
+  MAX_ROUTER_DEPENDENCIES, MAX_ROUTER_INPUT_CHARACTERS,
   MAX_ROUTER_MEMBER_METADATA, MAX_ROUTER_REQUEST_LENGTH, MAX_ROUTER_RESULT_CHARACTERS,
   MAX_ROUTER_TRANSCRIPT_CHARACTERS, MAX_ROUTER_TRIGGER_MESSAGE_IDS,
+  type MemberAvailability,
   type RoutingInput,
 } from "./conversation-router-types";
 
@@ -12,6 +14,23 @@ function prefix(value: string, limit: number): string {
   if (value.length <= limit) return value;
   const end = value.charCodeAt(limit - 1);
   return value.slice(0, end >= 0xD800 && end <= 0xDBFF ? limit - 1 : limit);
+}
+
+/** Availability is advice, so a cut is disclosed rather than fatal. The member
+ *  cap applies first, then the serialized-section cap; both join the same
+ *  omitted count, which accumulates across re-bounding. */
+function boundAvailability(rows: readonly MemberAvailability[] | undefined): {
+  availability: MemberAvailability[] | undefined;
+  omitted: number;
+} {
+  if (rows === undefined) return { availability: undefined, omitted: 0 };
+  const kept = rows.slice(0, MAX_ROUTER_AVAILABILITY_MEMBERS);
+  let omitted = rows.length - kept.length;
+  while (kept.length > 0 && JSON.stringify(kept).length > MAX_ROUTER_AVAILABILITY_CHARACTERS) {
+    kept.pop();
+    omitted++;
+  }
+  return { availability: kept, omitted };
 }
 
 /** Bound Router snapshots only; durable public records remain complete. The
@@ -79,10 +98,14 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
     return { ...member, name, role, ...(name !== member.name || role !== member.role ? { contextTruncated: true as const } : {}) };
   });
   const omittedMemberCount = (input.omittedMemberCount ?? 0) + input.memberMetadata.length - memberMetadata.length;
+  const boundedAvailability = boundAvailability(input.availability);
+  const omittedAvailabilityCount = (input.omittedAvailabilityCount ?? 0) + boundedAvailability.omitted;
   const snapshot = (): RoutingInput => ({ ...input, request, publicTranscript, completedAssignments, memberMetadata,
     durableCollaboration,
+    ...(boundedAvailability.availability !== undefined ? { availability: boundedAvailability.availability } : {}),
     ...(request !== input.request ? { requestTruncated: true } : {}),
     ...(omittedMemberCount > 0 ? { omittedMemberCount } : {}),
+    ...(omittedAvailabilityCount > 0 ? { omittedAvailabilityCount } : {}),
     ...(omittedAssignmentCount > 0 ? { omittedAssignmentCount } : {}),
   });
   let bounded = snapshot();

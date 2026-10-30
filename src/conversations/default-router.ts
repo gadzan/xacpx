@@ -4,9 +4,11 @@ import { decideCollaboration, readCollaborationHistory } from "./collaboration-p
 import {
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_ASSIGNMENT_ID_LENGTH,
+  MAX_ROUTER_AVAILABILITY_MEMBERS,
   MAX_ROUTER_MEMBER_METADATA,
   MAX_ROUTER_TASK_LENGTH,
   type DurableCollaborationFacts,
+  type MemberAvailability,
   type RouterCapabilityRestriction,
   type RoutingDecision,
   type RoutingMember,
@@ -70,6 +72,11 @@ export interface DefaultRouterDecisionInput {
     runId?: string;
     contextTruncated?: true;
   }[];
+  /** Bounded runtime availability sample (design §8.3). Advice only: a busy
+   *  member is still dispatchable, and this never relaxes a gate. */
+  availability?: readonly MemberAvailability[];
+  /** Members the availability caps left out. */
+  omittedAvailabilityCount?: number;
 }
 
 /**
@@ -283,10 +290,12 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     remainingBudget,
     leadBotId,
     publicTranscript,
+    availability,
+    omittedAvailabilityCount,
   } = value as Record<
     "request" | "requestMessageId" | "memberMetadata" | "completedAssignments" | "completedAssignmentTotal"
       | "omittedAssignmentCount" | "assignmentSequence" | "durableCollaboration" | "remainingBudget"
-      | "leadBotId" | "publicTranscript",
+      | "leadBotId" | "publicTranscript" | "availability" | "omittedAvailabilityCount",
     unknown
   >;
   if (typeof request !== "string") {
@@ -306,6 +315,10 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
   if (omittedAssignmentCount !== undefined
     && (typeof omittedAssignmentCount !== "number" || !Number.isSafeInteger(omittedAssignmentCount) || omittedAssignmentCount < 0)) {
     throw new Error("routing input omittedAssignmentCount must be a non-negative integer");
+  }
+  if (omittedAvailabilityCount !== undefined
+    && (typeof omittedAvailabilityCount !== "number" || !Number.isSafeInteger(omittedAvailabilityCount) || omittedAvailabilityCount < 0)) {
+    throw new Error("routing input omittedAvailabilityCount must be a non-negative integer");
   }
   if (typeof assignmentSequence !== "number" || !Number.isSafeInteger(assignmentSequence) || assignmentSequence < 0) {
     throw new Error("routing input requires a non-negative integer assignmentSequence");
@@ -333,6 +346,8 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     ...(Array.isArray(publicTranscript)
       ? { publicTranscript: publicTranscript.map((entry) => readTranscriptRow(entry)) }
       : {}),
+    ...(availability !== undefined ? { availability: readAvailability(availability) } : {}),
+    ...(omittedAvailabilityCount !== undefined ? { omittedAvailabilityCount } : {}),
   };
 }
 
@@ -395,6 +410,51 @@ function readMember(value: unknown): RoutingMember {
     throw new Error("routing input memberMetadata entry requires a boolean enabled flag");
   }
   return value as RoutingMember;
+}
+
+const AVAILABILITY_STATES: readonly MemberAvailability["state"][] = [
+  "idle", "working", "waiting-children", "waiting-human", "unavailable",
+];
+
+/** Availability crosses the process boundary as untrusted JSON too: every
+ *  field is checked, and an over-cap or malformed sample fails the CLI shut
+ *  rather than presenting a partial workload picture as complete. */
+function readAvailability(value: unknown): MemberAvailability[] {
+  if (!Array.isArray(value) || value.length > MAX_ROUTER_AVAILABILITY_MEMBERS) {
+    throw new Error(`routing input availability must be an array of at most ${MAX_ROUTER_AVAILABILITY_MEMBERS} members`);
+  }
+  return value.map((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      throw new Error("routing input availability must contain objects");
+    }
+    const row = entry as Record<string, unknown>;
+    if (typeof row.botId !== "string" || row.botId.trim().length === 0) {
+      throw new Error("routing input availability entry requires a non-empty botId");
+    }
+    if (!AVAILABILITY_STATES.includes(row.state as MemberAvailability["state"])) {
+      throw new Error("routing input availability entry has an unknown state");
+    }
+    for (const field of ["activeAssignments", "pendingAssignments"] as const) {
+      const count = row[field];
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+        throw new Error(`routing input availability entry requires a non-negative integer ${field}`);
+      }
+    }
+    if (typeof row.quarantinedForRun !== "boolean") {
+      throw new Error("routing input availability entry requires a boolean quarantinedForRun");
+    }
+    if (typeof row.sampledAt !== "string" || row.sampledAt.trim().length === 0) {
+      throw new Error("routing input availability entry requires a non-empty sampledAt");
+    }
+    return {
+      botId: row.botId,
+      state: row.state as MemberAvailability["state"],
+      activeAssignments: row.activeAssignments as number,
+      pendingAssignments: row.pendingAssignments as number,
+      quarantinedForRun: row.quarantinedForRun,
+      sampledAt: row.sampledAt,
+    };
+  });
 }
 
 const DIST_MARKER = "/dist/";

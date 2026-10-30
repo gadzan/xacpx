@@ -1,6 +1,7 @@
 import { ConversationError } from "./conversation-error";
 import { gateRoutingDecision } from "./conversation-router-gate";
 import { boundRoutingInput } from "./conversation-router-budget";
+import { sampleMemberAvailability } from "./conversation-member-availability";
 import { nextAssignmentSequence } from "./collaboration-policy";
 import type { ApplyRoutingDecisionInput } from "./conversation-store";
 import { isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
@@ -307,6 +308,8 @@ export class ConversationRouterEngine {
    *   is a recency window; `completedAssignmentTotal` carries the store's
    *   real total and `assignmentSequence` the durable id sequence.
    * - `remainingBudget`: `maxMemberTurns - consumedMemberTurns`
+   * - `availability`: bounded per-member work sampled from durable rows of the
+   *   Group's non-terminal Runs. Advice only; admission never reads it.
    * - `executionTarget`: the Topic's durable target (fail closed: no target
    *   means admission already refused the Run)
    */
@@ -374,6 +377,16 @@ export class ConversationRouterEngine {
       // Keep the public Group order for ordinary snapshots.
       ? [...candidates, ...disabled].sort((a, b) => conversation.botIds.indexOf(a.botId) - conversation.botIds.indexOf(b.botId))
       : [...candidates, ...disabled].slice(0, MAX_ROUTER_MEMBER_METADATA);
+    // Advice only (design §8.3): a runtime-sampled view of the Group's current
+    // work, never model- or client-authored. It never authorizes a dispatch —
+    // busy members stay dispatchable, and every claim re-checks durable
+    // lifecycle, permission, single-writer and capacity.
+    const availability = sampleMemberAvailability({
+      members: memberMetadata.map(({ botId, enabled }) => ({ botId, enabled })),
+      turns: store.listMemberAvailabilityFacts(run.conversationId),
+      ...(run.quarantinedBotIds?.length ? { quarantinedBotIds: run.quarantinedBotIds } : {}),
+      sampledAt: this.options.now().toISOString(),
+    });
     const memberTurns = store.listMemberTurns(run.id);
     const completedAssignments: RoutingAssignmentRecord[] = memberTurns.map((turn) => {
       const assignment: RoutingAssignmentRecord = {
@@ -416,6 +429,7 @@ export class ConversationRouterEngine {
       ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
       publicTranscript: transcript,
       memberMetadata,
+      availability,
       ...(conversation.botIds.length > memberMetadata.length ? { omittedMemberCount: conversation.botIds.length - memberMetadata.length } : {}),
       runState: {
         runId: run.id,

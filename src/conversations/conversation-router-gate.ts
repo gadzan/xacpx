@@ -10,6 +10,22 @@ export type RoutingGateResult =
   | { kind: "rejected"; code: string; message: string };
 
 /**
+ * Admission-relevant projection of the Router snapshot. Availability is
+ * ADVICE ONLY (design §8.3) and is structurally absent here, so a gate that
+ * tried to read it would not compile. Lifecycle, permission, single-writer
+ * and capacity stay exactly as they are: this gate never relaxes a check
+ * because a sampled member looked busy, idle, or stale.
+ */
+export type RoutingAdmissionInput = Omit<RoutingInput, "availability" | "omittedAvailabilityCount">;
+
+/** Compile-time proof of the boundary: `true` only while the admission
+ *  projection excludes availability. Re-adding it makes this fail to compile. */
+type AssertTrue<T extends true> = T;
+export type AvailabilityIsNotAdmission = AssertTrue<
+  "availability" extends keyof RoutingAdmissionInput ? false : true
+>;
+
+/**
  * PR8 router-decision gate (design §12.1/§12.2, plan §11.2/§11.3).
  *
  * Two layers, both fail-closed:
@@ -30,7 +46,7 @@ export type RoutingGateResult =
  */
 export function validateRoutingDecision(
   decision: RoutingDecision,
-  input: RoutingInput,
+  input: RoutingAdmissionInput,
   durableAssignmentIds?: Iterable<string>,
 ): void {
   if (decision.type !== "dispatch") {

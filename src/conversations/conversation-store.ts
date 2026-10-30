@@ -5,11 +5,13 @@ import type {
   ConversationMessage,
   ConversationRun,
   ConversationRoutingState,
+  ConversationRunState,
   HumanIngressContext,
   MemberTurnEffect,
   MemberTurnEffectProvenance,
   MemberTurnOrigin,
   MemberTurnRecord,
+  MemberTurnState,
   PendingDispatch,
 } from "./conversation-types";
 import type { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
@@ -60,6 +62,20 @@ export interface AcceptMemberInput {
   expectedOutput?: string;
   /** Assignment ids this member depends on. */
   dependsOn?: string[];
+}
+
+/**
+ * One durable fact behind the Router's advice-only availability snapshot
+ * (design §8.3). Only non-terminal Runs are read, so a settled Run history
+ * never grows this projection.
+ */
+export interface MemberAvailabilityFact {
+  botId: string;
+  state: MemberTurnState;
+  /** State of the Run this turn belongs to. */
+  runState: ConversationRunState;
+  /** Bot that dispatched this turn as a public handoff, when it is one. */
+  handoffSenderBotId?: string;
 }
 
 export interface AcceptRequestInput {
@@ -417,6 +433,13 @@ export interface ConversationStore {
   listMessages(query: ListMessagesQuery): ConversationMessage[];
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
+  /**
+   * Per-member work facts for the Router's advice-only availability snapshot
+   * (design §8.3). Reads only the Conversation's non-terminal Runs, oldest
+   * first, so the read is bounded by current work rather than history. This
+   * projection never authorizes anything: admission re-checks durable rows.
+   */
+  listMemberAvailabilityFacts(conversationId: string): MemberAvailabilityFact[];
   listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[];
   /** Exact public result join using the minted durable execution identity. */
   getMemberResult(turn: MemberTurnRecord): ConversationMessage | undefined;
