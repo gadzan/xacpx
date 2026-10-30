@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import {
   buildCollaborationPrompt,
   GROUP_COLLABORATION_CONTRACT,
+  MAX_LAYER_B_CHARS,
   type CollaborationPromptInput,
 } from "../../../src/bots/collaboration-prompt";
 import { composeBotTurnPrompt, composeBotTurnPromptFromSnapshot } from "../../../src/bots/bot-profile-prompt";
@@ -196,4 +197,42 @@ test("an assignment id wider than its cap is shortened visibly", () => {
   });
   expect(prompt).toContain(`Settled assignment ids: ${"i".repeat(128)}…`);
   expect(prompt).not.toContain(longId);
+});
+
+test("a wide snapshot is cut to its bound and says so", () => {
+  const layerB = (prompt: string) =>
+    prompt.slice(prompt.indexOf(SNAPSHOT_HEADER), prompt.indexOf(EVIDENCE_HEADER)).trimEnd();
+  const wide = buildCollaborationPrompt({
+    ...firstTurn,
+    snapshot: {
+      ...firstTurn.snapshot,
+      settledAssignmentIds: Array.from({ length: 20 }, (_, index) => `${index}`.padStart(120, "s")),
+    },
+  });
+  expect(layerB(wide).length).toBeLessThanOrEqual(MAX_LAYER_B_CHARS);
+  expect(layerB(wide)).toContain("dynamic snapshot truncated");
+  expect(layerB(wide)).toContain("group_read_result");
+  // The stable rules and the untrusted evidence are untouched by the cut.
+  expect(wide).toContain(GROUP_COLLABORATION_CONTRACT);
+  expect(wide.endsWith("Bot bot_builder: patched the lock path")).toBe(true);
+  // A snapshot that fits its bound is never marked.
+  const narrow = buildCollaborationPrompt(firstTurn);
+  expect(layerB(narrow)).not.toContain("truncated");
+  expect(layerB(narrow).length).toBeLessThan(MAX_LAYER_B_CHARS);
+});
+
+test("a snapshot cut never ends on a lone UTF-16 surrogate", () => {
+  const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  // The padding shifts the cut by one code unit, so both parities of a
+  // surrogate pair land on the boundary.
+  for (const padding of ["", "x"]) {
+    const prompt = buildCollaborationPrompt({
+      ...firstTurn,
+      snapshot: { ...firstTurn.snapshot, availabilityStates: `${padding}${"😀".repeat(900)}` },
+    });
+    const layerB = prompt.slice(prompt.indexOf(SNAPSHOT_HEADER), prompt.indexOf(EVIDENCE_HEADER));
+    expect(layerB.trimEnd().length).toBeLessThanOrEqual(MAX_LAYER_B_CHARS);
+    expect(layerB).toContain("dynamic snapshot truncated");
+    expect(LONE_SURROGATE.test(layerB)).toBe(false);
+  }
 });

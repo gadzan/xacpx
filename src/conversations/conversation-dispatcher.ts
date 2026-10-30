@@ -2109,13 +2109,33 @@ export class ConversationDispatcher {
       runId: run.id,
       botId: memberTurn.botId,
       ...(memberRole ? { memberRole } : {}),
-      settledAssignmentIds: memberTurn.dependsOn ?? [],
-      pendingAssignmentIds: memberTurn.assignmentId ? [memberTurn.assignmentId] : [],
+      settledAssignmentIds: memberTurn.followupSenderMemberTurnId !== undefined
+        ? this.wakeSettledAssignmentIds(memberTurn)
+        : memberTurn.dependsOn ?? [],
+      // A wake turn's own `followup_*` id is a runtime summary, not an
+      // assignment anyone is waiting for; its children have all settled.
+      pendingAssignmentIds: memberTurn.followupSenderMemberTurnId === undefined && memberTurn.assignmentId
+        ? [memberTurn.assignmentId] : [],
       wakeReason: memberTurn.followupSenderMemberTurnId ? "child-results-settled" : `turn-origin:${memberTurn.origin}`,
       ...(availability ? { availabilityStates: availability } : {}),
       budgetOrAuthorizationBlockers: memberTurn.blockedReason ? `${budget}; blocked: ${memberTurn.blockedReason}` : budget,
       progressVersion: `batch ${run.activeBatch ?? 1}, generation ${run.generation}`,
     };
+  }
+
+  /**
+   * The assignments a wake turn summarizes: the public handoff envelopes its
+   * sender wrote, all of which are in the wake's frozen trigger set. The wake
+   * exists only after every one of them settled.
+   */
+  private wakeSettledAssignmentIds(turn: MemberTurnRecord): string[] {
+    const sender = turn.followupSenderMemberTurnId;
+    const ids = new Set<string>();
+    for (const messageId of turn.triggerMessageIds) {
+      const handoff = this.store.getMessage(messageId)?.handoff;
+      if (handoff !== undefined && handoff.senderMemberTurnId === sender) ids.add(handoff.assignmentId);
+    }
+    return [...ids];
   }
 
   /**

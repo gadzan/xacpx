@@ -53,6 +53,13 @@ export interface CollaborationPromptInput {
 // a visible escape instead of a boundary a reader can be tricked across.
 const LAYER_B_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g;
 
+// Layer B is fresh facts, but a wide fan-out of settled ids can push the turn
+// past budget on its own while layer C stays capped. The snapshot block is
+// therefore cut to a fixed width with the same surrogate-safe prefix, keeping
+// contract + snapshot + evidence within the 26000-char turn budget.
+export const MAX_LAYER_B_CHARS = 1_100;
+const LAYER_B_TRUNCATION_MARKER = "\n[…dynamic snapshot truncated to keep the turn prompt within its length bound; read full state with group_read_result]";
+
 // Evidence is bounded as a whole. Layer C renders the assignment first and the
 // public context second, and that context ENDS with the human request, so the
 // bound drops the OLDEST context from its head and keeps the newest tail
@@ -145,7 +152,7 @@ function boundEvidence(evidence: CollaborationEvidence): string {
 /** Single builder: contract, then snapshot, then evidence, in that fixed order. */
 export function buildCollaborationPrompt(input: CollaborationPromptInput): string {
   const snapshot = input.snapshot;
-  const layerB = [
+  const rendered = [
     "Dynamic execution snapshot (server-generated for this turn):",
     layerBLine("Run id", snapshot.runId),
     layerBLine("Bot id", snapshot.botId),
@@ -157,6 +164,9 @@ export function buildCollaborationPrompt(input: CollaborationPromptInput): strin
     layerBLine("Budget or authorization blockers", snapshot.budgetOrAuthorizationBlockers),
     layerBLine("Progress version", snapshot.progressVersion),
   ].join("\n");
+  const layerB = rendered.length <= MAX_LAYER_B_CHARS
+    ? rendered
+    : `${prefix(rendered, MAX_LAYER_B_CHARS - LAYER_B_TRUNCATION_MARKER.length)}${LAYER_B_TRUNCATION_MARKER}`;
 
   return [
     "Collaboration contract (stable across every turn of this Group Topic):",
