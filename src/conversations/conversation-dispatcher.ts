@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { markCommandRevision, adapterFacingPrompt, isAdvertisedRuntimeCommand } from "./advertised-commands";
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
+import { GROUP_COLLABORATION_CONTRACT, type CollaborationEvidence, type CollaborationSnapshot } from "../bots/collaboration-prompt";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { sessionMatchesExecution } from "../bots/bot-types";
@@ -1725,7 +1726,11 @@ export class ConversationDispatcher {
       const rawCommand = isAdvertisedRuntimeCommand(commandIdentity, userText);
       const group = isGroup ? this.runtime.getGroupScope(work.run.conversationId) : undefined;
       const wrapped = isGroup
-        ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!, group)
+        ? composeBotTurnPromptFromSnapshot(snapshot, {
+          contract: GROUP_COLLABORATION_CONTRACT,
+          snapshot: this.collaborationSnapshot(work, snapshot.presentation.role),
+          evidence: groupPrompt!,
+        }, group)
         : composeBotTurnPromptFromSnapshot(snapshot, userText);
       const text = adapterFacingPrompt(commandIdentity, userText, wrapped);
       const directExecution = !isGroup && started.effect !== "read-only" ? this.directMessaging?.bindExecution({ memberTurnId: started.id, sourceTurnId, dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
@@ -2077,15 +2082,40 @@ export class ConversationDispatcher {
     return this.store.getMessage(messageId)?.content ?? "";
   }
 
-  private groupTurnPrompt(work: ClaimedWork): string {
+  private groupTurnPrompt(work: ClaimedWork): CollaborationEvidence {
     const context = this.frozenGroupTranscript(work);
-    if (work.run.mode !== "automatic" && !work.memberTurn.assignmentId) return context;
+    if (work.run.mode !== "automatic" && !work.memberTurn.assignmentId) return { context };
     // Recovery changes execution provenance, not the durable assignment.
     // Assignment instructions are per-member execution input, separate from
     // the frozen public transcript shared by parallel siblings.
     const expected = work.memberTurn.expectedOutput === undefined
       ? "" : `\n\nExpected output:\n${work.memberTurn.expectedOutput}`;
-    return `Group assignment:\nTask:\n${work.memberTurn.task}${expected}\n\nPublic Group context:\n${context}`;
+    return { task: `${work.memberTurn.task}${expected}`, context };
+  }
+
+  /**
+   * Layer B facts for a Group turn, read only from the claimed Run/MemberTurn
+   * rows this dispatcher already holds: no extra store read, so the snapshot
+   * can never widen the turn's scope beyond its own Topic and Run.
+   */
+  private collaborationSnapshot(work: ClaimedWork, memberRole: string | undefined): CollaborationSnapshot {
+    const { run, memberTurn } = work;
+    const availability = [
+      ...(run.failedBotIds.length > 0 ? [`failed: ${run.failedBotIds.join(", ")}`] : []),
+      ...(run.unavailableBotIds.length > 0 ? [`unavailable: ${run.unavailableBotIds.join(", ")}`] : []),
+    ].join("; ");
+    const budget = `remaining work budget ${Math.max(0, run.maxMemberTurns - run.consumedMemberTurns)} of ${run.maxMemberTurns}`;
+    return {
+      runId: run.id,
+      botId: memberTurn.botId,
+      ...(memberRole ? { memberRole } : {}),
+      settledAssignmentIds: memberTurn.dependsOn ?? [],
+      pendingAssignmentIds: memberTurn.assignmentId ? [memberTurn.assignmentId] : [],
+      wakeReason: memberTurn.followupSenderMemberTurnId ? "child-results-settled" : `turn-origin:${memberTurn.origin}`,
+      ...(availability ? { availabilityStates: availability } : {}),
+      budgetOrAuthorizationBlockers: memberTurn.blockedReason ? `${budget}; blocked: ${memberTurn.blockedReason}` : budget,
+      progressVersion: `batch ${run.activeBatch ?? 1}, generation ${run.generation}`,
+    };
   }
 
   /**

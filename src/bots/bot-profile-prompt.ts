@@ -1,13 +1,22 @@
 import { isKnownXacpxCommandText } from "../commands/command-list";
+import { buildCollaborationPrompt, type CollaborationPromptInput } from "./collaboration-prompt";
 import type { BotProfile, BotProfileSnapshot } from "./bot-types";
 
+/** `body` is either plain text or the three-layer Group collaboration prompt;
+ *  the latter is rendered by buildCollaborationPrompt so its layer order stays
+ *  structural. */
 export function composeBotTurnPrompt(
   profile: Pick<BotProfile, "name" | "instructions">,
-  userText: string,
+  body: string | CollaborationPromptInput,
   group?: { title?: string; description?: string },
 ): string {
-  if (isKnownXacpxCommandText(userText)) {
-    return userText;
+  // A turn with no assignment carries its request verbatim as evidence, so the
+  // whole-input command check still sees exactly what it saw before layers.
+  const commandText = typeof body === "string"
+    ? body
+    : body.evidence.task ? undefined : body.evidence.context;
+  if (commandText !== undefined && isKnownXacpxCommandText(commandText)) {
+    return commandText;
   }
 
   const lines = [
@@ -17,22 +26,22 @@ export function composeBotTurnPrompt(
     groupScopeLine(group),
   ].filter((line): line is string => Boolean(line));
 
-  const body = userText;
-  if (!body.trim()) {
+  const content = typeof body === "string" ? body : buildCollaborationPrompt(body);
+  if (!content.trim()) {
     return lines.join("\n\n");
   }
-  return `${lines.join("\n\n")}\n\n${body}`;
+  return `${lines.join("\n\n")}\n\n${content}`;
 }
 
 export function composeBotTurnPromptFromSnapshot(
   snapshot: BotProfileSnapshot,
-  userText: string,
+  body: string | CollaborationPromptInput,
   group?: { title?: string; description?: string },
 ): string {
   return composeBotTurnPrompt({
     name: snapshot.presentation.name,
     instructions: snapshot.behavior.instructions,
-  }, userText, group);
+  }, body, group);
 }
 
 /** Group scope header: the Group title/description is presentation, not
