@@ -1,11 +1,14 @@
 import {
+  MAX_DURABLE_UNRESOLVED_ISSUES,
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_AVAILABILITY_MEMBERS,
   MAX_ROUTER_INPUT_CHARACTERS,
   MAX_ROUTER_TASK_LENGTH,
   type DurableCollaborationFacts,
+  type DurableProgressReduction,
   type RoutingAssignmentRecord,
   type RoutingDecision,
+  type UnresolvedIssue,
 } from "./conversation-router-types";
 import { MAX_JEV_CHOICES, redactJevSecrets, type JevAskResult } from "./jev-client";
 import type { DefaultRouterDecisionInput, JevAskFn, JevRouterDecisionInput } from "./default-router";
@@ -132,12 +135,23 @@ function admissibleActions(history: RoutingAssignmentRecord[], omitted: boolean)
   return ["verify", "revise", "execute", "analyze", "need-human"];
 }
 
+/** Latest successful production batch: the current artifact version. */
+function artifactVersionOf(history: RoutingAssignmentRecord[]): number {
+  return history.reduce((batch, row) => isProduction(row) && row.outcome === "completed" ? Math.max(batch, row.batch) : batch, 0);
+}
+
+/** Latest successful verification of a given artifact version, or 0. */
+function verifiedVersionOf(history: RoutingAssignmentRecord[], artifactVersion: number): number {
+  if (artifactVersion === 0) return 0;
+  return history.reduce((batch, row) => row.batch > artifactVersion
+    && actionOf(row) === "verify" && row.outcome === "completed" ? Math.max(batch, row.batch) : batch, 0);
+}
+
 /** Producers of the current artifact version. This is cumulative accounting:
  *  the production batch may sit outside the evidence window, so callers derive
  *  it from the full durable history rather than from the clipped rows. */
-function producersOf(history: RoutingAssignmentRecord[]): string[] {
-  const productionBatch = history.reduce((batch, row) => isProduction(row) ? Math.max(batch, row.batch) : batch, 0);
-  const latestVerification = history.findLastIndex((row) => row.batch < productionBatch
+function producersOf(history: RoutingAssignmentRecord[], artifactVersion = artifactVersionOf(history)): string[] {
+  const latestVerification = history.findLastIndex((row) => row.batch < artifactVersion
     && actionOf(row) === "verify" && row.outcome === "completed");
   return history.slice(latestVerification + 1).filter(isProduction).map((row) => row.botId);
 }
@@ -146,6 +160,68 @@ function producersOf(history: RoutingAssignmentRecord[]): string[] {
  *  history before any evidence window is applied. */
 export function durableCollaborationFacts(history: RoutingAssignmentRecord[]): DurableCollaborationFacts {
   return { producerBotIds: [...new Set(producersOf(history))], recoveryExhausted: recoveryExhausted(history) };
+}
+
+/** Work the Run's durable rows prove is not finished: a started attempt that
+ *  ended `failed` and that no later successful evidence covers. Coverage is a
+ *  durable fact — a later successful attempt by the same member, or a later
+ *  successful verification of the current artifact version — never the
+ *  presence or absence of the row inside a bounded evidence window. An attempt
+ *  that never started produced no work, so it raises nothing.
+ *
+ * Computed from the FULL history, so it is identical at routing time and after
+ *  a store reopen, and bounded the way the evidence window is bounded. */
+export function durableProgressReduction(history: RoutingAssignmentRecord[]): DurableProgressReduction {
+  const artifactVersion = artifactVersionOf(history);
+  const verifiedVersion = verifiedVersionOf(history, artifactVersion);
+  const unresolved: UnresolvedIssue[] = [];
+  for (const row of history) {
+    // An attempt that never executed left no unfinished work behind.
+    if (row.outcome !== "failed" || row.started === false) continue;
+    const retried = history.some((other) => other.botId === row.botId && other.batch > row.batch && other.outcome === "completed");
+    if (retried || verifiedVersion > row.batch) continue;
+    unresolved.push({
+      assignmentId: row.id,
+      botId: row.botId,
+      batch: row.batch,
+      ...(row.failureReason !== undefined ? { failureReason: row.failureReason } : {}),
+    });
+  }
+  // Newest first, like the evidence window: the most recent failures are the
+  //  ones the next decision has to act on.
+  const issues = unresolved.reverse().slice(0, MAX_DURABLE_UNRESOLVED_ISSUES);
+  return {
+    issues,
+    total: unresolved.length,
+    ...(unresolved.length > issues.length ? { omittedIssueCount: unresolved.length - issues.length } : {}),
+    artifactVersion,
+    producerBotIds: [...new Set(producersOf(history, artifactVersion))],
+    verifiedVersion,
+  };
+}
+
+/** True when the durable reduction still proves unfinished work. A clipped
+ *  reduction never reads as empty: `total` is the durable Run count. */
+export function hasUnresolvedWork(reduction: DurableProgressReduction | undefined): boolean {
+  return reduction !== undefined && reduction.total > 0;
+}
+
+/** Bounded reduction for the Router snapshot. An already-reduced snapshot is
+ *  re-derived from its own `issues`, so repeated bounding is idempotent and
+ *  the durable total plus its disclosed omission survive. */
+export function boundDurableProgress(reduction: DurableProgressReduction | undefined): DurableProgressReduction | undefined {
+  if (reduction === undefined) return undefined;
+  if (reduction.issues.length <= MAX_DURABLE_UNRESOLVED_ISSUES) return reduction;
+  const issues = reduction.issues.slice(0, MAX_DURABLE_UNRESOLVED_ISSUES);
+  const total = Math.max(reduction.total, issues.length);
+  return {
+    issues,
+    total,
+    omittedIssueCount: total - issues.length,
+    artifactVersion: reduction.artifactVersion,
+    producerBotIds: reduction.producerBotIds,
+    verifiedVersion: reduction.verifiedVersion,
+  };
 }
 
 function hasFullResult(row: RoutingAssignmentRecord): boolean {
@@ -278,6 +354,13 @@ export async function decideCollaboration(input: JevRouterDecisionInput, ask: Je
   const durable = input.durableCollaboration;
   if (durable?.recoveryExhausted ?? recoveryExhausted(history)) return paused("verification evidence remains incomplete after two reports for the same production version; full results remain available for inspection");
   if (hasRepeatedResult(history)) return paused("a member repeated the same result without progress");
+  // The durable reduction, not the window, says what is still unfinished: a
+  //  failure that left the window stays unfinished until durable evidence
+  //  covers it, so completion is not offered over proven unresolved work.
+  const progress = input.durableProgress;
+  if (hasUnresolvedWork(progress)) {
+    return paused(`unresolved work remains: ${progress!.issues.map((issue) => issue.assignmentId).join(", ")}${progress!.omittedIssueCount ? ` and ${progress!.omittedIssueCount} older` : ""}`);
+  }
   const message = context(input, history);
   const fallback = (cause: string): RoutingDecision => {
     cause = redactJevSecrets(cause, { proxyUrls: [input.jev.proxyUrl, process.env.HTTPS_PROXY, process.env.https_proxy], apiKey: input.jev.apiKey });

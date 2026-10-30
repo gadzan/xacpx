@@ -1,13 +1,16 @@
 import { fileURLToPath } from "node:url";
 import { decideCollaboration, readCollaborationHistory } from "./collaboration-policy";
+import { MAX_BOT_ID_LENGTH } from "@ganglion/xacpx-relay-protocol";
 
 import {
+  MAX_DURABLE_UNRESOLVED_ISSUES,
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_ASSIGNMENT_ID_LENGTH,
   MAX_ROUTER_AVAILABILITY_MEMBERS,
   MAX_ROUTER_MEMBER_METADATA,
   MAX_ROUTER_TASK_LENGTH,
   type DurableCollaborationFacts,
+  type DurableProgressReduction,
   type MemberAvailability,
   type RouterCapabilityRestriction,
   type RoutingDecision,
@@ -56,6 +59,10 @@ export interface DefaultRouterDecisionInput {
   /** Durable accounting from the full history; the window above cannot
    *  reconstruct it once its rows are omitted. */
   durableCollaboration?: DurableCollaborationFacts;
+  /** Durable progress reduction (design §9): the Run's still-unfinished
+   *  work, the current artifact version and its producers, derived from the
+   *  full history before the evidence window was applied. */
+  durableProgress?: DurableProgressReduction;
   /** Recency window of durable results, retained for the adaptive Jev policy. */
   completedAssignments?: readonly RoutingAssignmentRecord[];
   remainingBudget: number;
@@ -287,6 +294,7 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     omittedAssignmentCount,
     assignmentSequence,
     durableCollaboration,
+    durableProgress,
     remainingBudget,
     leadBotId,
     publicTranscript,
@@ -294,7 +302,7 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     omittedAvailabilityCount,
   } = value as Record<
     "request" | "requestMessageId" | "memberMetadata" | "completedAssignments" | "completedAssignmentTotal"
-      | "omittedAssignmentCount" | "assignmentSequence" | "durableCollaboration" | "remainingBudget"
+      | "omittedAssignmentCount" | "assignmentSequence" | "durableCollaboration" | "durableProgress" | "remainingBudget"
       | "leadBotId" | "publicTranscript" | "availability" | "omittedAvailabilityCount",
     unknown
   >;
@@ -331,6 +339,7 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
   }
   const members: unknown[] = memberMetadata;
   const durable = readDurableCollaboration(durableCollaboration);
+  const progress = readDurableProgress(durableProgress);
   return {
     request,
     ...((value as { requestTruncated?: unknown }).requestTruncated === true ? { requestTruncated: true as const } : {}),
@@ -340,6 +349,7 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     ...(omittedAssignmentCount !== undefined ? { omittedAssignmentCount } : {}),
     assignmentSequence,
     ...(durable !== undefined ? { durableCollaboration: durable } : {}),
+    ...(progress !== undefined ? { durableProgress: progress } : {}),
     completedAssignments: readCollaborationHistory(completedAssignments),
     remainingBudget,
     ...(typeof leadBotId === "string" && leadBotId.trim().length > 0 ? { leadBotId } : {}),
@@ -367,6 +377,64 @@ function readDurableCollaboration(value: unknown): DurableCollaborationFacts | u
     throw new Error("routing input durableCollaboration.recoveryExhausted must be a boolean");
   }
   return { producerBotIds: facts.producerBotIds as string[], recoveryExhausted: facts.recoveryExhausted };
+}
+
+/** The progress reduction crosses the process boundary too: a malformed
+ *  unresolved set would let a decision read clipped rows as resolved work, so
+ *  it is decoded field by field and never defaulted to empty. */
+function readDurableProgress(value: unknown): DurableProgressReduction | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("routing input durableProgress must be an object");
+  }
+  const reduction = value as Record<string, unknown>;
+  if (!Array.isArray(reduction.issues) || reduction.issues.length > MAX_DURABLE_UNRESOLVED_ISSUES) {
+    throw new Error("routing input durableProgress.issues must be a bounded array");
+  }
+  const issues = reduction.issues.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("invalid unresolved issue");
+    const issue = entry as Record<string, unknown>;
+    if (typeof issue.assignmentId !== "string" || !issue.assignmentId.trim() || issue.assignmentId.length > 128) {
+      throw new Error("unresolved issue requires a durable assignment id");
+    }
+    if (typeof issue.botId !== "string" || !issue.botId.trim() || issue.botId.length > MAX_BOT_ID_LENGTH) {
+      throw new Error("unresolved issue requires a member bot id");
+    }
+    if (!Number.isSafeInteger(issue.batch) || (issue.batch as number) < 1) throw new Error("invalid unresolved issue batch");
+    if (issue.failureReason !== undefined
+      && (typeof issue.failureReason !== "string" || issue.failureReason.length > 2_000)) {
+      throw new Error("invalid unresolved issue failure reason");
+    }
+    return {
+      assignmentId: issue.assignmentId, botId: issue.botId, batch: issue.batch as number,
+      ...(issue.failureReason !== undefined ? { failureReason: issue.failureReason as string } : {}),
+    };
+  });
+  if (!Number.isSafeInteger(reduction.total) || (reduction.total as number) < 0) {
+    throw new Error("routing input durableProgress.total must be a non-negative integer");
+  }
+  if (reduction.omittedIssueCount !== undefined
+    && (!Number.isSafeInteger(reduction.omittedIssueCount) || (reduction.omittedIssueCount as number) < 0)) {
+    throw new Error("routing input durableProgress.omittedIssueCount must be a non-negative integer");
+  }
+  if (!Number.isSafeInteger(reduction.artifactVersion) || (reduction.artifactVersion as number) < 0) {
+    throw new Error("routing input durableProgress.artifactVersion must be a non-negative integer");
+  }
+  if (!Number.isSafeInteger(reduction.verifiedVersion) || (reduction.verifiedVersion as number) < 0) {
+    throw new Error("routing input durableProgress.verifiedVersion must be a non-negative integer");
+  }
+  if (!Array.isArray(reduction.producerBotIds) || reduction.producerBotIds.length > MAX_ROUTER_MEMBER_METADATA
+    || reduction.producerBotIds.some((botId) => typeof botId !== "string" || !botId.trim())) {
+    throw new Error("routing input durableProgress.producerBotIds must be member ids");
+  }
+  return {
+    issues,
+    total: reduction.total as number,
+    ...(reduction.omittedIssueCount !== undefined ? { omittedIssueCount: reduction.omittedIssueCount as number } : {}),
+    artifactVersion: reduction.artifactVersion as number,
+    producerBotIds: reduction.producerBotIds as string[],
+    verifiedVersion: reduction.verifiedVersion as number,
+  };
 }
 
 /** The Jev policy reads role/sender/content only; a row missing any of them is
