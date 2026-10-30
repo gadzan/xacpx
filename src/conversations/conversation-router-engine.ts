@@ -1,6 +1,7 @@
 import { ConversationError } from "./conversation-error";
 import { gateRoutingDecision } from "./conversation-router-gate";
 import { boundRoutingInput } from "./conversation-router-budget";
+import { nextAssignmentSequence } from "./collaboration-policy";
 import type { ApplyRoutingDecisionInput } from "./conversation-store";
 import { isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
 import {
@@ -202,7 +203,11 @@ export class ConversationRouterEngine {
     if (isRouterShutdown(signal)) {
       return { run: store.getRun(runId) ?? run, outcome: "skipped", reason: "router_shutdown" };
     }
-    const gate = gateRoutingDecision(raw, input);
+    // The snapshot's history is a window, so dependencies resolve against the
+    // Run's full settled id set: an older assignment stays a legal dependency
+    // after it leaves the window, and only truly unknown ids are rejected.
+    const durableAssignmentIds = new Set(store.listMemberTurns(runId).map((turn) => turn.assignmentId ?? turn.id));
+    const gate = gateRoutingDecision(raw, input, durableAssignmentIds);
     if (gate.kind === "rejected") {
       // Malformed/unsafe decisions fail closed BEFORE any durable MemberTurn
       // is created: the Run fails with the machine-readable gate code.
@@ -298,7 +303,9 @@ export class ConversationRouterEngine {
    * - `memberMetadata`: live Group membership with live Bot profiles
    * - `runState`: the durable Run row
    * - `completedAssignments`: durable MemberTurns of this Run and their
-   *   public results — this is what sequential work may build on
+   *   public results — this is what sequential work may build on. The array
+   *   is a recency window; `completedAssignmentTotal` carries the store's
+   *   real total and `assignmentSequence` the durable id sequence.
    * - `remainingBudget`: `maxMemberTurns - consumedMemberTurns`
    * - `executionTarget`: the Topic's durable target (fail closed: no target
    *   means admission already refused the Run)
@@ -421,7 +428,11 @@ export class ConversationRouterEngine {
         consumedMemberTurns: run.consumedMemberTurns,
         failedBotIds: [...run.failedBotIds],
       },
+      // The store's complete settled evidence feeds both the truthful total
+      // and the durable id sequence; only the array itself is windowed later.
       completedAssignments,
+      completedAssignmentTotal: completedAssignments.length,
+      assignmentSequence: nextAssignmentSequence(completedAssignments.map((assignment) => assignment.id), completedAssignments.length),
       remainingBudget: run.maxMemberTurns - run.consumedMemberTurns,
       ...(executionTarget ? { executionTarget } : {}),
     });

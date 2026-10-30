@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 
 import { gateRoutingDecision } from "../../../src/conversations/conversation-router-gate";
 import { boundRoutingInput } from "../../../src/conversations/conversation-router-budget";
-import { readCollaborationHistory } from "../../../src/conversations/collaboration-policy";
+import { nextAssignmentSequence, readCollaborationHistory } from "../../../src/conversations/collaboration-policy";
 import {
   isRouterCapabilityRestricted,
   MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_ASSIGNMENT_ID_LENGTH,
+  MAX_ROUTER_INPUT_CHARACTERS,
   MAX_ROUTER_REASON_LENGTH,
   MAX_ROUTER_TASK_LENGTH,
   parseRoutingDecision,
@@ -34,7 +35,8 @@ function decisionInput(overrides: Partial<DefaultRouterDecisionInput> = {}): Def
     request: "review the patch",
     requestMessageId: "cmsg_1",
     members: [member("bot_reviewer"), member("bot_tester", false)],
-    completedAssignmentCount: 0,
+    completedAssignmentTotal: 0,
+    assignmentSequence: 0,
     remainingBudget: 24,
     ...overrides,
   };
@@ -102,7 +104,7 @@ test("an exhausted member turn budget completes the Run", () => {
 });
 
 test("a Run that already spent a round completes: one round per run", () => {
-  expect(decideDefaultRouterAssignment(decisionInput({ completedAssignmentCount: 1 }))).toEqual({
+  expect(decideDefaultRouterAssignment(decisionInput({ completedAssignmentTotal: 1 }))).toEqual({
     type: "complete",
     reason: "The default router assigns one round per run.",
   });
@@ -317,6 +319,8 @@ function routingInput(): RoutingInput {
       failedBotIds: [],
     },
     completedAssignments: [],
+    completedAssignmentTotal: 0,
+    assignmentSequence: 0,
     remainingBudget: 24,
     executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
   };
@@ -340,7 +344,9 @@ function scriptedAsk(...answers: Array<string | { choice: string; confidence: nu
 
 function jevInput(history: RoutingAssignmentRecord[] = [], overrides: Partial<DefaultRouterDecisionInput> = {}) {
   return { ...decisionInput({ members: [member("bot_a"), member("bot_b"), member("disabled", false)],
-    completedAssignmentCount: history.length, completedAssignments: history, ...overrides }), jev: JEV_ENV };
+    completedAssignmentTotal: history.length,
+    assignmentSequence: nextAssignmentSequence(history.map((row) => row.id), history.length),
+    completedAssignments: history, ...overrides }), jev: JEV_ENV };
 }
 
 function settled(decision: RoutingDecision, batch: number, result = `Evidence for batch ${batch}`): RoutingAssignmentRecord {
@@ -749,7 +755,7 @@ test("cancelled/unknown work, absent history, no members and exhausted budgets n
   const row = settled(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask), 1);
   const calls = scriptedAsk();
   for (const input of [jevInput([], { request: " " }), jevInput([], { members: [] }), jevInput([], { remainingBudget: 0 }),
-    jevInput([], { completedAssignmentCount: 1 }), jevInput([{ ...row, outcome: "cancelled" }]), jevInput([{ ...row, outcome: "indeterminate" }])]) {
+    jevInput([], { completedAssignmentTotal: 1 }), jevInput([{ ...row, outcome: "cancelled" }]), jevInput([{ ...row, outcome: "indeterminate" }])]) {
     expect((await decideJevRouterAssignment(input, calls.ask)).type).toBe("need-human");
   }
   expect(calls.calls).toHaveLength(0);
@@ -792,6 +798,8 @@ test("CLI retains durable results across separate calls with loopback Jev", asyn
     const input = routingInput();
     input.completedAssignments = [{ id: "legacy-work", botId: "bot_reviewer", task: "prepare research", dependsOn: [],
       triggerMessageIds: [], outcome: "completed", attempt: 1, batch: 1, result: "artifact: report-v3, source references attached" }];
+    input.completedAssignmentTotal = 1;
+    input.assignmentSequence = 1;
     const capture = cliIo(["--decide"], JSON.stringify(input));
     capture.io.env = { XACPX_JEV_API_KEY: "loopback", XACPX_JEV_ENDPOINT: `http://127.0.0.1:${server.port}/v1/systemone` };
     expect(await runDefaultRouterCli(capture.io)).toBe(0);
@@ -814,4 +822,231 @@ test("CLI rejects malformed durable history without emitting a decision", async 
     expect(await runDefaultRouterCli(capture.io)).toBe(1);
     expect(capture.stdout).toEqual([]);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Bounded evidence windows (design §9): history length is never a ceiling
+// ---------------------------------------------------------------------------
+
+function settledHistory(count: number): RoutingAssignmentRecord[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `jev-v2-${index}-${index % 3 ? "analyze" : "execute"}`,
+    botId: index % 3 ? "bot_a" : "bot_b",
+    task: `Task ${index}`, dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: index + 1, result: `Result ${index}`,
+  }));
+}
+
+test("200 settled assignments route as a bounded recency window instead of failing", () => {
+  const input = boundRoutingInput({ ...routingInput(), completedAssignments: settledHistory(200),
+    completedAssignmentTotal: 200, assignmentSequence: 200 });
+  expect(input.completedAssignments).toHaveLength(MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+  expect(input.completedAssignments[0]?.id).toBe("jev-v2-136-analyze");
+  expect(input.completedAssignments.at(-1)?.id).toBe("jev-v2-199-analyze");
+  expect(input.completedAssignmentTotal).toBe(200);
+  expect(input.omittedAssignmentCount).toBe(136);
+  expect(JSON.stringify(input).length).toBeLessThanOrEqual(MAX_ROUTER_INPUT_CHARACTERS);
+  expect(boundRoutingInput(input)).toEqual(input);
+});
+
+test("the cumulative total reports the durable total while the window stays shorter", async () => {
+  const window = boundRoutingInput({ ...routingInput(), completedAssignments: settledHistory(200),
+    completedAssignmentTotal: 200, assignmentSequence: 200 });
+  expect(window.completedAssignments.length).toBeLessThan(window.completedAssignmentTotal);
+  // The policy mints from the durable sequence, so the windowed evidence is
+  // enough to dispatch and the next id names the true position.
+  const decision = expectDispatch(await decideJevRouterAssignment(
+    jevInput(window.completedAssignments, { completedAssignmentTotal: window.completedAssignmentTotal,
+      omittedAssignmentCount: window.omittedAssignmentCount, assignmentSequence: window.assignmentSequence }),
+    scriptedAsk("analyze", "bot_a").ask));
+  expect(decision.assignments[0]?.id).toBe("jev-v2-200-analyze");
+});
+
+test("two different windows mint distinct ids for the same logical position", async () => {
+  const mint = async (turns: number): Promise<string> => {
+    const window = boundRoutingInput({ ...routingInput(), completedAssignments: settledHistory(turns),
+      completedAssignmentTotal: turns, assignmentSequence: turns });
+    const decision = expectDispatch(await decideJevRouterAssignment(
+      jevInput(window.completedAssignments, { completedAssignmentTotal: window.completedAssignmentTotal,
+        omittedAssignmentCount: window.omittedAssignmentCount, assignmentSequence: window.assignmentSequence }),
+      scriptedAsk("analyze", "bot_a").ask));
+    return decision.assignments[0]!.id;
+  };
+  expect(await mint(128)).toBe("jev-v2-128-analyze");
+  expect(await mint(160)).toBe("jev-v2-160-analyze");
+});
+
+test("the per-decision assignment cap no longer bounds a Run's routing history", () => {
+  const exact = boundRoutingInput({ ...routingInput(), completedAssignments: settledHistory(MAX_ROUTER_ASSIGNMENTS_PER_DECISION),
+    completedAssignmentTotal: MAX_ROUTER_ASSIGNMENTS_PER_DECISION, assignmentSequence: MAX_ROUTER_ASSIGNMENTS_PER_DECISION });
+  expect(exact.completedAssignments).toHaveLength(MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+  expect(exact.omittedAssignmentCount).toBeUndefined();
+  const beyond = boundRoutingInput({ ...routingInput(), completedAssignments: settledHistory(MAX_ROUTER_ASSIGNMENTS_PER_DECISION + 1),
+    completedAssignmentTotal: MAX_ROUTER_ASSIGNMENTS_PER_DECISION + 1, assignmentSequence: MAX_ROUTER_ASSIGNMENTS_PER_DECISION + 1 });
+  expect(beyond.completedAssignments).toHaveLength(MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+  expect(beyond.completedAssignments[0]?.id).toBe("jev-v2-1-analyze");
+  expect(beyond.omittedAssignmentCount).toBe(1);
+});
+
+test("an oversized window sheds its oldest rows instead of failing the attempt", () => {
+  const heavy = settledHistory(200).map((row, index) => ({
+    ...row, task: `Task ${index}.`.padEnd(1_000, "t"),
+    dependsOn: Array.from({ length: 64 }, (_, dependency) => `dep-${index}-${dependency}`.padEnd(128, "d")),
+  }));
+  const input = boundRoutingInput({ ...routingInput(), completedAssignments: heavy,
+    completedAssignmentTotal: 200, assignmentSequence: 200 });
+  expect(input.completedAssignments.length).toBeLessThan(MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+  expect(input.completedAssignments.length).toBeGreaterThan(0);
+  expect(input.completedAssignments.at(-1)?.id).toBe("jev-v2-199-analyze");
+  expect(input.completedAssignmentTotal).toBe(200);
+  expect(input.omittedAssignmentCount).toBe(200 - input.completedAssignments.length);
+  expect(JSON.stringify(input).length).toBeLessThanOrEqual(MAX_ROUTER_INPUT_CHARACTERS);
+});
+
+test("the CLI carries the window and the durable total across the process boundary", async () => {
+  const window = boundRoutingInput({ ...routingInput(), completedAssignments: settledHistory(200),
+    completedAssignmentTotal: 200, assignmentSequence: 200 });
+  const capture = cliIo(["--decide"], JSON.stringify(window));
+  expect(await runDefaultRouterCli(capture.io)).toBe(0);
+  expect(JSON.parse(capture.stdout.join(""))).toMatchObject({ type: "need-human",
+    question: expect.stringContaining("Jev credentials are unavailable") });
+  // A short window that does not disclose its omissions fails closed before
+  // any model call: hidden evidence is never treated as resolved.
+  const { omittedAssignmentCount: _omitted, ...undeclared } = window;
+  const hidden = cliIo(["--decide"], JSON.stringify(undeclared));
+  hidden.io.env = { XACPX_JEV_API_KEY: "loopback" };
+  expect(await runDefaultRouterCli(hidden.io)).toBe(0);
+  expect(JSON.parse(hidden.stdout.join(""))).toMatchObject({
+    type: "need-human", question: expect.stringContaining("durable assignment evidence is missing"),
+  });
+});
+
+test("the default fan-out mints ids from the durable sequence, not the array index", () => {
+  const decision = expectDispatch(decideDefaultRouterAssignment(decisionInput({
+    members: [member("bot_reviewer")], assignmentSequence: 7,
+  })));
+  expect(decision.assignments[0]?.id).toBe("auto-7-bot_reviewer");
+});
+
+test("an out-of-range assignment ordinal cannot poison the durable minting sequence", async () => {
+  // 20 digits: Number() rounds it past the safe range, so it names no durable
+  // position and must not raise the floor for every later minted id.
+  const poisoned: RoutingAssignmentRecord = { id: "jev-v2-90071992547409910-execute", botId: "bot_a",
+    task: "work", dependsOn: [], triggerMessageIds: [], outcome: "completed", attempt: 1, batch: 1, result: "artifact v1" };
+  expect(nextAssignmentSequence([poisoned.id], 1)).toBe(1);
+  expect(nextAssignmentSequence([poisoned.id, "jev-v2-9007199254740991-verify"], 1)).toBe(1);
+  expect(nextAssignmentSequence([poisoned.id, "jev-v2-4-verify"], 2)).toBe(5);
+  const decision = expectDispatch(await decideJevRouterAssignment(
+    jevInput([poisoned], { assignmentSequence: nextAssignmentSequence([poisoned.id], 1) }),
+    scriptedAsk("analyze", "bot_b").ask));
+  expect(decision.assignments[0]?.id).toBe("jev-v2-1-analyze");
+  // The process boundary rejects a non-safe sequence, which is how one bad id
+  // used to fail every later decision closed; this snapshot still decides.
+  const capture = cliIo(["--decide"], JSON.stringify({ ...routingInput(), completedAssignments: [poisoned],
+    completedAssignmentTotal: 1, assignmentSequence: nextAssignmentSequence([poisoned.id], 1) }));
+  expect(await runDefaultRouterCli(capture.io)).toBe(0);
+  expect(JSON.parse(capture.stdout.join(""))).toMatchObject({ type: "need-human" });
+});
+
+/** Fixed snapshot near the serialized budget: 128 members and a full transcript
+ *  leave room for only a couple of history rows before the budget sheds them. */
+function saturatedInput(transcriptRows: number, history: RoutingAssignmentRecord[]): RoutingInput {
+  return {
+    ...routingInput(),
+    request: "q".repeat(16_000),
+    publicTranscript: Array.from({ length: transcriptRows }, (_, index) => ({
+      id: `cmsg_${index + 2}`, seq: index + 2, role: "human" as const, content: "t".repeat(2_000),
+    })),
+    memberMetadata: Array.from({ length: 128 }, (_, index) => ({
+      botId: `bot_${index}`, name: `Member ${index} `.padEnd(128, "n"), role: "r".repeat(256),
+      agent: "codex", workspace: "backend", enabled: index < 2,
+    })),
+    completedAssignments: history,
+    completedAssignmentTotal: history.length,
+    assignmentSequence: history.length,
+  };
+}
+
+function heavyRow(index: number, botId: string, action: "execute" | "analyze" | "verify", resultLength = 4_000): RoutingAssignmentRecord {
+  return {
+    id: `jev-v2-${index}-${action}`, botId, task: "work",
+    dependsOn: Array.from({ length: 64 }, (_, dependency) => `d-${index}-${dependency}`.padEnd(128, "d")),
+    triggerMessageIds: Array.from({ length: 64 }, (_, dependency) => `m-${index}-${dependency}`.padEnd(128, "m")),
+    outcome: "completed", attempt: 1, batch: index + 1, result: "r".repeat(resultLength),
+  };
+}
+
+/** The decision process over a loopback Jev: answers the first offered action
+ *  and then the first offered member, so the offered choices are the evidence. */
+function jevLoopback() {
+  const requests: Array<{ message: string; choices: Record<string, string> }> = [];
+  const server = Bun.serve({ port: 0, async fetch(req) {
+    const body = await req.json() as { state: { message: string }; questions: { bot: { criteria: Record<string, string> } } };
+    const choices = body.questions.bot.criteria;
+    requests.push({ message: body.state.message, choices });
+    const choice = "verify" in choices ? "verify" : Object.keys(choices)[0]!;
+    return Response.json({ answers: { bot: { type: "choice", choice, confidence: 0.9 } } });
+  } });
+  return {
+    requests,
+    env: { XACPX_JEV_API_KEY: "loopback", XACPX_JEV_ENDPOINT: `http://127.0.0.1:${server.port}/v1/systemone` } as NodeJS.ProcessEnv,
+    stop: () => { server.stop(true); },
+  };
+}
+
+test("an emptied evidence window is unknown history, never a fresh Run", async () => {
+  const window = boundRoutingInput(saturatedInput(16, [heavyRow(0, "bot_0", "execute"), heavyRow(1, "bot_1", "analyze")]));
+  expect(window.completedAssignments).toEqual([]);
+  expect(window.completedAssignmentTotal).toBe(2);
+  expect(window.omittedAssignmentCount).toBe(2);
+  const jev = jevLoopback();
+  try {
+    const capture = cliIo(["--decide"], JSON.stringify(window));
+    capture.io.env = jev.env;
+    expect(await runDefaultRouterCli(capture.io)).toBe(0);
+    // A 2-row Run is not a first step: no answer/execute offer may reappear.
+    expect(Object.keys(jev.requests[0]!.choices)).toEqual(["verify", "analyze", "need-human"]);
+    expect(JSON.parse(capture.stdout.join(""))).toMatchObject({
+      type: "dispatch", assignments: [{ id: "jev-v2-2-verify", botId: "bot_1" }],
+    });
+  } finally { jev.stop(); }
+});
+
+test("a producer stays excluded from verification after its batch leaves the window", async () => {
+  const window = boundRoutingInput(saturatedInput(14, [heavyRow(0, "bot_0", "execute"), heavyRow(1, "bot_1", "analyze")]));
+  expect(window.completedAssignments.map((row) => row.id)).toEqual(["jev-v2-1-analyze"]);
+  expect(window.omittedAssignmentCount).toBe(1);
+  expect(window.durableCollaboration).toEqual({ producerBotIds: ["bot_0"], recoveryExhausted: false });
+  const jev = jevLoopback();
+  try {
+    const capture = cliIo(["--decide"], JSON.stringify(window));
+    capture.io.env = jev.env;
+    expect(await runDefaultRouterCli(capture.io)).toBe(0);
+    expect(Object.keys(jev.requests[1]!.choices)).toEqual(["bot_1"]);
+    expect(JSON.parse(capture.stdout.join(""))).toMatchObject({
+      type: "dispatch", assignments: [{ id: "jev-v2-2-verify", botId: "bot_1" }],
+    });
+  } finally { jev.stop(); }
+});
+
+test("recovery exhaustion survives its reports leaving the window", async () => {
+  const window = boundRoutingInput(saturatedInput(14, [
+    heavyRow(0, "bot_0", "execute"), heavyRow(1, "bot_1", "verify", 5_000),
+    heavyRow(2, "bot_1", "verify", 5_000), heavyRow(3, "bot_1", "analyze"),
+  ]));
+  expect(window.completedAssignments.map((row) => row.id)).toEqual(["jev-v2-3-analyze"]);
+  expect(window.omittedAssignmentCount).toBe(3);
+  expect(window.durableCollaboration).toEqual({ producerBotIds: ["bot_0"], recoveryExhausted: true });
+  const jev = jevLoopback();
+  try {
+    const capture = cliIo(["--decide"], JSON.stringify(window));
+    capture.io.env = jev.env;
+    expect(await runDefaultRouterCli(capture.io)).toBe(0);
+    // Two oversized reports are spent on this version even though the window no
+    // longer holds them: the Run pauses instead of buying a third report.
+    expect(jev.requests).toEqual([]);
+    expect(JSON.parse(capture.stdout.join(""))).toMatchObject({
+      type: "need-human", question: expect.stringContaining("two reports"),
+    });
+  } finally { jev.stop(); }
 });

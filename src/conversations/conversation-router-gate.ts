@@ -28,13 +28,19 @@ export type RoutingGateResult =
  * verifies each id is a real public row of THIS Conversation+Topic before the
  * durable write (see ConversationRunService). A Router cannot invent messages.
  */
-export function validateRoutingDecision(decision: RoutingDecision, input: RoutingInput): void {
+export function validateRoutingDecision(
+  decision: RoutingDecision,
+  input: RoutingInput,
+  durableAssignmentIds?: Iterable<string>,
+): void {
   if (decision.type !== "dispatch") {
     return;
   }
   const memberByBotId = new Map(input.memberMetadata.map((member) => [member.botId, member]));
   const decisionIds = new Set<string>();
-  const priorAssignmentIds = new Set(input.completedAssignments.map((assignment) => assignment.id));
+  // A dependency names a durable assignment of this Run, not one still inside
+  // the recency window: callers pass the full settled id set when they have it.
+  const priorAssignmentIds = new Set(durableAssignmentIds ?? input.completedAssignments.map((assignment) => assignment.id));
   for (const assignment of decision.assignments) {
     if (decisionIds.has(assignment.id) || priorAssignmentIds.has(assignment.id)) {
       throw new RoutingDecisionError(
@@ -175,6 +181,7 @@ function hasDependencyCycle(assignments: Extract<RoutingDecision, { type: "dispa
 export function gateRoutingDecision(
   decision: unknown,
   input: RoutingInput,
+  durableAssignmentIds?: Iterable<string>,
 ): RoutingGateResult {
   let parsed: RoutingDecision;
   try {
@@ -186,7 +193,7 @@ export function gateRoutingDecision(
     throw error;
   }
   try {
-    validateRoutingDecision(parsed, input);
+    validateRoutingDecision(parsed, input, durableAssignmentIds);
     if (parsed.type === "dispatch" && hasDependencyCycle(parsed.assignments)) {
       return {
         kind: "rejected",

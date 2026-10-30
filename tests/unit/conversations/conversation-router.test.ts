@@ -26,6 +26,7 @@ import {
   type RouterCapabilityRestriction,
   type RoutingDecision,
   type RoutingInput,
+  MAX_ROUTER_ASSIGNMENTS_PER_DECISION,
   MAX_ROUTER_INPUT_CHARACTERS,
 } from "../../../src/conversations/conversation-router-types";
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
@@ -71,7 +72,8 @@ test("bundled collaboration policy drives a durable multi-member refinement loop
       inputs.push(structuredClone(input));
       return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
         members: input.memberMetadata, completedAssignments: input.completedAssignments,
-        completedAssignmentCount: input.completedAssignments.length, remainingBudget: input.remainingBudget,
+        completedAssignmentTotal: input.completedAssignmentTotal, omittedAssignmentCount: input.omittedAssignmentCount,
+        assignmentSequence: input.assignmentSequence, remainingBudget: input.remainingBudget,
         publicTranscript: input.publicTranscript,
         jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } }, async (question) => {
           const choice = script.shift();
@@ -137,7 +139,8 @@ for (const scenario of ["long-history", "oversized-evidence"] as const) {
         inputs.push(structuredClone(input));
         return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
           members: input.memberMetadata, completedAssignments: input.completedAssignments,
-          completedAssignmentCount: input.completedAssignments.length, remainingBudget: input.remainingBudget,
+          completedAssignmentTotal: input.completedAssignmentTotal, omittedAssignmentCount: input.omittedAssignmentCount,
+          assignmentSequence: input.assignmentSequence, remainingBudget: input.remainingBudget,
           jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } }, async (question) => {
             const choice = sequence.shift();
             expect(question.choices.some((candidate) => candidate.key === choice)).toBe(true);
@@ -178,7 +181,8 @@ test("cancelling a pending bundled collaboration assignment never starts or rout
   let calls = 0;
   const harness = await createHarness({ autoKick: false, router: { capabilityRestriction: RESTRICTED, async decide(input) {
     return decideJevRouterAssignment({ request: input.request, requestMessageId: input.requestMessageId,
-      members: input.memberMetadata, completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+      members: input.memberMetadata, completedAssignments: input.completedAssignments, completedAssignmentTotal: input.completedAssignmentTotal,
+      omittedAssignmentCount: input.omittedAssignmentCount, assignmentSequence: input.assignmentSequence,
       remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
       async () => ({ ok: true, choice: ++calls === 1 ? "execute" : BUILDER_ID, confidence: 0.9, latencyMs: 1 }));
   } } });
@@ -213,7 +217,8 @@ for (const scenario of ["oversized", "blank", "failed-revision"] as const) {
       }, async cancel() { return { outcome: "cancelled" }; } },
       router: { capabilityRestriction: RESTRICTED, async decide(input) {
         return decideJevRouterAssignment({ request: input.request, members: input.memberMetadata,
-          completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+          completedAssignments: input.completedAssignments, completedAssignmentTotal: input.completedAssignmentTotal,
+          omittedAssignmentCount: input.omittedAssignmentCount, assignmentSequence: input.assignmentSequence,
           remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
           async (question) => {
             const choice = choices.shift();
@@ -264,7 +269,8 @@ test("bundled verification caps parallel dependency previews and keeps full resu
       })) };
       const choices = input.completedAssignments.length === 5 ? ["verify", TESTER_ID] : ["complete"];
       return decideJevRouterAssignment({ request: input.request, members: input.memberMetadata,
-        completedAssignments: input.completedAssignments, completedAssignmentCount: input.completedAssignments.length,
+        completedAssignments: input.completedAssignments, completedAssignmentTotal: input.completedAssignmentTotal,
+        omittedAssignmentCount: input.omittedAssignmentCount, assignmentSequence: input.assignmentSequence,
         remainingBudget: input.remainingBudget, jev: { endpoint: "http://unused", apiKey: "test", model: "jev-1.13.0" } },
         async (question) => {
           const choice = choices.shift()!;
@@ -1649,6 +1655,8 @@ function baseInput(overrides: Partial<RoutingInput> = {}): RoutingInput {
       failedBotIds: [],
     },
     completedAssignments: [],
+    completedAssignmentTotal: 0,
+    assignmentSequence: 0,
     remainingBudget: 24,
     executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
     ...overrides,
@@ -1765,6 +1773,100 @@ test("a clean router decision passes the gate", () => {
   }));
   expect(gate.kind).toBe("decision");
 });
+
+test("a dependency on a durable assignment outside the evidence window stays legal", () => {
+  const windowed = baseInput({
+    completedAssignments: [{ id: "jev-v2-9-analyze", botId: BOT_ID, task: "work", dependsOn: [], triggerMessageIds: [],
+      outcome: "completed", attempt: 1, batch: 10, result: "current evidence" }],
+    completedAssignmentTotal: 11,
+    omittedAssignmentCount: 10,
+  });
+  const durable = ["jev-v2-0-execute", "jev-v2-9-analyze"];
+  const decision = {
+    type: "dispatch" as const, mode: "sequential" as const,
+    assignments: [{ id: "jev-v2-11-verify", botId: BOT_ID, task: "verify", triggerMessageIds: ["cmsg_1"],
+      dependsOn: ["jev-v2-0-execute"] }],
+  };
+  // The window no longer holds the dependency, but the Run's durable history
+  // does: only genuinely unknown ids are rejected.
+  expect(gateRoutingDecision(decision, windowed)).toEqual({
+    kind: "rejected", code: "router_assignment_dependency_unknown", message: expect.any(String),
+  });
+  expect(gateRoutingDecision(decision, windowed, durable)).toEqual({ kind: "decision", decision: parseRoutingDecision(decision) });
+  const unknown = { ...decision, assignments: [{ ...decision.assignments[0]!, dependsOn: ["jev-v2-404-missing"] }] };
+  expect(gateRoutingDecision(unknown, windowed, durable)).toEqual({
+    kind: "rejected", code: "router_assignment_dependency_unknown", message: expect.any(String),
+  });
+  // Duplicate detection is Run-wide as well: re-minting an id whose row left
+  // the window still collides with the durable assignment.
+  const duplicate = { ...decision, assignments: [{ ...decision.assignments[0]!, id: "jev-v2-0-execute", dependsOn: [] }] };
+  expect(gateRoutingDecision(duplicate, windowed, durable)).toEqual({
+    kind: "rejected", code: "router_assignment_duplicate", message: expect.any(String),
+  });
+});
+
+for (const totalTurns of [128, 256] as const) {
+  test(`automatic routing across ${totalTurns} settled MemberTurns stays bounded, cumulative and monotonic`, async () => {
+    let store: SqliteConversationStore | undefined;
+    const inputs: RoutingInput[] = [];
+    const minted: string[] = [];
+    const router: ConversationRouter = {
+      capabilityRestriction: RESTRICTED,
+      async decide(input) {
+        inputs.push(structuredClone(input));
+        const settled = store!.listMemberTurns(input.runState.runId).length;
+        // The cumulative count is the store's real total, never the window.
+        expect(input.completedAssignmentTotal).toBe(settled);
+        // The same 64-row bound holds at 128 and at 256 settled turns.
+        expect(input.completedAssignments.length).toBe(Math.min(settled, MAX_ROUTER_ASSIGNMENTS_PER_DECISION));
+        if (settled > MAX_ROUTER_ASSIGNMENTS_PER_DECISION) {
+          expect(input.omittedAssignmentCount).toBe(settled - MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+          expect(input.completedAssignments.at(-1)?.id).toBe(`jev-v2-${settled - 1}-execute`);
+        } else {
+          expect(input.omittedAssignmentCount).toBeUndefined();
+        }
+        expect(JSON.stringify(input).length).toBeLessThanOrEqual(MAX_ROUTER_INPUT_CHARACTERS);
+        if (settled >= totalTurns) return { type: "complete", reason: `${totalTurns} turns settled` };
+        const id = `jev-v2-${input.assignmentSequence}-execute`;
+        minted.push(id);
+        const member = input.memberMetadata[settled % input.memberMetadata.length]!;
+        return { type: "dispatch", mode: "single",
+          assignments: [{ id, botId: member.botId, task: `work ${settled}`, triggerMessageIds: [] }] };
+      },
+    };
+    const harness = await createHarness({ autoKick: false, router });
+    store = harness.store;
+    try {
+      const { group, topic } = await createGroup(harness);
+      const accepted = await acceptAutomatic(harness, group.id, topic.id, `long-run-${totalTurns}`);
+      // Admission caps automatic Runs at 24 turns; this Run is the long-history
+      // case under test, so its durable budget is widened through the store's
+      // test seam after the first real routing decision. One slot stays free so
+      // the final decision can still be routed (remainingBudget 0 is terminal).
+      harness.store.directWriteForTest("runs", accepted.run.id, { max_member_turns: String(totalTurns + 1) });
+      expect(harness.store.getRun(accepted.run.id)?.maxMemberTurns).toBe(totalTurns + 1);
+      for (let step = 0; step < totalTurns + 2 && harness.store.getRun(accepted.run.id)?.state !== "completed"; step++) {
+        await harness.dispatcher.kick(); await harness.service.awaitRouting();
+      }
+      const run = harness.store.getRun(accepted.run.id)!;
+      expect(run).toMatchObject({ state: "completed", consumedMemberTurns: totalTurns });
+      expect(run.completionReason).not.toBe("router_input_too_large");
+      const turns = harness.store.listMemberTurns(run.id);
+      expect(turns).toHaveLength(totalTurns);
+      // Ids are distinct and strictly monotonic across the window rollover.
+      expect(minted).toHaveLength(totalTurns);
+      expect(new Set(minted).size).toBe(totalTurns);
+      expect(minted.map((id) => Number(id.split("-")[2]))).toEqual(Array.from({ length: totalTurns }, (_, index) => index));
+      expect(turns.map((turn) => turn.assignmentId)).toEqual(minted);
+      // The window really rolled: every decision past 64 carried exactly 64
+      // rows plus a truthful omitted count.
+      const rolled = inputs.filter((input) => input.completedAssignmentTotal > MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+      expect(rolled).toHaveLength(totalTurns - MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
+      expect(rolled.every((input) => input.completedAssignments.length === MAX_ROUTER_ASSIGNMENTS_PER_DECISION
+        && input.omittedAssignmentCount === input.completedAssignmentTotal - MAX_ROUTER_ASSIGNMENTS_PER_DECISION)).toBe(true);
+    } finally { await harness.service.awaitRouting(); harness.store.close(); }
+  }, 120_000);
+}
 
 // ---------------------------------------------------------------------------
 // §11.5 / acceptance 10 — completion semantics

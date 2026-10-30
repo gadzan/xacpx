@@ -147,6 +147,18 @@ export interface RoutingRunState {
   failedBotIds: string[];
 }
 
+/** Run facts that a bounded evidence window cannot reconstruct once it drops
+ *  rows. The producer and recovery accounting below is cumulative, so it is
+ *  computed from the Run's full durable history before the window is applied. */
+export interface DurableCollaborationFacts {
+  /** Bots that produced the current artifact version. A verifier must not be
+   *  one of them, even when its production batch left the window. */
+  producerBotIds: string[];
+  /** Two incomplete verification reports were already spent on the current
+   *  production version. */
+  recoveryExhausted: boolean;
+}
+
 /**
  * Everything a Router call may consume, from one explicit snapshot.
  *
@@ -154,6 +166,11 @@ export interface RoutingRunState {
  * newest-first and public-only; oversized text has explicit truncation flags.
  * Large membership uses a disclosed candidate subset. Successful assignment
  * evidence must exist before its text is shortened for the model.
+ *
+ * `completedAssignments` is a recency WINDOW over the Run's durable evidence,
+ * never its whole history: `completedAssignmentTotal` carries the real
+ * cumulative count and `omittedAssignmentCount` discloses what the window
+ * left out. A missing old assignment is out of window, not resolved.
  */
 export interface RoutingInput {
   runId: string;
@@ -182,8 +199,22 @@ export interface RoutingInput {
   }>;
   memberMetadata: RoutingMember[];
   runState: RoutingRunState;
-  /** Durable evidence from this Run's assignments so far. */
+  /** Recency window of this Run's settled assignments. Newest evidence is
+   *  always present; see `completedAssignmentTotal` for the true history. */
   completedAssignments: RoutingAssignmentRecord[];
+  /** Truthful cumulative number of settled assignments of this Run. This is
+   *  a durable store fact, never the length of `completedAssignments`. */
+  completedAssignmentTotal: number;
+  /** Settled assignments the recency window left out. Their durable evidence
+   *  still exists: absence from this snapshot proves nothing was resolved. */
+  omittedAssignmentCount?: number;
+  /** Durable accounting over the full history; `completedAssignments` above is
+   *  only a window, so independence and recovery must not be derived from it. */
+  durableCollaboration?: DurableCollaborationFacts;
+  /** Durable Run-scoped monotonic sequence for minting assignment ids. It is
+   *  greater than every ordinal already used by this Run's assignment ids, so
+   *  two different windows can never mint the same id. */
+  assignmentSequence: number;
   /** Turns still available to spend. `0` means the Run must be completed,
    *  failed, or declared waiting-human — never dispatched again. */
   remainingBudget: number;
