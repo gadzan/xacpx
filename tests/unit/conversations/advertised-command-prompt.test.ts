@@ -15,6 +15,7 @@ import {
   rememberAdvertisedCommands,
   refusesMultiMemberSlash,
 } from "../../../src/conversations/advertised-commands";
+import { SILENCE_REPLY } from "../../../src/conversations/group-chat-wake";
 import { ConversationDispatcher } from "../../../src/conversations/conversation-dispatcher";
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
 import type { ConversationTurnRunInput } from "../../../src/conversations/conversation-turn-runner";
@@ -91,7 +92,11 @@ async function harness() {
   const runner = {
     async run(input: ConversationTurnRunInput) {
       calls.push(input);
-      return { status: "completed" as const, text: "adapter saw the command" };
+      // The fake adapter names only the bot it answers, so its reply relays to
+      // nobody: the subject is the command text reaching the runner once, not
+      // the group relay chain a reply that named nobody would start.
+      const name = bots.getBot(input.botId)?.name;
+      return { status: "completed" as const, text: name === undefined ? SILENCE_REPLY : `@${name} adapter saw the command` };
     },
     async cancel() { return { outcome: "cancelled" as const }; },
   };

@@ -227,7 +227,7 @@ for (const platform of ["discord", "feishu"] as const) {
 
 test("bound human input reaches existing provider chain, returns exact public results and stamps ingress", async () => {
   const physical: ChatRequest[] = [];
-  const current = await compose({ agent: { chat: async (input) => { physical.push(input); return { text: "reviewed" }; } } });
+  const current = await compose({ agent: { chat: async (input) => { physical.push(input); return { text: "@Builder reviewed" }; } } });
   try {
     const { topic, group: g, bots } = await group(current);
     const response = current.agent.chat(request("@Builder implement"));
@@ -239,7 +239,9 @@ test("bound human input reaches existing provider chain, returns exact public re
     expect(dispatch.humanIngress).toMatchObject({ chatKey: request().conversationId, senderId: "human", accountId: "default", chatType: "group" });
     expect(dispatch.authorityEpoch).toBe(current.runtime.authorityEpoch);
     await current.runtime.dispatcher.kick();
-    expect((await response).text).toBe("Builder:\nreviewed");
+    // The reply names only the addressed member, so the relay wakes nobody and
+    // the public result stays the one member's exact text.
+    expect((await response).text).toBe("Builder:\n@Builder reviewed");
     expect(physical).toHaveLength(1);
     expect(physical[0]!.metadata!.origin).toBe("human");
     expect(current.delegated()).toBe(0);
@@ -1273,7 +1275,10 @@ for (const platform of ["discord", "feishu"] as const) {
     let finishProvider = () => {};
     let providerAborted = false;
     const current = await compose({ agent: { chat: async (input) => {
-      if (++providerCalls === 1) return { text: "provider result" };
+      // The bound Conversation targets the lead Bot (Reviewer); the reply names
+      // only it, so the relay wakes no other member and the second provider
+      // call stays the cancel test's turn.
+      if (++providerCalls === 1) return { text: "@Reviewer provider result" };
       await new Promise<void>((resolve) => {
         finishProvider = resolve;
         input.abortSignal!.addEventListener("abort", () => { providerAborted = true; resolve(); }, { once: true });
