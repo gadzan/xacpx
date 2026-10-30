@@ -1252,14 +1252,29 @@ test("a producer verifying its own artifact does not clear an earlier failure", 
   });
 });
 
-test("a cross-member redo of the same work clears the failure", () => {
+test("a cross-member redo of the minted instruction clears the failure", async () => {
+  const first = expectDispatch(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask)).assignments[0]!;
+  const second = expectDispatch(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_b").ask)).assignments[0]!;
+  const failure = { ...first, dependsOn: first.dependsOn ?? [], outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed" };
+  const redo = { ...second, dependsOn: second.dependsOn ?? [], outcome: "completed" as const, attempt: 1, batch: 2, result: "artifact v1" };
+  expect(durableProgressReduction([failure, redo])).toMatchObject({ total: 0, issues: [] });
+});
+
+test("a Run that still owes work is never re-dispatched, so a minted retry cannot out-scope its failure", async () => {
+  const first = expectDispatch(await decideJevRouterAssignment(jevInput(), scriptedAsk("execute", "bot_a").ask)).assignments[0]!;
+  const failure = { ...first, dependsOn: first.dependsOn ?? [], outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed" };
+  const next = await decideJevRouterAssignment(jevInput([failure], { durableProgress: durableProgressReduction([failure]) }), scriptedAsk().ask);
+  expect(next.type).toBe("need-human");
+});
+
+test("a different action never counts as a redo of the same work", () => {
   const failure = {
     id: "jev-v2-0-execute", botId: "bot_a", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
     outcome: "failed" as const, attempt: 1, batch: 1, failureReason: "artifact build failed",
   };
-  const redo = {
-    id: "jev-v2-1-execute", botId: "bot_b", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
-    outcome: "completed" as const, attempt: 1, batch: 2, result: "artifact v1",
+  const answer = {
+    id: "jev-v2-1-answer", botId: "bot_b", task: "produce the artifact", dependsOn: [], triggerMessageIds: [],
+    outcome: "completed" as const, attempt: 1, batch: 2, result: "here is an answer",
   };
-  expect(durableProgressReduction([failure, redo])).toMatchObject({ total: 0, issues: [] });
+  expect(durableProgressReduction([failure, answer]).total).toBe(1);
 });

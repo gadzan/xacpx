@@ -166,11 +166,15 @@ export function durableCollaborationFacts(history: RoutingAssignmentRecord[]): D
   return { producerBotIds: [...new Set(producersOf(history))], recoveryExhausted: recoveryExhausted(history) };
 }
 
-/** Durable identity of the work one assignment was asked to do. A redo of the
- *  same work — by any member — carries the same instruction, which is the only
- *  logical task identity a settled row preserves. */
+/** Durable identity of the work one assignment was asked to do: its action plus
+ *  the task text. Two rows are the same work when both match, which is what a
+ *  cross-member redo of one instruction looks like. A router-minted retry after
+ *  a failure cannot occur — the policy refuses to redispatch a Run that still
+ *  owes work — so the failure excerpt it would append never has to be
+ *  normalized away here. */
 function sameWorkScope(left: RoutingAssignmentRecord, right: RoutingAssignmentRecord): boolean {
-  return left.task.trim() === right.task.trim();
+  const action = (row: RoutingAssignmentRecord) => /^jev-v2-\d+-([a-z-]+)$/.exec(row.id)?.[1] ?? "";
+  return action(left) === action(right) && left.task.trim() === right.task.trim();
 }
 
 /** Work the Run's durable rows prove is not finished: a started attempt that
