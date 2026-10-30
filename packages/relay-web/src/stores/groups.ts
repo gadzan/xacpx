@@ -1044,45 +1044,23 @@ export const useGroupsStore = defineStore("groups", () => {
    *  never become a default that the first send cannot execute. */
   /** Default target for a freshly opened Group.
    *
-   *  `catalogKnown` must be false when the Bot catalog could not be confirmed
-   *  (bots.list failed and nothing is cached). Eligibility metadata is
-   *  presentation context, so an RPC failure must fail narrow — never widen:
-   *  returning `everyone` on an unknown catalog would expand execution from the
-   *  lead Bot to the whole Group because of a read-only listing failure.
+   *  The server owns the implicit-lead rule: it resolves an absent target to
+   *  the Group's lead and refuses a lead that is disabled or no longer a
+   *  member. Choosing another member here would run a Bot the user never
+   *  selected, so this selector only ever names the lead, then the first
+   *  member by stable ID, and lets the backend refuse with its own code.
    *
-   *  With a known catalog the order is: enabled lead, then the first enabled
-   *  member in stable ID order. Without one, the lead (or first member by ID)
-   *  stays the single-member default and the server authoritatively rejects it
-   *  if that Bot is disabled. */
-  function defaultTargetFor(
-    group: GroupSummaryDto | GroupDetailDto,
-    bots: BotSummaryDto[],
-    catalogKnown = true,
-  ): GroupTargetSelection {
-    const fallback = (): GroupTargetSelection => {
-      if (group.leadBotId && group.botIds.includes(group.leadBotId)) {
-        return { mode: "members", botIds: [group.leadBotId] };
-      }
-      const first = [...group.botIds].sort()[0];
-      return first ? { mode: "members", botIds: [first] } : { mode: "everyone" };
-    };
-    if (!catalogKnown) {
-      return fallback();
-    }
-    const eligible = group.botIds.filter((id) => bots.find((b) => b.id === id)?.enabled);
-    if (group.leadBotId && eligible.includes(group.leadBotId)) {
+   *  It deliberately does not consult the Bot catalog: eligibility metadata is
+   *  presentation context, and an RPC failure must fail narrow rather than
+   *  widen execution to a different member. */
+  function defaultTargetFor(group: GroupSummaryDto | GroupDetailDto): GroupTargetSelection {
+    if (group.leadBotId && group.botIds.includes(group.leadBotId)) {
       return { mode: "members", botIds: [group.leadBotId] };
     }
-    const first = [...eligible].sort()[0];
+    const first = [...group.botIds].sort()[0];
     return first ? { mode: "members", botIds: [first] } : { mode: "everyone" };
   }
 
-  /** Resolver for UI actions that must respect the unconfirmed-catalog rule.
-   *  Takes the Bot rows the caller can see so it stays correct for both the
-   *  Group-open default and the Lead shortcut. */
-  function eligibleTargetFor(group: GroupSummaryDto | GroupDetailDto, bots: BotSummaryDto[]): GroupTargetSelection {
-    return defaultTargetFor(group, bots, botCatalogKnown.value);
-  }
 
   const sendPromptOutcomePromise = computed<Promise<GroupSendOutcome>>(
     () => inFlightSend.value ?? Promise.resolve("accepted" as GroupSendOutcome),
@@ -1276,9 +1254,7 @@ export const useGroupsStore = defineStore("groups", () => {
     ) {
       const kept = selection.botIds.filter((id) => res.group.botIds.includes(id));
       if (kept.length !== selection.botIds.length) {
-        targetSelection.value = kept.length > 0
-          ? { mode: "members", botIds: kept }
-          : eligibleTargetFor(res.group, directBotsStore.botsByInstance[targetInstanceId] ?? []);
+        targetSelection.value = kept.length > 0 ? { mode: "members", botIds: kept } : defaultTargetFor(res.group);
       }
     }
     void loadGroups(targetInstanceId).catch(() => {});
@@ -2280,7 +2256,7 @@ export const useGroupsStore = defineStore("groups", () => {
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }
-      targetSelection.value = defaultTargetFor(group, catalogBots, catalogKnown);
+      targetSelection.value = defaultTargetFor(group);
       const topics = await loadTopics(targetInstanceId, group.id);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
@@ -3619,7 +3595,7 @@ export const useGroupsStore = defineStore("groups", () => {
     uncertainPromptTarget,
     hasUncertainPrompt,
     botCatalogKnown,
-    eligibleTargetFor,
+    defaultTargetFor,
     promptInFlight,
     promptError,
     promptErrorDetail,
@@ -3639,7 +3615,6 @@ export const useGroupsStore = defineStore("groups", () => {
     currentTopics,
     currentTopic,
     isRunActive,
-    defaultTargetFor,
     resolveTarget,
     targetResolvable,
     reportTargetProblem,

@@ -66,7 +66,7 @@ interface Harness {
   service: ConversationRunService;
 }
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(options: { beforeGroupAcceptGatesAcquired?: () => Promise<void> } = {}): Promise<Harness> {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-lead-")), "conversation.sqlite");
   const store = await SqliteConversationStore.open(path);
   const state = createEmptyState();
@@ -104,6 +104,9 @@ async function createHarness(): Promise<Harness> {
     stateMutex,
     autoKick: false,
     releaseOwnedSession,
+    ...(options.beforeGroupAcceptGatesAcquired
+      ? { beforeGroupAcceptGatesAcquired: options.beforeGroupAcceptGatesAcquired }
+      : {}),
   });
   return { store, state, bots, service };
 }
@@ -219,4 +222,21 @@ test("Control passes an absent target through and still rejects a mixed target",
     text: "hello",
     target: { botId: "bot_x", mode: "automatic" } as never,
   })).toThrow(expect.objectContaining({ code: "invalid-target" }));
+});
+
+test("the implicit lead is re-derived from the live record inside the accept gates", async () => {
+  let retarget: (() => Promise<void>) | undefined;
+  const harness = await createHarness({
+    // The window the probe cannot close: the probe already read lead A, no gate
+    // is held yet, and updateGroup commits lead B before the gates are taken.
+    beforeGroupAcceptGatesAcquired: async () => { await retarget?.(); },
+  });
+  const { lead, other, group, topic } = await createGroup(harness, { lead: true });
+  retarget = async () => { await harness.bots.updateGroup(group.id, { leadBotId: other.id }); };
+
+  const accepted = await harness.service.acceptGroupPrompt(inputFor({ group, topic }, "req-live-lead"));
+
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([other.id]);
+  expect(accepted.memberTurns.some((turn) => turn.botId === lead.id)).toBe(false);
+  harness.store.close();
 });

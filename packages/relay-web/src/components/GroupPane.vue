@@ -122,7 +122,7 @@ const memberStatus = computed<MemberStatus | null>(() => {
   if (!current || !groupsStore.botCatalogKnown) return null;
   const disabled = memberBots.value.filter((b) => !b.enabled);
   if (disabled.length === 0) return null;
-  const target = groupsStore.eligibleTargetFor(current, bots.value);
+  const target = groupsStore.defaultTargetFor(current);
   if (target.mode !== "members") return { kind: "none-enabled" };
   return {
     kind: "some-disabled",

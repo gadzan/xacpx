@@ -431,7 +431,9 @@ export class ConversationRunService {
    * PR7 explicit Group accept. Structured target only: `members` selects
    *  unique Bot IDs (duplicates and cross-variant key mixes are rejected
    *  with invalid-target; caller order is preserved) or `everyone` expands
-   *  to current eligible members. Linearized against membership edits with the same
+   *  to current eligible members. An absent target is the implicit lead,
+   *  re-derived from the live record inside the held gates (retrying when the
+   *  live lead is uncovered). Linearized against membership edits with the same
    *  probe → acquire → re-verify → retry-with-widen pattern as updateGroup:
    *  targeted mode holds selected Bot gates; everyone mode retries when the
    *  live set widens beyond held gates. Per-member snapshots use
@@ -477,7 +479,7 @@ export class ConversationRunService {
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
     }
-    const parsed = this.parseGroupTarget(input.target, conversation);
+    const parsed = this.parseGroupTarget(input.target);
     if (memberPolicies && parsed.kind === "automatic") throw new ConversationError("invalid-effect-policy", "effect policy requires explicit members");
     // PR8 capability gate, BEFORE any durable write: automatic mode requires
     // a Router that can prove its capability restriction up front. An
@@ -513,9 +515,20 @@ export class ConversationRunService {
         }
         // Automatic admission snapshots only a carrier, never a MemberTurn.
         // Re-derive it under the probed gate and retry if its identity changed.
+        // An absent target re-derives the same way: the implicit lead is read
+        // from the in-gate live record, never the pre-gate probe, and a live
+        // lead the held gates do not cover returns null so the existing retry
+        // loop widens the gates — the same probe → acquire → re-verify loop as
+        // everyone. A live record with no lead throws target_required instead
+        // of executing a stale lead.
         const selected = parsed.kind === "automatic"
           ? this.groupEligibleMembers(live).slice(0, 1)
-          : this.resolveGroupMembers(live, parsed);
+          : this.resolveGroupMembers(
+            live,
+            parsed.kind === "lead"
+              ? { kind: "members" as const, botIds: [this.groupLeadBotId(live)] }
+              : parsed,
+          );
         if (parsed.kind === "automatic" && selected.length === 0) {
           throw new ConversationError("empty_target", "Group has no eligible member for automatic routing");
         }
@@ -531,7 +544,7 @@ export class ConversationRunService {
         if (uncovered.length > 0) {
           return null;
         }
-        const explicitSingleMember = parsed.kind === "members" && selected.length === 1;
+        const explicitSingleMember = (parsed.kind === "members" || parsed.kind === "lead") && selected.length === 1;
         const slashIdentities = (explicitSingleMember ? selected : this.groupEligibleMembers(live)).map((botId) => ({
           conversationId: input.conversationId,
           topicId: input.topicId,
@@ -1536,18 +1549,20 @@ export class ConversationRunService {
   }
 
   /** Normalize the wire target into an explicit selection. An absent target is
-   *  the Group's configured lead Bot — the single place the implicit lead rule
-   *  is resolved, so Control and the frontend selector are never load bearing.
-   *  Legacy Direct `{ botId }` on a Group path selects that single member.
-   *  `automatic` selects nobody: the Router decides the first batch, so the
-   *  parsed target carries no members (and the accept path requires a
-   *  capability-restricted Router before admitting it). */
+   *  the Group's configured lead Bot, but the member is deliberately NOT
+   *  resolved here: the parsed shape carries no members and the accept loop
+   *  re-derives the lead from the live record inside the held gates (retrying
+   *  when the live lead is uncovered), so a concurrent retarget can never
+   *  commit a Run for a stale lead. Control and the frontend selector stay
+   *  non-load-bearing. Legacy Direct `{ botId }` on a Group path selects that
+   *  single member. `automatic` selects nobody: the Router decides the first
+   *  batch, so the parsed target carries no members (and the accept path
+   *  requires a capability-restricted Router before admitting it). */
   private parseGroupTarget(
     target: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | undefined,
-    conversation: ConversationRecord,
-  ): { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" } {
+  ): { kind: "lead" } | { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" } {
     if (!target) {
-      return { kind: "members", botIds: [this.groupLeadBotId(conversation)] };
+      return { kind: "lead" };
     }
     // The variants are a mutually exclusive union: mixed shapes are
     // ambiguous input and fail closed — never silently interpreted as
@@ -1594,8 +1609,9 @@ export class ConversationRunService {
     throw new ConversationError("automatic_unsupported", "automatic Group routing is not available in this release");
   }
 
-  /** The implicit target of a plain Group prompt. A lead that is disabled or no
-   *  longer a member is refused by the same enabled/membership gates an
+  /** The implicit target of a plain Group prompt, read from the live record
+   *  inside the accept gates (never the pre-gate probe). A lead that is disabled
+   *  or no longer a member is refused by the same enabled/membership gates an
    *  explicit target passes, so no path ever substitutes another member. */
   private groupLeadBotId(conversation: ConversationRecord): string {
     const leadBotId = conversation.leadBotId;
@@ -1620,7 +1636,7 @@ export class ConversationRunService {
    *  Everyone whose actual target set is tiny. */
   private groupMemberCandidates(
     conversationId: string,
-    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" },
+    parsed: { kind: "lead" } | { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" },
   ): string[] {
     if (parsed.kind === "automatic") {
       const conversation = this.requireConversation(conversationId);
@@ -1634,6 +1650,19 @@ export class ConversationRunService {
       // The explicit/everyone cap bounds selected dispatch members. An
       // automatic Run owns zero members until a budgeted Router decision.
       return [carrier];
+    }
+    if (parsed.kind === "lead") {
+      // The implicit lead probes the best known candidate, exactly like the
+      // everyone eligible probe: a concurrent retarget commits under its own
+      // gates, the in-gate re-derivation sees the live lead, and an uncovered
+      // live lead returns null so the loop retries with widened gates. A
+      // missing lead probes no gate; the in-gate re-derivation throws
+      // target_required.
+      const conversation = this.requireConversation(conversationId);
+      if (conversation.kind !== "group") {
+        throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
+      }
+      return conversation.leadBotId ? [conversation.leadBotId] : [];
     }
     if (parsed.kind === "members") {
       // Gate acquisition is process-lifetime state: `runLifecycleAll` creates a

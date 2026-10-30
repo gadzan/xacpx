@@ -271,13 +271,11 @@ describe("useGroupsStore", () => {
     expect(store.currentTopic?.status).toBe("active");
   });
 
-  it("skips a disabled lead and a disabled first member in the default target", async () => {
+  it("names the lead even when the catalog marks it disabled and lets the server refuse", async () => {
     const store = useGroupsStore();
     const disabledLead: GroupSummaryDto = { ...GROUP, leadBotId: "bot_a", botIds: ["bot_a", "bot_b"] };
-    // Bot catalog marks the lead disabled and the first member disabled: the
-    // default must fall to an executable member.
-    const store1 = useGroupsStore();
-    void store1;
+    // The selector holds no server-side policy: the default only names the
+    // lead and the backend refuses a disabled lead with its own code.
     mockRpc.mockImplementation(async (inst: string, type: string) => {
       if (type === "control.groups.list") return { groups: [disabledLead] };
       if (type === "control.topics.list") {
@@ -294,12 +292,15 @@ describe("useGroupsStore", () => {
       throw new Error(`unexpected ${type}`);
     });
     await store.selectGroup("inst_1", "conversation_g");
-    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
   });
 
-  it("default target falls back to everyone when every member is disabled", async () => {
+  it("names the stale lead when every member is disabled and lets the server refuse", async () => {
     const store = useGroupsStore();
     const allDisabled: GroupSummaryDto = { ...GROUP, leadBotId: "bot_a", botIds: ["bot_a", "bot_b"] };
+    // No catalog substitution survives: the selector names the lead and the
+    // backend refuses with target resolution instead of the UI silently
+    // rerouting to everyone.
     mockRpc.mockImplementation(async (inst: string, type: string) => {
       if (type === "control.groups.list") return { groups: [allDisabled] };
       if (type === "control.topics.list") {
@@ -316,7 +317,7 @@ describe("useGroupsStore", () => {
       throw new Error(`unexpected ${type}`);
     });
     await store.selectGroup("inst_1", "conversation_g");
-    expect(store.targetSelection).toEqual({ mode: "everyone" });
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
   });
 
   it("falls back to deterministic first-by-ID member when no lead is set", async () => {
