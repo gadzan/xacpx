@@ -166,10 +166,11 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-target-button"]').text()).not.toContain("Select members");
     });
 
-    it("Lead respects a Bot that was disabled after a successful background refresh", async () => {
+    it("Lead still names the lead after a background refresh disabled it and lets the server refuse", async () => {
       const groups = seedGroupSelection();
       const direct = useDirectBotsStore();
-      // Catalog is confirmed but the lead Bot has since been disabled.
+      // Catalog is confirmed but the lead Bot has since been disabled. The
+      // selector names the lead and the backend refuses with bot_disabled.
       direct.botsLoaded["i1"] = true;
       direct.botsByInstance["i1"] = BOTS;
       groups.groupsByInstance["i1"] = [{ ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"] }];
@@ -181,33 +182,7 @@ describe("Group Components", () => {
       });
       await wrapper.find('[data-test="group-target-button"]').trigger("click");
       await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      // The disabled lead is not re-selected; an executable member is.
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-    });
-
-    it("Lead converges back to eligibility-aware once the catalog refresh succeeds", async () => {
-      const groups = seedGroupSelection();
-      const direct = useDirectBotsStore();
-      // bots.list failed: the catalog is unknown, so the composer is fail-narrow.
-      direct.botsLoaded["i1"] = false;
-      direct.botsByInstance["i1"] = [];
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      const wrapper = mount(GroupComposer, {
-        props: { bots: [] },
-        global: { plugins: [i18n] },
-      });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-      // A background bots-changed succeeds and reveals the lead is now disabled.
-      direct.botsLoaded["i1"] = true;
-      direct.botsByInstance["i1"] = BOTS;
-      await wrapper.setProps({ bots: BOTS });
-      await flushPromises();
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      // Converged: the stale unknown state did not pin the disabled lead.
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_off"] });
     });
 
     it("renders the queue-full refusal as translated text, not the raw code", async () => {
@@ -459,7 +434,7 @@ describe("Group Components", () => {
     });
 
 
-    it("Lead shortcut never selects a disabled Bot", async () => {
+    it("Lead shortcut names the disabled lead and lets the server refuse", async () => {
       const groups = seedGroupSelection();
       const direct = useDirectBotsStore();
       direct.botsLoaded["i1"] = true;
@@ -472,8 +447,8 @@ describe("Group Components", () => {
       });
       await wrapper.find('[data-test="group-target-button"]').trigger("click");
       await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      // The disabled lead must fall through to an executable member.
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      // No substitution in the UI: the backend owns the refusal with bot_disabled.
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_off"] });
     });
 
     it("toggles members and switches to everyone", async () => {

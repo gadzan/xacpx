@@ -74,6 +74,9 @@ function seedBots(bots: BotSummaryDto[]): void {
   const direct = useDirectBotsStore();
   direct.botsByInstance["i1"] = bots;
   direct.botsLoaded["i1"] = true;
+  // The pane loads the catalog for the instance it shows, so the seeded rows
+  // must also be the answer its own refresh receives.
+  routes.set("control.bots.list", () => ({ bots }));
 }
 
 function seedGroup(group: GroupSummaryDto): void {
@@ -340,7 +343,7 @@ describe("Disabled Bots", () => {
         "Disabled members: Reviewer and Sleeper. They stay in the Group and take no new work until enabled again.",
       );
       expect(wrapper.find('[data-test="group-lead-disabled"]').text()).toBe(
-        "The Lead, Reviewer, is disabled. New messages go to Tester by default.",
+        "The Lead, Reviewer, is disabled. Tester is enabled and can take over explicit sends.",
       );
     });
 
@@ -355,10 +358,14 @@ describe("Disabled Bots", () => {
       );
     });
 
-    it("shows no member status while the Bot catalog is unconfirmed", async () => {
-      seedBots([REVIEWER, TESTER, SLEEPER]);
-      useDirectBotsStore().botsLoaded["i1"] = false;
+    it("shows no member status when the pane's own catalog load fails", async () => {
+      seedBots([{ ...REVIEWER, enabled: false }, { ...TESTER, enabled: false }]);
       seedGroup(GROUP);
+      // A failed refresh leaves stale rows cached. They must not be read as
+      // "every member disabled", so the status stays hidden.
+      routes.set("control.bots.list", () => {
+        throw new Error("bots.list unavailable");
+      });
       const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
       await flushPromises();
 
@@ -375,7 +382,7 @@ describe("Disabled Bots", () => {
       expect(wrapper.find('[data-test="group-disabled-members"]').text()).toBe(
         "已禁用的成员：Reviewer和Sleeper。他们仍在群组中，重新启用前不会接收新工作。",
       );
-      expect(wrapper.find('[data-test="group-lead-disabled"]').text()).toBe("负责人 Reviewer 已禁用。新消息默认发给 Tester。");
+      expect(wrapper.find('[data-test="group-lead-disabled"]').text()).toBe("负责人 Reviewer 已禁用。Tester 仍可用，可由显式指定接手发送。");
     });
   });
 });

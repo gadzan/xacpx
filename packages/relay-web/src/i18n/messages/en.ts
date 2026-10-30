@@ -1005,7 +1005,7 @@ export default {
     },
     members: {
       disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",
-      leadDisabled: "The Lead, {lead}, is disabled. New messages go to {fallback} by default.",
+      leadDisabled: "The Lead, {lead}, is disabled. {fallback} is enabled and can take over explicit sends.",
       noneEnabled: "Every member of this Group is disabled. Enable one to send new work.",
     },
     manage: {
@@ -1030,7 +1030,7 @@ export default {
       needBots: "A Group needs at least two Bots. This instance has {count}.",
       lead: "Lead",
       noLead: "No Lead",
-      leadHint: "New messages go to the Lead by default. Without a Lead they go to the first enabled member.",
+      leadHint: "New messages go to the Lead by default. Without a Lead, a plain message is refused until you pick a member.",
       leadReassigned: "{previous} is no longer a member, so the Lead is now {next}.",
       leadCleared: "{previous} is no longer a member, so the Group has no Lead.",
       memberWorkLoading: "Looking for the unfinished work…",

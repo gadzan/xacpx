@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArrowLeft, MessageSquare, MoreHorizontal, Pencil, Plus, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
@@ -106,6 +106,13 @@ const bots = computed<BotSummaryDto[]>(() => {
   if (!instId) return [];
   return directBotsStore.botsByInstance[instId] ?? [];
 });
+// The pane renders member names itself, so it loads the catalog for the
+// instance it shows. Readiness is the store's own botsLoaded, not a local flag:
+// a later refresh from anywhere re-arms the status, and a failed refresh clears
+// it, so stale rows can never read as every member disabled.
+watch(() => groupsStore.instanceId, (instId) => {
+  if (instId) void directBotsStore.loadBots(instId).catch(() => null);
+}, { immediate: true });
 const memberBots = computed<BotSummaryDto[]>(() => {
   const ids = new Set(group.value?.botIds ?? []);
   return bots.value.filter((b) => ids.has(b.id));
@@ -114,21 +121,21 @@ const memberBots = computed<BotSummaryDto[]>(() => {
 type MemberStatus =
   | { kind: "none-enabled" }
   | { kind: "some-disabled"; names: string; lead?: string; fallback?: string };
-// An unconfirmed catalog would read as "every member disabled", so the
-// status waits for it. The fallback comes from the same resolver the
-// composer uses to pick the default target.
+// An unconfirmed catalog would read as "every member disabled", so the status
+// waits for it. The fallback is the first enabled member by stable ID, which is
+// display only: routing is the server's rule and the send may still be refused.
 const memberStatus = computed<MemberStatus | null>(() => {
   const current = group.value;
   if (!current || !groupsStore.botCatalogKnown) return null;
   const disabled = memberBots.value.filter((b) => !b.enabled);
   if (disabled.length === 0) return null;
-  const target = groupsStore.eligibleTargetFor(current, bots.value);
-  if (target.mode !== "members") return { kind: "none-enabled" };
+  const enabled = memberBots.value.filter((b) => b.enabled);
+  if (enabled.length === 0) return { kind: "none-enabled" };
   return {
     kind: "some-disabled",
     names: new Intl.ListFormat(locale.value, { type: "conjunction" }).format(disabled.map((b) => b.name)),
     lead: disabled.find((b) => b.id === current.leadBotId)?.name,
-    fallback: memberBots.value.find((b) => b.id === target.botIds[0])?.name,
+    fallback: [...enabled].sort((a, b) => a.id.localeCompare(b.id))[0]?.name,
   };
 });
 

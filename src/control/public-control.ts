@@ -55,13 +55,15 @@ export function sanitizePublicConversationPrompt(
   }
   const target = input.target;
   let sanitized: ConversationPromptRequestDto["target"];
+  // Absent stays absent: the accept path resolves a plain Group prompt to the
+  // Group's lead Bot, so Control never supplies a routing default of its own.
   if (target !== undefined) {
     // The variants are a mutually exclusive union. A target that is present
     // but not a well-formed single variant is NEVER laundered into whichever
     // variant matches first and NEVER silently dropped: dropping would fail
     // Direct open (target is optional there, so the owning bot would execute
-    // instead of the route the caller asked for) while Group merely reached
-    // `target_required`. Either way the caller's structured routing was
+    // instead of the route the caller asked for) while Group would silently
+    // resolve to its lead Bot. Either way the caller's structured routing was
     // rewritten — so reject at the boundary with the same typed code the
     // accept path uses (botId + mode:"automatic" must not become a direct
     // execution of botId).

@@ -259,7 +259,7 @@ watch(() => props.instanceId ?? groupsStore.instanceId, (id) => {
 watch(availability, (state) => {
   if (state.status === "ready" || groupsStore.targetSelection?.mode !== "automatic") return;
   const group = groupsStore.currentGroup;
-  groupsStore.setTarget(group ? groupsStore.eligibleTargetFor(group, props.bots) : { mode: "members", botIds: [] });
+  groupsStore.setTarget(group ? groupsStore.defaultTargetFor(group) : { mode: "members", botIds: [] });
 }, { immediate: true });
 
 // Losing the Jev key (cleared in another tab, or an instance that stopped
@@ -268,17 +268,16 @@ watch(availability, (state) => {
 watch(automaticVisible, (visible) => {
   if (visible || groupsStore.targetSelection?.mode !== "automatic") return;
   const group = groupsStore.currentGroup;
-  groupsStore.setTarget(group ? groupsStore.eligibleTargetFor(group, props.bots) : { mode: "members", botIds: [] });
+  groupsStore.setTarget(group ? groupsStore.defaultTargetFor(group) : { mode: "members", botIds: [] });
 });
 
-/** The Lead shortcut and the Group-open default share one resolver so a
- *  "Lead" pick can never re-select a Bot the member list itself disables. */
+/** The Lead shortcut and the Group-open default share one resolver: the server
+ *  owns the implicit rule, so this only names the lead and lets the backend
+ *  refuse a lead that is disabled or no longer a member. */
 function pickLead(): void {
   const group = groupsStore.currentGroup;
   if (!group) return;
-  // eligibleTargetFor applies the store's catalog-known state: an unconfirmed
-  // catalog must widen to Everyone under no circumstances.
-  const selection = groupsStore.eligibleTargetFor(group, props.bots);
+  const selection = groupsStore.defaultTargetFor(group);
   mentionOwned.value = false;
   groupsStore.setTarget(selection);
   closeMenu();

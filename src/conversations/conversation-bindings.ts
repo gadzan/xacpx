@@ -281,8 +281,9 @@ export class ConversationBindingService {
             text = text.slice(mention[0].length);
           } else {
             if (text.startsWith("@")) throw new ConversationError("external_target_invalid", "malformed member address");
-            if (!group.leadBotId) throw new ConversationError("external_target_required", "Group requires a target or lead Bot");
-            target = { botId: group.leadBotId };
+            // No mention: leave the target absent so the accept path derives the
+            // Lead inside its lifecycle gates. Materializing it here would run a
+            // Lead that a retarget replaced between this read and the gates.
           }
         }
         const input = sanitizePublicConversationPrompt({ ...binding, requestId: `external:${externalRequest.key}`, text, ...(target ? { target } : {}) });
