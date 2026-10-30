@@ -13,11 +13,11 @@ function prefix(value: string, limit: number): string {
   return value.slice(0, end >= 0xD800 && end <= 0xDBFF ? limit - 1 : limit);
 }
 
-/** Bound Router snapshots only; durable public records remain complete. */
+/** Bound Router snapshots only; durable public records remain complete. The
+ *  assignment evidence is a recency window: older settled assignments stay in
+ *  the store, are counted in `completedAssignmentTotal`, and are disclosed as
+ *  omitted rather than dropped silently or treated as resolved. */
 export function boundRoutingInput(input: RoutingInput): RoutingInput {
-  if (input.completedAssignments.length > MAX_ROUTER_ASSIGNMENTS_PER_DECISION) {
-    throw new ConversationError("router_input_too_large", "Router assignment history exceeds its snapshot budget");
-  }
   const request = prefix(input.request, MAX_ROUTER_REQUEST_LENGTH);
   let transcriptLeft = MAX_ROUTER_TRANSCRIPT_CHARACTERS;
   const publicTranscript = [...input.publicTranscript];
@@ -30,11 +30,19 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
     transcriptLeft -= content.length;
     publicTranscript[index] = { ...row, content, ...(content !== row.content ? { contextTruncated: true as const } : {}) };
   }
-  let resultLeft = MAX_ROUTER_RESULT_CHARACTERS;
-  const completedAssignments = [...input.completedAssignments];
-  // Latest batches receive evidence first; retain the caller's history order.
-  const newestAssignments = input.completedAssignments.map((assignment, index) => ({ assignment, index }))
+  // Recency is carried by batch, not the caller's array order: the window
+  // keeps the newest assignments and restores the caller's order for them.
+  const history = input.completedAssignments;
+  const newestRows = history.map((assignment, index) => ({ assignment, index }))
     .sort((a, b) => b.assignment.batch - a.assignment.batch || a.index - b.index);
+  const windowed = newestRows.slice(0, MAX_ROUTER_ASSIGNMENTS_PER_DECISION)
+    .sort((a, b) => a.index - b.index).map(({ assignment }) => assignment);
+  let omittedAssignmentCount = (input.omittedAssignmentCount ?? 0) + history.length - windowed.length;
+  let completedAssignments = windowed;
+  // Latest batches receive evidence first; retain the caller's history order.
+  const newestAssignments = completedAssignments.map((assignment, index) => ({ assignment, index }))
+    .sort((a, b) => b.assignment.batch - a.assignment.batch || a.index - b.index);
+  let resultLeft = MAX_ROUTER_RESULT_CHARACTERS;
   for (const { assignment, index } of newestAssignments) {
     const task = prefix(assignment.task, 1_000);
     const expectedOutput = assignment.expectedOutput === undefined ? undefined : prefix(assignment.expectedOutput, 500);
@@ -65,11 +73,26 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
     return { ...member, name, role, ...(name !== member.name || role !== member.role ? { contextTruncated: true as const } : {}) };
   });
   const omittedMemberCount = (input.omittedMemberCount ?? 0) + input.memberMetadata.length - memberMetadata.length;
-  const bounded: RoutingInput = { ...input, request, publicTranscript, completedAssignments, memberMetadata,
+  const snapshot = (): RoutingInput => ({ ...input, request, publicTranscript, completedAssignments, memberMetadata,
     ...(request !== input.request ? { requestTruncated: true } : {}),
     ...(omittedMemberCount > 0 ? { omittedMemberCount } : {}),
-  };
-  if (JSON.stringify(bounded).length > MAX_ROUTER_INPUT_CHARACTERS) {
+    ...(omittedAssignmentCount > 0 ? { omittedAssignmentCount } : {}),
+  });
+  let bounded = snapshot();
+  let size = JSON.stringify(bounded).length;
+  // History length never fails a routing attempt on its own: when the fixed
+  // evidence still exceeds the serialized budget, the oldest window rows leave
+  // it first, and their removal stays disclosed through the omitted count.
+  while (size > MAX_ROUTER_INPUT_CHARACTERS && completedAssignments.length > 0) {
+    // The oldest batch leaves first; ties keep the earliest member position.
+    const oldest = completedAssignments.reduce((drop, row, position) =>
+      row.batch < completedAssignments[drop]!.batch ? position : drop, 0);
+    completedAssignments = completedAssignments.toSpliced(oldest, 1);
+    omittedAssignmentCount++;
+    bounded = snapshot();
+    size = JSON.stringify(bounded).length;
+  }
+  if (size > MAX_ROUTER_INPUT_CHARACTERS) {
     throw new ConversationError("router_input_too_large", "Router snapshot exceeds its serialized character budget");
   }
   return bounded;

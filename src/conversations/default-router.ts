@@ -43,8 +43,13 @@ export interface DefaultRouterDecisionInput {
   requestTruncated?: true;
   requestMessageId: string;
   members: readonly RoutingMember[];
-  completedAssignmentCount: number;
-  /** Durable results, retained for the adaptive Jev policy. */
+  /** Truthful cumulative settled-assignment count, never the window length. */
+  completedAssignmentTotal: number;
+  /** Settled assignments outside the bounded window (durable, not resolved). */
+  omittedAssignmentCount?: number;
+  /** Durable Run-scoped sequence for minting assignment ids. */
+  assignmentSequence: number;
+  /** Recency window of durable results, retained for the adaptive Jev policy. */
   completedAssignments?: readonly RoutingAssignmentRecord[];
   remainingBudget: number;
   /** The Group's configured lead Bot, when one is set. */
@@ -92,7 +97,7 @@ export function decideDefaultRouterAssignment(input: DefaultRouterDecisionInput)
   }
   // One round per run. A second decision with evidence already on the Run
   // means the fan-out finished; looping it would burn the same budget again.
-  if (input.completedAssignmentCount > 0) {
+  if (input.completedAssignmentTotal > 0) {
     return { type: "complete", reason: "The default router assigns one round per run." };
   }
   // Both clamps mirror the decision gate: the per-decision assignment cap and
@@ -100,11 +105,13 @@ export function decideDefaultRouterAssignment(input: DefaultRouterDecisionInput)
   // engine may grant, so a valid decision is never refused downstream.
   const take = Math.min(enabled.length, input.remainingBudget, MAX_ROUTER_ASSIGNMENTS_PER_DECISION);
   const assignments = enabled.slice(0, take).map((member, index) => {
-    const qualifiedId = `auto-${index}-${member.botId}`;
+    // The durable sequence replaces the window length, so two different
+    // windows can never mint the same id for the same member position.
+    const qualifiedId = `auto-${input.assignmentSequence + index}-${member.botId}`;
     return {
-      // The bot id keeps the assignment traceable to a member; the bare index
-      // is the fallback for a Group whose ids alone would overflow the cap.
-      id: qualifiedId.length <= MAX_ROUTER_ASSIGNMENT_ID_LENGTH ? qualifiedId : `auto-${index}`,
+      // The bot id keeps the assignment traceable to a member; the bare
+      // sequence is the fallback when the member id alone overflows the cap.
+      id: qualifiedId.length <= MAX_ROUTER_ASSIGNMENT_ID_LENGTH ? qualifiedId : `auto-${input.assignmentSequence + index}`,
       botId: member.botId,
       task: request.slice(0, MAX_ROUTER_TASK_LENGTH),
       // The trigger is the Run's own request message when it has one; an empty
@@ -264,11 +271,15 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     requestMessageId,
     memberMetadata,
     completedAssignments,
+    completedAssignmentTotal,
+    omittedAssignmentCount,
+    assignmentSequence,
     remainingBudget,
     leadBotId,
     publicTranscript,
   } = value as Record<
-    "request" | "requestMessageId" | "memberMetadata" | "completedAssignments" | "remainingBudget" | "leadBotId" | "publicTranscript",
+    "request" | "requestMessageId" | "memberMetadata" | "completedAssignments" | "completedAssignmentTotal"
+      | "omittedAssignmentCount" | "assignmentSequence" | "remainingBudget" | "leadBotId" | "publicTranscript",
     unknown
   >;
   if (typeof request !== "string") {
@@ -279,6 +290,18 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
   }
   if (typeof remainingBudget !== "number" || !Number.isFinite(remainingBudget)) {
     throw new Error("routing input requires a numeric remainingBudget");
+  }
+  // The window never stands in for the Run's history: the cumulative count and
+  // the durable minting sequence must arrive explicitly or the CLI fails shut.
+  if (typeof completedAssignmentTotal !== "number" || !Number.isSafeInteger(completedAssignmentTotal) || completedAssignmentTotal < 0) {
+    throw new Error("routing input requires a non-negative integer completedAssignmentTotal");
+  }
+  if (omittedAssignmentCount !== undefined
+    && (typeof omittedAssignmentCount !== "number" || !Number.isSafeInteger(omittedAssignmentCount) || omittedAssignmentCount < 0)) {
+    throw new Error("routing input omittedAssignmentCount must be a non-negative integer");
+  }
+  if (typeof assignmentSequence !== "number" || !Number.isSafeInteger(assignmentSequence) || assignmentSequence < 0) {
+    throw new Error("routing input requires a non-negative integer assignmentSequence");
   }
   if (!Array.isArray(completedAssignments)) {
     throw new Error("routing input completedAssignments must be an array");
@@ -292,7 +315,9 @@ function readDecisionInput(value: unknown): DefaultRouterDecisionInput {
     ...((value as { requestTruncated?: unknown }).requestTruncated === true ? { requestTruncated: true as const } : {}),
     requestMessageId,
     members: members.map((entry) => readMember(entry)),
-    completedAssignmentCount: completedAssignments.length,
+    completedAssignmentTotal,
+    ...(omittedAssignmentCount !== undefined ? { omittedAssignmentCount } : {}),
+    assignmentSequence,
     completedAssignments: readCollaborationHistory(completedAssignments),
     remainingBudget,
     ...(typeof leadBotId === "string" && leadBotId.trim().length > 0 ? { leadBotId } : {}),
