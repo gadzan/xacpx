@@ -202,8 +202,8 @@ function openRemoval(): void {
     <!-- Mobile floating identity (<lg), modeled on the reference mock: the
          transcript runs full-height and the identity floats OVER it — back and ⋯ as
          glass circles at the edges, a centered glass base (name only) with a large
-         avatar overlapping its top edge; the avatar disc carries a theme fallback
-         (white in light, black in dark) so avatars without art still read. Content
+         avatar overlapping its top edge; the avatar disc is glass too (glass-avatar),
+         so avatars without art still read against the scrolling transcript. Content
          scrolls beneath. Zero layout height, so the transcript keeps the whole
          screen. The topic lives in the ⋯ sheet (TopicSwitcher renders its own
          MobileSheet). The transcript never repeats the avatar in front of bubbles
@@ -215,8 +215,8 @@ function openRemoval(): void {
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
               class="glass-avatar pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
-      <div class="glass-avatar absolute left-1/2 top-[calc(0.875rem+env(safe-area-inset-top))] flex -translate-x-1/2 flex-col items-center rounded-xl px-2.5 pb-1 pt-[3.25rem]">
-        <span class="absolute -top-2 left-1/2 grid h-14 w-14 -translate-x-1/2 place-items-center rounded-full bg-white dark:bg-black">
+      <div class="glass-avatar absolute left-1/2 top-[calc(0.875rem+env(safe-area-inset-top))] mt-[2.7rem] flex -translate-x-1/2 flex-col items-center rounded-xl px-2.5 py-2">
+        <span class="glass-avatar absolute -top-2 left-1/2 -mt-[2.7rem] grid h-14 w-14 -translate-x-1/2 place-items-center rounded-full">
           <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="56"
                      :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
                      :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
