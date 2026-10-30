@@ -17,6 +17,7 @@ import { classifyCapabilityReport, isBundledDefaultRouter,
   resolveProductionRouter } from "../../../src/conversations/production-router";
 import { canMintHumanPermissionInteraction } from "../../../src/conversations/conversation-execution";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
+import { SILENCE_REPLY } from "../../../src/conversations/group-chat-wake";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { ChatRequest } from "../../../src/weixin/agent/interface";
@@ -169,6 +170,10 @@ async function wire(options: {
   decisionTimeoutMs?: number;
   probeTimeoutMs?: number;
   origins?: Array<string | undefined>;
+  /** A silent reply speaks to nobody: a visible reply to a Group relays to the
+   *  other members, appending orchestration-origin provider calls after the
+   *  one this test inspects. */
+  silent?: boolean;
 }) {
   const state = options.state ?? createEmptyState();
   const stateStore = new MemoryStateStore();
@@ -182,7 +187,7 @@ async function wire(options: {
     agent: {
       chat: async (request: ChatRequest) => {
         options.origins?.push(request.metadata?.origin);
-        return { text: "assistant-reply" };
+        return { text: options.silent ? SILENCE_REPLY : "assistant-reply" };
       },
     },
     sessions,
@@ -308,7 +313,7 @@ test("a restricted probe routes through the production resolver without a tool p
   const origins: Array<string | undefined> = [];
   try {
     const router = await writeRouter(dir, "dispatch");
-    const { control, runtime } = await wire({ dir, command: router.command, env: router.env, origins });
+    const { control, runtime } = await wire({ dir, command: router.command, env: router.env, origins, silent: true });
     expect(control.getConversationRouterAvailability().status).toBe("ready");
     const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
     const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });

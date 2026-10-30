@@ -27,6 +27,7 @@ import type { SessionTransport, ResolvedSession } from "../../../src/transport/t
 import { isRunCancelling } from "../../../src/conversations/conversation-store";
 import type { ConversationDispatcherHooks, LeaseScheduler } from "../../../src/conversations/conversation-dispatcher";
 import type { ConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
+import { SILENCE_REPLY } from "../../../src/conversations/group-chat-wake";
 
 const RESTRICTED = { toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true, permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true, structuredOutputOnly: true };
 
@@ -1058,8 +1059,10 @@ test("shutdown between durable execution-start and capability bind does not manu
     starts++;
     executionToken = request.metadata!.groupExecutionToken!;
     providerEntered.resolve();
-    await finishProvider.promise;
-    return { text: "started execution drained normally" };
+    // The reply names only the sender Bot: the result stays stored public
+    // evidence, but the relay wakes no other member, so this shutdown test
+    // keeps its single provider start.
+    return { text: "@Sender started execution drained normally" };
   } } });
   let shutdown: Promise<void> | undefined, drain: Promise<void> | undefined;
   const unsubscribe = current.events.subscribe((event) => {
@@ -1088,7 +1091,7 @@ test("shutdown between durable execution-start and capability bind does not manu
       const member = reopened.listMemberTurns(accepted.run.id)[0]!;
       expect(member).toMatchObject({ state: "completed" });
       expect(member.failureReason).toBeUndefined();
-      expect(reopened.getMemberResult(member)?.content).toBe("started execution drained normally");
+      expect(reopened.getMemberResult(member)?.content).toBe("@Sender started execution drained normally");
     } finally { reopened.close(); }
     expect(() => current.runtime.handoffs.bindExecution({ senderMemberTurnId: "retired", sourceTurnId: "retired",
       dispatchId: "retired", owner: "retired", generation: 1 })).toThrow(expect.objectContaining({ code: "runtime_closed" }));
@@ -1500,7 +1503,9 @@ test("autoKick false still drains through wakePendingWork", async () => {
     autoKick: false,
     agent: { async chat() {
       calls += 1;
-      return { text: "woken" };
+      // Silence speaks to nobody: a visible reply would relay to the other
+      // member and the Run would take relay rounds this test never drives.
+      return { text: SILENCE_REPLY };
     } },
   });
   try {

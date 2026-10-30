@@ -18,6 +18,7 @@ import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { ChatRequest } from "../../../src/weixin/agent/interface";
+import { SILENCE_REPLY } from "../../../src/conversations/group-chat-wake";
 
 class MemoryStateStore {
   public saved: AppState[] = [];
@@ -67,6 +68,10 @@ async function boot(input: {
   origins: string[];
   received?: ChatRequest[];
   uploadRoot?: string;
+  /** A silent reply speaks to nobody: without it a Group member's stored reply
+   *  relays to the other members and the Run takes relay rounds the test
+   *  never drives. */
+  silent?: boolean;
 }) {
   const config = createConfig();
   const stateMutex = new AsyncMutex();
@@ -77,7 +82,7 @@ async function boot(input: {
       chat: async (request: ChatRequest) => {
         if (request.metadata?.origin) input.origins.push(request.metadata.origin);
         input.received?.push(request);
-        return { text: "recovered-reply" };
+        return { text: input.silent ? SILENCE_REPLY : "recovered-reply" };
       },
     },
     sessions,
@@ -185,7 +190,7 @@ for (const groupPrompt of [false, true]) {
       { id: "document", filePath: join(uploadRoot, "report.txt"), fileName: "report.txt", mimeType: "text/plain", kind: "file", size: 8 },
     ];
     const stateStore = new MemoryStateStore();
-    const first = await boot({ sqlitePath, state: createEmptyState(), stateStore, authorityEpoch: "media-a", ownerId: "media-a", origins: [], uploadRoot });
+    const first = await boot({ sqlitePath, state: createEmptyState(), stateStore, authorityEpoch: "media-a", ownerId: "media-a", origins: [], uploadRoot, silent: true });
     const bot = await first.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
     let conversationId = createDirectConversationId(bot.id);
     let topicId = createDirectTopicId(bot.id);
@@ -204,7 +209,7 @@ for (const groupPrompt of [false, true]) {
     await first.runtime.shutdown();
     const received: ChatRequest[] = [];
     const second = await boot({ sqlitePath, state: structuredClone(stateStore.saved.at(-1)!), stateStore: new MemoryStateStore(),
-      authorityEpoch: "media-b", ownerId: "media-b", origins: [], uploadRoot, received });
+      authorityEpoch: "media-b", ownerId: "media-b", origins: [], uploadRoot, received, silent: true });
     try {
       const replay = await asPublicControl(second.control).promptConversation(request);
       expect(replay.reused).toBe(true);
