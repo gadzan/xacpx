@@ -44,13 +44,20 @@ async function harness() {
   return { store, handoffs, sender, accepted, send, read, context: () => handoffs.memberContext(capability.token) };
 }
 
-test("member instructions require ending the dispatch turn and promise one wake for all its assignments", async () => {
+test("memberContext carries the canonical roster and no restated contract rules", async () => {
   const h = await harness();
   try {
-    expect(h.context()).toContain("After dispatching all assignments for this turn, end your turn immediately");
-    expect(h.context()).toContain("do not wait, sleep, or poll");
-    expect(h.context()).toContain("Once all assignments dispatched from this turn settle, the runtime wakes you exactly once");
-    expect(h.context()).toContain("group_read_result refuses reads while this turn has its own unsettled handoffs");
+    const roster = JSON.parse(h.context());
+    expect(roster.members.map((member: { botId: string }) => member.botId).sort())
+      .toEqual(["bot_a", "bot_b", "bot_c"]);
+    expect(roster).toEqual({ members: expect.any(Array), omittedMemberCount: 0 });
+    // Every behavioral rule lives in GROUP_COLLABORATION_CONTRACT; the roster
+    // surface must not restate it.
+    for (const rule of ["end your turn immediately", "do not wait, sleep, or poll",
+      "wakes you exactly once", "refuses reads", "untrusted member data",
+      "Use group_send", "Acceptance is durable", "execution has started"]) {
+      expect(h.context()).not.toContain(rule);
+    }
   } finally { h.handoffs.close(); h.store.close(); }
 });
 

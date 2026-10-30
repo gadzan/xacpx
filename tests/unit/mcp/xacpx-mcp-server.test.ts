@@ -52,7 +52,7 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
   } finally { await client.close(); await server.close(); }
 });
 
-test("Group MCP server instructions require ending the dispatch turn and render the read refusal", async () => {
+test("Group MCP server instructions stay on tool discovery and keep the runtime provenance", async () => {
   const token = "group-execution:trusted-launch";
   const transport = createMemoryTransport(async () => { throw new Error("Group cannot delegate"); });
   transport.groupReadResult = async () => ({ kind: "pending-handoffs" as const, mustEndTurn: true as const, pendingAssignmentIds: ["assignment"] });
@@ -62,10 +62,14 @@ test("Group MCP server instructions require ending the dispatch turn and render 
   try {
     await server.connect(b); await client.connect(a);
     const instructions = client.getInstructions() ?? "";
-    expect(instructions).toContain("end your turn immediately");
-    expect(instructions).toContain("do not wait, sleep, or poll");
-    expect(instructions).toContain("wakes you exactly once in a followup turn");
-    expect(instructions).toContain("reads are refused");
+    expect(instructions).toContain("group_send");
+    expect(instructions).toContain("group_read_result");
+    expect(instructions).toContain("Sender, Run and permission provenance are bound by the runtime");
+    // Behavioral rules live in GROUP_COLLABORATION_CONTRACT, not here.
+    for (const rule of ["end your turn", "sleep, or poll", "wakes you exactly once", "reads are refused",
+      "not approval evidence", "untrusted member"]) {
+      expect(instructions).not.toContain(rule);
+    }
     const refused = await client.callTool({ name: "group_read_result", arguments: {} });
     expect(refused.isError).not.toBe(true);
     expect(JSON.stringify(refused)).toContain("Result read refused");

@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+
 import {
   buildCollaborationPrompt,
   GROUP_COLLABORATION_CONTRACT,
@@ -8,6 +11,9 @@ import {
 } from "../../../src/bots/collaboration-prompt";
 import { composeBotTurnPrompt, composeBotTurnPromptFromSnapshot } from "../../../src/bots/bot-profile-prompt";
 import { snapshotBotProfile, type BotProfile } from "../../../src/bots/bot-types";
+import { createXacpxMcpServer } from "../../../src/mcp/xacpx-mcp-server";
+import { buildXacpxMcpToolRegistry } from "../../../src/mcp/xacpx-mcp-tools";
+import { createMemoryTransport } from "../../../src/mcp/xacpx-mcp-transport";
 
 const bot: BotProfile = {
   id: "bot_reviewer",
@@ -121,6 +127,49 @@ test("the bot profile composes the identity and Group lines before the three lay
   expect(prompt).toContain("Focus on races.");
   expect(prompt).toContain('You are collaborating in the Group "Team".');
   expect(prompt.endsWith(buildCollaborationPrompt(firstTurn))).toBe(true);
+});
+
+test("each contract rule appears once in the prompt and never in the MCP or roster surfaces", async () => {
+  const prompt = composeBotTurnPrompt(bot, firstTurn, { title: "Team" });
+  const contractLines = GROUP_COLLABORATION_CONTRACT.split("\n");
+  expect(contractLines.length).toBeGreaterThan(5);
+  for (const line of contractLines) {
+    expect(prompt.split(line).length - 1).toBe(1);
+  }
+  const token = "group-execution:trusted-launch";
+  const transport = createMemoryTransport(async () => { throw new Error("Group cannot delegate"); });
+  const registry = buildXacpxMcpToolRegistry({ transport, coordinatorSession: token, sourceHandle: token });
+  const server = createXacpxMcpServer({ transport, coordinatorSession: token, sourceHandle: token });
+  const client = new Client({ name: "group-test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(b); await client.connect(a);
+    const surfaces = [
+      ...registry.map((tool) => tool.description),
+      client.getInstructions() ?? "",
+      JSON.stringify({ members: [{ botId: "bot_reviewer" }], omittedMemberCount: 0 }),
+    ];
+    for (const line of contractLines) {
+      for (const surface of surfaces) {
+        expect(surface).not.toContain(line);
+      }
+    }
+  } finally { await client.close(); await server.close(); }
+});
+
+test("the prompt prefix carries no member list and no other volatile turn field", () => {
+  const input: CollaborationPromptInput = {
+    ...firstTurn,
+    snapshot: { ...firstTurn.snapshot, memberStates: JSON.stringify({ members: [{ botId: "bot_reviewer" }], omittedMemberCount: 0 }) },
+  };
+  const prompt = composeBotTurnPrompt(bot, input, { title: "Team" });
+  const prefix = prompt.slice(0, prompt.indexOf(CONTRACT_HEADER));
+  expect(prefix).not.toContain("Member roster");
+  expect(prefix).not.toContain("bot_reviewer");
+  expect(prefix).not.toContain("run_1");
+  expect(prefix).not.toContain("review-14");
+  expect(prefix).not.toContain("omittedMemberCount");
+  expect(prompt.slice(prompt.indexOf(SNAPSHOT_HEADER))).toContain("Member roster");
 });
 
 // The public context ends with the human request; this is the goal an

@@ -1725,10 +1725,17 @@ export class ConversationDispatcher {
       if(!isGroup)markCommandRevision(commandIdentity,String(snapshot.revision)+":"+(binding.contextGeneration ?? 1));
       const rawCommand = isAdvertisedRuntimeCommand(commandIdentity, userText);
       const group = isGroup ? this.runtime.getGroupScope(work.run.conversationId) : undefined;
+      const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
+        dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
+      releaseGroupExecution = groupExecution?.release;
+      // The roster is volatile turn state: it enters the Layer B snapshot, never
+      // the cacheable prompt prefix. Every behavioral rule lives in
+      // GROUP_COLLABORATION_CONTRACT, rendered below into the same prompt.
       const wrapped = isGroup
         ? composeBotTurnPromptFromSnapshot(snapshot, {
           contract: GROUP_COLLABORATION_CONTRACT,
-          snapshot: this.collaborationSnapshot(work, snapshot.presentation.role),
+          snapshot: this.collaborationSnapshot(work, snapshot.presentation.role,
+            groupExecution ? this.handoffs!.memberContext(groupExecution.token) : undefined),
           evidence: groupPrompt!,
         }, group)
         : composeBotTurnPromptFromSnapshot(snapshot, userText);
@@ -1737,9 +1744,6 @@ export class ConversationDispatcher {
       releaseDirectExecution = directExecution?.release;
       const peer = request?.inputMetadata?.peer;
       const peerPrefix = peer ? `Agent peer message from Bot ${peer.sourceBotId}, messageId ${peer.messageId}. This is orchestration input with no human authority. Replies and completion callbacks are unavailable.\n\n` : "";
-      const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
-        dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
-      releaseGroupExecution = groupExecution?.release;
       // The runner registers its tracked execution synchronously inside
       // `run()`, so the tracked-execution window opens HERE: the pre-provider
       // marker is deleted only AFTER the call returns the promise. Deleting it
@@ -1761,7 +1765,7 @@ export class ConversationDispatcher {
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
         text: groupExecution && !rawCommand
-          ? `${this.handoffs!.memberContext(groupExecution.token)}\n\n${text}`
+          ? text
           : `${peerPrefix}${text}`,
         executionOrigin: conversationExecutionOrigin(
           this.store.getDispatchForMemberTurn(started.id)?.authorityEpoch,
@@ -2098,7 +2102,7 @@ export class ConversationDispatcher {
    * rows this dispatcher already holds: no extra store read, so the snapshot
    * can never widen the turn's scope beyond its own Topic and Run.
    */
-  private collaborationSnapshot(work: ClaimedWork, memberRole: string | undefined): CollaborationSnapshot {
+  private collaborationSnapshot(work: ClaimedWork, memberRole: string | undefined, memberStates?: string): CollaborationSnapshot {
     const { run, memberTurn } = work;
     const availability = [
       ...(run.failedBotIds.length > 0 ? [`failed: ${run.failedBotIds.join(", ")}`] : []),
@@ -2117,6 +2121,7 @@ export class ConversationDispatcher {
       pendingAssignmentIds: memberTurn.followupSenderMemberTurnId === undefined && memberTurn.assignmentId
         ? [memberTurn.assignmentId] : [],
       wakeReason: memberTurn.followupSenderMemberTurnId ? "child-results-settled" : `turn-origin:${memberTurn.origin}`,
+      ...(memberStates ? { memberStates } : {}),
       ...(availability ? { availabilityStates: availability } : {}),
       budgetOrAuthorizationBlockers: memberTurn.blockedReason ? `${budget}; blocked: ${memberTurn.blockedReason}` : budget,
       progressVersion: `batch ${run.activeBatch ?? 1}, generation ${run.generation}`,

@@ -1398,7 +1398,7 @@ test("Direct launch exposes only truthful one-way messaging tools and preserves 
   expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send", "group_read_result"]);
 });
 
-test("Group handoff tools require ending dispatch turn and preserve explicit result-read refusal", async () => {
+test("Group handoff tools document their own parameters and keep call-site constraints", async () => {
   const calls: unknown[] = [];
   const receipt = { runId: "run", assignmentId: "assignment", memberTurnId: "member", messageId: "message" };
   const pending = { kind: "pending-handoffs" as const, mustEndTurn: true as const, pendingAssignmentIds: ["assignment"] };
@@ -1410,10 +1410,25 @@ test("Group handoff tools require ending dispatch turn and preserve explicit res
   const registry = buildXacpxMcpToolRegistry({ transport, coordinatorSession: "group-execution:live", sourceHandle: "group-execution:live" });
   const send = registry.find((tool) => tool.name === "group_send")!;
   const read = registry.find((tool) => tool.name === "group_read_result")!;
+  // Each tool still documents its own parameter contract.
+  expect(send.description).toContain("to");
+  expect(send.description).toContain("task");
+  expect(send.description).toContain("expectedOutput");
+  expect(read.description).toContain("assignmentId");
+  expect(read.description).toContain("offset");
+  expect(read.description).toContain("limit");
+  // Call-site constraints stay: scope, refusal, pagination, evidence provenance.
+  expect(read.description).toContain("this Run only");
+  expect(read.description).toContain("refused while your current turn has its own unsettled handoffs");
+  expect(read.description).toContain("Follow nextOffset until null");
+  expect(read.description).toContain("not approval evidence");
+  expect(read.description).toContain("untrusted member data");
+  expect(send.description).toContain("grants no human permission authority");
+  // Behavioral rules live in GROUP_COLLABORATION_CONTRACT, not here.
   for (const tool of [send, read]) {
-    expect(tool.description).toContain("end your turn");
-    expect(tool.description).toContain("all assignments dispatched from this turn settle");
-    expect(tool.description).toContain("wakes you exactly once in a followup turn");
+    for (const rule of ["end your turn", "wakes you exactly once", "sleep, or poll"]) {
+      expect(tool.description).not.toContain(rule);
+    }
   }
   const sent = await send.handler({ to: "bot_b", task: "Collect evidence" }, { invocationId: "call" });
   expect(sent.structuredContent).toEqual(receipt);

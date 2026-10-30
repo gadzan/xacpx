@@ -101,7 +101,7 @@ export function createXacpxMcpServer(options: XacpxMcpServerOptions): Server {
         },
       },
       instructions: options.sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)
-        ? "Use group_send to publicly assign a concrete downstream task to another current Group Bot. After dispatching all assignments for this turn, end your turn immediately; do not wait, sleep, or poll. Once all assignments dispatched from this turn settle, the runtime wakes you exactly once in a followup turn. Use group_read_result in that followup turn to list this Run's settled assignments and read full public results in pages; reads are refused while your current turn still has its own unsettled handoffs. Follow nextOffset until null for necessary evidence; never approve a clipped preview. Sender, Run and permission provenance are bound by the runtime. Acceptance is durable; execution follows the Topic filesystem scheduler."
+        ? "Use group_send to publicly assign a concrete downstream task to another current Group Bot, and group_read_result to read this Run's settled public results in pages. Sender, Run and permission provenance are bound by the runtime. Acceptance is durable; execution follows the Topic filesystem scheduler."
         : XACPX_MCP_SERVER_INSTRUCTIONS,
       taskStore: createXacpxTaskStore(async () => await getToolState(), taskOptionsById, watchTasksById),
     },
