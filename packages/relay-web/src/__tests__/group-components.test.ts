@@ -100,18 +100,22 @@ describe("Group Components", () => {
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       vi.spyOn(console, "error").mockImplementation(() => {});
       vi.spyOn(console, "warn").mockImplementation(() => {});
+      const width = window.innerWidth;
       window.innerWidth = 390;
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
-      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("Message members… (@ to mention)");
-      i18n.global.locale.value = "zh-CN";
-      await wrapper.vm.$nextTick();
-      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("发消息给成员…（@ 指定）");
-      wrapper.unmount();
-      i18n.global.locale.value = "en";
-      window.innerWidth = 1024;
+      try {
+        expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("Message members… (@ to mention)");
+        i18n.global.locale.value = "zh-CN";
+        await wrapper.vm.$nextTick();
+        expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("发消息给成员…（@ 指定）");
+      } finally {
+        wrapper.unmount();
+        i18n.global.locale.value = "en";
+        window.innerWidth = width;
+      }
     });
 
     it("renders the composer placeholder in both locales", async () => {

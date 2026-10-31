@@ -1021,7 +1021,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           <div v-if="dispatchRows[item.message.id]" class="mx-auto w-full max-w-3xl">
             <GroupDispatchRow
               :presentation="dispatchRows[item.message.id]!"
-                :stopping-all="stoppingAllRunId !== null && stoppingAllRunId === dispatchRows[item.message.id]!.members[0]?.runId"
+              :stopping-all="stoppingAllRunId !== null && stoppingAllRunId === dispatchRows[item.message.id]!.members[0]?.runId"
               @jump="jumpToMessage"
               @stop-member="handleStopMember"
               @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
