@@ -140,8 +140,9 @@ describe("GroupAvatarStack", () => {
       expect(grow.attributes("operator")).toBe("dilate");
       expect(grow.attributes("radius")).toBe(width);
       expect(filter.find("feFlood").attributes("style")).toContain("var(--avatar-ring)");
-      const cells = [...items(wrapper), wrapper.find('[data-test="group-avatar-more"]')];
-      for (const cell of cells) {
+      // Only avatars get the outline; the +N text sits on the background as is.
+      expect(styleOf(wrapper.find('[data-test="group-avatar-more"]'))).not.toContain("filter");
+      for (const cell of items(wrapper)) {
         const style = styleOf(cell);
         expect(style).toContain(`filter: url(#${id})`);
         expect(style).not.toContain("box-shadow");
@@ -164,6 +165,9 @@ describe("GroupAvatarStack", () => {
 
     expect(rendered).toHaveLength(3);
     expect(markerText(wrapper)).toBe("+2");
+    // The third member moves to the bottom left so +N owns the bottom-right quadrant.
+    expect(styleOf(rendered[2]!)).toContain("left: 29%");
+    expect(styleOf(rendered[2]!)).toContain("top: 71%");
     expect(styleOf(wrapper.find('[data-test="group-avatar-more"]'))).toContain("left: 79.5%");
     expect(styleOf(wrapper.find('[data-test="group-avatar-more"]'))).toContain("top: 72%");
     expect(styleOf(wrapper.find('[data-test="group-avatar-more"]'))).toContain("font-size: 14px");

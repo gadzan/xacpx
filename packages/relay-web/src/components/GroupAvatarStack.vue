@@ -76,7 +76,10 @@ const LAYOUTS: Record<number, Array<[number, number]>> = {
   3: [[29, 29], [71, 29], [50, 71]],
   4: [[29, 29], [71, 29], [29, 71], [71, 71]],
 };
-const layout = computed(() => LAYOUTS[shown.value.length] ?? LAYOUTS[3]!);
+/** With an overflow marker the three members take the top row and the bottom
+ *  left, so the marker owns the bottom-right quadrant alone. */
+const OVERFLOW_LAYOUT: Array<[number, number]> = [[29, 29], [71, 29], [29, 71]];
+const layout = computed(() => (overflow.value ? OVERFLOW_LAYOUT : LAYOUTS[shown.value.length] ?? LAYOUTS[3]!));
 
 /** A lone member fills the container; the rest are sub-avatars. */
 const subSize = computed(() => (shown.value.length === 1 ? props.size : Math.round(props.size * SUB_RATIO)));
@@ -109,7 +112,6 @@ function itemStyle(index: number) {
 const markerStyle = computed(() => ({
   left: "79.5%",
   top: "72%",
-  filter: outlineFilter,
   fontSize: `${Math.round(props.size * (overflow.value.length === 3 ? 0.29 : 0.38))}px`,
 }));
 
