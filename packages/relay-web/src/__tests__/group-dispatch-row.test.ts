@@ -1351,6 +1351,55 @@ describe("GroupTranscript dispatch aggregation", () => {
     wrapper.unmount();
   });
 
+  it("spins and disables stop-all from the confirmed click until the stop lands", async () => {
+    const groups = seedTranscript(
+      [handoffMessage(1), handoffMessage(2)],
+      [
+        memberTurn("turn_a", "bot_a", "completed"),
+        memberTurn("turn_member_1", "bot_b", "running"),
+        memberTurn("turn_member_2", "bot_c", "queued"),
+      ],
+    );
+    groups.groupsByInstance = {
+      instance_1: [{
+        id: "group_1",
+        kind: "group",
+        title: "Release",
+        botIds: ["bot_a", "bot_b", "bot_c"],
+        createdAt: "now",
+        updatedAt: "now",
+      }],
+    };
+    let finish!: () => void;
+    const cancel = vi.spyOn(groups, "stopCurrentAndQueued").mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
+    await flushPromises();
+
+    await wrapper.get('[data-test="group-dispatch-row"]').trigger("click");
+    const button = () => wrapper.get('[data-test="group-dispatch-stop-all"]');
+    await button().trigger("click");
+    await button().trigger("click");
+    await flushPromises();
+    settleConfirm(true);
+    await flushPromises();
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(button().attributes("disabled")).toBeDefined();
+    expect(button().attributes("aria-busy")).toBe("true");
+    expect(button().find('[data-test="group-dispatch-stop-all-spinner"]').exists()).toBe(true);
+    await button().trigger("click");
+    await flushPromises();
+    expect(useConfirmState().value).toBeFalsy();
+    expect(cancel).toHaveBeenCalledTimes(1);
+
+    // The stop did not land (the round is still active): the button comes back for a retry.
+    finish();
+    await flushPromises();
+    expect(button().attributes("disabled")).toBeUndefined();
+    expect(button().find('[data-test="group-dispatch-stop-all-spinner"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("names the leader in the Chinese stop-all confirmation", async () => {
     i18n.global.locale.value = "zh-CN";
     seedTranscript(

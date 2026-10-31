@@ -178,6 +178,15 @@ describe("AgentIcon", () => {
     const w = mount(AgentIcon, { props: { driver: "nope", fill: true, size: 15 } });
     expect(w.find(".lucide-bot").exists()).toBe(true);
   });
+
+  it("draws the fallback Bot at 72% of the box so its ink matches the brand marks", () => {
+    for (const [size, px] of [[16, "12"], [19, "14"], [32, "23"]] as const) {
+      const w = mount(AgentIcon, { props: { driver: "nope", size } });
+      // The wrapper box keeps the full size; only the line-art glyph shrinks inside it.
+      expect(w.find('[data-test="agent-icon"]').attributes("style")).toContain(`width: ${size}px`);
+      expect(w.find(".lucide-bot").attributes("width")).toBe(px);
+    }
+  });
 });
 
 describe("AgentIcon svg ids", () => {

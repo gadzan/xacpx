@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AtSign, Bot, Check, ChevronDown, Users } from "lucide-vue-next";
 import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
@@ -90,6 +90,11 @@ const sendBusy = ref(false);
 const attachments = useComposerStore();
 /** Below lg the completion selector is a bottom sheet, not a popover. */
 const isMobile = useIsMobile();
+/** Below Tailwind `sm` (640px) the full placeholder no longer fits one line. */
+const isNarrow = ref(typeof window !== "undefined" && window.innerWidth < 640);
+function syncNarrow(): void { isNarrow.value = window.innerWidth < 640; }
+onMounted(() => window.addEventListener("resize", syncNarrow));
+onBeforeUnmount(() => window.removeEventListener("resize", syncNarrow));
 /** Attachment scope: one upload draft per instance + Group + Topic, namespaced
  *  "group" so it never collides with the session chat or direct Bot scopes. */
 const attachKey = computed(() =>
@@ -770,7 +775,7 @@ function handleRetry(): void {
       :send-disabled="!canSend"
       :has-attachments="readyMedia"
       :attachments-send-disabled="attachments.uploading"
-      :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : $t('group.prompt.placeholder')"
+      :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : isNarrow ? $t('group.prompt.placeholderShort') : $t('group.prompt.placeholder')"
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
       stop-test-id="group-stop-run-button"

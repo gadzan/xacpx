@@ -233,7 +233,7 @@ function onInput(event: Event): void {
           :aria-controls="combobox ? comboboxListId : undefined"
           :aria-expanded="combobox ? comboboxExpanded : undefined"
           :aria-activedescendant="combobox ? comboboxActiveId : undefined"
-          class="block w-full resize-none bg-transparent pl-3.5 pr-12 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted focus:outline-none disabled:cursor-not-allowed"
+          class="block w-full resize-none bg-transparent pl-3.5 pr-12 text-base lg:text-sm leading-relaxed text-fg placeholder:text-sm lg:placeholder:text-ui placeholder:text-fg-muted placeholder:overflow-hidden placeholder:text-ellipsis placeholder:whitespace-nowrap focus:outline-none disabled:cursor-not-allowed"
           :class="[surfaceDisabled ? '' : 'disabled:opacity-50', expanded ? 'pt-2.5 pb-1' : 'pt-[7px] pb-[5px]', animateHeight ? 'transition-[height] duration-200 ease-out motion-reduce:transition-none' : '']"
           :disabled="disabled"
           :style="height !== undefined ? { height: height + 'px' } : undefined"
