@@ -4,12 +4,16 @@ import { useI18n } from "vue-i18n";
 import { Users } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import BotAvatar from "./BotAvatar.vue";
+import { useInstancesStore } from "../stores/instances";
 
 const props = defineProps<{
   /** The group's members, as the caller knows them. */
   bots: BotSummaryDto[];
   /** The container size in px. */
   size: number;
+  /** The members' instance, which maps each agent name to the driver the
+   *  default avatar draws. */
+  instanceId?: string | null;
   /** The group name, for the accessible label. */
   name: string;
   /** The TOTAL member count, disabled ones included. */
@@ -25,35 +29,17 @@ const props = defineProps<{
 }>();
 
 const { t } = useI18n();
+const instancesStore = useInstancesStore();
+
+/** The same driver lookup the transcript and the sidebar use, so a member
+ *  without an avatar draws the same default avatar in all three. */
+function driverFor(bot: BotSummaryDto): string | undefined {
+  const inst = props.instanceId ? instancesStore.byId(props.instanceId) : undefined;
+  return inst?.agents.find((a) => a.name === bot.agent)?.driver;
+}
 
 /** Sub-avatar diameter, as a share of the container. */
 const SUB_RATIO = 0.59;
-/** The letter tile's palette. Fixed colours, hashed by bot id. */
-const TILE_PALETTE = ["#D6453D", "#7C4DDB", "#C93D9C", "#2F7FDB", "#1E9C82", "#D9741A"] as const;
-
-const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-/** FNV-1a over the bot id: the same member keeps its colour across renames. */
-function hashOf(value: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < value.length; i++) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-function tileColor(botId: string): string {
-  return TILE_PALETTE[hashOf(botId) % TILE_PALETTE.length]!;
-}
-
-/** The first grapheme: a Chinese name yields its first character, an English
- *  name its first letter, uppercased. */
-function tileLetter(name: string): string {
-  const first = segmenter.segment(name)[Symbol.iterator]().next().value?.segment ?? "";
-  return /^[a-z]$/.test(first) ? first.toUpperCase() : first;
-}
-
 // A disabled or retired member takes no work, so it has no place in the collage.
 const eligible = computed(() => props.bots.filter((b) => b.enabled !== false && b.retired !== true));
 
@@ -154,16 +140,9 @@ const label = computed(() => {
         :style="itemStyle(index)"
         aria-hidden="true"
         data-test="group-avatar-item"
+        :data-bot-id="bot.id"
       >
-        <BotAvatar v-if="bot.avatar" :avatar="bot.avatar" :name="bot.name" :size="subSize" static aria-hidden="true" />
-        <!-- No avatar config: a letter tile, so the members stay tellable
-             apart. A pile of identical agent logos would not. -->
-        <span
-          v-else
-          class="grid h-full w-full place-items-center rounded-full font-semibold leading-none text-white"
-          :style="{ background: tileColor(bot.id), fontSize: `${Math.round(subSize / 2)}px` }"
-          data-test="group-avatar-tile"
-        >{{ tileLetter(bot.name) }}</span>
+        <BotAvatar :avatar="bot.avatar" :driver="driverFor(bot)" :name="bot.name" :size="subSize" static aria-hidden="true" />
       </span>
       <span
         v-if="overflow"

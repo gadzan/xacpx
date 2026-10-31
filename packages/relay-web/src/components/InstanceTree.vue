@@ -972,7 +972,7 @@ const rowSwipes = computed(() => {
               class="relative flex min-h-10 min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
               @click="onGroupTap(inst.id, g.id)"
             >
-              <GroupAvatarStack :bots="groupMemberBots(inst.id, g)" :size="36" :name="g.title"
+              <GroupAvatarStack :bots="groupMemberBots(inst.id, g)" :instance-id="inst.id" :size="36" :name="g.title"
                                 :total-count="g.botIds.length" :disabled-count="groupDisabledCount(inst.id, g)"
                                 :lead-bot-id="g.leadBotId"
                                 :activity-bot-ids="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? activityBotIds : undefined"

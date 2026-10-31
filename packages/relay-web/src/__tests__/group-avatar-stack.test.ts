@@ -3,6 +3,7 @@ import { flushPromises, mount, type DOMWrapper, type VueWrapper } from "@vue/tes
 import { createPinia, setActivePinia } from "pinia";
 import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
+import BotAvatar from "../components/BotAvatar.vue";
 import GroupAvatarStack from "../components/GroupAvatarStack.vue";
 import InstanceTree from "../components/InstanceTree.vue";
 import { useDirectBotsStore } from "../stores/direct-bots";
@@ -13,8 +14,7 @@ function bot(id: string, name: string, extra: Partial<BotSummaryDto> = {}): BotS
   return { id, name, agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", ...extra };
 }
 
-/** Members without an avatar config render letter tiles, whose text names the
- *  member, so the render order is readable from the DOM. */
+/** Each item carries its bot id, so the render order is readable from the DOM. */
 const LETTERS = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"];
 
 function members(count: number): BotSummaryDto[] {
@@ -30,6 +30,7 @@ interface StackProps {
   leadBotId?: string;
   activityBotIds?: string[];
   decorative?: boolean;
+  instanceId?: string;
 }
 
 function mountStack(props: Partial<StackProps>): VueWrapper {
@@ -54,6 +55,14 @@ function markerText(wrapper: VueWrapper): string {
 }
 
 describe("GroupAvatarStack", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    useInstancesStore().instances = [
+      { id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true,
+        agents: [{ name: "codex", driver: "codex" }], workspaces: [], agentCatalog: [] } as never,
+    ];
+  });
+
   it("draws one member as a single circle filling the container", () => {
     const wrapper = mountStack({ bots: members(1), size: 36, totalCount: 1 });
 
@@ -176,27 +185,23 @@ describe("GroupAvatarStack", () => {
     expect(wrapper.find("svg").exists()).toBe(true);
   });
 
-  it("draws a letter tile for a member without an avatar, coloured by bot id", () => {
-    const tile = (name: string) => {
-      const wrapper = mountStack({ bots: [bot("bot_a", name)], size: 36, totalCount: 1 });
-      return wrapper.find('[data-test="group-avatar-tile"]');
-    };
+  it("draws a member without an avatar as the default bot avatar, as the transcript does", () => {
+    const wrapper = mountStack({ bots: [bot("bot_a", "Alpha")], size: 36, totalCount: 1, instanceId: "i1" });
 
-    const renamed = tile("Zulu");
-    expect(tile("Alpha").text()).toBe("A");
-    // The hash reads the id, so renaming keeps the colour: bot_a is palette slot 0.
-    expect(styleOf(renamed)).toContain("background: rgb(214, 69, 61)");
-    expect(tile("Zulu").text()).toBe("Z");
+    const avatar = wrapper.findComponent(BotAvatar);
+    expect(avatar.attributes("data-avatar-kind")).toBe("default");
+    // The instance maps the agent name to its driver, the same lookup the transcript uses.
+    expect(avatar.props("driver")).toBe("codex");
+    expect(wrapper.find('[data-test="group-avatar-tile"]').exists()).toBe(false);
   });
 
-  it("renders a configured text avatar through BotAvatar instead of a letter tile", () => {
+  it("renders a configured avatar through BotAvatar", () => {
     const wrapper = mountStack({
       bots: [bot("bot_a", "Alpha", { avatar: { version: 1, kind: "text", value: "AB" } })],
       size: 36,
       totalCount: 1,
     });
 
-    expect(wrapper.find('[data-test="group-avatar-tile"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="bot-avatar"]').attributes("data-avatar-kind")).toBe("text");
   });
 
@@ -209,7 +214,7 @@ describe("GroupAvatarStack", () => {
       activityBotIds: ["bot_b", "bot_a"],
     });
 
-    expect(items(wrapper).map((item) => item.text())).toEqual(["C", "B", "A"]);
+    expect(items(wrapper).map((item) => item.attributes("data-bot-id"))).toEqual(["bot_c", "bot_b", "bot_a"]);
   });
 
   it("falls back to the given order when nobody has spoken", () => {
@@ -220,7 +225,7 @@ describe("GroupAvatarStack", () => {
       leadBotId: "bot_b",
     });
 
-    expect(items(wrapper).map((item) => item.text())).toEqual(["B", "A", "C"]);
+    expect(items(wrapper).map((item) => item.attributes("data-bot-id"))).toEqual(["bot_b", "bot_a", "bot_c"]);
   });
 
   it("stays silent in a row that already states the name and the count", () => {

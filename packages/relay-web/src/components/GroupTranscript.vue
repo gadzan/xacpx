@@ -846,7 +846,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
   <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 px-4 [overflow-anchor:none] lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && items.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
       <div class="mb-3">
-        <GroupAvatarStack :bots="bots" :size="48" :name="group?.title ?? 'Group'"
+        <GroupAvatarStack :bots="bots" :instance-id="groupsStore.instanceId" :size="48" :name="group?.title ?? 'Group'"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
                           :lead-bot-id="leadBotId" :activity-bot-ids="activityBotIds"
                           style="--avatar-ring: rgb(var(--c-bg))" />

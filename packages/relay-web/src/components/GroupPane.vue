@@ -202,7 +202,7 @@ const worktreeRunId = computed(() => {
       <button type="button" data-test="group-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
               class="grid h-11 w-11 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="memberPanelOpen = true">
-        <GroupAvatarStack :bots="memberBots" :size="32" :name="group?.title ?? $t('group.nav.title')"
+        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
                           :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
                           style="--avatar-ring: rgb(var(--c-surface))" />
@@ -238,7 +238,7 @@ const worktreeRunId = computed(() => {
       <button type="button" data-test="group-desktop-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
               class="grid h-11 w-11 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="memberPanelOpen = true">
-        <GroupAvatarStack :bots="memberBots" :size="44" :name="group?.title ?? $t('group.nav.title')"
+        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="44" :name="group?.title ?? $t('group.nav.title')"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
                           :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
                           style="--avatar-ring: rgb(var(--c-surface))" />
