@@ -868,7 +868,7 @@ function handleRetry(): void {
       <div
         v-else-if="!isMobile && slashMatches.length > 0"
         data-test="group-cmd-menu"
-        class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
+        class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
       >
         <button
           v-for="(command, index) in slashMatches"
@@ -886,7 +886,7 @@ function handleRetry(): void {
       <div
         v-if="!isMobile && mentionMatches.length > 0"
         data-test="group-mention-menu"
-        class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
+        class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
       >
         <button
           v-for="(member, index) in mentionMatches"

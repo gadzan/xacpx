@@ -6,6 +6,7 @@ import { api } from "../api/client";
 import { i18n } from "../i18n";
 import Input from "../components/ConversationPromptInput.vue";
 import GroupComposer from "../components/GroupComposer.vue";
+import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useDirectComposerStore } from "../stores/direct-composer";
 import { useGroupsStore } from "../stores/groups";
@@ -297,5 +298,46 @@ describe("composer completion selector", () => {
     expect(document.querySelector('[data-test="group-cmd-sheet"]')).toBeNull();
     expect(desktop.find('[data-test="group-mention-menu"]').exists()).toBe(true);
     expect(desktop.find('[data-test="group-mention-item"]').classes()).toContain("h-8");
+  });
+
+  it("renders every desktop completion popover as a glass-strong overlay", async () => {
+    setWidth(1280);
+    seedDirect();
+    const direct = mountDirect();
+    await direct.get("textarea").setValue("@");
+    await flushPromises();
+
+    seedGroup();
+    const group = mountGroup();
+    const ta = group.get('[data-test="group-composer-textarea"]');
+    await ta.setValue("@Te");
+    await group.vm.$nextTick();
+
+    // One selected member turns the slash rows on: the same overlay treatment
+    // must cover them.
+    useGroupsStore().targetSelection = { mode: "members", botIds: ["bot_a"] };
+    useConversationCommandsStore().remember(
+      { instanceId: "i1", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a" },
+      [{ name: "review", description: "adapter" }, { name: "reload" }],
+    );
+    await ta.setValue("/re");
+    await group.vm.$nextTick();
+
+    // Each popover is asserted in the state that opens it.
+    const glassTokens = ["bg-glass-strong", "backdrop-blur-glass", "backdrop-saturate-glass", "shadow-glass-float"];
+    const assertGlass = (testId: string): void => {
+      const popover = document.querySelector<HTMLElement>(`[data-test="${testId}"]`);
+      expect(popover, testId).not.toBeNull();
+      const classes = popover!.className.split(/\s+/);
+      for (const token of glassTokens) expect(classes, `${testId}: ${token}`).toContain(token);
+      expect(popover!.className).not.toContain("bg-surface");
+      expect(popover!.className).not.toContain("shadow-float");
+    };
+    assertGlass("direct-cmd-menu");
+    assertGlass("group-cmd-menu");
+    // Back to a mention query: the mention popover carries the same treatment.
+    await ta.setValue("@Te");
+    await group.vm.$nextTick();
+    assertGlass("group-mention-menu");
   });
 });

@@ -600,7 +600,7 @@ function onInput(): void {
         role="listbox"
         :aria-label="$t('bot.prompt.completions')"
         data-test="direct-cmd-menu"
-        class="absolute bottom-full left-0 z-20 mb-2 max-h-80 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
+        class="absolute bottom-full left-0 z-20 mb-2 max-h-80 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
       >
           <button
             v-for="(row, index) in rows"
