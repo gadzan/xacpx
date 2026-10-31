@@ -1331,9 +1331,7 @@ describe("GroupTranscript dispatch aggregation", () => {
         updatedAt: "now",
       }],
     };
-    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
-      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
-    });
+    const cancel = vi.spyOn(groups, "stopCurrentAndQueued").mockResolvedValue(undefined);
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
 
@@ -1400,9 +1398,7 @@ describe("GroupTranscript dispatch aggregation", () => {
         memberTurn("turn_member_2", "bot_c", "running"),
       ],
     );
-    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
-      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
-    });
+    const cancel = vi.spyOn(groups, "stopCurrentAndQueued").mockResolvedValue(undefined);
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
 
@@ -1550,9 +1546,7 @@ describe("GroupTranscript dispatch aggregation", () => {
       { capabilities: [RELAY_CAPABILITIES.runsCancelMemberV1] },
     );
     const cancelMember = vi.spyOn(groups, "cancelMember").mockResolvedValue(undefined);
-    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
-      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
-    });
+    const cancel = vi.spyOn(groups, "stopCurrentAndQueued").mockResolvedValue(undefined);
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
 
@@ -1575,9 +1569,7 @@ describe("GroupTranscript dispatch aggregation", () => {
         memberTurn("turn_member_2", "bot_c", "queued"),
       ],
     );
-    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
-      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
-    });
+    const cancel = vi.spyOn(groups, "stopCurrentAndQueued").mockResolvedValue(undefined);
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n] } });
     await flushPromises();
 
@@ -1836,9 +1828,7 @@ describe("GroupDispatchRow on mobile", () => {
         updatedAt: "now",
       }],
     };
-    const cancel = vi.spyOn(groups, "cancelCurrentRun").mockResolvedValue({
-      status: "blocked", scope: null, runId: "run_1", reason: "ownership",
-    });
+    const cancel = vi.spyOn(groups, "stopCurrentAndQueued").mockResolvedValue(undefined);
     const wrapper = mount(GroupTranscript, { props: { bots: profiles }, global: { plugins: [i18n], stubs: { teleport: true } } });
     await flushPromises();
 

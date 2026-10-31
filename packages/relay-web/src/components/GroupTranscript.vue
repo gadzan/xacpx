@@ -612,8 +612,8 @@ async function handleStopMember(payload: { runId: string; memberTurnId: string }
   }
 }
 
-/** Round-level stop: confirm first, then cancel the run through the same path
- *  as the per-run Stop button. */
+/** Round-level stop: confirm first, then stop the owner and every queued accept
+ *  behind it. The detail sheet's per-run Stop stays scoped to one Run. */
 async function handleStopAll(presentation: GroupDispatchPresentation): Promise<void> {
   const runId = presentation.members[0]?.runId;
   if (!runId) return;
@@ -630,7 +630,7 @@ async function handleStopAll(presentation: GroupDispatchPresentation): Promise<v
   // The round may have ended while the dialog was open: never cancel a run
   // other than the one the user confirmed.
   if (groupsStore.activeRun?.id !== runId) return;
-  void groupsStore.cancelCurrentRun();
+  void groupsStore.stopCurrentAndQueued();
 }
 
 /**

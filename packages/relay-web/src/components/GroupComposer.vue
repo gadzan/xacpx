@@ -620,7 +620,7 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
 async function handleCancel(): Promise<void> {
   const run = groupsStore.activeRun;
   if (!run || groupsStore.cancellingRunId) return;
-  await groupsStore.cancelCurrentRun({ runId: run.id });
+  await groupsStore.stopCurrentAndQueued();
 }
 
 async function onPaste(e: ClipboardEvent): Promise<void> {

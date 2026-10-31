@@ -172,7 +172,7 @@ function handleSend(text: string, media: PromptAttachmentRef[] = []): void {
 }
 
 function handleCancel(): void {
-  void groupsStore.cancelCurrentRun();
+  void groupsStore.stopCurrentAndQueued();
 }
 
 // An archived Topic stays browsable (its transcript is durable history), but it

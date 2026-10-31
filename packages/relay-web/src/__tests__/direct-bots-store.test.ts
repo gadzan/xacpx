@@ -5757,6 +5757,84 @@ describe("useDirectBotsStore", () => {
       expect(store.activeRun?.state).toBe("cancelled");
     });
 
+    it("stop cancels the queued accepts behind the owner so they never start", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.topicReady = true;
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const owner: ConversationRunDto = {
+        id: "run_owner", conversationId: "conv_1", topicId: "top_1",
+        requestMessageId: "msg_1", requestId: "req_owner", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now", startedAt: "now",
+      };
+      const queued: ConversationRunDto = {
+        id: "run_queued", conversationId: "conv_1", topicId: "top_1",
+        requestMessageId: "msg_2", requestId: "req_queued", mode: "explicit", state: "queued",
+        profileRevision: 1, createdAt: "now",
+      };
+      let promptCount = 0;
+      mockRpc.mockImplementation((_instanceId: string, type: string, payload?: { runId?: string }) => {
+        if (type === "control.conversation.prompt") {
+          promptCount += 1;
+          const run = promptCount === 1 ? owner : queued;
+          return Promise.resolve({
+            message: {
+              id: `msg_${promptCount}`, conversationId: "conv_1", topicId: "top_1",
+              seq: promptCount, role: "human", content: "review", createdAt: "now",
+            },
+            run: { ...run, requestMessageId: `msg_${promptCount}` },
+            memberTurn: {
+              id: `turn_${promptCount}`, runId: run.id, conversationId: "conv_1", topicId: "top_1",
+              botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit",
+              state: run.state, createdAt: "now",
+            },
+            // Every later accept is queued behind the standing owner.
+            activeRunId: owner.id,
+            activeRun: owner,
+          });
+        }
+        if (type === "control.runs.cancel") {
+          const cancelled = payload?.runId === owner.id ? owner : queued;
+          return Promise.resolve({ ok: true, run: { ...cancelled, state: "cancelled", memberTurns: [] } });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1", topicId: "top_1", messages: [], hasMoreBefore: false, hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      await store.sendPrompt("first");
+      await store.sendPrompt("second");
+      expect(store.activeRun?.id).toBe("run_owner");
+      expect(store.queuedRuns.map((run) => run.id)).toEqual(["run_queued"]);
+
+      await store.stopCurrentAndQueued();
+
+      // The queued accept is cancelled on the backend before the owner retires,
+      // so the owner's terminal handoff cannot promote it into execution.
+      const cancelCalls = mockRpc.mock.calls.filter((call) => call[1] === "control.runs.cancel");
+      expect(cancelCalls).toHaveLength(2);
+      expect(cancelCalls[0]?.[2]).toMatchObject({ runId: "run_queued" });
+      expect(cancelCalls[1]?.[2]).toMatchObject({ runId: "run_owner" });
+      // The backend's terminal row arrives over the socket: the prompt leaves the
+      // queue as cancelled, never as a Run that started.
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "conversation-run-changed", run: { ...queued, state: "cancelled" },
+      } } as never);
+      expect(store.isRunQueued("run_queued")).toBe(false);
+      expect(store.queuedRuns).toEqual([]);
+      expect(store.activeRun?.state).toBe("cancelled");
+    });
+
     it("cancels run with exact runId and updates state", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

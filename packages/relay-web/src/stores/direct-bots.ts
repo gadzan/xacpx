@@ -3267,6 +3267,27 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  /** Stop the Topic: cancel the queued accepts behind the owner, then the owner
+   *  itself. A queued accept is already a durable Run, so dropping it from the
+   *  local map alone would let the backend still start it: each one is
+   *  cancelled over the same RPC the owner uses. Queued Runs go first so the
+   *  owner's retirement cannot promote one of them into execution. */
+  async function stopCurrentAndQueued(): Promise<void> {
+    const targetInstId = instanceId.value;
+    if (targetInstId) {
+      await Promise.all(queuedRuns.value.map(async (run) => {
+        try {
+          unwrapRpc(await api.rpc<{ ok: boolean; run: ConversationRunDetailDto }>(targetInstId, MSG.runsCancel, { runId: run.id }));
+        } catch (err: unknown) {
+          // A failed queued cancel proves nothing about the Run: the terminal
+          // row still arrives over the socket and a later Stop retries it.
+          console.warn("cancelQueuedRun error:", err);
+        }
+      }));
+    }
+    await cancelCurrentRun();
+  }
+
   /**
    * Retire every pending interaction whose instance is no longer owned.
    *
@@ -4248,6 +4269,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     preparePromptRequestId,
     sendPrompt,
     cancelCurrentRun,
+    stopCurrentAndQueued,
     reconcileOnReconnect,
     reconcileOwnedInstanceNegative,
     applyEvent,

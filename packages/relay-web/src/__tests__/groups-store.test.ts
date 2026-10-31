@@ -2657,6 +2657,78 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.waitingQuestion).toBe("Which branch?");
   });
 
+  it("stop cancels the queued accepts behind the owner so they never start", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    const owner: ConversationRunDto = {
+      id: "run_owner", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_owner", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    const queued: ConversationRunDto = {
+      id: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_2", requestId: "req_queued", mode: "explicit", state: "queued",
+      profileRevision: 1, createdAt: "now",
+    };
+    let promptCount = 0;
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: { runId?: string }) => {
+      if (type === "control.conversation.prompt") {
+        promptCount += 1;
+        const run = promptCount === 1 ? owner : queued;
+        return {
+          reused: false,
+          conversationId: "conversation_g",
+          topicId: "topic_1",
+          requestId: run.requestId,
+          message: {
+            id: `msg_${promptCount}`, conversationId: "conversation_g", topicId: "topic_1",
+            seq: promptCount, role: "human", content: "review", createdAt: "now",
+          },
+          run: { ...run, requestMessageId: `msg_${promptCount}` },
+          // Every later accept is queued behind the standing owner.
+          activeRunId: owner.id,
+          activeRun: owner,
+        };
+      }
+      if (type === "control.runs.cancel") {
+        const cancelled = payload?.runId === owner.id ? owner : queued;
+        return { ok: true, run: { ...cancelled, state: "cancelled", finishedAt: "now" } };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        return { conversationId: "conversation_g", topicId: "topic_1", runs: [] };
+      }
+      if (type === "control.runs.get") return { run: { ...owner, state: "cancelled", memberTurns: [] } };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.sendPrompt("first");
+    await store.sendPrompt("second");
+    expect(store.activeRun?.id).toBe("run_owner");
+    expect(store.queuedRuns.map((run) => run.id)).toEqual(["run_queued"]);
+
+    await store.stopCurrentAndQueued();
+
+    // The queued accept is cancelled on the backend before the owner retires,
+    // so the owner's terminal handoff cannot promote it into execution.
+    const cancelCalls = mockRpc.mock.calls.filter((call) => call[1] === "control.runs.cancel");
+    expect(cancelCalls).toHaveLength(2);
+    expect(cancelCalls[0]?.[2]).toMatchObject({ runId: "run_queued" });
+    expect(cancelCalls[1]?.[2]).toMatchObject({ runId: "run_owner" });
+    // The backend's terminal row arrives over the socket: the prompt leaves the
+    // queue as cancelled, never as a Run that started.
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...queued, state: "cancelled" },
+    } } as never);
+    expect(store.isRunQueued("run_queued")).toBe(false);
+    expect(store.queuedRuns).toEqual([]);
+    expect(store.activeRun?.state).toBe("cancelled");
+  });
+
   it("admits a mid-run prompt as a queued Run behind the standing owner", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";

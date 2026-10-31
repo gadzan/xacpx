@@ -433,7 +433,7 @@ async function onDrop(e: DragEvent): Promise<void> {
 async function handleCancel(): Promise<void> {
   const run = directBotsStore.activeRun;
   if (!run || isCancelling.value) return;
-  await directBotsStore.cancelCurrentRun({ runId: run.id });
+  await directBotsStore.stopCurrentAndQueued();
 }
 function handleRetry(): void {
   void handleSend();
