@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useId } from "vue";
 import { useI18n } from "vue-i18n";
 import { Users } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
@@ -81,6 +81,13 @@ const layout = computed(() => LAYOUTS[shown.value.length] ?? LAYOUTS[3]!);
 /** A lone member fills the container; the rest are sub-avatars. */
 const subSize = computed(() => (shown.value.length === 1 ? props.size : Math.round(props.size * SUB_RATIO)));
 
+/** The outline follows each avatar's own opaque shape: the filter dilates
+ *  the item's alpha and paints the grown edge in the backdrop colour, so an
+ *  overlapping member reads as cut out of the one below. */
+const outlineId = `group-avatar-outline-${useId()}`;
+const outlineWidth = computed(() => (props.size <= 36 ? 1 : 1.5));
+const outlineFilter = `url(#${outlineId})`;
+
 const containerStyle = computed(() => ({
   width: `${props.size}px`,
   height: `${props.size}px`,
@@ -93,6 +100,7 @@ function itemStyle(index: number) {
     top: `${y}%`,
     width: `${subSize.value}px`,
     height: `${subSize.value}px`,
+    filter: outlineFilter,
   };
 }
 
@@ -101,6 +109,7 @@ function itemStyle(index: number) {
 const markerStyle = computed(() => ({
   left: "79.5%",
   top: "72%",
+  filter: outlineFilter,
   fontSize: `${Math.round(props.size * (overflow.value.length === 3 ? 0.29 : 0.38))}px`,
 }));
 
@@ -128,6 +137,17 @@ const label = computed(() => {
       <Users :size="fallbackIconSize" aria-hidden="true" />
     </span>
     <template v-else>
+      <svg class="absolute h-0 w-0" aria-hidden="true" focusable="false">
+        <filter :id="outlineId" x="-25%" y="-25%" width="150%" height="150%" color-interpolation-filters="sRGB" data-test="group-avatar-outline">
+          <feMorphology in="SourceAlpha" operator="dilate" :radius="outlineWidth" result="grown" />
+          <feFlood style="flood-color: var(--avatar-ring)" />
+          <feComposite in2="grown" operator="in" result="outline" />
+          <feMerge>
+            <feMergeNode in="outline" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </svg>
       <span
         v-for="(bot, index) in shown"
         :key="bot.id"
@@ -151,4 +171,7 @@ const label = computed(() => {
 </template>
 <style scoped>
 .group-avatar-item, .group-avatar-more { transform: translate(-50%, -50%); }
+/* The outline takes the colour of the backdrop it sits on. The caller
+   overrides it for a different backdrop. */
+.group-avatar-stack { --avatar-ring: rgb(var(--c-bg)); }
 </style>

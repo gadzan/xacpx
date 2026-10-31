@@ -204,7 +204,8 @@ const worktreeRunId = computed(() => {
               @click="memberPanelOpen = true">
         <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
-                          :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds" />
+                          :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
+                          style="--avatar-ring: rgb(var(--c-surface))" />
       </button>
       <div class="flex min-w-0 flex-1 flex-col">
         <div class="flex min-w-0 items-center gap-2"><span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span></div>
@@ -239,7 +240,8 @@ const worktreeRunId = computed(() => {
               @click="memberPanelOpen = true">
         <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="44" :name="group?.title ?? $t('group.nav.title')"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
-                          :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds" />
+                          :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
+                          style="--avatar-ring: rgb(var(--c-surface))" />
       </button>
       <div class="flex min-w-0 flex-col">
         <div class="flex min-w-0 items-center gap-2"><h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2></div>

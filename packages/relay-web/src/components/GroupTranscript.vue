@@ -848,7 +848,8 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
       <div class="mb-3">
         <GroupAvatarStack :bots="bots" :instance-id="groupsStore.instanceId" :size="48" :name="group?.title ?? 'Group'"
                           :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
-                          :lead-bot-id="leadBotId" :activity-bot-ids="activityBotIds" />
+                          :lead-bot-id="leadBotId" :activity-bot-ids="activityBotIds"
+                          style="--avatar-ring: rgb(var(--c-bg))" />
       </div>
       <h3 class="text-base font-semibold text-fg">{{ group?.title ?? "Group" }}</h3>
       <p class="mt-4 text-xs text-fg-muted">{{ $t("group.chat.emptyHint") }}</p>
