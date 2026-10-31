@@ -2,27 +2,85 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Design tokens — cold-grey canvas, one system blue, hairline edges.
+   Layering comes from lightness (canvas → sidebar → raised card), not from
+   borders. Glass is reserved for surfaces that float above content: the
+   conversation header, the composer card, menus, tooltips, toasts, dialogs. */
 :root {
-  /* Light theme — palette A "Sky" (晴空) */
-  --c-bg: 255 255 255;          /* #FFFFFF — Sky: content area */
-  --c-surface: 245 247 250;     /* #F5F7FA — sidebar / inputs / secondary */
-  --c-raised: 255 255 255;      /* #FFFFFF (+shadow) */
-  --c-border: 226 231 238;      /* #E2E7EE */
-  --c-fg: 24 34 53;             /* #182235 — navy; 15.9:1 on bg */
-  --c-fg-muted: 90 102 120;     /* #5A6678 — 5.4:1 on surface */
-  --c-accent: 39 102 194;       /* #2766C2 — AA on bg/surface (5.2:1+) */
-  --c-accent-hover: 31 89 173;  /* #1F59AD */
-  --c-run: 24 114 69;           /* #187245 — AA */
-  --c-run-bright: 61 190 120;   /* #3DBE78 (dot fill, not text) */
-  --c-warn: 147 87 0;           /* #935700 — AA */
-  --c-danger: 184 53 53;        /* #B83535 — AA */
-  --c-info: 39 102 194;         /* #2766C2 (= accent) */
-  --c-surface-2: 235 239 245;   /* #EBEFF5 — hover / selected / chips; 1.08:1 vs surface */
-  --c-accent-soft: 234 242 254; /* #EAF2FE — selected-row tint; fg 14.1:1, accent 4.95:1 */
-  --c-on-accent: 255 255 255;   /* #FFFFFF — text on filled accent; 5.58:1 (hover 6.79:1) */
-  --c-on-danger: 255 255 255;   /* #FFFFFF — text on filled danger; 5.84:1 */
-  --c-on-warn: 255 255 255;     /* #FFFFFF — text on filled warn; 5.83:1 */
-  /* Syntax highlighting tokens (CodeMirror githubHighlight, lib/cm-theme.ts) */
+  /* Canvas and surfaces. */
+  --c-bg: 243 244 246;          /* #F3F4F6 — cold grey canvas */
+  --c-surface: 237 239 242;     /* #EDEFF2 — sidebar, one step deeper than the canvas */
+  --c-surface-2: 229 231 235;   /* #E5E7EB — solid hover / track */
+  --c-raised: 255 255 255;      /* #FFFFFF — raised cards, selected rows, code blocks */
+
+  /* Hairline edge. Used with an alpha, never as a solid 1px rule. */
+  --c-border: 60 60 67;         /* #3C3C43 */
+
+  /* Text. */
+  --c-fg: 29 29 31;             /* #1D1D1F — 15.29:1 on canvas */
+  --c-fg-muted: 101 101 107;    /* #65656B — 5.26:1 on canvas, 5.03:1 on sidebar */
+
+  /* The single accent. Buttons use --c-accent; blue TEXT and icons use
+     --c-accent-text, one step deeper, so it stays legible on pale tints. */
+  --c-accent: 0 113 227;        /* #0071E3 — white text on it: 4.70:1 */
+  --c-accent-hover: 0 102 204;  /* #0066CC */
+  --c-accent-text: 0 95 194;    /* #005FC2 — 5.59:1 on canvas, 4.83:1 on accent-soft */
+  --c-on-accent: 255 255 255;   /* text on a filled accent */
+
+  /* Status colours. These only ever mean status. */
+  --c-run: 30 123 52;           /* #1E7B34 */
+  --c-run-bright: 40 167 69;    /* #28A745 */
+  --c-warn: 154 91 0;           /* #9A5B00 */
+  --c-warn-dot: 255 149 0;      /* #FF9500 */
+  --c-danger: 217 45 32;        /* #D92D20 */
+  --c-on-danger: 255 255 255;   /* text on a filled danger */
+  --c-on-warn: 255 255 255;     /* text on a filled warn */
+  --c-info: 0 113 227;          /* (= accent) */
+
+  /* Overlays: the scrim dims the canvas, so text on a scrim needs one step
+     more contrast than text on the bare canvas. These are the values the
+     overlay spec measured against the worst-case scrimmed surface. */
+  --c-danger-overlay: 196 24 11; /* #C4180B — danger text under a scrim */
+  --c-warn-overlay: 145 82 0;    /* #915200 — warn text under a scrim */
+  --c-run-overlay: 21 114 43;    /* #15722B — run text under a scrim */
+  --c-fg-muted-overlay: 98 98 104; /* #626268 — muted text under a scrim */
+  --c-accent-text-overlay: 0 95 194; /* #005FC2 — light blue text under a scrim */
+
+  /* Translucent greys for hover, selection, tracks, chips. */
+  --fill-hover: rgba(118, 118, 128, .10);
+  --fill-strong: rgba(118, 118, 128, .14);
+  --fill-track: rgba(118, 118, 128, .12);
+  --accent-soft: rgba(0, 113, 227, .11);
+
+  /* Hairlines. */
+  --hairline: rgba(60, 60, 67, .11);
+  --hairline-strong: rgba(60, 60, 67, .18);
+
+  /* Shadows. All below 6% black in light mode. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .04), 0 10px 30px rgba(28, 32, 40, .06);
+  --shadow-select: 0 1px 3px rgba(0, 0, 0, .05);
+  --shadow-press: 0 1px 2px rgba(0, 0, 0, .04);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .06);
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, .22), 0 2px 8px rgba(0, 0, 0, .08);
+  /* The old name for the overlay shadow, kept so the components that still
+     reference it pick up the new value. */
+  --shadow-float: var(--shadow-pop);
+  /* Motion. Non-composer controls only; the composer keeps its own 200ms
+     ease-out (see ConversationComposer.vue). */
+  --ease: cubic-bezier(.23, 1, .32, 1);
+  --dur-fast: 120ms;
+  --dur-base: 150ms;
+  --dur-sheet: 180ms;
+
+  /* Radii. */
+  --r-btn: 8px;
+  --r-input: 7px;
+  --r-card: 12px;
+  --r-dialog: 16px;
+  --r-menu: 10px;
+  --r-item: 5px;
+  --r-pill: 999px;
+  /* Syntax highlighting (CodeMirror githubHighlight, lib/cm-theme.ts). */
   --c-syn-keyword: #cf222e;
   --c-syn-string: #0a3069;
   --c-syn-number: #0550ae;
@@ -35,30 +93,54 @@
   --c-syn-constant: #0550ae;
   --c-syn-heading: #0550ae;
   --c-syn-link: #0a3069;
-  /* Single float shadow for overlays (menus, dialogs, toasts, drawers, FAB). */
-  --shadow-float: 0 8px 24px rgba(16,24,40,0.08);
 }
+
 .dark {
-  /* Dark theme — palette A "Sky" (晴空) */
-  --c-bg: 16 21 28;             /* #10151C */
-  --c-surface: 22 28 37;        /* #161C25 */
-  --c-raised: 31 39 49;         /* #1F2731 */
-  --c-border: 42 51 64;         /* #2A3340 */
-  --c-fg: 231 236 242;          /* #E7ECF2 */
-  --c-fg-muted: 154 165 180;    /* #9AA5B4 */
-  --c-accent: 94 163 247;       /* #5EA3F7 */
-  --c-accent-hover: 124 181 249;/* #7CB5F9 */
-  --c-run: 76 195 138;          /* #4CC38A */
-  --c-run-bright: 105 214 137;  /* #69D689 */
-  --c-warn: 227 166 59;         /* #E3A63B */
-  --c-danger: 244 127 124;      /* #F47F7C — AA on raised 5.87 / surface-2 4.91 */
-  --c-info: 94 163 247;         /* #5EA3F7 (= accent) */
-  --c-surface-2: 42 52 65;      /* #2A3441 — hover / selected / chips / inputs; distinct from raised #1F2731 */
-  --c-accent-soft: 24 42 64;    /* #182A40 — selected-row tint; fg 12.2:1, accent 5.6:1 */
-  --c-on-accent: 11 20 34;      /* #0B1422 — dark text on filled accent; 7.08:1, hover 8.65:1 (white was 2.61) */
-  --c-on-danger: 11 20 34;      /* #0B1422 — dark text on filled danger; 7.19:1 (white was 2.93) */
-  --c-on-warn: 11 20 34;        /* #0B1422 — dark text on filled warn; white was ~2.15 */
-  /* Syntax highlighting tokens (CodeMirror githubHighlight, lib/cm-theme.ts) */
+  --c-bg: 17 18 20;             /* #111214 */
+  --c-surface: 26 27 29;        /* #1A1B1D */
+  --c-surface-2: 44 45 50;      /* #2C2D32 */
+  --c-raised: 37 38 42;         /* #25262A */
+
+  --c-border: 255 255 255;
+
+  --c-fg: 245 245 247;          /* #F5F5F7 */
+  --c-fg-muted: 174 174 178;    /* #AEAEB2 */
+
+  --c-accent: 64 156 255;       /* #409CFF — dark text on it: 6.52:1 */
+  --c-accent-hover: 90 169 255; /* #5AA9FF */
+  --c-accent-text: 64 156 255;  /* #409CFF — 5.34:1 on raised */
+  --c-on-accent: 11 20 34;      /* #0B1422 */
+
+  --c-run: 48 209 88;
+  --c-run-bright: 48 209 88;
+  --c-warn: 255 159 10;
+  --c-warn-dot: 255 159 10;
+  --c-danger: 255 105 97;       /* #FF6961 */
+  --c-on-danger: 42 10 8;       /* #2A0A08 */
+  --c-on-warn: 11 20 34;        /* #0B1422 */
+  --c-info: 64 156 255;
+
+  --c-danger-overlay: 255 126 118;   /* #FF7E76 */
+  --c-warn-overlay: 255 159 10;
+  --c-run-overlay: 48 209 88;
+  --c-fg-muted-overlay: 174 174 178;
+  --c-accent-text-overlay: 79 171 255; /* #4FABFF */
+
+  --fill-hover: rgba(235, 235, 245, .07);
+  --fill-strong: rgba(235, 235, 245, .11);
+  --fill-track: rgba(235, 235, 245, .09);
+  --accent-soft: rgba(64, 156, 255, .16);
+
+  --hairline: rgba(255, 255, 255, .10);
+  --hairline-strong: rgba(255, 255, 255, .16);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .25), 0 18px 50px rgba(0, 0, 0, .20);
+  --shadow-select: 0 1px 3px rgba(0, 0, 0, .30);
+  --shadow-press: 0 1px 2px rgba(0, 0, 0, .25);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, .40), 0 1px 3px rgba(0, 0, 0, .25);
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, .50), 0 2px 8px rgba(0, 0, 0, .30);
+  --shadow-float: var(--shadow-pop);
+
   --c-syn-keyword: #ff7b72;
   --c-syn-string: #a5d6ff;
   --c-syn-number: #79c0ff;
@@ -71,11 +153,9 @@
   --c-syn-constant: #79c0ff;
   --c-syn-heading: #79c0ff;
   --c-syn-link: #a5d6ff;
-  /* Float shadow + hairline outline (shadow alone is invisible on dark). */
-  --shadow-float: 0 8px 24px rgba(0,0,0,0.32), 0 0 0 1px rgba(255,255,255,0.06);
 }
 
-/* Brand gradient — logo only */
+/* Brand gradient — logo only. */
 :root { --brand-from: #4F9BF5; --brand-to: #69D689; }
 
 html, body, #app { height: 100%; }
@@ -84,6 +164,56 @@ html, body, #app { height: 100%; }
    scrolling happens in inner containers, so clipping the document itself is safe. */
 html, body { overflow-x: hidden; }
 body { @apply bg-bg text-fg font-sans antialiased; }
+
+/* Glass surfaces. The blur is static — never animated, and never applied to an
+   ancestor that holds a fixed/absolute overlay, because a backdrop-filtered
+   ancestor becomes the containing block for its positioned descendants. */
+.glass {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border);
+}
+.glass-strong {
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border), var(--glass-shadow);
+}
+
+/* Glass tokens. Only the surfaces listed above get these. */
+:root {
+  --glass-bg: rgba(255, 255, 255, .72);         /* conversation header, mobile top bar */
+  --glass-bg-strong: rgba(255, 255, 255, .84);  /* composer, menus, tooltips, toasts, dialogs */
+  --glass-border: var(--hairline);
+  --glass-highlight: rgba(255, 255, 255, .90);
+  --glass-hover: var(--fill-hover);
+  --glass-blur: 20px;
+  --glass-saturate: 1.6;
+  --glass-shadow: var(--shadow-pop);
+  --scrim: rgba(0, 0, 0, .26);
+}
+.dark {
+  --glass-bg: rgba(37, 38, 42, .72);
+  --glass-bg-strong: rgba(37, 38, 42, .84);
+  --glass-border: var(--hairline);
+  --glass-highlight: rgba(255, 255, 255, .07);
+  --glass-hover: var(--fill-hover);
+  --glass-blur: 20px;
+  --glass-saturate: 1.6;
+  --glass-shadow: var(--shadow-pop);
+  --scrim: rgba(0, 0, 0, .45);
+}
+
+/* Without backdrop-filter the glass has nothing to blur, so it falls back to a
+   solid raised surface. Same for users who ask for reduced transparency. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root, .dark { --glass-bg: rgb(var(--c-raised)); --glass-bg-strong: rgb(var(--c-raised)); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root, .dark { --glass-bg: rgb(var(--c-raised)); --glass-bg-strong: rgb(var(--c-raised)); }
+  .glass, .glass-strong { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
 
 /* Branded focus ring on interactive elements (gap + accent halo).
    Text fields (input/textarea/select) are intentionally excluded — see the rule below. */
@@ -114,8 +244,8 @@ select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
 
 /* Live run-dot: expanding bright-green ring (matches mockup softpulse). */
 @keyframes softpulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(105,214,137,0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(105,214,137,0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(48,209,88,0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(48,209,88,0); }
 }
 .pulse-dot { animation: softpulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
 

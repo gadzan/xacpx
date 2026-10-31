@@ -27,14 +27,14 @@ it("toggle flips the mode, persists it, and updates the class", async () => {
 
 it("points every theme-color meta at the resolved theme on toggle", async () => {
   document.head.innerHTML =
-    '<meta name="theme-color" media="(prefers-color-scheme: light)" content="#FFFFFF">' +
-    '<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10151C">';
-  const { useThemeStore } = await import("../stores/theme");
+    '<meta name="theme-color" media="(prefers-color-scheme: light)" content="#000000">' +
+    '<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">';
+  const { useThemeStore, THEME_COLOR } = await import("../stores/theme");
   const t = useThemeStore();
   const contents = () => [...document.querySelectorAll('meta[name="theme-color"]')].map((m) => m.getAttribute("content"));
-  expect(contents()).toEqual(["#10151C", "#10151C"]);
+  expect(contents()).toEqual([THEME_COLOR.dark, THEME_COLOR.dark]);
   t.toggle();
-  expect(contents()).toEqual(["#FFFFFF", "#FFFFFF"]);
+  expect(contents()).toEqual([THEME_COLOR.light, THEME_COLOR.light]);
   document.head.innerHTML = "";
 });
 

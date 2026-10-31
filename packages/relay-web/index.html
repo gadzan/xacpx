@@ -6,8 +6,8 @@
     <title>XACPX HUB</title>
     <!-- Browser chrome colour = page --c-bg. stores/theme.ts rewrites both tags to the
          resolved theme when the user picks one explicitly (relay-theme). -->
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FFFFFF" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#10151C" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F3F4F6" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111214" />
     <meta name="description" content="Self-hosted relay dashboard for xacpx — remote-control acpx sessions." />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" href="/icon.svg" sizes="any" type="image/svg+xml" />
@@ -26,7 +26,7 @@
           }
           document.documentElement.classList.toggle('dark', m === 'dark');
           document.documentElement.style.colorScheme = m;
-          var tc = m === 'dark' ? '#10151C' : '#FFFFFF';
+          var tc = m === 'dark' ? '#111214' : '#F3F4F6';
           document.querySelectorAll('meta[name="theme-color"]').forEach(function (el) { el.setAttribute('content', tc); });
         } catch (e) {
           document.documentElement.classList.add('dark');
