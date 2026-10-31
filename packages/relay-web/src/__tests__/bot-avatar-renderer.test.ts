@@ -282,3 +282,41 @@ describe("BotAvatar resources and safe rendering", () => {
     expect(eyes(loaded)).toEqual(eyes(preview));
   });
 });
+
+describe("BotAvatar outline", () => {
+  const mountWith = (props: Record<string, unknown>) => mount(BotAvatar, { props: { static: true, size: 21, ...props }, global: { plugins: [i18n] } });
+
+  it("renders exactly as before when no caller asks for an outline", () => {
+    for (const props of [{ avatar: { ...config, motion: "off" } }, { driver: "codex" }, { avatar: { version: 1, kind: "text", value: "AB" } }]) {
+      const wrapper = mountWith(props);
+      expect(wrapper.find(".bot-avatar-outline").exists()).toBe(false);
+      expect(wrapper.html()).not.toContain("drop-shadow");
+      expect(wrapper.html()).not.toContain("--avatar-ring");
+      wrapper.unmount();
+    }
+  });
+
+  it("traces a character's own body path under the body, in CSS px", () => {
+    const wrapper = mountWith({ avatar: { ...config, motion: "off" }, outline: 1.5 });
+    const outline = wrapper.find(".bot-avatar-outline");
+    const body = wrapper.find(".bot-avatar-body");
+    expect(outline.attributes("d")).toBe(body.attributes("d"));
+    expect(outline.attributes("vector-effect")).toBe("non-scaling-stroke");
+    expect(outline.attributes("style")).toContain("stroke: var(--avatar-ring)");
+    expect(outline.attributes("style")).toContain("stroke-width: 3px");
+    // Under the body, so the body covers the inner half of the stroke; the hairline stays on the body.
+    const paths = wrapper.findAll("path").filter((p) => p.classes().some((c) => c.startsWith("bot-avatar-")));
+    expect(paths.map((p) => p.classes()[0])).toEqual(["bot-avatar-outline", "bot-avatar-body"]);
+    expect(wrapper.html()).not.toContain("drop-shadow");
+    wrapper.unmount();
+  });
+
+  it("follows the opaque pixels of the kinds that have no path", () => {
+    for (const props of [{ driver: "codex" }, { avatar: { version: 1, kind: "text", value: "AB" } }]) {
+      const wrapper = mountWith({ ...props, outline: 1 });
+      expect(wrapper.find(".bot-avatar-outline").exists()).toBe(false);
+      expect(wrapper.html()).toContain("drop-shadow(1px 0 0 var(--avatar-ring)) drop-shadow(-1px 0 0 var(--avatar-ring)) drop-shadow(0 1px 0 var(--avatar-ring)) drop-shadow(0 -1px 0 var(--avatar-ring))");
+      wrapper.unmount();
+    }
+  });
+});

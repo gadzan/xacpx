@@ -126,27 +126,19 @@ describe("GroupAvatarStack", () => {
     expect(markerText(wrapper)).toBe("+1");
     // 59% of 32px.
     expect(styleOf(rendered[0]!)).toContain("width: 19px");
+    // No ring: the members' own outlines separate them.
     expect(styleOf(rendered[0]!)).not.toContain("box-shadow");
   });
 
-  it("outlines every cell along its own shape, not a circle", () => {
-    for (const [size, width] of [[32, "1"], [36, "1"], [44, "1.5"], [48, "1.5"]] as const) {
+  it("outlines every member along its own shape, thinner on the small sizes", () => {
+    for (const [size, width] of [[32, 1], [36, 1], [44, 1.5], [48, 1.5]] as const) {
       const wrapper = mountStack({ bots: members(5), size, totalCount: 5 });
-      const filter = wrapper.find('[data-test="group-avatar-outline"]');
-      const id = filter.attributes("id");
-      // The outline grows the cell's own alpha, so it traces whatever shape the avatar has.
-      const grow = filter.find("feMorphology");
-      expect(grow.attributes("in")).toBe("SourceAlpha");
-      expect(grow.attributes("operator")).toBe("dilate");
-      expect(grow.attributes("radius")).toBe(width);
-      expect(filter.find("feFlood").attributes("style")).toContain("var(--avatar-ring)");
-      const cells = [...items(wrapper), wrapper.find('[data-test="group-avatar-more"]')];
-      for (const cell of cells) {
-        const style = styleOf(cell);
-        expect(style).toContain(`filter: url(#${id})`);
-        expect(style).not.toContain("box-shadow");
-        expect(style).not.toContain("z-index");
-        expect(style).not.toContain("border-radius");
+      for (const avatar of wrapper.findAllComponents(BotAvatar)) expect(avatar.props("outline")).toBe(width);
+      const marker = styleOf(wrapper.find('[data-test="group-avatar-more"]'));
+      expect(marker).toContain(`drop-shadow(${width}px 0 0 var(--avatar-ring))`);
+      for (const cell of [...items(wrapper), wrapper.find('[data-test="group-avatar-more"]')]) {
+        expect(styleOf(cell)).not.toContain("box-shadow");
+        expect(styleOf(cell)).not.toContain("z-index");
         expect(cell.classes()).not.toContain("rounded-full");
       }
     }
