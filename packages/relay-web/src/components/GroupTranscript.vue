@@ -614,9 +614,17 @@ async function handleStopMember(payload: { runId: string; memberTurnId: string }
 
 /** Round-level stop: confirm first, then stop the owner and every queued accept
  *  behind it. The detail sheet's per-run Stop stays scoped to one Run. */
+/** The round whose confirmed stop-all is in flight; its buttons spin and refuse
+ *  clicks. Released when the stop did not land so the user can retry; otherwise
+ *  held until the round ends and the buttons hide. */
+const stoppingAllRunId = ref<string | null>(null);
+/** A second click while the confirmation is open must not stack a second dialog. */
+let confirmingStopAll = false;
+
 async function handleStopAll(presentation: GroupDispatchPresentation): Promise<void> {
   const runId = presentation.members[0]?.runId;
-  if (!runId) return;
+  if (!runId || confirmingStopAll || stoppingAllRunId.value === runId) return;
+  confirmingStopAll = true;
   const ok = await confirm({
     title: t("group.dispatch.stopAllConfirm.title"),
     message: t("group.dispatch.stopAllConfirm.message", {
@@ -625,12 +633,15 @@ async function handleStopAll(presentation: GroupDispatchPresentation): Promise<v
     }),
     confirmLabel: t("group.dispatch.stopAllConfirm.confirm"),
     tone: "danger",
-  });
+  }).finally(() => { confirmingStopAll = false; });
   if (!ok) return;
   // The round may have ended while the dialog was open: never cancel a run
   // other than the one the user confirmed.
   if (groupsStore.activeRun?.id !== runId) return;
-  void groupsStore.stopCurrentAndQueued();
+  stoppingAllRunId.value = runId;
+  await groupsStore.stopCurrentAndQueued();
+  const stillRunning = groupsStore.activeRun?.id === runId && groupsStore.isRunActive;
+  if (stillRunning && stoppingAllRunId.value === runId) stoppingAllRunId.value = null;
 }
 
 /**
@@ -900,6 +911,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
               <GroupDispatchRow
                 v-if="dispatchRows[item.message.id]"
                 :presentation="dispatchRows[item.message.id]!"
+                :stopping-all="stoppingAllRunId !== null && stoppingAllRunId === dispatchRows[item.message.id]!.members[0]?.runId"
                 class="mt-2"
                 @jump="jumpToMessage"
                 @stop-member="handleStopMember"
@@ -918,6 +930,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
                    handoff, and every other handoff of the round collapses. -->
               <GroupDispatchRow
                 :presentation="dispatchRows[item.message.id]!"
+                :stopping-all="stoppingAllRunId !== null && stoppingAllRunId === dispatchRows[item.message.id]!.members[0]?.runId"
                 @jump="jumpToMessage"
                 @stop-member="handleStopMember"
                 @stop-all="handleStopAll(dispatchRows[item.message.id]!)"
@@ -950,6 +963,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
               <GroupDispatchRow
                 v-if="dispatchRows[item.message.id]"
                 :presentation="dispatchRows[item.message.id]!"
+                :stopping-all="stoppingAllRunId !== null && stoppingAllRunId === dispatchRows[item.message.id]!.members[0]?.runId"
                 class="mt-2"
                 @jump="jumpToMessage"
                 @stop-member="handleStopMember"
@@ -1007,6 +1021,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           <div v-if="dispatchRows[item.message.id]" class="mx-auto w-full max-w-3xl">
             <GroupDispatchRow
               :presentation="dispatchRows[item.message.id]!"
+                :stopping-all="stoppingAllRunId !== null && stoppingAllRunId === dispatchRows[item.message.id]!.members[0]?.runId"
               @jump="jumpToMessage"
               @stop-member="handleStopMember"
               @stop-all="handleStopAll(dispatchRows[item.message.id]!)"

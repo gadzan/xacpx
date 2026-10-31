@@ -1245,6 +1245,8 @@ export default {
     },
     prompt: {
       placeholder: "Message the selected members... ({'@'}name, {'@'}everyone)",
+      /** Below 640px: the full placeholder wraps to two lines next to Stop/Send. */
+      placeholderShort: "Message members… ({'@'} to mention)",
       createTopicFirst: "Create a topic to start chatting",
     },
     chat: {

@@ -11,7 +11,12 @@ const pending = useConfirmState();
 // The confirm owns a history entry while it is open, so the Android back key and the
 // iOS swipe cancel it like Esc does instead of leaving the site.
 let unregister: (() => void) | null = null;
+// The second click of a double-click on the button that opened the confirm
+// lands on the scrim; without this window it would cancel the confirm at once.
+const SCRIM_GRACE_MS = 350;
+let openedAt = 0;
 watch(pending, (p) => {
+  if (p) openedAt = performance.now();
   unregister?.();
   unregister = p ? pushModal({ id: "confirm", close: () => settleConfirm(false) }) : null;
 });
@@ -21,6 +26,10 @@ function onKey(e: KeyboardEvent): void {
   if (e.key === "Escape") { e.preventDefault(); navigateBack(); }
   else if (e.key === "Enter") { e.preventDefault(); settleConfirm(true); }
 }
+function onScrimClick(): void {
+  if (performance.now() - openedAt < SCRIM_GRACE_MS) return;
+  navigateBack();
+}
 onMounted(() => window.addEventListener("keydown", onKey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 </script>
@@ -28,7 +37,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 <template>
   <Teleport to="body">
     <div v-if="pending" class="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div class="absolute inset-0 bg-scrim backdrop-blur-sm" @click="navigateBack" />
+      <div class="absolute inset-0 bg-scrim backdrop-blur-sm" data-test="confirm-scrim" @click="onScrimClick" />
       <!-- A confirm dialog has no ✕: cancel is the way out. -->
       <div role="alertdialog" aria-modal="true" data-test="confirm-dialog"
            :aria-label="pending.title"

@@ -1243,6 +1243,7 @@ export default {
     },
     prompt: {
       placeholder: "给所选成员发消息...（{'@'}名称、{'@'}everyone）",
+      placeholderShort: "发消息给成员…（{'@'} 指定）",
       createTopicFirst: "先新建话题再发消息",
     },
     chat: {

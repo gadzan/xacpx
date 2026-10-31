@@ -19,6 +19,9 @@ import type { GroupDispatchPresentation } from "../lib/group-dispatch-presentati
  */
 const props = defineProps<{
   presentation: GroupDispatchPresentation;
+  /** A confirmed stop-all for this round is in flight: both stop-all buttons
+   *  spin and refuse clicks until the round ends and they hide. */
+  stoppingAll?: boolean;
 }>();
 
 /**
@@ -236,6 +239,7 @@ function stopMember(member: GroupDispatchPresentation["members"][number]): void 
 
 /** Round-level stop: the transcript owns the confirmation and cancellation. */
 function stopAll(): void {
+  if (props.stoppingAll) return;
   emit("stopAll");
 }
 
@@ -401,9 +405,12 @@ const STACK_ICON_SIZE = 14;
         <button
           type="button"
           data-test="group-dispatch-stop-all"
-          class="rounded-sm px-1 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
+          :disabled="stoppingAll"
+          :aria-busy="stoppingAll || undefined"
+          class="inline-flex items-center gap-1 rounded-sm px-1 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger disabled:cursor-default disabled:opacity-70 disabled:hover:bg-transparent"
           @click.stop="stopAll"
         >
+          <Loader2 v-if="stoppingAll" :size="12" class="animate-spin" aria-hidden="true" data-test="group-dispatch-stop-all-spinner" />
           {{ t("group.dispatch.stopAll") }}
         </button>
       </div>
@@ -463,9 +470,12 @@ const STACK_ICON_SIZE = 14;
           v-if="presentation.capability.anyActive"
           type="button"
           data-test="group-dispatch-sheet-stop-all"
-          class="w-full rounded-xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger transition-colors hover:bg-danger/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger"
+          :disabled="stoppingAll"
+          :aria-busy="stoppingAll || undefined"
+          class="flex w-full items-center justify-center gap-2 rounded-xl bg-danger/10 px-4 py-3 text-sm font-medium text-danger transition-colors hover:bg-danger/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-danger disabled:cursor-default disabled:opacity-70"
           @click="stopAll"
         >
+          <Loader2 v-if="stoppingAll" :size="16" class="animate-spin" aria-hidden="true" />
           {{ t("group.dispatch.stopAll") }}
         </button>
       </template>
