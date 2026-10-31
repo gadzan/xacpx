@@ -117,7 +117,7 @@ useModalA11y(panel, () => emit("close"), {
   <div ref="panel" v-bind="$attrs" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1"
        :data-dd-panel="ddPanel || undefined"
        :data-test="testId"
-       class="sheet-panel fixed inset-x-0 bottom-0 flex max-h-[78dvh] flex-col overflow-hidden rounded-t-[20px] bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:hidden"
+       class="sheet-panel fixed inset-x-0 bottom-0 flex max-h-[78dvh] flex-col overflow-hidden rounded-t-[24px] bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:hidden"
        :class="[zClass ?? 'z-40', dragging ? 'sheet-dragging' : '']" :style="panelStyle">
     <!-- Pull-to-close hot zone: the bar is decorative, the strip takes the drag. -->
     <div data-test="sheet-grabber" aria-hidden="true"

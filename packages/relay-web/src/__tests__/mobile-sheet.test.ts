@@ -58,7 +58,7 @@ describe("MobileSheet pull-to-close", () => {
     wrapper.unmount();
   });
 
-  it("carries the glass treatment, 20px top radius, glass scrim and 17px title", () => {
+  it("carries the glass treatment, 24px top radius, glass scrim and 17px title", () => {
     const wrapper = mountSheet();
     const panel = wrapper.find('[data-test="sheet"]');
     expect(panel.classes()).toEqual(
@@ -67,7 +67,7 @@ describe("MobileSheet pull-to-close", () => {
         "backdrop-blur-glass",
         "backdrop-saturate-glass",
         "shadow-glass-float",
-        "rounded-t-[20px]",
+        "rounded-t-[24px]",
         "max-h-[78dvh]",
       ]),
     );
