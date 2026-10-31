@@ -126,7 +126,7 @@ function close(): void {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[3px]"
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-[3px]"
        @click.self="navigateBack">
     <div
       ref="dialogEl"
@@ -190,7 +190,7 @@ function close(): void {
             class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-surface-2 text-fg transition-colors hover:bg-raised"
             @click="copyCommand"
           >
-            <Check v-if="copied" :size="16" class="text-success" />
+            <Check v-if="copied" :size="16" class="text-run" />
             <Copy v-else :size="16" />
           </button>
         </div>
@@ -220,7 +220,7 @@ function close(): void {
       <!-- Step 3: connected -->
       <div v-else class="mt-4">
         <p class="flex items-center gap-2 text-sm text-fg" data-test="add-instance-connected">
-          <Check :size="16" class="text-success" />
+          <Check :size="16" class="text-run" />
           {{ $t("settings.addInstanceConnected", { name: connectedInstance?.name ?? name }) }}
         </p>
         <div class="mt-4 flex items-center justify-end gap-2">

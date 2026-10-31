@@ -101,6 +101,20 @@ test("the add-instance button opens the three-step dialog, which mints the pairi
   expect(posts).toEqual([{ path: "/api/instances/pairing-token", body: { name: "build-box" } }]);
   expect(dialog.get('[data-test="add-instance-command"]').text()).toContain("pair-tok");
   expect(dialog.get('[data-test="add-instance-command"]').text()).toContain("xacpx channel add relay");
+
+  // The overlay dims with the shared scrim token, not a raw black.
+  const overlay = dialog.element.parentElement;
+  expect(overlay?.className).toContain("bg-scrim");
+  expect(overlay?.className).not.toContain("bg-black/");
+
+  // The success colour rides the shared run token.
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn(async () => {}) },
+  });
+  await dialog.get('[data-test="add-instance-copy"]').trigger("click");
+  await flushPromises();
+  expect(dialog.get('[data-test="add-instance-copy"]').find("svg").classes()).toContain("text-run");
 });
 
 test("the retention and relay blocks render the server values", async () => {
