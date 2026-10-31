@@ -59,6 +59,10 @@ const props = defineProps<{
    *  floating identity chip costs no layout height, so the pane passes its
    *  height as padding here instead; default keeps the plain 16px top pad. */
   topInsetClass?: string;
+  /** True while a message's Run is durable but still queued behind the
+   *  Topic's standing owner. Derived by the parent from the store so this
+   *  renderer keeps its single-source-of-truth contract. */
+  isRunQueued?: (runId: string | undefined) => boolean;
 }>();
 const emit = defineEmits<{
   loadOlder: [];
@@ -246,6 +250,9 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <ConversationBubble :message="m" :attachments="m.attachments" own />
           <template #meta>
             <ConversationMeta :message="m" />
+            <p v-if="isRunQueued?.(m.runId)" data-test="queued-prompt" class="mt-1 text-xs text-fg-muted">
+              {{ $t("common.queuedPrompt") }}
+            </p>
           </template>
         </TranscriptRow>
 

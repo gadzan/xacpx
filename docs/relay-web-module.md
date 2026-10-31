@@ -318,8 +318,8 @@ Web 侧另有一层短命缓存，只用于消除重复 RPC：键为 instance + 
   折叠箭头 + 类型图标（workspace→文件夹 / agent→品牌图标）+ 名称 + 计数；agent 分组下行内品牌图标去除。
   所有折叠行（实例、组、已禁用 Bot 组）统一一个 `ChevronRight` + `rotate-90` + `transition 150ms`，
   不再两图标切换；「已禁用」Bot 组作为分组标题行排在启用 Bot 列表下方。
-- **选中态**（会话行 / Bot 行）：只有 `bg-accent-soft` + 名称 `font-semibold text-accent`，左侧 3px
-  accent 条已移除；未选中行 hover `bg-surface-2`。
+- **选中态**（会话行 / Bot 行 / 群组行）：raised 卡片处理——行底 `bg-raised shadow-select`，名称
+  `font-semibold text-fg`；无左侧 accent 条、无边框。未选中行 hover `bg-fill-hover`。
 - **前缀去重**（仅展示层）：workspace 组内剥掉 `<组名>-` 前缀、agent 组内剥掉 `-<组名>` 后缀
   （对应 `<workspace>-<agent>` 自动 alias），hover title 恒为全名；剥空则不剥。
 - **组头悬停 ＋**（触屏常显）打开 `NewSessionDialog` 并预填本组 workspace/agent
@@ -390,6 +390,22 @@ Conversation 的 slash 列表来自现有 `agent-commands` 事件，按 `convers
 `/api/active-turns` 的同名字段）按实例整表替换。换 Topic 或换 Bot 读到的是另一行，不会带上别的 Topic
 的命令。菜单只显示该 Bot 运行时广告的命令，不显示 xacpx 管理命令目录。Group 在未明确选中一名成员时
 只提示先选择成员，Enter/Tab 不发送。
+
+**补全选择器的移动形态**：Direct（`ConversationPromptInput.vue`）与 Group（`GroupComposer.vue`）的
+斜杠 / @ 候选列表在 `<lg` 时不再用输入框上方的行内浮层，而是整体渲染进 `MobileSheet`
+（Teleport 到 `body`，`test-id` 为 `direct-cmd-sheet` / `group-cmd-sheet`），行高 `min-h-[46px]`；
+`≥lg` 仍是原来的行内 popover。断点用 `useIsMobile()`（`lib/use-dropdown.ts`，读
+`window.innerWidth < 1024`，与 Tailwind `lg` 一致），与其它下拉共用同一判断。
+键盘契约两平台完全一致：listbox 的 `role` / `id` / option id 与 `aria-activedescendant` 都相同，
+方向键、Enter、Escape 仍走 `composer-completion.ts` 的 `completionKey`——因为 **textarea 始终保持
+DOM 焦点**（sheet 里放一个不可聚焦的 `data-sheet-initial-focus`，阻止 sheet 抢焦点），
+`aria-activedescendant` 始终由 textarea 指向当前项。
+关闭路径：选中一行、Esc、点遮罩、返回手势。关闭时按 Esc 的方式收起菜单（**半截输入不丢**），
+并把焦点还给 textarea；Group 侧额外挡掉「sheet 自身浮层导致的失焦」，否则点 sheet 的遮罩/把手/
+× 会把半截 @ 提前提交。sheet 是浮层，输入框不跳动、不改变高度。
+注意：模板里写 `<MobileSheet>` 却漏掉 `import MobileSheet from "./MobileSheet.vue"` 时，
+`vue-tsc` **不会报错**（模板组件未解析不参与类型检查），但运行时该 sheet 渲染为空——
+这类问题只能靠断言 sheet DOM 的测试发现。
 
 Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）。菜单展示角色、Lead 和
 启用状态。同名成员靠 bot id 区分。无法解析、重名、停用或已移除的手工 `@` 会提示，并清掉由 mention
@@ -466,6 +482,10 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
 
 - `DashboardView.vue` 桌面（`lg:` ≥1024px）保持三栏静态布局；未选中任何会话 / Bot / 群组 / 实例桌面时
   中栏渲染空状态、右栏整体隐藏（见下文「桌面空状态与右栏折叠」）。窄屏（`<lg`）按选择状态分两种形态：
+  - **桌面顶栏与侧栏的分工**：桌面不再有独立的全局顶栏壳——品牌标识移到左侧栏顶部（`data-test="sidebar-brand"`，
+    仅 `lg` 可见），主题切换与设置入口移到左侧栏底部 footer（`data-test="sidebar-footer"`，`border-t border-hairline`，
+    仅 `lg` 可见）。全局顶栏在桌面只保留连接徽标、搜索触发器和终端 / 桌面开关；顶栏里的品牌、主题与设置
+    入口加了 `lg:hidden`，所以移动端行为不变，桌面不重复渲染。侧栏宽度 232px（`lg:w-[232px]`）。
   - **选中会话 / Direct Bot**：全局顶栏（品牌、连接徽标、搜索、终端/桌面/主题/设置）在 `<lg` 隐藏
     （`:class="mobileSingleBar ? 'hidden lg:flex' : 'flex'"`，纯 CSS，桌面不受影响），改为**一条 52px 顶栏**
     （`h-[calc(3.25rem+env(safe-area-inset-top))]`）：左按钮 `←` 44px（返回首页列表，`data-test="mobile-back"`）、
@@ -499,7 +519,7 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   且当前离线时显示（「连上过」由 `DashboardView` 在 `onStatus` 里记录并通过 `provide(CONN_EVER_OPENED)`
   下发，Bot 页的条在断线期间挂载也能正确显示；connection store 仍只有 `online` 布尔，中性态属后续 PR）。
 - **触控目标**（`<lg`）：图标按钮 ≥40×40（`h-10 w-10 lg:h-7 lg:w-7` 之类，桌面尺寸保持原样），
-  主要操作（composer 发送/停止、FAB、返回 ←）44px；bottom sheet 条目 ≥48px。
+  主要操作（composer 发送/停止、FAB、返回 ←）44px；全局搜索触发器 48px（`h-12 lg:h-8`）；bottom sheet 条目 ≥48px。
 - **缩放与输入框字号**：`index.html` viewport 去掉 `maximum-scale=1, user-scalable=no`（恢复双指缩放），
   并在 `style.css` 末尾追加 `@media (pointer: coarse) { input, textarea, select { font-size: 16px !important } }`，
   避免 iOS 聚焦字号 <16px 的字段时自动放大。
@@ -959,7 +979,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 - **Bot / Group 管理弹层的移动端布局**：`BotDialog.vue` 与 `GroupDialog.vue` 使用 Teleport 挂到 `body`，避免实例侧栏的 `transform` 把 fixed 遮罩限制在侧栏内。遮罩按动态视口高度和设备安全区留白；标题与操作栏不收缩，仅表单内容滚动。Group 的 fieldset 显式允许收缩，长成员名称和说明不会撑宽窄屏表单。
 
-- **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots | Groups` 模式切换；切到 Bots 时展示 Bot 列表（名称、角色、agent、workspace 与启用状态），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
+- **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots | Groups` 模式切换，采用分段控件（segmented control）样式：凹槽轨道 `bg-fill-track rounded-btn p-0.5`，分段 `h-6 rounded-sm`，选中段 `bg-raised shadow-press font-semibold text-fg`，未选中段 `text-fg-muted hover:bg-fill-hover`（`data-test="instance-nav-track"`）。切到 Bots 时展示 Bot 列表（名称、角色、agent、workspace 与启用状态），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
 - **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。新建时工作区默认选择「新建专属工作区」，由所选实例的 daemon 在 `~/.xacpx/bots/` 下创建并注册，也可选择实例已有工作区；自动选项在请求中省略 `workspace`。没有已注册工作区时仍可创建 Bot。编辑仅选择已注册工作区。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
 - **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatarQuickView.vue` / `BotAvatar.vue`）**：Bot 弹层不再有「基本设置 / 头像外观」标签页；基本设置表单顶部直接展示头像。点击头像打开放大查看浮层（`BotAvatarQuickView.vue`，只读，不改变草稿）；该浮层是独立注册的一层（`useModalA11y`），Esc 或移动端返回只关闭浮层而不关弹层，焦点回到头像入口。头像右下角角标切到头像外观视图，标题栏返回按钮回到基本设置。外观视图支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，两个视图间切换不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。新建 Bot 时每次打开弹层随机生成一个角色头像（形状 / 颜色 / 表情），编辑沿用已保存配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
 - **头像状态与资源**：侧栏只展示身份，不聚合全局忙碌。Direct 按当前 Conversation / Topic / Run，Group 按精确 MemberTurn 与交互归属展示；完成动作只由已观察到的同任务完成事件授权，恢复快照与重连不回放。历史消息、选项、成员选择器和交接双头像静态渲染；可见动态头像共用一个帧时钟，离屏、隐藏、减少动态效果与卸载释放或暂停相应资源。普通 Session 与 Agent 品牌图标仍使用 `AgentIcon`。
@@ -1020,6 +1040,16 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - **删除**：内联确认列出话题数、先停止排队/执行中的任务、含未提交或未整合修改的成员工作树不会被丢弃（删除停在 `deleting` 等待处理后重试）、成员 Bot 与私聊保留。`groups.delete` 失败或超时后先重新读取列表：群组已消失按成功处理；仍在列表中则报告未完成，`lifecycle: "deleting"` 的群组在侧栏和顶栏显示「删除中」，对话框提供「重试删除」。
 - **超时语义**：`timeout` / `instance-offline` / `instance-reconnected` 的创建与保存结果未知（`groups.create` 没有 requestId），界面提示先查看已刷新的列表，不显示为成功或失败。
 - **跨页面同步**：`conversations-changed` 会刷新任何已加载过的实例群组列表，即使当前没有选中群组。
+
+### 群组成员面板（`GroupMemberPanel.vue`）
+
+- **入口**（两处，同一个面板）：`GroupPane` 顶栏的成员头像拼合（移动端 `group-avatar-button`、桌面 `group-desktop-avatar-button`）可点开；`<lg` 顶栏 `⋯` sheet 新增「成员」条目（`sheet-group-members`）。头像拼合由 `GroupAvatarStack.vue` 渲染，面板只挂在已有的按钮上，不重复实现头像。
+- **两种形态**（内容一致）：`<lg` 是 `MobileSheet` 底部面板，`≥lg` 是居中对话框（`GroupMemberDialog.vue`，`bg-glass-strong` + Teleport 到 `body`）。两者拆成两个组件是必需的：`useModalA11y` 每挂载一个面板登记一层遮罩，而 `MobileSheet` 自己登记一层，同一文件里同时渲染两者会在移动端重复登记，Esc / 返回手势就可能关错层。任何时刻只挂载一种形态，因此只登记一层。
+- **成员名单**：群组自己的 `botIds` 决定成员与顺序（Lead 在前，其余按群组顺序），Bot 目录只提供名称、角色、头像与 `enabled`。每行给出名称、角色、Lead 标记和状态；行高 48px（紧凑列表档），行内按钮/可点区域不小于 44px。
+- **禁用成员仍在名单里**：禁用只是不接新工作，成员身份不变，所以它照常列出（只有头像拼合会排除它），并写明原因（`group.panel.disabledReason`）。已移除的 Bot（`retired`）与目录尚未确认的成员是另外两种状态，不会被误报成「禁用」：前者显示「已移除」，后者不宣称任何状态。
+- **无障碍名称**带成员总数与禁用数（`group.panel.label` + `group.panel.disabledSuffix`），禁用数量不靠颜色传达。
+- **「谁在干活」状态行**（`GroupWorkingRow.vue`）：位于群聊顶栏下方、消息流之上，只在有人正在执行时出现，空态完全不渲染。判定取自 store 的实时状态：活动 Run 的 MemberTurn 为 `running`，或该成员仍持有 live turn 条目（重连后仍能显示）；`queued` / `dispatched` 还没开始执行，终止态的 turn 已结束。
+- **数据来源**：`stores/groups.ts` 未新增任何字段——成员取 `currentGroup.botIds` 拼 Bot 目录，在线状态取 `memberTurns` 与 `liveTurnsByMember`。
 
 自动协作每轮按已有结果选择下一步行动和合适成员，支持分析、执行、验证、修正和结束；无需用户描述人员安排。简单问答可以直接完成，产出类任务需要验证最新结果。已有结果后的路由不确定或无进展会显示 waiting-human；预算耗尽仍是失败。公开指派卡的任务展示当前行动，后续行动沿用同一 Run，不要求所有成员都发言。详见[通用协作策略](conversation-runtime.md#bundled-adaptive-collaboration)。
 
@@ -1208,5 +1238,23 @@ Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行
 ConversationPromptInput uses the shared pure composer-completion helpers and its own Direct capability source. The first /token opens adapter command completion only while the caret is inside that token; choosing replaces the token with /name plus a space, preserving following text and never sending. Skills appear only when the adapter explicitly advertises kind=skill; no global skill directory is scanned. @ queries show the authorized Direct registry candidates, with agent/workspace context for duplicate display names. Only selecting a candidate creates agentMentions; typed @names remain ordinary text.
 
 Menus show at most eight rows, paginate bounded server results, support Up/Down, Enter/Tab, Escape, click/touch, and listbox accessibility. Shift+Enter stays a newline, and IME composition owns its keys. Loading, empty/no-match, unavailable, and error states have en/zh-CN strings and retry; disabled, recovery, in-flight, and active-Run/Stop gates remain intact.
+
+**Mobile form of the completion selector**: in Direct (`ConversationPromptInput.vue`) and Group
+(`GroupComposer.vue`), the slash / @ candidate lists render inside a `MobileSheet` (Teleported to `body`,
+test ids `direct-cmd-sheet` / `group-cmd-sheet`, rows `min-h-[46px]`) below `lg` instead of the inline
+popover above the input; at `lg` and above the inline popover is unchanged. The breakpoint is
+`useIsMobile()` (`lib/use-dropdown.ts`, `window.innerWidth < 1024`, matching Tailwind `lg`), the same
+check every other dropdown uses. The keyboard contract is identical on both platforms — the listbox
+`role` / `id` / option ids and `aria-activedescendant` are the same, and Up/Down, Enter and Escape still
+run through `completionKey` in `composer-completion.ts`, because the **textarea keeps DOM focus** (a
+non-focusable `data-sheet-initial-focus` inside the sheet stops the sheet from taking it) and
+`aria-activedescendant` always points from the textarea at the active option. Close paths: picking a
+row, Escape, tapping the scrim, and the back gesture. Closing dismisses the menu the way Escape does
+(a half-typed mention survives) and returns focus to the textarea; Group additionally ignores the blur
+caused by the sheet's own chrome, so tapping the scrim, grabber or × cannot commit a half-typed @ early.
+The sheet is an overlay — the composer neither jumps nor resizes. Note that a template using
+`<MobileSheet>` without `import MobileSheet from "./MobileSheet.vue"` is **not** a type error
+(`vue-tsc` does not type-check unresolved template components) but renders no sheet at runtime; only a
+test asserting the sheet's DOM catches it.
 
 The direct-composer store isolates drafts by instance/Conversation/Topic/Bot. A contiguous edit shifts later UTF-16 ranges and removes references touched by the edit. Send freezes original text/references/target and requestId; rejection or uncertainty preserves the draft and repeat payload. Only an accepted result clears the identical captured draft, including when the view has switched. Scope/profile/event changes fence late capability responses; snapshots and agent-commands events refresh the command projection, including ready-empty advertisements. GroupComposer and the ordinary Session composer keep their existing data sources.

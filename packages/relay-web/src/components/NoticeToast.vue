@@ -8,10 +8,10 @@ const notices = useNoticesStore();
 // completions read run (success), everything else reads info.
 function toneClass(kind: string): string {
   const k = kind.toLowerCase();
-  if (k === "queue-overflow") return "text-fg-muted";
-  if (k.includes("fail") || k.includes("error")) return "text-danger";
-  if (k.includes("complet") || k.includes("done") || k.includes("success")) return "text-run";
-  return "text-info";
+  if (k === "queue-overflow") return "text-fg-muted-overlay";
+  if (k.includes("fail") || k.includes("error")) return "text-danger-overlay";
+  if (k.includes("comple") || k.includes("done") || k.includes("success")) return "text-run-overlay";
+  return "text-accent-text-overlay";
 }
 </script>
 
@@ -24,12 +24,15 @@ function toneClass(kind: string): string {
       v-for="n in notices.items.slice(0, 4)"
       :key="n.id"
       :data-test="n.kind === 'queue-overflow' ? 'queue-overflow-toast' : 'notice'"
-      class="pointer-events-auto rounded-sm bg-raised px-3 py-2 text-sm text-fg shadow-float"
+      class="pointer-events-auto flex h-9 items-center rounded-lg bg-glass-strong px-3.5 text-ui shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
     >
-      <div class="flex items-start justify-between gap-2">
-        <span v-if="n.kind === 'queue-overflow'" class="text-fg-muted">{{ n.text }}</span>
-        <span v-else><span class="text-xs uppercase" :class="toneClass(n.kind)">{{ n.kind }}</span><br />{{ n.text }}</span>
-        <button class="text-xs text-fg-muted hover:text-fg" :aria-label="$t('common.dismissNotice')" @click="notices.dismiss(n.id)">×</button>
+      <div class="flex min-w-0 flex-1 items-center justify-between gap-2">
+        <span v-if="n.kind === 'queue-overflow'" class="min-w-0 truncate text-fg-muted-overlay">{{ n.text }}</span>
+        <span v-else class="flex min-w-0 items-center gap-2">
+          <span class="shrink-0 text-xs uppercase" :class="toneClass(n.kind)">{{ n.kind }}</span>
+          <span class="min-w-0 truncate">{{ n.text }}</span>
+        </span>
+        <button class="shrink-0 text-fg-muted-overlay hover:text-fg" :aria-label="$t('common.dismissNotice')" @click="notices.dismiss(n.id)">×</button>
       </div>
     </div>
   </div>

@@ -20,6 +20,7 @@ import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
 import BotAvatar from "./BotAvatar.vue";
+import GroupAvatarStack from "./GroupAvatarStack.vue";
 import BotDialog from "./BotDialog.vue";
 import GroupDialog from "./GroupDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
@@ -27,6 +28,7 @@ import DropdownPanel from "./DropdownPanel.vue";
 import Tooltip from "./Tooltip.vue";
 import type { GroupArchivedMode, GroupArchivedState, InstanceView } from "../stores/instances";
 import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
 
 // Local directive: focus + select an element on mount (the rename input).
 const vFocus = {
@@ -40,6 +42,8 @@ const terminals = useTerminalStore();
 const directBotsStore = useDirectBotsStore();
 const groupsStore = useGroupsStore();
 const { t } = useI18n();
+// The collage order of the open Group; other rows keep their botIds order.
+const activityBotIds = useGroupAvatarActivity();
 
 // A session row carries the agent NAME; the brand glyph keys on its driver. Prefer the
 // driver carried on the row itself (server-resolved; sleeping rows live outside the
@@ -77,8 +81,15 @@ function setMode(instanceId: string, mode: "sessions" | "bots" | "groups"): void
   if (mode === "bots" && !directBotsStore.botsLoaded[instanceId]) {
     void directBotsStore.loadBots(instanceId).catch(() => {});
   }
-  if (mode === "groups" && !groupsStore.groupsLoaded[instanceId]) {
-    void groupsStore.loadGroups(instanceId).catch(() => {});
+  if (mode === "groups") {
+    if (!groupsStore.groupsLoaded[instanceId]) {
+      void groupsStore.loadGroups(instanceId).catch(() => {});
+    }
+    // The group rows draw their members' avatars, so the catalog has to load
+    // with the list - not only when the Bot list itself is open.
+    if (!directBotsStore.botsLoaded[instanceId]) {
+      void directBotsStore.loadBots(instanceId).catch(() => {});
+    }
   }
 }
 function onBotTap(instanceId: string, botId: string): void {
@@ -118,6 +129,17 @@ const disabledBotsOpen = ref<Set<string>>(new Set());
 const enablingBots = ref<Set<string>>(new Set());
 function botsWithEnabled(instanceId: string, enabled: boolean): BotSummaryDto[] {
   return (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.enabled === enabled);
+}
+/** A group's members in the group's own order: the collage's fallback order. */
+function groupMemberBots(instanceId: string, group: GroupSummaryDto): BotSummaryDto[] {
+  const byId = new Map((directBotsStore.botsByInstance[instanceId] ?? []).map((b) => [b.id, b]));
+  return group.botIds.flatMap((id) => {
+    const bot = byId.get(id);
+    return bot ? [bot] : [];
+  });
+}
+function groupDisabledCount(instanceId: string, group: GroupSummaryDto): number {
+  return groupMemberBots(instanceId, group).filter((b) => !b.enabled || b.retired).length;
 }
 function isBotSelected(instanceId: string, botId: string): boolean {
   return directBotsStore.instanceId === instanceId && directBotsStore.selectedBotId === botId;
@@ -746,7 +768,7 @@ const rowSwipes = computed(() => {
             <Filter :size="14" />
             <span v-if="archivedIsExpanded(inst.id)" class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
           </button>
-          <DropdownPanel v-if="filterDd.open && filterFor === inst.id" :dd="filterDd" tone="raised" width="w-52"
+          <DropdownPanel v-if="filterDd.open && filterFor === inst.id" :dd="filterDd" width="w-52"
                          placement="bottom-end" role="menu"
                          :title='$t("instance.filter")' test-id="instance-filter-menu"
                          :nav-count="1" @navigate="void toggleArchived(inst.id)">
@@ -770,12 +792,12 @@ const rowSwipes = computed(() => {
            Instead of a border-l indent rail, hierarchy reads from background tint +
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
-        <div v-if="inst.online" class="flex min-w-0 items-center gap-1 pb-1 mb-1 px-1">
+        <div v-if="inst.online" data-test="instance-nav-track" class="mb-1 flex min-w-0 items-center gap-0.5 rounded-btn bg-fill-track p-0.5">
           <button
             type="button"
             data-test="instance-nav-sessions"
-            class="flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm px-1.5 py-0.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'sessions' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+            :class="modeFor(inst.id) === 'sessions' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
             @click="setMode(inst.id, 'sessions')"
           >
             <MessageSquare :size="11" class="shrink-0" />
@@ -784,8 +806,8 @@ const rowSwipes = computed(() => {
           <button
             type="button"
             data-test="instance-nav-bots"
-            class="flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm px-1.5 py-0.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'bots' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+            :class="modeFor(inst.id) === 'bots' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
             @click="setMode(inst.id, 'bots')"
           >
             <Bot :size="11" class="shrink-0" />
@@ -794,8 +816,8 @@ const rowSwipes = computed(() => {
           <button
             type="button"
             data-test="instance-nav-groups"
-            class="flex min-w-0 items-center gap-1 whitespace-nowrap rounded-sm px-1.5 py-0.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'groups' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+            :class="modeFor(inst.id) === 'groups' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
             @click="setMode(inst.id, 'groups')"
           >
             <Users :size="11" class="shrink-0" />
@@ -842,7 +864,7 @@ const rowSwipes = computed(() => {
               v-else
               data-test="bot-row"
               class="bot-sidebar-row relative flex h-10 items-center rounded-sm transition-colors"
-              :class="isBotSelected(inst.id, entry.bot.id) ? 'bg-accent-soft' : 'hover:bg-surface-2'"
+              :class="isBotSelected(inst.id, entry.bot.id) ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'"
             >
               <button
                 type="button"
@@ -855,7 +877,7 @@ const rowSwipes = computed(() => {
                 <span class="flex min-w-0 flex-1 flex-col">
                   <span v-if="entry.bot.retired" data-test="bot-removed" class="truncate text-xs text-fg-muted">{{ $t("bot.removal.removed") }}</span>
                   <span data-test="bot-name" class="min-w-0 truncate text-ui font-medium"
-                        :class="!entry.bot.enabled ? 'text-fg-muted' : (isBotSelected(inst.id, entry.bot.id) ? 'font-semibold text-accent' : 'text-fg')">
+                        :class="!entry.bot.enabled ? 'text-fg-muted' : (isBotSelected(inst.id, entry.bot.id) ? 'font-semibold text-fg' : 'text-fg')">
                     {{ entry.bot.name }}
                   </span>
                   <span v-if="entry.bot.role && !entry.bot.retired" class="truncate text-xs text-fg-muted">{{ entry.bot.role }}</span>
@@ -881,7 +903,6 @@ const rowSwipes = computed(() => {
                 v-if="botMenuOpen(inst.id, entry.bot.id)"
                 :dd="botMenuDd"
                 :groups="botMenuGroups(inst.id, entry.bot)"
-                tone="raised"
                 placement="bottom-end"
                 role="menu"
                 :title="entry.bot.name"
@@ -946,17 +967,20 @@ const rowSwipes = computed(() => {
                :key="g.id"
                data-test="group-row"
                class="group relative flex items-center rounded-sm transition-colors"
-               :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-accent-soft' : 'hover:bg-surface-2'">
+               :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'">
             <button
-              class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
+              class="relative flex min-h-10 min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
               @click="onGroupTap(inst.id, g.id)"
             >
-              <span class="relative shrink-0">
-                <Users :size="14" class="text-accent" />
-              </span>
+              <GroupAvatarStack :bots="groupMemberBots(inst.id, g)" :size="36" :name="g.title"
+                                :total-count="g.botIds.length" :disabled-count="groupDisabledCount(inst.id, g)"
+                                :lead-bot-id="g.leadBotId"
+                                :activity-bot-ids="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? activityBotIds : undefined"
+                                decorative
+                                :style="{ '--avatar-ring': groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'rgb(var(--c-raised))' : 'rgb(var(--c-surface))' }" />
               <div class="flex min-w-0 flex-1 flex-col">
                 <span data-test="group-name" class="min-w-0 truncate text-ui font-medium"
-                      :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg'">
+                      :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'font-semibold text-fg' : 'text-fg'">
                   {{ g.title }}
                 </span>
                 <span class="truncate text-xs text-fg-muted">{{ $t("group.header.members", g.botIds.length) }}</span>
@@ -1027,6 +1051,7 @@ const rowSwipes = computed(() => {
               :key="s.alias"
               data-test="session-row"
               class="group relative rounded-sm"
+              :class="isSelected(inst.id, s.alias) ? 'bg-raised shadow-select' : ''"
             >
             <!-- Clip layer: bounds ONLY the swipe track so the off-screen action blocks
                  stay hidden until revealed. The row itself is NOT clipped, so the ⋯
@@ -1043,7 +1068,7 @@ const rowSwipes = computed(() => {
             >
               <!-- Foreground row content (spans the full row width). -->
               <div class="relative flex w-full shrink-0 items-center rounded-sm transition-colors"
-                   :class="isSelected(inst.id, s.alias) ? 'bg-accent-soft' : 'hover:bg-surface-2'">
+                   :class="isSelected(inst.id, s.alias) ? '' : 'hover:bg-fill-hover'">
                 <button
                   class="relative flex min-h-[52px] lg:min-h-0 min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
                   @click="onRowTap(inst.id, s.alias)"
@@ -1078,8 +1103,8 @@ const rowSwipes = computed(() => {
                     ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
                   </span>
                   <!-- Agent grouping: out-of-flow, in pl-2.5 (10px) × py-2 bottom padding.
-                       left-0.5 keeps it off the 3px selected bar; bottom-0.5 keeps it below
-                       the vertically-centered attention-dot so the two do not cover each other. -->
+                       bottom-0.5 keeps it below the vertically-centered attention-dot so
+                       the two do not cover each other. -->
                   <span
                     v-else-if="hasOpenTerminal(inst.id, s.alias)"
                     data-test="terminal-open-marker"
@@ -1100,7 +1125,7 @@ const rowSwipes = computed(() => {
                   <div v-else class="flex min-w-0 flex-1 items-center">
                     <span data-test="session-name" class="min-w-0 truncate text-sm font-medium"
                           :title="s.displayName || s.alias"
-                          :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-accent' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
+                          :class="s.archived ? 'text-fg-muted' : (isSelected(inst.id, s.alias) ? 'font-semibold text-fg' : 'text-fg')">{{ rowName(inst, s, grp.key) }}</span>
                     <Tooltip v-if="!s.archived && s.warm === false" :text='$t("instance.sessionColdTooltip")'>
                       <Unplug data-test="cold-indicator" :size="12" tabindex="0" role="img"
                               :aria-label='$t("instance.sessionColdTooltip")'
@@ -1141,9 +1166,9 @@ const rowSwipes = computed(() => {
             </div>
             <!-- ⋯ menu: the unified action panel (③ icon trigger), a child of the ROW
                  (not the clip layer) so it overflows the row downward instead of being
-                 clipped to the row's height. Sidebar panels use bg-raised. -->
+                 clipped to the row's height. -->
             <DropdownPanel v-if="inst.online && menuDd.open && menuFor === `${inst.id}:${s.alias}`"
-                           :dd="menuDd" tone="raised" width="w-40" placement="bottom-end" role="menu"
+                           :dd="menuDd" width="w-40" placement="bottom-end" role="menu"
                            :title="rowName(inst, s, grp.key)"
                            :groups="menuGroups(s)"
                            @select="onMenuSelect(inst.id, s, $event)" />

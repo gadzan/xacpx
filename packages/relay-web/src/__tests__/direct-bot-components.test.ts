@@ -1554,7 +1554,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", [], []]);
     });
 
-    it("keeps the composer editable, blocks Enter, and offers Stop while a run is active", async () => {
+    it("keeps the composer editable, offers Send and Stop side by side while a run is active", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
       directBots.activeRun = {
@@ -1580,8 +1580,8 @@ describe("Direct Bot Components", () => {
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
 
-      // Empty composer during a run offers Stop as the only action, and it
-      // dispatches the store's cancel for this exact run.
+      // Stop and Send coexist during a run. Stop dispatches the store's
+      // cancel for this exact run.
       const cancelSpy = vi.spyOn(directBots, "cancelCurrentRun").mockResolvedValue({
         status: "blocked", scope: null, runId: null, reason: "no-active-run",
       });
@@ -1591,22 +1591,24 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       expect(cancelSpy).toHaveBeenCalledWith({ runId: "run_1" });
 
-      // Typed text swaps nothing: the button stays Stop while a run is
-      // active, and Enter still refuses to send.
+      // Typed text keeps both buttons. Enter sends: the backend queues the
+      // prompt behind the running turn, so the user is never stuck unable to
+      // send what they just typed.
       await textarea.setValue("steer this");
+      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(true);
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
-      expect(wrapper.emitted("send")).toBeUndefined();
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-      // The persistent Stop dispatches the store's cancel for this exact run
-      // and never sends mid-run.
+      expect(wrapper.emitted("send")).toBeTruthy();
+
+      // Stop still dispatches the cancel and never sends on its own.
+      const sendsBefore = wrapper.emitted("send")?.length ?? 0;
       await wrapper.find('[data-test="stop-run-button"]').trigger("click");
       await flushPromises();
-      expect(wrapper.emitted("send")).toBeUndefined();
+      expect(wrapper.emitted("send")?.length ?? 0).toBe(sendsBefore);
       expect(cancelSpy).toHaveBeenCalledTimes(2);
       expect(cancelSpy).toHaveBeenLastCalledWith({ runId: "run_1" });
     });
 
-    it("keeps Stop (not Send) with a staged image while a run is active", async () => {
+    it("keeps Stop and Send side by side with a staged image while a run is active", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
       directBots.selectedBotId = "b1";
@@ -1637,11 +1639,14 @@ describe("Direct Bot Components", () => {
       });
       const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
       await flushPromises();
-      // A staged image counts as sendable, but with stopWhileBusy the
-      // button stays Stop for the whole run and never flips back to Send.
+      // A staged image counts as sendable, so both actions stay reachable
+      // during the run instead of the button flipping to Stop only.
       const stop = wrapper.find('[data-test="stop-run-button"]');
       expect(stop.exists()).toBe(true);
       expect((stop.element as HTMLButtonElement).disabled).toBe(false);
+      const send = wrapper.find('[data-test="send-prompt-button"]');
+      expect(send.exists()).toBe(true);
+      expect((send.element as HTMLButtonElement).disabled).toBe(false);
     });
 
     it("disables the composer while topic recovery is still in flight", async () => {

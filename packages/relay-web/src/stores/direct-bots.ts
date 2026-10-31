@@ -90,10 +90,9 @@ export type DirectBotErrorCode =
   | "ownershipChecking"
   | "topicRecovering"
   | "botDisabled"
-  | "runInProgress"
   | "cancelUnknown"
   | "instanceOffline";
-export type DirectBotPromptErrorCode = "topicRecovering" | "botDisabled" | "runInProgress" | "connectorOutdated";
+export type DirectBotPromptErrorCode = "topicRecovering" | "botDisabled" | "connectorOutdated";
 export type DirectBotCancelErrorCode = "ownershipUnconfirmed" | "ownershipChecking" | "cancelUnknown";
 export type DirectBotHistoryErrorCode = "discoveryFailed";
 export type DirectBotGeneralErrorCode = "instanceOffline";
@@ -518,6 +517,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const topicReady = ref<boolean>(true);
   // Active Run / Live Turn state
   const activeRun = ref<ConversationRunDto | null>(null);
+  /** Runs this tab accepted that the backend queued behind the Topic owner.
+   *  A mid-run send is accepted as `state: "queued"` while `activeRun` keeps
+   *  the running owner, so the accepted Run is durable but owns nothing yet.
+   *  Tracking it keeps those Runs out of the foreign-Run fence. */
+  const queuedOwnRuns = ref<Record<string, ConversationRunDto>>({});
+  /** Insertion order is accept order, which is the order the backend drains. */
+  const queuedRuns = computed<ConversationRunDto[]>(() => Object.values(queuedOwnRuns.value));
+  const isRunQueued = (runId: string | undefined): boolean =>
+    !!runId && queuedOwnRuns.value[runId] !== undefined;
   const liveCompletedRunId = ref<string | null>(null);
   const activeMemberTurn = ref<MemberTurnSummaryDto | null>(null);
   const liveTurn = ref<DirectBotLiveTurn | null>(null);
@@ -1336,6 +1344,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeTopicId.value = null;
     messages.value = [];
     activeRun.value = null;
+    queuedOwnRuns.value = {};
     activeMemberTurn.value = null;
     liveTurn.value = null;
     topicReady.value = true;
@@ -1379,6 +1388,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
     activeRun.value = null;
+    queuedOwnRuns.value = {};
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2217,6 +2227,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
     activeRun.value = null;
+    queuedOwnRuns.value = {};
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2313,6 +2324,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
     activeRun.value = null;
+    queuedOwnRuns.value = {};
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2355,6 +2367,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     hasMoreAfter.value = false;
     activeMemberTurn.value = null;
     activeRun.value = null;
+    queuedOwnRuns.value = {};
     liveTurn.value = null;
     latestPlanRunId.value = null;
     planByRunId.value = {};
@@ -2494,14 +2507,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       promptErrorDetail.value = null;
       return "rejected";
     }
-    // Fence the slow accept RPC against a recovered durable Run: if recovery
-    // adopted an active Run while this prompt was being composed, refuse to
-    // send a second prompt into the same Topic.
-    if (isRunActive.value) {
-      promptError.value = "runInProgress";
-      promptErrorDetail.value = null;
-      return "rejected";
-    }
+    // A Run already executing is not a barrier: the backend admits the prompt
+    // as a queued Run behind the standing owner and dispatches it once that
+    // owner settles. Refusing here would leave a composer the user can still
+    // type into unable to send anything at all.
     const targetInstId = instanceId.value;
     const targetBotId = selectedBotId.value;
     const targetConvId = activeConversationId.value;
@@ -2621,10 +2630,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         // Contested ownerless accept: the tracked nonterminal owner stands;
         // the fence below confirms it. Never adopt the optimistic row here.
       } else if (promptOwner && promptOwner.id !== res.run.id) {
-        // The Topic owner differs from the accepted Run (B durable before C):
-        activeRun.value = mergeRun(null, promptOwner);
-        activeMemberTurn.value = null;
-        liveTurn.value = null;
+        // The accepted Run is queued behind a standing owner. Only reset the
+        // owner's turn state when the owner actually changed: re-adopting the
+        // Run this tab already tracks must not wipe the live turn it streams.
+        const ownerChanged = activeRun.value?.id !== promptOwner.id;
+        activeRun.value = mergeRun(activeRun.value, promptOwner);
+        if (ownerChanged) {
+          activeMemberTurn.value = null;
+          liveTurn.value = null;
+        }
         latestPlanRunId.value = promptOwner.id;
       } else if (acceptOverwritesOwner) {
         activeRun.value = mergeRun(activeRun.value, res.run);
@@ -2633,6 +2647,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         } else {
           if (res.memberTurn) activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
         }
+      }
+      // A queued accept owns nothing yet, so it never reaches `activeRun`. Keep
+      // it here: its own run-changed events must not look like a foreign Run.
+      if (res.run.id !== activeRun.value?.id && !isTerminalRunState(res.run.state)) {
+        queuedOwnRuns.value = {
+          ...queuedOwnRuns.value,
+          [res.run.id]: mergeRun(queuedOwnRuns.value[res.run.id] ?? null, res.run),
+        };
       }
       // Null from here on means the accept did not overwrite: a different-id
       // nonterminal owner stayed tracked. Its HUD/discovery branches below
@@ -2711,7 +2733,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       return "accepted";
     } catch (err: unknown) {
       if (acceptedPromptRequests.has(reqId)) {
-        if (isCurrent() && promptError.value === "runInProgress") {promptError.value=null;promptErrorDetail.value=null;}
         return "accepted";
       }
       // WS may already have proved durable accept for this requestId (the
@@ -2743,11 +2764,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           promptError.value = err instanceof Error ? err.message : String(err);
           promptErrorDetail.value = promptError.value;
         }
-      } else if (isCurrent() && promptError.value === "runInProgress") {
-        // The blocked Prompt C was never sent and its Run is now durable:
-        // drop the transient gate error instead of pinning a stale banner.
-        promptError.value = null;
-        promptErrorDetail.value = null;
       }
       // Retain currentDraftRequestId so a retry uses the exact same requestId.
       // A definitive refusal keeps that id only while the text is unchanged.
@@ -3860,6 +3876,26 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (e.type === "conversation-run-changed") {
       const run = e.run;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        // One of our own queued accepts: the standing owner still runs, so the
+        // accepted Run is durable but owns nothing. Track it instead of letting
+        // it trip the foreign-Run fence; the owner's terminal event re-elects
+        // the true owner through discovery.
+        const ownQueuedRun = queuedOwnRuns.value[run.id];
+        if (ownQueuedRun && activeRun.value?.id !== run.id) {
+          const nextQueued = { ...queuedOwnRuns.value };
+          if (isTerminalRunState(run.state)) {
+            delete nextQueued[run.id];
+          } else {
+            nextQueued[run.id] = mergeRun(ownQueuedRun, run);
+          }
+          queuedOwnRuns.value = nextQueued;
+          return;
+        }
+        if (ownQueuedRun) {
+          const nextQueued = { ...queuedOwnRuns.value };
+          delete nextQueued[run.id];
+          queuedOwnRuns.value = nextQueued;
+        }
         // Same-owner merge, plus null-owner terminal rows (they carry no
         // ownership claim). A null owner with a *nonterminal* row must NOT
         // blind-adopt here: an older queued Run may sort ahead, and the later
@@ -4184,6 +4220,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     currentTopics,
     currentTopic,
     isRunActive,
+    queuedRuns,
+    isRunQueued,
     loadBots,
     loadBotDetail,
     isBotDetailHydrated,

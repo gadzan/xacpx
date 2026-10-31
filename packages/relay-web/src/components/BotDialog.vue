@@ -417,14 +417,14 @@ function describeSubmitError(err: unknown): string {
 <template>
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-black/50 p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
+  <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-scrim p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
        @click.self="navigateBack">
     <div ref="dialogEl"
          role="dialog"
          aria-modal="true"
          :aria-labelledby="'bot-dialog-title'"
          tabindex="-1"
-       class="relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-surface text-fg shadow-float"
+       class="relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
        :class="view === 'appearance' ? 'max-w-3xl' : 'max-w-lg'">
       <!-- Header -->
       <div class="flex shrink-0 items-center justify-between gap-2 px-5 py-3.5">
@@ -434,19 +434,19 @@ function describeSubmitError(err: unknown): string {
             type="button"
             data-test="bot-avatar-back"
             :aria-label="$t('common.back')"
-            class="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-fg-muted-overlay transition-colors hover:bg-fill-hover hover:text-fg"
             @click="view = 'basic'"
           >
             <ChevronLeft :size="16" />
           </button>
-          <h2 id="bot-dialog-title" class="min-w-0 truncate text-base font-semibold">
+          <h2 id="bot-dialog-title" class="min-w-0 truncate text-base font-semibold text-fg">
             {{ view === 'appearance' ? $t("bot.avatar.appearanceTitle") : isEditing ? $t("bot.dialog.editTitle") : $t("bot.dialog.createTitle") }}
           </h2>
         </div>
         <button
           type="button"
           :aria-label="$t('common.close')"
-          class="grid h-7 w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+          class="grid h-7 w-7 place-items-center rounded-lg text-fg-muted-overlay transition-colors hover:bg-fill-hover hover:text-fg"
           @click="navigateBack"
         >
           <X :size="16" />
@@ -456,7 +456,7 @@ function describeSubmitError(err: unknown): string {
       <!-- Form Content -->
       <form class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-4 thin-scroll" @submit.prevent="submit">
         <!-- Error Banner -->
-        <div v-if="errorMessage" class="flex items-start gap-2.5 rounded-lg bg-danger/10 p-3 text-xs text-danger">
+        <div v-if="errorMessage" class="flex items-start gap-2.5 rounded-lg bg-danger/10 p-3 text-xs text-danger-overlay">
           <AlertCircle :size="15" class="mt-0.5 shrink-0" />
           <div class="flex-1 leading-relaxed">{{ errorMessage }}</div>
         </div>
@@ -465,7 +465,7 @@ function describeSubmitError(err: unknown): string {
           instructions cannot be wiped) with an explicit Retry. -->
         <div v-if="isEditing && props.bot && !detailHydrated && detailLoadError"
              data-test="bot-detail-retry"
-             class="flex items-center justify-between gap-2.5 rounded-lg bg-warning/10 p-3 text-xs text-warning">
+             class="flex items-center justify-between gap-2.5 rounded-lg bg-warning/10 p-3 text-xs text-warn-overlay">
           <div class="flex-1 leading-relaxed">{{ $t("bot.validation.detailLoadFailed", { msg: detailLoadError }) }}</div>
           <button type="button"
                   data-test="bot-detail-retry-button"
@@ -503,7 +503,7 @@ function describeSubmitError(err: unknown): string {
         <!-- Name -->
         <div>
           <label for="bot-name" class="block text-xs font-medium text-fg-muted mb-1.5">
-            {{ $t("bot.fields.name") }} <span class="text-danger">*</span>
+            {{ $t("bot.fields.name") }} <span class="text-danger-overlay">*</span>
           </label>
           <input
             id="bot-name"
@@ -518,7 +518,7 @@ function describeSubmitError(err: unknown): string {
             class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
             :class="nameNeedsWorkspaceChars ? 'ring-1 ring-danger focus-visible:ring-2 focus-visible:ring-danger' : ''"
           />
-          <p v-if="nameNeedsWorkspaceChars" id="bot-name-error" data-test="bot-name-error" role="alert" class="mt-1 text-xs text-danger">
+          <p v-if="nameNeedsWorkspaceChars" id="bot-name-error" data-test="bot-name-error" role="alert" class="mt-1 text-xs text-danger-overlay">
             {{ $t("bot.validation.dedicatedWorkspaceNameInvalid") }}
           </p>
         </div>
@@ -544,7 +544,7 @@ function describeSubmitError(err: unknown): string {
           <!-- Agent -->
           <div>
             <label for="bot-agent" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.agent") }} <span class="text-danger">*</span>
+              {{ $t("bot.fields.agent") }} <span class="text-danger-overlay">*</span>
             </label>
             <p v-if="identityLocked" class="mb-1.5 text-xs text-fg-muted">
               {{ $t("bot.lifecycle.identityLocked") }}
@@ -565,7 +565,7 @@ function describeSubmitError(err: unknown): string {
           <!-- Workspace -->
           <div>
             <label for="bot-workspace" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.workspace") }} <span v-if="!dedicatedWorkspaceSupported" class="text-danger">*</span>
+              {{ $t("bot.fields.workspace") }} <span v-if="!dedicatedWorkspaceSupported" class="text-danger-overlay">*</span>
             </label>
             <SelectMenu
               id="bot-workspace"
@@ -646,19 +646,19 @@ function describeSubmitError(err: unknown): string {
       </form>
 
       <!-- Footer -->
-      <div class="flex shrink-0 items-center justify-end gap-2.5 px-5 py-3 bg-surface/50">
+      <div class="flex shrink-0 items-center justify-end gap-2.5 px-5 py-3">
         <button
           v-if="isEditing && props.bot && props.bot.retired !== true"
           type="button"
           data-test="bot-dialog-remove"
-          class="mr-auto rounded-lg px-3 py-1.5 text-xs font-medium text-danger"
+          class="mr-auto rounded-btn px-3 py-1.5 text-xs font-medium text-danger-overlay transition-colors hover:bg-danger/10"
           @click="removalOpen = true"
         >
           {{ $t("bot.removal.action") }}
         </button>
         <button
           type="button"
-          class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+          class="h-8 rounded-btn border border-hairline bg-raised px-3 text-xs font-medium text-fg transition-colors hover:bg-fill-hover hover:text-fg"
           @click="navigateBack"
         >
           {{ $t("common.cancel") }}
@@ -666,7 +666,7 @@ function describeSubmitError(err: unknown): string {
         <button
           type="button"
           :disabled="submitting || !name.trim() || nameNeedsWorkspaceChars || (isEditing && !!props.bot && !detailHydrated)"
-          class="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
+          class="flex h-8 items-center gap-1.5 rounded-btn bg-accent px-4 text-xs font-semibold text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
           @click="submit"
         >
           <Loader2 v-if="submitting" :size="13" class="animate-spin" />

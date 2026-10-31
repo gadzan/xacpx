@@ -253,7 +253,7 @@ test("selecting a session from the home list routes to chat and hides the list b
   expect(chat.sessionAlias).toBe("backend");
   expect(wrapper.find('[data-drawer="left"]').classes()).toContain("max-lg:hidden");
   // Desktop keeps the static sidebar column.
-  expect(wrapper.find('[data-drawer="left"]').classes()).toContain("lg:w-[248px]");
+  expect(wrapper.find('[data-drawer="left"]').classes()).toContain("lg:w-[232px]");
 });
 
 test("opening a file overlays the viewer but keeps the chat mounted (inert) so scroll is preserved without re-layout jank", async () => {
@@ -289,20 +289,20 @@ test("the sidebar header toggle collapses the instances column, and the edge han
   const wrapper = mountDash();
   await flushPromises();
   const left = wrapper.find('[data-drawer="left"]');
-  expect(left.classes()).toContain("lg:w-[248px]");
+  expect(left.classes()).toContain("lg:w-[232px]");
   // No expand handle while the sidebar is open.
   expect(wrapper.find('[data-test="expand-left"]').exists()).toBe(false);
 
   // Collapse via the control in the sidebar's own header.
   await wrapper.find('[data-test="toggle-left"]').trigger("click");
   expect(left.classes()).toContain("lg:w-0");
-  expect(left.classes()).not.toContain("lg:w-[248px]");
+  expect(left.classes()).not.toContain("lg:w-[232px]");
 
   // Once collapsed, a slim edge handle appears and brings the sidebar back.
   const handle = wrapper.find('[data-test="expand-left"]');
   expect(handle.exists()).toBe(true);
   await handle.trigger("click");
-  expect(left.classes()).toContain("lg:w-[248px]");
+  expect(left.classes()).toContain("lg:w-[232px]");
   expect(wrapper.find('[data-test="expand-left"]').exists()).toBe(false);
 });
 

@@ -16,16 +16,16 @@ describe("PromptInput non-blocking composer (message queue)", () => {
     expect(w.emitted("send")?.[0]).toEqual(["queue me please", []]);
   });
 
-  it("busy + empty composer: the send button becomes Stop (cancel), Send unmounts", async () => {
+  it("busy + empty composer: Send and Stop coexist, both enabled", async () => {
     const w = mount(PromptInput, { props: { busy: true } });
     expect(w.find('[data-test="cancel-turn"]').exists()).toBe(true);
-    expect(w.find('[data-test="composer-send"]').exists()).toBe(false);
+    expect(w.find('[data-test="composer-send"]').exists()).toBe(true);
   });
 
-  it("typing while busy reverts Stop back to Send (so the message queues)", async () => {
+  it("typing while busy keeps Send and Stop side by side (so the message queues)", async () => {
     const w = mount(PromptInput, { props: { busy: true } });
     await w.find("textarea").setValue("queue me please");
-    expect(w.find('[data-test="cancel-turn"]').exists()).toBe(false);
+    expect(w.find('[data-test="cancel-turn"]').exists()).toBe(true);
     expect(w.find('[data-test="composer-send"]').exists()).toBe(true);
   });
 

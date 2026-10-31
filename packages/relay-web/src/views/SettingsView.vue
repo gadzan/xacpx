@@ -18,6 +18,7 @@ import {
   getExistingSubscription,
   isDesktopNotificationsEnabled,
 } from "../lib/web-push";
+import AddInstanceDialog from "../components/AddInstanceDialog.vue";
 const auth = useAuthStore();
 const theme = useThemeStore();
 const router = useRouter();
@@ -25,9 +26,8 @@ const locale = useLocaleStore();
 const { t } = useI18n();
 const localeLabels: Record<string, string> = { en: "English", "zh-CN": "中文" };
 const retention = ref<{ days: number; maxPerSession: number } | null>(null);
-const pairing = ref("");
-const pairingName = ref("");
 const relay = ref<{ current: string; latest: string | null; updateAvailable: boolean } | null>(null);
+const showAddInstance = ref(false);
 
 onMounted(async () => {
   try {
@@ -38,11 +38,6 @@ onMounted(async () => {
     relay.value = await api.get<{ current: string; latest: string | null; updateAvailable: boolean }>("/api/version");
   } catch { /* leave null; relay section shows a dash */ }
 });
-
-async function genPairing() {
-  const r = await api.post<{ token: string }>("/api/instances/pairing-token", { name: pairingName.value });
-  pairing.value = r.token;
-}
 
 async function onLogout() {
   const ok = await confirm({
@@ -171,14 +166,13 @@ void onMounted(() => { void probeNotifications(); });
 
     <section class="mb-6">
       <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.addInstance") }}</h2>
-      <div class="flex gap-2">
-        <input v-model="pairingName" :placeholder='$t("settings.instanceNamePlaceholder")' class="flex-1 rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
-        <button data-test="gen-pairing" class="rounded-lg bg-surface-2 px-3 h-9 text-ui text-fg hover:bg-surface-2/80" @click="genPairing">{{ $t("settings.generateToken") }}</button>
-      </div>
-      <div v-if="pairing" class="mt-2 rounded-sm bg-bg p-2 text-xs text-fg">
-        <div>{{ $t("settings.runOnHost") }}</div>
-        <code class="block break-all">xacpx channel add relay --url &lt;this-relay-ws-url&gt; --token {{ pairing }}</code>
-      </div>
+      <button
+        data-test="open-add-instance"
+        class="h-11 rounded-xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
+        @click="showAddInstance = true"
+      >
+        {{ $t("settings.addInstance") }}
+      </button>
     </section>
 
     <section class="mb-6">
@@ -223,5 +217,7 @@ void onMounted(() => { void probeNotifications(); });
         <LogOut :size="15" />{{ $t("settings.signOut") }}
       </button>
     </section>
+
+    <AddInstanceDialog v-if="showAddInstance" @close="showAddInstance = false" />
   </div>
 </template>

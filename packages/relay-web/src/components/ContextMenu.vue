@@ -71,10 +71,10 @@ function onKey(e: KeyboardEvent): void {
   else if (e.key === "Escape") { e.preventDefault(); emit("close"); }
 }
 function rowClass(it: ContextMenuItem, index: number): string {
-  if (it.disabled) return "cursor-not-allowed text-fg-muted/50";
+  if (it.disabled) return "cursor-not-allowed text-fg-muted-overlay";
   const hl = index === highlight.value;
-  if (it.danger) return ["text-danger", hl ? "bg-danger/10" : "hover:bg-danger/10"].join(" ");
-  return ["text-fg", hl ? "bg-surface-2" : "hover:bg-surface-2"].join(" ");
+  if (it.danger) return ["text-danger-overlay", hl ? "bg-fill-strong" : "hover:bg-danger/10"].join(" ");
+  return ["text-fg", hl ? "bg-fill-strong" : "hover:bg-fill-hover"].join(" ");
 }
 function onDocClick() { emit("close"); }
 // The menu owns document keys while open (the dropdown that spawned it stands down).
@@ -108,10 +108,10 @@ onBeforeUnmount(() => {
   <!-- Desktop: anchored at the pointer. `data-dd-panel` marks it as a layer owned by
        the open dropdown, so the dropdown's outside-pointerdown check ignores it. -->
   <div v-else ref="el" data-test="context-menu" data-dd-panel
-       class="fixed z-50 min-w-40 rounded-lg bg-surface p-1 shadow-float"
+       class="fixed z-50 min-w-40 rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
        :style="{ left: pos.x + 'px', top: pos.y + 'px' }" @click.stop>
     <button v-for="(it, i) in items" :key="it.key" :data-test="`menu-${it.key}`" :disabled="it.disabled"
-            class="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm disabled:cursor-not-allowed"
+            class="flex h-[30px] w-full items-center rounded-item px-2 text-left text-ui disabled:cursor-not-allowed"
             :class="rowClass(it, i)"
             @click="emit('select', it.key); emit('close')">
       {{ it.label }}

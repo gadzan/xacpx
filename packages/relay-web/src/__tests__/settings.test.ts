@@ -45,7 +45,7 @@ describe("SettingsView", () => {
     expect(w.find('[data-test="gen-invite"]').exists()).toBe(false);
   });
 
-  it("generates a pairing token and shows the install command", async () => {
+  it("opens the add-instance dialog, which mints the pairing token", async () => {
     get.mockImplementation((url: string) =>
       url === "/api/version"
         ? Promise.resolve({ current: "0.6.0", latest: null, updateAvailable: false })
@@ -55,11 +55,15 @@ describe("SettingsView", () => {
     auth.account = { username: "a" };
     const w = mount(SettingsView, { global: { stubs: { "router-link": true } } });
     await flushPromises();
-    await w.find('[data-test="gen-pairing"]').trigger("click");
+    await w.find('[data-test="open-add-instance"]').trigger("click");
     await flushPromises();
-    expect(post).toHaveBeenCalledWith("/api/instances/pairing-token", { name: "" });
-    expect(w.text()).toContain("PAIR9");
-    expect(w.text()).toContain("channel add relay");
+    const dialog = w.get('[data-test="add-instance-dialog"]');
+    await dialog.find('[data-test="add-instance-name"]').setValue("build-box");
+    await dialog.find('[data-test="add-instance-next"]').trigger("click");
+    await flushPromises();
+    expect(post).toHaveBeenCalledWith("/api/instances/pairing-token", { name: "build-box" });
+    expect(dialog.text()).toContain("PAIR9");
+    expect(dialog.text()).toContain("channel add relay");
   });
 
   it("signs out from the Account section (logout now lives in Settings, not the sidebar)", async () => {

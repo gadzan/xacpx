@@ -251,7 +251,7 @@ function openRemoval(): void {
          purpose (same as GroupPane): a backdrop-filtered ancestor becomes the containing
          block for fixed/absolute descendants and would trap TopicSwitcher's popover,
          confirm dialog and row menu inside this header. -->
-    <header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
+    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
       <div class="flex items-center gap-3 min-w-0">
         <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32"
                    :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
@@ -320,7 +320,7 @@ function openRemoval(): void {
             {{ $t("bot.nav.talkWith") }}
             <ChevronDown :size="12" class="shrink-0 transition-transform" :class="navDd.open ? 'rotate-180' : ''" />
           </button>
-          <DropdownPanel :dd="navDd" tone="surface" width="w-64" placement="bottom-end"
+          <DropdownPanel :dd="navDd" width="w-64" placement="bottom-end"
                          :title='$t("bot.nav.talkWith")' test-id="direct-nav-menu" role="menu"
                          :groups="navGroups" @select="onNavSelect" />
         </div>
@@ -371,6 +371,7 @@ function openRemoval(): void {
       :live-turn="directBotsStore.liveTurn"
       :active-run="directBotsStore.activeRun"
       :active-member-turn="directBotsStore.activeMemberTurn"
+      :is-run-queued="directBotsStore.isRunQueued"
       :run-parts="directBotsStore.completeRunParts"
       :plan-entries="directBotsStore.planEntries"
       :has-more-older="directBotsStore.hasMoreBefore"

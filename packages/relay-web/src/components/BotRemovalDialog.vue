@@ -145,15 +145,15 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" @click.self="emit('close')">
-    <div role="dialog" aria-modal="true" class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl bg-surface text-fg shadow-float">
+  <div class="fixed inset-0 z-[60] flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="emit('close')">
+    <div role="dialog" aria-modal="true" class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
       <header class="px-5 py-3.5">
         <h2 class="text-base font-semibold">{{ t("bot.removal.title", { name: botName }) }}</h2>
       </header>
-      <div class="flex-1 space-y-3 overflow-y-auto px-5 py-4 text-sm">
+      <div class="flex-1 space-y-3 overflow-y-auto px-5 py-4 text-sm text-fg-muted-overlay">
         <p>{{ t("bot.removal.body") }}</p>
         <p v-if="loading" data-test="removal-loading">{{ t("bot.removal.loading") }}</p>
-        <p v-if="errorText" data-test="removal-error" class="text-danger">{{ errorText }}</p>
+        <p v-if="errorText" data-test="removal-error" class="text-danger-overlay">{{ errorText }}</p>
         <p v-if="finished" data-test="removal-finished">{{ t("bot.removal.removedBanner") }}</p>
         <ul v-if="impact" class="space-y-2 text-xs leading-relaxed">
           <li v-for="group in impact.groups" :key="group.conversationId" data-test="removal-group">
@@ -193,12 +193,14 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
         </p>
       </div>
       <footer class="flex justify-end gap-2 px-5 py-3">
-        <button type="button" class="rounded-lg px-3 py-1.5 text-sm" @click="emit('close')">{{ t("bot.removal.close") }}</button>
+        <button type="button"
+                class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover"
+                @click="emit('close')">{{ t("bot.removal.close") }}</button>
         <button
           v-if="!finished"
           type="button"
           data-test="removal-confirm"
-          class="rounded-lg bg-danger px-3 py-1.5 text-sm text-on-danger disabled:opacity-40"
+          class="h-8 rounded-btn bg-danger px-3 text-ui font-semibold text-on-danger disabled:opacity-40"
           :disabled="loading || pending || blocked || (impact?.externalBindings.length ? !releaseDirectBindings : false)"
           @click="confirmRemove"
         >
