@@ -126,8 +126,8 @@ describe("GroupAvatarStack", () => {
     expect(markerText(wrapper)).toBe("+1");
     // 59% of 32px.
     expect(styleOf(rendered[0]!)).toContain("width: 19px");
-    // The thin bar earns a thinner ring.
-    expect(styleOf(rendered[0]!)).toContain("box-shadow: 0 0 0 1.5px var(--avatar-ring)");
+    // No ring: the members' own outlines separate them.
+    expect(styleOf(rendered[0]!)).not.toContain("box-shadow");
   });
 
   it("draws five members as three avatars plus +2", () => {

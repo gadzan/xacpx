@@ -81,9 +81,6 @@ const layout = computed(() => LAYOUTS[shown.value.length] ?? LAYOUTS[3]!);
 /** A lone member fills the container; the rest are sub-avatars. */
 const subSize = computed(() => (shown.value.length === 1 ? props.size : Math.round(props.size * SUB_RATIO)));
 
-/** The ring separates overlapping members, so it takes the background's colour. */
-const ringWidth = computed(() => (props.size === 32 ? 1.5 : 2));
-
 const containerStyle = computed(() => ({
   width: `${props.size}px`,
   height: `${props.size}px`,
@@ -96,8 +93,6 @@ function itemStyle(index: number) {
     top: `${y}%`,
     width: `${subSize.value}px`,
     height: `${subSize.value}px`,
-    // A lone member has nothing to overlap, so it needs no ring.
-    boxShadow: shown.value.length === 1 ? "none" : `0 0 0 ${ringWidth.value}px var(--avatar-ring)`,
   };
 }
 
@@ -136,7 +131,7 @@ const label = computed(() => {
       <span
         v-for="(bot, index) in shown"
         :key="bot.id"
-        class="group-avatar-item absolute grid place-items-center rounded-full"
+        class="group-avatar-item absolute grid place-items-center"
         :style="itemStyle(index)"
         aria-hidden="true"
         data-test="group-avatar-item"
@@ -155,9 +150,5 @@ const label = computed(() => {
   </span>
 </template>
 <style scoped>
-/* The ring separates overlapping members, so it takes the colour of the
-   background it sits on. The caller overrides it for a different backdrop. */
-.group-avatar-stack { --avatar-ring: rgb(var(--c-bg)); }
-
 .group-avatar-item, .group-avatar-more { transform: translate(-50%, -50%); }
 </style>

@@ -976,8 +976,7 @@ const rowSwipes = computed(() => {
                                 :total-count="g.botIds.length" :disabled-count="groupDisabledCount(inst.id, g)"
                                 :lead-bot-id="g.leadBotId"
                                 :activity-bot-ids="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? activityBotIds : undefined"
-                                decorative
-                                :style="{ '--avatar-ring': groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'rgb(var(--c-raised))' : 'rgb(var(--c-surface))' }" />
+                                decorative />
               <div class="flex min-w-0 flex-1 flex-col">
                 <span data-test="group-name" class="min-w-0 truncate text-ui font-medium"
                       :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'font-semibold text-fg' : 'text-fg'">
