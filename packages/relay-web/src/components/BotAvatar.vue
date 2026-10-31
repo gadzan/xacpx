@@ -14,11 +14,7 @@ import { bodyPath } from "../lib/bot-avatar/geometry";
 
 const props = withDefaults(defineProps<{
   avatar?: BotAvatarConfig; driver?: string | null; name?: string; size?: number; state?: BotAvatarState;
-  static?: boolean; disabled?: boolean;
-  /** Outline width in CSS px, in the `--avatar-ring` colour, traced along the avatar's own
-   *  shape. Off unless a caller asks; only the group collage does, to cut overlapping
-   *  members apart. */
-  outline?: number; retired?: boolean; activityKey?: string; follow?: boolean; preview?: boolean; observedCompletion?: boolean;
+  static?: boolean; disabled?: boolean; retired?: boolean; activityKey?: string; follow?: boolean; preview?: boolean; observedCompletion?: boolean;
 }>(), { size: 24, state: "idle", static: false, disabled: false, retired: false, follow: false, preview: false, observedCompletion: false });
 const { t } = useI18n();
 const root = ref<HTMLElement>();
@@ -52,14 +48,6 @@ const hairline = computed(() => character.value?.color === "creme" || character.
 // The badge marks a state the bot cannot act on: waiting (!), failed (!), indeterminate (?),
 // offline (−) and removed (×). A cancelled run has no badge — the "−" reads as a broken
 // status dot rather than as "stopped", so cancellation shows through the state alone.
-// A character traces its body path, so the edge is exact. The other kinds have no path,
-// so four unblurred drop-shadows follow their opaque pixels instead.
-const outlineShadow = computed(() => {
-  const w = props.outline;
-  if (!w) return undefined;
-  const ring = "var(--avatar-ring)";
-  return { filter: `drop-shadow(${w}px 0 0 ${ring}) drop-shadow(-${w}px 0 0 ${ring}) drop-shadow(0 ${w}px 0 ${ring}) drop-shadow(0 -${w}px 0 ${ring})` };
-});
 const indicator = computed(() => ({ waiting: "!", failed: "!", indeterminate: "?", offline: "−", retired: "×" } as Partial<Record<BotAvatarState, string>>)[state.value]);
 let mounted = false, active = true, time = 0;
 let initialPreviewCompletion = props.preview && state.value === "completed";
@@ -192,15 +180,11 @@ onBeforeUnmount(() => { mounted = false; releaseResources(); });
   <span ref="root" data-test="bot-avatar" :data-state="state" :data-avatar-kind="avatar?.kind || 'default'"
     class="bot-avatar" role="img" :aria-label="label" :title="avatar?.kind === 'text' ? avatar.value : label"
     :style="{ width: `${size}px`, height: `${size}px` }">
-    <AgentIcon v-if="!avatar" :driver="driver" :size="size" :style="outlineShadow" aria-hidden="true" />
-    <span v-else-if="avatar.kind === 'text'" class="bot-avatar-text" :style="outlineShadow" aria-hidden="true">{{ text }}</span>
+    <AgentIcon v-if="!avatar" :driver="driver" :size="size" aria-hidden="true" />
+    <span v-else-if="avatar.kind === 'text'" class="bot-avatar-text" aria-hidden="true">{{ text }}</span>
     <svg v-else-if="pose" viewBox="-50 -50 100 100" aria-hidden="true" focusable="false">
       <defs><clipPath :id="maskId"><path :d="path" /></clipPath></defs>
       <circle v-if="pose.ring" r="44" fill="none" stroke="rgb(var(--c-accent))" stroke-width="3" :opacity="pose.ring" />
-      <!-- Twice the width, under the body: the body covers the inner half, so only the
-           outer half shows. Non-scaling, so the width is CSS px at every size. -->
-      <path v-if="outline" class="bot-avatar-outline" :d="path" fill="none" stroke-linejoin="round" vector-effect="non-scaling-stroke"
-        :style="{ stroke: 'var(--avatar-ring)', strokeWidth: `${outline * 2}px` }" />
       <path class="bot-avatar-body" :d="path" :fill="color" :data-hairline="hairline" />
       <g :clip-path="`url(#${maskId})`">
         <rect v-for="(eye, index) in pose.eyes" :key="index" :x="-eye.w / 2" :y="-eye.h / 2" :width="eye.w" :height="eye.h" :rx="Math.min(eye.w, eye.h) / 2"
