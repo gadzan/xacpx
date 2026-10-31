@@ -20,6 +20,7 @@ import { migrateAwayFromLegacyTerminalIds } from "../lib/terminal-sessions";
 import InstanceTree from "../components/InstanceTree.vue";
 import AgentIcon from "../components/AgentIcon.vue";
 import MobileSheet from "../components/MobileSheet.vue";
+import QuickSwitchSheet from "../components/QuickSwitchSheet.vue";
 import MobileConnStrip from "../components/MobileConnStrip.vue";
 import ChatPane from "../components/ChatPane.vue";
 import EmptySessionState, { type RecentSessionItem } from "../components/EmptySessionState.vue";
@@ -350,9 +351,15 @@ function closeDesktop(): void {
 // reachable from the mobile markup.
 // One bottom sheet at a time: opening any sheet replaces the current one (the open-tabs
 // sheet does not stack on the ⋯ sheet, and closing it does not return there).
-type MobileSheetId = "more" | "tabs" | "fabInstance";
+type MobileSheetId = "more" | "tabs" | "fabInstance" | "quickSwitch";
 const activeSheet = ref<MobileSheetId | null>(null);
 function openSheet(id: MobileSheetId): void { activeSheet.value = id; }
+/** The quick-switch sheet opens from the conversation page's title (<lg only).
+ *  Desktop keeps the sidebar for navigation, so the tap is inert there. */
+function openQuickSwitch(): void {
+  if (isDesktop.value) return;
+  openSheet("quickSwitch");
+}
 function closeSheet(): void { activeSheet.value = null; }
 /** The single InstanceTree instance: the drawer's tree on desktop (and with a selection),
  *  the main-area list on the mobile home. The FAB drives its create-session dialog
@@ -361,6 +368,14 @@ const instanceTree = ref<InstanceType<typeof InstanceTree> | null>(null);
 
 const isBotSelected = computed(() => directBotsStore.isBotSelected);
 const isGroupSelected = computed(() => groupsStore.isGroupSelected);
+/** The instance the quick-switch sheet lists: the viewed conversation's instance,
+ *  or the Bot / Group's own instance when that pane is up. Null when nothing is
+ *  selected (the sheet then has nothing to list). */
+const quickSwitchInstanceId = computed<string | null>(() =>
+  chat.instanceId
+  ?? (isBotSelected.value ? directBotsStore.instanceId : null)
+  ?? (isGroupSelected.value ? groupsStore.instanceId : null),
+);
 /** Nothing selected: no session, bot, group, or instance desktop viewer. On <lg the
  *  instance tree becomes the main content (with the FAB); on lg the center column shows
  *  the empty state instead. */
@@ -714,26 +729,32 @@ onUnmounted(() => {
        @touchstart.passive="swipe.onTouchStart"
        @touchend.passive="swipe.onTouchEnd"
        @touchcancel.passive="swipe.onTouchCancel">
-    <!-- Global top bar: brand lockup + connection pill on the left; search, theme, settings on the right. -->
+    <!-- Global top bar. On mobile it carries the brand lockup, the connection pill,
+         the search trigger and the theme / settings entries. On desktop the brand
+         and the theme / settings entries live in the sidebar (its brand block and
+         its footer), so only the connection pill, the search trigger and the
+         terminal / desktop toggles remain here. -->
     <!-- pt-[env(safe-area-inset-top)]: in an installed iOS PWA (viewport-fit=cover)
          the content runs under the notch / status bar; extend the bar's surface up
          so its controls sit below the inset instead of behind the notch. env() is 0
          on desktop, so this is a no-op there. -->
     <header class="sticky top-0 z-30 h-[calc(2.75rem+env(safe-area-inset-top))] shrink-0 items-center justify-between bg-surface/80 px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl"
-            :class="mobileSingleBar ? 'hidden lg:flex' : 'flex'">
-      <!-- Left: brand X mark + "xacpx · relay" lockup, then the Connected pill. The
-           sidebar collapse control lives in the sidebar's own header (and a slim edge
-           handle below), not up here. -->
+           :class="mobileSingleBar ? 'hidden lg:flex' : 'flex'">
+      <!-- Left: on mobile the brand X mark + wordmark, then the Connected pill; on
+           desktop the brand has moved into the sidebar, so only the pill stays.
+           The sidebar collapse control lives in the sidebar's own header (and a
+           slim edge handle below), not up here. -->
       <div class="flex items-center gap-2">
-        <BrandLogo />
+        <div class="lg:hidden"><BrandLogo /></div>
         <ConnectionBadge />
       </div>
-      <!-- Right: search button with ⌘K chip, theme toggle, settings. -->
+      <!-- Right: search button with ⌘K chip, terminal / desktop toggles, and (on
+           mobile only) the theme toggle and the settings link. -->
       <div class="flex items-center gap-1.5">
         <button
           data-test="global-search"
           :aria-label='$t("nav.search")'
-          class="group flex h-10 lg:h-7 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-surface-2 active:bg-surface-2 lg:bg-bg lg:hover:bg-surface-2 lg:active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
+          class="group flex h-12 lg:h-8 items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-surface-2 active:bg-surface-2 lg:bg-bg lg:hover:bg-surface-2 lg:active:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:w-64"
           @click="paletteOpen = true"
         >
           <Search :size="14" class="text-fg-muted" />
@@ -763,10 +784,12 @@ onUnmounted(() => {
         >
           <Monitor :size="15" />
         </button>
+        <!-- Theme + settings moved into the sidebar footer on desktop; they stay
+             here for mobile, where the sidebar footer is not reachable. -->
         <button
           data-test="theme-toggle"
           :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
-          class="grid h-10 w-10 lg:h-7 lg:w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:hidden"
           @click="theme.toggle()"
         >
           <Moon v-if="theme.mode === 'dark'" :size="15" />
@@ -776,7 +799,7 @@ onUnmounted(() => {
           to="/settings"
           data-test="settings-link"
           :aria-label='$t("nav.settings")'
-          class="grid h-10 w-10 lg:h-7 lg:w-7 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="grid h-10 w-10 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:hidden"
         >
           <Settings :size="15" />
         </router-link>
@@ -796,10 +819,15 @@ onUnmounted(() => {
       <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-2">
         <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
       </span>
-      <div class="flex min-w-0 flex-1 flex-col">
-        <span class="truncate text-sm font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
-        <span data-test="mobile-session-subtitle" class="truncate text-xs text-fg-muted">{{ sessionSubtitle }}</span>
-      </div>
+      <!-- The title is the quick-switch trigger (<lg): tapping it opens the
+           half-screen with recent conversations + this instance's Bots / groups
+           (design mobile.md §6.1). Desktop keeps the sidebar for navigation. -->
+      <button type="button" data-test="mobile-session-title" :aria-label='$t("quickSwitch.title")'
+              class="flex min-h-[44px] min-w-0 flex-1 flex-col items-start text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="openQuickSwitch">
+        <span class="w-full truncate text-sm font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
+        <span data-test="mobile-session-subtitle" class="w-full truncate text-xs text-fg-muted">{{ sessionSubtitle }}</span>
+      </button>
       <button type="button" data-test="mobile-more" :aria-label='$t("common.more")'
               class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
@@ -820,9 +848,15 @@ onUnmounted(() => {
       <div data-test="column" data-drawer="left"
            class="flex shrink-0 flex-col bg-surface transition-[width] max-lg:relative max-lg:w-full lg:static"
            :class="[
-             leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[248px]',
+             leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[232px]',
              nothingSelected ? '' : 'max-lg:hidden',
            ]">
+        <!-- Brand lockup at the top of the sidebar (desktop): the global header no
+             longer shows it there, so the sidebar carries the product identity
+             itself. Mobile keeps the brand in the global top bar. -->
+        <div data-test="sidebar-brand" class="hidden h-11 shrink-0 items-center px-3 lg:flex">
+          <BrandLogo />
+        </div>
         <div class="flex h-9 shrink-0 items-center justify-between px-3 text-xs">
           <span class="font-semibold uppercase tracking-wider text-fg-muted">{{ $t("nav.instances") }}</span>
           <div class="flex items-center gap-2">
@@ -832,6 +866,27 @@ onUnmounted(() => {
           </div>
         </div>
         <InstanceTree ref="instanceTree" @select="onSelect" @select-bot="onSelectBot" @select-group="onSelectGroup" @open-desktop="openDesktop" />
+        <!-- Sidebar footer (desktop): the theme toggle and the settings link, which
+             the global header no longer renders there. -->
+        <div data-test="sidebar-footer" class="mt-auto hidden shrink-0 items-center gap-1 border-t border-hairline px-2 py-2 lg:flex">
+          <button
+            data-test="sidebar-theme-toggle"
+            :aria-label='theme.mode === "dark" ? $t("nav.toLight") : $t("nav.toDark")'
+            class="grid h-8 w-8 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            @click="theme.toggle()"
+          >
+            <Moon v-if="theme.mode === 'dark'" :size="15" />
+            <Sun v-else :size="15" />
+          </button>
+          <router-link
+            to="/settings"
+            data-test="sidebar-settings-link"
+            :aria-label='$t("nav.settings")'
+            class="grid h-8 w-8 place-items-center rounded-btn text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <Settings :size="15" />
+          </router-link>
+        </div>
       </div>
 
       <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
@@ -1024,6 +1079,16 @@ onUnmounted(() => {
         <span class="truncate">{{ inst.name }}</span>
       </button>
     </MobileSheet>
+
+    <!-- Quick switch (mobile, <lg): the conversation page's title opens it. Recent
+         conversations + the current instance's Bots and groups in one scrollable
+         sheet; picking a row switches and closes. -->
+    <QuickSwitchSheet v-if="activeSheet === 'quickSwitch' && quickSwitchInstanceId"
+                      :instance-id="quickSwitchInstanceId"
+                      @close="closeSheet"
+                      @select-session="(id, alias) => { onSelect(id, alias); closeSheet(); }"
+                      @select-bot="(id, botId) => { onSelectBot(id, botId); closeSheet(); }"
+                      @select-group="(id, groupId) => { onSelectGroup(id, groupId); closeSheet(); }" />
 
     <NoticeToast />
     <ActionToast />

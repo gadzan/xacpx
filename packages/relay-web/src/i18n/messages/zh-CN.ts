@@ -1,6 +1,7 @@
 // Simplified-Chinese catalog. Mirror the key shape of en.ts exactly.
 export default {
   common: {
+    queuedPrompt: "等待当前回复结束",
     cancel: "取消",
     confirm: "确认",
     ok: "确定",
@@ -18,6 +19,7 @@ export default {
     loading: "加载中…",
     retry: "重试",
     close: "关闭",
+    next: "下一步",
   },
   connection: {
     connecting: "连接中…",
@@ -45,6 +47,14 @@ export default {
     bots: "Bots",
     groups: "群组",
   },
+  quickSwitch: {
+    title: "快速切换",
+    sessions: "最近会话",
+    bots: "Bots",
+    groups: "群组",
+    search: "筛选…",
+    empty: "暂无内容。",
+  },
   mobileBar: {
     openTabs: "已打开标签（{n}）",
     switchTopic: "切换话题",
@@ -60,6 +70,15 @@ export default {
     instanceNamePlaceholder: "实例名称（可选）",
     generateToken: "生成令牌",
     runOnHost: "在 xacpx 主机上运行：",
+    addInstanceStepName: "给这台主机起个名字，再生成一个一次性令牌用于连接。",
+    addInstanceWaiting: "等待实例连接…",
+    addInstanceConnected: "已连接 · {name}",
+    addInstanceNotYet: "还没连上？检查命令是否在目标机器上运行。",
+    addInstanceRegenerate: "重新复制命令",
+    addInstanceLater: "稍后再说",
+    addInstanceDone: "完成",
+    copyCommand: "复制命令",
+    copied: "已复制",
     retentionTitle: "历史保留",
     retentionBody: "每个会话保留最新的 {max} 条消息，最多保留 {days} 天。由服务端配置。",
     relayTitle: "Relay",
@@ -970,7 +989,6 @@ export default {
       ownershipChecking: "归属未确认。正在检查活动运行...",
       topicRecovering: "话题仍在恢复中。请等待历史加载完成后再发送。",
       botDisabled: "Bot 已被禁用。请启用后再发送消息。",
-      runInProgress: "已有运行正在进行。请等待完成或取消后再试。",
       referenceTargetUnavailable: "已选目标已不可用，请重新选择后发送。",
       referencesUnavailable: "当前执行策略不支持 Agent 引用。",
       invalidReferences: "已选引用发生变化，请重新选择目标。",
@@ -1001,6 +1019,18 @@ export default {
     },
     header: {
       members: "{count} 名成员",
+    },
+    avatar: {
+      disabled: "（{count} 名已禁用）",
+    },
+    panel: {
+      title: "成员",
+      label: "{title} · {count} 名成员{disabled}",
+      disabledSuffix: "（{count} 名已禁用）",
+      lead: "负责人",
+      removed: "已移除",
+      disabledReason: "已禁用，重新启用前不接收新工作。",
+      working: "{names} 正在回复…",
     },
     members: {
       disabled: "已禁用的成员：{names}。他们仍在群组中，重新启用前不会接收新工作。",

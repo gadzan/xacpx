@@ -249,13 +249,13 @@ const style = computed(() => ({
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-radius: 16px;
-  background: rgb(var(--c-raised));
+  border-radius: 10px;
+  background: var(--glass-bg-strong);
   color: rgb(var(--c-fg));
-  /* Match Relay's restrained float token so the detail feels part of the
-     conversation rather than a modal layered above it. */
-  box-shadow: var(--shadow-float);
-  border: 1px solid rgb(var(--c-border));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  /* The glass shadow carries the outer float, the top highlight and the hairline. */
+  box-shadow: inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border), var(--glass-shadow);
   animation: detail-in 120ms ease-out;
 }
 @keyframes detail-in {

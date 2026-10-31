@@ -120,7 +120,7 @@ describe("paused Run presentation", () => {
     expect(wrapper.find('[data-test="group-pause-run-button"]').exists()).toBe(false);
   });
 
-  it("does not offer send while the Run is paused", async () => {
+  it("offers Send and Stop side by side while the Run is paused", async () => {
     const groups = seedGroupSelection(RUN);
     const wrapper = mount(GroupComposer, {
       props: { bots: BOTS },
@@ -130,9 +130,9 @@ describe("paused Run presentation", () => {
     expect(groups.isRunActive).toBe(true);
     await wrapper.find('[data-test="group-composer-textarea"]').setValue("next step");
     await wrapper.vm.$nextTick();
-    // A paused Run is still the Topic owner: the composer keeps the stop
-    // affordance and offers no send action at all.
-    expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(false);
+    // A paused Run still owns the Topic, but the backend queues a prompt
+    // behind it, so Send and Stop coexist — exactly like a running Run.
+    expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(true);
   });
 });

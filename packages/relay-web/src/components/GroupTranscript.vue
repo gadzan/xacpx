@@ -7,7 +7,6 @@ import {
   CircleStop,
   HelpCircle,
   Loader2,
-  Users,
 } from "lucide-vue-next";
 import type {
   BotSummaryDto,
@@ -28,6 +27,7 @@ import GroupDispatchLeaderStop from "./GroupDispatchLeaderStop.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import BotAvatar from "./BotAvatar.vue";
+import GroupAvatarStack from "./GroupAvatarStack.vue";
 import GroupAgentTurnRow from "./GroupAgentTurnRow.vue";
 import AgentThinkingBubble, { type BubbleStatus } from "./AgentThinkingBubble.vue";
 import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
@@ -49,6 +49,10 @@ import {
 
 const props = defineProps<{
   bots: BotSummaryDto[];
+  /** The lead member: drawn first in the empty-state collage. */
+  leadBotId?: string;
+  /** Member ids by most recent activity: the empty-state collage's order. */
+  activityBotIds?: string[];
 }>();
 
 const { t, locale } = useI18n();
@@ -58,6 +62,8 @@ const instancesStore = useInstancesStore();
 const isMobile = useIsMobile();
 
 const group = computed(() => groupsStore.currentGroup);
+// Disabled members are not drawn, but the collage label still reports them.
+const disabledMemberCount = computed(() => props.bots.filter((b) => !b.enabled || b.retired).length);
 const topic = computed(() => groupsStore.currentTopic);
 const run = computed(() => groupsStore.activeRun);
 const botById = computed<Record<string, BotSummaryDto>>(() => {
@@ -606,8 +612,8 @@ async function handleStopMember(payload: { runId: string; memberTurnId: string }
   }
 }
 
-/** Round-level stop: confirm first, then cancel the run through the same path
- *  as the per-run Stop button. */
+/** Round-level stop: confirm first, then stop the owner and every queued accept
+ *  behind it. The detail sheet's per-run Stop stays scoped to one Run. */
 async function handleStopAll(presentation: GroupDispatchPresentation): Promise<void> {
   const runId = presentation.members[0]?.runId;
   if (!runId) return;
@@ -624,7 +630,7 @@ async function handleStopAll(presentation: GroupDispatchPresentation): Promise<v
   // The round may have ended while the dialog was open: never cancel a run
   // other than the one the user confirmed.
   if (groupsStore.activeRun?.id !== runId) return;
-  void groupsStore.cancelCurrentRun();
+  void groupsStore.stopCurrentAndQueued();
 }
 
 /**
@@ -839,8 +845,11 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
   <div data-test="group-dispatch-announcer" role="status" aria-live="polite" aria-atomic="true" class="sr-only">{{ dispatchAnnouncement }}</div>
   <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto py-4 px-4 [overflow-anchor:none] lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && items.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
-      <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent-soft text-accent">
-        <Users :size="22" />
+      <div class="mb-3">
+        <GroupAvatarStack :bots="bots" :instance-id="groupsStore.instanceId" :size="48" :name="group?.title ?? 'Group'"
+                          :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
+                          :lead-bot-id="leadBotId" :activity-bot-ids="activityBotIds"
+                          style="--avatar-ring: rgb(var(--c-bg))" />
       </div>
       <h3 class="text-base font-semibold text-fg">{{ group?.title ?? "Group" }}</h3>
       <p class="mt-4 text-xs text-fg-muted">{{ $t("group.chat.emptyHint") }}</p>
@@ -931,6 +940,13 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
 
             <template v-if="item.message.role === 'human'" #meta>
               <ConversationMeta :message="item.message" />
+              <p
+                v-if="groupsStore.isRunQueued(item.message.runId)"
+                data-test="queued-prompt"
+                class="mt-1 text-xs text-fg-muted"
+              >
+                {{ $t("common.queuedPrompt") }}
+              </p>
               <GroupDispatchRow
                 v-if="dispatchRows[item.message.id]"
                 :presentation="dispatchRows[item.message.id]!"

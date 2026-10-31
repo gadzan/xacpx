@@ -13,8 +13,7 @@ import { useIsMobile } from "../lib/use-dropdown";
 const props = withDefaults(
   defineProps<{
     modelValue: string;
-    /** A turn is running: the button becomes Stop (with stopWhileBusy, always —
-     *  even with sendable text; otherwise only an empty composer cancels). */
+    /** A turn is running: the Stop button appears beside Send. */
     busy?: boolean;
     disabled?: boolean;
     /** A send is in flight: the button shows a spinner and ignores clicks. */
@@ -36,9 +35,6 @@ const props = withDefaults(
     attachmentsSendDisabled?: boolean;
     /** True when attachments are staged: an empty body sends instead of stopping. */
     hasAttachments?: boolean;
-    /** Busy keeps the Stop button even with sendable text. Panes whose sends
-     *  queue server-side mid-run must leave this off. */
-    stopWhileBusy?: boolean;
     /** The pane drives an ARIA combobox from its completion menu. */
     combobox?: boolean;
     /** Element id of the pane's completion listbox. */
@@ -80,11 +76,11 @@ const hasSendable = computed(() => props.modelValue.trim().length > 0 || props.h
  *  show not-allowed. A running turn (Stop must stay prominent) or an in-flight
  *  send (spinner) keeps the card at full strength and only dims the textarea. */
 const surfaceDisabled = computed(() => props.disabled && !props.busy && !props.sending);
-/** While a turn runs the button is Stop. Default: only when the composer has
- *  nothing sendable (queues-while-busy panes keep Send for typed text).
- *  stopWhileBusy panes refuse to send mid-run entirely, so the button stays
- *  Stop and the click routes to @cancel. */
-const showStop = computed(() => props.busy && (props.stopWhileBusy === true || !hasSendable.value));
+/** While a turn runs the Stop button appears beside Send, not instead of it:
+ *  the backend accepts a prompt sent mid-run and queues it, so the user can
+ *  keep typing and sending while a reply is still running. The card stays
+ *  expanded for the whole run so the second button has somewhere to sit. */
+const showStop = computed(() => props.busy);
 
 function reportCaret(): void {
   const el = textarea.value;
@@ -195,11 +191,14 @@ function onInput(event: Event): void {
        and stack layers above this card baseline (no pb / border-t here).
        rounded-3xl reads as a pill on the one-line resting card (42px) and stays
        soft on the expanded card. -->
+  <!-- The card is glass-strong: a translucent surface with a hairline and the
+       card shadow. The glass is static — it is not in the transition list, so
+       the radius animation below is unchanged. -->
   <form class="relative mx-auto w-full max-w-3xl px-0" @submit.prevent="emit('send')" @dragover.prevent @drop="emit('drop', $event)">
     <div
       ref="surface"
       data-test="composer-surface"
-      class="relative bg-surface transition-[background-color,border-radius] duration-200 ease-out focus-within:ring-2 focus-within:ring-accent"
+      class="relative bg-glass-strong backdrop-blur-glass backdrop-saturate-glass shadow-glass-float transition-[background-color,border-radius] duration-200 ease-out focus-within:ring-2 focus-within:ring-accent"
       :class="[expanded ? 'rounded-2xl' : 'rounded-3xl', surfaceDisabled ? 'cursor-not-allowed opacity-60' : '']"
       :aria-disabled="surfaceDisabled ? 'true' : undefined"
     >
@@ -252,6 +251,10 @@ function onInput(event: Event): void {
         />
 
         <div class="absolute flex items-center gap-1.5" :class="expanded ? 'bottom-2 right-2' : 'right-2 top-1/2 -translate-y-1/2'">
+          <!-- Stop and Send sit side by side while a turn runs. Replacing Send
+               with Stop left the user unable to keep typing during a long
+               reply, and the backend queues the prompt anyway, so both
+               actions stay reachable. -->
           <button
             v-if="showStop"
             type="button"
@@ -270,7 +273,6 @@ function onInput(event: Event): void {
             </span>
           </button>
           <button
-            v-else
             type="submit"
             :data-test="sendTestId"
             :disabled="disabled || sending || sendDisabled || attachmentsSendDisabled || !hasSendable"

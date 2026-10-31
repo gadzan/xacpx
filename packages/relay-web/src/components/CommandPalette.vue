@@ -74,26 +74,25 @@ onBeforeUnmount(() => { unregister?.(); unregister = null; });
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-24" data-test="command-palette" @click.self="navigateBack">
-    <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-raised shadow-float">
-      <div class="flex items-center gap-2 px-4 py-3">
-        <Search :size="16" class="shrink-0 text-fg-muted" />
+  <div class="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-24 backdrop-blur-sm" data-test="command-palette" @click.self="navigateBack">
+    <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+      <div class="flex min-h-12 items-center gap-2 px-4">
+        <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
         <input ref="input" v-model="query" data-test="palette-input" data-ring="container"
-               :placeholder='$t("palette.placeholder")'
-               class="w-full bg-transparent text-sm text-fg placeholder:text-fg-muted outline-none"
+               class="w-full bg-transparent text-sm text-fg placeholder:text-fg-muted-overlay outline-none"
                @input="active = 0; clampActive()" @keydown="onKeydown" />
       </div>
-      <ul class="max-h-80 overflow-y-auto py-1 text-sm">
+      <ul class="max-h-80 overflow-y-auto p-1 text-ui">
         <li v-for="(r, i) in rows" :key="`${r.instanceId}:${r.alias}:${i}`">
-          <button data-test="palette-row" class="flex w-full items-center gap-2 px-4 py-1.5 text-left"
-                  :class="i === active ? 'bg-accent-soft text-accent' : 'text-fg hover:bg-fg/5'"
+          <button data-test="palette-row" class="flex min-h-12 w-full items-center gap-2 rounded-item px-4 py-1.5 text-left"
+                  :class="i === active ? 'bg-fill-strong text-fg' : 'text-fg hover:bg-fill-hover'"
                   @mouseenter="active = i" @click="choose(r)">
             <MessageSquare :size="14" class="shrink-0" />
             <span class="font-medium">{{ r.label }}</span>
-            <span class="truncate text-xs text-fg-muted">{{ r.sub }}</span>
+            <span class="truncate text-xs text-fg-muted-overlay">{{ r.sub }}</span>
           </button>
         </li>
-        <li v-if="!rows.length" class="px-4 py-3 text-xs text-fg-muted">{{ $t("palette.noMatches") }}</li>
+        <li v-if="!rows.length" class="px-4 py-3 text-xs text-fg-muted-overlay">{{ $t("palette.noMatches") }}</li>
       </ul>
     </div>
   </div>

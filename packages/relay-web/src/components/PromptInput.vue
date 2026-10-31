@@ -958,7 +958,7 @@ function onKeydown(e: KeyboardEvent) {
                          class="shrink-0 transition-transform" :class="modelDd.open ? 'rotate-180' : ''" />
           </button>
           <DropdownPanel v-if="controls.modelAvailable.length"
-                         :dd="modelDd" tone="surface" width="min-w-40" placement="top"
+                         :dd="modelDd" width="min-w-40" placement="top"
                          :title='$t("chat.model")' test-id="model-menu"
                          :groups="modelGroups" @select="pickModel" />
           <button v-if="modelUnavailable || modelRecovery" type="button" data-test="model-refresh"
@@ -984,7 +984,7 @@ function onKeydown(e: KeyboardEvent) {
               }}</span>
               <ChevronDown :size="12" class="shrink-0 transition-transform" :class="effortDd.open ? 'rotate-180' : ''" />
             </button>
-            <DropdownPanel :dd="effortDd" tone="surface" width="min-w-32" placement="top"
+            <DropdownPanel :dd="effortDd" width="min-w-32" placement="top"
                            :title='$t("chat.effort")' test-id="effort-menu"
                            :groups="effortGroups" @select="pickEffort" />
           </div>

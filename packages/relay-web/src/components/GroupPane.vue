@@ -13,9 +13,14 @@ import GroupDialog from "./GroupDialog.vue";
 import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
 import TopicSwitcher from "./TopicSwitcher.vue";
 import MobileConnStrip from "./MobileConnStrip.vue";
+import GroupAvatarStack from "./GroupAvatarStack.vue";
+import GroupMemberPanel from "./GroupMemberPanel.vue";
+import GroupWorkingRow from "./GroupWorkingRow.vue";
 import MobileSheet from "./MobileSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
 import { backInFlight } from "../lib/mobile-back";
+import { presentGroupWorkingMembers } from "../lib/group-members";
+import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
 
 const emit = defineEmits<{
   /** Mobile top bar's ←: back to the home list (DashboardView clears the selection). */
@@ -29,6 +34,7 @@ const { locale } = useI18n();
 
 const newTopicDialogOpen = ref(false);
 const groupDialogOpen = ref(false);
+const memberPanelOpen = ref(false);
 const activeSheet = ref<"more" | null>(null);
 function closeSheet(): void { activeSheet.value = null; }
 // Zero Topics: the centre "Create first Topic" CTA is the only Topic entry, so
@@ -113,10 +119,26 @@ const bots = computed<BotSummaryDto[]>(() => {
 watch(() => groupsStore.instanceId, (instId) => {
   if (instId) void directBotsStore.loadBots(instId).catch(() => null);
 }, { immediate: true });
+// Member order follows the group's own botIds: the collage falls back to that
+// order for members nobody has heard from yet.
 const memberBots = computed<BotSummaryDto[]>(() => {
-  const ids = new Set(group.value?.botIds ?? []);
-  return bots.value.filter((b) => ids.has(b.id));
+  const byId = new Map(bots.value.map((b) => [b.id, b]));
+  return (group.value?.botIds ?? []).flatMap((id) => {
+    const bot = byId.get(id);
+    return bot ? [bot] : [];
+  });
 });
+const disabledMemberCount = computed(() => memberBots.value.filter((b) => !b.enabled || b.retired).length);
+const activityBotIds = useGroupAvatarActivity();
+
+// The members that currently hold a turn. Both inputs are the store's live
+// turn state: the active Run's durable member turns, and the live turn map
+// that survives a reconnect. Empty when the Group is idle.
+const workingMembers = computed(() => presentGroupWorkingMembers({
+  memberTurns: groupsStore.memberTurns,
+  liveTurnIds: Object.keys(groupsStore.liveTurnsByMember),
+  bots: memberBots.value,
+}));
 
 type MemberStatus =
   | { kind: "none-enabled" }
@@ -150,7 +172,7 @@ function handleSend(text: string, media: PromptAttachmentRef[] = []): void {
 }
 
 function handleCancel(): void {
-  void groupsStore.cancelCurrentRun();
+  void groupsStore.stopCurrentAndQueued();
 }
 
 // An archived Topic stays browsable (its transcript is durable history), but it
@@ -175,9 +197,16 @@ const worktreeRunId = computed(() => {
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
               class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
-      <div class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
-        <Users :size="16" />
-      </div>
+      <!-- The collage opens the member panel: it is the Group's membership at a
+           glance, and the panel is the full list behind it. -->
+      <button type="button" data-test="group-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="memberPanelOpen = true">
+        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="32" :name="group?.title ?? $t('group.nav.title')"
+                          :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
+                          :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
+                          style="--avatar-ring: rgb(var(--c-surface))" />
+      </button>
       <div class="flex min-w-0 flex-1 flex-col">
         <div class="flex min-w-0 items-center gap-2"><span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span></div>
         <TopicSwitcher
@@ -203,11 +232,17 @@ const worktreeRunId = computed(() => {
 
     <!-- Opaque on purpose: a backdrop-filtered ancestor becomes the containing block for
          fixed/absolute descendants, which would trap TopicSwitcher's popover, confirm
-         dialog and row menu inside this 44px header. -->
-    <header class="hidden lg:flex shrink-0 min-h-11 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
-      <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent">
-        <Users :size="15" />
-      </div>
+         dialog and row menu inside this header. -->
+    <header data-conversation-header class="hidden lg:flex shrink-0 min-h-14 items-center gap-2.5 bg-surface px-3 lg:px-5 py-1.5">
+      <!-- The desktop collage opens the same member panel as the mobile one. -->
+      <button type="button" data-test="group-desktop-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
+              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              @click="memberPanelOpen = true">
+        <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="44" :name="group?.title ?? $t('group.nav.title')"
+                          :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
+                          :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds"
+                          style="--avatar-ring: rgb(var(--c-surface))" />
+      </button>
       <div class="flex min-w-0 flex-col">
         <div class="flex min-w-0 items-center gap-2"><h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2></div>
         <div class="flex min-w-0 items-center gap-1.5 text-xs text-fg-muted">
@@ -247,6 +282,10 @@ const worktreeRunId = computed(() => {
       </button>
     </header>
 
+    <!-- "Who is working": the members that currently hold a turn. Renders
+         nothing while the Group is idle. -->
+    <GroupWorkingRow :members="workingMembers" />
+
     <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>
       <button type="button" @click="groupsStore.generalError = null; groupsStore.generalErrorCode = null">
@@ -281,7 +320,7 @@ const worktreeRunId = computed(() => {
         <span>{{ $t("group.firstTopic.action") }}</span>
       </button>
     </div>
-    <GroupTranscript v-else :bots="memberBots" />
+    <GroupTranscript v-else :bots="memberBots" :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds" />
     <ConversationWorktreePanel v-if="groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
       :instance-id="groupsStore.instanceId" :run-id="worktreeRunId" />
 
@@ -314,9 +353,17 @@ const worktreeRunId = computed(() => {
       :group="group"
       @close="groupDialogOpen = false"
     />
+    <GroupMemberPanel v-if="memberPanelOpen" @close="memberPanelOpen = false" />
 
     <!-- Group ⋯ sheet (<lg): the desktop header's edit entry. -->
     <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="group-more-sheet" @close="closeSheet">
+      <!-- The member panel: the second entry point (the top bar's ⋯ menu). -->
+      <button type="button" data-test="sheet-group-members"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              @click="memberPanelOpen = true; closeSheet()">
+        <Users :size="18" class="shrink-0 text-fg-muted" />
+        <span>{{ $t("group.panel.title") }}</span>
+      </button>
       <button type="button" data-test="sheet-group-edit"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
               @click="groupDialogOpen = true; closeSheet()">

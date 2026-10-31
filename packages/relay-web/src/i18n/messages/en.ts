@@ -3,6 +3,7 @@
 // test assertions on visible text keep passing.
 export default {
   common: {
+    queuedPrompt: "Waiting for the current reply to finish",
     cancel: "Cancel",
     confirm: "Confirm",
     ok: "OK",
@@ -20,6 +21,7 @@ export default {
     loading: "Loading…",
     retry: "Retry",
     close: "Close",
+    next: "Next",
   },
   connection: {
     connecting: "Connecting…",
@@ -47,6 +49,14 @@ export default {
     bots: "Bots",
     groups: "Groups",
   },
+  quickSwitch: {
+    title: "Quick switch",
+    sessions: "Recent sessions",
+    bots: "Bots",
+    groups: "Groups",
+    search: "Filter…",
+    empty: "Nothing here yet.",
+  },
   mobileBar: {
     openTabs: "Open tabs ({n})",
     switchTopic: "Switch topic",
@@ -62,6 +72,15 @@ export default {
     instanceNamePlaceholder: "instance name (optional)",
     generateToken: "Generate token",
     runOnHost: "Run on the xacpx host:",
+    addInstanceStepName: "Name this host, then generate a one-time token to connect it.",
+    addInstanceWaiting: "Waiting for the instance to connect…",
+    addInstanceConnected: "Connected · {name}",
+    addInstanceNotYet: "Not connected yet? Check that the command is running on the target machine.",
+    addInstanceRegenerate: "Copy the command again",
+    addInstanceLater: "Later",
+    addInstanceDone: "Done",
+    copyCommand: "Copy command",
+    copied: "Copied",
     retentionTitle: "History retention",
     retentionBody: "Keeps the newest {max} messages per session, for up to {days} days. Configured server-side.",
     relayTitle: "Relay",
@@ -972,7 +991,6 @@ export default {
       ownershipChecking: "Ownership unconfirmed. Checking active run...",
       topicRecovering: "Topic is still recovering. Wait for history to finish loading before sending.",
       botDisabled: "Bot is disabled. Enable it before sending messages.",
-      runInProgress: "A run is already in progress. Wait for it to finish or cancel it.",
       referenceTargetUnavailable: "A selected target is no longer available. Select it again before sending.",
       referencesUnavailable: "Agent references are unavailable for this execution policy.",
       invalidReferences: "A selected reference changed. Select the target again.",
@@ -1003,6 +1021,18 @@ export default {
     },
     header: {
       members: "{count} member | {count} members",
+    },
+    avatar: {
+      disabled: " ({count} disabled)",
+    },
+    panel: {
+      title: "Members",
+      label: "{title} · {count} member{disabled} | {title} · {count} members{disabled}",
+      disabledSuffix: " ({count} disabled)",
+      lead: "Lead",
+      removed: "Removed",
+      disabledReason: "Disabled — takes no new work until enabled again.",
+      working: "{names} working…",
     },
     members: {
       disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",

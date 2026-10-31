@@ -25,6 +25,12 @@ describe("CommandPalette", () => {
     expect(w.text()).not.toContain("/status");
   });
 
+  it("keeps rows and the search field at touch height (48px)", () => {
+    const w = mount(CommandPalette);
+    for (const row of w.findAll('[data-test="palette-row"]')) expect(row.classes()).toContain("min-h-12");
+    expect(w.find('[data-test="palette-input"]').element.closest("div")!.className.split(/\s+/)).toContain("min-h-12");
+  });
+
   it("filters by the query across label and subtitle", async () => {
     const w = mount(CommandPalette);
     await w.find('[data-test="palette-input"]').setValue("frontend");

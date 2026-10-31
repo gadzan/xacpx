@@ -24,6 +24,8 @@ import { useComposerStore } from "../stores/composer";
 import ComposerAttachments from "./ComposerAttachments.vue";
 import ComposerAttachPicker from "./ComposerAttachPicker.vue";
 import ConversationComposer from "./ConversationComposer.vue";
+import MobileSheet from "./MobileSheet.vue";
+import { useIsMobile } from "../lib/use-dropdown";
 
 const props = defineProps<{
   disabled?: boolean;
@@ -48,6 +50,8 @@ const composing = ref(false),
   cmdActiveIdx = ref(0),
   cmdDismissed = ref(false),
   page = ref(0);
+/** Below lg the completion selector is a bottom sheet, not a popover. */
+const isMobile = useIsMobile();
 const scope = computed(() =>
   JSON.stringify([
     directBotsStore.instanceId,
@@ -338,6 +342,12 @@ function pickRow(index: number): void {
     composer.value?.setSelectionRange(replaced.cursor, replaced.cursor);
   });
 }
+/** The sheet closed (scrim, ✕, back gesture): dismiss the menu the way Escape
+ *  does — the half-typed text stays — and hand focus back to the textarea. */
+function closeSelector(): void {
+  cmdDismissed.value = true;
+  void nextTick(() => composer.value?.focus());
+}
 function onKeydown(e: KeyboardEvent): void {
   const action = completionKey({
     key: e.key,
@@ -379,7 +389,7 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 async function handleSend(): Promise<void> {
-  if (blocked.value || isRunActive.value || composing.value || attachments.uploading) return;
+  if (blocked.value || composing.value || attachments.uploading) return;
   const key = scope.value,
     text = promptText.value,
     staged = attachments.snapshot(attachKey.value),
@@ -423,7 +433,7 @@ async function onDrop(e: DragEvent): Promise<void> {
 async function handleCancel(): Promise<void> {
   const run = directBotsStore.activeRun;
   if (!run || isCancelling.value) return;
-  await directBotsStore.cancelCurrentRun({ runId: run.id });
+  await directBotsStore.stopCurrentAndQueued();
 }
 function handleRetry(): void {
   void handleSend();
@@ -486,10 +496,9 @@ function onInput(): void {
       :disabled="blocked"
       :sending="isPromptInFlight"
       :cancelling="isCancelling"
-      :stop-while-busy="true"
       :has-attachments="readyMedia"
       :attachments-send-disabled="attachments.uploading"
-      :send-disabled="isRunActive"
+      :send-disabled="false"
       :placeholder="composerPlaceholder"
       send-test-id="send-prompt-button"
       stop-test-id="stop-run-button"
@@ -525,14 +534,74 @@ function onInput(): void {
         />
       </template>
       <template #menus>
-        <div
-          v-if="menuOpen"
-          id="direct-completion-menu"
-          role="listbox"
-          :aria-label="$t('bot.prompt.completions')"
-          data-test="direct-cmd-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-80 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
-        >
+      <!-- Below lg the selector is a bottom sheet (rows are finger-sized); at lg
+           the inline popover above the composer stays exactly as it was. -->
+      <Teleport v-if="isMobile && menuOpen" to="body">
+        <MobileSheet :title="$t('bot.prompt.completions')" test-id="direct-cmd-sheet" @close="closeSelector">
+          <!-- The textarea keeps DOM focus while its listbox is open (it owns
+               aria-activedescendant), so the sheet must not move focus on mount:
+               this is the sheet's initial-focus target and is not focusable. -->
+          <span data-sheet-initial-focus aria-hidden="true" />
+          <div
+            id="direct-completion-menu"
+            role="listbox"
+            :aria-label="$t('bot.prompt.completions')"
+            data-test="direct-cmd-menu"
+            class="w-full"
+          >
+            <button
+              v-for="(row, index) in rows"
+              :id="'direct-completion-' + index"
+              :key="row.key"
+              type="button"
+              role="option"
+              :aria-selected="index === cmdActiveIdx"
+              data-test="direct-cmd-item"
+              class="flex min-h-[46px] w-full items-center gap-2 rounded-sm px-3 text-left text-sm"
+              :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
+              @pointerdown.prevent
+              @click="pickRow(index)"
+            >
+              <span v-if="row.kind === 'skill'" class="text-accent">{{
+                $t("bot.prompt.skillCompletion")
+              }}</span>
+              <span class="font-medium text-fg">{{ row.label }}</span
+              ><span class="truncate text-fg-muted">{{ row.detail }}</span>
+            </button>
+            <div v-if="!rows.length" role="status" class="px-3 py-2 text-xs text-fg-muted">
+              {{ $t("bot.prompt.completion" + status) }}
+            </div>
+            <button
+              v-if="more"
+              type="button"
+              class="flex min-h-[46px] w-full items-center px-3 text-left text-xs text-accent"
+              @pointerdown.prevent
+              @click="nextPage"
+            >
+              {{ $t("bot.prompt.moreCompletions") }}
+            </button>
+            <button
+              v-if="status === 'error' || status === 'loading' || status === 'unavailable'"
+              type="button"
+              class="flex min-h-[46px] w-full items-center px-3 text-left text-xs text-accent"
+              @pointerdown.prevent
+              @click="refresh()"
+            >
+              {{ $t("bot.prompt.retry") }}
+            </button>
+          </div>
+        </MobileSheet>
+      </Teleport>
+
+      <!-- Desktop (>= lg): the inline popover. -->
+      <div
+        v-if="!isMobile && menuOpen"
+        id="direct-completion-menu"
+        role="listbox"
+        :aria-label="$t('bot.prompt.completions')"
+        data-test="direct-cmd-menu"
+        class="absolute bottom-full left-0 z-20 mb-2 max-h-80 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
+      >
           <button
             v-for="(row, index) in rows"
             :id="'direct-completion-' + index"

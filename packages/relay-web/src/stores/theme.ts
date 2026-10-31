@@ -4,7 +4,7 @@ import { ref } from "vue";
 export type ThemeMode = "dark" | "light";
 const KEY = "relay-theme";
 /** Browser-chrome colour per theme; mirrors --c-bg and the theme-color metas in index.html. */
-export const THEME_COLOR: Record<ThemeMode, string> = { light: "#FFFFFF", dark: "#10151C" };
+export const THEME_COLOR: Record<ThemeMode, string> = { light: "#F3F4F6", dark: "#111214" };
 
 function initialMode(): ThemeMode {
   const saved = localStorage.getItem(KEY);

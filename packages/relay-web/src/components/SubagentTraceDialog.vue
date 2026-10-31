@@ -33,10 +33,10 @@ useModalA11y(dialog, () => emit("close"));
 <template>
   <Teleport to="body">
     <div class="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6" data-test="subagent-trace-dialog">
-      <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="navigateBack" />
+      <div class="absolute inset-0 bg-scrim backdrop-blur-sm" @click="navigateBack" />
       <section ref="dialog" role="dialog" aria-modal="true" tabindex="-1"
                aria-labelledby="subagent-trace-title"
-               class="relative flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-surface shadow-float">
+               class="relative flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
         <header class="relative shrink-0 overflow-hidden px-5 py-4 sm:px-6">
           <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-accent/10 via-transparent to-run/5" />
           <div class="relative flex items-start gap-3">
@@ -50,8 +50,8 @@ useModalA11y(dialog, () => emit("close"));
                 </span>
                 <span class="inline-flex items-center gap-1 text-xs text-fg-muted">
                   <Loader2 v-if="status === 'running'" :size="12" class="animate-spin motion-reduce:animate-none text-accent" />
-                  <AlertTriangle v-else-if="status === 'error'" :size="12" class="text-danger" />
-                  <Check v-else :size="12" class="text-run" />
+                  <AlertTriangle v-else-if="status === 'error'" :size="12" class="text-danger-overlay" />
+                  <Check v-else :size="12" class="text-run-overlay" />
                   {{ status === "running" ? $t("tools.running") : status === "error" ? $t("tools.failed") : $t("tools.finished") }}
                 </span>
               </div>
@@ -88,7 +88,7 @@ useModalA11y(dialog, () => emit("close"));
           <div v-else-if="!step.detail && !outputText" class="grid min-h-36 place-items-center rounded-2xl bg-surface-2 text-center">
             <div>
               <Loader2 v-if="status === 'running'" :size="18" class="mx-auto animate-spin motion-reduce:animate-none text-accent" />
-              <Check v-else :size="18" class="mx-auto text-run" />
+              <Check v-else :size="18" class="mx-auto text-run-overlay" />
               <p class="mt-2 text-ui text-fg-muted">{{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}</p>
             </div>
           </div>

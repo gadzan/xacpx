@@ -100,7 +100,6 @@ export type GroupErrorCode =
   | "ownershipUnconfirmed"
   | "ownershipChecking"
   | "topicRecovering"
-  | "runInProgress"
   | "topicQueueFull"
   | "targetTooLarge"
   | "promptPendingConfirmation"
@@ -558,6 +557,16 @@ export const useGroupsStore = defineStore("groups", () => {
   const topicReady = ref<boolean>(true);
 
   const activeRun = ref<ConversationRunDto | null>(null);
+  /** Runs this tab accepted that the backend queued behind the Topic owner.
+   *  A mid-run send is accepted as `state: "queued"` while `activeRun` keeps
+   *  the running owner, so the accepted Run is durable but owns nothing yet.
+   *  Tracking it keeps those Runs out of the foreign-Run fence and lets the
+   *  transcript mark the sent prompt as waiting instead of looking lost. */
+  const queuedOwnRuns = ref<Record<string, ConversationRunDto>>({});
+  /** Insertion order is accept order, which is the order the backend drains. */
+  const queuedRuns = computed<ConversationRunDto[]>(() => Object.values(queuedOwnRuns.value));
+  const isRunQueued = (runId: string | undefined): boolean =>
+    !!runId && queuedOwnRuns.value[runId] !== undefined;
   const liveCompletedMemberTurns = ref<{ runId: string; ids: Record<string, true> } | null>(null);
   const memberTurnsById = ref<Record<string, MemberTurnSummaryDto>>({});
   const liveTurnsByMember = ref<Record<string, GroupLiveTurn>>({});
@@ -1932,6 +1941,7 @@ export const useGroupsStore = defineStore("groups", () => {
       // The list no longer mentions our run at all (rolled off / foreign client):
       // drop the ownership instead of pinning the composer to a phantom Run.
       activeRun.value = null;
+      queuedOwnRuns.value = {};
       liveTurnsByMember.value = {};
     }
     memberTurnsById.value = {};
@@ -2251,6 +2261,7 @@ export const useGroupsStore = defineStore("groups", () => {
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
     activeRun.value = null;
+    queuedOwnRuns.value = {};
     memberTurnsById.value = {};
     liveTurnsByMember.value = {};
     latestPlanRunId.value = null;
@@ -2332,6 +2343,7 @@ export const useGroupsStore = defineStore("groups", () => {
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
     activeRun.value = null;
+    queuedOwnRuns.value = {};
     memberTurnsById.value = {};
     liveTurnsByMember.value = {};
     latestPlanRunId.value = null;
@@ -2373,6 +2385,7 @@ export const useGroupsStore = defineStore("groups", () => {
     hasMoreAfter.value = false;
     memberTurnsById.value = {};
     activeRun.value = null;
+    queuedOwnRuns.value = {};
     liveTurnsByMember.value = {};
     latestPlanRunId.value = null;
     planByRunId.value = {};
@@ -2501,11 +2514,10 @@ export const useGroupsStore = defineStore("groups", () => {
       promptErrorDetail.value = null;
       return "uncertain";
     }
-    if (isRunActive.value) {
-      promptError.value = "runInProgress";
-      promptErrorDetail.value = null;
-      return "uncertain";
-    }
+    // A Run already executing is not a barrier: the backend admits the prompt
+    // as a queued Run behind the standing owner and dispatches it once that
+    // owner settles. Refusing here would leave a composer the user can still
+    // type into unable to send anything at all.
     // Invariant: an uncertain prompt may only be resolved by replaying its own
     // tuple (or by durable reconciliation discovering it). Minting a fresh
     // requestId meanwhile would leave the original Run executing AND run the new
@@ -2605,15 +2617,29 @@ export const useGroupsStore = defineStore("groups", () => {
       if (contestedOwnerless) {
         // Keep the tracked owner; fence below confirms it.
       } else if (promptOwner && promptOwner.id !== res.run.id) {
-        activeRun.value = mergeRun(null, promptOwner);
-        memberTurnsById.value = {};
-        liveTurnsByMember.value = {};
+        // The accepted Run is queued behind a standing owner. Only reset the
+        // owner's turn state when the owner actually changed: re-adopting the
+        // Run this tab already tracks must not wipe the live turn it streams.
+        const ownerChanged = activeRun.value?.id !== promptOwner.id;
+        activeRun.value = mergeRun(activeRun.value, promptOwner);
+        if (ownerChanged) {
+          memberTurnsById.value = {};
+          liveTurnsByMember.value = {};
+        }
         latestPlanRunId.value = promptOwner.id;
       } else if (acceptOverwritesOwner) {
         activeRun.value = mergeRun(activeRun.value, res.run);
         const turns = res.memberTurns ?? (res.memberTurn ? [res.memberTurn] : []);
         applyMemberTurns(turns);
         mirrorAcceptedRun(res.run, turns);
+      }
+      // A queued accept owns nothing yet, so it never reaches `activeRun`. Keep
+      // it here: its own run-changed events must not look like a foreign Run.
+      if (res.run.id !== activeRun.value?.id && !isTerminalRunState(res.run.state)) {
+        queuedOwnRuns.value = {
+          ...queuedOwnRuns.value,
+          [res.run.id]: mergeRun(queuedOwnRuns.value[res.run.id] ?? null, res.run),
+        };
       }
       const adoptedRun = activeRun.value;
       if (!adoptedRun) {
@@ -2718,9 +2744,6 @@ export const useGroupsStore = defineStore("groups", () => {
           promptError.value = err instanceof Error ? err.message : String(err);
           promptErrorDetail.value = promptError.value;
         }
-      } else if (isCurrent() && promptError.value === "runInProgress") {
-        promptError.value = null;
-        promptErrorDetail.value = null;
       }
       if (!isCurrent()) {
         // The selection moved (or the Topic was deleted) while the RPC was in
@@ -2970,6 +2993,27 @@ export const useGroupsStore = defineStore("groups", () => {
         cancellingRunId.value = null;
       }
     }
+  }
+
+  /** Stop the Group Topic: cancel the queued accepts behind the owner, then the
+   *  owner itself. A queued accept is already a durable Run, so dropping it
+   *  from the local map alone would let the backend still start it: each one is
+   *  cancelled over the same RPC the owner uses. Queued Runs go first so the
+   *  owner's retirement cannot promote one of them into execution. */
+  async function stopCurrentAndQueued(): Promise<void> {
+    const targetInstId = instanceId.value;
+    if (targetInstId) {
+      await Promise.all(queuedRuns.value.map(async (run) => {
+        try {
+          unwrapRpc(await api.rpc<{ ok: boolean; run: ConversationRunDetailDto }>(targetInstId, MSG.runsCancel, { runId: run.id }));
+        } catch (err: unknown) {
+          // A failed queued cancel proves nothing about the Run: the terminal
+          // row still arrives over the socket and a later Stop retries it.
+          console.warn("cancelQueuedRun error:", err);
+        }
+      }));
+    }
+    await cancelCurrentRun();
   }
 
   async function reconcileOnReconnect(): Promise<void> {
@@ -3328,6 +3372,26 @@ export const useGroupsStore = defineStore("groups", () => {
     if (e.type === "conversation-run-changed") {
       const run = e.run;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        // One of our own queued accepts: the standing owner still runs, so the
+        // accepted Run is durable but owns nothing. Track it instead of letting
+        // it trip the foreign-Run fence; the owner's terminal event re-elects
+        // the true owner through discovery.
+        const ownQueuedRun = queuedOwnRuns.value[run.id];
+        if (ownQueuedRun && activeRun.value?.id !== run.id) {
+          const nextQueued = { ...queuedOwnRuns.value };
+          if (isTerminalRunState(run.state)) {
+            delete nextQueued[run.id];
+          } else {
+            nextQueued[run.id] = mergeRun(ownQueuedRun, run);
+          }
+          queuedOwnRuns.value = nextQueued;
+          return;
+        }
+        if (ownQueuedRun) {
+          const nextQueued = { ...queuedOwnRuns.value };
+          delete nextQueued[run.id];
+          queuedOwnRuns.value = nextQueued;
+        }
         if (
           (activeRun.value && activeRun.value.id === run.id) ||
           (!activeRun.value && isTerminalRunState(run.state))
@@ -3600,6 +3664,8 @@ export const useGroupsStore = defineStore("groups", () => {
     historyErrorDetail,
     topicReady,
     activeRun,
+    queuedRuns,
+    isRunQueued,
     liveCompletedMemberTurns,
     memberTurns,
     memberTurnsById,
@@ -3680,6 +3746,7 @@ export const useGroupsStore = defineStore("groups", () => {
     sendPrompt,
     retryUncertainPrompt,
     cancelCurrentRun,
+    stopCurrentAndQueued,
     reconcileOnReconnect,
     applyEvent,
   };
