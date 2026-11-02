@@ -2553,45 +2553,12 @@ export class ControlService {
 
   listBots() {
     const bots = this.requireConversations().bots;
-    const live = bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
-    const retired = bots.listTombstones().map((tomb) => ({
-      id: tomb.id,
-      name: tomb.name,
-      ...(tomb.avatar ? { avatar: tomb.avatar } : {}),
-      ...(tomb.role ? { role: tomb.role } : {}),
-      agent: tomb.agent,
-      workspace: tomb.workspace,
-      enabled: false,
-      updatedAt: tomb.retiredAt,
-      retired: true as const,
-    }));
-    return [...live, ...retired];
+    return bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
   }
 
   getBot(id: string) {
     const bots = this.requireConversations().bots;
-    try {
-      return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
-    } catch (error) {
-      const code = error instanceof Error && "code" in error ? String(error.code) : "";
-      const tomb = code === "bot_not_found" ? bots.listTombstones().find((item) => item.id === id) : undefined;
-      if (!tomb) {
-        throw error;
-      }
-      return {
-        id: tomb.id,
-        name: tomb.name,
-        ...(tomb.avatar ? { avatar: tomb.avatar } : {}),
-        ...(tomb.role ? { role: tomb.role } : {}),
-        agent: tomb.agent,
-        workspace: tomb.workspace,
-        enabled: false,
-        updatedAt: tomb.retiredAt,
-        createdAt: tomb.retiredAt,
-        profileRevision: 1,
-        retired: true as const,
-      };
-    }
+    return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
   }
 
   /**

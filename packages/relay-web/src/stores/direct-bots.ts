@@ -1186,23 +1186,26 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return res.bot;
   }
 
-  async function deleteBot(targetInstanceId: string, botId: string): Promise<void> {
-    unwrapRpc(await api.rpc<{ ok: boolean }>(targetInstanceId, MSG.botsDelete, { id: botId }));
-    // Retire first: a deferred pre-delete list snapshot must land on the
-    // stale branch — otherwise its membership would clear the tombstone
-    // below and reinsert the just-deleted row.
+  // A Bot that left the catalog must not come back from a deferred list
+  // snapshot taken before it left, and must not stay selected once it is gone.
+  // Retire first: the snapshot then lands on the stale branch instead of
+  // reinserting the row.
+  function dropBotFromCatalog(targetInstanceId: string, botId: string): void {
     retireBotCatalogRequests(targetInstanceId);
     dropBotDetail(targetInstanceId, botId);
-
     const list = botsByInstance.value[targetInstanceId] ?? [];
     botsByInstance.value = {
       ...botsByInstance.value,
-      [targetInstanceId]: list.filter((b) => b.id !== botId),
+      [targetInstanceId]: list.filter((bot) => bot.id !== botId),
     };
-
     if (instanceId.value === targetInstanceId && selectedBotId.value === botId) {
       clearSelection();
     }
+  }
+
+  async function deleteBot(targetInstanceId: string, botId: string): Promise<void> {
+    unwrapRpc(await api.rpc<{ ok: boolean }>(targetInstanceId, MSG.botsDelete, { id: botId }));
+    dropBotFromCatalog(targetInstanceId, botId);
   }
 
   async function previewBotRemoval(targetInstanceId: string, botId: string): Promise<BotRemovalPreviewDto> {
@@ -1238,13 +1241,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       },
     ));
     if (res.operation.phase === "completed") {
-      const list = botsByInstance.value[targetInstanceId] ?? [];
-      botsByInstance.value = {
-        ...botsByInstance.value,
-        [targetInstanceId]: list.map((bot) => bot.id === input.botId
-          ? { ...bot, enabled: false, retired: true }
-          : bot),
-      };
+      // The removal is durable: the row leaves the catalog instead of turning
+      // into a disabled retired row (nothing disabled remains to show).
+      dropBotFromCatalog(targetInstanceId, input.botId);
     }
     try {
       await loadBots(targetInstanceId);

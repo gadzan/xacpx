@@ -121,7 +121,8 @@ const otherBots = computed(() => {
   const instanceId = directBotsStore.instanceId;
   const currentId = bot.value?.id;
   if (!instanceId || !currentId) return [];
-  return (directBotsStore.botsByInstance[instanceId] ?? []).filter((row) => row.id !== currentId);
+  return (directBotsStore.botsByInstance[instanceId] ?? [])
+    .filter((row) => row.id !== currentId && row.retired !== true);
 });
 
 const memberGroups = computed(() => {

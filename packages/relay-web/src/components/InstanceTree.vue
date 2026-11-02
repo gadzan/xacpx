@@ -128,7 +128,11 @@ const removalFor = ref<{ instanceId: string; bot: BotSummaryDto } | null>(null);
 const disabledBotsOpen = ref<Set<string>>(new Set());
 const enablingBots = ref<Set<string>>(new Set());
 function botsWithEnabled(instanceId: string, enabled: boolean): BotSummaryDto[] {
-  return (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.enabled === enabled);
+  // A removed Bot is not disabled — it is gone from the catalog entirely once
+  // the daemon catches up, so this filter only bridges the window where a
+  // stale snapshot (or an older daemon) still carries the row.
+  return (directBotsStore.botsByInstance[instanceId] ?? [])
+    .filter((b) => b.enabled === enabled && b.retired !== true);
 }
 /** A group's members in the group's own order: the collage's fallback order. */
 function groupMemberBots(instanceId: string, group: GroupSummaryDto): BotSummaryDto[] {

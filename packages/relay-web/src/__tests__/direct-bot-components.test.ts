@@ -2676,9 +2676,11 @@ describe("Direct Bot Components", () => {
 
       // "Talk with" opens the same other-bots + groups lists as the desktop nav menu.
       // It replaces the ⋯ sheet rather than stacking on it: one sheet dialog at a time.
+      // The retired self row is filtered out of the candidates, so only Tester lists.
       await sheet.find('[data-test="sheet-bot-nav"]').trigger("click");
       const nav = wrapper.find('[data-test="bot-nav-sheet"]');
       expect(nav.exists()).toBe(true);
+      expect(nav.findAll('[data-test="sheet-bot-option"]').map((row) => row.text())).toEqual(["Tester"]);
       expect(wrapper.find('[data-test="mobile-bot-more-sheet"]').exists()).toBe(false);
       expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1);
       await nav.find('[data-test="sheet-bot-option"]').trigger("click");

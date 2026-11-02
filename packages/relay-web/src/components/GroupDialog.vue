@@ -70,7 +70,8 @@ const deletingNow = ref(false);
 
 const catalogLoading = ref(false);
 const catalogError = ref<string | null>(null);
-const bots = computed<BotSummaryDto[]>(() => directBotsStore.botsByInstance[props.instanceId] ?? []);
+const bots = computed<BotSummaryDto[]>(() =>
+  (directBotsStore.botsByInstance[props.instanceId] ?? []).filter((b) => b.retired !== true));
 const botsById = computed(() => new Map(bots.value.map((b) => [b.id, b])));
 const catalogReady = computed(() => directBotsStore.botsLoaded[props.instanceId] === true || bots.value.length > 0);
 const unknownMemberIds = computed(() => memberIds.value.filter((id) => !botsById.value.has(id)));
