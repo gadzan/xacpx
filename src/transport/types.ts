@@ -262,8 +262,13 @@ export interface SessionTransport {
   setMode(session: ResolvedSession, modeId: string): Promise<void>;
   /** Switch the running session's model. Optional: transports that can't omit it. */
   setModel?(session: ResolvedSession, modelId: string): Promise<void>;
-  /** Read the current model and the agent-advertised available model ids. Optional. */
-  getSessionModel?(session: ResolvedSession): Promise<{ current?: string; available: string[] }>;
+  /** Read the current model and the agent-advertised available model ids. Optional.
+   *  `options.refresh` asks implementations with a cache to bypass it and read
+   *  the transport directly (used by background timeout reconciliation). */
+  getSessionModel?(
+    session: ResolvedSession,
+    options?: { refresh?: boolean },
+  ): Promise<{ current?: string; available: string[] }>;
   /** Set the adapter-advertised reasoning effort for this session. Optional. */
   setSessionEffort?(session: ResolvedSession, effort: string): Promise<void>;
   /** Read the current and adapter-advertised reasoning-effort values. Optional. */

@@ -215,6 +215,39 @@ describe("session-controls store", () => {
     expect(s.modelError).toBe(detail);
   });
 
+  it("loadModel failure marks the diagnostic as an automatic load error", async () => {
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "bridge request timed out" } });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+    expect(s.modelErrorSource).toBe("load");
+    s.dismissModelError();
+    expect(s.modelError).toBe("");
+    expect(s.modelErrorSource).toBe("");
+  });
+
+  it("a pending model switch shows an info toast and never reports failure", async () => {
+    rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a", "model-b"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+    rpc.mockResolvedValueOnce({ ok: false, current: null, pending: true });
+    const ok = await s.setModel("i1", "backend", "model-b", { optimistic: false });
+    expect(ok).toBe(false);
+    expect(s.modelCurrent).toBe("model-a");
+    expect(s.modelError).toBe("");
+    expect(useToasts().value[0]).toMatchObject({ tone: "info", key: "chat.modelSetPending" });
+  });
+
+  it("setModel failure marks the diagnostic as an explicit switch error", async () => {
+    rpc.mockResolvedValueOnce({ current: "model-a", available: ["model-a"] });
+    const s = useSessionControlsStore();
+    await s.loadModel("i1", "backend");
+    rpc.mockResolvedValueOnce({ error: { code: "internal", message: "set failed" } });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await s.setModel("i1", "backend", "model-b", { optimistic: false });
+    expect(s.modelErrorSource).toBe("set");
+    log.mockRestore();
+  });
+
   it("does not make a new account wait for the previous account's model mutation", async () => {
     useAuthStore().account = { username: "alice" };
     await writeViewSnapshot("bob", "session-model", "i1", "backend", {

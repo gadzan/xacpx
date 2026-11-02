@@ -970,7 +970,11 @@ async function dispatchControlRequest(
               input.modelId,
               { deadlineAt },
             );
-      return { ok: result.applied, current: result.current ?? null };
+      return {
+        ok: result.applied,
+        current: result.current ?? null,
+        ...(result.pending ? { pending: true } : {}),
+      };
     }
     case MSG.sessionEffortGet: {
       const input = parseControlPayload(MSG.sessionEffortGet, payload);

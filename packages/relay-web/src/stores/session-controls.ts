@@ -33,6 +33,8 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   const modelAvailable = ref<string[]>([]);
   const modelLoading = ref(false);
   const modelError = ref("");
+  /** Which operation produced `modelError`: an automatic load/refresh or an explicit switch. */
+  const modelErrorSource = ref<"" | "load" | "set">("");
   const effortCurrent = ref<string | undefined>(undefined);
   const effortAvailable = ref<string[]>([]);
   const effortLoading = ref(false);
@@ -81,6 +83,13 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     modelCurrent.value = undefined;
     modelAvailable.value = [];
     modelError.value = "";
+    modelErrorSource.value = "";
+  }
+
+  /** Clear the automatic-load diagnostic (used by the global banner's dismiss). */
+  function dismissModelError(): void {
+    modelError.value = "";
+    modelErrorSource.value = "";
   }
 
   function clearEffortState(): void {
@@ -155,6 +164,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       : null;
     modelLoading.value = true;
     modelError.value = "";
+    modelErrorSource.value = "";
     let seeded = false;
     try {
       // Never paint a pre-mutation cache while a model change for this exact
@@ -186,6 +196,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       if (isErrorPayload(r)) {
         if (!seeded) clearModelState();
         modelError.value = r.error.message;
+        modelErrorSource.value = "load";
         return false;
       }
       modelCurrent.value = typeof r.current === "string" ? r.current : undefined;
@@ -199,6 +210,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       if (!isCurrentRequest(context, revision) || (isValid && !isValid())) return false;
       if (!seeded) clearModelState();
       modelError.value = error instanceof Error ? error.message : String(error);
+      modelErrorSource.value = "load";
       return false;
     } finally {
       if (isCurrentRequest(context, revision)) modelLoading.value = false;
@@ -222,6 +234,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     // Its stale finally block is intentionally ignored, so clear the spinner now.
     modelLoading.value = false;
     modelError.value = "";
+    modelErrorSource.value = "";
     if (options?.optimistic !== false) modelCurrent.value = id;
     const operation = (async (): Promise<boolean> => {
       try {
@@ -230,7 +243,23 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
           if (isCurrentRequest(context, revision)) {
             modelCurrent.value = rollbackModel(context, prev);
             modelError.value = r.error.message;
+            modelErrorSource.value = "set";
             reportModelSwitchFailure(r.error.message);
+          }
+          return false;
+        }
+        if (r.pending === true) {
+          // The daemon accepted the switch but timed out before it could observe
+          // the result; it reconciles in the background. This is not a failure,
+          // so keep the chip on the last known model and say so with an info toast.
+          const observed = rollbackModel(context, prev);
+          if (ownerGeneration === accountGeneration) {
+            recordAuthoritativeModel(context, revision, observed);
+          }
+          cacheModel(cacheOwner, instanceId, alias, { current: observed, available: availableAtSet }, cacheToken);
+          if (isCurrentRequest(context, revision)) {
+            modelCurrent.value = observed;
+            pushToast("info", "chat.modelSetPending");
           }
           return false;
         }
@@ -245,6 +274,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
           if (isCurrentRequest(context, revision)) {
             modelCurrent.value = observed;
             modelError.value = `requested ${id}; authoritative model is ${r.current ?? "unknown"}`;
+            modelErrorSource.value = "set";
             reportModelSwitchFailure(
               `requested ${id}; authoritative model is ${r.current ?? "unknown"}`,
             );
@@ -266,6 +296,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
         if (isCurrentRequest(context, revision)) {
           modelCurrent.value = rollbackModel(context, prev);
           modelError.value = e instanceof Error ? e.message : String(e);
+          modelErrorSource.value = "set";
           reportModelSwitchFailure(e instanceof Error ? e.message : "set-failed");
         }
         return false;
@@ -527,7 +558,8 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   watch(() => auth.account?.username ?? null, () => resetForAccountChange(), { flush: "sync" });
 
   return {
-    modelCurrent, modelAvailable, modelLoading, modelError, reset, loadModel, setModel,
+    modelCurrent, modelAvailable, modelLoading, modelError, modelErrorSource, dismissModelError,
+    reset, loadModel, setModel,
     effortCurrent, effortAvailable, effortLoading, loadEffort, setEffort, waitForEffortSet,
     applyLiveEvent,
   };

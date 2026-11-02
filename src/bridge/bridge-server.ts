@@ -515,6 +515,7 @@ agent: requireString(params, "agent"),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          ...(params.refresh === true ? { refresh: true } : {}),
         }, params));
       case "probeAgentCapabilities":
         return await this.engines.probeAgentCapabilities({

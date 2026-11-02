@@ -34,6 +34,7 @@ import CenterTabStrip from "../components/CenterTabStrip.vue";
 import NoticeToast from "../components/NoticeToast.vue";
 import ActionToast from "../components/ActionToast.vue";
 import ToastHost from "../components/ToastHost.vue";
+import SessionModelBanner from "../components/SessionModelBanner.vue";
 import ConnectionBadge from "../components/ConnectionBadge.vue";
 import CommandPalette from "../components/CommandPalette.vue";
 import BrandLogo from "../components/BrandLogo.vue";
@@ -1028,6 +1029,7 @@ onUnmounted(() => {
     <NoticeToast />
     <ActionToast />
     <ToastHost />
+    <SessionModelBanner />
     <CommandPalette v-if="paletteOpen"
                     @close="paletteOpen = false"
                     @select-session="(id, alias) => { onSelect(id, alias); paletteOpen = false; }" />

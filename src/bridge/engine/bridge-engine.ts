@@ -98,6 +98,8 @@ export interface EngineSessionInput {
   logicalSessionId?: string;
   /** Daemon-declared persisted engine for this session (plan §48). */
   transportEngine?: "cli" | "runtime";
+  /** Bypass engine-side metadata caches and read the transport directly. */
+  refresh?: boolean;
 }
 
 export interface EngineListInput {

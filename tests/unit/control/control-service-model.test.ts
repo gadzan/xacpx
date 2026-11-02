@@ -18,6 +18,7 @@ function makeDeps() {
     message: string;
     context?: Record<string, unknown>;
   }> = [];
+  const events: Array<{ type: string }> = [];
   const resolvedSession: typeof session & { effort?: string } = { ...session };
   const deps = {
     sessions: {
@@ -65,9 +66,9 @@ function makeDeps() {
         logs.push({ event, message, context });
       },
     },
-    events: { emit: () => {} },
+    events: { emit: (event: { type: string }) => events.push(event) },
   };
-  return { deps, calls, logs };
+  return { deps, calls, logs, events };
 }
 
 test("getSessionModel returns current + available for a resolved session", async () => {
@@ -102,29 +103,32 @@ test("setSessionModel switches the transport model and persists by alias", async
   ]);
 });
 
-test("setSessionModel reconciles a timed-out switch that acpx actually applied", async () => {
-  const { deps, calls, logs } = makeDeps();
+test("setSessionModel returns pending immediately and reconciles off the request path", async () => {
+  const { deps, calls, logs, events } = makeDeps();
   deps.transport.setModel = async () => {
     calls.push("transport:internal-backend:claude-opus-4-8");
     throw new CommandTimeoutError(30_000, "acpx set model", {
       stage: "set-model",
     });
   };
-  deps.transport.getSessionModel = async () => {
-    calls.push("query:internal-backend");
+  deps.transport.getSessionModel = async (
+    _s: typeof session,
+    options?: { refresh?: boolean },
+  ) => {
+    calls.push(`query:${options?.refresh ? "refresh" : "read"}`);
     return { current: "claude-opus-4-8", available: ["claude-opus-4-8"] };
   };
   const control = new ControlService(deps as never);
 
+  // The ambiguous timeout must not add a second 45s read to the request path.
   await expect(
     control.setSessionModel("relay:acc", "backend", "claude-opus-4-8"),
-  ).resolves.toEqual({
-    current: "claude-opus-4-8",
-    applied: true,
-  });
+  ).resolves.toEqual({ current: undefined, applied: false, pending: true });
+  await control.whenBackgroundIdle();
+
   expect(calls).toEqual([
     "transport:internal-backend:claude-opus-4-8",
-    "query:internal-backend",
+    "query:refresh",
     "persist:internal-backend:claude-opus-4-8",
   ]);
   expect(logs).toEqual([
@@ -134,12 +138,14 @@ test("setSessionModel reconciles a timed-out switch that acpx actually applied",
       context: {
         sessionAlias: "internal-backend",
         requestedModel: "claude-opus-4-8",
-        observedModel: "claude-opus-4-8",
         timeout:
           "acpx command timed out during set-model after 30s: acpx set model",
+        observedModel: "claude-opus-4-8",
+        outcome: "reconciled",
       },
     },
   ]);
+  expect(events).toEqual([{ type: "sessions-changed" }]);
 });
 
 test("setSessionModel adopts the authoritative model when a timed-out switch produced a third value", async () => {
@@ -157,15 +163,13 @@ test("setSessionModel adopts the authoritative model when a timed-out switch pro
 
   await expect(
     control.setSessionModel("relay:acc", "backend", "claude-opus-4-8"),
-  ).resolves.toEqual({
-    current: "provider/fallback-model",
-    applied: false,
-  });
+  ).resolves.toEqual({ current: undefined, applied: false, pending: true });
+  await control.whenBackgroundIdle();
   expect(calls).toEqual(["persist:internal-backend:provider/fallback-model"]);
 });
 
-test("setSessionModel serializes timeout reconciliation with a newer switch for the same session", async () => {
-  const { deps, calls } = makeDeps();
+test("a newer switch supersedes the background reconciliation of a timed-out one", async () => {
+  const { deps, calls, logs } = makeDeps();
   let resolveObserved!: (value: {
     current?: string;
     available: string[];
@@ -183,7 +187,7 @@ test("setSessionModel serializes timeout reconciliation with a newer switch for 
     }
   };
   deps.transport.getSessionModel = async () => {
-    calls.push("query:internal-backend");
+    calls.push("query:refresh");
     markQueryStarted();
     return await new Promise((resolve) => {
       resolveObserved = resolve;
@@ -191,26 +195,52 @@ test("setSessionModel serializes timeout reconciliation with a newer switch for 
   };
   const control = new ControlService(deps as never);
 
-  const first = control.setSessionModel("relay:acc", "backend", "model-b");
+  await expect(
+    control.setSessionModel("relay:acc", "backend", "model-b"),
+  ).resolves.toEqual({ current: undefined, applied: false, pending: true });
   await queryStarted;
-  const second = control.setSessionModel("relay:acc", "backend", "model-c");
-  for (let i = 0; i < 10; i += 1) await Promise.resolve();
-
-  expect(calls).toEqual([
-    "transport:internal-backend:model-b",
-    "query:internal-backend",
-  ]);
+  // The write queue is free again: the newer selection must win outright.
+  await expect(
+    control.setSessionModel("relay:acc", "backend", "model-c"),
+  ).resolves.toEqual({ current: "model-c", applied: true });
 
   resolveObserved({ current: "model-b", available: ["model-b", "model-c"] });
-  await expect(first).resolves.toEqual({ current: "model-b", applied: true });
-  await expect(second).resolves.toEqual({ current: "model-c", applied: true });
+  await control.whenBackgroundIdle();
+
   expect(calls).toEqual([
     "transport:internal-backend:model-b",
-    "query:internal-backend",
-    "persist:internal-backend:model-b",
+    "query:refresh",
     "transport:internal-backend:model-c",
     "persist:internal-backend:model-c",
   ]);
+  expect(logs.map((log) => log.context?.outcome)).toEqual(["superseded"]);
+});
+
+test("a failed reconciliation read keeps the persisted model and logs the failure", async () => {
+  const { deps, calls, logs } = makeDeps();
+  deps.transport.setModel = async () => {
+    calls.push("transport:internal-backend:claude-opus-4-8");
+    throw new CommandTimeoutError(30_000, "acpx set model", {
+      stage: "set-model",
+    });
+  };
+  deps.transport.getSessionModel = async () => {
+    calls.push("query:refresh");
+    throw new Error("worker gone");
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.setSessionModel("relay:acc", "backend", "claude-opus-4-8"),
+  ).resolves.toEqual({ current: undefined, applied: false, pending: true });
+  await control.whenBackgroundIdle();
+
+  expect(calls).toEqual([
+    "transport:internal-backend:claude-opus-4-8",
+    "query:refresh",
+  ]);
+  expect(logs.map((log) => log.context?.outcome)).toEqual(["failed"]);
+  expect(logs[0]?.context?.reconcileError).toBe("worker gone");
 });
 
 test("setSessionModel rejects viable requests only after queue aging makes their deadline unsafe", async () => {
