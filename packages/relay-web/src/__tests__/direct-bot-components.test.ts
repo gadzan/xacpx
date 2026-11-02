@@ -1610,6 +1610,106 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")?.length ?? 0).toBe(sendsBefore);
       expect(stopSpy).toHaveBeenCalledTimes(2);
     });
+    it("keeps Stop mounted while a cancel is in flight even after the user types", async () => {
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.activeRun = {
+        id: "run_1",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      directBots.cancellingRunId = "run_1";
+
+      const wrapper = mount(ConversationPromptInput, {
+        global: {
+          plugins: [i18n],
+        },
+      });
+
+      // The textarea stays editable while the cancel resolves, so the draft
+      // becomes sendable. The cancelling presentation outranks the draft rule:
+      // Stop (disabled, spinner) stays mounted and Send must not replace it
+      // mid-cancel — dispatching a prompt while the cancel is unresolved is
+      // exactly the race this guards against.
+      const textarea = wrapper.find("textarea");
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
+      await textarea.setValue("steer this");
+
+      const stop = wrapper.find('[data-test="stop-run-button"]');
+      expect(stop.exists()).toBe(true);
+      expect((stop.element as HTMLButtonElement).disabled).toBe(true);
+      expect(stop.find("svg.animate-spin").exists()).toBe(true);
+      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
+    });
+
+    it("shows Stop instead of a dead Send while an attachment uploads during a run", async () => {
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      directBots.activeConversationId = "c1";
+      directBots.activeTopicId = "t1";
+      directBots.activeRun = {
+        id: "run_1",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const composer = useComposerStore();
+      composer.bindInstance("i1", JSON.stringify(["direct", "i1", "c1", "t1", "b1"]));
+      composer.pending.push({
+        id: "local-1",
+        uploadId: "u1",
+        filename: "shot.png",
+        mimeType: "image/png",
+        size: 3,
+        kind: "image",
+        filePath: "/uploads/u1/shot.png",
+        status: "uploading",
+      });
+      const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const textarea = wrapper.find("textarea");
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
+      await textarea.setValue("also this");
+      // An upload in flight blocks Send; while a run is active the card must
+      // still offer the one usable action — Stop — not a disabled Send.
+      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
+    });
+
+    it("keeps Send enabled during a run when every send guard is clear", async () => {
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.activeRun = {
+        id: "run_1",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
+      await wrapper.find("textarea").setValue("queue this");
+      // Nothing blocks Send: the busy card must offer Send, never Stop.
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      const send = wrapper.find('[data-test="send-prompt-button"]');
+      expect(send.exists()).toBe(true);
+      expect((send.element as HTMLButtonElement).disabled).toBe(false);
+    });
 
     it("shows Send only with a staged image while a run is active", async () => {
       const directBots = useDirectBotsStore();

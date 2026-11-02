@@ -224,6 +224,82 @@ describe("Group Components", () => {
       expect(wrapper.text()).not.toContain("topicQueueFull");
     });
 
+    it("keeps Stop mounted while a cancel is in flight even after the user types", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.cancellingRunId = "run_1";
+
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+
+      // The textarea stays editable while the cancel resolves. Stop owns the
+      // cancelling spinner and must outrank the draft rule: Send must not
+      // replace it (and it would be dead anyway — canSend refuses mid-cancel).
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
+      await textarea.setValue("steer this");
+
+      const stop = wrapper.find('[data-test="group-stop-run-button"]');
+      expect(stop.exists()).toBe(true);
+      expect((stop.element as HTMLButtonElement).disabled).toBe(true);
+      expect(stop.find("svg.animate-spin").exists()).toBe(true);
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(false);
+    });
+
+    it("shows Stop instead of a dead Send when the target is unresolvable during a run", async () => {
+      const groups = seedGroupSelection();
+      // An empty member selection resolves to targetEmpty, so Send is blocked.
+      groups.targetSelection = { mode: "members", botIds: [] };
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
+      await textarea.setValue("please review");
+
+      // Send cannot fire with an unresolvable target; the running card must
+      // still expose the one action that works — Stop.
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(false);
+      const stop = wrapper.find('[data-test="group-stop-run-button"]');
+      expect(stop.exists()).toBe(true);
+      expect((stop.element as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("keeps a disabled Send when idle even though the target is unresolvable", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: [] };
+
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("please review");
+
+      // Stop requires a run: idle keeps the guarded Send, disabled.
+      expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(false);
+      const send = wrapper.find('[data-test="group-send-prompt-button"]');
+      expect(send.exists()).toBe(true);
+      expect((send.element as HTMLButtonElement).disabled).toBe(true);
+    });
+
     describe("drafts are kept per Group + Topic", () => {
       beforeEach(() => sessionStorage.clear());
       const TOPICS = [

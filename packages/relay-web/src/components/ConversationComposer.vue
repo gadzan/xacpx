@@ -76,12 +76,23 @@ const hasSendable = computed(() => props.modelValue.trim().length > 0 || props.h
  *  show not-allowed. A running turn (Stop must stay prominent) or an in-flight
  *  send (spinner) keeps the card at full strength and only dims the textarea. */
 const surfaceDisabled = computed(() => props.disabled && !props.busy && !props.sending);
-/** While a turn runs the card shows exactly one action: Stop when the draft is
- *  empty (nothing staged), Send once there is something to queue. The backend
- *  accepts a prompt sent mid-run and queues it, so typing or staging an
- *  attachment flips Stop to Send, and clearing the draft flips back. The card
+/** Send is not the usable action: the card itself is disabled, or a pane guard
+ *  (no resolvable target, an upload still in flight) would render a dead Send. */
+const sendBlocked = computed(
+  () => props.disabled || props.sendDisabled === true || props.attachmentsSendDisabled === true,
+);
+/** While a turn runs the card shows exactly one action: Stop whenever Send is
+ *  not the usable action — the draft is empty (nothing staged), a cancel is in
+ *  flight (Stop owns the cancelling spinner, so the cancel presentation
+ *  outranks the draft rule: typing cannot unmount Stop mid-cancel), or a pane
+ *  guard would leave Send dead. Otherwise Send, because the backend accepts a
+ *  prompt sent mid-run and queues it; typing or staging an attachment flips
+ *  Stop to Send, and clearing the draft flips back. An in-flight send keeps the
+ *  Send spinner, so `sending` is deliberately not a Stop condition. The card
  *  stays expanded for the whole run so the button has somewhere to sit. */
-const showStop = computed(() => props.busy && !hasSendable.value);
+const showStop = computed(
+  () => props.busy && !props.sending && (props.cancelling || !hasSendable.value || sendBlocked.value),
+);
 
 function reportCaret(): void {
   const el = textarea.value;
@@ -252,9 +263,9 @@ function onInput(event: Event): void {
         />
 
         <div class="absolute flex items-center gap-1.5" :class="expanded ? 'bottom-2 right-2' : 'right-2 top-1/2 -translate-y-1/2'">
-          <!-- Exactly one action while a turn runs: Stop on an empty draft,
-               Send once there is something to queue. Clearing the draft
-               reveals Stop again. -->
+          <!-- Exactly one action while a turn runs: Stop whenever Send is not
+               the usable action (empty draft, a cancel in flight, or a pane
+               guard that would leave Send dead), otherwise Send. -->
           <button
             v-if="showStop"
             type="button"
