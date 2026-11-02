@@ -1,4 +1,36 @@
 # Changelog
+## [relay 0.14.12-beta.15] - 2026-11-02
+
+### Added
+
+- 排队的 prompt 在当前回合结束前只留在 composer 下方的等待条里，不再提前冒泡进转录：hub 转录页排除 pending 行，刷新后从 `GET messages?view=pending` 恢复等待条，开始执行时才在转录里出现，取消时删除隐藏的预写入行（#520）。
+- 运行中的输入框只显示一个动作：草稿为空时是 Stop，输入文字或暂存附件后变成 Send，清空草稿回到 Stop；Enter 仍然在运行中的回合后面排队（#522）。
+
+### Fixed
+
+- Elicitation 表单 UX 重做：布局刷新、可选标签保持可读、与 composer 拉开间距；单选题改为行内选项，重复问题文本不再出现而 schema 描述保留；响应时限放宽到五分钟，transport watchdog 对齐（#518）。
+- 受控移除的 Bot 不再以「已禁用」身份留在目录里：`ControlService.listBots()/getBot()` 不再拼接墓碑，`BotService` 构造时清除 `retired` 移除记录且 state 加载边界一并丢弃存量；群成员选择器、@提及、Talk-with 候选与 Disabled 折叠区全部跳过 retired 行（#517）。
+- 模型 / effort chip 的上拉面板不再被输入卡片裁剪成零像素：`overflow-hidden` 只在折叠态生效，桌面输入行永远不裁剪，移动端折叠态保留（#523）。
+
+## [channel-relay 0.7.8-beta.11] - 2026-11-02
+
+- Compatibility floor raised to `0.24.10-beta.11` with no channel behavior change.
+
+## [0.24.10-beta.11] - 2026-11-02
+
+### Fixed
+
+- 受控移除的 Bot 不再以「已禁用」身份留在目录里：`ControlService.listBots()/getBot()` 不再拼接墓碑，`BotService` 构造时清除 `retired` 移除记录且 state 加载边界一并丢弃存量，in-flight 的 `deleting` / `indeterminate` 屏障原样保留（#517）。
+- Elicitation 响应时限放宽到五分钟，transport watchdog 对齐（#518）。
+
+## [channel-feishu 0.8.7-beta.11] - 2026-11-02
+
+- Compatibility floor raised to `0.24.10-beta.11` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.11] - 2026-11-02
+
+- Compatibility floor raised to `0.24.10-beta.11` with no channel behavior change.
+
 ## [relay-protocol 0.6.4-beta.8] - 2026-10-31
 
 ### Changed
