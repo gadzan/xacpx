@@ -650,6 +650,14 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const account = c.get("account");
     const instance = deps.instances.getOwned(c.req.param("id"), account.id);
     if (!instance) return c.json({ error: "not-found" }, 404);
+    // Durable pending queue for the strip's reload recovery: pre-written rows
+    // still carrying a queue_item_id, hidden from transcript pages until drain.
+    if (c.req.query("view") === "pending") {
+      const pending = deps.messages.listPendingBySession(account.id, instance.id, c.req.param("alias"));
+      return c.json({
+        items: pending.map((p) => ({ id: p.queueItemId, textPreview: p.textPreview, enqueuedAt: p.enqueuedAt })),
+      });
+    }
     // Cursor pagination: `before` = oldest id the client already has (load older);
     // `limit` is clamped to [1, 200]. Both optional — omitted = most recent page.
     // `view=compact` strips bulky tool details (diffs/output) for first-paint; the
@@ -899,10 +907,16 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         }
       }
       if (body.type === MSG.queueCancel && !isErrorPayload(result)) {
-        const p = payload as { itemId?: string };
+        const p = payload as { itemId?: string; sessionAlias?: string };
         if (typeof p.itemId === "string") {
           const cancelResult = result as { cancelled?: boolean };
           if (cancelResult.cancelled !== false) {
+            // The item will never drain: drop its hidden pre-written row so it
+            // cannot leak into a later transcript page or drain promotion.
+            // No-op when the cancel raced a drain (row already promoted).
+            if (typeof p.sessionAlias === "string") {
+              deps.messages.deletePendingByQueueItem(instance.id, p.sessionAlias, p.itemId);
+            }
             deps.onWebPromptQueueCancelled?.(instance.id, p.itemId);
           }
         }

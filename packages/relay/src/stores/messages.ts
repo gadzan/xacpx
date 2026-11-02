@@ -313,6 +313,10 @@ export class MessageStore {
    * Without `before` returns the most recent `limit` rows; with `before` returns the
    * `limit` rows immediately OLDER than that message id (cursor pagination for
    * "load older" on scroll-up). `hasMore` reports whether further-back rows exist.
+   * Pending queued rows (`queue_item_id` set) are EXCLUDED: a queued prompt lives
+   * only in the queue strip until its drained turn-started promotes it. Filtering
+   * happens in SQL before the limit+1 slicing so a deep pending backlog cannot
+   * starve transcript pages or flip hasMore.
    */
   listBySession(
     accountId: string,
@@ -327,6 +331,7 @@ export class MessageStore {
       `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at, m.slot_after_id, m.started_after_seq
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
+         AND m.queue_item_id IS NULL
          AND (? IS NULL OR m.id < ?)
        ORDER BY m.id DESC LIMIT ?`,
       [accountId, instanceId, sessionAlias, before, before, limit + 1],
@@ -337,6 +342,49 @@ export class MessageStore {
       hasMore,
       messages: page.reverse().map(toDto),
     };
+  }
+
+  /**
+   * Durable pending queue for one session: pre-written inbound rows still carrying
+   * a `queue_item_id` (real queued row or recovery fallback). Powers the queue
+   * strip's reload recovery — the connector's in-memory queue is ephemeral, so a
+   * refresh would otherwise lose every not-yet-drained chip. Oldest-first.
+   */
+  listPendingBySession(
+    accountId: string,
+    instanceId: string,
+    sessionAlias: string,
+  ): Array<{ queueItemId: string; textPreview: string; enqueuedAt: string }> {
+    const rows = this.db.all<{ queue_item_id: string; text: string; created_at: string }>(
+      `SELECT m.queue_item_id, m.text, m.created_at
+       FROM messages m JOIN instances i ON i.id = m.instance_id
+       WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
+         AND m.queue_item_id IS NOT NULL
+       ORDER BY m.id ASC`,
+      [accountId, instanceId, sessionAlias],
+    );
+    return rows.map((r) => ({
+      queueItemId: r.queue_item_id,
+      // Mirrors QUEUE_PREVIEW_MAX (src/control/turn-support.ts): the strip chip
+      // never carries the full prompt body.
+      textPreview: r.text.length > 120 ? r.text.slice(0, 120) : r.text,
+      enqueuedAt: r.created_at,
+    }));
+  }
+
+  /**
+   * Drop a still-pending queued row (by connector queue id). Called when a queue
+   * cancel succeeds: the item will never drain, so its pre-written row must not
+   * linger hidden and leak into a later transcript or drain. No-op when the row
+   * already promoted (drained) or never existed — the cancel raced the drain.
+   */
+  deletePendingByQueueItem(instanceId: string, sessionAlias: string, queueItemId: string): boolean {
+    this.db.run(
+      "DELETE FROM messages WHERE instance_id = ? AND session_alias = ? AND queue_item_id = ?",
+      [instanceId, sessionAlias, queueItemId],
+    );
+    const changed = this.db.get<{ n: number }>("SELECT changes() AS n");
+    return (changed?.n ?? 0) > 0;
   }
 
   /** One persisted row, account-scoped. Used to hydrate compact list rows on expand. */
