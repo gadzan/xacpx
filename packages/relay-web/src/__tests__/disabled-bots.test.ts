@@ -264,6 +264,21 @@ describe("Disabled Bots", () => {
       await disabledRow(wrapper).find('[data-test="bot-menu-button"]').trigger("click");
       expect(wrapper.find('[data-test="bot-menu-toggle"]').text()).toBe("启用");
     });
+
+    it("keeps a removed Bot out of the Disabled list entirely", async () => {
+      // Older daemons emitted retired rows with enabled:false. They are not
+      // disabled Bots — they are gone, so the Disabled section must not count
+      // or list them.
+      seedBots([REVIEWER, { ...TESTER, enabled: false, retired: true }, SLEEPER]);
+      const wrapper = await mountBotsTree();
+
+      expect(botNames(wrapper)).toEqual(["Reviewer"]);
+      expect(wrapper.find('[data-test="bots-disabled-toggle"]').text()).toBe("Disabled (1)");
+
+      await wrapper.find('[data-test="bots-disabled-toggle"]').trigger("click");
+      expect(botNames(wrapper)).toEqual(["Reviewer", "Sleeper"]);
+      expect(wrapper.find('[data-test="bot-removed"]').exists()).toBe(false);
+    });
   });
 
   describe("BotDialog Enabled switch", () => {

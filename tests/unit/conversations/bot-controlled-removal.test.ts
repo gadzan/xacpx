@@ -114,8 +114,10 @@ test("an unused bot retires, and deleteBot still removes a different unused bot"
       previewRevision: impact.revision,
     });
     expect(removed.operation.phase).toBe("completed");
-    expect(current.control.listBots().find((item) => item.id === unused.id)?.retired).toBe(true);
-    expect(current.control.getBot(unused.id).name).toBe("Unused");
+    // Removed Bots leave the catalog entirely: no disabled retired row, no
+    // detail fallback. A stale client snapshot converges through this list.
+    expect(current.control.listBots().some((item) => item.id === unused.id)).toBe(false);
+    expect(() => current.control.getBot(unused.id)).toThrow(BotError);
     await expect(current.control.promptConversation({
       conversationId: createDirectConversationId(unused.id),
       topicId: createDirectTopicId(unused.id),
@@ -141,7 +143,7 @@ test("a bot that only created a topic can be removed while that topic stays", as
     expect(removed.operation.phase).toBe("completed");
     expect(current.state.conversation_topics[topic.id]?.title).toBe("Scratch");
     expect(current.runtime.store.hasDurableBotWork(created.id)).toBe(false);
-    expect(current.control.getBot(created.id).retired).toBe(true);
+    expect(() => current.control.getBot(created.id)).toThrow(BotError);
   } finally {
     await current.close();
   }
@@ -182,7 +184,7 @@ test("direct chat stays unless the caller explicitly clears it, and group histor
     expect(current.runtime.store.botHistoryCounts(speaker.id, conversationId).groupRuns).toBeGreaterThan(0);
     expect(current.runtime.store.hasDurableBotWork(speaker.id)).toBe(true);
     await expect(current.control.deleteBot(speaker.id)).rejects.toMatchObject({ code: "bot_not_found" });
-    expect(current.control.getBot(partner.id).retired).toBeUndefined();
+    expect(current.control.listBots().some((item) => item.id === speaker.id)).toBe(false);
     expect(current.state.conversations[group.id]?.botIds).toEqual([partner.id, keeper.id]);
     expect(current.state.conversation_topics[groupTopic.id]?.title).toBe("Sprint");
   } finally {
@@ -328,7 +330,7 @@ test("a departed member session is released and the group transcript stays", asy
     expect(current.state.sessions[keeperAlias]?.owner?.botId).toBe(right.id);
     expect(current.state.conversation_topics[topic.id]?.conversationId).toBe(group.id);
     expect(current.runtime.store.listRuns(group.id, topic.id)[0]?.requestId).toBe("said");
-    expect(current.control.getBot(left.id).retired).toBe(true);
+    expect(current.control.listBots().some((item) => item.id === left.id)).toBe(false);
   } finally {
     await current.close();
   }
@@ -363,7 +365,7 @@ test("a new prompt during removal is rejected and does not recreate the bot", as
     expect(seen).toBeInstanceOf(BotError);
     expect(seen).toMatchObject({ code: "bot_removing" });
     expect(current.runtime.store.listRuns(createDirectConversationId(created.id)).map((run) => run.requestId)).not.toContain("raced");
-    expect(current.control.getBot(created.id).retired).toBe(true);
+    expect(current.control.listBots().some((item) => item.id === created.id)).toBe(false);
   } finally {
     await current.close();
   }
@@ -477,7 +479,7 @@ test("release failure survives restart and the same request finishes", async () 
       previewRevision: "ignored",
     });
     expect(retried.operation.phase).toBe("completed");
-    expect(second.control.getBot(created.id).retired).toBe(true);
+    expect(second.control.listBots().some((item) => item.id === created.id)).toBe(false);
     expect(second.state.sessions[alias]).toBeUndefined();
   } finally {
     await second.close();
@@ -533,7 +535,7 @@ test("the same removal request returns the same result", async () => {
       previewRevision: "anything",
     });
     expect(second.operation).toEqual(first.operation);
-    expect(current.control.listBots().filter((item) => item.id === created.id)).toHaveLength(1);
+    expect(current.control.listBots().filter((item) => item.id === created.id)).toHaveLength(0);
   } finally {
     await current.close();
   }
@@ -556,6 +558,37 @@ test("an AppState removal phase installs the SQLite barrier before accept", asyn
     })).rejects.toMatchObject({ code: "bot_removing" });
     expect(current.runtime.store.botRemovalPhase(created.id)).toBe("deleting");
     expect(current.runtime.store.listRuns(createDirectConversationId(created.id))).toEqual([]);
+  } finally {
+    await current.close();
+  }
+});
+
+test("a retired removal record left by an older daemon keeps the catalog clean", async () => {
+  const state = createEmptyState();
+  const legacyId = "bot_legacy";
+  state.bot_removals[legacyId] = {
+    botId: legacyId,
+    phase: "retired",
+    tombstone: {
+      id: legacyId,
+      name: "Legacy",
+      agent: "codex",
+      workspace: "backend",
+      retiredAt: NOW,
+    },
+    updatedAt: NOW,
+  };
+  const current = await compose({ state });
+  try {
+    // The tombstone never re-enters the catalog, and the residue is dropped
+    // from AppState at construction instead of surviving every restart.
+    expect(current.control.listBots().some((item) => item.id === legacyId)).toBe(false);
+    expect(current.state.bot_removals[legacyId]).toBeUndefined();
+    await expect(current.control.removeBot({
+      botId: legacyId,
+      requestId: "remove-legacy",
+      previewRevision: "anything",
+    })).rejects.toMatchObject({ code: "bot_not_found" });
   } finally {
     await current.close();
   }

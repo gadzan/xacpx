@@ -134,7 +134,11 @@ const automaticVisible = computed(() => automaticReady.value && jevConfigured.va
 const selectedIds = computed<string[]>(() =>
   selection.value?.mode === "members" ? selection.value.botIds : [],
 );
-const eligibleBots = computed(() => props.bots.filter((b) => b.enabled));
+// Rows the picker lists: every live member, disabled ones shown but not
+// pickable. A removed Bot is not listed at all — the daemon's catalog drops
+// the row and this only bridges a stale snapshot.
+const pickableBots = computed(() => props.bots.filter((b) => b.retired !== true));
+const eligibleBots = computed(() => pickableBots.value.filter((b) => b.enabled));
 const selectionLabel = computed(() => {
   if (isAutomatic.value) return t("group.target.automatic");
   if (isEveryone.value) return t("group.target.everyone");
@@ -206,7 +210,7 @@ watch(draftKey, (next, prev) => {
 const everyoneRecipients = computed<Array<{ id: string; name: string; lead: boolean }>>(() => {
   const group = groupsStore.currentGroup;
   if (!group) return [];
-  const byId = new Map(props.bots.map((b) => [b.id, b] as const));
+  const byId = new Map(props.bots.filter((b) => b.retired !== true).map((b) => [b.id, b] as const));
   return group.botIds
     .filter((id) => byId.get(id)?.enabled === true)
     .map((id) => ({ id, name: byId.get(id)?.name ?? id, lead: group.leadBotId === id }));
@@ -314,13 +318,15 @@ function driverFor(bot: BotSummaryDto): string | undefined {
 
 const mentionMembers = computed<GroupMentionMember[]>(() => {
   const leadId = groupsStore.currentGroup?.leadBotId;
-  return props.bots.map((bot) => ({
-    botId: bot.id,
-    name: bot.name,
-    ...(bot.role ? { role: bot.role } : {}),
-    enabled: memberUnavailableReason(bot) === null,
-    lead: bot.id === leadId,
-  }));
+  return props.bots
+    .filter((bot) => bot.retired !== true)
+    .map((bot) => ({
+      botId: bot.id,
+      name: bot.name,
+      ...(bot.role ? { role: bot.role } : {}),
+      enabled: memberUnavailableReason(bot) === null,
+      lead: bot.id === leadId,
+    }));
 });
 
 const singleMemberId = computed(() => {
@@ -744,7 +750,7 @@ function handleRetry(): void {
               <Check v-if="isEveryone" :size="14" class="shrink-0 text-accent" />
             </button>
             <p class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ $t("group.target.selectMembers") }}</p>
-            <button v-for="b in props.bots" :key="b.id"
+            <button v-for="b in pickableBots" :key="b.id"
                     :data-test="`group-target-member-${b.id}`"
                     :aria-disabled="!!memberUnavailableReason(b)"
                     :title="memberUnavailableReason(b) ?? undefined"

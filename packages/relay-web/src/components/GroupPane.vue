@@ -122,7 +122,7 @@ watch(() => groupsStore.instanceId, (instId) => {
 // Member order follows the group's own botIds: the collage falls back to that
 // order for members nobody has heard from yet.
 const memberBots = computed<BotSummaryDto[]>(() => {
-  const byId = new Map(bots.value.map((b) => [b.id, b]));
+  const byId = new Map(bots.value.filter((b) => b.retired !== true).map((b) => [b.id, b]));
   return (group.value?.botIds ?? []).flatMap((id) => {
     const bot = byId.get(id);
     return bot ? [bot] : [];

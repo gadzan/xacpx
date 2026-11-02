@@ -340,6 +340,16 @@ export class BotService {
     this._onBotReenabled = options?.onBotReenabled;
     this.conversationWork = options?.conversationWork;
     this.state.bot_removals ??= {};
+    // Removed Bots leave no catalog trace (the Control catalog lists live
+    // profiles only), so a completed removal record is pure residue: drop it
+    // in place so state loaded from an older daemon converges instead of
+    // keeping retired rows forever. In-flight phases stay — they are live
+    // barriers, not tombstones.
+    for (const [id, record] of Object.entries(this.state.bot_removals)) {
+      if (record.phase === "retired") {
+        delete this.state.bot_removals[id];
+      }
+    }
   }
 
   /** Shared with BotRuntimeManager: one botId, one exclusive lifecycle. */

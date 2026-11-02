@@ -131,10 +131,9 @@ test("stored Bot and retired records normalize legacy avatars and quarantine mal
     expect(loaded.bots.bot_a?.avatar).toEqual(expected);
     expect(loaded.bots.bot_a?.instructions).toBe("Do not change this.");
     expect(loaded.bots.bot_a?.profileRevision).toBe(7);
-    expect(loaded.bot_removals.bot_retired?.tombstone?.avatar).toEqual(expected);
+    expect(loaded.bot_removals).toEqual({});
     if (stored && typeof stored === "object") {
       expect(loaded.bots.bot_a?.avatar).not.toBe(stored);
-      expect(loaded.bot_removals.bot_retired?.tombstone?.avatar).not.toBe(stored);
     }
   }
   for (const malformed of [{ ...avatar, version: 2 }, { ...avatar, shape: "unknown" }, 12, []]) {
@@ -177,7 +176,7 @@ test("legacy and structured avatar records survive StateStore save and process r
     await store.save(loaded);
     const afterMigration = await new StateStore(path).load();
     expect(afterMigration.bots.bot_a).toEqual(loaded.bots.bot_a);
-    expect(afterMigration.bot_removals.bot_retired).toEqual(loaded.bot_removals.bot_retired);
+    expect(afterMigration.bot_removals).toEqual({});
     afterMigration.bots.bot_a!.avatar = {
       version: 1, kind: "character", shape: "nuage", color: "bleu", expression: "curieux", motion: "off",
     };
@@ -185,7 +184,7 @@ test("legacy and structured avatar records survive StateStore save and process r
     const restarted = await new StateStore(path).load();
     expect(restarted.bots.bot_a?.avatar).toEqual(afterMigration.bots.bot_a?.avatar);
     expect(restarted.bots.bot_a?.profileRevision).toBe(3);
-    expect(restarted.bot_removals.bot_retired?.tombstone?.avatar).toEqual({ version: 1, kind: "text", value: "🤖" });
+    expect(restarted.bot_removals).toEqual({});
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

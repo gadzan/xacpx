@@ -1238,13 +1238,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       },
     ));
     if (res.operation.phase === "completed") {
+      // The removal is durable: the row leaves the catalog instead of turning
+      // into a disabled retired row (nothing disabled remains to show).
       const list = botsByInstance.value[targetInstanceId] ?? [];
       botsByInstance.value = {
         ...botsByInstance.value,
-        [targetInstanceId]: list.map((bot) => bot.id === input.botId
-          ? { ...bot, enabled: false, retired: true }
-          : bot),
+        [targetInstanceId]: list.filter((bot) => bot.id !== input.botId),
       };
+      dropBotDetail(targetInstanceId, input.botId);
     }
     try {
       await loadBots(targetInstanceId);
