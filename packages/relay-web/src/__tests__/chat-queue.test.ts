@@ -38,8 +38,8 @@ it("queue-updated replaces the per-session queue list", () => {
   expect(chat.sessionQueue).toEqual([]);
 });
 
-it("sending while busy still issues control.prompt and pushes the optimistic bubble", async () => {
-  rpc.mockResolvedValueOnce({ ok: true });
+it("sending while busy keeps the prompt in the strip, not the transcript", async () => {
+  rpc.mockResolvedValueOnce({ ok: true, queued: true, queueItemId: "q1" });
   const chat = useChatStore();
   chat.select("i1", "s");
   // make the session busy: a live turn exists
@@ -47,11 +47,12 @@ it("sending while busy still issues control.prompt and pushes the optimistic bub
   expect(chat.busy).toBe(true);
   const before = chat.messages.length;
   await chat.send("queued msg");
-  expect(chat.messages.length).toBe(before + 1); // bubble pushed as normal
+  expect(chat.messages.length).toBe(before); // no transcript bubble while queued
+  expect(chat.sessionQueue.map((i) => i.id)).toEqual(["q1"]);
   expect(rpc).toHaveBeenCalledWith("i1", "control.prompt", { sessionAlias: "s", text: "queued msg" });
 });
 
-it("moves a drained queued prompt after the previous reply without duplicating it", async () => {
+it("builds the bubble at drain time and clears the strip", async () => {
   rpc.mockResolvedValueOnce({ ok: true, queued: true, queueItemId: "q1" });
   const chat = useChatStore();
   chat.select("i1", "s");
@@ -59,16 +60,19 @@ it("moves a drained queued prompt after the previous reply without duplicating i
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "first reply" } } as WebServerEvent);
 
   await chat.send("queued prompt");
+  expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([]);
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "queue-updated", chatKey: "c", sessionAlias: "s", items: [] } } as WebServerEvent);
 
   expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([
     ["out", "first reply"],
     ["in", "queued prompt"],
   ]);
+  expect(chat.sessionQueue).toEqual([]);
 });
 
-it("reconciles when the drain event arrives before the queued RPC response", async () => {
+it("dedupes when the drain event arrives before the queued RPC response", async () => {
   let resolveRpc!: (value: unknown) => void;
   rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
   const chat = useChatStore();
@@ -84,19 +88,20 @@ it("reconciles when the drain event arrives before the queued RPC response", asy
   resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
   await sending;
 
+  // The late RPC must not resurrect a second bubble or a leftover strip chip.
   expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([
     ["out", "first reply"],
     ["in", "queued prompt"],
     ["out", "second reply"],
   ]);
+  expect(chat.sessionQueue).toEqual([]);
 });
 
-it("keeps queue correlation across the previous turn history reload", async () => {
+it("reloads pending strip items without transcript bubbles", async () => {
   rpc.mockResolvedValueOnce({ ok: true, queued: true, queueItemId: "q1" });
   globalThis.fetch = vi.fn().mockResolvedValue({
     json: async () => ({
       messages: [
-        { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1", queueItemId: "q1" },
         { id: 2, instanceId: "i1", sessionAlias: "s", direction: "out", text: "first reply", createdAt: "t2" },
       ],
       hasMore: false,
@@ -108,65 +113,48 @@ it("keeps queue correlation across the previous turn history reload", async () =
   await chat.send("queued prompt");
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "first reply" } } as WebServerEvent);
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(chat.messages[0]?.id).toBe(1);
-
-  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
+  await chat.loadHistory();
 
   expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([
     ["out", "first reply"],
-    ["in", "queued prompt"],
   ]);
-});
+  expect(chat.sessionQueue).toEqual([]);
 
-it("defers history convergence until the queued RPC response establishes correlation", async () => {
-  let resolveRpc!: (value: unknown) => void;
-  rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
-  const fetchMock = vi.fn().mockResolvedValue({
-    json: async () => ({
-      messages: [
-        { id: 1, instanceId: "i1", sessionAlias: "s", direction: "out", text: "first reply", createdAt: "t1" },
-        { id: 2, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t2" },
-        { id: 3, instanceId: "i1", sessionAlias: "s", direction: "out", text: "second reply", createdAt: "t3" },
-      ],
-      hasMore: false,
-    }),
-  });
-  globalThis.fetch = fetchMock as typeof fetch;
-  const chat = useChatStore();
-  chat.select("i1", "s");
-  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } } as WebServerEvent);
-  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "first reply" } } as WebServerEvent);
-
-  const sending = chat.send("queued prompt");
-  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
-  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
-  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "second reply" } } as WebServerEvent);
-  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } } as WebServerEvent);
-  expect(fetchMock).not.toHaveBeenCalled();
-  resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
-  await sending;
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  // The pending endpoint (not the transcript page) restores the strip after reload.
+  globalThis.fetch = vi.fn().mockImplementation(async (input: unknown) => ({
+    json: async () => {
+      const url = String(input);
+      if (url.includes("view=pending")) {
+        return { items: [{ id: "q1", textPreview: "queued prompt", enqueuedAt: "t1" }] };
+      }
+      return {
+        messages: [
+          { id: 2, instanceId: "i1", sessionAlias: "s", direction: "out", text: "first reply", createdAt: "t2" },
+        ],
+        hasMore: false,
+      };
+    },
+  })) as typeof fetch;
+  await chat.loadHistory();
   expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([
     ["out", "first reply"],
-    ["in", "queued prompt"],
-    ["out", "second reply"],
   ]);
+  expect(chat.sessionQueue.map((i) => i.id)).toEqual(["q1"]);
 });
 
 it("reloads history immediately after reselecting a session during prompt RPC", async () => {
-  let resolveRpc!: (value: unknown) => void;
-  rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
-  const fetchMock = vi.fn().mockResolvedValue({
-    json: async () => ({
-      messages: [
-        { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1", queueItemId: "q1" },
-      ],
-      hasMore: false,
-    }),
-  });
+  const { promise, resolve } = Promise.withResolvers<unknown>();
+  rpc.mockImplementationOnce(() => promise);
+  const transcript = {
+    messages: [
+      { id: 1, instanceId: "i1", sessionAlias: "s", direction: "out", text: "first reply", createdAt: "t1" },
+    ],
+    hasMore: false,
+  };
+  const pending = { items: [{ id: "q1", textPreview: "queued prompt", enqueuedAt: "t1" }] };
+  const fetchMock = vi.fn().mockImplementation(async (input: unknown) => ({
+    json: async () => (String(input).includes("view=pending") ? pending : transcript),
+  }));
   globalThis.fetch = fetchMock as typeof fetch;
   const chat = useChatStore();
   chat.select("i1", "s");
@@ -176,64 +164,26 @@ it("reloads history immediately after reselecting a session during prompt RPC", 
   // The reselected pane is empty — history must load right away rather than defer
   // until the prompt RPC settles, or the pane would show only the live turn.
   await chat.loadHistory();
-  expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt"]);
+  expect(chat.messages.map((message) => message.text)).toEqual(["first reply"]);
+  expect(chat.sessionQueue.map((i) => i.id)).toEqual(["q1"]);
 
-  resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
+  resolve({ ok: true, queued: true, queueItemId: "q1" });
   await sending;
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  // Settling the RPC must not duplicate the prompt row.
-  expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt"]);
+  // The settle-time convergence reload must not create a transcript bubble.
+  await vi.waitFor(() => {
+    expect(chat.messages.map((message) => message.text)).toEqual(["first reply"]);
+    expect(chat.sessionQueue.map((i) => i.id)).toEqual(["q1"]);
+  });
+  expect(fetchMock).toHaveBeenCalled();
 });
 
-it("converges after the RPC settles when the reselect fetch raced the queueItemId stamp", async () => {
-  let resolveRpc!: (value: unknown) => void;
-  rpc.mockImplementationOnce(() => new Promise((resolve) => { resolveRpc = resolve; }));
-  const fetchMock = vi.fn()
-    // Reselect fetch races the RPC: the hub persisted the prompt row on enqueue, but
-    // markQueued hasn't stamped its queueItemId yet — the row arrives uncorrelated.
-    .mockResolvedValueOnce({
-      json: async () => ({
-        messages: [
-          { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1" },
-        ],
-        hasMore: false,
-      }),
-    })
-    // The post-settle convergence reload returns the authoritative correlated row.
-    .mockResolvedValue({
-      json: async () => ({
-        messages: [
-          { id: 1, instanceId: "i1", sessionAlias: "s", direction: "in", text: "queued prompt", createdAt: "t1", queueItemId: "q1" },
-        ],
-        hasMore: false,
-      }),
-    });
-  globalThis.fetch = fetchMock as typeof fetch;
+it("immediate send still bubbles in the transcript", async () => {
+  rpc.mockResolvedValueOnce({ ok: true });
   const chat = useChatStore();
   chat.select("i1", "s");
-  const sending = chat.send("queued prompt");
-  chat.select("i1", "other");
-  chat.select("i1", "s");
-  await chat.loadHistory();
-  expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt"]);
-
-  // The drain event can't correlate the uncorrelated row, so it pushes its own bubble —
-  // a transient duplicate that the convergence reload below must eliminate.
-  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", queueItemId: "q1", prompt: "queued prompt" } } as WebServerEvent);
-  expect(chat.messages.map((message) => message.text)).toEqual(["queued prompt", "queued prompt"]);
-
-  resolveRpc({ ok: true, queued: true, queueItemId: "q1" });
-  await sending;
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
-  // RPC settle triggered the deferred convergence reload with the authoritative row.
-  expect(fetchMock).toHaveBeenCalledTimes(2);
-  expect(chat.messages.map((message) => [message.text, message.queueItemId])).toEqual([
-    ["queued prompt", "q1"],
-  ]);
+  await chat.send("hello");
+  expect(chat.messages.map((message) => [message.direction, message.text])).toEqual([["in", "hello"]]);
+  expect(chat.sessionQueue).toEqual([]);
 });
 
 it("cancelQueuedItem issues control.queue.cancel and optimistically drops the chip", async () => {
