@@ -39,6 +39,7 @@ import type {
   RuntimeElicitationDecision,
 } from "./runtime/runtime-worker-protocol";
 import { resolveAcpxHostPolicyEnv } from "../../transport/acpx-host-policy";
+import { ELICITATION_RPC_TIMEOUT_MS } from "../../interactions/elicitation-interaction-broker.js";
 
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -1210,8 +1211,8 @@ export class RuntimeEngine implements BridgeEngine {
     if (this.options.onElicitationRequest) {
       // The outbound call is cancellable by request id: when the agent
       // withdraws this single elicitation/create the bridge aborts the
-      // daemon RPC and the broker unwinds instead of waiting out its
-      // 120s deadline with a live renderer.
+      // daemon RPC and the broker unwinds instead of waiting out the
+      // broker deadline with a live renderer.
       const cancelled = new AbortController();
       const onAbort = (): void => {
         if (!cancelled.signal.aborted) cancelled.abort(signal?.reason ?? new Error("elicitation cancelled by agent request"));
@@ -1219,7 +1220,7 @@ export class RuntimeEngine implements BridgeEngine {
       if (signal?.aborted) onAbort();
       else signal?.addEventListener("abort", onAbort, { once: true });
       try {
-        const timeoutMs = this.options.elicitationRequestTimeoutMs ?? 125_000;
+        const timeoutMs = this.options.elicitationRequestTimeoutMs ?? ELICITATION_RPC_TIMEOUT_MS;
         const decision = await raceWithTimeout(
           this.options.onElicitationRequest(payload, cancelled.signal),
           timeoutMs,

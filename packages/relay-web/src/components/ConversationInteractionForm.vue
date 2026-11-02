@@ -125,9 +125,9 @@ function controlName(index: number, field: InteractionFieldDto): string {
  *
  * Only those may use `<label for>`: a `for` that resolves to no control is worse
  * than no label, because it actively misleads assistive tech and anything that
- * walks `for` -> element. `boolean` and `multi-select` render a SET of controls
- * and carry no single id, so they get a labelled group instead. `number`, `text`,
- * and `single-select` each render exactly one, with the id set on it.
+ * walks `for` -> element. `boolean`, `single-select`, and `multi-select` render a
+ * SET of controls and carry no single id, so their title becomes a labelled
+ * group instead.
  */
 function labelableControl(field: InteractionFieldDto): boolean {
   return field.kind === "text" || field.kind === "number";
@@ -377,6 +377,9 @@ function onTextInput(field: InteractionFieldDto, event: Event): void {
   if (result.ok) emit('answer', field.key, result.value);
 }
 
+function isSelected(field: InteractionFieldDto, value: string): boolean {
+  return String(hasAnswer(props.answers, field.key) ? props.answers[field.key] : '') === value;
+}
 function onSelect(field: InteractionFieldDto, value: string): void {
   emit('answer', field.key, value);
 }
@@ -473,9 +476,10 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           `<label for>` is emitted only for the kinds that render a control
           carrying this exact `id`: a `for` that points at nothing is not merely
           useless, it misleads assistive tech and any tooling that resolves
-          `for` -> control. `boolean` (a pair of buttons) and `multi-select` (a
-          checkbox group) have no single control to name, so their title becomes a
-          labelled group: a `role="group"` element named by the legend span. -->
+          `for` -> control. `boolean` (a pair of buttons), `single-select` (an
+          option group), and `multi-select` (a checkbox group) have no single
+          control to name, so their title becomes a labelled group: a
+          `role="group"` element named by the legend span. -->
         <label
           v-if="labelableControl(field)"
           class="flex flex-wrap items-baseline gap-x-1.5 gap-y-0 text-xs font-medium text-fg"
@@ -489,8 +493,8 @@ function onSelect(field: InteractionFieldDto, value: string): void {
         <div
           v-else
           :id="controlName(index, field)"
-          role="group"
-          :aria-labelledby="`${controlName(index, field)}-legend`"
+          :role="field.kind === 'single-select' ? undefined : 'group'"
+          :aria-labelledby="field.kind === 'single-select' ? undefined : `${controlName(index, field)}-legend`"
           class="flex flex-wrap items-baseline gap-x-1.5 gap-y-0 text-xs font-medium text-fg"
         >
           <span :id="`${controlName(index, field)}-legend`">{{ field.title }}</span>
@@ -527,14 +531,16 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           </button>
         </div>
 
-        <div v-else-if="field.kind === 'single-select'" class="flex flex-wrap gap-2">
+        <div v-else-if="field.kind === 'single-select'" role="group"
+             :aria-labelledby="`${controlName(index, field)}-legend`" class="flex flex-wrap gap-2">
           <button
             v-for="option in field.options ?? []"
             :key="option.value"
             type="button"
             :data-test="`interaction-option-${option.value}`"
+            :aria-pressed="isSelected(field, option.value)"
             class="rounded-md border border-border bg-surface px-3 py-2 text-sm transition-colors"
-            :class="String(hasAnswer(answers, field.key) ? answers[field.key] : '') === option.value
+            :class="isSelected(field, option.value)
               ? 'border-accent bg-accent-soft text-accent ring-1 ring-accent'
               : 'text-fg hover:bg-surface-2'"
             @click="onSelect(field, option.value)"

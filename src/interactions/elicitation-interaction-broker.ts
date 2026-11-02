@@ -566,7 +566,7 @@ export class ElicitationInteractionBroker {
    * This is request-scoped cancellation, distinct from turn disposal: an agent
    * can withdraw a single `elicitation/create` with `$/cancel_request` while
    * its prompt turn keeps running. Without this the renderer keeps collecting
-   * input until the 120s deadline even though nobody will read the answer.
+   * input until the broker deadline even though nobody will read the answer.
    *
    * Idempotent and safe for unknown ids: a cancel racing an already-settled
    * request is a no-op, and a cancel for a request this broker never saw (or

@@ -17,6 +17,7 @@ import {
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
 import { raceWithTimeout } from "../../../util/async.js";
+import { ELICITATION_RPC_TIMEOUT_MS } from "../../../interactions/elicitation-interaction-broker.js";
 import {
   probeWindowsProcessIdentity,
   terminateWindowsDescendantsOf,
@@ -660,8 +661,7 @@ export class RuntimeWorkerClient {
       if (!handler) {
         decision = { action: "cancel" };
       } else {
-        // Watchdog sits just above the broker's five-minute business deadline.
-        const timeoutMs = this.deps?.elicitationTimeoutMs ?? 305_000;
+        const timeoutMs = this.deps?.elicitationTimeoutMs ?? ELICITATION_RPC_TIMEOUT_MS;
         const settled = await raceWithTimeout(
           (async () => handler(payload, inflight.signal))(),
           timeoutMs,

@@ -426,7 +426,7 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     // elicitation/create itself, its prompt turn, or the session goes away.
     // This second controller exists because the cancel FRAME must also reach
     // the daemon/bridge/broker chain — aborting only the local signal would
-    // let the renderer keep collecting input until the 120s deadline while
+    // let the renderer keep collecting input until the broker deadline while
     // the agent had already withdrawn the request.
     const requestCancel = new AbortController();
     const handlerSignal = AbortSignal.any([context.signal, requestCancel.signal]);
@@ -446,7 +446,7 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       state.pendingElicitations.delete(elicitationRequestId);
       rejectElicitation(new Error("elicitation cancelled"));
       // Tell the host to abort its outbound daemon/broker call. Without this
-      // the renderer keeps collecting input until the 120s deadline even
+      // the renderer keeps collecting input until the broker deadline even
       // though nobody will read the answer.
       process.stdout.write(encodeWorkerMessage({
         id: elicitationRequestId,
