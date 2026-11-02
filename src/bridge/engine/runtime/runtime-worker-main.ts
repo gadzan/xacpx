@@ -456,7 +456,7 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     });
     process.stdout.write(encodeWorkerMessage({ id: elicitationRequestId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
     // Watchdog handle kept so the SUCCESS path can clear it. Without this a
-    // two-second elicitation still holds a 125s timer and an abort listener
+    // two-second elicitation still holds a watchdog timer and an abort listener
     // for the rest of the turn — unref'd so it cannot block exit, but it is a
     // deterministic short-term leak on the happy path.
     let watchdog: ReturnType<typeof setTimeout> | undefined;

@@ -652,7 +652,7 @@ export class RuntimeWorkerClient {
     }
     // Track the outbound in-flight call so a request-scoped cancel can abort
     // the daemon/broker wait. Without this the handler would sit until the
-    // 125s watchdog even after the agent withdrew the request.
+    // watchdog even after the agent withdrew the request.
     const inflight = new AbortController();
     this.inflightElicitations.set(elicitationRequestId, { controller: inflight, promptRequestId, payload });
     let decision: RuntimeElicitationDecision;
