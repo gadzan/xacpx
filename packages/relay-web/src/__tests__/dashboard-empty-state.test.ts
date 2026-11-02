@@ -6,6 +6,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 const disconnect = vi.fn();
 vi.mock("../api/events", () => ({
   connectEvents: () => disconnect,
+  subscribeWebEvents: () => () => {},
   sendSubscribe: vi.fn(),
   sendWebClientMessage: vi.fn(),
   isRetryableTerminalError: () => false,
