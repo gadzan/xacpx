@@ -243,6 +243,36 @@ test("a failed reconciliation read keeps the persisted model and logs the failur
   expect(logs[0]?.context?.reconcileError).toBe("worker gone");
 });
 
+test("an empty reconciliation read never clears the persisted model", async () => {
+  const { deps, calls, logs, events } = makeDeps();
+  deps.transport.setModel = async () => {
+    calls.push("transport:internal-backend:claude-opus-4-8");
+    throw new CommandTimeoutError(30_000, "acpx set model", {
+      stage: "set-model",
+    });
+  };
+  deps.transport.getSessionModel = async () => {
+    calls.push("query:refresh");
+    return { available: [] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.setSessionModel("relay:acc", "backend", "claude-opus-4-8"),
+  ).resolves.toEqual({ current: undefined, applied: false, pending: true });
+  await control.whenBackgroundIdle();
+
+  // Persisting an empty current means "forget the saved model", so the read must
+  // never reach the session store; the previous selection survives.
+  expect(calls).toEqual([
+    "transport:internal-backend:claude-opus-4-8",
+    "query:refresh",
+  ]);
+  expect(events).toEqual([]);
+  expect(logs.map((log) => log.context?.outcome)).toEqual(["failed"]);
+  expect(logs[0]?.context?.reason).toBe("empty-current");
+});
+
 test("setSessionModel rejects viable requests only after queue aging makes their deadline unsafe", async () => {
   const { deps, calls } = makeDeps();
   let now = 1_000;

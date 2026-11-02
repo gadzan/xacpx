@@ -1213,6 +1213,16 @@ export class ControlService {
       });
       return;
     }
+    if (!observed.current) {
+      // Session persistence reads an empty model as "forget the saved model", so
+      // an untrustworthy empty read must never reach it: keep what is stored.
+      await this.logModelTimeoutReconcile("failed", {
+        ...baseFields,
+        observedModel: null,
+        reason: "empty-current",
+      });
+      return;
+    }
     // Re-check inside the per-session queue so a switch that started while the
     // authoritative read was in flight still wins.
     await this.runSessionConfigSetExclusive(session.alias, async () => {
