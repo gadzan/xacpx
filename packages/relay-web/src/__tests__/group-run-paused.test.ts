@@ -120,7 +120,7 @@ describe("paused Run presentation", () => {
     expect(wrapper.find('[data-test="group-pause-run-button"]').exists()).toBe(false);
   });
 
-  it("offers Send and Stop side by side while the Run is paused", async () => {
+  it("shows one action while the Run is paused: Send with a draft, Stop when empty", async () => {
     const groups = seedGroupSelection(RUN);
     const wrapper = mount(GroupComposer, {
       props: { bots: BOTS },
@@ -131,8 +131,14 @@ describe("paused Run presentation", () => {
     await wrapper.find('[data-test="group-composer-textarea"]').setValue("next step");
     await wrapper.vm.$nextTick();
     // A paused Run still owns the Topic, but the backend queues a prompt
-    // behind it, so Send and Stop coexist — exactly like a running Run.
+    // behind it, so a non-empty draft shows Send only — exactly like a
+    // running Run.
     expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(false);
+    // Clearing the draft reveals Stop while the Run stays paused.
+    await wrapper.find('[data-test="group-composer-textarea"]').setValue("");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(true);
   });
 });
