@@ -448,7 +448,7 @@ export interface RuntimeEngineOptions {
    * never sends an elicitation the daemon would just cancel.
    */
   elicitationInteractionCapable?: boolean;
-  /** Host-side elicitation watchdog in ms. Defaults to 125_000. */
+  /** Host-side elicitation watchdog in ms. Defaults to 305_000. */
   elicitationRequestTimeoutMs?: number;
 }
 export function defaultWorkerEntryCandidates(fromUrl = import.meta.url): string[] {

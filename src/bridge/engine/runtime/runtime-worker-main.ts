@@ -461,7 +461,7 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     // deterministic short-term leak on the happy path.
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Business deadline (120s) sits inside the daemon broker; this worker
+      // Business deadline (five minutes) sits inside the daemon broker; this worker
       // watchdog (ELICITATION_RPC_TIMEOUT_MS) only protects against a wedged
       // host transport and fails closed exactly like the broker's cancel path.
       const decision = await Promise.race([

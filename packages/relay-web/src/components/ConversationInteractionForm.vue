@@ -23,7 +23,6 @@ import type {
   InteractionRequestDto,
   InteractionValueDto,
 } from "@ganglion/xacpx-relay-protocol";
-import SelectMenu from "./SelectMenu.vue";
 
 const props = defineProps<{
   request: InteractionRequestDto;
@@ -95,6 +94,11 @@ const messageLines = computed<readonly string[]>(() => {
   const message = props.request.elicitation?.message ?? '';
   return message.length === 0 ? [] : message.split('\n');
 });
+const showSchemaDescription = computed(() => {
+  const description = schemaDescription.value.trim();
+  const message = props.request.elicitation?.message ?? '';
+  return description.length > 0 && !message.includes(description);
+});
 
 /**
  * The DOM `id` a field's control uses, for `<label :for>` to bind to it.
@@ -126,7 +130,7 @@ function controlName(index: number, field: InteractionFieldDto): string {
  * and `single-select` each render exactly one, with the id set on it.
  */
 function labelableControl(field: InteractionFieldDto): boolean {
-  return field.kind === "text" || field.kind === "number" || field.kind === "single-select";
+  return field.kind === "text" || field.kind === "number";
 }
 
 /**
@@ -381,7 +385,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
 <template>
   <div
     data-test="interaction-form"
-    class="w-full rounded-lg bg-warning/5 p-3 space-y-3"
+    class="w-full rounded-xl border border-border bg-surface p-4 shadow-sm space-y-4"
   >
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0 flex-1 space-y-1">
@@ -412,14 +416,14 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           is shown, such a form opens with nothing above the fields and asks
           nothing. Shown here so the form always has a question. -->
         <div
-          v-if="schemaTitle"
+          v-if="schemaTitle && !messageLines.includes(schemaTitle)"
           data-test="interaction-schema-title"
           class="text-xs font-semibold text-fg"
         >{{ schemaTitle }}</div>
         <div
-          v-if="schemaDescription"
+          v-if="showSchemaDescription"
           data-test="interaction-schema-description"
-          class="whitespace-pre-wrap text-xs text-fg"
+          class="whitespace-pre-wrap text-xs text-fg-muted"
         >{{ schemaDescription }}</div>
         <!-- Agent-controlled text, rendered as data. No v-html: the point is that
           nothing the agent wrote can become markup here. -->
@@ -474,7 +478,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           labelled group: a `role="group"` element named by the legend span. -->
         <label
           v-if="labelableControl(field)"
-          class="flex items-baseline gap-1.5 text-xs font-medium text-fg"
+          class="flex flex-wrap items-baseline gap-x-1.5 gap-y-0 text-xs font-medium text-fg"
           :for="controlName(index, field)"
         >
           <span>{{ field.title }}</span>
@@ -487,7 +491,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           :id="controlName(index, field)"
           role="group"
           :aria-labelledby="`${controlName(index, field)}-legend`"
-          class="flex items-baseline gap-1.5 text-xs font-medium text-fg"
+          class="flex flex-wrap items-baseline gap-x-1.5 gap-y-0 text-xs font-medium text-fg"
         >
           <span :id="`${controlName(index, field)}-legend`">{{ field.title }}</span>
           <span v-if="!field.required" class="text-xs font-normal text-fg-muted">
@@ -523,19 +527,21 @@ function onSelect(field: InteractionFieldDto, value: string): void {
           </button>
         </div>
 
-        <!-- Select: the option VALUE is the answer, so the label can be anything
-          the agent wrote. The current selection is always visible. -->
-        <SelectMenu
-          v-else-if="field.kind === 'single-select'"
-          :id="controlName(index, field)"
-          :data-test="`interaction-select-${field.key}`"
-          :model-value="String(hasAnswer(answers, field.key) ? answers[field.key] : '')"
-          :aria-label="field.title"
-          :title="field.title"
-          :placeholder="t('bot.interaction.choose')"
-          :groups="[{ options: (field.options ?? []).map((o) => ({ value: o.value, label: o.label })) }]"
-          @update:model-value="onSelect(field, $event)"
-        />
+        <div v-else-if="field.kind === 'single-select'" class="flex flex-wrap gap-2">
+          <button
+            v-for="option in field.options ?? []"
+            :key="option.value"
+            type="button"
+            :data-test="`interaction-option-${option.value}`"
+            class="rounded-md border border-border bg-surface px-3 py-2 text-sm transition-colors"
+            :class="String(hasAnswer(answers, field.key) ? answers[field.key] : '') === option.value
+              ? 'border-accent bg-accent-soft text-accent ring-1 ring-accent'
+              : 'text-fg hover:bg-surface-2'"
+            @click="onSelect(field, option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
 
         <!-- Multi-select: the answer is a string[] of option VALUES, so the
           renderer must produce an array. A single value here would be rejected by

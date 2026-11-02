@@ -134,9 +134,8 @@ export interface RuntimeWorkerClientDeps {
    */
   permissionTimeoutMs?: number;
   /**
-   * Host-side elicitation watchdog in ms. Sits just above the daemon
-   * broker's 120s business deadline so only a wedged transport fails the
-   * turn here. Defaults to 125_000.
+   * Host-side elicitation watchdog sits just above the daemon's five-minute
+   * business deadline. Defaults to 305_000.
    */
   elicitationTimeoutMs?: number;
   /**
@@ -661,8 +660,8 @@ export class RuntimeWorkerClient {
       if (!handler) {
         decision = { action: "cancel" };
       } else {
-        // Watchdog sits just above the broker's 120s business deadline.
-        const timeoutMs = this.deps?.elicitationTimeoutMs ?? 125_000;
+        // Watchdog sits just above the broker's five-minute business deadline.
+        const timeoutMs = this.deps?.elicitationTimeoutMs ?? 305_000;
         const settled = await raceWithTimeout(
           (async () => handler(payload, inflight.signal))(),
           timeoutMs,
