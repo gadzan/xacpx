@@ -1622,18 +1622,25 @@ test("a cancelled finish marks the turn stopped, not errored", () => {
   expect(store.messages.at(-1)).toMatchObject({ status: "cancelled", text: "partial" });
 });
 
-test("PromptInput stays composable while busy: Send and Stop coexist, typing queues on submit", async () => {
+test("PromptInput while busy shows one action: Stop when empty, Send once typed, Enter queues", async () => {
   const wrapper = mount(PromptInput, { props: { busy: true } });
   // Textarea is intentionally enabled while busy (pre-compose / Esc-to-stop).
   expect((wrapper.find("textarea").element as HTMLTextAreaElement).disabled).toBe(false);
-  // Busy composer keeps Send and Stop side by side, empty or not.
+  // Busy + empty draft: Stop only, no Send.
   expect(wrapper.find('[data-test="cancel-turn"]').exists()).toBe(true);
-  expect(wrapper.find('[data-test="composer-send"]').exists()).toBe(true);
+  expect(wrapper.find('[data-test="composer-send"]').exists()).toBe(false);
   await wrapper.find("textarea").setValue("queued while busy");
-  expect(wrapper.find('[data-test="composer-send"]').exists()).toBe(true);
+  // Busy + content: Send only (still enabled, Enter queues server-side).
+  expect(wrapper.find('[data-test="cancel-turn"]').exists()).toBe(false);
+  const send = wrapper.find('[data-test="composer-send"]');
+  expect(send.exists()).toBe(true);
+  expect((send.element as HTMLButtonElement).disabled).toBe(false);
   await wrapper.find("textarea").trigger("keydown", { key: "Enter" });
-  // Submitting while busy is no longer blocked — the message queues server-side.
   expect(wrapper.emitted("send")?.[0]).toEqual(["queued while busy", []]);
+  // Clearing the draft reveals Stop again.
+  await wrapper.find("textarea").setValue("");
+  expect(wrapper.find('[data-test="cancel-turn"]').exists()).toBe(true);
+  expect(wrapper.find('[data-test="composer-send"]').exists()).toBe(false);
 });
 
 test("PromptInput Esc-while-busy emits cancel", async () => {

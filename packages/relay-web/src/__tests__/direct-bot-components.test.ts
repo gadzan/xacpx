@@ -1554,7 +1554,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", [], []]);
     });
 
-    it("keeps the composer editable, offers Send and Stop side by side while a run is active", async () => {
+    it("shows one action while a run is active: Stop when empty, Send once typed", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
       directBots.activeRun = {
@@ -1580,32 +1580,38 @@ describe("Direct Bot Components", () => {
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
 
-      // Stop and Send coexist during a run. Stop dispatches the store's
+      // Busy + empty draft: Stop only. Stop dispatches the store's
       // queue-clearing stop, which cancels the queued accepts and the owner.
       const stopSpy = vi.spyOn(directBots, "stopCurrentAndQueued").mockResolvedValue(undefined);
-      const stopBtn = wrapper.find('[data-test="stop-run-button"]');
-      expect(stopBtn.exists()).toBe(true);
-      await stopBtn.trigger("click");
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
+      await wrapper.find('[data-test="stop-run-button"]').trigger("click");
       await flushPromises();
       expect(stopSpy).toHaveBeenCalledTimes(1);
 
-      // Typed text keeps both buttons. Enter sends: the backend queues the
+      // Typed text flips Stop to Send. Enter sends: the backend queues the
       // prompt behind the running turn, so the user is never stuck unable to
       // send what they just typed.
       await textarea.setValue("steer this");
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      const send = wrapper.find('[data-test="send-prompt-button"]');
+      expect(send.exists()).toBe(true);
+      expect((send.element as HTMLButtonElement).disabled).toBe(false);
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
       expect(wrapper.emitted("send")).toBeTruthy();
 
-      // Stop still dispatches the stop and never sends on its own.
+      // Clearing the draft reveals Stop again, and Stop never sends on its own.
       const sendsBefore = wrapper.emitted("send")?.length ?? 0;
+      await textarea.setValue("");
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
       await wrapper.find('[data-test="stop-run-button"]').trigger("click");
       await flushPromises();
       expect(wrapper.emitted("send")?.length ?? 0).toBe(sendsBefore);
       expect(stopSpy).toHaveBeenCalledTimes(2);
     });
 
-    it("keeps Stop and Send side by side with a staged image while a run is active", async () => {
+    it("shows Send only with a staged image while a run is active", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
       directBots.selectedBotId = "b1";
@@ -1636,11 +1642,8 @@ describe("Direct Bot Components", () => {
       });
       const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
       await flushPromises();
-      // A staged image counts as sendable, so both actions stay reachable
-      // during the run instead of the button flipping to Stop only.
-      const stop = wrapper.find('[data-test="stop-run-button"]');
-      expect(stop.exists()).toBe(true);
-      expect((stop.element as HTMLButtonElement).disabled).toBe(false);
+      // A staged image counts as sendable, so the busy card shows Send only.
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
       const send = wrapper.find('[data-test="send-prompt-button"]');
       expect(send.exists()).toBe(true);
       expect((send.element as HTMLButtonElement).disabled).toBe(false);

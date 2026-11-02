@@ -13,7 +13,7 @@ import { useIsMobile } from "../lib/use-dropdown";
 const props = withDefaults(
   defineProps<{
     modelValue: string;
-    /** A turn is running: the Stop button appears beside Send. */
+    /** A turn is running: Stop replaces Send while the draft is empty. */
     busy?: boolean;
     disabled?: boolean;
     /** A send is in flight: the button shows a spinner and ignores clicks. */
@@ -76,11 +76,12 @@ const hasSendable = computed(() => props.modelValue.trim().length > 0 || props.h
  *  show not-allowed. A running turn (Stop must stay prominent) or an in-flight
  *  send (spinner) keeps the card at full strength and only dims the textarea. */
 const surfaceDisabled = computed(() => props.disabled && !props.busy && !props.sending);
-/** While a turn runs the Stop button appears beside Send, not instead of it:
- *  the backend accepts a prompt sent mid-run and queues it, so the user can
- *  keep typing and sending while a reply is still running. The card stays
- *  expanded for the whole run so the second button has somewhere to sit. */
-const showStop = computed(() => props.busy);
+/** While a turn runs the card shows exactly one action: Stop when the draft is
+ *  empty (nothing staged), Send once there is something to queue. The backend
+ *  accepts a prompt sent mid-run and queues it, so typing or staging an
+ *  attachment flips Stop to Send, and clearing the draft flips back. The card
+ *  stays expanded for the whole run so the button has somewhere to sit. */
+const showStop = computed(() => props.busy && !hasSendable.value);
 
 function reportCaret(): void {
   const el = textarea.value;
@@ -251,10 +252,9 @@ function onInput(event: Event): void {
         />
 
         <div class="absolute flex items-center gap-1.5" :class="expanded ? 'bottom-2 right-2' : 'right-2 top-1/2 -translate-y-1/2'">
-          <!-- Stop and Send sit side by side while a turn runs. Replacing Send
-               with Stop left the user unable to keep typing during a long
-               reply, and the backend queues the prompt anyway, so both
-               actions stay reachable. -->
+          <!-- Exactly one action while a turn runs: Stop on an empty draft,
+               Send once there is something to queue. Clearing the draft
+               reveals Stop again. -->
           <button
             v-if="showStop"
             type="button"
@@ -273,6 +273,7 @@ function onInput(event: Event): void {
             </span>
           </button>
           <button
+            v-if="!showStop"
             type="submit"
             :data-test="sendTestId"
             :disabled="disabled || sending || sendDisabled || attachmentsSendDisabled || !hasSendable"

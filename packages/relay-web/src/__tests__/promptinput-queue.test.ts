@@ -16,17 +16,22 @@ describe("PromptInput non-blocking composer (message queue)", () => {
     expect(w.emitted("send")?.[0]).toEqual(["queue me please", []]);
   });
 
-  it("busy + empty composer: Send and Stop coexist, both enabled", async () => {
+  it("busy + empty composer: Stop only, no Send", async () => {
     const w = mount(PromptInput, { props: { busy: true } });
     expect(w.find('[data-test="cancel-turn"]').exists()).toBe(true);
-    expect(w.find('[data-test="composer-send"]').exists()).toBe(true);
+    expect(w.find('[data-test="composer-send"]').exists()).toBe(false);
   });
 
-  it("typing while busy keeps Send and Stop side by side (so the message queues)", async () => {
+  it("typing while busy flips Stop to Send (so the message queues)", async () => {
     const w = mount(PromptInput, { props: { busy: true } });
     await w.find("textarea").setValue("queue me please");
+    expect(w.find('[data-test="cancel-turn"]').exists()).toBe(false);
+    const send = w.find('[data-test="composer-send"]');
+    expect(send.exists()).toBe(true);
+    expect((send.element as HTMLButtonElement).disabled).toBe(false);
+    await w.find("textarea").setValue("");
     expect(w.find('[data-test="cancel-turn"]').exists()).toBe(true);
-    expect(w.find('[data-test="composer-send"]').exists()).toBe(true);
+    expect(w.find('[data-test="composer-send"]').exists()).toBe(false);
   });
 
   it("still renders the Send button (not Stop) when not busy", () => {
