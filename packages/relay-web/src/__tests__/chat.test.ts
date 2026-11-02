@@ -1025,14 +1025,15 @@ it("anchored cancelled:false turn does not mistake a same-millisecond legacy row
   } as never);
 
   await chat.cancel();
-  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  // loadHistory fetches transcript + pending strip in parallel (2 requests).
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
   chat.applyEvent({
     kind: "control-event",
     instanceId: "inst",
     event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: true },
   } as never);
-  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
 
   const outs = chat.messages.filter((message) => message.direction === "out");
   expect(outs).toHaveLength(2);
@@ -1083,15 +1084,22 @@ it("late finish after cancelled:false history convergence does not duplicate the
 
 it("late finish after cancelled:false stays deduplicated when the follow-up history reload fails", async () => {
   rpc.mockResolvedValueOnce({ cancelled: false });
-  const fetchMock = vi.fn()
-    .mockResolvedValueOnce(new Response(JSON.stringify({
-      messages: [
-        { id: 1, instanceId: "inst", sessionAlias: "A", direction: "in", text: "prompt", createdAt: new Date(1).toISOString() },
-        { id: 2, instanceId: "inst", sessionAlias: "A", direction: "out", text: "done", createdAt: new Date(2).toISOString(), startedAt: 10, slotAfterId: 1 },
-      ],
-      hasMore: false,
-    }), { status: 200 }))
-    .mockRejectedValueOnce(new Error("history unavailable"));
+  const historyOk = {
+    messages: [
+      { id: 1, instanceId: "inst", sessionAlias: "A", direction: "in", text: "prompt", createdAt: new Date(1).toISOString() },
+      { id: 2, instanceId: "inst", sessionAlias: "A", direction: "out", text: "done", createdAt: new Date(2).toISOString(), startedAt: 10, slotAfterId: 1 },
+    ],
+    hasMore: false,
+  };
+  let historyCalls = 0;
+  // loadHistory fires transcript + pending in parallel: dispatch by URL, not
+  // call order, or the pending reply lands in the transcript slot.
+  const fetchMock = vi.fn().mockImplementation(async (input: unknown) => {
+    if (String(input).includes("view=pending")) return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    historyCalls += 1;
+    if (historyCalls === 1) return new Response(JSON.stringify(historyOk), { status: 200 });
+    throw new Error("history unavailable");
+  });
   vi.stubGlobal("fetch", fetchMock);
 
   const chat = useChatStore();
@@ -1105,7 +1113,8 @@ it("late finish after cancelled:false stays deduplicated when the follow-up hist
   });
 
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: true } } as never);
-  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  // turn-finished triggers a second loadHistory (transcript + pending = 4 total).
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
 
   expect(chat.busy).toBe(false);
   expect(chat.messages.filter((message) => message.direction === "out")).toHaveLength(1);

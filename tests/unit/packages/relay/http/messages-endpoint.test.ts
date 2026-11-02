@@ -45,8 +45,7 @@ test("rpc prompt echoes the user message into history", async () => {
   expect(cached.messages.map((m) => [m.direction, m.text])).toEqual([["in", "do it"]]);
   runtime.close();
 });
-
-test("a queued prompt is persisted where it drains, after the previous turn reply", async () => {
+test("a queued prompt stays out of the transcript but visible as pending until it drains", async () => {
   const { runtime, cookie } = await loggedIn();
   const accountId = runtime.accounts.findByUsername("admin")!.id;
   const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", accountId, {
@@ -63,16 +62,55 @@ test("a queued prompt is persisted where it drains, after the previous turn repl
     method: "POST", headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "queued prompt" } }),
   });
+  // Enqueued: the transcript shows no bubble, the durable pending list feeds the strip.
+  expect(runtime.messages.listBySession(accountId, "i1", "backend").messages.map((message) => [message.direction, message.text])).toEqual([
+    ["out", "first reply"],
+  ]);
+  expect(runtime.messages.listPendingBySession(accountId, "i1", "backend").map((p) => [p.queueItemId, p.textPreview])).toEqual([
+    ["q1", "queued prompt"],
+  ]);
+  const res = await runtime.app.request("/api/instances/i1/sessions/backend/messages?view=pending", {
+    headers: { cookie },
+  });
+  expect(res.status).toBe(200);
+  const pendingBody = await res.json();
+  expect(pendingBody.items.map((item: { id: string; textPreview: string }) => [item.id, item.textPreview])).toEqual([
+    ["q1", "queued prompt"],
+  ]);
+
+  // Drain: the same pre-written row is promoted to the transcript tail exactly once.
   fire({ type: "turn-started", chatKey: `relay:${accountId}`, sessionAlias: "backend", queueItemId: "q1", prompt: "queued prompt" });
   fire({ type: "turn-output", chatKey: `relay:${accountId}`, sessionAlias: "backend", chunk: "second reply" });
   fire({ type: "turn-finished", chatKey: `relay:${accountId}`, sessionAlias: "backend", ok: true });
-
   const cached = runtime.messages.listBySession(accountId, "i1", "backend");
   expect(cached.messages.map((message) => [message.direction, message.text])).toEqual([
     ["out", "first reply"],
     ["in", "queued prompt"],
     ["out", "second reply"],
   ]);
+  expect(runtime.messages.listPendingBySession(accountId, "i1", "backend")).toEqual([]);
+  runtime.close();
+});
+
+test("cancelling a queued prompt drops its hidden pre-written row", async () => {
+  const { runtime, cookie } = await loggedIn();
+  const accountId = runtime.accounts.findByUsername("admin")!.id;
+  (runtime.gateway as unknown as { sendRequest: () => Promise<unknown> }).sendRequest = async (instanceId: string, type: string) => {
+    if (type === MSG.queueCancel) return { cancelled: true };
+    return { ok: true, queued: true, queueItemId: "q1" };
+  };
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "queued prompt" } }),
+  });
+  expect(runtime.messages.listPendingBySession(accountId, "i1", "backend").map((p) => p.queueItemId)).toEqual(["q1"]);
+  const res = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.queueCancel, payload: { chatKey: `relay:${accountId}`, sessionAlias: "backend", itemId: "q1" } }),
+  });
+  expect(res.status).toBe(200);
+  expect(runtime.messages.listPendingBySession(accountId, "i1", "backend")).toEqual([]);
+  expect(runtime.messages.listBySession(accountId, "i1", "backend").messages).toEqual([]);
   runtime.close();
 });
 
