@@ -264,7 +264,7 @@ onUnmounted(() => clearInterval(timer));
              list of fields would grow the footer until the composer left a phone
              screen entirely. -->
         <ConversationInteractionForm v-if="sessionInteraction" key="interaction-layer"
-                                     class="stack-layer stack-layer--interaction thin-scroll relative z-40 mx-2 max-h-[min(45vh,22rem)] overflow-y-auto pb-[var(--stack-overlap)] sm:mx-3"
+                                     class="stack-layer stack-layer--interaction thin-scroll relative z-40 mx-2 mb-3 max-h-[min(45vh,22rem)] overflow-y-auto sm:mx-3"
                                      :request="sessionInteraction.request"
                                      :answers="sessionInteraction.answers"
                                      :submitting="sessionInteraction.submitting"

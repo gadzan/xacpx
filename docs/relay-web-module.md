@@ -448,9 +448,10 @@ hub 的 `interaction-opened` / `interaction-snapshot` 是表单的唯一来源�
 表单一旦关闭（答复、拒绝、超时、撤回），点立即消失，不需要切到那个会话。
 
 `ChatPane.vue` 把表单作为 composer 栈最上面的一层渲染（`ConversationInteractionForm`），复用 Direct Bot 的同一套渲染与校验：
-必填未答不可提交、`format` 无法本地复核时阻断提交、`pattern` 只展示不执行。作答走 `control.interaction.respond`，
-帧里**不带任何身份**——`responderId` 由 hub 用自己的登录会话盖章；表单收起只由 `interaction-closed` 决定，
-快照缺席一律记 `gone`，不推断"被谁关掉"。
+必填未答不可提交、`format` 无法本地复核时阻断提交、`pattern` 只展示不执行。单选选项逐项展示为按钮；schema 描述仅在未包含于正文时显示，避免重复；作答走 `control.interaction.respond`；
+帧里**不带任何身份**——`responderId` 由 hub 用自己的登录会话盖章；表单收起只由 `interaction-closed` 决定，快照缺席一律记 `gone`，不推断"被谁关掉"。
+
+交互表单等待人工回答 5 分钟，broker 的业务 deadline 为 300 秒，worker watchdog 为 305 秒；到期关闭表单。
 
 ## 流式 Markdown 渲染
 
