@@ -83,11 +83,11 @@ async function handleCreate(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm"
        @click.self="navigateBack">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="group-topic-title" tabindex="-1" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
-      <h3 id="group-topic-title" class="mb-2 text-sm font-semibold">{{ $t("group.topic.createTitle") }}</h3>
-      <p class="mb-3 text-xs text-fg-muted">{{ $t("group.topic.createHint") }}</p>
+    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="group-topic-title" tabindex="-1" class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:w-full">
+      <h3 id="group-topic-title" class="mb-2 text-base font-semibold text-fg">{{ $t("group.topic.createTitle") }}</h3>
+      <p class="mb-3 text-sm text-fg-muted-overlay">{{ $t("group.topic.createHint") }}</p>
       <form @submit.prevent="handleCreate">
         <input
           v-model="title"
@@ -107,7 +107,7 @@ async function handleCreate(): Promise<void> {
             :placeholder="workspacesLoad === 'loading' && !workspaces.length ? $t('common.loading') : $t('group.topic.workspacePlaceholder')"
             :groups="workspaceGroups"
           />
-          <p v-if="workspacesLoad === 'failed'" data-test="group-topic-workspaces-failed" class="-mt-2 mb-3 flex items-center gap-2 text-xs text-danger">
+          <p v-if="workspacesLoad === 'failed'" data-test="group-topic-workspaces-failed" class="-mt-2 mb-3 flex items-center gap-2 text-xs text-danger-overlay">
             <span>{{ $t("group.topic.workspacesFailed") }}</span>
             <button type="button" data-test="group-topic-workspaces-retry" class="font-medium underline" @click="loadWorkspaces">
               {{ $t("common.retry") }}
@@ -126,10 +126,10 @@ async function handleCreate(): Promise<void> {
         <p v-else data-test="group-topic-per-member-hint" class="mb-4 rounded-lg bg-surface-2 px-3 py-2 text-xs leading-relaxed text-fg-muted">
           {{ $t("group.topic.perMemberHint") }}
         </p>
-        <div class="flex items-center justify-end gap-2">
+        <div class="flex gap-2 lg:items-center lg:justify-end">
           <button
             type="button"
-            class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
+            class="h-11 flex-1 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover lg:h-8 lg:flex-none"
             @click="navigateBack"
           >
             {{ $t("common.cancel") }}
@@ -137,7 +137,7 @@ async function handleCreate(): Promise<void> {
           <button
             type="submit"
             :disabled="creating || !title.trim() || (!perMember && !workspace)"
-            class="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:opacity-90 disabled:opacity-50"
+            class="h-11 flex-1 rounded-btn bg-accent px-3 text-ui font-semibold text-on-accent hover:opacity-90 disabled:opacity-50 lg:h-8 lg:flex-none"
           >
             {{ $t("common.create") }}
           </button>

@@ -59,15 +59,15 @@ function onPick(instanceId: string): void {
       </li>
     </ul>
     <div class="relative">
-      <DropdownPanel :dd="pickerDd" tone="surface" width="w-56" placement="top"
+      <DropdownPanel :dd="pickerDd" width="w-56" placement="top"
                      :title='$t("instance.newSession")' test-id="empty-instance-panel"
                      :nav-count="instances.length"
                      @navigate="(i) => onPick(instances[i]!.id)">
         <template #default="{ mobile }">
           <p class="px-2 pb-1 pt-1.5 text-xs text-fg-muted">{{ $t("instance.pickInstance") }}</p>
           <button v-for="(inst, i) in instances" :key="inst.id" type="button" data-test="empty-instance-option"
-                  class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm text-fg"
-                  :class="[mobile ? 'h-11' : 'h-8', !mobile && i === pickerDd.highlight ? 'bg-surface-2' : '']"
+                  class="flex w-full items-center gap-2 rounded-item px-2 text-left text-ui text-fg"
+                  :class="[mobile ? 'h-11' : 'h-[30px]', !mobile && i === pickerDd.highlight ? 'bg-fill-strong' : 'hover:bg-fill-hover']"
                   @click="onPick(inst.id)">
             <span class="h-2 w-2 shrink-0 rounded-full bg-run" aria-hidden="true" />
             <span class="min-w-0 truncate">{{ inst.name }}</span>

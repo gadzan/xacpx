@@ -30,6 +30,8 @@ import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
 import { setLocale, resolveLocale } from "../i18n";
 import type { NonInteractivePermissions, PermissionMode } from "../config/types";
 import { ensureAgentOverlays, parseAgentOverlayEntries } from "../transport/acpx-agent-overlay";
+import { ELICITATION_RPC_TIMEOUT_MS } from "../interactions/elicitation-interaction-broker.js";
+import type { ResolveElicitationRequestParams } from "../transport/acpx-bridge/acpx-bridge-protocol";
 
 type BridgeInput = AsyncIterable<string> & {
   close(): void;
@@ -221,10 +223,10 @@ export async function runBridgeMain(): Promise<void> {
           // agent withdrew this elicitation/create, we carry the abort into
           // `requestDaemon`, which sends the bridge `cancelRpcId` frame, which
           // makes the daemon drop its pending bridge RPC. The broker then sees
-          // its own cancel and unwinds instead of sitting out the 120s
+          // its own cancel and unwinds instead of sitting out the broker
           // deadline with the renderer still live.
           try {
-            const decision = await server.requestDaemon<{ action?: unknown }, "resolveElicitationRequest">("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 125_000, ...(signal ? { signal } : {}) });
+            const decision = await server.requestDaemon<{ action?: unknown }, "resolveElicitationRequest">("resolveElicitationRequest", payload as unknown as ResolveElicitationRequestParams, { timeoutMs: ELICITATION_RPC_TIMEOUT_MS, ...(signal ? { signal } : {}) });
             if (
               decision
               && typeof decision === "object"

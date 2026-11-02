@@ -1511,6 +1511,13 @@ export const useInstancesStore = defineStore("instances", () => {
     if (event.kind === "instance-status") {
       invalidateAgentCapabilities(event.instanceId);
       const inst = byId(event.instanceId);
+      // A freshly paired instance connects before this tab has ever listed it.
+      // instance-status is account-wide, so this is the first proof it exists:
+      // re-list instead of dropping the event on an unknown id. The add-instance
+      // dialog waits on exactly this arrival.
+      if (!inst) {
+        if (event.online) void loadInstances().catch(() => {});
+      }
       if (inst) {
         inst.online = event.online;
         // An instance that just came online needs its sessions fetched regardless of

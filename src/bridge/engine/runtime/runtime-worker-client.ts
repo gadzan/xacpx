@@ -17,6 +17,7 @@ import {
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
 import { raceWithTimeout } from "../../../util/async.js";
+import { ELICITATION_RPC_TIMEOUT_MS } from "../../../interactions/elicitation-interaction-broker.js";
 import {
   probeWindowsProcessIdentity,
   terminateWindowsDescendantsOf,
@@ -134,9 +135,8 @@ export interface RuntimeWorkerClientDeps {
    */
   permissionTimeoutMs?: number;
   /**
-   * Host-side elicitation watchdog in ms. Sits just above the daemon
-   * broker's 120s business deadline so only a wedged transport fails the
-   * turn here. Defaults to 125_000.
+   * Host-side elicitation watchdog sits just above the daemon's five-minute
+   * business deadline. Defaults to 305_000.
    */
   elicitationTimeoutMs?: number;
   /**
@@ -652,7 +652,7 @@ export class RuntimeWorkerClient {
     }
     // Track the outbound in-flight call so a request-scoped cancel can abort
     // the daemon/broker wait. Without this the handler would sit until the
-    // 125s watchdog even after the agent withdrew the request.
+    // watchdog even after the agent withdrew the request.
     const inflight = new AbortController();
     this.inflightElicitations.set(elicitationRequestId, { controller: inflight, promptRequestId, payload });
     let decision: RuntimeElicitationDecision;
@@ -661,8 +661,7 @@ export class RuntimeWorkerClient {
       if (!handler) {
         decision = { action: "cancel" };
       } else {
-        // Watchdog sits just above the broker's 120s business deadline.
-        const timeoutMs = this.deps?.elicitationTimeoutMs ?? 125_000;
+        const timeoutMs = this.deps?.elicitationTimeoutMs ?? ELICITATION_RPC_TIMEOUT_MS;
         const settled = await raceWithTimeout(
           (async () => handler(payload, inflight.signal))(),
           timeoutMs,

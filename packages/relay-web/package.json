@@ -34,7 +34,7 @@
     "@codemirror/view": "^6.0.0",
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
-    "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.7",
+    "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.8",
     "@lezer/highlight": "^1.0.0",
     "@lobehub/icons-static-svg": "1.91.0",
     "@novnc/novnc": "1.7.0",

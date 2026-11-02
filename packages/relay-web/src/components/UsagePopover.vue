@@ -77,14 +77,14 @@ onBeforeUnmount(() => {
     <div
       ref="card"
       data-test="usage-popover"
-      class="fixed z-[60] w-60 rounded-lg bg-raised p-3 text-sm shadow-float"
+      class="fixed z-[60] w-60 max-w-[calc(100vw-16px)] rounded-lg bg-glass-strong p-3 text-sm shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
       :style="style"
       role="dialog"
     >
-      <p class="mb-1 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.usage.contextWindow") }}</p>
+      <p class="mb-1 text-xs font-semibold uppercase tracking-wide text-fg-muted-overlay">{{ $t("chat.usage.contextWindow") }}</p>
       <div class="flex items-baseline justify-between tabular-nums">
         <span class="text-fg">{{ used.toLocaleString() }} / {{ size.toLocaleString() }}</span>
-        <span class="text-fg-muted">{{ pct }}%</span>
+        <span class="text-fg-muted-overlay">{{ pct }}%</span>
       </div>
 
       <template v-if="breakdown">
@@ -92,7 +92,7 @@ onBeforeUnmount(() => {
         <dl class="space-y-0.5">
           <template v-for="row in breakdownRows" :key="row.key">
             <div v-if="num((breakdown as Record<string, number | undefined>)[row.key]) !== null" class="flex justify-between tabular-nums">
-              <dt class="text-fg-muted">{{ $t(row.label) }}</dt>
+              <dt class="text-fg-muted-overlay">{{ $t(row.label) }}</dt>
               <dd class="text-fg">{{ num((breakdown as Record<string, number | undefined>)[row.key]) }}</dd>
             </div>
           </template>
@@ -100,9 +100,8 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-if="costText() !== null">
-        <p class="mb-1 mt-3 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.usage.cost") }}</p>
+        <p class="mb-1 mt-3 text-xs font-semibold uppercase tracking-wide text-fg-muted-overlay">{{ $t("chat.usage.cost") }}</p>
         <div class="flex justify-between tabular-nums">
-          <span class="text-fg-muted">{{ $t("chat.usage.cumulative") }}</span>
           <span class="text-fg">{{ costText() }}</span>
         </div>
       </template>

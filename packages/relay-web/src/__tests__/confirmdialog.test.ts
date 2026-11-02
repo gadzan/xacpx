@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { confirm, settleConfirm, useConfirmState } from "../lib/use-confirm";
 
-afterEach(() => settleConfirm(false));
+afterEach(() => { settleConfirm(false); vi.restoreAllMocks(); });
 
 describe("ConfirmDialog + confirm()", () => {
   it("is hidden until confirm() opens it, then shows title/message/labels", async () => {
@@ -34,6 +34,25 @@ describe("ConfirmDialog + confirm()", () => {
     await flushPromises();
     (document.querySelector('[data-test="confirm-cancel"]') as HTMLElement).click();
     await expect(p).resolves.toBe(false);
+  });
+
+  it("ignores the scrim click that finishes a double-click, then cancels on a later one", async () => {
+    let now = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    mount(ConfirmDialog, { attachTo: document.body });
+    let settled: boolean | null = null;
+    void confirm({ title: "Stop all?" }).then((v) => { settled = v; });
+    await flushPromises();
+    const scrim = document.querySelector('[data-test="confirm-scrim"]') as HTMLElement;
+    now = 1120;
+    scrim.click();
+    await flushPromises();
+    expect(settled).toBeNull();
+    expect(document.querySelector('[data-test="confirm-dialog"]')).not.toBeNull();
+    now = 1600;
+    scrim.click();
+    await flushPromises();
+    await vi.waitFor(() => expect(settled).toBe(false));
   });
 
   it("a second confirm() supersedes the first (resolves it false)", async () => {

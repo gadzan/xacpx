@@ -17,8 +17,6 @@ import type { DropdownController, DropdownGroup, DropdownRow } from "../lib/use-
 const props = defineProps<{
   dd: DropdownController;
   groups?: DropdownGroup[];
-  /** Panel background: `raised` inside the sidebar (matches the surface there). */
-  tone?: "surface" | "raised";
   /** Tailwind width class; default is the list-panel minimum. */
   width?: string;
   placement?: "bottom" | "bottom-end" | "top" | "top-end";
@@ -132,13 +130,13 @@ watch(
 );
 
 function rowClass(row: DropdownRow, mobile: boolean): string {
-  if (row.disabled) return "cursor-not-allowed text-fg-muted/50";
-  if (row.danger) return "text-danger hover:bg-danger/10";
+  if (row.disabled) return "cursor-not-allowed text-fg-muted-overlay";
+  if (row.danger) return "text-danger-overlay hover:bg-danger/10";
   const hl = isHighlighted(row);
   return [
-    row.selected ? "font-medium text-fg" : "text-fg",
-    // Touch sheet: no persistent highlight (selected = ✓ only), just press feedback.
-    mobile ? "active:bg-surface-2" : hl ? "bg-surface-2" : "hover:bg-surface-2",
+    row.selected ? "font-semibold" : "",
+    // Selection is background only — never a stripe, never blue text.
+    mobile ? "active:bg-fill-hover" : row.selected || hl ? "bg-fill-strong" : "hover:bg-fill-hover",
   ].join(" ");
 }
 
@@ -150,73 +148,76 @@ const placementClass = computed(() => {
     default: return "absolute left-0 top-full mt-1";
   }
 });
-const panelTone = computed(() => (props.tone === "raised" ? "bg-raised" : "bg-surface"));
 const listRole = computed(() => props.role ?? "listbox");
 </script>
 
 <template>
   <!-- <lg: the same rows inside a bottom sheet (title = the dropdown's scene name). -->
   <MobileSheet v-if="isMobile && dd.open" :title="title ?? ''" :z-class="sheetZ" :test-id="sheetTestId ?? testId" dd-panel @close="dd.closeMenu()">
-    <div v-if="showSearch" class="sticky top-0 z-10 -mx-2 bg-raised px-3 pb-1 pt-1">
+    <div v-if="showSearch" class="sticky top-0 z-10 -mx-2 bg-glass-strong px-3 pb-1 pt-1">
       <div class="flex h-11 items-center gap-2 rounded-lg bg-surface-2 px-3">
-        <Search :size="16" class="shrink-0 text-fg-muted" />
+        <Search :size="16" class="shrink-0 text-fg-muted-overlay" />
         <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
                :placeholder="searchPlaceholder ?? t('common.filter')"
-               class="min-w-0 flex-1 bg-transparent text-base text-fg outline-none placeholder:text-fg-muted" />
+               class="min-w-0 flex-1 bg-transparent text-base text-fg outline-none placeholder:text-fg-muted-overlay" />
       </div>
     </div>
     <template v-for="(g, gi) in filtered" :key="gi">
-      <p v-if="g.label" class="px-3 pb-1 pt-2 text-xs text-fg-muted">{{ g.label }}</p>
+      <p v-if="g.label" class="px-3 pb-1 pt-2 text-xs text-fg-muted-overlay">{{ g.label }}</p>
       <button v-for="row in g.rows" :key="row.value" type="button" :role="listRole === 'menu' ? 'menuitem' : 'option'"
               :data-value="row.value"
               :data-test="row.testId"
               :disabled="row.disabled" :aria-selected="row.selected"
-              class="flex h-11 w-full items-center gap-3 rounded-lg px-3 text-sm"
+              class="flex h-11 w-full items-center gap-3 rounded-item px-3 text-ui"
               :class="rowClass(row, true)"
               @click="activate(row)">
-        <component :is="row.icon" v-if="row.icon" :size="16" class="shrink-0 text-fg-muted" />
+        <component :is="row.icon" v-if="row.icon" :size="16" class="shrink-0 text-fg-muted-overlay" />
         <span class="min-w-0 truncate" :class="row.mono ? 'font-mono text-ui' : ''">{{ row.label }}</span>
-        <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted/60">{{ row.hint }}</span>
-        <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent" />
+        <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted-overlay">{{ row.hint }}</span>
+        <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent-text" />
       </button>
     </template>
-    <p v-if="groups && !flatRows.length" class="px-3 py-3 text-sm text-fg-muted">{{ emptyText ?? t("common.noMatch") }}</p>
+    <p v-if="groups && !flatRows.length" class="px-3 py-3 text-sm text-fg-muted-overlay">{{ emptyText ?? t("common.noMatch") }}</p>
     <slot :mobile="true" />
   </MobileSheet>
 
-  <!-- Desktop popover. -->
+  <!-- Desktop popover: one glass surface, rows scroll inside it so the search field
+       never needs a sticky backdrop (a second backdrop-filtered layer inside the
+       panel would nest glass). -->
   <div v-else-if="dd.open" data-dd-panel
        :data-test="testId" :role="listRole" :aria-label="title"
-       class="z-30 max-h-80 overflow-y-auto rounded-lg p-1 shadow-float"
-       :class="[placementClass, panelTone, width ?? 'min-w-40']">
-    <div v-if="showSearch" class="sticky top-0 z-10 -mx-1 -mt-1 px-2 pb-1 pt-2" :class="panelTone">
-      <div class="flex h-8 items-center gap-2 rounded-sm bg-surface-2 px-2">
-        <Search :size="14" class="shrink-0 text-fg-muted" />
+       class="z-30 flex max-h-80 flex-col overflow-hidden rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
+       :class="[placementClass, width ?? 'min-w-40']">
+    <div v-if="showSearch" class="shrink-0 px-1 pb-1 pt-1">
+      <div class="flex h-8 items-center gap-2 rounded-sm bg-fill-track px-2">
+        <Search :size="14" class="shrink-0 text-fg-muted-overlay" />
         <input ref="searchEl" v-model="query" type="search" data-test="dd-search"
                :placeholder="searchPlaceholder ?? t('common.filter')"
-               class="min-w-0 flex-1 bg-transparent text-sm text-fg outline-none placeholder:text-fg-muted" />
+               class="min-w-0 flex-1 bg-transparent text-ui text-fg outline-none placeholder:text-fg-muted-overlay" />
       </div>
     </div>
-    <template v-for="(g, gi) in filtered" :key="gi">
-      <p v-if="g.label" class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ g.label }}</p>
-      <template v-for="row in g.rows" :key="row.value">
-        <div v-if="row.separatorBefore" class="mx-2 my-1 h-px bg-fg/[0.06]" />
-        <button type="button"
-              :role="listRole === 'menu' ? 'menuitem' : 'option'"
-              :data-value="row.value"
-              :data-test="row.testId"
-              :disabled="row.disabled" :aria-selected="row.selected"
-              class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-sm"
-              :class="rowClass(row, false)"
-              @click="activate(row)" @mouseenter="!row.disabled && (dd.highlight = navIndexOf(row))">
-        <component :is="row.icon" v-if="row.icon" :size="14" class="shrink-0 text-fg-muted" />
-        <span class="min-w-0 truncate" :class="row.mono ? 'font-mono text-ui' : ''">{{ row.label }}</span>
-        <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted/60">{{ row.hint }}</span>
-        <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent" />
-      </button>
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <template v-for="(g, gi) in filtered" :key="gi">
+        <p v-if="g.label" class="px-2 pb-1 pt-2 text-xs text-fg-muted-overlay">{{ g.label }}</p>
+        <template v-for="row in g.rows" :key="row.value">
+          <div v-if="row.separatorBefore" class="mx-2 my-1 h-px bg-hairline" />
+          <button type="button"
+                :role="listRole === 'menu' ? 'menuitem' : 'option'"
+                :data-value="row.value"
+                :data-test="row.testId"
+                :disabled="row.disabled" :aria-selected="row.selected"
+                class="flex h-[30px] w-full items-center gap-2 rounded-item px-2 text-ui"
+                :class="rowClass(row, false)"
+                @click="activate(row)" @mouseenter="!row.disabled && (dd.highlight = navIndexOf(row))">
+          <component :is="row.icon" v-if="row.icon" :size="14" class="shrink-0 text-fg-muted-overlay" />
+          <span class="min-w-0 truncate" :class="row.mono ? 'font-mono' : ''">{{ row.label }}</span>
+          <span v-if="row.hint" class="ml-auto shrink-0 text-xs text-fg-muted-overlay">{{ row.hint }}</span>
+          <Check v-else-if="row.selected" :size="16" class="ml-auto shrink-0 text-accent-text" />
+        </button>
+        </template>
       </template>
-    </template>
-    <p v-if="groups && !flatRows.length" class="px-2 py-3 text-sm text-fg-muted">{{ emptyText ?? t("common.noMatch") }}</p>
-    <slot :mobile="false" />
+      <p v-if="groups && !flatRows.length" class="px-2 py-3 text-sm text-fg-muted-overlay">{{ emptyText ?? t("common.noMatch") }}</p>
+      <slot :mobile="false" />
+    </div>
   </div>
 </template>

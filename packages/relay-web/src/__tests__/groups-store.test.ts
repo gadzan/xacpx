@@ -2656,6 +2656,224 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.state).toBe("waiting-human");
     expect(store.activeRun?.waitingQuestion).toBe("Which branch?");
   });
+
+  it("stop cancels the queued accepts behind the owner so they never start", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    const owner: ConversationRunDto = {
+      id: "run_owner", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_owner", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    const queued: ConversationRunDto = {
+      id: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_2", requestId: "req_queued", mode: "explicit", state: "queued",
+      profileRevision: 1, createdAt: "now",
+    };
+    let promptCount = 0;
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: { runId?: string }) => {
+      if (type === "control.conversation.prompt") {
+        promptCount += 1;
+        const run = promptCount === 1 ? owner : queued;
+        return {
+          reused: false,
+          conversationId: "conversation_g",
+          topicId: "topic_1",
+          requestId: run.requestId,
+          message: {
+            id: `msg_${promptCount}`, conversationId: "conversation_g", topicId: "topic_1",
+            seq: promptCount, role: "human", content: "review", createdAt: "now",
+          },
+          run: { ...run, requestMessageId: `msg_${promptCount}` },
+          // Every later accept is queued behind the standing owner.
+          activeRunId: owner.id,
+          activeRun: owner,
+        };
+      }
+      if (type === "control.runs.cancel") {
+        const cancelled = payload?.runId === owner.id ? owner : queued;
+        return { ok: true, run: { ...cancelled, state: "cancelled", finishedAt: "now" } };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        return { conversationId: "conversation_g", topicId: "topic_1", runs: [] };
+      }
+      if (type === "control.runs.get") return { run: { ...owner, state: "cancelled", memberTurns: [] } };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.sendPrompt("first");
+    await store.sendPrompt("second");
+    expect(store.activeRun?.id).toBe("run_owner");
+    expect(store.queuedRuns.map((run) => run.id)).toEqual(["run_queued"]);
+
+    await store.stopCurrentAndQueued();
+
+    // The queued accept is cancelled on the backend before the owner retires,
+    // so the owner's terminal handoff cannot promote it into execution.
+    const cancelCalls = mockRpc.mock.calls.filter((call) => call[1] === "control.runs.cancel");
+    expect(cancelCalls).toHaveLength(2);
+    expect(cancelCalls[0]?.[2]).toMatchObject({ runId: "run_queued" });
+    expect(cancelCalls[1]?.[2]).toMatchObject({ runId: "run_owner" });
+    // The backend's terminal row arrives over the socket: the prompt leaves the
+    // queue as cancelled, never as a Run that started.
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...queued, state: "cancelled" },
+    } } as never);
+    expect(store.isRunQueued("run_queued")).toBe(false);
+    expect(store.queuedRuns).toEqual([]);
+    expect(store.activeRun?.state).toBe("cancelled");
+  });
+
+  it("admits a mid-run prompt as a queued Run behind the standing owner", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_b"] };
+    const owner: ConversationRunDto = {
+      id: "run_owner", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_owner", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    const ownerTurn: MemberTurnSummaryDto = {
+      id: "turn_owner", runId: owner.id, conversationId: "conversation_g", topicId: "topic_1",
+      botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "running", createdAt: "now",
+    };
+    store.activeRun = owner;
+    store.memberTurnsById = { turn_owner: ownerTurn };
+    store.liveTurnsByMember = {
+      turn_owner: { parts: [], status: "working", startedAt: 1, revision: 1, attempt: 1 },
+    };
+    mockRpc.mockResolvedValueOnce({
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_queued",
+      message: {
+        id: "msg_2", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+        role: "human", content: "second", createdAt: "now",
+      },
+      run: {
+        id: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_2", requestId: "req_queued", mode: "explicit", state: "queued",
+        profileRevision: 1, createdAt: "now",
+      },
+      memberTurn: {
+        id: "turn_queued", runId: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now",
+      },
+      // The accept names the standing owner, never the accepted Run.
+      activeRunId: owner.id,
+      activeRun: owner,
+    });
+    await store.sendPrompt("second");
+    // The queued accept owns nothing yet: the owner keeps its live turn.
+    expect(store.activeRun?.id).toBe("run_owner");
+    expect(store.memberTurnsById.turn_owner?.state).toBe("running");
+    expect(store.liveTurnsByMember.turn_owner).toBeDefined();
+    // It is tracked as this tab's own queued Run, so its own run-changed rows
+    // never look foreign.
+    expect(store.queuedRuns.map((run) => run.id)).toEqual(["run_queued"]);
+    expect(store.isRunQueued("run_queued")).toBe(true);
+    expect(store.isRunQueued("run_owner")).toBe(false);
+  });
+
+  it("re-elects the queued own Run as the owner when the standing Run goes terminal", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_b"] };
+    const owner: ConversationRunDto = {
+      id: "run_owner", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_owner", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    const queued: ConversationRunDto = {
+      id: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_2", requestId: "req_queued", mode: "explicit", state: "queued",
+      profileRevision: 1, createdAt: "now",
+    };
+    mockRpc.mockResolvedValueOnce({
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_queued",
+      message: {
+        id: "msg_2", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+        role: "human", content: "second", createdAt: "now",
+      },
+      run: queued,
+      activeRunId: owner.id,
+      activeRun: owner,
+    });
+    await store.sendPrompt("second");
+    expect(store.queuedRuns.map((run) => run.id)).toEqual(["run_queued"]);
+    // Discovery after the owner's terminal row names the queued Run as the
+    // authoritative next owner.
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        return { conversationId: "conversation_g", topicId: "topic_1", runs: [queued], activeRunId: queued.id, activeRun: queued };
+      }
+      if (type === "control.runs.get") return { run: { ...queued, memberTurns: [] } };
+      throw new Error(`unexpected ${type}`);
+    });
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...owner, state: "completed" },
+    } } as never);
+    await flushPromises();
+    expect(store.activeRun?.id).toBe("run_queued");
+    // The promoted Run's own row now belongs to the active owner, so it leaves
+    // the queue instead of tripping the foreign-Run fence.
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...queued, state: "running", startedAt: "now" },
+    } } as never);
+    expect(store.isRunQueued("run_queued")).toBe(false);
+    expect(store.queuedRuns).toEqual([]);
+    expect(store.activeRun?.state).toBe("running");
+  });
+
+  it("rediscovers instead of adopting a foreign queued Run", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    const foreign: ConversationRunDto = {
+      id: "run_foreign", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_f", requestId: "req_foreign", mode: "explicit", state: "queued",
+      profileRevision: 1, createdAt: "now",
+    };
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        return { conversationId: "conversation_g", topicId: "topic_1", runs: [foreign], activeRunId: foreign.id, activeRun: foreign };
+      }
+      if (type === "control.runs.get") return { run: { ...foreign, memberTurns: [] } };
+      throw new Error(`unexpected ${type}`);
+    });
+    // A Run another tab accepted arrives over the socket: this tab owns no
+    // owner, so the row proves nothing about topic-wide ownership.
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: foreign,
+    } } as never);
+    expect(store.activeRun?.id).not.toBe("run_foreign");
+    expect(store.ownershipUncertain).toBe(true);
+    await flushPromises();
+    expect(store.activeRun?.id).toBe("run_foreign");
+    expect(store.ownershipUncertain).toBe(false);
+  });
 });
 
 describe("useGroupsStore Group management", () => {

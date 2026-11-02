@@ -303,12 +303,12 @@ onMounted(async () => {
   <!-- Teleport to body: the mobile instance drawer uses `transform`, which would
        otherwise trap this fixed overlay inside the narrow off-canvas drawer. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="navigateBack">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
     <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="manage-instance-title"
-         class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl bg-raised shadow-float focus:outline-none" data-test="manage-instance-dialog">
+         class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none" data-test="manage-instance-dialog">
       <header class="flex shrink-0 items-center justify-between px-5 py-3">
-        <h2 id="manage-instance-title" class="truncate text-sm font-semibold text-fg">{{ $t("instance.manageTitle", { name }) }}</h2>
-        <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label="$t('instance.close')" @click="navigateBack"><X :size="16" /></button>
+        <h2 id="manage-instance-title" class="truncate text-base font-semibold text-fg">{{ $t("instance.manageTitle", { name }) }}</h2>
+        <button class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label="$t('instance.close')" @click="navigateBack"><X :size="16" /></button>
       </header>
       <div v-if="loading" class="py-6 text-center text-sm text-fg-muted">{{ $t("instance.dialogLoading") }}</div>
       <template v-else>
@@ -327,7 +327,7 @@ onMounted(async () => {
           <div v-if="tab === 'general'" id="tabpanel-general" role="tabpanel" aria-labelledby="tab-general" class="space-y-6">
             <section class="space-y-3">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.nameLabel") }}</h3>
-              <p v-if="renameError" data-test="rename-error" class="rounded-sm bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ renameError }}</p>
+              <p v-if="renameError" data-test="rename-error" class="rounded-sm bg-danger/[0.08] px-3 py-2 text-sm text-danger-overlay">{{ renameError }}</p>
               <div class="flex gap-2">
                 <input v-model="name" data-test="rename-name" :placeholder="$t('instance.renamePlaceholder')"
                        class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -369,7 +369,7 @@ onMounted(async () => {
                 <p v-if="routerReason.detail" data-test="router-reason-detail" class="break-words font-mono text-xs text-fg-muted">{{ routerReason.detail }}</p>
               </div>
               <p data-test="router-hint" class="text-xs text-fg-muted">{{ routerHint }}</p>
-              <p v-if="routerErrorText" data-test="router-error" class="text-xs text-error">{{ routerErrorText }}</p>
+              <p v-if="routerErrorText" data-test="router-error" class="text-xs text-danger-overlay">{{ routerErrorText }}</p>
             </section>
             <section data-test="terminal-settings" class="space-y-2">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.terminalSettingsTitle") }}</h3>
@@ -388,8 +388,8 @@ onMounted(async () => {
                   {{ terminalStatusText }}
                 </p>
               </div>
-              <p v-if="terminalSettings?.restartRequired" data-test="terminal-restart-required" class="text-xs text-warn">{{ $t('instance.terminalSettingsRestart') }}</p>
-              <p v-if="terminalError" data-test="terminal-settings-error" class="text-xs text-error">{{ terminalError }}</p>
+              <p v-if="terminalSettings?.restartRequired" data-test="terminal-restart-required" class="text-xs text-warn-overlay">{{ $t('instance.terminalSettingsRestart') }}</p>
+              <p v-if="terminalError" data-test="terminal-settings-error" class="text-xs text-danger-overlay">{{ terminalError }}</p>
             </section>
             <section data-test="files-settings" class="space-y-2">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.filesSettingsTitle") }}</h3>
@@ -407,7 +407,7 @@ onMounted(async () => {
                 <p data-test="files-settings-status" class="text-sm text-fg-muted">{{ filesStatusText }}</p>
               </div>
               <p data-test="files-settings-hint" class="text-xs text-fg-muted">{{ $t("instance.filesSettingsHint") }}</p>
-              <p v-if="filesError" data-test="files-settings-error" class="text-xs text-error">{{ filesError }}</p>
+              <p v-if="filesError" data-test="files-settings-error" class="text-xs text-danger-overlay">{{ filesError }}</p>
             </section>
             <details v-if="jevEditable || jevUpgradeNotice" data-test="jev-details" class="rounded-lg border border-border/70 px-3 py-2">
               <summary class="cursor-pointer text-sm font-semibold text-fg">{{ $t("instance.jevTitle") }}</summary>
@@ -463,7 +463,7 @@ onMounted(async () => {
                 </span>
               </div>
               <p v-if="jevTestView?.kind === 'failed' && jevTestView.detail" data-test="jev-test-detail" class="break-words font-mono text-xs text-fg-muted">{{ jevTestView.detail }}</p>
-              <p v-if="jevErrorText" data-test="jev-error" class="text-xs text-error">{{ jevErrorText }}</p>
+              <p v-if="jevErrorText" data-test="jev-error" class="text-xs text-danger-overlay">{{ jevErrorText }}</p>
               </div>
             </details>
             <section class="space-y-1">

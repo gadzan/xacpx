@@ -308,12 +308,12 @@ async function submit(): Promise<void> {
        otherwise make this fixed overlay resolve against the drawer (narrow,
        off-canvas) instead of the viewport. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="navigateBack">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
     <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="new-session-title"
-         class="w-full max-w-md rounded-2xl bg-raised shadow-float focus:outline-none" data-test="new-session-dialog">
+         class="w-full max-w-md rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none" data-test="new-session-dialog">
       <header class="flex items-center justify-between px-5 py-3">
-        <h2 id="new-session-title" class="text-sm font-semibold text-fg">{{ $t("session.newSession") }} <span class="font-normal text-fg-muted">· {{ instanceName }}</span></h2>
-        <button class="rounded-sm p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")' @click="navigateBack"><X :size="16" /></button>
+        <h2 id="new-session-title" class="text-base font-semibold text-fg">{{ $t("session.newSession") }} <span class="font-normal text-fg-muted-overlay">· {{ instanceName }}</span></h2>
+        <button class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label='$t("session.close")' @click="navigateBack"><X :size="16" /></button>
       </header>
 
       <div class="space-y-4 px-5 py-4">
@@ -399,12 +399,12 @@ async function submit(): Promise<void> {
             <SelectMenu v-else-if="nativeSessions.length" v-model="nativeSel" :groups="nativeGroups"
                         data-test="ns-native" :aria-label='$t("session.nativeSession")' :placeholder='$t("session.selectNative")' />
             <!-- Error: distinct danger block with a friendly hint (e.g. agent not authenticated). -->
-            <div v-else-if="nativeError" data-test="ns-native-error" class="rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger">
+            <div v-else-if="nativeError" data-test="ns-native-error" class="rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger-overlay">
               <div class="flex items-start gap-1.5">
                 <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
                 <div class="min-w-0">
                   <p class="break-words font-medium">{{ nativeError }}</p>
-                  <p v-if="nativeErrorHint" class="mt-1 text-danger">{{ nativeErrorHint }}</p>
+                  <p v-if="nativeErrorHint" class="mt-1 text-danger-overlay">{{ nativeErrorHint }}</p>
                 </div>
               </div>
             </div>
@@ -413,14 +413,14 @@ async function submit(): Promise<void> {
             </p>
           </div>
 
-          <p v-if="error" data-test="ns-error" class="rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger">{{ error }}</p>
+          <p v-if="error" data-test="ns-error" class="rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger-overlay">{{ error }}</p>
         </template>
       </div>
 
       <footer class="flex justify-end gap-2 px-5 py-3">
-        <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="navigateBack">{{ $t("common.cancel") }}</button>
+        <button class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover" @click="navigateBack">{{ $t("common.cancel") }}</button>
         <button data-test="ns-create" :disabled="!canSubmit"
-                class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
+                class="h-8 rounded-btn bg-accent px-4 text-ui font-semibold text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
                 @click="submit">{{ submitting ? $t("session.creatingButton") : $t("session.create") }}</button>
       </footer>
     </div>

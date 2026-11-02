@@ -620,9 +620,17 @@ export const useChatStore = defineStore("chat", () => {
     const revision = transcriptRevision;
     loadingHistory.value = true;
     try {
-      const { messages: rows, hasMore } = await api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
-        historyPath(id, alias),
-      );
+      const [{ messages: rows, hasMore }, pending] = await Promise.all([
+        api.get<{ messages: MessageRecordDto[]; hasMore?: boolean }>(
+          historyPath(id, alias),
+        ),
+        // Durable pending queue: the connector's in-memory queue is ephemeral,
+        // so a refresh would otherwise lose every not-yet-drained strip chip.
+        // Transcript pages exclude pending rows; this is the strip's own source.
+        api.get<{ items: QueueItemDto[] }>(
+          `/api/instances/${id}/sessions/${alias}/messages?view=pending`,
+        ).catch(() => ({ items: [] as QueueItemDto[] })),
+      ]);
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
       if (requestSequence !== historyRequestSequence) return;
       // A live event may mutate the selected transcript while this request is in
@@ -632,6 +640,9 @@ export const useChatStore = defineStore("chat", () => {
       // selection so persisted history and the current turn converge.
       if (revision !== transcriptRevision) return loadHistory();
       messages.value = placeTurnsInSlots(keepRicherStructured(rows, messages.value).map(rawStructured));
+      // Server-authoritative pending snapshot wins over the send()-time fallback
+      // chip (local clock/preview); a live queue-updated later replaces again.
+      queues.value[historyKey] = pending.items;
       touchTranscript();
       seededFromCache = false;
       seedRowsPresent = false;
@@ -1148,14 +1159,18 @@ export const useChatStore = defineStore("chat", () => {
         rollbackIndicators();
         touchTranscript();
       } else if (res?.queued && res.queueItemId) {
-        entry.queueItemId = res.queueItemId;
-        if (messages.value.some((message) => message !== entry && message.queueItemId === res.queueItemId)) {
-          // The drain event won the race with the RPC response. Keep the original
-          // optimistic row (including attachments) at the event bubble's position.
-          const entryIndex = messages.value.indexOf(entry);
-          if (entryIndex >= 0) messages.value.splice(entryIndex, 1);
-          const eventBubbleIndex = messages.value.findIndex((message) => message.queueItemId === res.queueItemId);
-          if (eventBubbleIndex >= 0) messages.value.splice(eventBubbleIndex, 1, entry);
+        // Queue-only display: the prompt lives in the strip until its turn drains,
+        // never as a transcript bubble. Remove the optimistic row just pushed; the
+        // drain-time turn-started (same queueItemId + prompt) rebuilds it at the
+        // actual execution point. If the drain event already built that bubble
+        // (it won the race), drop the optimistic row and keep the event one.
+        const entryIndex = messages.value.indexOf(entry);
+        if (entryIndex >= 0) messages.value.splice(entryIndex, 1);
+        if (!messages.value.some((message) => message.queueItemId === res.queueItemId)) {
+          queues.value[bufKey(id, alias)] = [
+            ...(queues.value[bufKey(id, alias)] ?? []),
+            { id: res.queueItemId, textPreview: text.slice(0, 120), enqueuedAt: new Date().toISOString() },
+          ];
         }
         touchTranscript();
       }
@@ -1285,6 +1300,17 @@ export const useChatStore = defineStore("chat", () => {
   /** Cancel a still-pending queued prompt. Drops the chip optimistically (so the strip
    *  reacts immediately) and issues the RPC best-effort — if it fails, the next
    *  `queue-updated` snapshot re-syncs the truth anyway. */
+  async function cancelQueuedItem(instanceId: string, alias: string, itemId: string): Promise<void> {
+    const key = bufKey(instanceId, alias);
+    const list = queues.value[key];
+    if (list) queues.value[key] = list.filter((i) => i.id !== itemId);
+    try {
+      await api.rpc(instanceId, "control.queue.cancel", { sessionAlias: alias, itemId });
+    } catch {
+      // best-effort; a queue-updated re-syncs
+    }
+  }
+
   /** Replace a compact list row with the full persisted structured payload so
    *  expanding a tool/subagent card can show diffs and command output. No-op when
    *  the row is already full, missing, or the selection changed. */
@@ -1316,17 +1342,6 @@ export const useChatStore = defineStore("chat", () => {
       await work;
     } finally {
       hydratingMessages.delete(messageId);
-    }
-  }
-
-  async function cancelQueuedItem(instanceId: string, alias: string, itemId: string): Promise<void> {
-    const key = bufKey(instanceId, alias);
-    const list = queues.value[key];
-    if (list) queues.value[key] = list.filter((i) => i.id !== itemId);
-    try {
-      await api.rpc(instanceId, "control.queue.cancel", { sessionAlias: alias, itemId });
-    } catch {
-      // best-effort; a queue-updated re-syncs
     }
   }
 

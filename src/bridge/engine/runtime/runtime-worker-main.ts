@@ -426,7 +426,7 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     // elicitation/create itself, its prompt turn, or the session goes away.
     // This second controller exists because the cancel FRAME must also reach
     // the daemon/bridge/broker chain — aborting only the local signal would
-    // let the renderer keep collecting input until the 120s deadline while
+    // let the renderer keep collecting input until the broker deadline while
     // the agent had already withdrawn the request.
     const requestCancel = new AbortController();
     const handlerSignal = AbortSignal.any([context.signal, requestCancel.signal]);
@@ -446,7 +446,7 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       state.pendingElicitations.delete(elicitationRequestId);
       rejectElicitation(new Error("elicitation cancelled"));
       // Tell the host to abort its outbound daemon/broker call. Without this
-      // the renderer keeps collecting input until the 120s deadline even
+      // the renderer keeps collecting input until the broker deadline even
       // though nobody will read the answer.
       process.stdout.write(encodeWorkerMessage({
         id: elicitationRequestId,
@@ -456,12 +456,12 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     });
     process.stdout.write(encodeWorkerMessage({ id: elicitationRequestId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
     // Watchdog handle kept so the SUCCESS path can clear it. Without this a
-    // two-second elicitation still holds a 125s timer and an abort listener
+    // two-second elicitation still holds a watchdog timer and an abort listener
     // for the rest of the turn — unref'd so it cannot block exit, but it is a
     // deterministic short-term leak on the happy path.
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Business deadline (120s) sits inside the daemon broker; this worker
+      // Business deadline (five minutes) sits inside the daemon broker; this worker
       // watchdog (ELICITATION_RPC_TIMEOUT_MS) only protects against a wedged
       // host transport and fails closed exactly like the broker's cancel path.
       const decision = await Promise.race([

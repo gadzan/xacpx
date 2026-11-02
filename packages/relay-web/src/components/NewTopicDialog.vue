@@ -40,11 +40,11 @@ async function handleCreateTopic(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm"
        @click.self="navigateBack">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
-      <h3 id="new-topic-title" class="text-sm font-semibold mb-2">{{ $t("bot.topic.createTitle") }}</h3>
-      <p class="text-xs text-fg-muted mb-3">{{ $t("bot.topic.createHint") }}</p>
+    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:w-full">
+      <h3 id="new-topic-title" class="mb-2 text-base font-semibold text-fg">{{ $t("bot.topic.createTitle") }}</h3>
+      <p class="mb-3 text-sm text-fg-muted-overlay">{{ $t("bot.topic.createHint") }}</p>
       <form @submit.prevent="handleCreateTopic">
         <input
           v-model="newTopicTitle"
@@ -52,12 +52,12 @@ async function handleCreateTopic(): Promise<void> {
           required
           maxlength="60"
           :placeholder="$t('bot.topic.titlePlaceholder')"
-          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none mb-4"
+          class="mb-4 h-8 w-full rounded-lg bg-surface-2 px-3 text-sm outline-none"
         />
-        <div class="flex items-center justify-end gap-2">
+        <div class="flex gap-2 lg:items-center lg:justify-end">
           <button
             type="button"
-            class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
+            class="h-11 flex-1 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover lg:h-8 lg:flex-none"
             @click="navigateBack"
           >
             {{ $t("common.cancel") }}
@@ -65,7 +65,7 @@ async function handleCreateTopic(): Promise<void> {
           <button
             type="submit"
             :disabled="creatingTopic || !newTopicTitle.trim()"
-            class="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:opacity-90 disabled:opacity-50"
+            class="h-11 flex-1 rounded-btn bg-accent px-3 text-ui font-semibold text-on-accent hover:opacity-90 disabled:opacity-50 lg:h-8 lg:flex-none"
           >
             {{ $t("common.create") }}
           </button>

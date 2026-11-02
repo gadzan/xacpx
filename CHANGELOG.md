@@ -1,10 +1,57 @@
 # Changelog
-## [Unreleased]
+## [relay-protocol 0.6.4-beta.8] - 2026-10-31
 
 ### Changed
 
-- 群组多轮交接（V2 P0-B）成为默认行为，`conversations.followupRedispatch: false` 可回滚。交接唤醒现在可以继续派活，完成判定改为读取整个 Run 的等待图而不是当前 batch；工作窗口不再以固定 24 轮判失败，而是按 `max(8, shortage)` 确定性续期并写入 `run_budget_decisions` 审计（`runs.budget_epoch`），续期本身不会凭空创建任务；发送者第一次派活时在同一事务内预留一次返回唤醒（`followup_reservations`），容量不足时唤醒保持欠付并在 resume 时恰好兑现一次。资源不足（成员不可用、窗口无法表示）不再伪装成预算失败，而是拒绝该次派活并让 Run 进入可恢复的暂停。
+- `ConversationRunDto` now carries `budgetEpoch`, `controlRevision`, `progressRevision` and the pause fields (`pauseReason`, `pauseRequestedAt`, `pausedAt`), all bounded by the validator and covered by the runs-history key allowlist, so the dashboard renders a paused or renewed Run from the same snapshot it already fetches. Additive only: a core that does not implement `control.runs.pause`/`resume` still answers `unsupported-rpc`, and the capability is advertised only when both ends support it.
 
+## [relay 0.14.12-beta.14] - 2026-10-31
+
+### Added
+
+- 设计语言整体刷新：冷灰画布 + 白色抬升卡片、单一系统蓝、hairline 描边与极浅投影，玻璃只留给浮层、顶栏与 composer。侧边栏改为品牌区 + 实例分段控件 + 选中行为白色卡片（去掉左侧色条）与页脚（主题切换、设置）；下拉、菜单、右键菜单、悬浮提示、toast 与全部对话框统一走 `glass-strong` 半径体系，`DropdownPanel` 的 `tone` prop 直接删除（无别名保留）。移动端补齐触控尺寸（搜索 48px、会话行 ≥52px、按钮 ≥44px），`MobileSheet` 增加把手与下滑关闭，下拉改为底部 sheet，@ / slash 选择器在 `lg` 以下变为底部 sheet 且桌面弹层与键盘契约不变，另加最近会话 / Bot / 群组的快速切换半屏。分组头像改为成员拼贴（1 / 2 对角 / 3 三角 / 4 为 2×2，5+ 为 3+"+N"），字母回退色按 `fnv1a(botId)` 生成因此改名不变色，禁用与退出的成员不计入拼贴但计入无障碍标签；顶栏「…」成员行与头像拼贴都能打开成员面板（含禁用原因与「谁在忙」一行）；添加实例改为三步对话框（命名 → 复制一次性命令并等待 → 已连接）。对比度由 `scripts/contrast-check.mjs` 按实际合成表面校验，所有前后景对达到 WCAG AA（#515）。
+- 运行中的输入框可以继续发送：Stop 与 Send 并排，Send 不再因有 Run 在执行而被前端拒绝，store 记录后端接受为排队的 prompt，转录里用「等待当前回复」标注这些消息；`runInProgress` 错误码及其文案与死分支一并删除（#515）。
+- 群组 Run 支持暂停 / 继续：状态区渲染 `paused`，Pause/Resume 控件按 `runs.pause.v1` 能力出现，暂停期间不提供发送入口；旧内核没有该 RPC 时控件不显示而不是点了报错（#513）。
+- 不带目标的群组消息默认发给该群组的 lead Bot：群组输入框的默认项显示 lead（没有 lead 时显示按稳定 ID 排序的第一名成员），但不再替用户挑选可接单成员，最终由后端解析或拒绝；pane 的状态提示改为只报告谁被禁用、谁可以显式发送，不再承诺默认去向。群组成员目录按当前实例加载，因此群组路径也能正确显示名字，就绪状态取 store 的 `botsLoaded`，刷新失败时会隐藏提示而不是把旧数据读成「全员禁用」（#503）。
+
+### Changed
+
+- 移动端浮动的 Bot 身份 chip 从内联 `style` 改回 Tailwind 工具类（`py-2`、`mt-[2.7rem]`、`-mt-[2.7rem]`），生成声明完全等价，无视觉或行为变化（#507）。
+
+### Fixed
+
+- 手机端点模型 chip、effort chip、模型刷新或附件按钮时，输入卡片不再立刻坍缩回一行、要打开的下拉也不再生效：卡片在捕获阶段跟踪 `pointerdown`，最后一次按下落在卡片内就保持展开，只有点在卡片外才折叠；卡片自己打开的浮层（dropdown / sheet / popover）通过 `pinExpanded` 在打开期间永不折叠。折叠契约已写入 `docs/relay-web-module.md`（#508）。
+- 群组顶栏的回退 Bot 图标恢复成与其他头像同一视觉尺寸（`AgentIcon` 只画到 72%，外层不再用 `h-full w-full` 覆盖掉这个收缩）；640px 以下群组 composer 改用单行短文案并加 `nowrap` + 省略号兜底，桌面文案不变；「全部停止」的确认按钮在落地前禁用并显示 spinner，`ConfirmDialog` 在打开后 350ms 内忽略遮罩点击，双击不再把自己刚打开的确认框关掉（#516）。
+
+## [channel-relay 0.7.8-beta.10] - 2026-10-31
+
+### Added
+
+- Relay connector now advertises `runs.pause.v1` alongside its other run capabilities and passes `control.runs.pause` / `control.runs.resume` through to the daemon, so the dashboard can hold a Run resumably instead of only stopping it. An older core answers `unsupported-rpc`, which keeps the control hidden rather than failing the click (#513).
+
+## [0.24.10-beta.10] - 2026-10-31
+
+### Added
+
+- 群组多轮交接（V2 P0-B）成为默认行为，`conversations.followupRedispatch: false` 可回滚。交接唤醒现在可以继续派活，完成判定改为读取整个 Run 的等待图而不是当前 batch；工作窗口不再以固定 24 轮判失败，而是按 `max(8, shortage)` 确定性续期并写入 `run_budget_decisions` 审计（`runs.budget_epoch`），续期本身不会凭空创建任务；发送者第一次派活时在同一事务内预留一次返回唤醒（`followup_reservations`），容量不足时唤醒保持欠付并在 resume 时恰好兑现一次。资源不足（成员不可用、窗口无法表示）不再伪装成预算失败，而是拒绝该次派活并让 Run 进入可恢复的暂停（#505、#514）。
+- 没有指定目标的群组消息现在由该群组配置的 lead Bot 应答，不再是 `target_required`：第三方客户端不传 target 时由后端在闸门内从 live 记录重新推导 lead，因此中途改派不会让旧 lead 承诺；lead 被禁用或已不在成员表中时按显式 target 的同一套 enabled/membership 闸门拒绝，永不静默替换成别的成员。没有 lead 的群组行为不变（#503）。
+- 群成员 prompt 拆成三层：稳定的协作契约（可缓存前缀）、当前 Run 的事实快照、以及带边界标记的成员产出证据。快照层超过 1,100 字符会在代理对安全的位置截断并显式指向 `group_read_result`；被唤醒的发送者不再报告一个空的已结算列表，而是列出自己派出的公开交接的 assignment id（#504）。
+- Router 现在能看到一份运行时采样的成员可用性快照（`idle` / `working` / `waiting-children` / `waiting-human` / `unavailable`，含在途与排队数量、Run 内隔离标记），只读取该会话未终结的 Run，成员上限 64、序列化上限 12,000 字符并披露被裁掉的数量。它是建议而非许可：admission 闸门在类型上就无法读取该字段（`RoutingAdmissionInput`），因此负载信息永远不会让必需的工作被跳过（#510）。
+- Run 有了可恢复的 `paused` 状态：`control.runs.pause` / `control.runs.resume` 在 `control_revision` 上做 CAS，用一条持久 receipt 保证幂等；运行中的暂停先记录 drain 意图，已领取的尝试全部落地后由持久行自身收敛为 `paused`，Stop 意图与 `indeterminate` 封印优先于暂停；恢复前重新校验会话/Topic 存活与 Topic 归属，未开始的成员保持排队并在 resume 后重新可领取；暂停期间 Run 保留自己的 Topic，新 prompt 明确回复 `topic_paused` 而不是静默排队；重启后暂停的 Run 以暂停状态重开且不重放任何工作（#513）。
+- 未解决问题跨路由窗口保留：`DurableProgressReduction` 在窗口裁剪之前从该 Run 的完整结算历史推导（当前产物版本及其生产者、仍未覆盖的失败，以及最后验证该版本的 batch），`applyRoutingDecision` 在仍有未覆盖工作时以 `router_unresolved_work` 拒绝 `complete`，且判据在重启后不变；内置策略遇到未解决问题直接以 `need-human` 暂停，不再给出一个它自己不能接受的 `complete`（#512）。
+
+### Changed
+
+- Router 输入不再把 64 条 assignment 当成 Run 一生的历史：`completedAssignments` 变为按 batch 取最近 64 条的新近窗口，同时携带真实的累计计数、被省略数量、`durableCollaboration` 事实与 Run 级单调 `assignmentSequence`；序列化仍超 131,072 字符时按最旧优先继续裁剪并逐条披露。assignment id 由该序号铸造，不再取决于窗口内的 `history.length`，闸门用 Run 的完整已结算 id 集合解析 `dependsOn`，因此依赖在行滑出窗口后依然合法（#506）。
+- 协作规则现在只有一个来源：Group prompt 的契约是唯一表述处（唤醒行的「恰好一次」保证从被删副本迁入），`memberContext` 只剩长度受限（480 字符）的成员名单数据，成员名单从 prompt 前缀移入快照层，因此两轮之间共享可缓存前缀；`group_send` / `group_read_result` 的描述与回执只保留各自参数契约与调用点约束（#509）。
+
+## [channel-feishu 0.8.7-beta.10] - 2026-10-31
+
+- Compatibility floor raised to `0.24.10-beta.10` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.10] - 2026-10-31
+
+- Compatibility floor raised to `0.24.10-beta.10` with no channel behavior change.
 
 ## [relay-protocol 0.6.4-beta.7] - 2026-10-29
 

@@ -171,11 +171,52 @@ function mountForm(
     expect(withAnswer.find('[data-test="interaction-submit"]').attributes("disabled")).toBe(undefined);
   });
 
-  it("an empty message still shows the schema's own question", async () => {
-    // The wire validator allows `message: ""` on purpose — "a schema with a good
-    // title needs no prose" — so an agent may carry its ENTIRE question in
-    // `schemaTitle`/`schemaDescription`. Rendering neither left such a form with
-    // nothing above its fields, which is a form that asks nothing.
+  it("shows the question once when schema description duplicates the message", async () => {
+    const wrapper = mountForm([
+      { kind: "text", key: "s", title: "S", required: false },
+    ]);
+    wrapper.setProps({
+      request: {
+        ...wrapper.props("request") as object,
+        elicitation: {
+          mode: "form",
+          message: "Choose deployment target",
+          fields: [{ kind: "text", key: "s", title: "S", required: false }],
+          schemaTitle: "Choose deployment target",
+          schemaDescription: "Choose deployment target",
+          agent: { name: "codex" },
+        },
+      },
+    } as never);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text().match(/Choose deployment target/g)).toHaveLength(1);
+    expect(wrapper.find('[data-test="interaction-schema-description"]').exists()).toBe(false);
+  });
+
+  it("keeps a distinct schema description and shows it with the message", async () => {
+    const wrapper = mountForm([
+      { kind: "text", key: "s", title: "S", required: false },
+    ]);
+    wrapper.setProps({
+      request: {
+        ...wrapper.props("request") as object,
+        elicitation: {
+          mode: "form",
+          message: "Choose deployment target",
+          fields: [{ kind: "text", key: "s", title: "S", required: false }],
+          schemaTitle: "Deployment",
+          schemaDescription: "Pick one region; the rest of the fields are optional.",
+          agent: { name: "codex" },
+        },
+      },
+    } as never);
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-test="interaction-schema-title"]').text()).toBe("Deployment");
+    expect(wrapper.find('[data-test="interaction-schema-description"]').text())
+      .toBe("Pick one region; the rest of the fields are optional.");
+  });
+
+  it("an empty message still shows the schema title and description", async () => {
     const wrapper = mountForm([
       { kind: "text", key: "s", title: "S", required: false },
     ]);
@@ -187,17 +228,14 @@ function mountForm(
           message: "",
           fields: [{ kind: "text", key: "s", title: "S", required: false }],
           schemaTitle: "Choose deployment target",
-          schemaDescription: "Pick one region; the rest of the fields are optional.",
+          schemaDescription: "Pick one region.",
           agent: { name: "codex" },
         },
       },
     } as never);
     await wrapper.vm.$nextTick();
-    const title = wrapper.find('[data-test="interaction-schema-title"]');
-    const description = wrapper.find('[data-test="interaction-schema-description"]');
-    expect(title.exists()).toBe(true);
-    expect(title.text()).toBe("Choose deployment target");
-    expect(description.text()).toContain("Pick one region");
+    expect(wrapper.find('[data-test="interaction-schema-title"]').text()).toBe("Choose deployment target");
+    expect(wrapper.find('[data-test="interaction-schema-description"]').text()).toBe("Pick one region.");
   });
 
   it("the agent identity is rendered when the frame carries one", async () => {
@@ -504,20 +542,32 @@ describe("ConversationInteractionForm field kinds", () => {
     expect(wrapper.emitted("answer")![0]).toEqual(["ok", true]);
   });
 
-  it("single-select emits the option VALUE, not the label", async () => {
+  it("shows every single-select option inline and emits the selected VALUE", async () => {
     const wrapper = mountForm([
       {
         kind: "single-select",
         key: "env",
         title: "Env",
         required: true,
-        options: [{ value: "prod", label: "Production!" }],
+        options: [
+          { value: "prod", label: "Production!" },
+          { value: "stage", label: "Staging" },
+          { value: "dev", label: "Development" },
+        ],
       },
     ]);
-    // The select is the unified SelectMenu: open the trigger, then pick the row.
-    await wrapper.find('[data-test="interaction-select-env"]').trigger("click");
-    await wrapper.find('[data-value="prod"]').trigger("click");
+    const group = wrapper.find('[role="group"][aria-labelledby]');
+    expect(group.attributes("aria-labelledby")).toContain("-legend");
+    expect(wrapper.find('[data-test="interaction-option-prod"]').attributes("aria-pressed")).toBe("false");
+    await wrapper.find('[data-test="interaction-option-prod"]').trigger("click");
     expect(wrapper.emitted("answer")![0]).toEqual(["env", "prod"]);
+    const selected = mountForm(
+      [{ kind: "single-select", key: "env", title: "Env", required: true,
+         options: [{ value: "prod", label: "Production!" }, { value: "stage", label: "Staging" }] }],
+      { env: "stage" },
+    );
+    expect(selected.find('[data-test="interaction-option-stage"]').attributes("aria-pressed")).toBe("true");
+    expect(selected.find('[data-test="interaction-option-prod"]').attributes("aria-pressed")).toBe("false");
   });
 });
 

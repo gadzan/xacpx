@@ -156,7 +156,7 @@ onUnmounted(() => clearInterval(timer));
   <div class="flex h-full flex-1 flex-col">
     <!-- header (desktop only: <lg the single mobile top bar in DashboardView /
          DirectBotPane carries the title + subtitle instead of this chip row) -->
-    <div class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
+    <div data-conversation-header class="hidden lg:flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
       <h1 class="hidden lg:block text-sm font-semibold tracking-tight text-fg">{{ currentSession?.displayName || chat.sessionAlias }}</h1>
       <!-- Chip strip scrolls horizontally (swipe on touch) so long workspace/branch names
            stay fully readable instead of truncating — title tooltips don't work on touch.
@@ -264,7 +264,7 @@ onUnmounted(() => clearInterval(timer));
              list of fields would grow the footer until the composer left a phone
              screen entirely. -->
         <ConversationInteractionForm v-if="sessionInteraction" key="interaction-layer"
-                                     class="stack-layer stack-layer--interaction thin-scroll relative z-40 mx-2 max-h-[min(45vh,22rem)] overflow-y-auto pb-[var(--stack-overlap)] sm:mx-3"
+                                     class="stack-layer stack-layer--interaction thin-scroll relative z-40 mx-2 mb-3 max-h-[min(45vh,22rem)] overflow-y-auto sm:mx-3"
                                      :request="sessionInteraction.request"
                                      :answers="sessionInteraction.answers"
                                      :submitting="sessionInteraction.submitting"

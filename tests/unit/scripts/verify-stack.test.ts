@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdirSync, rmdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -8,8 +10,11 @@ import {
   manifestPath,
   parseAccessToken,
   planPluginHome,
+  portOwner,
+  processMatches,
   removeStateDir,
   statePaths,
+  sweepProcesses,
 } from "../../../scripts/verify-stack.mjs";
 
 describe("verify-stack planPluginHome", () => {
@@ -93,6 +98,36 @@ describe("verify-stack removeStateDir", () => {
       rmdirSync(statePaths().root);
     } catch {
       /* parent still in use */
+    }
+  });
+});
+
+describe("verify-stack process identity", () => {
+  it("finds and identifies a live process by its command line", async () => {
+    const needle = join(statePaths().root, `identity-needle-${process.pid}`);
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", needle], {
+      stdio: "ignore",
+    });
+    // `spawn` fires after exec, which is the moment the command line is visible
+    // to `ps`; waiting on that event replaces a poll against the real clock.
+    await once(child, "spawn");
+    try {
+      expect(sweepProcesses(needle)).toEqual([child.pid]);
+      expect(processMatches(child.pid!, needle)).toBe(true);
+      expect(processMatches(child.pid!, `${needle}-absent`)).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+    }
+    await once(child, "exit");
+    expect(sweepProcesses(needle)).toEqual([]);
+  });
+
+  it("reports the pid that holds a listening port", () => {
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+    try {
+      expect(portOwner(server.port)).toBe(process.pid);
+    } finally {
+      server.stop(true);
     }
   });
 });

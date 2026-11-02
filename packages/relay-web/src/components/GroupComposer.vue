@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AtSign, Bot, Check, ChevronDown, Users } from "lucide-vue-next";
 import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
@@ -21,9 +21,10 @@ import ConversationComposer from "./ConversationComposer.vue";
 import ComposerAttachments from "./ComposerAttachments.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import ComposerAttachPicker from "./ComposerAttachPicker.vue";
-import { useDropdown } from "../lib/use-dropdown";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
 import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
+import MobileSheet from "./MobileSheet.vue";
+import { useIsMobile, useDropdown } from "../lib/use-dropdown";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -87,6 +88,13 @@ const mentionOwned = ref(false);
 const unresolvedConfirm = ref<{ key: string; text: string; target: string } | null>(null);
 const sendBusy = ref(false);
 const attachments = useComposerStore();
+/** Below lg the completion selector is a bottom sheet, not a popover. */
+const isMobile = useIsMobile();
+/** Below Tailwind `sm` (640px) the full placeholder no longer fits one line. */
+const isNarrow = ref(typeof window !== "undefined" && window.innerWidth < 640);
+function syncNarrow(): void { isNarrow.value = window.innerWidth < 640; }
+onMounted(() => window.addEventListener("resize", syncNarrow));
+onBeforeUnmount(() => window.removeEventListener("resize", syncNarrow));
 /** Attachment scope: one upload draft per instance + Group + Topic, namespaced
  *  "group" so it never collides with the session chat or direct Bot scopes. */
 const attachKey = computed(() =>
@@ -126,7 +134,11 @@ const automaticVisible = computed(() => automaticReady.value && jevConfigured.va
 const selectedIds = computed<string[]>(() =>
   selection.value?.mode === "members" ? selection.value.botIds : [],
 );
-const eligibleBots = computed(() => props.bots.filter((b) => b.enabled));
+// Rows the picker lists: every live member, disabled ones shown but not
+// pickable. A removed Bot is not listed at all — the daemon's catalog drops
+// the row and this only bridges a stale snapshot.
+const pickableBots = computed(() => props.bots.filter((b) => b.retired !== true));
+const eligibleBots = computed(() => pickableBots.value.filter((b) => b.enabled));
 const selectionLabel = computed(() => {
   if (isAutomatic.value) return t("group.target.automatic");
   if (isEveryone.value) return t("group.target.everyone");
@@ -198,7 +210,7 @@ watch(draftKey, (next, prev) => {
 const everyoneRecipients = computed<Array<{ id: string; name: string; lead: boolean }>>(() => {
   const group = groupsStore.currentGroup;
   if (!group) return [];
-  const byId = new Map(props.bots.map((b) => [b.id, b] as const));
+  const byId = new Map(props.bots.filter((b) => b.retired !== true).map((b) => [b.id, b] as const));
   return group.botIds
     .filter((id) => byId.get(id)?.enabled === true)
     .map((id) => ({ id, name: byId.get(id)?.name ?? id, lead: group.leadBotId === id }));
@@ -306,13 +318,15 @@ function driverFor(bot: BotSummaryDto): string | undefined {
 
 const mentionMembers = computed<GroupMentionMember[]>(() => {
   const leadId = groupsStore.currentGroup?.leadBotId;
-  return props.bots.map((bot) => ({
-    botId: bot.id,
-    name: bot.name,
-    ...(bot.role ? { role: bot.role } : {}),
-    enabled: memberUnavailableReason(bot) === null,
-    lead: bot.id === leadId,
-  }));
+  return props.bots
+    .filter((bot) => bot.retired !== true)
+    .map((bot) => ({
+      botId: bot.id,
+      name: bot.name,
+      ...(bot.role ? { role: bot.role } : {}),
+      enabled: memberUnavailableReason(bot) === null,
+      lead: bot.id === leadId,
+    }));
 });
 
 const singleMemberId = computed(() => {
@@ -343,6 +357,8 @@ const mentionMatches = computed(() => {
   if (!query || mentionDismissed.value) return [];
   return filterMentionMembers(mentionMembers.value, query.query).slice(0, 8);
 });
+/** The completion menu (slash hint, slash rows or mention rows) is showing. */
+const cmdMenuOpen = computed(() => slashHint.value || slashMatches.value.length > 0 || mentionMatches.value.length > 0);
 
 watch(singleMemberId, () => {
   cmdDismissed.value = false;
@@ -393,6 +409,13 @@ function onInput(text: string): void {
 function commitMentionAtBoundary(): boolean {
   return applyMention(promptText.value, true);
 }
+/** The sheet is part of the composer's own layer: a tap on its chrome (scrim,
+ *  grabber, ✕) blurs the textarea on some platforms, which is not the user
+ *  leaving the composer — the half-typed mention must survive it. */
+function onComposerBlur(): boolean {
+  if (isMobile.value && cmdMenuOpen.value) return true;
+  return commitMentionAtBoundary();
+}
 
 function onCaret(selection: { start: number; end: number }): void {
   caret.value = selection.start;
@@ -421,6 +444,14 @@ function pickMention(member: GroupMentionMember): void {
     composer.value?.focus();
     composer.value?.setSelectionRange(replaced.cursor, replaced.cursor);
   });
+}
+/** The bottom sheet closed (scrim, ✕, back gesture): dismiss the menu the way
+ *  Escape does — the half-typed mention stays — and hand focus back to the
+ *  textarea. */
+function closeCmdMenu(): void {
+  mentionDismissed.value = true;
+  cmdDismissed.value = true;
+  void nextTick(() => composer.value?.focus());
 }
 
 function pickSlash(name: string): void {
@@ -500,10 +531,10 @@ function onKeydown(e: KeyboardEvent): void {
 const baseCanSend = computed(() => !props.disabled
   && !groupsStore.promptInFlight
   && !groupsStore.cancellingRunId
-  && !groupsStore.isRunActive
   && groupsStore.topicReady
-  // A fresh send is refused while a previous prompt's outcome is unknown: the
-  // only way forward is replaying that prompt's frozen tuple.
+  // A Run already executing does not block sending: the backend queues the
+  // prompt behind the standing owner. Only an unknown prompt outcome does,
+  // because its frozen tuple is the sole safe way forward.
   && !groupsStore.hasUncertainPrompt);
 
 /** Final send guard: evaluated after any pending mention has been committed.
@@ -600,7 +631,7 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
 async function handleCancel(): Promise<void> {
   const run = groupsStore.activeRun;
   if (!run || groupsStore.cancellingRunId) return;
-  await groupsStore.cancelCurrentRun({ runId: run.id });
+  await groupsStore.stopCurrentAndQueued();
 }
 
 async function onPaste(e: ClipboardEvent): Promise<void> {
@@ -691,7 +722,7 @@ function handleRetry(): void {
         </button>
         <!-- One panel (unified §F): rows render in a slot (avatars + disabled notes);
              composer panels open upward. -->
-        <DropdownPanel :dd="targetDd" tone="surface" width="w-64" placement="top"
+        <DropdownPanel :dd="targetDd" width="w-64" placement="top"
                        :title='$t("group.target.sendTo")' test-id="group-target-menu"
                        :nav-count="navCount" @navigate="onNavSelect">
           <template #default="{ mobile }">
@@ -719,7 +750,7 @@ function handleRetry(): void {
               <Check v-if="isEveryone" :size="14" class="shrink-0 text-accent" />
             </button>
             <p class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ $t("group.target.selectMembers") }}</p>
-            <button v-for="b in props.bots" :key="b.id"
+            <button v-for="b in pickableBots" :key="b.id"
                     :data-test="`group-target-member-${b.id}`"
                     :aria-disabled="!!memberUnavailableReason(b)"
                     :title="memberUnavailableReason(b) ?? undefined"
@@ -748,10 +779,9 @@ function handleRetry(): void {
       :sending="groupsStore.promptInFlight"
       :cancelling="!!groupsStore.cancellingRunId"
       :send-disabled="!canSend"
-      :stop-while-busy="true"
       :has-attachments="readyMedia"
       :attachments-send-disabled="attachments.uploading"
-      :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : $t('group.prompt.placeholder')"
+      :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : isNarrow ? $t('group.prompt.placeholderShort') : $t('group.prompt.placeholder')"
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
       stop-test-id="group-stop-run-button"
@@ -764,7 +794,7 @@ function handleRetry(): void {
       @caret="onCaret"
       @compositionstart="composing = true"
       @compositionend="onCompositionEnd"
-      @blur="commitMentionAtBoundary"
+      @blur="onComposerBlur"
     >
       <template #attachments>
         <ComposerAttachments
@@ -781,56 +811,114 @@ function handleRetry(): void {
         />
       </template>
       <template #menus>
-        <div
-          v-if="slashHint"
-          data-test="group-slash-hint"
-          class="absolute bottom-full left-0 z-20 mb-2 w-full rounded-2xl bg-raised px-3 py-2 text-xs text-fg-muted shadow-float"
-        >
-          {{ $t("bot.errors.slashSelectMember") }}
-        </div>
-        <div
-          v-else-if="slashMatches.length > 0"
-          data-test="group-cmd-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
-        >
-          <button
-            v-for="(command, index) in slashMatches"
-            :key="command.name"
-            type="button"
-            data-test="group-cmd-item"
-            class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-            :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-            @mousedown.prevent="pickSlash(command.name)"
+      <!-- Below lg the selector is a bottom sheet (rows are finger-sized); at lg
+           the inline popovers above the composer stay exactly as they were. -->
+      <Teleport
+        v-if="isMobile && cmdMenuOpen"
+        to="body"
+      >
+        <MobileSheet :title="$t('bot.prompt.completions')" test-id="group-cmd-sheet" @close="closeCmdMenu">
+          <!-- The textarea keeps DOM focus while its list is open, so the sheet
+               must not move focus on mount: this is the sheet's initial-focus
+               target and is not focusable. -->
+          <span data-sheet-initial-focus aria-hidden="true" />
+          <div
+            v-if="slashHint"
+            data-test="group-slash-hint"
+            class="w-full rounded-2xl bg-raised px-3 py-2 text-xs text-fg-muted"
           >
-            <span class="font-medium text-fg">/{{ command.name }}</span>
-            <span v-if="command.description" class="truncate text-xs text-fg-muted">{{ command.description }}</span>
-          </button>
-        </div>
-        <div
-          v-if="mentionMatches.length > 0"
-          data-test="group-mention-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float"
+            {{ $t("bot.errors.slashSelectMember") }}
+          </div>
+          <div v-else-if="slashMatches.length > 0" data-test="group-cmd-menu" class="w-full">
+            <button
+              v-for="(command, index) in slashMatches"
+              :key="command.name"
+              type="button"
+              data-test="group-cmd-item"
+              class="flex min-h-[46px] w-full items-center gap-2 rounded-sm px-3 text-left text-sm"
+              :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
+              @pointerdown.prevent
+              @click="pickSlash(command.name)"
+            >
+              <span class="font-medium text-fg">/{{ command.name }}</span>
+              <span v-if="command.description" class="truncate text-xs text-fg-muted">{{ command.description }}</span>
+            </button>
+          </div>
+          <div v-if="mentionMatches.length > 0" data-test="group-mention-menu" class="w-full">
+            <button
+              v-for="(member, index) in mentionMatches"
+              :key="member.botId"
+              type="button"
+              data-test="group-mention-item"
+              :data-bot-id="member.botId"
+              :aria-disabled="!member.enabled"
+              :title="!member.enabled ? memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) ?? undefined : undefined"
+              class="flex min-h-[46px] w-full items-center gap-2 rounded-sm px-3 text-left text-sm"
+              :class="index === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
+              @pointerdown.prevent
+              @click="pickMention(member)"
+            >
+              <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
+              <span v-if="member.lead" class="shrink-0 text-xs text-accent">{{ $t("group.target.lead") }}</span>
+              <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
+              <span v-if="!member.enabled" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) }}</span>
+              <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
+            </button>
+          </div>
+        </MobileSheet>
+      </Teleport>
+
+      <!-- Desktop (>= lg): the inline popovers. -->
+      <div
+        v-if="!isMobile && slashHint"
+        data-test="group-slash-hint"
+        class="absolute bottom-full left-0 z-20 mb-2 w-full rounded-2xl bg-raised px-3 py-2 text-xs text-fg-muted shadow-float"
+      >
+        {{ $t("bot.errors.slashSelectMember") }}
+      </div>
+      <div
+        v-else-if="!isMobile && slashMatches.length > 0"
+        data-test="group-cmd-menu"
+        class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
+      >
+        <button
+          v-for="(command, index) in slashMatches"
+          :key="command.name"
+          type="button"
+          data-test="group-cmd-item"
+          class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+          :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
+          @mousedown.prevent="pickSlash(command.name)"
         >
-          <button
-            v-for="(member, index) in mentionMatches"
-            :key="member.botId"
-            type="button"
-            data-test="group-mention-item"
-            :data-bot-id="member.botId"
-            :aria-disabled="!member.enabled"
-            :title="!member.enabled ? memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) ?? undefined : undefined"
-            class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-            :class="index === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-            @pointerdown.prevent
-            @click="pickMention(member)"
-          >
-            <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
-            <span v-if="member.lead" class="shrink-0 text-xs text-accent">{{ $t("group.target.lead") }}</span>
-            <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
-            <span v-if="!member.enabled" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) }}</span>
-            <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
-          </button>
-        </div>
+          <span class="font-medium text-fg">/{{ command.name }}</span>
+          <span v-if="command.description" class="truncate text-xs text-fg-muted">{{ command.description }}</span>
+        </button>
+      </div>
+      <div
+        v-if="!isMobile && mentionMatches.length > 0"
+        data-test="group-mention-menu"
+        class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
+      >
+        <button
+          v-for="(member, index) in mentionMatches"
+          :key="member.botId"
+          type="button"
+          data-test="group-mention-item"
+          :data-bot-id="member.botId"
+          :aria-disabled="!member.enabled"
+          :title="!member.enabled ? memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) ?? undefined : undefined"
+          class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
+          :class="index === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
+          @pointerdown.prevent
+          @click="pickMention(member)"
+        >
+          <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
+          <span v-if="member.lead" class="shrink-0 text-xs text-accent">{{ $t("group.target.lead") }}</span>
+          <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
+          <span v-if="!member.enabled" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) }}</span>
+          <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
+        </button>
+      </div>
       </template>
     </ConversationComposer>
   </div>

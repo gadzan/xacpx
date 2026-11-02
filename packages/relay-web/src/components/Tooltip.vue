@@ -126,10 +126,10 @@ onBeforeUnmount(() => {
     <slot />
     <Teleport to="body">
       <span v-if="visible" ref="bubble" role="tooltip" data-test="tooltip" :data-placement="pos.side"
-            class="pointer-events-none fixed z-50 whitespace-nowrap rounded-sm bg-fg px-2 py-1 text-xs text-bg shadow-float"
+            class="pointer-events-none fixed z-50 max-w-[240px] rounded-sm bg-glass-strong px-2 py-1 text-xs leading-[18px] text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
             :style="{ left: `${pos.left}px`, top: `${pos.top}px` }">
         {{ props.text }}
-        <span class="absolute h-2 w-2 -translate-x-1/2 rotate-45 bg-fg"
+        <span class="absolute h-2 w-2 -translate-x-1/2 rotate-45 bg-glass-strong backdrop-blur-glass backdrop-saturate-glass"
               :class="pos.side === 'above' ? '-bottom-1' : '-top-1'"
               :style="{ left: pos.arrowLeft === null ? '50%' : `${pos.arrowLeft}px` }" />
       </span>

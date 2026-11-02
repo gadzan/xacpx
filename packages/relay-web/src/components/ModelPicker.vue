@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
+import { Check } from "lucide-vue-next";
 import type { AgentCapabilityState, CapabilityModel, SelectionEffect } from "@ganglion/xacpx-relay-protocol";
 import { classifySelection } from "@ganglion/xacpx-relay-protocol";
+import { useDropdown } from "../lib/use-dropdown";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 const props = withDefaults(defineProps<{
@@ -32,7 +34,24 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
-const open = ref(false);
+// The model field is a combobox: useDropdown owns the shared contract (outside
+// pointerdown and Esc close it, Escape returns focus to the field) exactly like
+// every other dropdown.
+const dd = useDropdown();
+// Esc returns focus to the trigger, and focus opens the list again — which
+// would make Esc a no-op. The close marks that focus as ours so the handler
+// below does not re-open on it.
+let focusIsReturn = false;
+const closeMenu = dd.closeMenu.bind(dd);
+dd.closeMenu = (options?: { focusTrigger?: boolean }) => {
+  focusIsReturn = true;
+  closeMenu(options);
+  focusIsReturn = false;
+};
+function onFocus(): void {
+  if (focusIsReturn) return;
+  dd.openMenu();
+}
 
 const settled = computed(() => props.state.status === "loading" ? undefined : props.state);
 const adapterModels = computed((): CapabilityModel[] => settled.value?.status === "ready" ? settled.value.models : []);
@@ -104,20 +123,14 @@ const canFetch = computed(() => {
 
 function pickModel(modelId: string): void {
   emit("update:model", modelId);
-  open.value = false;
+  dd.closeMenu();
 }
 function onCustom(event: Event): void {
   emit("update:model", (event.target as HTMLInputElement).value);
-  open.value = true;
+  dd.openMenu();
 }
 function onEffort(value: string): void {
   emit("update:effort", value);
-}
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key === "Escape" && open.value) {
-    event.stopPropagation();
-    open.value = false;
-  }
 }
 </script>
 
@@ -143,41 +156,55 @@ function onKeydown(event: KeyboardEvent): void {
         <label class="mb-1.5 block text-xs font-medium text-fg-muted" :for="modelTestId">{{ t("capability.model") }}</label>
         <input
           :id="modelTestId"
+          :ref="(el) => (dd.trigger = el as HTMLElement | null)"
           :data-test="modelTestId"
           :value="model"
           autocomplete="off"
+          :aria-haspopup="'listbox'"
+          :aria-expanded="dd.open"
           :placeholder="t('capability.defaultModel')"
           class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
-          @focus="open = true"
+          @focus="onFocus"
+          @click="dd.openMenu()"
           @input="onCustom"
-          @keydown="onKeydown"
         />
-        <ul v-if="open" :data-test="listTestId" class="absolute z-30 mt-1 max-h-80 w-full overflow-y-auto rounded-lg bg-surface p-1 shadow-float">
+        <ul v-if="dd.open" :data-test="listTestId" data-dd-panel
+            class="absolute z-30 mt-1 max-h-80 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
           <li>
-            <button type="button" data-test="model-picker-default" class="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-fg-muted hover:bg-surface-2" @mousedown.prevent="pickModel('')">
-              {{ t("capability.defaultModel") }}
+            <button type="button" data-test="model-picker-default"
+                    class="flex h-[30px] w-full items-center rounded-item px-2 text-left text-ui"
+                    :class="model === '' ? 'bg-fill-strong font-semibold text-fg' : 'text-fg-muted hover:bg-fill-hover'"
+                    @mousedown.prevent="pickModel('')">
+              <span class="min-w-0 flex-1 truncate">{{ t("capability.defaultModel") }}</span>
+              <Check v-if="model === ''" :size="16" class="shrink-0 text-accent-text" />
             </button>
           </li>
           <li v-for="entry in adapterModels" :key="entry.modelId">
             <button type="button"
                 data-test="model-option"
                 :data-model-id="entry.modelId"
-                class="flex min-h-8 w-full flex-col items-start justify-center rounded-sm px-2 py-1 text-left text-sm text-fg hover:bg-surface-2"
+                class="flex min-h-[30px] w-full flex-col items-start justify-center rounded-item px-2 py-1 text-left text-ui"
+                :class="entry.modelId === model ? 'bg-fill-strong font-semibold text-fg' : 'text-fg hover:bg-fill-hover'"
                 @mousedown.prevent="pickModel(entry.modelId)"
             >
-              <span class="block truncate">{{ entry.name }}</span>
-              <span v-if="entry.name !== entry.modelId" class="block truncate font-mono text-xs text-fg-muted">{{ entry.modelId }}</span>
+              <span class="flex w-full min-w-0 items-center gap-2">
+                <span class="min-w-0 flex-1 truncate">{{ entry.name }}</span>
+                <Check v-if="entry.modelId === model" :size="16" class="shrink-0 text-accent-text" />
+              </span>
+              <span v-if="entry.name !== entry.modelId" class="block w-full truncate font-mono text-xs text-fg-muted-overlay">{{ entry.modelId }}</span>
             </button>
           </li>
-          <li v-if="suggestions.length" class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ t("capability.suggestion") }}</li>
+          <li v-if="suggestions.length" class="px-2 pb-1 pt-2 text-xs text-fg-muted-overlay">{{ t("capability.suggestion") }}</li>
           <li v-for="entry in suggestions" :key="`suggestion:${entry.modelId}`">
             <button type="button"
                 data-test="model-suggestion"
                 :data-model-id="entry.modelId"
-                class="flex h-8 w-full items-center rounded-sm px-2 text-left font-mono text-ui text-fg hover:bg-surface-2"
+                class="flex h-[30px] w-full items-center gap-2 rounded-item px-2 text-left font-mono text-ui"
+                :class="entry.modelId === model ? 'bg-fill-strong font-semibold text-fg' : 'text-fg hover:bg-fill-hover'"
                 @mousedown.prevent="pickModel(entry.modelId)"
             >
-              {{ entry.modelId }}
+              <span class="min-w-0 flex-1 truncate">{{ entry.modelId }}</span>
+              <Check v-if="entry.modelId === model" :size="16" class="shrink-0 text-accent-text" />
             </button>
           </li>
         </ul>

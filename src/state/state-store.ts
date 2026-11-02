@@ -1003,6 +1003,12 @@ function parseBotRemovals(
       dropped.push({ section: "bot_removals", key: id, reason: "malformed bot removal record" });
       continue;
     }
+    // A completed removal is residue (the catalog never surfaces it), so the
+    // load boundary drops it the same way BotService converges state that
+    // bypassed this parse. In-flight phases stay as live barriers.
+    if (parsed.phase === "retired") {
+      continue;
+    }
     removals[id] = parsed;
   }
   return removals;

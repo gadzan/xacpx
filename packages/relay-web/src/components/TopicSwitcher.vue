@@ -144,29 +144,31 @@ async function submitRowConfirm(): Promise<void> {
 
     <!-- One panel (unified §F): popover on desktop, MobileSheet below lg. Rows are
          caller-rendered (status glyph, trailing ⋯, inline rename form). -->
-    <DropdownPanel :dd="dd" tone="surface" width="w-80" placement="bottom"
+    <DropdownPanel :dd="dd" width="w-80" placement="bottom"
                    :title='$t("mobileBar.switchTopic")' :test-id="'topic-panel'" :sheet-test-id="direct ? 'bot-topic-sheet' : 'group-topic-sheet'"
                    :searchable="topics.length > 7" :nav-count="visible.length"
                    v-model:query="query"
                    @navigate="(i) => selectTopic(visible[i]!)">
       <template #default="{ mobile }">
-        <p v-if="!visible.length" class="px-2 py-3 text-sm text-fg-muted">{{ $t("bot.topic.empty") }}</p>
+        <p v-if="!visible.length" class="px-2 py-3 text-sm text-fg-muted-overlay">{{ $t("bot.topic.empty") }}</p>
         <div v-for="(topic, i) in visible" :key="topic.id"
              data-test="topic-row" :data-topic-id="topic.id" :data-topic-status="topic.status"
              class="group/row">
           <div class="flex items-center gap-1 rounded-sm px-2 py-1.5 text-sm"
                :class="[mobile ? 'min-h-11' : 'h-8',
-                        topic.id === activeTopicId ? 'font-medium text-fg' : 'text-fg',
-                        topic.status === 'archived' ? 'text-fg-muted' : '',
+                        topic.id === activeTopicId
+                          ? mobile ? 'bg-accent-soft font-medium text-fg' : 'font-medium text-fg'
+                          : 'text-fg',
+                        topic.status === 'archived' ? 'text-fg-muted-overlay' : '',
                         !mobile && i === dd.highlight ? 'bg-surface-2' : '']">
             <button type="button" class="min-w-0 flex-1 truncate text-left" @click="selectTopic(topic)">
               {{ topic.title || $t("bot.topic.default") }}
             </button>
-            <Archive v-if="topic.status === 'archived'" :size="12" class="shrink-0 text-fg-muted" />
-            <RotateCcw v-if="topic.status === 'deleting'" :size="12" class="shrink-0 text-fg-muted" />
-            <Check v-if="topic.id === activeTopicId" :size="14" class="ml-auto shrink-0 text-accent" />
+            <Archive v-if="topic.status === 'archived'" :size="12" class="shrink-0 text-fg-muted-overlay" />
+            <RotateCcw v-if="topic.status === 'deleting'" :size="12" class="shrink-0 text-fg-muted-overlay" />
+            <Check v-if="topic.id === activeTopicId" :size="14" class="ml-auto shrink-0 text-accent-text" />
             <button type="button" data-test="topic-row-more" :aria-label="$t('common.more')"
-                    class="shrink-0 rounded-sm p-1 text-fg-muted transition-colors hover:bg-surface-2"
+                    class="shrink-0 rounded-sm p-1 text-fg-muted-overlay transition-colors hover:bg-fill-hover"
                     :class="[topic.id === activeTopicId ? '' : 'ml-auto',
                              mobile ? '' : 'opacity-0 group-hover/row:opacity-100',
                              i === dd.highlight && !mobile ? 'opacity-100' : '']"
@@ -177,9 +179,9 @@ async function submitRowConfirm(): Promise<void> {
             <button type="submit" data-test="topic-rename-save" class="rounded-sm bg-accent px-2 py-0.5 text-xs text-on-accent">{{ $t("bot.topic.save") }}</button>
           </form>
         </div>
-        <p v-if="actionError" data-test="topic-action-error" class="px-2 py-1 text-xs text-danger">{{ actionError }}</p>
+        <p v-if="actionError" data-test="topic-action-error" class="px-2 py-1 text-xs text-danger-overlay">{{ actionError }}</p>
         <button type="button" :data-test="direct ? 'new-topic-button' : 'group-new-topic-button'"
-                class="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm text-accent transition-colors hover:bg-surface-2"
+                class="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm text-accent-text-overlay transition-colors hover:bg-fill-hover"
                 :class="mobile ? 'min-h-11' : 'h-8'"
                 @click="createTopic"><Plus :size="14" class="shrink-0" /><span>{{ $t("bot.topic.new") }}</span></button>
       </template>
@@ -188,18 +190,18 @@ async function submitRowConfirm(): Promise<void> {
     <ContextMenu v-if="rowMenu" :x="rowMenu.x" :y="rowMenu.y" :items="rowMenuItems"
                  @select="onRowMenuSelect" @close="rowMenu = null" />
 
-    <div v-if="confirmKind" class="fixed inset-0 z-40 flex items-end justify-center bg-black/50 p-4 md:items-center" @click.self="navigateBack">
-      <div role="dialog" aria-modal="true" data-test="topic-confirm" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
-        <h3 class="text-sm font-semibold">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearTitle") : $t("bot.topic.confirmDeleteTitle") }}</h3>
-        <p class="mt-2 text-xs text-fg-muted">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearBody") : $t("bot.topic.confirmDeleteBody") }}</p>
-        <p v-if="(confirmImpact?.worktreeRunIds.length ?? 0) > 0" data-test="topic-worktree-warning" class="mt-2 text-xs text-danger">{{ $t("bot.topic.worktreeWarning") }}</p>
+    <div v-if="confirmKind" class="fixed inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
+      <div role="dialog" aria-modal="true" data-test="topic-confirm" class="w-full max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+        <h3 class="text-base font-semibold text-fg">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearTitle") : $t("bot.topic.confirmDeleteTitle") }}</h3>
+        <p class="mt-2 text-sm text-fg-muted-overlay">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearBody") : $t("bot.topic.confirmDeleteBody") }}</p>
+        <p v-if="(confirmImpact?.worktreeRunIds.length ?? 0) > 0" data-test="topic-worktree-warning" class="mt-2 text-xs text-danger-overlay">{{ $t("bot.topic.worktreeWarning") }}</p>
         <label v-if="(confirmImpact?.bindings.length ?? 0) > 0" class="mt-3 flex items-start gap-2 text-xs">
           <input v-model="releaseBindings" data-test="topic-release-bindings" type="checkbox" class="mt-0.5" />
           <span>{{ $t("bot.topic.confirmUnbind") }}</span>
         </label>
-        <p v-if="actionError" class="mt-2 text-xs text-danger">{{ actionError }}</p>
+        <p v-if="actionError" class="mt-2 text-xs text-danger-overlay">{{ actionError }}</p>
         <div class="mt-4 flex justify-end gap-2">
-          <button type="button" class="rounded-lg px-3 py-1.5 text-xs" @click="navigateBack">{{ $t("common.cancel") }}</button>
+          <button type="button" class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg transition-colors hover:bg-fill-hover" @click="navigateBack">{{ $t("common.cancel") }}</button>
           <button
             type="button"
             data-test="topic-confirm-submit"
@@ -212,10 +214,10 @@ async function submitRowConfirm(): Promise<void> {
         </div>
       </div>
     </div>
-    <div v-if="isolationTopic" class="fixed inset-0 z-40 flex items-end justify-center bg-black/50 p-4 md:items-center" @click.self="navigateBack">
-      <div role="dialog" aria-modal="true" data-test="topic-isolation" class="w-full max-w-sm rounded-2xl bg-surface p-4 shadow-float">
-        <h3 class="text-sm font-semibold">{{ $t("bot.topic.isolationTitle") }}</h3>
-        <p class="mt-2 text-xs text-fg-muted">{{ $t("bot.topic.isolationBody") }}</p>
+    <div v-if="isolationTopic" class="fixed inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
+      <div role="dialog" aria-modal="true" data-test="topic-isolation" class="w-full max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+        <h3 class="text-base font-semibold text-fg">{{ $t("bot.topic.isolationTitle") }}</h3>
+        <p class="mt-2 text-sm text-fg-muted-overlay">{{ $t("bot.topic.isolationBody") }}</p>
         <div class="mt-3 space-y-1" role="radiogroup" :aria-label="$t('bot.topic.isolationTitle')">
           <button
             v-for="option in isolationOptions"
@@ -228,15 +230,15 @@ async function submitRowConfirm(): Promise<void> {
             :disabled="isolationSaving"
             @click="chooseIsolation(option.value)"
           >
-            <Check :size="14" class="shrink-0 text-accent" :class="isolationTopic.executionTarget?.isolation === option.value ? '' : 'invisible'" />
+            <Check :size="14" class="shrink-0 text-accent-text-overlay" :class="isolationTopic.executionTarget?.isolation === option.value ? '' : 'invisible'" />
             <span class="min-w-0 flex-1">{{ $t(option.labelKey) }}</span>
           </button>
         </div>
-        <p v-if="isolationTopic.executionTarget?.isolation === 'worktree-per-member'" class="mt-2 text-xs text-fg-muted">{{ $t("group.worktree.boundary") }}</p>
-        <p class="mt-2 text-xs text-fg-muted">{{ $t("bot.topic.isolationHint") }}</p>
-        <p v-if="actionError" class="mt-2 text-xs text-danger">{{ actionError }}</p>
+        <p v-if="isolationTopic.executionTarget?.isolation === 'worktree-per-member'" class="mt-2 text-xs text-fg-muted-overlay">{{ $t("group.worktree.boundary") }}</p>
+        <p class="mt-2 text-xs text-fg-muted-overlay">{{ $t("bot.topic.isolationHint") }}</p>
+        <p v-if="actionError" class="mt-2 text-xs text-danger-overlay">{{ actionError }}</p>
         <div class="mt-4 flex justify-end gap-2">
-          <button type="button" class="rounded-lg px-3 py-1.5 text-xs" @click="navigateBack">{{ $t("common.cancel") }}</button>
+          <button type="button" class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg transition-colors hover:bg-fill-hover" @click="navigateBack">{{ $t("common.cancel") }}</button>
         </div>
       </div>
     </div>
