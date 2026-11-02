@@ -1166,7 +1166,10 @@ export const useChatStore = defineStore("chat", () => {
         // (it won the race), drop the optimistic row and keep the event one.
         const entryIndex = messages.value.indexOf(entry);
         if (entryIndex >= 0) messages.value.splice(entryIndex, 1);
-        if (!messages.value.some((message) => message.queueItemId === res.queueItemId)) {
+        if (!messages.value.some((message) => message.queueItemId === res.queueItemId)
+          && !queues.value[bufKey(id, alias)]?.some((item) => item.id === res.queueItemId)) {
+          // Neither the drain event nor the connector's queue-updated push has
+          // surfaced this item yet; the local chip is the last-resort fallback.
           queues.value[bufKey(id, alias)] = [
             ...(queues.value[bufKey(id, alias)] ?? []),
             { id: res.queueItemId, textPreview: text.slice(0, 120), enqueuedAt: new Date().toISOString() },
