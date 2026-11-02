@@ -201,11 +201,9 @@ export function processMatches(pid, needle) {
     if (result.error || result.status !== 0) return false;
     return (result.stdout ?? "").includes(needle);
   }
-  try {
-    return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(needle);
-  } catch {
-    return false;
-  }
+  const result = spawnSync("ps", ["-o", "command=", "-ww", "-p", String(pid)], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return false;
+  return (result.stdout ?? "").includes(needle);
 }
 
 async function waitFor(label, predicate, timeoutMs = STARTUP_TIMEOUT_MS) {
@@ -301,14 +299,19 @@ async function httpOk(url) {
   }
 }
 
-function portOwner(port) {
-  if (process.platform !== "win32") return null;
-  const result = spawnSync(
-    "powershell",
-    ["-NoProfile", "-Command", `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)`],
-    { encoding: "utf8" },
-  );
-  const pid = Number((result.stdout ?? "").trim());
+export function portOwner(port) {
+  if (process.platform === "win32") {
+    const result = spawnSync(
+      "powershell",
+      ["-NoProfile", "-Command", `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)`],
+      { encoding: "utf8" },
+    );
+    const pid = Number((result.stdout ?? "").trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  }
+  const result = spawnSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return null;
+  const pid = Number((result.stdout ?? "").split(/\s+/).filter(Boolean)[0]);
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
@@ -317,17 +320,26 @@ function portOwner(port) {
  * teardown left nothing behind, and to find a stack the manifest forgot.
  */
 export function sweepProcesses(needle) {
-  if (process.platform !== "win32") return [];
-  const result = spawnSync(
-    "powershell",
-    ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${needle}*' } | Select-Object -ExpandProperty ProcessId`],
-    { encoding: "utf8" },
-  );
+  if (process.platform === "win32") {
+    const result = spawnSync(
+      "powershell",
+      ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${needle}*' } | Select-Object -ExpandProperty ProcessId`],
+      { encoding: "utf8" },
+    );
+    if (result.error || result.status !== 0) return [];
+    return (result.stdout ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(Number)
+      .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+  }
+  const result = spawnSync("ps", ["-eo", "pid=,command=", "-ww"], { encoding: "utf8" });
   if (result.error || result.status !== 0) return [];
   return (result.stdout ?? "")
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(Number)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes(needle))
+    .map((line) => Number(line.split(/\s+/)[0]))
     .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
 }
 
