@@ -291,10 +291,12 @@ function onInput(event: Event): void {
 
       <!-- The fold animates max-height/opacity/visibility instead of v-show: a
            display:none toggle is what made focus look instant. visibility keeps the
-           hidden controls unfocusable while still transitioning. -->
+           hidden controls unfocusable while still transitioning. overflow-hidden
+           belongs to the COLLAPSED state only: the chip dropdowns open upward out
+           of this row, and a persistent clip would hide their panels entirely. -->
       <div v-if="hasAffordances" data-test="composer-affordances"
-           class="flex items-center gap-2 overflow-hidden px-2.5 transition-[max-height,opacity,padding,visibility] duration-200 ease-out motion-reduce:transition-none"
-           :class="expanded ? 'visible max-h-16 opacity-100 pb-2 pt-0.5' : 'invisible max-h-0 opacity-0 pb-0 pt-0'">
+           class="flex items-center gap-2 px-2.5 transition-[max-height,opacity,padding,visibility] duration-200 ease-out motion-reduce:transition-none"
+           :class="expanded ? 'visible max-h-16 opacity-100 pb-2 pt-0.5' : 'invisible max-h-0 opacity-0 pb-0 pt-0 overflow-hidden'">
         <div data-test="composer-controls" class="flex min-w-0 flex-1 items-center gap-2">
           <slot name="controls" />
         </div>
