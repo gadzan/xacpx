@@ -179,6 +179,14 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
         } });
         return;
       }
+      if (type === "control.session.model.get") {
+        json(res, 200, { result: { current: "e2e-model", available: ["e2e-model", "e2e-model-mini"] } });
+        return;
+      }
+      if (type === "control.session.effort.get") {
+        json(res, 200, { result: { current: "medium", available: ["low", "medium", "high"] } });
+        return;
+      }
       json(res, 200, { result: {} });
       return;
     }
