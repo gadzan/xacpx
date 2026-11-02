@@ -7,6 +7,7 @@ import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 const disconnect = vi.fn();
 vi.mock("../api/events", () => ({
   connectEvents: () => disconnect,
+  subscribeWebEvents: () => () => {},
   sendSubscribe: vi.fn(),
   sendWebClientMessage: vi.fn(),
   isRetryableTerminalError: (code: string) =>

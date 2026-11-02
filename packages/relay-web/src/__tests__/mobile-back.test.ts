@@ -11,6 +11,7 @@ vi.mock("../api/events", () => ({
     captured.onStatus = onStatus;
     return disconnect;
   },
+  subscribeWebEvents: () => () => {},
   sendSubscribe: vi.fn(),
   sendWebClientMessage: vi.fn(),
   isRetryableTerminalError: () => false,

@@ -6,6 +6,7 @@ import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-proto
 // The WS client is stubbed so jsdom needs no real socket.
 vi.mock("../api/events", () => ({
   connectEvents: () => () => {},
+  subscribeWebEvents: () => () => {},
   sendSubscribe: vi.fn(),
   sendWebClientMessage: vi.fn(),
   isRetryableTerminalError: () => false,

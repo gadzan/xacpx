@@ -604,6 +604,11 @@ export class ControlService {
   private readonly turnQueue: TurnQueue;
   private readonly workspaceGit: WorkspaceGit;
   private readonly sessionConfigSetTails = new Map<string, Promise<void>>();
+  /** Monotonic per-session model-selection generation; background reconciliation only
+   *  persists while it still owns the newest user selection. */
+  private readonly modelMutationGenerations = new Map<string, number>();
+  /** Fire-and-forget maintenance (timeout reconciliation) awaited by tests/shutdown. */
+  private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
   private readonly botWorkspaceMutex = new AsyncMutex();
   private conversationRuntime: ConversationRuntime | undefined;
@@ -976,7 +981,7 @@ export class ControlService {
     alias: string,
     modelId: string,
     options: ModelSetRequestOptions = {},
-  ): Promise<{ current?: string; applied: boolean }> {
+  ): Promise<{ current?: string; applied: boolean; pending?: boolean }> {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) throw new Error("session not found");
     const setModel = this.deps.transport.setModel?.bind(this.deps.transport);
@@ -993,46 +998,28 @@ export class ControlService {
           "model switch deadline is too close to safely start the queued operation",
         );
       }
+      const mutationGeneration = this.nextModelMutationGeneration(
+        session.alias,
+      );
       try {
         await setModel(session, modelId);
       } catch (error) {
         // A process timeout is ambiguous: acpx may have applied the model before it
-        // stopped responding. Read back the authoritative transport state so the
-        // persisted logical session and relay-web's optimistic chip cannot diverge.
+        // stopped responding. Reconciling inline would spend a second full timeout
+        // budget on an already-slow request, so report the ambiguity immediately and
+        // adopt the authoritative transport state in the background.
         if (
           !isCommandTimeoutError(error) ||
           !this.deps.transport.getSessionModel
         )
           throw error;
-        let observed: { current?: string; available: string[] };
-        try {
-          observed = await this.deps.transport.getSessionModel(session);
-        } catch {
-          // Preserve the original timeout; reconciliation is best-effort diagnostics.
-          throw error;
-        }
-        await this.deps.sessions.setSessionModel(
-          session.alias,
-          observed.current,
+        this.scheduleModelTimeoutReconcile(
+          session,
+          modelId,
+          mutationGeneration,
+          error,
         );
-        try {
-          await this.deps.logger?.error(
-            "control.session.model.timeout_reconciled",
-            "Model switch timed out; adopted authoritative transport state",
-            {
-              sessionAlias: session.alias,
-              requestedModel: modelId,
-              observedModel: observed.current ?? null,
-              timeout: error instanceof Error ? error.message : String(error),
-            },
-          );
-        } catch {
-          // Logging is diagnostic only; reconciliation already succeeded.
-        }
-        return {
-          current: observed.current,
-          applied: observed.current === modelId,
-        };
+        return { current: undefined, applied: false, pending: true };
       }
       await this.deps.sessions.setSessionModel(session.alias, modelId);
       return { current: modelId, applied: true };
@@ -1160,6 +1147,149 @@ export class ControlService {
       if (this.sessionConfigSetTails.get(sessionAlias) === tail) {
         this.sessionConfigSetTails.delete(sessionAlias);
       }
+    }
+  }
+
+  private nextModelMutationGeneration(sessionAlias: string): number {
+    const next = (this.modelMutationGenerations.get(sessionAlias) ?? 0) + 1;
+    this.modelMutationGenerations.set(sessionAlias, next);
+    return next;
+  }
+
+  /** Adopt the authoritative transport model after a timed-out switch, off the
+   *  request path. A newer user selection supersedes this reconciliation, and a
+   *  read failure keeps the last persisted value untouched. */
+  private scheduleModelTimeoutReconcile(
+    session: ResolvedSession,
+    requestedModel: string,
+    mutationGeneration: number,
+    timeoutError: unknown,
+  ): void {
+    const task = this.reconcileModelAfterTimeout(
+      session,
+      requestedModel,
+      mutationGeneration,
+      timeoutError,
+    ).catch(() => {});
+    this.backgroundTasks.add(task);
+    void task.finally(() => {
+      this.backgroundTasks.delete(task);
+    });
+  }
+
+  private async reconcileModelAfterTimeout(
+    session: ResolvedSession,
+    requestedModel: string,
+    mutationGeneration: number,
+    timeoutError: unknown,
+  ): Promise<void> {
+    const getSessionModel = this.deps.transport.getSessionModel?.bind(
+      this.deps.transport,
+    );
+    if (!getSessionModel) return;
+    const baseFields = {
+      sessionAlias: session.alias,
+      requestedModel,
+      timeout:
+        timeoutError instanceof Error ? timeoutError.message : String(timeoutError),
+    };
+    let observed: { current?: string; available: string[] };
+    try {
+      // `refresh` bypasses any runtime metadata cache: this read must reflect the
+      // transport's real state after the timeout, not a stale snapshot.
+      observed = await getSessionModel(session, { refresh: true });
+    } catch (error) {
+      await this.logModelTimeoutReconcile("failed", {
+        ...baseFields,
+        observedModel: null,
+        reconcileError: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (!this.ownsModelSelection(session.alias, mutationGeneration)) {
+      await this.logModelTimeoutReconcile("superseded", {
+        ...baseFields,
+        observedModel: observed.current ?? null,
+      });
+      return;
+    }
+    if (!observed.current) {
+      // Session persistence reads an empty model as "forget the saved model", so
+      // an untrustworthy empty read must never reach it: keep what is stored.
+      await this.logModelTimeoutReconcile("failed", {
+        ...baseFields,
+        observedModel: null,
+        reason: "empty-current",
+      });
+      return;
+    }
+    // Re-check inside the per-session queue so a switch that started while the
+    // authoritative read was in flight still wins.
+    await this.runSessionConfigSetExclusive(session.alias, async () => {
+      if (!this.ownsModelSelection(session.alias, mutationGeneration)) {
+        await this.logModelTimeoutReconcile("superseded", {
+          ...baseFields,
+          observedModel: observed.current ?? null,
+        });
+        return;
+      }
+      try {
+        await this.deps.sessions.setSessionModel(
+          session.alias,
+          observed.current,
+        );
+      } catch (error) {
+        await this.logModelTimeoutReconcile("failed", {
+          ...baseFields,
+          observedModel: observed.current ?? null,
+          reconcileError: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+      await this.logModelTimeoutReconcile("reconciled", {
+        ...baseFields,
+        observedModel: observed.current ?? null,
+      });
+      try {
+        this.deps.events.emit({ type: "sessions-changed" });
+      } catch {
+        // Event fan-out is best-effort; persistence already succeeded.
+      }
+    });
+  }
+
+  private ownsModelSelection(
+    sessionAlias: string,
+    mutationGeneration: number,
+  ): boolean {
+    return (
+      this.modelMutationGenerations.get(sessionAlias) ?? 0
+    ) === mutationGeneration;
+  }
+
+  private async logModelTimeoutReconcile(
+    outcome: "reconciled" | "superseded" | "failed",
+    fields: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.deps.logger?.error(
+        "control.session.model.timeout_reconciled",
+        outcome === "reconciled"
+          ? "Model switch timed out; adopted authoritative transport state"
+          : outcome === "superseded"
+            ? "Model switch timed out; reconciliation skipped because a newer selection won"
+            : "Model switch timed out; background reconciliation did not persist",
+        { ...fields, outcome },
+      );
+    } catch {
+      // Logging is diagnostic only.
+    }
+  }
+
+  /** Await in-flight background maintenance (timeout reconciliation). */
+  async whenBackgroundIdle(): Promise<void> {
+    while (this.backgroundTasks.size > 0) {
+      await Promise.all([...this.backgroundTasks]);
     }
   }
 

@@ -1307,6 +1307,9 @@ export interface SessionModelSetResult {
   ok: boolean;
   /** Authoritative transport model after timeout reconciliation, if known. */
   current?: string | null;
+  /** The write timed out and the daemon is reconciling in the background; the
+   *  requested model is not confirmed yet. Clients should not report failure. */
+  pending?: boolean;
 }
 
 export interface SessionModelResult {

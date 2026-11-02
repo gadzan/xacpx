@@ -6,6 +6,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 // Stub the WS client so jsdom needs no real socket.
 vi.mock("../api/events", () => ({
   connectEvents: () => vi.fn(),
+  subscribeWebEvents: () => () => {},
   sendWebClientMessage: vi.fn(),
   sendSubscribe: vi.fn(),
   isRetryableTerminalError: (code: string) =>

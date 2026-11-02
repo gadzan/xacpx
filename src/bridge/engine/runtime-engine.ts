@@ -57,6 +57,22 @@ function isEnoent(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && (err as { code?: unknown }).code === "ENOENT";
 }
 
+/** Model/effort metadata is cheap to re-read but expensive to wait for: a runtime
+ *  worker `status` can queue behind a cold supervisor handshake (~60s) or a stale
+ *  fence discharge. Reads therefore serve this cache and refresh off-path. */
+const SESSION_METADATA_TTL_MS = 60_000;
+
+interface SessionMetadataSnapshot {
+  /** Worker whose lifecycle the snapshot belongs to; any rotation invalidates it. */
+  client: RuntimeWorkerClient;
+  model?: string;
+  availableModels?: string[];
+  effort?: string;
+  availableEfforts?: string[];
+  /** Epoch ms; 0 marks a snapshot that must be re-read before it is trusted as fresh. */
+  refreshedAt: number;
+}
+
 export type RecordLookupResult =
   | { kind: "found"; recordId: string }
   | { kind: "absent" }
@@ -501,7 +517,7 @@ export class RuntimeEngine implements BridgeEngine {
   private hasAnyActiveTurn(): boolean { for (const v of this.activeTurns.values()) if (v > 0) return true; return false; }
   private hasAnyBusinessOp(): boolean { for (const v of this.inFlightBusinessOps.values()) if (v > 0) return true; return false; }
   private incActiveTurn(key: string): void { this.activeTurns.set(key, (this.activeTurns.get(key) ?? 0) + 1); }
-  private decActiveTurn(key: string): void { const n = (this.activeTurns.get(key) ?? 0) - 1; if (n <= 0) this.activeTurns.delete(key); else this.activeTurns.set(key, n); }
+  private decActiveTurn(key: string): void { const n = (this.activeTurns.get(key) ?? 0) - 1; if (n <= 0) { this.activeTurns.delete(key); this.markSessionMetadataStale(key); } else this.activeTurns.set(key, n); }
   private incBusinessOp(key: string): void { this.inFlightBusinessOps.set(key, (this.inFlightBusinessOps.get(key) ?? 0) + 1); }
   private decBusinessOp(key: string): void { const n = (this.inFlightBusinessOps.get(key) ?? 0) - 1; if (n <= 0) this.inFlightBusinessOps.delete(key); else this.inFlightBusinessOps.set(key, n); }
   private clearActiveTurn(key: string): void { this.activeTurns.delete(key); }
@@ -666,6 +682,9 @@ export class RuntimeEngine implements BridgeEngine {
   private readonly recordIds = new Map<string, string>();
   private readonly recoveringModels = new Set<string>();
   private readonly physicalBusinessOps = new Map<string, number>();
+  /** Per-session model/effort snapshots served without touching the worker. */
+  private readonly sessionMetadataCache = new Map<string, SessionMetadataSnapshot>();
+  private readonly sessionMetadataRefreshing = new Set<string>();
 
   private assertModelRecoveryIdle(input: EngineSessionInput): void {
     if (this.recoveringModels.has(this.physicalFenceKeyForInput(input))) {
@@ -2045,14 +2064,18 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async setModel(input: EngineSessionInput & { modelId: string }) {
+    const sessionKey = this.workerKey(input);
     await this.withWorker(input, async (client, agentProcessEnv) => {
       try {
         await this.ensureSessionHandle(input, client, agentProcessEnv);
         await client.request("setConfigOption", { key: "model", value: input.modelId });
       } catch (error) {
+        // Failed (often timed-out) mutation: authoritative value is unknown.
+        this.markSessionMetadataStale(sessionKey);
         if (!modelRestoreFailure(error) || !resolveOmpRecoveryLaunch(input)) throw error;
         await this.recoverNativeModelRestore(input, error, agentProcessEnv);
       }
+      this.patchSessionMetadata(sessionKey, { model: input.modelId });
       return {};
     });
     return {};
@@ -2188,14 +2211,22 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }> {
-    return await this.withWorker(input, async (client, agentProcessEnv) => {
-      await this.ensureSessionHandle(input, client, agentProcessEnv);
-      const status = (await client.request<{ models?: { currentModelId?: string; availableModelIds: string[] } }>("status")) ?? {};
-      return {
-        current: status.models?.currentModelId,
-        available: status.models?.availableModelIds ?? [],
-      };
-    });
+    if (input.refresh) {
+      const snapshot = await this.readSessionMetadata(input);
+      return { current: snapshot.model, available: snapshot.availableModels ?? [] };
+    }
+    const cached = this.liveSessionMetadata(this.workerKey(input));
+    if (cached) {
+      if (Date.now() - cached.refreshedAt >= SESSION_METADATA_TTL_MS) {
+        this.refreshSessionMetadataInBackground(input);
+      }
+      return { current: cached.model, available: cached.availableModels ?? [] };
+    }
+    // No snapshot yet: never block the read on a cold worker handshake. Kick a
+    // background refresh and report "unknown" so the caller can render a
+    // pending/unknown state instead of a 45s timeout.
+    this.refreshSessionMetadataInBackground(input);
+    return { available: [] };
   }
 
   async setSessionEffort(input: EngineSessionInput & { effort: string }): Promise<Record<string, never>> {
@@ -2203,33 +2234,138 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   private async applyConfigOption(input: EngineSessionInput, key: string, value: string): Promise<Record<string, never>> {
+    const sessionKey = this.workerKey(input);
     await this.withWorker(input, async (client, agentProcessEnv) => {
-      await this.ensureSessionHandle(input, client, agentProcessEnv);
-      await client.request("setConfigOption", { key, value });
+      try {
+        await this.ensureSessionHandle(input, client, agentProcessEnv);
+        await client.request("setConfigOption", { key, value });
+      } catch (error) {
+        // A failed mutation leaves the authoritative value unknown.
+        this.markSessionMetadataStale(sessionKey);
+        throw error;
+      }
+      if (key === "effort") this.patchSessionMetadata(sessionKey, { effort: value });
       return {};
     });
     return {};
   }
 
   async getSessionEffort(input: EngineSessionInput): Promise<SessionEffortState> {
+    if (input.refresh) {
+      const snapshot = await this.readSessionMetadata(input);
+      return { current: snapshot.effort, available: snapshot.availableEfforts ?? [] };
+    }
+    const cached = this.liveSessionMetadata(this.workerKey(input));
+    if (cached) {
+      if (Date.now() - cached.refreshedAt >= SESSION_METADATA_TTL_MS) {
+        this.refreshSessionMetadataInBackground(input);
+      }
+      return { current: cached.effort, available: cached.availableEfforts ?? [] };
+    }
+    this.refreshSessionMetadataInBackground(input);
+    return { available: [] };
+  }
+
+  /** Direct worker read: ensure + status, then replace the cached snapshot.
+   *  Public acpx Runtime exposes config options via status.details.configOptions
+   *  (same shape as the CLI record's acpx.config_options) — reuse the shared
+   *  CLI effort resolver instead of a fabricated top-level field. */
+  private async readSessionMetadata(input: EngineSessionInput): Promise<SessionMetadataSnapshot> {
+    const sessionKey = this.workerKey(input);
     return await this.withWorker(input, async (client, agentProcessEnv) => {
       await this.ensureSessionHandle(input, client, agentProcessEnv);
-      // Public acpx Runtime exposes config options via status.details.configOptions
-      // (same shape as the CLI record's acpx.config_options) — reuse the shared
-      // CLI effort resolver instead of a fabricated top-level field.
       const status = (await client.request<{
         details?: { configOptions?: unknown };
         models?: { currentModelId?: string; availableModelIds?: string[] };
       }>("status")) ?? {};
-      const rawConfig = JSON.stringify({
-        acpx: { config_options: status.details?.configOptions ?? [] },
-      });
-      const parsed = parseSessionEffortRecord(rawConfig);
-      return {
-        current: parsed?.current,
-        available: parsed?.available ?? [],
+      const parsed = parseSessionEffortRecord(
+        JSON.stringify({ acpx: { config_options: status.details?.configOptions ?? [] } }),
+      );
+      const snapshot: SessionMetadataSnapshot = {
+        client,
+        ...(status.models?.currentModelId !== undefined ? { model: status.models.currentModelId } : {}),
+        availableModels: status.models?.availableModelIds ?? [],
+        ...(parsed?.current !== undefined ? { effort: parsed.current } : {}),
+        availableEfforts: parsed?.available ?? [],
+        refreshedAt: Date.now(),
       };
+      this.sessionMetadataCache.set(sessionKey, snapshot);
+      return snapshot;
     });
+  }
+
+  /** Fire-and-forget refresh used by cache hits (TTL expiry) and cache misses. */
+  private refreshSessionMetadataInBackground(input: EngineSessionInput): void {
+    const sessionKey = this.workerKey(input);
+    if (this.sessionMetadataRefreshing.has(sessionKey)) return;
+    this.sessionMetadataRefreshing.add(sessionKey);
+    const task = (async () => {
+      try {
+        const snapshot = await this.readSessionMetadata(input);
+        if (!this.isLiveWorkerClient(sessionKey, snapshot.client)) {
+          this.sessionMetadataCache.delete(sessionKey);
+        }
+      } catch {
+        // Metadata refresh is best-effort; a slow or failed worker must never
+        // surface on a read request.
+      } finally {
+        this.sessionMetadataRefreshing.delete(sessionKey);
+      }
+    })();
+    void task;
+  }
+
+  /** Cached snapshot that still belongs to the session's current live worker. */
+  private liveSessionMetadata(sessionKey: string): SessionMetadataSnapshot | undefined {
+    const entry = this.sessionMetadataCache.get(sessionKey);
+    if (!entry) return undefined;
+    if (!this.isLiveWorkerClient(sessionKey, entry.client)) {
+      this.sessionMetadataCache.delete(sessionKey);
+      return undefined;
+    }
+    return entry;
+  }
+
+  private isLiveWorkerClient(sessionKey: string, client: RuntimeWorkerClient): boolean {
+    return (
+      this.manager?.get(sessionKey) === client &&
+      client.alive &&
+      client.lifecycle !== "failed" &&
+      client.lifecycle !== "stopped" &&
+      client.lifecycle !== "cooling"
+    );
+  }
+
+  /** Merge known fields into the snapshot; keeps the previous catalog when omitted. */
+  private patchSessionMetadata(
+    sessionKey: string,
+    patch: { model?: string; effort?: string },
+  ): void {
+    const client = this.manager?.get(sessionKey);
+    if (!client || !this.isLiveWorkerClient(sessionKey, client)) {
+      // The worker rotated; a stale snapshot would describe the wrong process.
+      this.sessionMetadataCache.delete(sessionKey);
+      return;
+    }
+    const previous =
+      this.sessionMetadataCache.get(sessionKey)?.client === client
+        ? this.sessionMetadataCache.get(sessionKey)
+        : undefined;
+    this.sessionMetadataCache.set(sessionKey, {
+      client,
+      ...(patch.model !== undefined ? { model: patch.model } : previous?.model !== undefined ? { model: previous.model } : {}),
+      ...(previous?.availableModels !== undefined ? { availableModels: previous.availableModels } : {}),
+      ...(patch.effort !== undefined ? { effort: patch.effort } : previous?.effort !== undefined ? { effort: previous.effort } : {}),
+      ...(previous?.availableEfforts !== undefined ? { availableEfforts: previous.availableEfforts } : {}),
+      refreshedAt: previous?.refreshedAt ?? 0,
+    });
+  }
+
+  /** Keep the last known values for immediate reads but require a re-read. */
+  private markSessionMetadataStale(sessionKey: string): void {
+    const entry = this.liveSessionMetadata(sessionKey);
+    if (!entry) return;
+    this.sessionMetadataCache.set(sessionKey, { ...entry, refreshedAt: 0 });
   }
   async cancel(input: EngineSessionInput): Promise<{ cancelled: boolean; message: string }> {
     // Admission gate: wait for any in-flight policy transition (plan §32)
@@ -2264,6 +2400,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    this.sessionMetadataCache.delete(key);
     const physicalFenceKey = this.physicalFenceKeyForInput(input);
     try {
       await this.waitForAcquiringQuiescence(key);
@@ -2334,6 +2471,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    this.sessionMetadataCache.delete(key);
     const physicalFenceKey = this.physicalFenceKeyForInput(input);
     try {
       // PR6: mark deleting so new enqueue is rejected (lifecycle boundary) — inside try so finally always clears
@@ -2592,6 +2730,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   async freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>> {
     const key = this.workerKey(input);
+    this.sessionMetadataCache.delete(key);
     this.sessionCatalog.set(key, input);
     const timer = this.idleTimers.get(key);
     if (timer) {

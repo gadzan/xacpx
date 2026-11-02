@@ -18,6 +18,7 @@ vi.mock("../api/events", () => ({
     captured.onStatus = onStatus;
     return disconnect;
   },
+  subscribeWebEvents: () => () => {},
   sendSubscribe,
   isRetryableTerminalError: (code: string) =>
     code === "instance-offline" || code === "events-offline"

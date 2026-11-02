@@ -67,6 +67,7 @@ it("shows a model-switch failure through the global toast instead of beside the 
   await flush();
 
   expect(w.find('[data-test="model-error"]').exists()).toBe(false);
+  expect(w.find('[data-test="model-diagnostic"]').exists()).toBe(false);
   expect(useToasts().value[0]).toMatchObject({ tone: "error", key: "chat.modelSetFailed" });
   log.mockRestore();
 });

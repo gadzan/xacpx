@@ -7,6 +7,7 @@ import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-proto
 
 vi.mock("../api/events", () => ({
   connectEvents: () => () => {},
+  subscribeWebEvents: () => () => {},
   sendSubscribe: vi.fn(),
   sendWebClientMessage: vi.fn(),
   isRetryableTerminalError: () => false,

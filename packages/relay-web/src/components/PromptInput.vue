@@ -777,8 +777,6 @@ function onKeydown(e: KeyboardEvent) {
     @drop.prevent="onDrop"
     @dragover.prevent
   >
-    <p v-if="controls.modelError" data-test="model-diagnostic"
-       class="mb-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ $t('chat.modelControlFailed', { detail: controls.modelError }) }}</p>
     <!-- hidden file picker -->
     <input
       ref="fileInput"
