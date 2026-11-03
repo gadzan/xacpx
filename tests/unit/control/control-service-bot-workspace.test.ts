@@ -62,6 +62,8 @@ async function wire(options?: {
   createWorkspace?: () => Promise<never>;
   failPersist?: boolean;
   takeoverCwd?: string;
+  /** Mimic ConfigStore loading workspaces with normalized separators. */
+  registryCwd?: (cwd: string) => string;
   removeWorkspace?: (name: string) => Promise<never>;
   logger?: { error: (event: string, message: string, context?: Record<string, unknown>) => Promise<void> };
 }) {
@@ -78,12 +80,13 @@ async function wire(options?: {
     stateMutex,
   });
   const events = createControlEventBus();
+  const registryCwd = options?.registryCwd ?? ((cwd: string) => cwd);
   const registry = {
-    list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace })),
+    list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace, cwd: registryCwd(workspace.cwd) })),
     create: options?.createWorkspace ?? (async (name: string, cwd: string, description?: string, createOptions?: { dedicated?: boolean }) => {
       const registered = options?.takeoverCwd ?? cwd;
       config.workspaces[name] = { cwd: registered, ...(description ? { description } : {}), ...(createOptions?.dedicated ? { dedicated: true } : {}) };
-      return { name, cwd: registered, ...(description ? { description } : {}), ...(createOptions?.dedicated ? { dedicated: true } : {}) };
+      return { name, cwd: registryCwd(registered), ...(description ? { description } : {}), ...(createOptions?.dedicated ? { dedicated: true } : {}) };
     }),
     remove: options?.removeWorkspace ?? (async (name: string) => {
       delete config.workspaces[name];
@@ -734,6 +737,25 @@ test("a retried removal whose operation froze the flag off keeps the workspace",
   expect(retried.operation.workspaceCleanup).toBeUndefined();
   expect(existsSync(dir)).toBe(true);
   expect(w.config.workspaces["Reviewer"]).toMatchObject({ dedicated: true });
+});
+
+test("a dedicated workspace whose registry entry uses normalized separators still cleans up", async () => {
+  // ConfigStore loads workspaces through normalizePath (forward slashes) while
+  // the marker keeps the native path the allocator built. The preview the
+  // dialog reads and the removal must share one predicate.
+  const w = await wire({ registryCwd: (cwd) => cwd.replace(/\\/g, "/") });
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  const dir = join(w.botsHome, "Reviewer");
+  expect((await w.control.previewBotRemoval(bot.id)).dedicatedWorkspace).toEqual({
+    name: "Reviewer",
+    path: dir,
+    inUse: false,
+  });
+
+  const { operation } = await removeBot(w, bot.id, "rm-normalized", { deleteDedicatedWorkspace: true });
+  expect(operation.workspaceCleanup).toEqual({ outcome: "deleted", path: dir });
+  expect(existsSync(dir)).toBe(false);
+  expect(w.config.workspaces["Reviewer"]).toBeUndefined();
 });
 
 test("a dedicated workspace is marked dedicated and hidden from listWorkspaces", async () => {
