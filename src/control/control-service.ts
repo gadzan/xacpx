@@ -590,13 +590,9 @@ function toLifecycleOperationDto(operation: LifecycleOperation): LifecycleOperat
       ? {
         clearDirectHistory: operation.params.clearDirectHistory,
         releaseDirectBindings: operation.params.releaseDirectBindings,
-        params: {
-          clearDirectHistory: operation.params.clearDirectHistory,
-          releaseDirectBindings: operation.params.releaseDirectBindings,
-          ...(operation.params.deleteDedicatedWorkspace !== undefined
-            ? { deleteDedicatedWorkspace: operation.params.deleteDedicatedWorkspace }
-            : {}),
-        },
+        ...(operation.params.deleteDedicatedWorkspace !== undefined
+          ? { deleteDedicatedWorkspace: operation.params.deleteDedicatedWorkspace }
+          : {}),
       }
       : {}),
     ...(operation.workspaceCleanup ? { workspaceCleanup: operation.workspaceCleanup } : {}),

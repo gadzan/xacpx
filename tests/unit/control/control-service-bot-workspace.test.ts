@@ -713,9 +713,9 @@ test("a retried removal honours the delete flag frozen on the operation", async 
     previewRevision: impact.revision,
     deleteDedicatedWorkspace: false,
   });
-  // The client seeds its controls from this, so the mapping has to carry the
+  // The client seeds its controls from these, so the mapping has to carry the
   // frozen decision and not just the live request.
-  expect(retried.operation.params).toEqual({
+  expect(retried.operation).toMatchObject({
     clearDirectHistory: false,
     releaseDirectBindings: false,
     deleteDedicatedWorkspace: true,
@@ -746,9 +746,9 @@ test("a retried removal whose operation froze the flag off keeps the workspace",
     previewRevision: impact.revision,
     deleteDedicatedWorkspace: true,
   });
-  // Explicit `false` must reach the client too: `??` keeps it over a live
+  // Explicit `false` must reach the client too: seeding keeps it over a live
   // `true`, which is the whole point of freezing.
-  expect(retried.operation.params).toEqual({
+  expect(retried.operation).toMatchObject({
     clearDirectHistory: false,
     releaseDirectBindings: false,
     deleteDedicatedWorkspace: false,
