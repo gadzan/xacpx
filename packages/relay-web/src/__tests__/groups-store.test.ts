@@ -272,6 +272,65 @@ describe("useGroupsStore", () => {
     expect(store.currentTopic?.status).toBe("active");
   });
 
+  it("lists currentTopics newest-first and lands on the Topic that owns an executing Run", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        // The backend contract is createdAt ascending: the store must present
+        // the reverse order without touching the raw cache.
+        return { topics: [
+          { id: "topic_old", conversationId: "conversation_g", title: "Old", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_new", conversationId: "conversation_g", title: "New", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        const p = payload as { topicId: string };
+        return p.topicId === "topic_old"
+          ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conversation_g", topicId: "topic_old", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+          : { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    // Newest on top, and the executing Topic (the OLDER one here) still beats
+    // the newest Topic as the default landing spot.
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_new", "topic_old"]);
+    expect(store.activeTopicId).toBe("topic_old");
+  });
+
+  it("falls back to the plain default Topic when the runs.list probe fails", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_old", conversationId: "conversation_g", title: "Old", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_new", conversationId: "conversation_g", title: "New", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") throw new Error("authority down");
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    // Degrade = original default logic: first ACTIVE Topic (newest here).
+    expect(store.activeTopicId).toBe("topic_new");
+  });
+
   it("names the lead even when the catalog marks it disabled and lets the server refuse", async () => {
     const store = useGroupsStore();
     const disabledLead: GroupSummaryDto = { ...GROUP, leadBotId: "bot_a", botIds: ["bot_a", "bot_b"] };
@@ -2240,7 +2299,7 @@ describe("useGroupsStore", () => {
     // success with a list it could not verify.
     expect(listCalls).toBeGreaterThan(1);
     expect(listCalls).toBeLessThanOrEqual(4);
-    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_deleted", "topic_alive"]);
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_alive", "topic_deleted"]);
     expect(store.activeTopicId).toBe("topic_deleted");
   });
 

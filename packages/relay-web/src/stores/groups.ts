@@ -31,6 +31,7 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { isActiveRunState, probeExecutingTopics, sortTopicsNewestFirst } from "../lib/topic-order";
 import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectBotsStore } from "./direct-bots";
 
@@ -220,12 +221,6 @@ const RUN_STATE_PRECEDENCE: Record<ConversationRunStateDto, number> = {
 
 function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean {
   return state === "completed" || state === "failed" || state === "cancelled" || state === "indeterminate";
-}
-
-function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
-  // A paused Run still owns the Topic and its queued work: the composer must
-  // stay closed until the user resumes or stops it, exactly like a running one.
-  return state === "queued" || state === "running" || state === "waiting-human" || state === "paused";
 }
 
 /** Mirrors the backend's group_member_has_work probe, which looks only at the
@@ -1038,7 +1033,10 @@ export const useGroupsStore = defineStore("groups", () => {
   });
   const currentTopics = computed(() => {
     if (!instanceId.value || !activeConversationId.value) return [];
-    return topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? [];
+    // Presentation order is newest-first: the raw Topic cache keeps the
+    // server's ascending order, this computed is the one view every pane and
+    // picker reads from.
+    return sortTopicsNewestFirst(topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? []);
   });
   const currentTopic = computed(() => {
     if (!activeTopicId.value) return undefined;
@@ -2239,6 +2237,34 @@ export const useGroupsStore = defineStore("groups", () => {
     }
   }
 
+  /** Authoritative probe: which Topic of this Conversation owns an executing
+   *  Run right now, per runs.list's elected active owner. The probe is bounded
+   *  (see EXECUTING_TOPIC_PROBE_TIMEOUT_MS) and degrades to `undefined` on any
+   *  failure or timeout, so a slow or failing authority falls back to the
+   *  plain default selection and never holds `topicReady` closed by itself.
+   *  When several Topics execute, the first in display order (newest) wins. */
+  async function findExecutingTopicId(
+    targetInstanceId: string,
+    conversationId: string,
+    ordered: TopicSummaryDto[],
+  ): Promise<string | undefined> {
+    try {
+      const probe = await probeExecutingTopics(ordered, async (topicId) =>
+        unwrapRpc(
+          await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(
+            targetInstanceId,
+            MSG.runsList,
+            { conversationId, topicId },
+          ),
+        ),
+      );
+      if (probe.status !== "complete") return undefined;
+      return ordered.find((topic) => probe.activeByTopicId[topic.id])?.id;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function selectGroup(targetInstanceId: string, groupId: string): Promise<void> {
     liveCompletedMemberTurns.value = null;
     clearRunHistory();
@@ -2301,12 +2327,21 @@ export const useGroupsStore = defineStore("groups", () => {
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }
-      // Prefer the Group's default, else the first ACTIVE Topic: opening a Group
-      // whose oldest Topic is archived must not land the composer in a state
-      // where every send is refused with topic_not_active.
-      const targetTopicId = group.defaultTopicId
-        ?? topics.find((topic) => topic.status === "active")?.id
-        ?? topics[0]?.id;
+      // Default selection: an executing Topic beats the plain default. The
+      // probe is authoritative (runs.list), bounded, and degrades to the plain
+      // default on any failure — it must never hold the gate closed. The
+      // fallback order (default Topic, else the first ACTIVE Topic in display
+      // order) still protects against landing the composer in an archived
+      // Topic where every send is refused with topic_not_active.
+      const ordered = sortTopicsNewestFirst(topics);
+      const executingTopicId = await findExecutingTopicId(targetInstanceId, group.id, ordered);
+      if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
+        return;
+      }
+      const targetTopicId = executingTopicId
+        ?? group.defaultTopicId
+        ?? ordered.find((topic) => topic.status === "active")?.id
+        ?? ordered[0]?.id;
       if (targetTopicId) {
         activeTopicId.value = targetTopicId;
         await loadHistory(targetInstanceId, group.id, targetTopicId);

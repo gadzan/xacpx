@@ -38,6 +38,7 @@ import { api } from "../api/client";
 import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectComposerStore } from "./direct-composer";
 import { pushToast } from "../lib/use-toasts";
+import { isActiveRunState, probeExecutingTopics, sortTopicsNewestFirst, type TopicRunsAuthority } from "../lib/topic-order";
 
 export interface DirectCancelScope {
   kind: "direct";
@@ -290,10 +291,6 @@ function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean
 async function listOwnedInstances(): Promise<Array<{ id: string }>> {
   const { instances: rows } = await api.get<{ instances: Array<{ id: string }> }>("/api/instances");
   return Array.isArray(rows) ? rows : [];
-}
-
-function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
-  return state === "queued" || state === "running" || state === "waiting-human" || state === "paused";
 }
 
 function shouldUpdateRunState(current: ConversationRunStateDto | undefined, incoming: ConversationRunStateDto): boolean {
@@ -773,16 +770,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   });
   const currentTopics = computed(() => {
     if (!instanceId.value || !activeConversationId.value) return [];
-    return topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? [];
+    // Presentation order is newest-first: the raw Topic cache keeps the
+    // server's ascending order, this computed is the one view every pane and
+    // picker reads from.
+    return sortTopicsNewestFirst(topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? []);
   });
   const currentTopic = computed(() => {
     if (!activeTopicId.value) return undefined;
     return currentTopics.value.find((t) => t.id === activeTopicId.value);
   });
-  const isRunActive = computed(() => {
-    const s = activeRun.value?.state;
-    return s === "queued" || s === "running" || s === "waiting-human";
-  });
+  const isRunActive = computed(() => isActiveRunState(activeRun.value?.state));
 
   // RPC: Bot CRUD
   function dropBotDetail(targetInstanceId: string, botId: string): void {
@@ -2202,6 +2199,34 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   }
 
   // Selection & Navigation
+  /** Authoritative probe: which Topic of this Conversation owns an executing
+   *  Run right now, per runs.list's elected active owner. The probe is bounded
+   *  (see EXECUTING_TOPIC_PROBE_TIMEOUT_MS) and degrades to `undefined` on any
+   *  failure or timeout, so a slow or failing authority falls back to the
+   *  plain default selection and never holds `topicReady` closed by itself.
+   *  When several Topics execute, the first in display order (newest) wins. */
+  async function findExecutingTopicId(
+    targetInstanceId: string,
+    conversationId: string,
+    ordered: TopicSummaryDto[],
+  ): Promise<string | undefined> {
+    try {
+      const probe = await probeExecutingTopics(ordered, async (topicId) =>
+        unwrapRpc(
+          await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(
+            targetInstanceId,
+            MSG.runsList,
+            { conversationId, topicId },
+          ),
+        ),
+      );
+      if (probe.status !== "complete") return undefined;
+      return ordered.find((topic) => probe.activeByTopicId[topic.id])?.id;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
     liveCompletedRunId.value = null;
     const generation = ++currentSelectionGeneration;
@@ -2267,7 +2292,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
           return;
         }
-        const targetTopicId = conv.defaultTopicId ?? topics[0]?.id;
+        // Default selection: an executing Topic beats the plain default, but
+        // the probe is authoritative (runs.list), bounded, and degrades to the
+        // plain default on any failure — it must never hold the gate closed.
+        const ordered = sortTopicsNewestFirst(topics);
+        const executingTopicId = await findExecutingTopicId(targetInstanceId, conv.id, ordered);
+        if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
+          return;
+        }
+        const targetTopicId = executingTopicId ?? conv.defaultTopicId ?? ordered[0]?.id;
         if (targetTopicId) {
           activeTopicId.value = targetTopicId;
           // loadHistory owns topicReady from here: it reopens the gate only on

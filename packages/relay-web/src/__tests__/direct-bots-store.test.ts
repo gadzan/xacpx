@@ -800,6 +800,64 @@ describe("useDirectBotsStore", () => {
     });
   });
 
+  describe("Topic display order and executing-topic default selection", () => {
+    const CONV = { id: "conv_z", kind: "bot", title: "Z", botId: "bot_z", createdAt: "now", updatedAt: "now" };
+    function rpcFor(handlers: Record<string, (payload?: unknown) => unknown>) {
+      mockRpc.mockImplementation((_inst: string, type: string, payload?: unknown) => {
+        if (type === "control.bots.list") return Promise.resolve({ bots: [{ id: "bot_z", name: "Z", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] });
+        const h = handlers[type];
+        return h ? h(payload) : Promise.resolve({});
+      });
+    }
+    function topic(id: string, createdAt: string): TopicSummaryDto {
+      return { id, conversationId: "conv_z", title: id, status: "active", createdAt, updatedAt: createdAt };
+    }
+
+    it("lists currentTopics newest-first regardless of server order", async () => {
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV, defaultTopicId: "top_old" }] }),
+        // The backend contract is createdAt ascending: the store must present
+        // the reverse order without touching the raw cache.
+        "control.topics.list": () => Promise.resolve({ topics: [topic("top_old", "2026-01-01T00:00:00.000Z"), topic("top_mid", "2026-02-01T00:00:00.000Z"), topic("top_new", "2026-03-01T00:00:00.000Z")] }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_old", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": () => Promise.resolve({ runs: [] }),
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.currentTopics.map((t) => t.id)).toEqual(["top_new", "top_mid", "top_old"]);
+      expect(store.topicsByConversation["inst_1:conv_z"]?.map((t) => t.id)).toEqual(["top_old", "top_mid", "top_new"]);
+    });
+
+    it("selectBot lands on the Topic that owns an executing Run, ahead of the default Topic", async () => {
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV, defaultTopicId: "top_default" }] }),
+        "control.topics.list": () => Promise.resolve({ topics: [topic("top_default", "2026-03-01T00:00:00.000Z"), topic("top_executing", "2026-01-01T00:00:00.000Z")] }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_executing", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": (payload?: unknown) => {
+          const p = payload as { topicId: string };
+          return Promise.resolve(p.topicId === "top_executing"
+            ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conv_z", topicId: "top_executing", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+            : { runs: [] });
+        },
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.activeTopicId).toBe("top_executing");
+    });
+
+    it("falls back to the plain default Topic when the runs.list probe fails", async () => {
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV, defaultTopicId: "top_default" }] }),
+        "control.topics.list": () => Promise.resolve({ topics: [topic("top_default", "2026-03-01T00:00:00.000Z"), topic("top_other", "2026-01-01T00:00:00.000Z")] }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_default", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": () => Promise.reject(new Error("authority down")),
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.activeTopicId).toBe("top_default");
+    });
+  });
+
   describe("History and Pagination", () => {
     it("loads newest-first tail history then recovers the durable active run", async () => {
       const store = useDirectBotsStore();
