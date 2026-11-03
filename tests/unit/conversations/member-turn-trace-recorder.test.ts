@@ -6,7 +6,7 @@ import { createControlEventBus } from "../../../src/control/control-event-bus";
 import type { ConversationTurnCorrelation } from "../../../src/control/conversation-control-dtos";
 import { createSqlDriver } from "../../../src/conversations/sql-driver";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
-import { GroupMemberTraceRecorder } from "../../../src/conversations/group-member-trace-recorder";
+import { MemberTurnTraceRecorder } from "../../../src/conversations/member-turn-trace-recorder";
 import { createEmptyState } from "../../../src/state/types";
 
 const NOW = "2026-10-20T12:00:00.000Z";
@@ -51,7 +51,7 @@ const query = { conversationId: CONVERSATION, topicId: TOPIC, runId: RUN, member
 test("live Group events persist ordered public text, tools, plan and terminal", async () => {
   const { appState, store } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     events.emit({ type: "turn-started", chatKey: "group", sessionAlias: "alias", conversation: correlation() });
@@ -82,7 +82,7 @@ test("live Group events persist ordered public text, tools, plan and terminal", 
 test("missing identity, direct scope, private topics and stale attempts are not recorded", async () => {
   const { appState, store } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     events.emit({ type: "turn-output", chatKey: "group", sessionAlias: "alias", chunk: "no identity" });
@@ -105,7 +105,7 @@ test("activation interrupts crashed streams and rejects their later terminal eve
   const { appState, store } = await fixture();
   const events = createControlEventBus();
   store.traces.appendBatch({ ...correlation(), attempt: ATTEMPT, sourceTurnId: SOURCE }, "crashed-process", []);
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     expect(store.traces.get(query)?.recordingState).toBe("interrupted");
@@ -121,7 +121,7 @@ test("activation interrupts crashed streams and rejects their later terminal eve
 test("alternating public text and thought chunks retain arrival order", async () => {
   const { appState, store } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     events.emit({ type: "turn-started", chatKey: "group", sessionAlias: "alias", conversation: correlation() });
@@ -146,7 +146,7 @@ test("alternating public text and thought chunks retain arrival order", async ()
 test("a short live trace becomes readable on the flush timer", async () => {
   const { appState, store } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     events.emit({ type: "turn-started", chatKey: "group", sessionAlias: "alias", conversation: correlation() });
@@ -166,7 +166,7 @@ test("a failed flush cannot later complete or restart the same attempt", async (
   const { appState, store } = await fixture();
   const events = createControlEventBus();
   const errors: unknown[] = [];
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW, onError: (error) => errors.push(error) });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW, onError: (error) => errors.push(error) });
   try {
     recorder.activate();
     events.emit({ type: "turn-started", chatKey: "group", sessionAlias: "alias", conversation: correlation() });
@@ -188,7 +188,7 @@ test("a failed flush cannot later complete or restart the same attempt", async (
 test("empty public plan snapshots replace earlier plans", async () => {
   const { appState, store } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     events.emit({ type: "turn-started", chatKey: "group", sessionAlias: "alias", conversation: correlation() });
@@ -208,7 +208,7 @@ test("empty public plan snapshots replace earlier plans", async () => {
 test("terminal and stream events without an observed start create no trace", async () => {
   const { appState, store } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     events.emit({ type: "turn-output", chatKey: "group", sessionAlias: "alias", chunk: "unobserved", conversation: correlation() });
@@ -225,7 +225,7 @@ test("shutdown flushes with unique batch identities, interrupts open traces and 
   const { appState, store } = await fixture();
   const events = createControlEventBus();
   const errors: unknown[] = [];
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW, onError: (error) => errors.push(error) });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW, onError: (error) => errors.push(error) });
   recorder.activate();
   events.emit({ type: "turn-started", chatKey: "group", sessionAlias: "alias", conversation: correlation() });
   events.emit({ type: "plan", chatKey: "group", sessionAlias: "alias", entries: [], conversation: correlation() });
@@ -245,7 +245,7 @@ test("shutdown flushes with unique batch identities, interrupts open traces and 
 test("retired attempt buffers are fenced again when they flush", async () => {
   const { appState, store, sql } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     events.emit({ type: "turn-started", chatKey: "group", sessionAlias: "alias", conversation: correlation() });
@@ -274,7 +274,7 @@ test("interleaved sibling members keep independent sequences and terminal state"
     VALUES (?, ?, ?, ?, ?, ?, 1, 'human-explicit', 'running', '[]', ?)`,
   [sibling.memberTurnId, RUN, CONVERSATION, TOPIC, sibling.botId, sibling.sourceTurnId!, NOW]);
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     for (const member of [correlation(), sibling]) {
@@ -301,7 +301,7 @@ test("interleaved sibling members keep independent sequences and terminal state"
 test("escaped Unicode text chunks fit the durable UTF8 JSON event bound without loss", async () => {
   const { appState, store } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   const text = "\u0000😀漢\"\\".repeat(15000);
   try {
     recorder.activate();
@@ -319,10 +319,31 @@ test("escaped Unicode text chunks fit the durable UTF8 JSON event bound without 
   }
 });
 
+test("direct Bot turns persist the same public trace as Group member turns", async () => {
+  const appState = state();
+  const group = appState.conversations[CONVERSATION]!;
+  appState.conversations[CONVERSATION] = { ...group, kind: "bot", botIds: [BOT] };
+  const { store } = await fixture();
+  const events = createControlEventBus();
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
+  try {
+    recorder.activate();
+    events.emit({ type: "turn-started", chatKey: "direct", sessionAlias: "alias", conversation: correlation() });
+    events.emit({ type: "turn-output", chatKey: "direct", sessionAlias: "alias", chunk: "direct answer", conversation: correlation() });
+    events.emit({ type: "turn-finished", chatKey: "direct", sessionAlias: "alias", ok: true, conversation: correlation() });
+    const page = store.traces.listEvents(query)!;
+    expect(page.recordingState).toBe("complete");
+    expect(page.events.map((event) => event.kind)).toEqual(["text", "terminal"]);
+  } finally {
+    recorder.dispose();
+    store.close();
+  }
+});
+
 test("plans that cannot be retained whole interrupt instead of silently truncating", async () => {
   const { appState, store } = await fixture();
   const events = createControlEventBus();
-  const recorder = new GroupMemberTraceRecorder({ store, state: appState, events, now: () => NOW });
+  const recorder = new MemberTurnTraceRecorder({ store, state: appState, events, now: () => NOW });
   try {
     recorder.activate();
     events.emit({ type: "turn-started", chatKey: "group", sessionAlias: "alias", conversation: correlation() });

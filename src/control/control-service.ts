@@ -3345,9 +3345,9 @@ export class ControlService {
   }
 
   private assertPublicRunHistoryScope(runtime: ConversationRuntime, conversationId: string, topicId: string): void {
-    if (!runtime.runs.listGroups().some(group => group.id === conversationId)) {
-      throw new ConversationError("conversation_not_found", "public Group Conversation not found");
-    }
+    // Run history serves every public Conversation (Group and direct Bot); only
+    // private peer Topics stay outside. A missing conversation fails inside
+    // listTopics with conversation_not_found.
     if (runtime.runs.isPeerTopic(topicId)
       || !runtime.runs.listTopics(conversationId).some(topic => topic.id === topicId)) {
       throw new ConversationError("topic_not_found", "public Topic does not belong to this Conversation");

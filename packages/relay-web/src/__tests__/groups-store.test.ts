@@ -1334,7 +1334,7 @@ describe("useGroupsStore", () => {
     await bubbles[1]!.trigger("click");
     // Single-open policy: the last opened detail wins and shows that member's
     // recorded trace only.
-    expect(wrapper.findComponent({ name: "GroupRunDetailPopover" }).exists()).toBe(true);
+    expect(wrapper.findComponent({ name: "TraceOverlay" }).exists()).toBe(true);
     await flushPromises();
     expect(document.querySelector('[data-test="group-detail-card"]')?.textContent).toContain("test output");
     expect(document.querySelector('[data-test="group-detail-card"]')?.textContent).not.toContain("review output");

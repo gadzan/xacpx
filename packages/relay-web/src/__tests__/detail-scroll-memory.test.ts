@@ -2,16 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type { TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import GroupRunDetailPopover from "../components/GroupRunDetailPopover.vue";
-import GroupRunDetailSheet from "../components/GroupRunDetailSheet.vue";
+import TraceOverlay from "../components/TraceOverlay.vue";
 
 const run = { id: "run", conversationId: "group", topicId: "topic", requestMessageId: "message", requestId: "request", mode: "explicit" as const, state: "running" as const, profileRevision: 1, createdAt: "now" };
 const memberTurn = { id: "member", runId: "run", conversationId: "group", topicId: "topic", botId: "bot", batch: 1, attempt: 1, origin: "human" as const, state: "running" as const, createdAt: "now" };
 const parts: TurnPartDto[] = [{ type: "text", text: "Recorded process now available" }];
 
-for (const [name, component, selector] of [
-  ["popover", GroupRunDetailPopover, ".group-detail-scroll"],
-  ["sheet", GroupRunDetailSheet, '[data-test="group-detail-sheet"] .thin-scroll'],
+for (const [name, selector, viewportWidth] of [
+  ["drawer", ".group-detail-scroll", 1280],
+  ["sheet", '[data-test="group-detail-sheet"] .thin-scroll', 390],
 ] as const) {
   describe(`${name} delayed scroll restore`, () => {
     let maxScroll: number;
@@ -19,6 +18,7 @@ for (const [name, component, selector] of [
     let original: PropertyDescriptor | undefined;
     beforeEach(() => {
       setActivePinia(createPinia());
+      window.innerWidth = viewportWidth;
       maxScroll = 0;
       offsets = new WeakMap();
       original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
@@ -29,6 +29,7 @@ for (const [name, component, selector] of [
       });
     });
     afterEach(() => {
+      window.innerWidth = 1280;
       if (original) Object.defineProperty(HTMLElement.prototype, "scrollTop", original);
       else Reflect.deleteProperty(HTMLElement.prototype, "scrollTop");
       document.body.innerHTML = "";
@@ -39,8 +40,8 @@ for (const [name, component, selector] of [
       const anchor = document.createElement("button");
       document.body.append(anchor);
       const memory = new Map([["member:1", 240], ["member:2", 180]]);
-      const wrapper = mount(component, { attachTo: document.body, props: {
-        id: "detail", anchorEl: anchor, scrollerEl: null, run, memberTurn, attempt: 1,
+      const wrapper = mount(TraceOverlay, { attachTo: document.body, props: {
+        id: "detail", anchorEl: anchor, run, memberTurn, attempt: 1,
         parts: [], traceLoading: true, scrollMemory: memory,
       } });
       await flushPromises();
@@ -70,8 +71,8 @@ for (const [name, component, selector] of [
       const anchor = document.createElement("button");
       document.body.append(anchor);
       const memory = new Map([["member:1", 240]]);
-      const wrapper = mount(component, { attachTo: document.body, props: {
-        id: "detail", anchorEl: anchor, scrollerEl: null, run, memberTurn, attempt: 1,
+      const wrapper = mount(TraceOverlay, { attachTo: document.body, props: {
+        id: "detail", anchorEl: anchor, run, memberTurn, attempt: 1,
         parts: [], traceLoading: true, scrollMemory: memory,
       } });
       await flushPromises();

@@ -1196,7 +1196,8 @@ describe("Group Components", () => {
       const bubbles = wrapper.findAll('[data-test="agent-thinking-bubble"]');
       expect(bubbles).toHaveLength(2);
       expect(bubbles[0]!.classes()).toContain("is-done");
-      expect(bubbles[1]!.classes()).toContain("is-running");
+      // A still-running member owns the dots entry, not a status bubble.
+      expect(bubbles[1]!.classes()).toContain("dots-trigger");
     });
 
     it("opens the anchored detail popover from one bubble and stops the exact active run from it", async () => {

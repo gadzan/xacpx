@@ -30,8 +30,7 @@ import BotAvatar from "./BotAvatar.vue";
 import GroupAvatarStack from "./GroupAvatarStack.vue";
 import GroupAgentTurnRow from "./GroupAgentTurnRow.vue";
 import AgentThinkingBubble, { type BubbleStatus } from "./AgentThinkingBubble.vue";
-import GroupRunDetailPopover from "./GroupRunDetailPopover.vue";
-import GroupRunDetailSheet from "./GroupRunDetailSheet.vue";
+import TraceOverlay from "./TraceOverlay.vue";
 import { useIsMobile } from "../lib/use-dropdown";
 import {
   presentGroupDispatch,
@@ -1048,6 +1047,9 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
             :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === item.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[item.memberTurn.id] === true"
             :disabled="botById[item.memberTurn.botId] ? !botById[item.memberTurn.botId]!.enabled : false"
             :stopped="stoppedLeaderTurnIds.has(item.memberTurn.id)"
+            :single-member="item.run.memberTurns.length <= 1"
+            :run-state="item.run.run.state"
+            :live-parts="groupsStore.liveTurnForMember(item.memberTurn.id)?.parts ?? (item.memberTurn.state === 'running' || item.memberTurn.state === 'dispatched' || item.memberTurn.state === 'queued' ? [] : undefined)"
             @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
           >
           </GroupAgentTurnRow>
@@ -1102,11 +1104,10 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
 
   </div>
 
-  <!-- One detail state; mobile owns a modal sheet, desktop follows the bubble. -->
-  <component :is="isMobile ? GroupRunDetailSheet : GroupRunDetailPopover"
+  <!-- One detail state: the execution-process drawer (desktop) / sheet (mobile). -->
+  <TraceOverlay
     v-if="openDetail"
     :id="detailId"
-    :scroller-el="scroller"
     :anchor-el="detailTriggerEl"
     :run="openDetail.run"
     :member-turn="openDetail.memberTurn"

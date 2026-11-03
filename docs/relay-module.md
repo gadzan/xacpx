@@ -497,7 +497,8 @@ can expire before a multi-step Git operation finishes: refetch the durable Run a
 the same integration request identity/recover rather than initiating another decision.
 
 `control.runs.details.batch` (`{conversationId, topicId, runIds}`) returns up to 50
-Run details for one public Topic and lists unknown ids in `missingRunIds`.
+Run details for one public Topic (Group or direct Bot Conversation) and lists
+unknown ids in `missingRunIds`.
 `control.runs.trace.get` (`{conversationId, topicId, runId, memberTurnId, attempt,
 afterSeq?, limit?}`) returns one bounded page of a MemberTurn's recorded public
 process. Both are read-only and scoped to the requesting public Topic; a private
