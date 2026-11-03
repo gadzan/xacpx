@@ -842,6 +842,7 @@ export default {
       agentRequired: "Agent 为必填项。",
       workspaceRequired: "工作区为必填项。",
       dedicatedWorkspaceNameInvalid: "名字里需要有字母或数字，或手动选择一个工作区",
+      dedicatedWorkspaceExists: "该 Bot 已拥有专属工作区。",
       detailLoading: "Bot 详情仍在加载中，请稍候再保存。",
       detailLoadFailed: "Bot 详情加载失败（{msg}），请重试后再保存。",
     },

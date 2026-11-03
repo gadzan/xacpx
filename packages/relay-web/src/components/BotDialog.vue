@@ -423,6 +423,9 @@ async function submit(): Promise<void> {
 
 const SUBMIT_ERROR_KEYS: Record<string, string> = {
   workspace_name_underivable: "bot.validation.dedicatedWorkspaceNameInvalid",
+  // A concurrent editor (or a stale cached dialog) can lose this race; the
+  // backend string would otherwise surface raw in the banner.
+  dedicated_workspace_exists: "bot.validation.dedicatedWorkspaceExists",
 };
 
 function describeSubmitError(err: unknown): string {

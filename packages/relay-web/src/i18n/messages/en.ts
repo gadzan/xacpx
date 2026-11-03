@@ -844,6 +844,7 @@ export default {
       agentRequired: "Agent is required.",
       workspaceRequired: "Workspace is required.",
       dedicatedWorkspaceNameInvalid: "Name needs a letter or number, or pick a workspace.",
+      dedicatedWorkspaceExists: "This Bot already owns a dedicated workspace.",
       detailLoading: "Bot details are still loading. Wait a moment before saving.",
       detailLoadFailed: "Could not load Bot details ({msg}). Retry before saving.",
     },
