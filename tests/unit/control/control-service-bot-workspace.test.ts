@@ -62,6 +62,8 @@ async function wire(options?: {
   createWorkspace?: () => Promise<never>;
   failPersist?: boolean;
   takeoverCwd?: string;
+  /** Mimic ConfigStore loading workspaces with normalized separators. */
+  registryCwd?: (cwd: string) => string;
   removeWorkspace?: (name: string) => Promise<never>;
   logger?: { error: (event: string, message: string, context?: Record<string, unknown>) => Promise<void> };
 }) {
@@ -78,12 +80,13 @@ async function wire(options?: {
     stateMutex,
   });
   const events = createControlEventBus();
+  const registryCwd = options?.registryCwd ?? ((cwd: string) => cwd);
   const registry = {
-    list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace })),
+    list: () => Object.entries(config.workspaces).map(([name, workspace]) => ({ name, ...workspace, cwd: registryCwd(workspace.cwd) })),
     create: options?.createWorkspace ?? (async (name: string, cwd: string, description?: string, createOptions?: { dedicated?: boolean }) => {
       const registered = options?.takeoverCwd ?? cwd;
       config.workspaces[name] = { cwd: registered, ...(description ? { description } : {}), ...(createOptions?.dedicated ? { dedicated: true } : {}) };
-      return { name, cwd: registered, ...(description ? { description } : {}), ...(createOptions?.dedicated ? { dedicated: true } : {}) };
+      return { name, cwd: registryCwd(registered), ...(description ? { description } : {}), ...(createOptions?.dedicated ? { dedicated: true } : {}) };
     }),
     remove: options?.removeWorkspace ?? (async (name: string) => {
       delete config.workspaces[name];
@@ -374,6 +377,11 @@ test("a dedicatedWorkspace key smuggled through the public payload is ignored", 
   });
 });
 
+/** The separator this platform does NOT use; see the cleanup-unit helper. */
+function nonNativeSeparators(dir: string): string {
+  return process.platform === "win32" ? dir.replace(/\\/g, "/") : dir.replace(/\//g, "\\");
+}
+
 interface BotWorkspaceHarness {
   botsHome: string;
   config: AppConfig;
@@ -641,6 +649,137 @@ test("a retried removal keeps the workspaceCleanup the first attempt recorded", 
   expect(retried.operation.workspaceCleanup).toEqual({ outcome: "deleted", path: dir });
   expect(existsSync(dir)).toBe(false);
 });
+test("a marker committed while the removal is in flight still gets cleaned up", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  // Deterministic race: removeBot reads the claim from the live profile before
+  // the removal barrier exists, so an allocator can still commit a marker in
+  // that window. The delegate performs exactly that allocation between the
+  // claim read and the real removal, then retires the Bot.
+  const realRemove = w.runtime.removals.remove.bind(w.runtime.removals);
+  (w.runtime.removals as { remove: typeof realRemove }).remove = async (input) => {
+    await w.control.updateBot(bot.id, { dedicatedWorkspace: true });
+    return realRemove(input);
+  };
+
+  const { operation } = await removeBot(w, bot.id, "rm-race", { deleteDedicatedWorkspace: true });
+  expect(operation.workspaceCleanup).toEqual({ outcome: "deleted", path: join(w.botsHome, "Reviewer") });
+  expect(existsSync(join(w.botsHome, "Reviewer"))).toBe(false);
+  expect(w.config.workspaces["Reviewer"]).toBeUndefined();
+});
+
+test("removing a Bot without a dedicated workspace records no workspace cleanup", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const { operation } = await removeBot(w, bot.id, "rm-plain");
+  expect(operation.workspaceCleanup).toBeUndefined();
+});
+
+/** Deterministically fail the first post-barrier cleanup step. */
+function failFirstCleanup(w: BotWorkspaceHarness): void {
+  const real = w.runtime.runs.cancelDirectExecution.bind(w.runtime.runs);
+  let failed = false;
+  (w.runtime.runs as { cancelDirectExecution: typeof real }).cancelDirectExecution = async (botId) => {
+    if (!failed) {
+      failed = true;
+      return "indeterminate";
+    }
+    return real(botId);
+  };
+}
+
+test("a retried removal honours the delete flag frozen on the operation", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  const dir = join(w.botsHome, "Reviewer");
+  const impact = await w.control.previewBotRemoval(bot.id);
+  failFirstCleanup(w);
+
+  // The attempt fails after the barrier, so the operation keeps
+  // `deleteDedicatedWorkspace: true` as a frozen param.
+  await expect(w.control.removeBot({
+    botId: bot.id,
+    requestId: "rm-frozen-on",
+    previewRevision: impact.revision,
+    deleteDedicatedWorkspace: true,
+  })).rejects.toMatchObject({ code: "conversation_indeterminate" });
+
+  // The retry arrives with the box unchecked, but the operation already
+  // decided to delete: skipping the cleanup would strand the directory, its
+  // `dedicated: true` registration, and no workspaceCleanup record.
+  const retried = await w.control.removeBot({
+    botId: bot.id,
+    requestId: "rm-frozen-on",
+    previewRevision: impact.revision,
+    deleteDedicatedWorkspace: false,
+  });
+  // The client seeds its controls from these, so the mapping has to carry the
+  // frozen decision and not just the live request.
+  expect(retried.operation).toMatchObject({
+    clearDirectHistory: false,
+    releaseDirectBindings: false,
+    deleteDedicatedWorkspace: true,
+  });
+  expect(retried.operation.workspaceCleanup).toEqual({ outcome: "deleted", path: dir });
+  expect(existsSync(dir)).toBe(false);
+  expect(w.config.workspaces["Reviewer"]).toBeUndefined();
+});
+
+test("a retried removal whose operation froze the flag off keeps the workspace", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  const dir = join(w.botsHome, "Reviewer");
+  const impact = await w.control.previewBotRemoval(bot.id);
+  failFirstCleanup(w);
+
+  await expect(w.control.removeBot({
+    botId: bot.id,
+    requestId: "rm-frozen-off",
+    previewRevision: impact.revision,
+  })).rejects.toMatchObject({ code: "conversation_indeterminate" });
+
+  // The retry asks to delete, but the operation froze the flag off: the
+  // workspace must survive exactly as the operation decided.
+  const retried = await w.control.removeBot({
+    botId: bot.id,
+    requestId: "rm-frozen-off",
+    previewRevision: impact.revision,
+    deleteDedicatedWorkspace: true,
+  });
+  // Explicit `false` must reach the client too: seeding keeps it over a live
+  // `true`, which is the whole point of freezing.
+  expect(retried.operation).toMatchObject({
+    clearDirectHistory: false,
+    releaseDirectBindings: false,
+    deleteDedicatedWorkspace: false,
+  });
+  expect(retried.operation.workspaceCleanup).toBeUndefined();
+  expect(existsSync(dir)).toBe(true);
+  expect(w.config.workspaces["Reviewer"]).toMatchObject({ dedicated: true });
+});
+
+test("a dedicated workspace whose registry entry uses the other separator still cleans up", async () => {
+  // ConfigStore loads workspaces through normalizePath (forward slashes) while
+  // the marker keeps the native path the allocator built. The preview the
+  // dialog reads and the removal must share one predicate.
+  const w = await wire({ registryCwd: nonNativeSeparators });
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  const dir = join(w.botsHome, "Reviewer");
+  // The registry string must differ from the marker string on every platform,
+  // or the comparison this case pins would not be exercised at all.
+  expect(nonNativeSeparators(dir)).not.toBe(dir);
+  expect((await w.control.previewBotRemoval(bot.id)).dedicatedWorkspace).toEqual({
+    name: "Reviewer",
+    path: dir,
+    inUse: false,
+  });
+
+  const { operation } = await removeBot(w, bot.id, "rm-normalized", { deleteDedicatedWorkspace: true });
+  expect(operation.workspaceCleanup).toEqual({ outcome: "deleted", path: dir });
+  expect(existsSync(dir)).toBe(false);
+  expect(w.config.workspaces["Reviewer"]).toBeUndefined();
+});
+
 test("a dedicated workspace is marked dedicated and hidden from listWorkspaces", async () => {
   const w = await wire();
   await w.control.createBot({ name: "Reviewer", agent: "codex" });

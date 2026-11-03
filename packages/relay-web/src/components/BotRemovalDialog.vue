@@ -31,6 +31,19 @@ const requestId = ref<string>(crypto.randomUUID());
 const clearDirectHistory = ref(false);
 const releaseDirectBindings = ref(false);
 const deleteDedicatedWorkspace = ref(false);
+
+/** Freeze only what the operation reports. The core freezes each flag the
+ *  first attempt accepted, so a control is read-only when the operation names
+ *  that flag and editable otherwise: with no reported flags the dialog behaves
+ *  exactly like a fresh attempt (an older core still accepts the live values). */
+function freezeFlag(flag: "clearDirectHistory" | "releaseDirectBindings" | "deleteDedicatedWorkspace"): boolean {
+  return pending.value || (needsRetry.value && operation.value?.[flag] !== undefined);
+}
+function seedFromFrozenParams(): void {
+  clearDirectHistory.value = operation.value?.clearDirectHistory ?? clearDirectHistory.value;
+  releaseDirectBindings.value = operation.value?.releaseDirectBindings ?? releaseDirectBindings.value;
+  deleteDedicatedWorkspace.value = operation.value?.deleteDedicatedWorkspace ?? deleteDedicatedWorkspace.value;
+}
 const loading = ref(true);
 const pending = ref(false);
 const errorText = ref("");
@@ -75,6 +88,7 @@ async function loadPreview(): Promise<void> {
     if (next.operation) {
       requestId.value = next.operation.requestId;
       operation.value = await props.getOperation(next.operation.id);
+      seedFromFrozenParams();
     }
     if (next.phase === "retired") {
       emit("removed");
@@ -100,6 +114,7 @@ async function confirmRemove(): Promise<void> {
       deleteDedicatedWorkspace: deleteDedicatedWorkspace.value,
     });
     operation.value = result;
+    seedFromFrozenParams();
     if (result.phase === "completed") {
       reportWorkspaceCleanup(result);
       emit("removed");
@@ -174,15 +189,15 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           </li>
         </ul>
         <label v-if="impact && !finished" class="flex items-start gap-2 text-xs">
-          <input v-model="clearDirectHistory" data-test="removal-clear-direct" type="checkbox" :disabled="pending || needsRetry" />
+          <input v-model="clearDirectHistory" data-test="removal-clear-direct" type="checkbox" :disabled="freezeFlag('clearDirectHistory')" />
           <span>{{ t("bot.removal.directHistory") }}</span>
         </label>
         <label v-if="impact && impact.externalBindings.length && !finished" class="flex items-start gap-2 text-xs">
-          <input v-model="releaseDirectBindings" data-test="removal-release-bindings" type="checkbox" :disabled="pending" />
+          <input v-model="releaseDirectBindings" data-test="removal-release-bindings" type="checkbox" :disabled="freezeFlag('releaseDirectBindings')" />
           <span>{{ t("bot.removal.bindings") }}</span>
         </label>
         <label v-if="canDeleteWorkspace && !finished" class="flex items-start gap-2 text-xs">
-          <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="pending" />
+          <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="freezeFlag('deleteDedicatedWorkspace')" />
           <span>
             {{ t("bot.removal.workspace") }}
             <code data-test="removal-workspace-path" class="break-all text-[11px] opacity-70">{{ dedicatedWorkspace?.path }}</code>

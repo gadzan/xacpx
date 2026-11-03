@@ -590,6 +590,9 @@ function toLifecycleOperationDto(operation: LifecycleOperation): LifecycleOperat
       ? {
         clearDirectHistory: operation.params.clearDirectHistory,
         releaseDirectBindings: operation.params.releaseDirectBindings,
+        ...(operation.params.deleteDedicatedWorkspace !== undefined
+          ? { deleteDedicatedWorkspace: operation.params.deleteDedicatedWorkspace }
+          : {}),
       }
       : {}),
     ...(operation.workspaceCleanup ? { workspaceCleanup: operation.workspaceCleanup } : {}),
@@ -3002,17 +3005,28 @@ export class ControlService {
 
   async removeBot(input: RemoveBotRequestDto): Promise<{ operation: LifecycleOperationDto }> {
     return this.runConversationMutation(async (runtime) => {
-      const deleteDedicatedWorkspace = input.deleteDedicatedWorkspace === true;
-      // The profile is retired inside remove(), so the claim must be read first.
-      const claim = deleteDedicatedWorkspace ? this.dedicatedWorkspaceClaim(runtime, input.botId) : undefined;
       const removed = await runtime.removals.remove({
         botId: input.botId,
         requestId: input.requestId,
         previewRevision: input.previewRevision,
         clearDirectHistory: input.clearDirectHistory === true,
         releaseDirectBindings: input.releaseDirectBindings === true,
-        deleteDedicatedWorkspace,
+        deleteDedicatedWorkspace: input.deleteDedicatedWorkspace === true,
       });
+      // The tombstone is the claim the Bot owned when it retired, so an
+      // allocator that committed a marker after the pre-read but before the
+      // barrier still gets its cleanup. The flag comes from the OPERATION:
+      // remove() freezes it for a retried requestId, so the request arriving
+      // now may disagree with the decision this operation already recorded. A
+      // cached operation from an earlier attempt already carries its own
+      // cleanup record and must not have it overwritten by a re-evaluation of
+      // a directory that is long gone.
+      const tombstone = runtime.bots.removal(input.botId)?.tombstone;
+      const claim = removed.params?.deleteDedicatedWorkspace === true
+        && tombstone?.dedicatedWorkspace !== undefined
+        && removed.workspaceCleanup === undefined
+        ? { marker: tombstone.dedicatedWorkspace, workspace: tombstone.workspace }
+        : undefined;
       const operation = claim === undefined
         ? removed
         : await this.recordDedicatedWorkspaceCleanup(runtime, input.botId, claim, removed);

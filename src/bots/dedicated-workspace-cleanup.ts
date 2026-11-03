@@ -3,6 +3,7 @@ import { lstat, realpath, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { isWorkspaceRemovalRefused } from "../config/workspace-removal";
+import { isSamePath } from "../util/path";
 import type { AppState } from "../state/types";
 import type { DedicatedWorkspaceMarker } from "./bot-types";
 
@@ -192,8 +193,11 @@ async function firstBlocker(
   marker: DedicatedWorkspaceMarker,
   path: string,
 ): Promise<DedicatedWorkspaceCleanupBlocker | undefined> {
+  // The registry hands cwds back through `normalizePath` while the marker
+  // keeps the native path the allocator built, so this is a path identity
+  // question, not a string one. Preview and removal share this predicate.
   const registered = input.workspaces.find((workspace) => workspace.name === marker.name);
-  if (registered === undefined || registered.cwd !== marker.cwd) {
+  if (registered === undefined || !isSamePath(registered.cwd, marker.cwd)) {
     return { kind: "cwd_mismatch", registeredCwd: registered?.cwd ?? "" };
   }
   if (hasReferences(input.references)) {

@@ -43,10 +43,10 @@ function mountDialog(previewValue: BotRemovalPreviewDto, removeImpl?: (input: {
   clearDirectHistory: boolean;
   releaseDirectBindings: boolean;
   deleteDedicatedWorkspace: boolean;
-}) => Promise<LifecycleOperationDto>, supportsWorkspaceCleanup = false) {
+}) => Promise<LifecycleOperationDto>, supportsWorkspaceCleanup = false, operationImpl?: () => Promise<LifecycleOperationDto>) {
   const preview = vi.fn(async () => previewValue);
   const remove = vi.fn(removeImpl ?? (async () => operation("completed", { clearDirectHistory: false })));
-  const getOperation = vi.fn(async () => operation("failed", { error: { code: "session_release_failed", message: "release failed" }, requestId: "req-kept" }));
+  const getOperation = vi.fn(operationImpl ?? (async () => operation("failed", { error: { code: "session_release_failed", message: "release failed" }, requestId: "req-kept" })));
   const wrapper = mount(BotRemovalDialog, {
     props: {
       botName: "Reviewer",
@@ -120,6 +120,87 @@ describe("BotRemovalDialog", () => {
     const { wrapper } = mountDialog(impact({ phase: "retired" }));
     await flushPromises();
     expect(wrapper.get("[data-test=removal-finished]").text()).toContain("Group history stays");
+  });
+
+  it("renders a frozen operation read-only with the values the core will apply", async () => {
+    // The core freezes all three flags on the first accepted attempt, so a
+    // retry ignores a flipped box. Render the frozen values read-only: a
+    // reopened dialog then neither lies nor dead-ends. Retry stays reachable
+    // because the frozen bindings flag is what the confirm gate needs.
+    const previewPatch = {
+      phase: "deleting" as const,
+      dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false },
+      externalBindings: [{ key: "binding-1", conversationId: "conversation_1", topicId: "topic_1" }],
+    };
+    const { wrapper, remove } = mountDialog(
+      impact({
+        ...previewPatch,
+        operation: {
+          id: "bot-remove:req-frozen",
+          requestId: "req-frozen",
+          phase: "failed",
+          error: { code: "session_release_failed", message: "release failed" },
+        },
+      }),
+      async () => operation("completed", { requestId: "req-frozen" }),
+      true,
+      async () => operation("failed", {
+        requestId: "req-frozen",
+        error: { code: "session_release_failed", message: "release failed" },
+        clearDirectHistory: true,
+        releaseDirectBindings: true,
+        deleteDedicatedWorkspace: true,
+      }),
+    );
+    await flushPromises();
+    const expected = {
+      "removal-clear-direct": true,
+      "removal-release-bindings": true,
+      "removal-delete-workspace": true,
+    } as const;
+    for (const [choice, frozen] of Object.entries(expected)) {
+      const input = wrapper.get(`[data-test=${choice}]`);
+      expect((input.element as HTMLInputElement).checked, choice).toBe(frozen);
+      expect(input.attributes("disabled"), choice).toBeDefined();
+    }
+    const confirm = wrapper.get("[data-test=removal-confirm]");
+    expect(confirm.text()).toContain("Retry cleanup");
+    expect(confirm.attributes("disabled")).toBeUndefined();
+    await confirm.trigger("click");
+    await flushPromises();
+    expect(remove.mock.calls[0]![0]).toMatchObject({
+      clearDirectHistory: true,
+      releaseDirectBindings: true,
+      deleteDedicatedWorkspace: true,
+    });
+  });
+
+  it("keeps a retryable removal editable when the operation reports no frozen flags", async () => {
+    // An older core sent no flags back and still accepts the live values, so
+    // the dialog must behave exactly like a fresh attempt: editable controls,
+    // and checking bindings has to make Retry pressable. Freezing here would
+    // dead-end a retry the core would have accepted.
+    const previewValue = impact({
+      phase: "deleting",
+      dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false },
+      externalBindings: [{ key: "binding-1", conversationId: "conversation_1", topicId: "topic_1" }],
+      operation: {
+        id: "bot-remove:req-legacy",
+        requestId: "req-legacy",
+        phase: "failed",
+        error: { code: "session_release_failed", message: "release failed" },
+      },
+    });
+    const { wrapper } = mountDialog(previewValue, undefined, true);
+    await flushPromises();
+    for (const choice of ["removal-clear-direct", "removal-release-bindings", "removal-delete-workspace"]) {
+      expect(wrapper.get(`[data-test=${choice}]`).attributes("disabled"), choice).toBeUndefined();
+    }
+    const confirm = wrapper.get("[data-test=removal-confirm]");
+    expect(confirm.text()).toContain("Retry cleanup");
+    expect(confirm.attributes("disabled")).toBeDefined();
+    await wrapper.get("[data-test=removal-release-bindings]").setValue(true);
+    expect(confirm.attributes("disabled")).toBeUndefined();
   });
 
   it("offers the dedicated workspace folder and sends the delete flag", async () => {

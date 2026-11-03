@@ -378,6 +378,10 @@ export interface LifecycleOperationDto {
     previewRevision?: string;
     clearDirectHistory?: boolean;
     releaseDirectBindings?: boolean;
+    /** Frozen at the first accepted attempt. A retry that arrives with a
+     *  different value is ignored by the core, so clients seed their control
+     *  from this whenever it is reported. */
+    deleteDedicatedWorkspace?: boolean;
     /** Dedicated workspace cleanup outcome, recorded once the Bot is retired. */
     workspaceCleanup?: {
         outcome: "deleted" | "kept" | "failed";
