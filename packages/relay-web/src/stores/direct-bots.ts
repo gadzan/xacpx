@@ -3453,7 +3453,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
 
     // Check active run if we believed one was active (same predicate as
-    // isRunActive: queued/running/waiting-human).
+    // isRunActive).
       if (rId && activeRun.value?.id === rId && isActiveRunState(activeRun.value.state)) {
         try {
           const res = unwrapRpc(
