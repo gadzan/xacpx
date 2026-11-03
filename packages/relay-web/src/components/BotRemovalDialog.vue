@@ -31,6 +31,22 @@ const requestId = ref<string>(crypto.randomUUID());
 const clearDirectHistory = ref(false);
 const releaseDirectBindings = ref(false);
 const deleteDedicatedWorkspace = ref(false);
+
+/** The values this removal was accepted with. The core freezes them on the
+ *  first attempt and ignores a retry's inputs, so a reopened retryable
+ *  operation renders and submits these instead of an editable live value. */
+const frozenParams = computed(() => operation.value?.params ?? null);
+const effectiveClearDirectHistory = computed(() => frozenParams.value?.clearDirectHistory ?? clearDirectHistory.value);
+const effectiveReleaseDirectBindings = computed(() => frozenParams.value?.releaseDirectBindings ?? releaseDirectBindings.value);
+const effectiveDeleteDedicatedWorkspace = computed(() => frozenParams.value?.deleteDedicatedWorkspace ?? deleteDedicatedWorkspace.value);
+
+function seedFromFrozenParams(): void {
+  const frozen = frozenParams.value;
+  if (frozen === null) return;
+  clearDirectHistory.value = frozen.clearDirectHistory;
+  releaseDirectBindings.value = frozen.releaseDirectBindings;
+  deleteDedicatedWorkspace.value = frozen.deleteDedicatedWorkspace === true;
+}
 const loading = ref(true);
 const pending = ref(false);
 const errorText = ref("");
@@ -75,6 +91,7 @@ async function loadPreview(): Promise<void> {
     if (next.operation) {
       requestId.value = next.operation.requestId;
       operation.value = await props.getOperation(next.operation.id);
+      seedFromFrozenParams();
     }
     if (next.phase === "retired") {
       emit("removed");
@@ -95,11 +112,12 @@ async function confirmRemove(): Promise<void> {
     const result = await props.remove({
       requestId: requestId.value,
       previewRevision: current.revision,
-      clearDirectHistory: clearDirectHistory.value,
-      releaseDirectBindings: releaseDirectBindings.value,
-      deleteDedicatedWorkspace: deleteDedicatedWorkspace.value,
+      clearDirectHistory: effectiveClearDirectHistory.value,
+      releaseDirectBindings: effectiveReleaseDirectBindings.value,
+      deleteDedicatedWorkspace: effectiveDeleteDedicatedWorkspace.value,
     });
     operation.value = result;
+    seedFromFrozenParams();
     if (result.phase === "completed") {
       reportWorkspaceCleanup(result);
       emit("removed");
@@ -201,7 +219,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           type="button"
           data-test="removal-confirm"
           class="h-8 rounded-btn bg-danger px-3 text-ui font-semibold text-on-danger disabled:opacity-40"
-          :disabled="loading || pending || blocked || (impact?.externalBindings.length ? !releaseDirectBindings : false)"
+          :disabled="loading || pending || blocked || (impact?.externalBindings.length ? !effectiveReleaseDirectBindings : false)"
           @click="confirmRemove"
         >
           {{ needsRetry ? t("bot.removal.retry") : t("bot.removal.confirm") }}
