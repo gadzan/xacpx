@@ -2765,33 +2765,49 @@ export class ControlService {
         { field: "workspace" },
       );
     }
+    // Replacing the owned directory would orphan the previous registration:
+    // nothing else may target or delete it, so the ownership check runs again
+    // inside the allocation critical section: a second concurrent request must
+    // not allocate past this fast check.
+    const existing = this.rejectOwnedDedicatedWorkspace(runtime, id);
+    // The directory is named after the Bot's new name when the same request
+    // renames it, exactly like a create.
+    return this.withAllocatedDedicatedWorkspace(
+      patch.name ?? existing.name,
+      (workspace, marker) =>
+        runtime.bots.updateBot(id, { ...patch, workspace }, {
+          dedicatedWorkspace: marker,
+          claimsDedicatedWorkspace: true,
+        }),
+      () => { this.rejectOwnedDedicatedWorkspace(runtime, id); },
+    );
+  }
+
+  /** Reject handing a Bot a second dedicated workspace: the first directory
+   *  would keep its registration with nothing left to target or delete it.
+   *  Removing the Bot stays the only way to hand that directory back. */
+  private rejectOwnedDedicatedWorkspace(runtime: ConversationRuntime, id: string): BotProfile {
     const existing = runtime.bots.getBot(id);
     if (existing.dedicatedWorkspace !== undefined) {
-      // Replacing the owned directory would orphan the previous registration:
-      // nothing else may target or delete it. Removing the Bot stays the only
-      // way to hand that directory back.
       throw new BotError(
         "dedicated_workspace_exists",
         `bot "${id}" already owns a dedicated workspace`,
         { field: "workspace" },
       );
     }
-    // The directory is named after the Bot's new name when the same request
-    // renames it, exactly like a create.
-    return this.withAllocatedDedicatedWorkspace(patch.name ?? existing.name, (workspace, marker) =>
-      runtime.bots.updateBot(id, { ...patch, workspace }, {
-        dedicatedWorkspace: marker,
-        claimsDedicatedWorkspace: true,
-      }));
+    return existing;
   }
 
   /** Allocate a registry-backed directory under the bots home, then let
    *  `commit` point the Bot at it. The whole sequence runs under the
    *  workspace transaction so a concurrent allocator cannot take the name, and
-   *  a failed commit rolls the registration and the empty directory back. */
+   *  a failed commit rolls the registration and the empty directory back.
+   *  `guard` re-runs the caller's ownership check inside that critical section,
+   *  where no sibling allocator can interleave. */
   private async withAllocatedDedicatedWorkspace(
     botName: string,
     commit: (workspace: string, marker: DedicatedWorkspaceMarker) => Promise<BotProfile>,
+    guard?: () => void,
   ): Promise<BotProfile> {
     // Reject before touching the filesystem or the workspace registry.
     const base = sanitizeWorkspaceName(botName);
@@ -2803,6 +2819,7 @@ export class ControlService {
       );
     }
     const allocate = async (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => {
+      guard?.();
       const root = this.botsHome();
       await mkdir(root, { recursive: true, mode: 0o700 });
       const taken: Record<string, true> = Object.create(null);
