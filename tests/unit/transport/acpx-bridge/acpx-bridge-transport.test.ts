@@ -1,7 +1,16 @@
-import { expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { ResolvedSession } from "../../../../src/transport/types";
 import { AcpxBridgeTransport } from "../../../../src/transport/acpx-bridge/acpx-bridge-transport";
+import { setLocale } from "../../../../src/i18n";
+
+// The spawn-failure messages are localized; another suite may have left a
+// non-English locale active in this process.
+beforeEach(() => setLocale("en"));
+afterAll(() => setLocale("en"));
 
 const session: ResolvedSession = {
   alias: "api-fix",
@@ -950,4 +959,66 @@ test("bridge transport proxies primeRuntimeQueues mapping sessions to EngineSess
       },
     },
   ]);
+});
+
+const enoentSpawnMessage =
+  "Failed to spawn agent command: node guard.js -- ghost acp. The agent process could not start because a required executable, interpreter, working directory, or other launch path was not found.";
+
+function failingTransport(message: string): AcpxBridgeTransport {
+  return new AcpxBridgeTransport({
+    request: async () => {
+      throw new Error(message);
+    },
+  });
+}
+
+test("names the workspace when the agent could not spawn because its cwd is gone", async () => {
+  const missingCwd = join(tmpdir(), "xacpx-missing-workspace");
+
+  await expect(failingTransport(enoentSpawnMessage).ensureSession({ ...session, cwd: missingCwd }))
+    .rejects.toThrow(`Workspace "backend" points at a path that does not exist: ${missingCwd}`);
+});
+
+test("keeps the acpx spawn failure when the session cwd exists", async () => {
+  await expect(failingTransport(enoentSpawnMessage).ensureSession({ ...session, cwd: process.cwd() }))
+    .rejects.toThrow("Failed to spawn agent command");
+});
+
+test("names the missing launch path when the agent executable is gone", async () => {
+  const missingExe = join(tmpdir(), "xacpx-missing-agent.exe");
+
+  await expect(failingTransport(enoentSpawnMessage).ensureSession({
+    ...session,
+    cwd: process.cwd(),
+    agentArgv: [missingExe, "--acp"],
+  })).rejects.toThrow(`Agent "codex" cannot start because this launch path does not exist: ${missingExe}`);
+});
+
+test("keeps the acpx error when the spawn failure carries no ENOENT sentence", async () => {
+  const missingCwd = join(tmpdir(), "xacpx-missing-workspace");
+
+  await expect(failingTransport("Failed to spawn agent command: ghost acp").ensureSession({ ...session, cwd: missingCwd }))
+    .rejects.toThrow("Failed to spawn agent command: ghost acp");
+});
+
+test("keeps the acpx error when the cwd exists as a regular file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-cwd-file-"));
+  const fileCwd = join(dir, "not-a-directory");
+  await writeFile(fileCwd, "");
+  try {
+    await expect(failingTransport(enoentSpawnMessage).ensureSession({ ...session, cwd: fileCwd }))
+      .rejects.toThrow("Failed to spawn agent command");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("keeps the acpx error when only a later argv entry is missing", async () => {
+  const missingArgument = join(tmpdir(), "xacpx-missing-argument.js");
+
+  await expect(failingTransport(enoentSpawnMessage).ensureSession({
+    ...session,
+    cwd: process.cwd(),
+    agentArgv: [process.execPath, missingArgument],
+  })).rejects.toThrow("Failed to spawn agent command");
 });

@@ -1,4 +1,4 @@
-import { expect, mock, spyOn, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,12 @@ import { CommandTimeoutError } from "../../../../src/transport/command-timeouts"
 import type { AcpxQueueOwnerLauncher } from "../../../../src/transport/acpx-queue-owner-launcher";
 import type { ResolvedSession } from "../../../../src/transport/types";
 import { QuotaManager } from "../../../../src/weixin/messaging/quota-manager";
+import { setLocale } from "../../../../src/i18n";
+
+// The spawn-failure messages are localized; another suite may have left a
+// non-English locale active in this process.
+beforeEach(() => setLocale("en"));
+afterAll(() => setLocale("en"));
 
 const session: ResolvedSession = {
   alias: "api-fix",
@@ -3108,4 +3114,33 @@ test("resume carries host ceilings alongside explicit agent env", async () => {
   await transport.resumeAgentSession?.(session, "thread-1");
 
   expect(seenEnvs.some((env) => env?.FILTERED_AGENT === "1" && env?.ACPX_MAX_ACP_MESSAGE_BYTES === "5678")).toBe(true);
+});
+
+const enoentSpawnMessage =
+  "Failed to spawn agent command: node guard.js -- ghost acp. The agent process could not start because a required executable, interpreter, working directory, or other launch path was not found.";
+
+test("names the workspace when acpx could not spawn the agent because its cwd is gone", async () => {
+  const missingCwd = join(tmpdir(), "xacpx-missing-workspace");
+  const run = mock(async () => {
+    throw new Error(enoentSpawnMessage);
+  });
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, run);
+
+  await expect(transport.ensureSession({ ...session, cwd: missingCwd }))
+    .rejects.toThrow(`Workspace "backend" points at a path that does not exist: ${missingCwd}`);
+});
+
+test("names the workspace when the model retry is the run that could not spawn", async () => {
+  const missingCwd = join(tmpdir(), "xacpx-missing-workspace");
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("--model")) {
+      throw new Error('Cannot apply --model "ghost[high]": the ACP agent did not advertise that model.');
+    }
+    throw new Error(enoentSpawnMessage);
+  });
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, run);
+
+  await expect(transport.ensureSession({ ...session, cwd: missingCwd, model: "ghost[high]" }))
+    .rejects.toThrow(`Workspace "backend" points at a path that does not exist: ${missingCwd}`);
+  expect(run.mock.calls.some(([, args]) => Array.isArray(args) && !args.includes("--model"))).toBe(true);
 });
