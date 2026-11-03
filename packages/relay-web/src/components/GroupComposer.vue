@@ -703,7 +703,7 @@ function handleRetry(): void {
       <p>{{ $t('group.mentionConfirm.body') }}</p>
       <p class="mt-2 text-xs text-fg-muted">{{ selectionLabel }}</p>
     </ComposerConfirmDialog>
-    <div v-if="!needsFirstTopic" class="mb-2 flex items-center gap-2">
+    <div v-if="!needsFirstTopic" class="mx-auto w-full max-w-3xl mb-2 flex items-center gap-2">
       <div class="relative">
         <button
           type="button"
