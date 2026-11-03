@@ -245,7 +245,10 @@ daemon's own slot directly under the bots root with no symlink in the path.
 The transaction then unregisters the entry and removes the directory. A
 failure leaves the Bot retired and records
 `workspaceCleanup: { outcome: "deleted" | "kept" | "failed"; path; code? }` on
-the operation, so a retry reports the same result.
+the operation, so a retry reports the same result. `deleteDedicatedWorkspace`
+(like `clearDirectHistory` and `releaseDirectBindings`) is frozen on the first
+accepted attempt: a retry that arrives with a different value is ignored, and
+the dashboard disables those options once the operation is retryable.
 
 At accept, the Run stores `profileRevision` plus a snapshot of:
 

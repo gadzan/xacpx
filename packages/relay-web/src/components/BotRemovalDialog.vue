@@ -182,7 +182,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           <span>{{ t("bot.removal.bindings") }}</span>
         </label>
         <label v-if="canDeleteWorkspace && !finished" class="flex items-start gap-2 text-xs">
-          <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="pending" />
+          <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="pending || needsRetry" />
           <span>
             {{ t("bot.removal.workspace") }}
             <code data-test="removal-workspace-path" class="break-all text-[11px] opacity-70">{{ dedicatedWorkspace?.path }}</code>
