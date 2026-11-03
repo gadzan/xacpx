@@ -186,6 +186,7 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - model 切换完成后会重新读取 effort，因为 adapter 可能按 model 广告不同的推理强度选项；仅当
   composer 仍指向发起切换的同一会话时应用刷新结果。
 - OMP 模型恢复：只有驱动是 `omp` 且报错是精确的 `Could not restore model <id>` 文案才走恢复横幅，其它鉴权/目录/通用报错不视为“模型已下架”，也不做自动映射。横幅隐藏原始报错、只显示受影响的模型 id，并提供“获取模型并选择替代项”动作：该动作经 `control.session.model.get { refresh: true }` 冷探测当前精确启动拿可选项；`current` 是恢复前保存的选择，直到选中替代项并 `control.session.model.set` 成功才被覆盖。选择替代模型走正常 setter 与上面的串行/乐观规则；成功提示明确“原消息尚未重新发送”。
+- 冷会话（`warm=false`、未运行）点刷新同样走 `refresh: true` 冷探测：探针以 `--auth-policy fail` 起一个临时会话，因此主机上 adapter 未登录时拿到的是 `AUTH_REQUIRED`，而不是旧列表。此时 `SessionModelBanner` 以 `session.authHint`（按当前会话的 agent 名，例如 omp）先行说明“尚未在主机上认证”，原始诊断跟在后面保留给运维；非鉴权类刷新失败仍只走 `chat.modelControlFailed` 原文。分类只认 auth/login/unauthor/credential/sign-in 形状（`src/lib/adapter-auth-error.ts`，`NewSessionDialog` 的 native 列表提示共用同一判定），不做猜测式映射。
 - session/实例切换以独立 context revision 丢弃 model 与 effort 的迟到响应，避免旧会话结果污染
   当前 composer。没有广告 effort 的 agent 不显示控件，也不会触发设置请求。
 - 新建会话的控件初始化：逻辑会话先可被 `control.sessions.list` 看到，adapter 启动完成后才广告

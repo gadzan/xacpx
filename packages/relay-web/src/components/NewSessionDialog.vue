@@ -9,6 +9,7 @@ import { navigateBack } from "../lib/mobile-back";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
 import { fmtDateTime } from "../lib/format";
+import { isAdapterAuthError } from "../lib/adapter-auth-error";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 import DirectoryPicker from "./DirectoryPicker.vue";
 import ModelPicker from "./ModelPicker.vue";
@@ -198,7 +199,7 @@ watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
 const nativeErrorHint = computed(() => {
   const e = nativeError.value;
   if (!e) return "";
-  if (/auth|login|unauthor|credential|sign[\s-]?in/i.test(e)) {
+  if (isAdapterAuthError(e)) {
     return t("session.authHint", { agent: agentValue.value || t("session.thisAgent") });
   }
   return "";
