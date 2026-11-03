@@ -43,6 +43,24 @@ it("keeps explicit switch failures on the toast and out of the banner", async ()
   expect(banner()).toBeNull();
 });
 
+it("dismisses the banner and clears the diagnostic", async () => {
+  const controls = useSessionControlsStore();
+  controls.modelError = "timed out";
+  controls.modelErrorSource = "load";
+
+  mount(SessionModelBanner);
+  await nextTick();
+
+  const dismiss = document.body.querySelector<HTMLButtonElement>('[data-test="model-banner-dismiss"]');
+  expect(dismiss).not.toBeNull();
+  dismiss?.click();
+  await nextTick();
+
+  expect(banner()).toBeNull();
+  expect(controls.modelError).toBe("");
+  expect(controls.modelErrorSource).toBe("");
+});
+
 it("leads an adapter auth failure with the login hint and keeps the diagnostic", async () => {
   const chat = useChatStore();
   const instances = useInstancesStore();

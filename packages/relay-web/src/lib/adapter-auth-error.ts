@@ -1,3 +1,4 @@
+// Matches the diagnostic src/agents/capability-probe.ts classifyProbeFailure builds for failure: "unauthenticated".
 const ADAPTER_AUTH_PATTERN = /auth|login|unauthor|credential|sign[\s-]?in/i;
 
 /** True when a raw adapter/bridge error is shaped like a missing host login. */
