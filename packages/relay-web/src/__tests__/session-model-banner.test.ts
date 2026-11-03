@@ -105,6 +105,43 @@ it("leaves a non-auth refresh diagnostic on the existing banner copy", async () 
   expect(text).not.toContain("log it in there");
 });
 
+it("does not read an auth-shaped session alias as an auth failure", async () => {
+  const controls = useSessionControlsStore();
+  controls.modelError = 'model catalog refresh failed for agent "omp" session "relay:authoring": timeout: the capability probe timed out';
+  controls.modelErrorSource = "load";
+
+  mount(SessionModelBanner);
+  await nextTick();
+
+  const text = banner()?.textContent ?? "";
+  expect(text).toContain("Model state unavailable");
+  expect(text).not.toContain("isn't authenticated on the host");
+});
+
+it("still leads unauthenticated when the session alias looks like auth", async () => {
+  const instances = useInstancesStore();
+  instances.instances = [{
+    id: "i1", name: "pc", online: true, lastSeenAt: null, sessionsLoaded: true,
+    sessions: [{ alias: "relay:authoring", agent: "omp", workspace: "/w", transportSession: "t", running: false, archived: false }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } satisfies InstanceView];
+  const chat = useChatStore();
+  chat.instanceId = "i1";
+  chat.sessionAlias = "relay:authoring";
+  const controls = useSessionControlsStore();
+  const detail = 'model catalog refresh failed for agent "omp" session "relay:authoring": unauthenticated: the adapter requires authentication before it can list models';
+  controls.modelError = detail;
+  controls.modelErrorSource = "load";
+  await nextTick();
+
+  mount(SessionModelBanner);
+  await nextTick();
+
+  const text = banner()?.textContent ?? "";
+  expect(text).toContain("omp isn't authenticated on the host");
+  expect(text.indexOf("isn't authenticated on the host")).toBeLessThan(text.indexOf(detail));
+});
+
 it("names the agent generically when the session row is not loaded yet", async () => {
   const controls = useSessionControlsStore();
   controls.modelError = 'model catalog refresh failed for agent "omp" session "relay:x": unauthenticated: the adapter requires authentication before it can list models';
