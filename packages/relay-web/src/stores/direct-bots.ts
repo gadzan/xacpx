@@ -1145,6 +1145,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       instructions?: string | null;
       agent?: string;
       workspace?: string;
+      /** Ask the daemon to allocate a fresh dedicated workspace instead. */
+      dedicatedWorkspace?: boolean;
       model?: string | null;
       effort?: string | null;
       enabled?: boolean | null;

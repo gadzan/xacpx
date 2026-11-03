@@ -826,6 +826,7 @@ export default {
       agent: "Agent",
       workspace: "Workspace",
       dedicatedWorkspace: "New workspace",
+      dedicatedWorkspaceCurrent: "Dedicated workspace",
       dedicatedWorkspaceHint: "Creates a dedicated workspace under ~/.xacpx/bots/ on this daemon instance.",
       workspacePreviewHint: "Model suggestions appear once the workspace is created; you can enter a model and reasoning effort now.",
       instructions: "Instructions",

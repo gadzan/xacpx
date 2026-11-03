@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle, ChevronLeft, Pencil } from "lucide-vue-next";
 import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, useInstancesStore } from "../stores/instances";
+import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, supportsBotDedicatedWorkspaceUpdate, useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
@@ -37,11 +37,20 @@ const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
 
 const isEditing = computed(() => !!props.bot);
+// The Bot's own daemon-allocated workspace. It is private: the instance never
+// lists it among registered workspaces, so the form renders it as this Bot's
+// dedicated slot and never as a normal option.
+const botDedicatedWorkspace = ref(props.bot?.dedicatedWorkspace);
+const ownsDedicatedWorkspace = computed(() => botDedicatedWorkspace.value !== undefined);
 // Creating a Bot without a workspace needs a core that allocates a dedicated
-// one. Older cores (and their connectors) still require `workspace`, so the
-// "New workspace" default is only offered when the instance advertises it;
-// otherwise the form keeps the original pick-a-workspace behaviour.
-const dedicatedWorkspaceSupported = computed(() => !isEditing.value && supportsBotDedicatedWorkspace(inst.value));
+// one; older cores (and their connectors) still require `workspace`, so the
+// option only appears when the instance advertises it. Editing needs the
+// update capability instead, and is refused once the Bot already owns a
+// dedicated workspace (replacing it would orphan its directory).
+const canRequestDedicatedWorkspace = computed(() =>
+  isEditing.value
+    ? supportsBotDedicatedWorkspaceUpdate(inst.value) && !ownsDedicatedWorkspace.value
+    : supportsBotDedicatedWorkspace(inst.value));
 // True once the Bot materialized an actual direct runtime binding/session:
 // agent/workspace are then backend-locked (runtime_identity_locked). A
 // persisted Direct Conversation alone keeps delete fail-closed (bot_in_use)
@@ -128,7 +137,7 @@ async function loadCapabilities(probe = false): Promise<void> {
   // loading state until it arrives instead of claiming a preview is missing.
   // Without the dedicated-workspace default there is nothing to preview
   // until a workspace is picked (the original behaviour).
-  if (!dedicatedWorkspaceSupported.value && !capabilityWorkspace.value) return;
+  if (!canRequestDedicatedWorkspace.value && !capabilityWorkspace.value) return;
   const previewWorkspace = capabilityWorkspace.value;
   let next: AgentCapabilityState;
   if (previewWorkspace) {
@@ -199,20 +208,25 @@ const agentGroups = computed<SelectGroup[]>(() => [
 const availableWorkspaces = computed(() => inst.value?.workspaces ?? []);
 const workspaceGroups = computed<SelectGroup[]>(() => {
   const options = [...availableWorkspaces.value.map((w) => ({ value: w.name, label: w.name }))];
-  // A Bot may run in a workspace this instance no longer lists (e.g. a
-  // dedicated Bot workspace); the current value must stay visible.
-  if (isEditing.value && workspace.value && !options.some((option) => option.value === workspace.value)) {
+  // The Bot's own dedicated workspace never appears as an ordinary option: its
+  // raw name stays out of the list, and the current value is labelled as the
+  // Bot-owned slot so an update that keeps it still keeps the daemon's marker.
+  if (botDedicatedWorkspace.value) {
+    options.unshift({ value: botDedicatedWorkspace.value.name, label: t("bot.fields.dedicatedWorkspaceCurrent") });
+  } else if (isEditing.value && workspace.value && !options.some((option) => option.value === workspace.value)) {
+    // A Bot may run in a workspace this instance no longer lists; the current
+    // value must stay visible.
     options.unshift({ value: workspace.value, label: workspace.value });
   }
-  if (dedicatedWorkspaceSupported.value) options.unshift({ value: "", label: t("bot.fields.dedicatedWorkspace") });
+  if (canRequestDedicatedWorkspace.value) options.unshift({ value: "", label: t("bot.fields.dedicatedWorkspace") });
   return [{ options }];
 });
-const capabilityWorkspace = computed(() => workspace.value || (dedicatedWorkspaceSupported.value ? availableWorkspaces.value[0]?.name : undefined));
+const capabilityWorkspace = computed(() => workspace.value || (canRequestDedicatedWorkspace.value ? availableWorkspaces.value[0]?.name : undefined));
 // Same rule as the daemon: a new workspace is named after the Bot, which needs
 // at least one letter or digit (CJK included). Shown live under the name.
 const nameNeedsWorkspaceChars = computed(() => {
   const trimmed = name.value.trim();
-  return dedicatedWorkspaceSupported.value && !workspace.value && trimmed.length > 0 && !hasWorkspaceNameChars(trimmed);
+  return canRequestDedicatedWorkspace.value && !workspace.value && trimmed.length > 0 && !hasWorkspaceNameChars(trimmed);
 });
 // Revision of the authoritative detail that the untouched fields show. A
 // summary never carries instructions, so Save stays gated while this is null.
@@ -245,6 +259,7 @@ function applyDetail(detail: BotDetailDto): void {
   if (!avatarDirty.value) avatar.value = copyBotAvatar(detail.avatar);
   if (!roleDirty.value) role.value = detail.role ?? "";
   if (!agentDirty.value) agent.value = detail.agent;
+  botDedicatedWorkspace.value = detail.dedicatedWorkspace;
   if (!workspaceDirty.value) workspace.value = detail.workspace;
   if (!modelDirty.value) model.value = detail.model ?? "";
   if (!effortDirty.value) effort.value = detail.effort ?? "";
@@ -299,7 +314,7 @@ onMounted(() => {
     if (!agent.value && availableAgents.value.length > 0) {
       agent.value = availableAgents.value[0]?.name ?? "";
     }
-    if (!dedicatedWorkspaceSupported.value && !workspace.value && availableWorkspaces.value.length > 0) {
+    if (!canRequestDedicatedWorkspace.value && !workspace.value && availableWorkspaces.value.length > 0) {
       workspace.value = availableWorkspaces.value[0]?.name ?? "";
     }
     await loadCapabilities(false);
@@ -332,7 +347,7 @@ async function submit(): Promise<void> {
     errorMessage.value = t("bot.validation.agentRequired");
     return;
   }
-  if (!dedicatedWorkspaceSupported.value && !workspace.value) {
+  if (!canRequestDedicatedWorkspace.value && !workspace.value) {
     errorMessage.value = t("bot.validation.workspaceRequired");
     return;
   }
@@ -360,6 +375,7 @@ async function submit(): Promise<void> {
         instructions?: string | null;
         agent?: string;
         workspace?: string;
+        dedicatedWorkspace?: boolean;
         model?: string | null;
         effort?: string | null;
         enabled?: boolean | null;
@@ -373,7 +389,10 @@ async function submit(): Promise<void> {
       if (roleDirty.value) patch.role = role.value.trim() || null;
       if (instructionsDirty.value) patch.instructions = instructions.value.trim() || null;
       if (agentDirty.value) patch.agent = agent.value;
-      if (workspaceDirty.value) patch.workspace = workspace.value;
+      if (workspaceDirty.value) {
+        if (workspace.value) patch.workspace = workspace.value;
+        else patch.dedicatedWorkspace = true;
+      }
       if (modelDirty.value) patch.model = normalizedModel(model.value) ?? null;
       if (effortDirty.value) patch.effort = effort.value.trim() || null;
       if (enabledDirty.value) patch.enabled = enabled.value;
@@ -565,7 +584,7 @@ function describeSubmitError(err: unknown): string {
           <!-- Workspace -->
           <div>
             <label for="bot-workspace" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.workspace") }} <span v-if="!dedicatedWorkspaceSupported" class="text-danger-overlay">*</span>
+              {{ $t("bot.fields.workspace") }} <span v-if="!canRequestDedicatedWorkspace" class="text-danger-overlay">*</span>
             </label>
             <SelectMenu
               id="bot-workspace"
@@ -578,7 +597,7 @@ function describeSubmitError(err: unknown): string {
               :groups="workspaceGroups"
               @update:model-value="workspaceDirty = true"
             />
-            <p v-if="dedicatedWorkspaceSupported && !workspace" data-test="bot-dedicated-workspace-hint" class="mt-1 text-xs text-fg-muted">
+            <p v-if="canRequestDedicatedWorkspace && !workspace" data-test="bot-dedicated-workspace-hint" class="mt-1 text-xs text-fg-muted">
               {{ $t("bot.fields.dedicatedWorkspaceHint") }}
             </p>
           </div>

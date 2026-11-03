@@ -52,6 +52,18 @@ export interface CreateBotOptions {
   claimsDedicatedWorkspace?: boolean;
 }
 
+/**
+ * Daemon-internal update channel, mirroring `CreateBotOptions`. A caller that
+ * allocates a dedicated workspace itself passes the marker here; the public
+ * payload cannot claim ownership of a directory it did not allocate.
+ */
+export interface UpdateBotOptions {
+  dedicatedWorkspace?: DedicatedWorkspaceMarker;
+  /** Daemon-internal: this update targets the workspace it just registered, so
+   *  the dedicated-workspace reuse guard must not reject the owner. */
+  claimsDedicatedWorkspace?: boolean;
+}
+
 export interface UpdateBotInput {
   name?: string;
   avatar?: BotAvatarConfig | null;
@@ -474,7 +486,7 @@ export class BotService {
     });
   }
 
-  async updateBot(id: string, patch: UpdateBotInput): Promise<BotProfile> {
+  async updateBot(id: string, patch: UpdateBotInput, options?: UpdateBotOptions): Promise<BotProfile> {
     this.assertOpen();
     return await this.runLifecycle(id, async () => {
       this.assertOpen();
@@ -492,32 +504,43 @@ export class BotService {
         if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasDefaultWorkspaceRuntime(id)) {
           throw new BotError("runtime_identity_locked", `bot "${id}" workspace cannot change while a runtime exists`);
         }
+        const allocatedMarker = this.validatedMarker(options?.dedicatedWorkspace);
         const resolvedWorkspace = this.requirePatchString(patch.workspace, existing.workspace, "workspace");
+        if (allocatedMarker !== undefined && allocatedMarker.name !== resolvedWorkspace) {
+          throw new BotError(
+            "dedicated_workspace_invalid",
+            "bot dedicatedWorkspace marker must name the workspace being assigned",
+          );
+        }
         // A Bot always keeps the right to reference its own workspace —
         // including a dedicated one — so a rename/enable-only update (or an
         // explicit same-name write) never trips the reuse guard. Pointing at
-        // *another* Bot's dedicated workspace stays rejected.
+        // *another* Bot's dedicated workspace stays rejected. A daemon-allocated
+        // name is claimed by the caller that just registered it.
         const targetsOwnWorkspace = resolvedWorkspace === existing.workspace;
         const identity = this.requireIdentity({
           name: this.requirePatchString(patch.name, existing.name, "name"),
           agent: this.requirePatchString(patch.agent, existing.agent, "agent"),
           workspace: resolvedWorkspace,
-        }, targetsOwnWorkspace);
+        }, targetsOwnWorkspace || options?.claimsDedicatedWorkspace === true);
         this.assertAcceptsWork(id);
         // A dedicated-workspace marker claims a directory this daemon
         // allocated for the Bot. Pointing the Bot at another workspace
         // drops that claim, so a later cleanup never removes a directory
-        // the Bot no longer uses. The same name keeps the claim.
+        // the Bot no longer uses. The same name keeps the claim; a fresh
+        // allocation replaces it outright.
         const { dedicatedWorkspace, ...profile } = existing;
-        const keepsDedicatedWorkspace = dedicatedWorkspace !== undefined
+        const keepsDedicatedWorkspace = allocatedMarker === undefined
+          && dedicatedWorkspace !== undefined
           && (patch.workspace === undefined
             || patch.workspace === existing.workspace
             || patch.workspace === dedicatedWorkspace.name);
+        const nextMarker = allocatedMarker ?? (keepsDedicatedWorkspace ? dedicatedWorkspace : undefined);
         const next: BotProfile = {
           ...profile,
           ...identity,
           ...this.patchOptional(existing, patch),
-          ...(keepsDedicatedWorkspace ? { dedicatedWorkspace } : {}),
+          ...(nextMarker !== undefined ? { dedicatedWorkspace: nextMarker } : {}),
           enabled: patch.enabled === undefined || patch.enabled === null ? existing.enabled : patch.enabled,
           profileRevision: (existing.profileRevision ?? 1) + 1,
           updatedAt: this.now().toISOString(),

@@ -202,6 +202,14 @@ session is minted, so a foreign execution override can never land on another
 Bot's directory. Runtime cwd resolution reads the config directly and never
 consults the flag.
 
+Because the name is absent from every picker list, any client that derives a
+Bot's runnability from the registered workspaces must treat the Bot's own
+`dedicatedWorkspace` marker as equivalent to a registered entry for
+`bot.workspace`. The dashboard's Group member picker does exactly that: a
+member pointed at its own dedicated directory stays selectable and mentionable,
+while a workspace that is neither registered nor the Bot's own still reports
+`No runtime`.
+
 An auto-allocated Bot profile also records a `dedicatedWorkspace` marker
 (workspace name, directory path, allocation time) so the daemon can tell a
 directory it created for the Bot apart from a workspace the user chose. The
@@ -211,6 +219,18 @@ than trusted. Pointing the Bot at a different workspace drops the marker from
 the saved profile, so the daemon no longer claims ownership of that directory;
 the same workspace name, or an update that does not touch the workspace, keeps
 it.
+
+`updateBot` may also ask for a fresh dedicated workspace with
+`dedicatedWorkspace: true`. The daemon allocates and registers it exactly like
+a create — named after the new name when the same request renames the Bot —
+and stores the marker. It rejects the request with
+`dedicated_workspace_conflict` when the patch also names a `workspace`, and
+with `dedicated_workspace_exists` when the Bot already owns one: replacing an
+owned directory would orphan a registration no other caller may target. A
+failed update rolls the new registration and its empty directory back. Bot
+DTOs (`listBots` / `getBot`) expose the marker as
+`dedicatedWorkspace: { name, path }`, so a client labels that slot instead of
+offering it as a workspace option.
 
 `previewBotRemoval` reports the marker as `dedicatedWorkspace` with an `inUse`
 flag. `removeBot` accepts `deleteDedicatedWorkspace` (default false) and runs

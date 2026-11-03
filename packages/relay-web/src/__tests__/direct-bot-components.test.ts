@@ -522,6 +522,104 @@ describe("Direct Bot Components", () => {
       }));
       expect(wrapper.emitted("saved")).toBeTruthy();
     });
+
+    function mountEditDialog(options: {
+      capabilities: string[];
+      workspace?: string;
+      dedicatedWorkspace?: { name: string; path: string };
+    }) {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1", name: "Local", online: true, lastSeenAt: null, sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          capabilities: options.capabilities,
+        } as never,
+      ];
+      vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
+      const workspace = options.workspace ?? "repo";
+      const directBots = useDirectBotsStore();
+      vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
+        id: "bot_1", name: "Existing Bot", agent: "codex", workspace,
+        ...(options.dedicatedWorkspace ? { dedicatedWorkspace: options.dedicatedWorkspace } : {}),
+        enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockImplementation(async (_i, _id, patch) => ({
+        id: "bot_1", name: "Existing Bot", agent: "codex",
+        workspace: patch.workspace ?? workspace,
+        enabled: true, profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      }));
+      const existingBot: BotSummaryDto = {
+        id: "bot_1", name: "Existing Bot", agent: "codex", workspace,
+        enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      return { wrapper, updateSpy };
+    }
+
+    it("offers a fresh dedicated workspace while editing a Bot that has none", async () => {
+      const { wrapper, updateSpy } = mountEditDialog({
+        capabilities: [
+          RELAY_CAPABILITIES.botsDedicatedWorkspaceV1,
+          RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1,
+        ],
+      });
+      await flushPromises();
+      await flushPromises();
+      await wrapper.find("#bot-workspace").trigger("click");
+      expect(wrapper.findAll("[data-value]").map((option) => option.attributes("data-value"))).toEqual(["", "repo"]);
+      await wrapper.find('[data-value=""]').trigger("click");
+      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(true);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", { dedicatedWorkspace: true });
+    });
+
+    it("labels the Bot's own dedicated workspace instead of listing it as a workspace option", async () => {
+      const { wrapper, updateSpy } = mountEditDialog({
+        capabilities: [
+          RELAY_CAPABILITIES.botsDedicatedWorkspaceV1,
+          RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1,
+        ],
+        workspace: "reviewer-ws",
+        dedicatedWorkspace: { name: "reviewer-ws", path: "/home/u/.xacpx/bots/reviewer-ws" },
+      });
+      await flushPromises();
+      await flushPromises();
+      expect(wrapper.find("#bot-workspace").attributes("data-selected")).toBe("reviewer-ws");
+      await wrapper.find("#bot-workspace").trigger("click");
+      const options = wrapper.findAll("[data-value]");
+      // The owned directory appears under the reserved label instead of its raw
+      // name, and a Bot that already owns one gets no "New workspace" entry.
+      expect(options.map((option) => option.attributes("data-value"))).toEqual(["reviewer-ws", "repo"]);
+      expect(options[0]!.text()).toBe(i18n.global.t("bot.fields.dedicatedWorkspaceCurrent"));
+      expect(wrapper.find('[data-test="bot-dedicated-workspace-hint"]').exists()).toBe(false);
+      await wrapper.find("#bot-workspace").trigger("click");
+      // Untouched workspace stays out of the patch, so the marker survives.
+      await wrapper.find("#bot-name").setValue("Renamed Bot");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      const patch = updateSpy.mock.calls[0]?.[2];
+      expect(patch).not.toHaveProperty("workspace");
+      expect(patch).not.toHaveProperty("dedicatedWorkspace");
+    });
+
+    it("does not offer a fresh dedicated workspace on an instance without the update capability", async () => {
+      const { wrapper } = mountEditDialog({
+        capabilities: [RELAY_CAPABILITIES.botsDedicatedWorkspaceV1],
+      });
+      await flushPromises();
+      await flushPromises();
+      await wrapper.find("#bot-workspace").trigger("click");
+      expect(wrapper.findAll("[data-value]").map((option) => option.attributes("data-value"))).toEqual(["repo"]);
+    });
+
     it("sends only touched fields on edit so a remote rev2 is not clobbered", async () => {
       const instances = useInstancesStore();
       instances.instances = [

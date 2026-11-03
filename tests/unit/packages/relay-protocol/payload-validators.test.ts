@@ -315,6 +315,16 @@ test("Bot avatar wire writes accept only strict versioned configs and update nul
   expect(parseControlPayload(MSG.botsUpdate, { id: "bot_1" })).toEqual({ id: "bot_1" });
 });
 
+test("Bot update accepts the dedicated-workspace flag as a strict boolean", () => {
+  expect(parseControlPayload(MSG.botsUpdate, { id: "bot_1", dedicatedWorkspace: true }))
+    .toEqual({ id: "bot_1", dedicatedWorkspace: true });
+  expect(parseControlPayload(MSG.botsUpdate, { id: "bot_1", dedicatedWorkspace: false }))
+    .toEqual({ id: "bot_1", dedicatedWorkspace: false });
+  for (const invalid of ["true", 1, null, {}]) {
+    expect(parseControlPayload(MSG.botsUpdate, { id: "bot_1", dedicatedWorkspace: invalid })).toBeNull();
+  }
+});
+
 test("Bot and Conversation control RPCs validate product IDs, not hidden aliases", () => {
   expect(parseControlPayload(MSG.botsCreate, {
     name: "Reviewer", agent: "codex", workspace: "backend",

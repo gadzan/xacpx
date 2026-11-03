@@ -652,6 +652,68 @@ test("a dedicated workspace is marked dedicated and hidden from listWorkspaces",
   expect(w.control.listWorkspaces().map((workspace) => workspace.name)).toEqual(["backend"]);
 });
 
+test("bot DTOs expose the owned dedicated workspace so pickers can label it", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  const expected = { name: "Reviewer", path: join(w.botsHome, "Reviewer") };
+  expect(w.control.getBot(bot.id).dedicatedWorkspace).toEqual(expected);
+  expect(w.control.listBots().find((row) => row.id === bot.id)?.dedicatedWorkspace).toEqual(expected);
+  const other = await w.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  expect(w.control.getBot(other.id).dedicatedWorkspace).toBeUndefined();
+});
+
+test("updating to a new dedicated workspace allocates, marks, and hides it", async () => {
+  for (const transaction of [true, false]) {
+    const w = await wire({ transaction });
+    const bot = await w.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+
+    const updated = await w.control.updateBot(bot.id, { name: "Researcher", dedicatedWorkspace: true });
+    expect(updated.workspace).toBe("Researcher");
+    expect(updated.dedicatedWorkspace).toEqual({ name: "Researcher", path: join(w.botsHome, "Researcher") });
+    expect(w.state.bots[bot.id]?.dedicatedWorkspace).toEqual({
+      name: "Researcher",
+      cwd: join(w.botsHome, "Researcher"),
+      createdAt: NOW,
+    });
+    expect(readdirSync(w.botsHome)).toEqual(["Researcher"]);
+    expect(w.config.workspaces["Researcher"]).toEqual({
+      cwd: join(w.botsHome, "Researcher"),
+      description: "Bot default workspace for Researcher",
+      dedicated: true,
+    });
+    // The freshly allocated name is private: no picker offers it.
+    expect(w.control.listWorkspaces().map((workspace) => workspace.name)).toEqual(["backend"]);
+  }
+});
+
+test("a Bot that already owns a dedicated workspace cannot be given another one", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  await expect(w.control.updateBot(bot.id, { dedicatedWorkspace: true }))
+    .rejects.toMatchObject({ code: "dedicated_workspace_exists" });
+  expect(readdirSync(w.botsHome)).toEqual(["Reviewer"]);
+  expect(Object.keys(w.config.workspaces)).toEqual(["backend", "Reviewer"]);
+});
+
+test("a dedicated-workspace request cannot also name a workspace", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await expect(w.control.updateBot(bot.id, { workspace: "backend", dedicatedWorkspace: true }))
+    .rejects.toMatchObject({ code: "dedicated_workspace_conflict" });
+  expect(w.state.bots[bot.id]?.workspace).toBe("backend");
+});
+
+test("a failed update rolls the freshly allocated dedicated workspace back", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await expect(w.control.updateBot(bot.id, { agent: "ghost", dedicatedWorkspace: true }))
+    .rejects.toMatchObject({ code: "agent_not_registered" });
+  expect(w.config.workspaces["Reviewer"]).toBeUndefined();
+  expect(existsSync(join(w.botsHome, "Reviewer"))).toBe(false);
+  expect(w.state.bots[bot.id]?.workspace).toBe("backend");
+  expect(w.state.bots[bot.id]?.dedicatedWorkspace).toBeUndefined();
+});
+
 test("a dedicated workspace cannot become another Bot or a Topic target", async () => {
   const w = await wire();
   const owner = await w.control.createBot({ name: "Reviewer", agent: "codex" });

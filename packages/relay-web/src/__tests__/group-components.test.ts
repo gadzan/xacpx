@@ -577,6 +577,55 @@ describe("Group Components", () => {
       expect(off.attributes("aria-disabled")).toBe("true");
     });
 
+    it("treats a member's own dedicated workspace as runnable even though pickers hide it", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const isolated: BotSummaryDto = {
+        id: "bot_isolated",
+        name: "Isolated",
+        agent: "codex",
+        workspace: "Isolated",
+        dedicatedWorkspace: { name: "Isolated", path: "/home/u/.xacpx/bots/Isolated" },
+        enabled: true,
+        updatedAt: "now",
+      };
+      const wrapper = mount(GroupComposer, {
+        // The instance's registered workspaces deliberately omit the dedicated
+        // directory: the Bot's own marker is the only availability record.
+        props: { bots: [...BOTS, isolated] },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      const row = wrapper.find('[data-test="group-target-member-bot_isolated"]');
+      expect(row.attributes("aria-disabled")).toBe("false");
+      expect(row.text()).not.toContain(i18n.global.t("group.target.noRuntime"));
+      await row.trigger("click");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a", "bot_isolated"] });
+    });
+
+    it("still reports No runtime for a workspace that is neither registered nor the Bot's own", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const stray: BotSummaryDto = {
+        id: "bot_stray",
+        name: "Stray",
+        agent: "codex",
+        workspace: "gone",
+        enabled: true,
+        updatedAt: "now",
+      };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: [...BOTS, stray] },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      const row = wrapper.find('[data-test="group-target-member-bot_stray"]');
+      expect(row.attributes("aria-disabled")).toBe("true");
+      expect(row.text()).toContain(i18n.global.t("group.target.noRuntime"));
+      await row.trigger("click");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
+
     it("typing @Ann into @Anna never selects Ann first", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: [] };

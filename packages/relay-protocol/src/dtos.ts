@@ -313,6 +313,13 @@ export interface BotSummaryDto {
   hasRuntime?: boolean;
   /** Present once controlled removal has retired the executable profile. */
   retired?: true;
+  /** The Bot's daemon-allocated workspace, present only when the daemon
+   *  created it. Lets the Web label that private slot instead of offering it
+   *  as a workspace option. */
+  dedicatedWorkspace?: {
+    name: string;
+    path: string;
+  };
 }
 export interface BotRemovalPreviewDto {
   botId: string;
