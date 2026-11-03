@@ -2703,6 +2703,17 @@ export class ControlService {
   }
 
   /**
+   * Feature probe for connectors: `updateBot` accepts `dedicatedWorkspace: true`
+   * and allocates a fresh dedicated workspace for an existing Bot. Connectors
+   * advertise `RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1` only when
+   * this exists and returns true, so the edit dialog never offers the option
+   * against an older core that would reject the payload.
+   */
+  supportsBotDedicatedWorkspaceUpdate(): true {
+    return true;
+  }
+
+  /**
    * Feature probe for connectors: `removeBot` accepts
    * `deleteDedicatedWorkspace` and deletes the Bot's daemon-allocated
    * workspace directory. Connectors advertise
@@ -2734,9 +2745,72 @@ export class ControlService {
     });
   }
 
-  private async createBotWithDefaultWorkspace(runtime: ConversationRuntime, input: BotCreateRequestDto) {
+  private createBotWithDefaultWorkspace(runtime: ConversationRuntime, input: BotCreateRequestDto) {
+    return this.withAllocatedDedicatedWorkspace(input.name, (workspace, marker) =>
+      runtime.bots.createBot({ ...input, workspace }, {
+        dedicatedWorkspace: marker,
+        claimsDedicatedWorkspace: true,
+      }));
+  }
+
+  private updateBotWithDefaultWorkspace(
+    runtime: ConversationRuntime,
+    id: string,
+    patch: Omit<BotUpdateRequestDto, "dedicatedWorkspace">,
+  ) {
+    if (patch.workspace !== undefined) {
+      throw new BotError(
+        "dedicated_workspace_conflict",
+        "a new dedicated workspace cannot be combined with an explicit workspace",
+        { field: "workspace" },
+      );
+    }
+    // Replacing the owned directory would orphan the previous registration:
+    // nothing else may target or delete it, so the ownership check runs again
+    // inside the allocation critical section: a second concurrent request must
+    // not allocate past this fast check.
+    const existing = this.rejectOwnedDedicatedWorkspace(runtime, id);
+    // The directory is named after the Bot's new name when the same request
+    // renames it, exactly like a create.
+    return this.withAllocatedDedicatedWorkspace(
+      patch.name ?? existing.name,
+      (workspace, marker) =>
+        runtime.bots.updateBot(id, { ...patch, workspace }, {
+          dedicatedWorkspace: marker,
+          claimsDedicatedWorkspace: true,
+        }),
+      () => { this.rejectOwnedDedicatedWorkspace(runtime, id); },
+    );
+  }
+
+  /** Reject handing a Bot a second dedicated workspace: the first directory
+   *  would keep its registration with nothing left to target or delete it.
+   *  Removing the Bot stays the only way to hand that directory back. */
+  private rejectOwnedDedicatedWorkspace(runtime: ConversationRuntime, id: string): BotProfile {
+    const existing = runtime.bots.getBot(id);
+    if (existing.dedicatedWorkspace !== undefined) {
+      throw new BotError(
+        "dedicated_workspace_exists",
+        `bot "${id}" already owns a dedicated workspace`,
+        { field: "workspace" },
+      );
+    }
+    return existing;
+  }
+
+  /** Allocate a registry-backed directory under the bots home, then let
+   *  `commit` point the Bot at it. The whole sequence runs under the
+   *  workspace transaction so a concurrent allocator cannot take the name, and
+   *  a failed commit rolls the registration and the empty directory back.
+   *  `guard` re-runs the caller's ownership check inside that critical section,
+   *  where no sibling allocator can interleave. */
+  private async withAllocatedDedicatedWorkspace(
+    botName: string,
+    commit: (workspace: string, marker: DedicatedWorkspaceMarker) => Promise<BotProfile>,
+    guard?: () => void,
+  ): Promise<BotProfile> {
     // Reject before touching the filesystem or the workspace registry.
-    const base = sanitizeWorkspaceName(input.name);
+    const base = sanitizeWorkspaceName(botName);
     if (base === null) {
       throw new BotError(
         "workspace_name_underivable",
@@ -2744,7 +2818,8 @@ export class ControlService {
         { field: "workspace" },
       );
     }
-    const create = async (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => {
+    const allocate = async (workspaces: Pick<ControlServiceDeps["workspaces"], "list" | "create" | "remove">) => {
+      guard?.();
       const root = this.botsHome();
       await mkdir(root, { recursive: true, mode: 0o700 });
       const taken: Record<string, true> = Object.create(null);
@@ -2767,15 +2842,16 @@ export class ControlService {
       }
       let registered = false;
       try {
-        await workspaces.create(name, dir, `Bot default workspace for ${input.name.trim()}`, { dedicated: true });
+        await workspaces.create(name, dir, `Bot default workspace for ${botName.trim()}`, { dedicated: true });
         registered = true;
-        return await runtime.bots.createBot({ ...input, workspace: name }, {
-          dedicatedWorkspace: { name, cwd: dir, createdAt: new Date(this.deps.now?.() ?? Date.now()).toISOString() },
-          claimsDedicatedWorkspace: true,
+        return await commit(name, {
+          name,
+          cwd: dir,
+          createdAt: new Date(this.deps.now?.() ?? Date.now()).toISOString(),
         });
       } catch (error) {
         if (registered) {
-          // A same-name entry that is not ours (replaced out from under us, or
+          // A same-name entry that is not ours (replaced from under us, or
           // never ours) stays: removing by name would delete someone else's
           // registration. The orphaned directory we created is still removed.
           const current = workspaces.list().find((workspace) => workspace.name === name);
@@ -2809,8 +2885,8 @@ export class ControlService {
       }
     };
     return this.deps.workspaces.transaction
-      ? this.deps.workspaces.transaction(create)
-      : this.botWorkspaceMutex.run(() => create(this.deps.workspaces));
+      ? this.deps.workspaces.transaction(allocate)
+      : this.botWorkspaceMutex.run(() => allocate(this.deps.workspaces));
   }
 
   private botsHome(): string {
@@ -2897,7 +2973,10 @@ export class ControlService {
 
   async updateBot(id: string, patch: BotUpdateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
-      const bot = await runtime.bots.updateBot(id, patch);
+      const { dedicatedWorkspace, ...profile } = patch;
+      const bot = dedicatedWorkspace === true
+        ? await this.updateBotWithDefaultWorkspace(runtime, id, profile)
+        : await runtime.bots.updateBot(id, profile);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
       return toBotDetail(bot, runtime.bots.hasRuntime(bot.id));

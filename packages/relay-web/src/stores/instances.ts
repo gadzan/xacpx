@@ -158,6 +158,15 @@ export function supportsBotDedicatedWorkspaceCleanup(instance: { capabilities?: 
 }
 
 /**
+ * True when the instance's core allocates a fresh dedicated workspace for an
+ * existing Bot (`control.bots.update` with `dedicatedWorkspace: true`). An
+ * older core rejects the payload, so the edit dialog must not offer it.
+ */
+export function supportsBotDedicatedWorkspaceUpdate(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1);
+}
+
+/**
  * True when the instance's core can cancel ONE member turn of a Run
  * (`control.runs.cancelMember`). An older core has no scoped cancellation,
  * so the web must not offer a per-member or per-leader stop there: it offers

@@ -579,7 +579,7 @@ const validateBotsUpdate: Validator<BotsUpdatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.id)
     && optStr(o.name) && (o.avatar === undefined || o.avatar === null || isBotAvatarWriteConfig(o.avatar)) && optStrOrNull(o.role)
-    && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace)
+    && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace) && optBool(o.dedicatedWorkspace)
     && optStrOrNull(o.model) && optStrOrNull(o.effort) && optBoolOrNull(o.enabled)
     ? (o as unknown as BotsUpdatePayload) : null;
 };

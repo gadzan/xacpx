@@ -48,6 +48,13 @@ export interface BotSummaryDto {
   hasRuntime?: boolean;
   /** Present once controlled removal has retired the executable profile. */
   retired?: true;
+  /** The Bot's daemon-allocated workspace, present only when the daemon
+   *  created it. Lets a client label that private slot without asking the
+   *  workspace registry, which never lists it. */
+  dedicatedWorkspace?: {
+    name: string;
+    path: string;
+  };
 }
 
 export interface BotDetailDto extends BotSummaryDto {
@@ -143,6 +150,10 @@ export interface BotUpdateRequestDto {
   instructions?: string | null;
   agent?: string;
   workspace?: string;
+  /** Ask the daemon to allocate a fresh dedicated workspace for this Bot
+   *  instead of naming one. Mutually exclusive with `workspace`, and refused
+   *  once the Bot already owns a dedicated workspace. */
+  dedicatedWorkspace?: boolean;
   model?: string | null;
   effort?: string | null;
   enabled?: boolean | null;
@@ -425,7 +436,12 @@ export interface ConversationHistoryResponseDto {
   hasMoreAfter: boolean;
 }
 
+function dedicatedWorkspaceDto(marker: BotProfile["dedicatedWorkspace"]) {
+  return marker === undefined ? undefined : { name: marker.name, path: marker.cwd };
+}
+
 export function toBotSummary(bot: BotProfile, hasRuntime?: boolean): BotSummaryDto {
+  const dedicatedWorkspace = dedicatedWorkspaceDto(bot.dedicatedWorkspace);
   return {
     id: bot.id,
     name: bot.name,
@@ -438,6 +454,7 @@ export function toBotSummary(bot: BotProfile, hasRuntime?: boolean): BotSummaryD
     ...(bot.role ? { role: bot.role } : {}),
     ...(bot.model ? { model: bot.model } : {}),
     ...(bot.effort ? { effort: bot.effort } : {}),
+    ...(dedicatedWorkspace ? { dedicatedWorkspace } : {}),
     ...(hasRuntime ? { hasRuntime: true as const } : {}),
   };
 }

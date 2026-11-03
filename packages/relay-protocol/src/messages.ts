@@ -562,6 +562,9 @@ export interface BotsUpdatePayload {
   instructions?: string | null;
   agent?: string;
   workspace?: string;
+  /** Ask the daemon to allocate a fresh dedicated workspace for this Bot
+   *  instead of naming one. Mutually exclusive with `workspace`. */
+  dedicatedWorkspace?: boolean;
   model?: string | null;
   effort?: string | null;
   enabled?: boolean | null;
@@ -1412,6 +1415,11 @@ export const RELAY_CAPABILITIES = {
    *  validator and the core accept it, so the web keeps requiring a workspace
    *  for instances whose core predates dedicated Bot workspaces. */
   botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
+  /** `control.bots.update` accepts `dedicatedWorkspace: true` and allocates a
+   *  fresh dedicated Bot workspace for an existing Bot. Advertised only when
+   *  the connector's validator and the core both accept it, so the edit dialog
+   *  never offers the option against an instance that would reject it. */
+  botsDedicatedWorkspaceUpdateV1: "bots.dedicated-workspace-update.v1",
   /** `control.bots.remove` accepts `deleteDedicatedWorkspace` and deletes the
    *  Bot's daemon-allocated workspace directory. Advertised only when both the
    *  connector's validator and the core accept it, so the web never offers

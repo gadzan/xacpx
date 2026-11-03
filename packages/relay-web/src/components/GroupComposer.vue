@@ -216,11 +216,22 @@ const everyoneRecipients = computed<Array<{ id: string; name: string; lead: bool
     .map((id) => ({ id, name: byId.get(id)?.name ?? id, lead: group.leadBotId === id }));
 });
 
+/** A Bot's default workspace is runnable when the instance lists it, or when
+ *  it is the Bot's own daemon-allocated workspace: that directory is
+ *  deliberately absent from every workspace picker, yet its owner runs there. */
+function botWorkspaceRunnable(
+  instance: { workspaces: Array<{ name: string }> },
+  bot: BotSummaryDto,
+): boolean {
+  if (instance.workspaces.some((workspace) => workspace.name === bot.workspace)) return true;
+  return bot.dedicatedWorkspace?.name === bot.workspace;
+}
+
 function memberUnavailableReason(bot: BotSummaryDto): string | null {
   if (bot.retired) return t("bot.status.disabled");
   const instance = instancesStore.byId(props.instanceId ?? groupsStore.instanceId ?? "");
   if (instance && (!instance.agents.some(agent => agent.name === bot.agent)
-    || !instance.workspaces.some(workspace => workspace.name === bot.workspace))) return t("group.target.noRuntime");
+    || !botWorkspaceRunnable(instance, bot))) return t("group.target.noRuntime");
   return bot.enabled ? null : t("bot.status.disabled");
 }
 

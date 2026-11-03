@@ -266,6 +266,7 @@ var RELAY_CAPABILITIES = {
   desktopArdAuthV1: "desktop.ard-auth.v1",
   interactionElicitationFormV1: "interaction.elicitation.form.v1",
   botsDedicatedWorkspaceV1: "bots.dedicated-workspace.v1",
+  botsDedicatedWorkspaceUpdateV1: "bots.dedicated-workspace-update.v1",
   botsDedicatedWorkspaceCleanupV1: "bots.dedicated-workspace-cleanup.v1",
   runsCancelMemberV1: "runs.cancel-member.v1",
   runsPauseV1: "runs.pause.v1",
@@ -1755,7 +1756,7 @@ var validateBotsCreate = (p) => {
 };
 var validateBotsUpdate = (p) => {
   const o = fields(p);
-  return o && isStr(o.id) && optStr(o.name) && (o.avatar === undefined || o.avatar === null || isBotAvatarWriteConfig(o.avatar)) && optStrOrNull(o.role) && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace) && optStrOrNull(o.model) && optStrOrNull(o.effort) && optBoolOrNull(o.enabled) ? o : null;
+  return o && isStr(o.id) && optStr(o.name) && (o.avatar === undefined || o.avatar === null || isBotAvatarWriteConfig(o.avatar)) && optStrOrNull(o.role) && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace) && optBool(o.dedicatedWorkspace) && optStrOrNull(o.model) && optStrOrNull(o.effort) && optBoolOrNull(o.enabled) ? o : null;
 };
 var validateBotsDelete = (p) => {
   const o = fields(p);

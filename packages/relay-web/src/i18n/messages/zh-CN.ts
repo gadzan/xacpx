@@ -824,6 +824,7 @@ export default {
       agent: "Agent",
       workspace: "工作区",
       dedicatedWorkspace: "新建专属工作区",
+      dedicatedWorkspaceCurrent: "专属工作区",
       dedicatedWorkspaceHint: "将在此守护进程实例的 ~/.xacpx/bots/ 下创建专属工作区。",
       workspacePreviewHint: "工作区创建后才能获取模型建议，现在可先手动填写模型和推理等级。",
       instructions: "系统指令",

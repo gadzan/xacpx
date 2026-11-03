@@ -198,6 +198,20 @@ export function supportsBotDedicatedWorkspaceCleanup(control: unknown): boolean 
 }
 
 /**
+ * True when this instance can allocate a fresh dedicated workspace while
+ * editing a Bot: the core must say so (older cores reject the payload) AND the
+ * relay-protocol validator this connector resolved must accept it. Either half
+ * missing keeps the capability off, so the edit dialog never offers an option
+ * the instance would reject.
+ */
+export function supportsBotDedicatedWorkspaceUpdate(control: unknown): boolean {
+  const probe = (control as { supportsBotDedicatedWorkspaceUpdate?: unknown } | null)?.supportsBotDedicatedWorkspaceUpdate;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parseControlPayload(MSG.botsUpdate, { id: "probe", dedicatedWorkspace: true }) !== null;
+}
+
+/**
  * True when this instance can cancel ONE member turn of a Run: the core must
  * expose `cancelMemberTurn` AND the relay-protocol validator this connector
  * resolved must accept the scoped payload. Either half missing keeps the
@@ -368,6 +382,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsBotDedicatedWorkspaceCleanup(control)) {
       capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceCleanupV1);
+    }
+    if (supportsBotDedicatedWorkspaceUpdate(control)) {
+      capabilities.push(RELAY_CAPABILITIES.botsDedicatedWorkspaceUpdateV1);
     }
     if (supportsRunsCancelMember(control)) {
       capabilities.push(RELAY_CAPABILITIES.runsCancelMemberV1);
