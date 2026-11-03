@@ -713,6 +713,13 @@ test("a retried removal honours the delete flag frozen on the operation", async 
     previewRevision: impact.revision,
     deleteDedicatedWorkspace: false,
   });
+  // The client seeds its controls from this, so the mapping has to carry the
+  // frozen decision and not just the live request.
+  expect(retried.operation.params).toEqual({
+    clearDirectHistory: false,
+    releaseDirectBindings: false,
+    deleteDedicatedWorkspace: true,
+  });
   expect(retried.operation.workspaceCleanup).toEqual({ outcome: "deleted", path: dir });
   expect(existsSync(dir)).toBe(false);
   expect(w.config.workspaces["Reviewer"]).toBeUndefined();
@@ -738,6 +745,13 @@ test("a retried removal whose operation froze the flag off keeps the workspace",
     requestId: "rm-frozen-off",
     previewRevision: impact.revision,
     deleteDedicatedWorkspace: true,
+  });
+  // Explicit `false` must reach the client too: `??` keeps it over a live
+  // `true`, which is the whole point of freezing.
+  expect(retried.operation.params).toEqual({
+    clearDirectHistory: false,
+    releaseDirectBindings: false,
+    deleteDedicatedWorkspace: false,
   });
   expect(retried.operation.workspaceCleanup).toBeUndefined();
   expect(existsSync(dir)).toBe(true);

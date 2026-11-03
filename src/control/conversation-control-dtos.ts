@@ -138,6 +138,14 @@ export interface LifecycleOperationDto {
   previewRevision?: string;
   clearDirectHistory?: boolean;
   releaseDirectBindings?: boolean;
+  /** Frozen at the first accepted attempt: the values the Bot was removed
+   *  with. A retry that arrives with different values is ignored by the core,
+   *  so clients seed and gate their controls from these when they are present. */
+  params?: {
+    clearDirectHistory: boolean;
+    releaseDirectBindings: boolean;
+    deleteDedicatedWorkspace?: boolean;
+  };
   /** Dedicated workspace cleanup result, recorded once the Bot is retired. */
   workspaceCleanup?: DedicatedWorkspaceCleanupOutcome;
   updatedAt: string;
