@@ -52,6 +52,18 @@ it("sending while busy keeps the prompt in the strip, not the transcript", async
   expect(rpc).toHaveBeenCalledWith("i1", "control.prompt", { sessionAlias: "s", text: "queued msg" });
 });
 
+it("does not duplicate the chip when queue-updated already delivered the item", async () => {
+  rpc.mockResolvedValueOnce({ ok: true, queued: true, queueItemId: "q1" });
+  const chat = useChatStore();
+  chat.select("i1", "s");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } } as WebServerEvent);
+  // The connector emits queue-updated synchronously at enqueue, so the push
+  // arrives while the HTTP RPC is still in flight.
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "queue-updated", chatKey: "c", sessionAlias: "s", items: [{ id: "q1", textPreview: "queued msg", enqueuedAt: "t" }] } } as WebServerEvent);
+  await chat.send("queued msg");
+  expect(chat.sessionQueue.map((i) => i.id)).toEqual(["q1"]);
+});
+
 it("builds the bubble at drain time and clears the strip", async () => {
   rpc.mockResolvedValueOnce({ ok: true, queued: true, queueItemId: "q1" });
   const chat = useChatStore();
