@@ -31,5 +31,6 @@ packages/docs/.vitepress/dist
 .superpowers/
 .gstack/
 .reasonix/
+.pi/
 
 .mock-agent-*.json
