@@ -377,6 +377,11 @@ test("a dedicatedWorkspace key smuggled through the public payload is ignored", 
   });
 });
 
+/** The separator this platform does NOT use; see the cleanup-unit helper. */
+function nonNativeSeparators(dir: string): string {
+  return process.platform === "win32" ? dir.replace(/\\/g, "/") : dir.replace(/\//g, "\\");
+}
+
 interface BotWorkspaceHarness {
   botsHome: string;
   config: AppConfig;
@@ -739,13 +744,16 @@ test("a retried removal whose operation froze the flag off keeps the workspace",
   expect(w.config.workspaces["Reviewer"]).toMatchObject({ dedicated: true });
 });
 
-test("a dedicated workspace whose registry entry uses normalized separators still cleans up", async () => {
+test("a dedicated workspace whose registry entry uses the other separator still cleans up", async () => {
   // ConfigStore loads workspaces through normalizePath (forward slashes) while
   // the marker keeps the native path the allocator built. The preview the
   // dialog reads and the removal must share one predicate.
-  const w = await wire({ registryCwd: (cwd) => cwd.replace(/\\/g, "/") });
+  const w = await wire({ registryCwd: nonNativeSeparators });
   const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
   const dir = join(w.botsHome, "Reviewer");
+  // The registry string must differ from the marker string on every platform,
+  // or the comparison this case pins would not be exercised at all.
+  expect(nonNativeSeparators(dir)).not.toBe(dir);
   expect((await w.control.previewBotRemoval(bot.id)).dedicatedWorkspace).toEqual({
     name: "Reviewer",
     path: dir,

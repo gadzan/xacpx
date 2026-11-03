@@ -26,18 +26,30 @@ function botsHome(): string {
   return home;
 }
 
-/** The shape `ConfigStore` hands back: forward slashes, via `normalizePath`. */
-function registeredCwd(home: string, name: string): string {
-  return join(home, name).replace(/\\/g, "/");
+/** The separator this platform does NOT use.
+ *
+ * The real mismatch is ConfigStore handing back `normalizePath` output (forward
+ * slashes) while the marker keeps the `path.join`-native path: on Windows those
+ * are two different strings for one directory. Writing the registry side with
+ * the non-native separator reproduces that on every platform, so a raw string
+ * compare fails on Linux and macOS too — where rewriting a backslash to "/" is a no-op
+ * and the regression would go unguarded.
+ */
+function nonNativeSeparators(dir: string): string {
+  return process.platform === "win32" ? dir.replace(/\\/g, "/") : dir.replace(/\//g, "\\");
 }
 
-test("a native-separator marker cleans up the registry's normalized entry", async () => {
+test("a marker in native separators cleans up a registry entry in the other separator", async () => {
   const home = botsHome();
   const name = "Reviewer";
   const dir = join(home, name);
   mkdirSync(dir);
   const marker = { name, cwd: dir, createdAt: "2026-11-03T00:00:00.000Z" };
-  const workspaces = [{ name, cwd: registeredCwd(home, name) }];
+  const registryCwd = nonNativeSeparators(dir);
+  // Guard the guard: if both sides were ever byte-identical again, this test
+  // would pass without exercising the comparison at all.
+  expect(registryCwd).not.toBe(dir);
+  const workspaces = [{ name, cwd: registryCwd }];
 
   // Preview path: the dialog renders `inUse` from this plan, so a separator
   // mismatch would hide the delete-workspace checkbox on Windows.
@@ -80,7 +92,7 @@ test("a registry entry that points elsewhere still blocks the cleanup", async ()
   const plan = await evaluateDedicatedWorkspaceCleanup({
     marker,
     workspace: name,
-    workspaces: [{ name, cwd: join(home, "elsewhere").replace(/\\/g, "/") }],
+    workspaces: [{ name, cwd: nonNativeSeparators(join(home, "elsewhere")) }],
     botsHomeRoot: home,
     references: EMPTY_REFERENCES,
   });
@@ -90,7 +102,7 @@ test("a registry entry that points elsewhere still blocks the cleanup", async ()
     marker,
     workspace: name,
     deps: {
-      workspaces: { list: () => [{ name, cwd: join(home, "elsewhere") }], remove: async () => {} },
+      workspaces: { list: () => [{ name, cwd: nonNativeSeparators(join(home, "elsewhere")) }], remove: async () => {} },
       botsHomeRoot: home,
       references: () => EMPTY_REFERENCES,
     },
