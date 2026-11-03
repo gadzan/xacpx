@@ -32,20 +32,17 @@ const clearDirectHistory = ref(false);
 const releaseDirectBindings = ref(false);
 const deleteDedicatedWorkspace = ref(false);
 
-/** The values this removal was accepted with. The core freezes them on the
- *  first attempt and ignores a retry's inputs, so a reopened retryable
- *  operation renders and submits these instead of an editable live value. */
-const frozenParams = computed(() => operation.value?.params ?? null);
-const effectiveClearDirectHistory = computed(() => frozenParams.value?.clearDirectHistory ?? clearDirectHistory.value);
-const effectiveReleaseDirectBindings = computed(() => frozenParams.value?.releaseDirectBindings ?? releaseDirectBindings.value);
-const effectiveDeleteDedicatedWorkspace = computed(() => frozenParams.value?.deleteDedicatedWorkspace ?? deleteDedicatedWorkspace.value);
-
+/** Freeze only what the operation reports. The core freezes each flag the
+ *  first attempt accepted, so a control is read-only when the operation names
+ *  that flag and editable otherwise: with no reported flags the dialog behaves
+ *  exactly like a fresh attempt (an older core still accepts the live values). */
+function freezeFlag(flag: "clearDirectHistory" | "releaseDirectBindings" | "deleteDedicatedWorkspace"): boolean {
+  return pending.value || (needsRetry.value && operation.value?.[flag] !== undefined);
+}
 function seedFromFrozenParams(): void {
-  const frozen = frozenParams.value;
-  if (frozen === null) return;
-  clearDirectHistory.value = frozen.clearDirectHistory;
-  releaseDirectBindings.value = frozen.releaseDirectBindings;
-  deleteDedicatedWorkspace.value = frozen.deleteDedicatedWorkspace === true;
+  clearDirectHistory.value = operation.value?.clearDirectHistory ?? clearDirectHistory.value;
+  releaseDirectBindings.value = operation.value?.releaseDirectBindings ?? releaseDirectBindings.value;
+  deleteDedicatedWorkspace.value = operation.value?.deleteDedicatedWorkspace ?? deleteDedicatedWorkspace.value;
 }
 const loading = ref(true);
 const pending = ref(false);
@@ -112,9 +109,9 @@ async function confirmRemove(): Promise<void> {
     const result = await props.remove({
       requestId: requestId.value,
       previewRevision: current.revision,
-      clearDirectHistory: effectiveClearDirectHistory.value,
-      releaseDirectBindings: effectiveReleaseDirectBindings.value,
-      deleteDedicatedWorkspace: effectiveDeleteDedicatedWorkspace.value,
+      clearDirectHistory: clearDirectHistory.value,
+      releaseDirectBindings: releaseDirectBindings.value,
+      deleteDedicatedWorkspace: deleteDedicatedWorkspace.value,
     });
     operation.value = result;
     seedFromFrozenParams();
@@ -192,15 +189,15 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           </li>
         </ul>
         <label v-if="impact && !finished" class="flex items-start gap-2 text-xs">
-          <input v-model="clearDirectHistory" data-test="removal-clear-direct" type="checkbox" :disabled="pending || needsRetry" />
+          <input v-model="clearDirectHistory" data-test="removal-clear-direct" type="checkbox" :disabled="freezeFlag('clearDirectHistory')" />
           <span>{{ t("bot.removal.directHistory") }}</span>
         </label>
         <label v-if="impact && impact.externalBindings.length && !finished" class="flex items-start gap-2 text-xs">
-          <input v-model="releaseDirectBindings" data-test="removal-release-bindings" type="checkbox" :disabled="pending || needsRetry" />
+          <input v-model="releaseDirectBindings" data-test="removal-release-bindings" type="checkbox" :disabled="freezeFlag('releaseDirectBindings')" />
           <span>{{ t("bot.removal.bindings") }}</span>
         </label>
         <label v-if="canDeleteWorkspace && !finished" class="flex items-start gap-2 text-xs">
-          <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="pending || needsRetry" />
+          <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="freezeFlag('deleteDedicatedWorkspace')" />
           <span>
             {{ t("bot.removal.workspace") }}
             <code data-test="removal-workspace-path" class="break-all text-[11px] opacity-70">{{ dedicatedWorkspace?.path }}</code>
@@ -219,7 +216,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           type="button"
           data-test="removal-confirm"
           class="h-8 rounded-btn bg-danger px-3 text-ui font-semibold text-on-danger disabled:opacity-40"
-          :disabled="loading || pending || blocked || (impact?.externalBindings.length ? !effectiveReleaseDirectBindings : false)"
+          :disabled="loading || pending || blocked || (impact?.externalBindings.length ? !releaseDirectBindings : false)"
           @click="confirmRemove"
         >
           {{ needsRetry ? t("bot.removal.retry") : t("bot.removal.confirm") }}
