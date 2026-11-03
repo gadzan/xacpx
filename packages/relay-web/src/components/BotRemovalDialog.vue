@@ -178,7 +178,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           <span>{{ t("bot.removal.directHistory") }}</span>
         </label>
         <label v-if="impact && impact.externalBindings.length && !finished" class="flex items-start gap-2 text-xs">
-          <input v-model="releaseDirectBindings" data-test="removal-release-bindings" type="checkbox" :disabled="pending" />
+          <input v-model="releaseDirectBindings" data-test="removal-release-bindings" type="checkbox" :disabled="pending || needsRetry" />
           <span>{{ t("bot.removal.bindings") }}</span>
         </label>
         <label v-if="canDeleteWorkspace && !finished" class="flex items-start gap-2 text-xs">
