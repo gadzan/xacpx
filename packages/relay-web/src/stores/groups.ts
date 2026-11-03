@@ -1493,7 +1493,7 @@ export const useGroupsStore = defineStore("groups", () => {
       ? topics.some((topic) => topic.id === activeTopicId.value)
       : false;
     if (activeTopicId.value && !stillThere) {
-      const nextActive = topics.find((topic) => topic.status === "active");
+      const nextActive = sortTopicsNewestFirst(topics).find((topic) => topic.status === "active");
       if (nextActive) {
         await switchTopic(nextActive.id);
       } else {
@@ -1592,7 +1592,7 @@ export const useGroupsStore = defineStore("groups", () => {
       && activeConversationId.value === conversationId
       && activeTopicId.value === topicId
     ) {
-      const fallback = next.find((topic) => topic.status === "active");
+      const fallback = sortTopicsNewestFirst(next).find((topic) => topic.status === "active");
       if (fallback) void switchTopic(fallback.id);
       else activeTopicId.value = null;
     }
@@ -2250,7 +2250,7 @@ export const useGroupsStore = defineStore("groups", () => {
         ),
       );
       if (probe.status !== "complete") return undefined;
-      return ordered.find((topic) => probe.activeByTopicId[topic.id])?.id;
+      return ordered.find((topic) => topic.status === "active" && probe.activeByTopicId[topic.id])?.id;
     } catch {
       return undefined;
     }
@@ -2324,10 +2324,15 @@ export const useGroupsStore = defineStore("groups", () => {
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }
-      const targetTopicId = executingTopicId
+      const live = topicsByConversation.value[`${targetInstanceId}:${group.id}`];
+      const current = sortTopicsNewestFirst(live ?? topics);
+      const executing = executingTopicId !== undefined && current.some((topic) => topic.id === executingTopicId && topic.status === "active")
+        ? executingTopicId
+        : undefined;
+      const targetTopicId = executing
         ?? group.defaultTopicId
-        ?? ordered.find((topic) => topic.status === "active")?.id
-        ?? ordered[0]?.id;
+        ?? current.find((topic) => topic.status === "active")?.id
+        ?? current[0]?.id;
       if (targetTopicId) {
         activeTopicId.value = targetTopicId;
         await loadHistory(targetInstanceId, group.id, targetTopicId);

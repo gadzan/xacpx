@@ -1329,7 +1329,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   ): void {
     if (instanceId.value !== targetInstanceId || activeConversationId.value !== conversationId) return;
     if (!activeTopicId.value || topics.some((topic) => topic.id === activeTopicId.value)) return;
-    const fallback = topics.find((topic) => topic.status === "active") ?? topics[0];
+    const ordered = sortTopicsNewestFirst(topics);
+    const fallback = ordered.find((topic) => topic.status === "active") ?? ordered[0];
     if (fallback) {
       void switchTopic(fallback.id);
       return;
@@ -2212,7 +2213,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         ),
       );
       if (probe.status !== "complete") return undefined;
-      return ordered.find((topic) => probe.activeByTopicId[topic.id])?.id;
+      return ordered.find((topic) => topic.status === "active" && probe.activeByTopicId[topic.id])?.id;
     } catch {
       return undefined;
     }
@@ -2288,7 +2289,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
           return;
         }
-        const targetTopicId = executingTopicId ?? conv.defaultTopicId ?? ordered[0]?.id;
+        const live = topicsByConversation.value[`${targetInstanceId}:${conv.id}`];
+        const current = sortTopicsNewestFirst(live ?? topics);
+        const executing = executingTopicId !== undefined && current.some((topic) => topic.id === executingTopicId && topic.status === "active")
+          ? executingTopicId
+          : undefined;
+        const targetTopicId = executing ?? conv.defaultTopicId ?? current.find((topic) => topic.status === "active")?.id ?? current[0]?.id;
         if (targetTopicId) {
           activeTopicId.value = targetTopicId;
           // loadHistory owns topicReady from here: it reopens the gate only on
