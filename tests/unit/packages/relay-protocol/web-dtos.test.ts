@@ -1182,6 +1182,7 @@ test("history details keep a run a human abandoned instead of dropping the batch
   const abandoned = { ...historyRun, state: "indeterminate" as const, waitingQuestion: undefined, abandonedAt: "2026-01-01T00:00:00.000Z" };
   expect(isRunsDetailsBatchResult({ runs: [abandoned] })).toBe(true);
   expect(isRunsDetailsBatchResult({ runs: [{ ...abandoned, abandonRequestId: "req" }] })).toBe(false);
+  expect(isRunsDetailsBatchResult({ runs: [{ ...abandoned, abandonedAt: 7 }] })).toBe(false);
 });
 
 test("history details accept the scoped cancellation reason and the followup sender", () => {
