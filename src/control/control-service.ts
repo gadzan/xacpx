@@ -3002,22 +3002,24 @@ export class ControlService {
 
   async removeBot(input: RemoveBotRequestDto): Promise<{ operation: LifecycleOperationDto }> {
     return this.runConversationMutation(async (runtime) => {
-      const deleteDedicatedWorkspace = input.deleteDedicatedWorkspace === true;
       const removed = await runtime.removals.remove({
         botId: input.botId,
         requestId: input.requestId,
         previewRevision: input.previewRevision,
         clearDirectHistory: input.clearDirectHistory === true,
         releaseDirectBindings: input.releaseDirectBindings === true,
-        deleteDedicatedWorkspace,
+        deleteDedicatedWorkspace: input.deleteDedicatedWorkspace === true,
       });
       // The tombstone is the claim the Bot owned when it retired, so an
       // allocator that committed a marker after the pre-read but before the
-      // barrier still gets its cleanup. A cached operation from an earlier
-      // attempt already carries its own cleanup record and must not have it
-      // overwritten by a re-evaluation of a directory that is long gone.
+      // barrier still gets its cleanup. The flag comes from the OPERATION:
+      // remove() freezes it for a retried requestId, so the request arriving
+      // now may disagree with the decision this operation already recorded. A
+      // cached operation from an earlier attempt already carries its own
+      // cleanup record and must not have it overwritten by a re-evaluation of
+      // a directory that is long gone.
       const tombstone = runtime.bots.removal(input.botId)?.tombstone;
-      const claim = deleteDedicatedWorkspace
+      const claim = removed.params?.deleteDedicatedWorkspace === true
         && tombstone?.dedicatedWorkspace !== undefined
         && removed.workspaceCleanup === undefined
         ? { marker: tombstone.dedicatedWorkspace, workspace: tombstone.workspace }
