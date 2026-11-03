@@ -88,6 +88,8 @@ Elicitation 的**身份**只从 core 已校验的精确 turn context 来：任�
   Web 看板（阶段三）消费本阶段的 HTTP API 与事件。
 - **能力声明**：连接器注册时声明 `interaction.elicitation.form.v1`；其余能力按实现条件声明——
   `bots.dedicated-workspace.v1` 需要 core 的 `supportsBotDedicatedWorkspace()` 探测通过，
+  `bots.dedicated-workspace-update.v1` 需要 core 的
+  `supportsBotDedicatedWorkspaceUpdate()` 探测通过，
   `runs.cancel-member.v1` 需要 core 暴露 `cancelMemberTurn(runId, memberTurnId)`，
   `bots.dedicated-workspace-cleanup.v1` 需要 core 的
   `supportsBotDedicatedWorkspaceCleanup()` 探测通过。
