@@ -695,6 +695,27 @@ test("a Bot that already owns a dedicated workspace cannot be given another one"
   expect(Object.keys(w.config.workspaces)).toEqual(["backend", "Reviewer"]);
 });
 
+test("two concurrent dedicated-workspace updates allocate exactly one", async () => {
+  for (const transaction of [true, false]) {
+    const w = await wire({ transaction });
+    const bot = await w.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    // Both requests read "no dedicated workspace" before either allocates, so
+    // only the allocation critical section can keep the loser from registering
+    // a second directory nobody could ever target or delete.
+    const settled = await Promise.allSettled([
+      w.control.updateBot(bot.id, { dedicatedWorkspace: true }),
+      w.control.updateBot(bot.id, { dedicatedWorkspace: true }),
+    ]);
+    const rejected = settled.filter((row) => row.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ code: "dedicated_workspace_exists" });
+    const winner = settled.find((row) => row.status === "fulfilled") as PromiseFulfilledResult<{ dedicatedWorkspace?: { name: string } }>;
+    expect(winner.value.dedicatedWorkspace?.name).toBe("Reviewer");
+    expect(readdirSync(w.botsHome)).toEqual(["Reviewer"]);
+    expect(Object.keys(w.config.workspaces)).toEqual(["backend", "Reviewer"]);
+  }
+});
+
 test("a dedicated-workspace request cannot also name a workspace", async () => {
   const w = await wire();
   const bot = await w.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
