@@ -122,6 +122,30 @@ describe("BotRemovalDialog", () => {
     expect(wrapper.get("[data-test=removal-finished]").text()).toContain("Group history stays");
   });
 
+  it("freezes the workspace-delete choice once a retry is pending", async () => {
+    // The core freezes `deleteDedicatedWorkspace` on the first accepted
+    // attempt, so a retried removal ignores a flipped box. Offer it read-only
+    // instead of letting the user pick something the operation will override.
+    const dedicatedWorkspace = { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false };
+    const retryable = mountDialog(impact({
+      phase: "deleting",
+      dedicatedWorkspace,
+      operation: {
+        id: "bot-remove:req-frozen",
+        requestId: "req-frozen",
+        phase: "failed",
+        error: { code: "session_release_failed", message: "release failed" },
+      },
+    }), async () => operation("completed", { requestId: "req-frozen" }), true);
+    await flushPromises();
+    expect(retryable.wrapper.get("[data-test=removal-delete-workspace]").attributes("disabled")).toBeDefined();
+    retryable.wrapper.unmount();
+
+    const fresh = mountDialog(impact({ dedicatedWorkspace }), undefined, true);
+    await flushPromises();
+    expect(fresh.wrapper.get("[data-test=removal-delete-workspace]").attributes("disabled")).toBeUndefined();
+  });
+
   it("offers the dedicated workspace folder and sends the delete flag", async () => {
     const { wrapper, remove } = mountDialog(impact({
       dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false },
