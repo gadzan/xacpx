@@ -336,6 +336,10 @@ Web 侧另有一层短命缓存，只用于消除重复 RPC：键为 instance + 
   （对应 `<workspace>-<agent>` 自动 alias），hover title 恒为全名；剥空则不剥。
 - **组头悬停 ＋**（触屏常显）打开 `NewSessionDialog` 并预填本组 workspace/agent
   （`presetWorkspace`/`presetAgent` props，仍可改）；实例 footer 的 ＋ 不变。移动端零特化。
+- **行内动作的显隐**：会话行 ⋯、Bot 行 ⋯、群组行编辑按钮统一为
+  `opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100`——
+  有 hover 能力的指针设备悬停行才出现，触屏常显；按钮用 opacity 占位，不改变行宽。
+  Bot 行不再单独画启用状态圆点：禁用的 Bot 由弱化头像与名称表达。
 
 ## 切换会话的渲染性能
 
@@ -992,7 +996,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 - **Bot / Group 管理弹层的移动端布局**：`BotDialog.vue` 与 `GroupDialog.vue` 使用 Teleport 挂到 `body`，避免实例侧栏的 `transform` 把 fixed 遮罩限制在侧栏内。遮罩按动态视口高度和设备安全区留白；标题与操作栏不收缩，仅表单内容滚动。Group 的 fieldset 显式允许收缩，长成员名称和说明不会撑宽窄屏表单。
 
-- **侧栏模式切换**：左栏顶部一行 `Sessions | Bots | Groups` 模式切换，全侧栏共用一行，切一次同时切换所有实例卡片（见上文「侧栏导航 tab」），采用分段控件（segmented control）样式：凹槽轨道 `bg-fill-track rounded-btn p-0.5`，分段 `h-6 rounded-sm`，选中段 `bg-raised shadow-press font-semibold text-fg`，未选中段 `text-fg-muted hover:bg-fill-hover`（`data-test="instance-nav-track"`）。切到 Bots 时展示 Bot 列表（名称、角色、agent、workspace 与启用状态），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
+- **侧栏模式切换**：左栏顶部一行 `Sessions | Bots | Groups` 模式切换，全侧栏共用一行，切一次同时切换所有实例卡片（见上文「侧栏导航 tab」），采用分段控件（segmented control）样式：凹槽轨道 `bg-fill-track rounded-btn p-0.5`，分段 `h-6 rounded-sm`，选中段 `bg-raised shadow-press font-semibold text-fg`，未选中段 `text-fg-muted hover:bg-fill-hover`（`data-test="instance-nav-track"`）。切到 Bots 时展示 Bot 列表（头像、名称、角色；禁用的 Bot 以弱化头像和名称呈现，不再单独画启用状态圆点），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
 - **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。新建时工作区默认选择「新建专属工作区」，由所选实例的 daemon 在 `~/.xacpx/bots/` 下创建并注册，也可选择实例已有工作区；自动选项在请求中省略 `workspace`。没有已注册工作区时仍可创建 Bot。编辑仅选择已注册工作区。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
 - **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatarQuickView.vue` / `BotAvatar.vue`）**：Bot 弹层不再有「基本设置 / 头像外观」标签页；基本设置表单顶部直接展示头像。点击头像打开放大查看浮层（`BotAvatarQuickView.vue`，只读，不改变草稿）；该浮层是独立注册的一层（`useModalA11y`），Esc 或移动端返回只关闭浮层而不关弹层，焦点回到头像入口。头像右下角角标切到头像外观视图，标题栏返回按钮回到基本设置。外观视图支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，两个视图间切换不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。新建 Bot 时每次打开弹层随机生成一个角色头像（形状 / 颜色 / 表情），编辑沿用已保存配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
 - **头像状态与资源**：侧栏只展示身份，不聚合全局忙碌。Direct 按当前 Conversation / Topic / Run，Group 按精确 MemberTurn 与交互归属展示；完成动作只由已观察到的同任务完成事件授权，恢复快照与重连不回放。历史消息、选项、成员选择器和交接双头像静态渲染；可见动态头像共用一个帧时钟，离屏、隐藏、减少动态效果与卸载释放或暂停相应资源。普通 Session 与 Agent 品牌图标仍使用 `AgentIcon`。
@@ -1046,7 +1050,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 ### Group 创建、编辑与删除（`GroupDialog.vue`）
 
-- **入口**：实例侧栏 Groups 模式底部常驻「新建群组」（空列表、加载失败时同样可见）；群组行悬停出现编辑按钮；桌面端 `GroupPane` 顶栏右侧的编辑按钮与 `<lg` 顶栏 `⋯` sheet 的「编辑群组」条目都打开 `GroupDialog`。新建成功后自动选中该群组，没有话题时 `GroupPane` 以「创建第一个话题」引导打开 `GroupTopicDialog`。该对话框打开时自行拉取实例工作区（`loadWorkspaces`），不依赖之前是否打开过 Bot 或会话表单；拉取失败时显示重试。
+- **入口**：实例侧栏 Groups 模式底部常驻「新建群组」（空列表、加载失败时同样可见）；群组行悬停出现编辑按钮（触屏常显）；桌面端 `GroupPane` 顶栏右侧的编辑按钮与 `<lg` 顶栏 `⋯` sheet 的「编辑群组」条目都打开 `GroupDialog`。新建成功后自动选中该群组，没有话题时 `GroupPane` 以「创建第一个话题」引导打开 `GroupTopicDialog`。该对话框打开时自行拉取实例工作区（`loadWorkspaces`），不依赖之前是否打开过 Bot 或会话表单；拉取失败时显示重试。
 - **表单**：名称（≤80）、说明、至少两个不同成员、可选 Lead。成员行展示角色、Agent 与启用状态，同名 Bot 附带稳定 ID。新建时 Lead 默认取第一个已启用成员，直到用户手动选择；移除当前 Lead 时改选下一个已启用成员（没有则清空）并提示。实例不足两个 Bot 时给出「新建 Bot」引导，Bot 表单关闭后回到群组表单。
 - **编辑**：只发送与打开时快照不同的字段，避免回滚其他客户端的并发修改；`groups.update` 成功后才合并列表，并从当前发送目标中剔除已移除成员。
 - **成员仍有任务**：`group_member_has_work` 时，按话题调用 `runs.list`（`limit: 200`，并合并 `activeRun`）和 `runs.get`，列出持有被移除成员 `queued` / `dispatched` / `running` MemberTurn 的 Run（含 `indeterminate` Run），提供逐个 Stop（`runs.cancel`）后重新查询。
