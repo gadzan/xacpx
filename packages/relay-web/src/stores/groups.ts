@@ -1033,9 +1033,6 @@ export const useGroupsStore = defineStore("groups", () => {
   });
   const currentTopics = computed(() => {
     if (!instanceId.value || !activeConversationId.value) return [];
-    // Presentation order is newest-first: the raw Topic cache keeps the
-    // server's ascending order, this computed is the one view every pane and
-    // picker reads from.
     return sortTopicsNewestFirst(topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? []);
   });
   const currentTopic = computed(() => {
@@ -2237,12 +2234,6 @@ export const useGroupsStore = defineStore("groups", () => {
     }
   }
 
-  /** Authoritative probe: which Topic of this Conversation owns an executing
-   *  Run right now, per runs.list's elected active owner. The probe is bounded
-   *  (see EXECUTING_TOPIC_PROBE_TIMEOUT_MS) and degrades to `undefined` on any
-   *  failure or timeout, so a slow or failing authority falls back to the
-   *  plain default selection and never holds `topicReady` closed by itself.
-   *  When several Topics execute, the first in display order (newest) wins. */
   async function findExecutingTopicId(
     targetInstanceId: string,
     conversationId: string,
@@ -2327,12 +2318,7 @@ export const useGroupsStore = defineStore("groups", () => {
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }
-      // Default selection: an executing Topic beats the plain default. The
-      // probe is authoritative (runs.list), bounded, and degrades to the plain
-      // default on any failure — it must never hold the gate closed. The
-      // fallback order (default Topic, else the first ACTIVE Topic in display
-      // order) still protects against landing the composer in an archived
-      // Topic where every send is refused with topic_not_active.
+      // Prefer an ACTIVE Topic: the server refuses sends into an archived one.
       const ordered = sortTopicsNewestFirst(topics);
       const executingTopicId = await findExecutingTopicId(targetInstanceId, group.id, ordered);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {

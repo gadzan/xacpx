@@ -277,8 +277,6 @@ describe("useGroupsStore", () => {
     mockRpc.mockImplementation(async (_inst: string, type: string, payload?: unknown) => {
       if (type === "control.groups.list") return { groups: [GROUP] };
       if (type === "control.topics.list") {
-        // The backend contract is createdAt ascending: the store must present
-        // the reverse order without touching the raw cache.
         return { topics: [
           { id: "topic_old", conversationId: "conversation_g", title: "Old", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
           { id: "topic_new", conversationId: "conversation_g", title: "New", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
@@ -300,8 +298,6 @@ describe("useGroupsStore", () => {
       throw new Error(`unexpected ${type}`);
     });
     await store.selectGroup("inst_1", "conversation_g");
-    // Newest on top, and the executing Topic (the OLDER one here) still beats
-    // the newest Topic as the default landing spot.
     expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_new", "topic_old"]);
     expect(store.activeTopicId).toBe("topic_old");
   });
@@ -327,7 +323,6 @@ describe("useGroupsStore", () => {
       throw new Error(`unexpected ${type}`);
     });
     await store.selectGroup("inst_1", "conversation_g");
-    // Degrade = original default logic: first ACTIVE Topic (newest here).
     expect(store.activeTopicId).toBe("topic_new");
   });
 

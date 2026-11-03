@@ -816,8 +816,6 @@ describe("useDirectBotsStore", () => {
     it("lists currentTopics newest-first regardless of server order", async () => {
       rpcFor({
         "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV, defaultTopicId: "top_old" }] }),
-        // The backend contract is createdAt ascending: the store must present
-        // the reverse order without touching the raw cache.
         "control.topics.list": () => Promise.resolve({ topics: [topic("top_old", "2026-01-01T00:00:00.000Z"), topic("top_mid", "2026-02-01T00:00:00.000Z"), topic("top_new", "2026-03-01T00:00:00.000Z")] }),
         "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_old", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
         "control.runs.list": () => Promise.resolve({ runs: [] }),

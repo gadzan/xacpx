@@ -43,7 +43,7 @@ describe("probeExecutingTopics", () => {
       const never = Promise.withResolvers<TopicRunsAuthority>();
       const pending = probeExecutingTopics(
         [topic("t1", "2026-01-01T00:00:00.000Z")],
-        () => never.promise, // never settles: the deadline must win
+        () => never.promise,
         25,
       );
       await vi.advanceTimersByTimeAsync(25);
