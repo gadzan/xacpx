@@ -132,21 +132,26 @@ async function closeSurface(): Promise<void> {
 }
 
 let intersectionCallback: IntersectionObserverCallback | null = null;
+let observedTargets: Element[] = [];
 let observerProto: typeof IntersectionObserver | undefined;
 
 /** The shared setup stubs IntersectionObserver as a no-op; popover tests need
  *  the callback so the off-screen close path is exercised deterministically. */
 function installIntersectionProbe(): void {
   intersectionCallback = null;
+  observedTargets = [];
   observerProto = globalThis.IntersectionObserver;
   globalThis.IntersectionObserver = class {
     constructor(callback: IntersectionObserverCallback) { intersectionCallback = callback; }
     readonly root = null;
     readonly rootMargin = "0px";
     readonly thresholds = [0];
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
+    observe(target: Element): void { observedTargets.push(target); }
+    unobserve(target: Element): void {
+      const i = observedTargets.indexOf(target);
+      if (i >= 0) observedTargets.splice(i, 1);
+    }
+    disconnect(): void { observedTargets.length = 0; }
     takeRecords(): IntersectionObserverEntry[] { return []; }
   } as unknown as typeof IntersectionObserver;
 }
@@ -280,16 +285,28 @@ describe("GroupThinkingBubbles UI", () => {
     wrapper.unmount();
   });
 
-  it("closes the detail when the trigger leaves the scroller", async () => {
+  it("closes the detail when the row leaves the scroller, survives a trigger swap", async () => {
     const groups = seedEnvironment();
     seedLiveRun();
     vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
     const wrapper = mountTranscript();
     await openFirstBubble(wrapper);
     expect(card()).not.toBeNull();
+    // The live ⇄ finished branch swap replaces the trigger button while the
+    // row stays; that must NOT close the open detail.
     const bubble = wrapper.get('[data-test="agent-thinking-bubble"]').element as HTMLElement;
+    const row = bubble.closest("[data-row-id]") as HTMLElement;
+    // The live ⇄ finished branch swap replaces the trigger button while the
+    // row stays; that must NOT close the open detail. The drawer observed the
+    // row at mount, never the swappable button.
+    expect(observedTargets).not.toContain(bubble);
+    expect(observedTargets).toContain(row);
     bubble.remove();
     fireOffscreen(bubble);
+    await flushPromises();
+    expect(card()).not.toBeNull();
+    // The row itself scrolling out (or being removed) closes it.
+    fireOffscreen(row);
     await flushPromises();
     expect(card()).toBeNull();
     wrapper.unmount();

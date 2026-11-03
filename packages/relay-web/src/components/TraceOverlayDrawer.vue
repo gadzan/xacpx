@@ -82,27 +82,36 @@ const { remember: memoizeScroll } = useDetailScrollMemory(
 function onOutsidePointer(event: PointerEvent): void {
   if (document.querySelector('[data-composer-confirm]')) return;
   // The layer itself is pointer-through (collapsed popover contract): only the
-  // drawer intercepts. Clicks that land on the drawer or the anchor stay.
-  if (props.anchorEl && event.composedPath().includes(props.anchorEl)) return;
+  // drawer intercepts. Clicks that land on the drawer or the anchor's row stay.
+  if (rowEl() && event.composedPath().includes(rowEl()!)) return;
   if (drawerEl.value && event.composedPath().includes(drawerEl.value)) return;
   // Outside click closes without refocusing: the pointer is elsewhere now and
   // focus must follow it, not snap back to the bubble.
   emit("close");
 }
 
+/** The row outlives the trigger button: the live ⇄ finished branch swap
+ *  replaces the button while the detail is open, so intersection and
+  * outside-pointer checks anchor to the row, never the swappable button. */
+function rowEl(): HTMLElement | null {
+  return props.anchorEl?.closest<HTMLElement>("[data-row-id]") ?? null;
+}
+
 let anchorObserver: IntersectionObserver | null = null;
 
 // Anchor scrolled out of the transcript or its row was removed (compacted):
-// close without touching focus — the reader has already moved on.
+// close without touching focus — the reader has already moved on. A trigger
+// swap (live ⇄ finished branch) detaches the button but keeps the row; only
+// a missing row counts as gone.
 function observeAnchor(): void {
   anchorObserver?.disconnect();
   anchorObserver = null;
-  const anchor = props.anchorEl;
-  if (!anchor || typeof IntersectionObserver === "undefined") return;
+  const row = rowEl();
+  if (!row || typeof IntersectionObserver === "undefined") return;
   anchorObserver = new IntersectionObserver((entries) => {
-    if (entries.some((entry) => entry.target === props.anchorEl && !entry.isIntersecting)) emit("close");
+    if (entries.some((entry) => entry.target === row && !entry.isIntersecting)) emit("close");
   }, { root: null, threshold: 0 });
-  anchorObserver.observe(anchor);
+  anchorObserver.observe(row);
 }
 
 onMounted(() => {
@@ -114,7 +123,7 @@ onBeforeUnmount(() => {
   anchorObserver?.disconnect();
   anchorObserver = null;
 });
-watch(() => props.anchorEl, observeAnchor, { flush: "post" });
+watch(rowEl, observeAnchor, { flush: "post" });
 </script>
 
 <template>

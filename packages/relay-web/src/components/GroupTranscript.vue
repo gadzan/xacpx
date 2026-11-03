@@ -1068,7 +1068,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
             :stopped="stoppedLeaderTurnIds.has(item.memberTurn.id)"
             :single-member="item.run.memberTurns.length <= 1"
             :run-state="item.run.run.state"
-            :live-parts="groupsStore.liveTurnForMember(item.memberTurn.id)?.parts ?? (item.memberTurn.state === 'running' || item.memberTurn.state === 'dispatched' || item.memberTurn.state === 'queued' ? [] : undefined)"
+            :live-parts="groupsStore.liveTurnForMember(item.memberTurn.id)?.parts"
             @toggle="handleToggle(bubbleKeyOf(item.memberTurn.id), $event)"
           >
           </GroupAgentTurnRow>

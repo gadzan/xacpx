@@ -139,7 +139,7 @@ defineExpose({ bubbleStatus });
     <p v-if="taskHint" class="w-full text-xs leading-relaxed text-fg-muted" data-test="group-member-task-hint">
       {{ taskHint }}
     </p>
-    <template v-if="liveParts !== undefined && memberTurn.state !== 'completed' && memberTurn.state !== 'failed' && memberTurn.state !== 'cancelled' && memberTurn.state !== 'indeterminate'">
+    <template v-if="liveParts !== undefined">
       <!-- Running member: one text bubble per segment, dots beneath the last.
            No status entry, no tool/reasoning rows, no folded trace header. -->
       <div
