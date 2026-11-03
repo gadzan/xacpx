@@ -883,7 +883,7 @@ const rowSwipes = computed(() => {
             <div
               v-else
               data-test="bot-row"
-              class="bot-sidebar-row relative flex h-10 items-center rounded-sm transition-colors"
+              class="bot-sidebar-row group relative flex h-10 items-center rounded-sm transition-colors"
               :class="isBotSelected(inst.id, entry.bot.id) ? 'bg-raised shadow-select' : 'hover:bg-fill-hover'"
             >
               <button
@@ -902,9 +902,6 @@ const rowSwipes = computed(() => {
                   </span>
                   <span v-if="entry.bot.role && !entry.bot.retired" class="truncate text-xs text-fg-muted">{{ entry.bot.role }}</span>
                 </span>
-                <span class="h-1.5 w-1.5 shrink-0 rounded-full"
-                      :class="entry.bot.enabled ? 'bg-run' : 'bg-fg-muted'"
-                      :title="entry.bot.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')" />
               </button>
               <button
                 type="button"
@@ -912,7 +909,7 @@ const rowSwipes = computed(() => {
                 :aria-label="$t('common.more')"
                 aria-haspopup="menu"
                 :aria-expanded="botMenuOpen(inst.id, entry.bot.id)"
-                class="bot-menu-trigger mr-1 grid h-10 w-10 shrink-0 place-items-center rounded-sm text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:h-7 lg:w-7"
+                class="bot-menu-trigger mr-1 grid h-10 w-10 shrink-0 place-items-center rounded-sm text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:h-7 lg:w-7 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100"
                 @click.stop="toggleBotMenu(inst.id, entry.bot.id, $event.currentTarget as HTMLElement)"
               >
                 <span class="grid h-7 w-7 place-items-center rounded-sm transition-colors hover:bg-surface-2 hover:text-fg">
@@ -1011,7 +1008,7 @@ const rowSwipes = computed(() => {
                 {{ $t("group.list.deleting") }}
               </span>
             </button>
-            <div class="flex items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+            <div class="flex items-center gap-0.5 pr-1 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-within:opacity-100">
               <button
                 type="button"
                 data-test="edit-group-tree-button"
