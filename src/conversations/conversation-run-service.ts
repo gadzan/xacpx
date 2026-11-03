@@ -1540,6 +1540,7 @@ export class ConversationRunService {
   previewTopic(conversationId: string, topicId: string): {
     unsettledRunIds: string[];
     indeterminateRunIds: string[];
+    abandonableRunIds: string[];
     bindingChatKeys: string[];
     worktreeRunIds: string[];
   } {
@@ -1549,6 +1550,7 @@ export class ConversationRunService {
     return {
       unsettledRunIds: runs.filter((run) => this.isUnsettledRun(run.state)).map((run) => run.id),
       indeterminateRunIds: runs.filter((run) => run.state === "indeterminate").map((run) => run.id),
+      abandonableRunIds: this.blockingIndeterminate(runs).map((run) => run.id),
       bindingChatKeys: this.topicBindingChatKeys(conversationId, topicId),
       worktreeRunIds: this.store.listWorktreeRunIds(conversationId, topicId),
     };
@@ -1833,6 +1835,31 @@ export class ConversationRunService {
     this.trackReadyAutomaticRuns();
   }
 
+  /**
+   * Operator abandonment of a sealed `indeterminate` Run. `indeterminate` means
+   * the side effects are unknown AND the provider will never prove them, which
+   * previously left the Topic's `deleting` barrier with no exit: teardown fails
+   * closed on unknown work forever. This records the human decision — the one
+   * thing a late provider settle would otherwise supply — so the Run stops
+   * blocking its own cleanup root. Nothing is reclassified: the Run stays
+   * `indeterminate`, no member is retried, no dispatch reopens. Teardown's own
+   * verified physical release is what actually stops a lingering turn, so it
+   * must be the caller's next step. Refuses while the Topic still has unsettled
+   * Runs: their sessions are about to be released, which is a different
+   * decision than accepting a sealed unknown.
+   */
+  async abandonUnknownRun(runId: string): Promise<ConversationRun> {
+    this.assertOpen();
+    const run = this.store.getRun(runId);
+    if (!run) {
+      throw new ConversationError("run_not_found", `run "${runId}" does not exist`);
+    }
+    this.assertTopicSettled(run.conversationId, run.topicId, "abandoning its unknown result");
+    const result = this.store.abandonUnknownRun({ runId, now: this.now().toISOString() });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-run-changed", run: result.run });
+    return result.run;
+  }
+
   async cancelMemberTurn(runId: string, memberTurnId: string): Promise<void> {
     this.assertOpen();
     await this.dispatcher.cancelMemberTurn(runId, memberTurnId);
@@ -2047,7 +2074,7 @@ export class ConversationRunService {
     await this.dispatcher.flushOwnedClaimLeases();
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const remaining = this.store.listRuns(conversationId);
-    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    const indeterminate = this.blockingIndeterminate(remaining);
     if (indeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "conversation has indeterminate work", {
         runIds: indeterminate.map((run) => run.id),
@@ -2163,8 +2190,7 @@ export class ConversationRunService {
         runIds: unsettled.map((run) => run.id),
       });
     }
-    const ghostIndeterminate = this.store.listRuns(conversationId)
-      .filter((run) => run.state === "indeterminate");
+    const ghostIndeterminate = this.blockingIndeterminate(this.store.listRuns(conversationId));
     if (ghostIndeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "group has indeterminate work", {
         runIds: ghostIndeterminate.map((run) => run.id),
@@ -2747,7 +2773,7 @@ export class ConversationRunService {
         runIds: blocking.map((run) => run.id),
       });
     }
-    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    const indeterminate = this.blockingIndeterminate(remaining);
     if (indeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
         runIds: indeterminate.map((run) => run.id),
@@ -3410,6 +3436,17 @@ export class ConversationRunService {
     return state === "queued" || state === "running" || state === "waiting-human" || state === "paused";
   }
 
+  /**
+   * Sealed unknown work that still blocks destroying its own cleanup root. A
+   * human who abandoned the unknown result (`abandonUnknownRun`) has accepted
+   * the loss, so the Run neither blocks teardown nor shelters anything: it
+   * cannot execute, and the teardown that follows is what performs the
+   * verified physical release.
+   */
+  private blockingIndeterminate(runs: ConversationRun[]): ConversationRun[] {
+    return runs.filter((run) => run.state === "indeterminate" && run.abandonedAt === undefined);
+  }
+
   private assertTopicHasNoIndeterminate(conversationId: string, topicId: string): void {
     const indeterminate = this.store.listRuns(conversationId, topicId).filter((run) => run.state === "indeterminate");
     if (indeterminate.length > 0) {
@@ -3551,7 +3588,7 @@ export class ConversationRunService {
         runIds: blocking.map((run) => run.id),
       });
     }
-    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    const indeterminate = this.blockingIndeterminate(remaining);
     if (indeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
         runIds: indeterminate.map((run) => run.id),

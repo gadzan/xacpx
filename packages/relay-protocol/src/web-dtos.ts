@@ -763,6 +763,7 @@ function validConversationRun(value: unknown): boolean {
       || (Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))))
     && typeof c.createdAt === "string"
     && optStr(c.completionReason) && optStr(c.routingReason) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && optStr(c.abandonedAt)
     && optStr(c.pauseReason) && optStr(c.pauseRequestedAt) && optStr(c.pausedAt)
     && (c.controlRevision === undefined || (typeof c.controlRevision === "number" && Number.isSafeInteger(c.controlRevision) && c.controlRevision >= 0))
     && (c.progressRevision === undefined || (typeof c.progressRevision === "number" && Number.isSafeInteger(c.progressRevision) && c.progressRevision >= 0))
@@ -861,7 +862,7 @@ const historyRunKeys = [
   "id", "conversationId", "topicId", "requestMessageId", "requestId", "mode", "state", "completionReason",
   "profileRevision", "activeBatch", "maxMemberTurns", "budgetEpoch", "consumedMemberTurns", "failedBotIds",
   "unavailableBotIds", "quarantinedBotIds", "routingState", "routingReason", "waitingQuestion", "createdAt",
-  "startedAt", "finishedAt",
+  "startedAt", "finishedAt", "abandonedAt",
   "controlRevision", "progressRevision", "pauseReason", "pauseRequestedAt", "pausedAt",
   "memberTurns", "profileSnapshot", "worktree",
 ] as const satisfies readonly (keyof ConversationRunHistoryDetailDto)[];

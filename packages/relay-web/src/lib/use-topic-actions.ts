@@ -13,6 +13,9 @@ export interface TopicActionHandlers {
   clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
   /** Absent on surfaces whose topics have no execution target (Direct). */
   setTopicIsolation?: (topicId: string, isolation: TopicIsolation) => Promise<void>;
+  /** Give up on sealed `indeterminate` Runs so a teardown that failed closed
+   *  can proceed. Absent when the connector cannot serve `runs.abandon`. */
+  abandonUnknownRuns?: (runIds: string[]) => Promise<void>;
 }
 
 // Action state machine behind TopicSwitcher, the one topic surface shared by the group
@@ -29,9 +32,16 @@ export function useTopicActions(handlers: TopicActionHandlers) {
   const confirmImpact = ref<TopicImpactDto | null>(null);
   const releaseBindings = ref(false);
   const confirming = ref(false);
+  const abandoning = ref(false);
+  // Narrower than "confirm failed": a release failure must not offer abandon.
+  const actionErrorCode = ref<string | null>(null);
   const isolationTopic = ref<TopicSummaryDto | null>(null);
   const isolationSaving = ref(false);
 
+  const canAbandonUnknown = computed(() => confirmKind.value === "delete"
+    && actionErrorCode.value === "conversation_indeterminate"
+    && (confirmImpact.value?.abandonableRunIds?.length ?? 0) > 0
+    && handlers.abandonUnknownRuns !== undefined);
   const confirmBlocked = computed(() => {
     const bindings = confirmImpact.value?.bindings.length ?? 0;
     const worktrees = confirmImpact.value?.worktreeRunIds.length ?? 0;
@@ -85,6 +95,7 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     releaseBindings.value = false;
     confirmImpact.value = null;
     actionError.value = null;
+    actionErrorCode.value = null;
     try {
       confirmImpact.value = await handlers.previewTopic(topic.id);
     } catch (error: unknown) {
@@ -99,26 +110,56 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     confirmImpact.value = null;
   }
 
-  async function submitConfirm(): Promise<void> {
+  /** Shared with abandon-then-retry so the pre-flight gates are not re-run
+   *  against a stale impact snapshot. Closes after the guard drops, because
+   *  `closeConfirm` refuses while `confirming`. */
+  async function applyConfirm(): Promise<void> {
     const topicId = confirmTopicId.value;
     const kind = confirmKind.value;
     if (!topicId || !kind) return;
-    const bindings = confirmImpact.value?.bindings.length ?? 0;
-    if (bindings > 0 && !releaseBindings.value) return;
-    if ((confirmImpact.value?.worktreeRunIds.length ?? 0) > 0) return;
     confirming.value = true;
     actionError.value = null;
+    actionErrorCode.value = null;
+    let applied = false;
     try {
       if (kind === "delete") {
         await handlers.teardownTopic(topicId, confirmRequestId.value, releaseBindings.value);
       } else {
         await handlers.clearTopic(topicId, confirmRequestId.value, releaseBindings.value);
       }
-      closeConfirm();
+      applied = true;
     } catch (error: unknown) {
       actionError.value = error instanceof Error ? error.message : String(error);
+      const code = (error as { code?: unknown } | null)?.code;
+      actionErrorCode.value = typeof code === "string" ? code : null;
     } finally {
       confirming.value = false;
+    }
+    if (applied) closeConfirm();
+  }
+
+  async function submitConfirm(): Promise<void> {
+    const bindings = confirmImpact.value?.bindings.length ?? 0;
+    if (bindings > 0 && !releaseBindings.value) return;
+    if ((confirmImpact.value?.worktreeRunIds.length ?? 0) > 0) return;
+    await applyConfirm();
+  }
+
+  /** Retries with the same `requestId`: the backend is idempotent per request. */
+  async function abandonUnknown(): Promise<void> {
+    const ids = confirmImpact.value?.abandonableRunIds ?? [];
+    if (!handlers.abandonUnknownRuns || ids.length === 0 || abandoning.value || confirming.value) return;
+    abandoning.value = true;
+    actionError.value = null;
+    try {
+      await handlers.abandonUnknownRuns(ids);
+      if (confirmImpact.value) confirmImpact.value = { ...confirmImpact.value, abandonableRunIds: [] };
+      await applyConfirm();
+    } catch (error: unknown) {
+      actionError.value = error instanceof Error ? error.message : String(error);
+      actionErrorCode.value = null;
+    } finally {
+      abandoning.value = false;
     }
   }
 
@@ -184,6 +225,8 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     confirmImpact,
     releaseBindings,
     confirming,
+    abandoning,
+    canAbandonUnknown,
     isolationTopic,
     isolationSaving,
     openIsolation,
@@ -198,5 +241,6 @@ export function useTopicActions(handlers: TopicActionHandlers) {
     openConfirm,
     closeConfirm,
     submitConfirm,
+    abandonUnknown,
   };
 }

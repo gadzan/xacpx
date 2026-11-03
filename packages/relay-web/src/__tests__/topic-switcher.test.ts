@@ -19,6 +19,7 @@ function impact(partial: Partial<TopicImpactDto> = {}): TopicImpactDto {
     unsettledRunIds: [],
     indeterminateRunIds: [],
     worktreeRunIds: [],
+    abandonableRunIds: [],
     actions: { rename: true, archive: true, restore: false, teardown: true, clear: false },
     ...partial,
   };
@@ -31,6 +32,7 @@ function mountSwitcher(overrides: Partial<{
   renameTopic: (topicId: string, title: string) => Promise<void>;
   restoreTopic: (topicId: string) => Promise<void>;
   teardownTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
+  abandonUnknownRuns?: (runIds: string[]) => Promise<void>;
 }> = {}) {
   const renameTopic = overrides.renameTopic ?? vi.fn(async () => {});
   const setTopicIsolation = overrides.setTopicIsolation ?? vi.fn(async () => {});
@@ -48,6 +50,7 @@ function mountSwitcher(overrides: Partial<{
       teardownTopic,
       clearTopic: vi.fn(async () => {}),
       setTopicIsolation,
+      ...(overrides.abandonUnknownRuns ? { abandonUnknownRuns: overrides.abandonUnknownRuns } : {}),
     },
     global: { plugins: [i18n] },
   });
@@ -127,6 +130,72 @@ describe("TopicSwitcher (Bot topics)", () => {
     expect(wrapper.find("[data-test='topic-confirm-submit']").attributes("disabled")).toBeDefined();
     await wrapper.find("[data-test='topic-confirm-submit']").trigger("click");
     expect(teardownTopic).not.toHaveBeenCalled();
+  });
+
+  it("offers giving up sealed unknown work, then retries the same delete", async () => {
+    const teardownTopic = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("topic has indeterminate work"), {
+        code: "conversation_indeterminate",
+      }))
+      .mockResolvedValueOnce(undefined);
+    const abandonUnknownRuns = vi.fn(async () => {});
+    const { wrapper } = mountSwitcher({
+      teardownTopic,
+      abandonUnknownRuns,
+      previewTopic: vi.fn(async () => impact({ indeterminateRunIds: ["run_1"], abandonableRunIds: ["run_1"] })),
+    });
+    const menu = await rowMenu(wrapper, 1);
+    await menu.find("[data-test='menu-delete']").trigger("click");
+    await flushPromises();
+    expect(wrapper.find("[data-test='topic-abandon']").exists()).toBe(false);
+    await wrapper.find("[data-test='topic-confirm-submit']").trigger("click");
+    await flushPromises();
+    const requestId = teardownTopic.mock.calls[0]![1];
+    expect(wrapper.find("[data-test='topic-abandon']").exists()).toBe(true);
+    await wrapper.find("[data-test='topic-abandon-submit']").trigger("click");
+    await flushPromises();
+    expect(abandonUnknownRuns).toHaveBeenCalledWith(["run_1"]);
+    expect(teardownTopic).toHaveBeenCalledTimes(2);
+    expect(teardownTopic.mock.calls[1]![1]).toBe(requestId);
+    expect(wrapper.find("[data-test='topic-confirm']").exists()).toBe(false);
+  });
+
+  it("keeps the abandon door shut for a failure that is not unknown work", async () => {
+    const abandonUnknownRuns = vi.fn(async () => {});
+    const { wrapper } = mountSwitcher({
+      teardownTopic: vi.fn(async () => {
+        throw Object.assign(new Error("release failed"), { code: "session_release_failed" });
+      }),
+      abandonUnknownRuns,
+      previewTopic: vi.fn(async () => impact({ indeterminateRunIds: ["run_1"], abandonableRunIds: ["run_1"] })),
+    });
+    const menu = await rowMenu(wrapper, 1);
+    await menu.find("[data-test='menu-delete']").trigger("click");
+    await flushPromises();
+    await wrapper.find("[data-test='topic-confirm-submit']").trigger("click");
+    await flushPromises();
+    expect(wrapper.find("[data-test='topic-abandon']").exists()).toBe(false);
+    expect(abandonUnknownRuns).not.toHaveBeenCalled();
+  });
+
+  it("offers a retry on a topic stuck in deleting", async () => {
+    const stuck: TopicSummaryDto = {
+      id: "t-stuck", conversationId: "c1", title: "Stuck", status: "deleting",
+      createdAt: "now", updatedAt: "now",
+    };
+    const teardownTopic = vi.fn(async () => {});
+    const { wrapper } = mountSwitcher({
+      topics: [...topics, stuck],
+      teardownTopic,
+      previewTopic: vi.fn(async () => impact({ topic: stuck })),
+    });
+    const menu = await rowMenu(wrapper, 3);
+    expect(menu.find("[data-test='menu-delete']").exists()).toBe(false);
+    await menu.find("[data-test='menu-retry-delete']").trigger("click");
+    await flushPromises();
+    await wrapper.find("[data-test='topic-confirm-submit']").trigger("click");
+    await flushPromises();
+    expect(teardownTopic).toHaveBeenCalledWith("t-stuck", expect.any(String), false);
   });
 
   it("switches a topic's isolation from the row menu and keeps a failed choice open", async () => {

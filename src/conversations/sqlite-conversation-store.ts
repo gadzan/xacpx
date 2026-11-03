@@ -194,6 +194,7 @@ interface RunRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  abandoned_at?: string | null;
 }
 
 interface MemberTurnRow {
@@ -666,6 +667,7 @@ function mapRun(row: RunRow): ConversationRun {
     budgetEpoch: Number(row.budget_epoch ?? 0),
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
+    ...(optionalString(row.abandoned_at) ? { abandonedAt: row.abandoned_at as string } : {}),
   };
 }
 
@@ -868,6 +870,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureRunAggregateColumns();
     this.ensureMemberTurnBlockedColumn();
     this.ensureRunControlColumns();
+    this.ensureRunAbandonColumns();
     this.ensureRoutingDecisionTable();
     this.ensureWaitingQuestionColumn();
     this.ensureRoutingReasonColumn();
@@ -2793,6 +2796,47 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
+  /**
+   * Operator abandonment of a sealed `indeterminate` Run — the decision half
+   * that `reconcileLateResult` gets from a late provider settle. When no proof
+   * will ever arrive, a human accepts that the side effects are lost. Records
+   * exactly that and nothing else: the Run STAYS `indeterminate` (never a
+   * false `cancelled`), dispatches stay finished and scheduling stays dead, so
+   * no unknown work can be restarted. Gates that would otherwise refuse to
+   * destroy the Run's only cleanup root (topic teardown) read the marker.
+   * Idempotent: an already-abandoned Run is a no-op.
+   */
+  abandonUnknownRun(input: { runId: string; now: string }): { run: ConversationRun; changed: boolean } {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(input.runId);
+      if (run.state !== "indeterminate") {
+        throw new ConversationError(
+          "run_not_indeterminate",
+          `run "${run.id}" has no unknown outcome to abandon`,
+        );
+      }
+      if (run.abandonedAt !== undefined) {
+        return { run, changed: false };
+      }
+      // An abandoned Run must never shelter work that can still execute: the
+      // seal already settled every sibling, so a live member here means the
+      // row contradicts the state and the decision has no safe meaning.
+      const live = this.listMemberTurns(run.id).filter((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state));
+      if (live.length > 0) {
+        throw new ConversationError(
+          "run_not_settled",
+          `run "${run.id}" still has executing member turns`,
+          { memberTurnIds: live.map((turn) => turn.id) },
+        );
+      }
+      this.sqlite.run(
+        "UPDATE runs SET abandoned_at = ? WHERE id = ? AND abandoned_at IS NULL",
+        [input.now, run.id],
+      );
+      return { run: this.requireRun(run.id), changed: true };
+    });
+  }
+
   settleCancelBatch(input: SettleCancelBatchInput): SettleCancelBatchResult {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(input.runId);
@@ -4217,6 +4261,19 @@ export class SqliteConversationStore implements ConversationStore {
     }
     if (!names.has("last_control_request_id")) {
       this.sqlite.exec("ALTER TABLE runs ADD COLUMN last_control_request_id TEXT");
+    }
+  }
+
+  /**
+   * Operator abandonment of a sealed `indeterminate` Run. A column, not a state
+   * change: the unknown side effects stay unknown and the Run stays
+   * `indeterminate`. Gates that refuse to destroy a root still holding unknown
+   * work (topic teardown) read this marker and let the human's decision win.
+   */
+  private ensureRunAbandonColumns(): void {
+    const names = new Set(this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)").map((col) => col.name));
+    if (!names.has("abandoned_at")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN abandoned_at TEXT");
     }
   }
 

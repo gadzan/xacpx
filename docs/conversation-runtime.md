@@ -184,6 +184,8 @@ The durable boundary is the dispatch `authorityEpoch` **bound to** `humanIngress
 
   Accepted-but-never-started is a different recovery case (redispatch). Started-but-result-unknown is not.
 
+  **Operator abandonment.** A sealed Run's proof may never arrive (the provider turn is gone). Because `deleting` is an irreversible Topic barrier and teardown fails closed on `indeterminate` (`conversation_indeterminate`), that case used to be a permanent dead end: the Topic stayed "deleting" forever with no entrypoint. `abandonRun` (`control.runs.abandon`) records the human decision as `runs.abandoned_at` and changes nothing else: the Run and its MemberTurns stay `indeterminate` (never a false `cancelled`), no dispatch reopens, no evidence is rewritten. It refuses while the Topic still has unsettled Runs, because those sessions are about to be released, which is a different decision. The Topic teardown and clear roots read the marker, so they proceed and perform their own verified physical release. Bot removal, member release, and Topic restore still fail closed on `indeterminate`; deleting or clearing the Topic is the exit from those, and it now succeeds. `previewTopic` reports `abandonableRunIds` (sealed and not yet abandoned) so a surface can offer the choice.
+
 ## Profile revision snapshot
 
 Each Bot has a monotonic `profileRevision` (PR2 records default to `1` on parse). `updateBot` increments it.

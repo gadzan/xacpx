@@ -426,6 +426,10 @@ export interface TopicImpactDto {
     unsettledRunIds: string[];
     indeterminateRunIds: string[];
     worktreeRunIds: string[];
+    /** Sealed `indeterminate` Runs a human has NOT yet abandoned. While any
+     *  remain, teardown fails closed with `conversation_indeterminate`; the
+     *  surface offers giving up the unknown result for exactly these. */
+    abandonableRunIds: string[];
     actions: {
         rename: boolean;
         archive: boolean;
@@ -546,6 +550,10 @@ export interface ConversationRunDto {
     createdAt: string;
     startedAt?: string;
     finishedAt?: string;
+    /** Set when a human abandoned this sealed `indeterminate` Run's unknown
+     *  outcome. The state stays `indeterminate`; this only records the decision.
+     *  Absent on cores that predate `runs.abandon`. */
+    abandonedAt?: string;
 }
 export interface BotProfileSnapshotDto {
     revision: number;

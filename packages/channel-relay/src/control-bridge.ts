@@ -1411,6 +1411,12 @@ async function dispatchControlRequest(
       if (typeof control.resumeRun !== "function") return errorPayload("unsupported-rpc", "daemon does not support resuming Runs");
       return control.resumeRun(input);
     }
+    case MSG.runsAbandon: {
+      const input = parseControlPayload(MSG.runsAbandon, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsAbandon}: malformed payload`);
+      if (typeof control.abandonRun !== "function") return errorPayload("unsupported-rpc", "daemon does not support abandoning an unknown Run result");
+      return { run: await control.abandonRun(input) };
+    }
     default:
       return errorPayload(
         "unknown-type",

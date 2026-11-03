@@ -257,6 +257,20 @@ test("recoverable terminal RPC payloads require hub-stamped viewerId and reject 
   })).toBeNull();
 });
 
+test("the abandon RPC carries exactly one Run and cannot smuggle a state", () => {
+  expect(parseControlPayload(MSG.runsAbandon, { runId: "run_1" })).not.toBeNull();
+  for (const bad of [
+    { runId: "run_1", requestId: "req_1" },
+    {},
+    { runId: "" },
+    { runId: 42 },
+    { runId: "run_1", state: "cancelled" },
+    null,
+  ]) {
+    expect(parseControlPayload(MSG.runsAbandon, bad)).toBeNull();
+  }
+});
+
 test("recoverable terminal event payloads validate attachment-scoped hub stamps", () => {
   expect(parseTerminalEventPayload(MSG.terminalStreamStart, {
     attachmentId: "a1", viewerId: "v1",

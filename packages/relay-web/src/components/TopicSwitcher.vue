@@ -22,11 +22,15 @@ const props = defineProps<{
   variant?: "group" | "direct";
   /** Absent on surfaces whose topics have no execution target (Direct). */
   setTopicIsolation?: (topicId: string, isolation: TopicIsolation) => Promise<void>;
+  /** Let the user give up on sealed unknown Runs so a teardown that failed
+   *  closed can finish. Absent when the connector cannot serve `runs.abandon`. */
+  abandonUnknownRuns?: (runIds: string[]) => Promise<void>;
 }>();
 const emit = defineEmits<{ select: [topicId: string]; create: [] }>();
 
 const { editingId, draftTitle, actionError, confirmKind, confirmImpact, releaseBindings, confirming, confirmBlocked,
-  statusLabel, startRename, saveRename, archive, restore, openConfirm, closeConfirm, submitConfirm,
+  abandoning, canAbandonUnknown,
+  statusLabel, startRename, saveRename, archive, restore, openConfirm, closeConfirm, submitConfirm, abandonUnknown,
   isolationTopic, isolationSaving, openIsolation, closeIsolation, chooseIsolation } = useTopicActions(props);
 
 
@@ -97,7 +101,10 @@ const rowMenuItems = computed<ContextMenuItem[]>(() => {
   }
   if (topic.status === "active") items.push({ key: "archive", label: t("bot.topic.archive") });
   if (topic.status === "archived") items.push({ key: "restore", label: t("bot.topic.restore") });
-  if (topic.status !== "deleting") {
+  // `deleting` is a barrier with no other exit: the row must keep a retry.
+  if (topic.status === "deleting") {
+    items.push({ key: "retry-delete", label: t("bot.topic.retryDelete"), danger: true });
+  } else {
     items.push(topic.defaultDirect === true
       ? { key: "clear", label: t("bot.topic.clear"), danger: true }
       : { key: "delete", label: t("bot.topic.delete"), danger: true });
@@ -113,13 +120,18 @@ function onRowMenuSelect(key: string): void {
   if (key === "isolation") { openIsolation(topic); return; }
   if (key === "archive") { void archive(topic); return; }
   if (key === "restore") { void restore(topic); return; }
-  if (key === "delete" || key === "clear") void openConfirm(key, topic);
+  if (key === "delete" || key === "clear" || key === "retry-delete") void openConfirm("delete", topic);
 }
 
 // A failed delete/clear keeps the confirm dialog open with its error, so only a closed
 // confirm (success or plain cancel) dismisses the panel.
 async function submitRowConfirm(): Promise<void> {
   await submitConfirm();
+  if (!confirmKind.value) closePanel();
+}
+
+async function abandonRowUnknown(): Promise<void> {
+  await abandonUnknown();
   if (!confirmKind.value) closePanel();
 }
 </script>
@@ -200,6 +212,18 @@ async function submitRowConfirm(): Promise<void> {
           <span>{{ $t("bot.topic.confirmUnbind") }}</span>
         </label>
         <p v-if="actionError" class="mt-2 text-xs text-danger-overlay">{{ actionError }}</p>
+        <div v-if="canAbandonUnknown"
+             data-test="topic-abandon"
+             class="mt-3 rounded-lg bg-warn/10 p-2.5 text-xs text-warn-overlay">
+          <p>{{ $t("bot.topic.abandonHint", { count: confirmImpact?.abandonableRunIds?.length ?? 0 }) }}</p>
+          <button type="button"
+                  data-test="topic-abandon-submit"
+                  :disabled="abandoning"
+                  class="mt-2 rounded-btn bg-warn/20 px-2 py-0.5 font-medium transition-colors hover:bg-warn/30 disabled:opacity-50"
+                  @click="abandonRowUnknown">
+            {{ $t("bot.topic.abandon") }}
+          </button>
+        </div>
         <div class="mt-4 flex justify-end gap-2">
           <button type="button" class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg transition-colors hover:bg-fill-hover" @click="navigateBack">{{ $t("common.cancel") }}</button>
           <button

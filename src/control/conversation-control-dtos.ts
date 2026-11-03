@@ -186,6 +186,10 @@ export interface TopicImpactDto {
   unsettledRunIds: string[];
   indeterminateRunIds: string[];
   worktreeRunIds: string[];
+  /** Sealed `indeterminate` Runs a human has NOT yet abandoned. While any
+   *  remain, teardown fails closed with `conversation_indeterminate`; the
+   *  surface offers "give up the unknown result" for exactly these. */
+  abandonableRunIds: string[];
   actions: {
     rename: boolean;
     archive: boolean;
@@ -292,6 +296,9 @@ export interface ConversationRunDto {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  /** Set when a human abandoned this sealed `indeterminate` Run's unknown
+   *  outcome. The state stays `indeterminate`; this only records the decision. */
+  abandonedAt?: string;
 }
 
 export interface ConversationRunDetailDto extends ConversationRunDto {
@@ -404,6 +411,12 @@ export interface RunControlRequestDto {
   controlRevision: number;
   /** Pause only; defaults to `human-paused` in the store. */
   reason?: string;
+}
+
+/** Abandon input. No CAS token and no request id: the decision is idempotent per
+ *  Run, and the sealed Run has no competing state machine left to race. */
+export interface RunAbandonRequestDto {
+  runId: string;
 }
 
 export interface RunControlResultDto {
@@ -612,6 +625,7 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     ...(run.completionReason ? { completionReason: run.completionReason } : {}),
     ...(run.startedAt ? { startedAt: run.startedAt } : {}),
     ...(run.finishedAt ? { finishedAt: run.finishedAt } : {}),
+    ...(run.abandonedAt ? { abandonedAt: run.abandonedAt } : {}),
   };
 }
 
