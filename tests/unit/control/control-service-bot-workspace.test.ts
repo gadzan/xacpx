@@ -641,6 +641,32 @@ test("a retried removal keeps the workspaceCleanup the first attempt recorded", 
   expect(retried.operation.workspaceCleanup).toEqual({ outcome: "deleted", path: dir });
   expect(existsSync(dir)).toBe(false);
 });
+test("a marker committed while the removal is in flight still gets cleaned up", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  // Deterministic race: removeBot reads the claim from the live profile before
+  // the removal barrier exists, so an allocator can still commit a marker in
+  // that window. The delegate performs exactly that allocation between the
+  // claim read and the real removal, then retires the Bot.
+  const realRemove = w.runtime.removals.remove.bind(w.runtime.removals);
+  (w.runtime.removals as { remove: typeof realRemove }).remove = async (input) => {
+    await w.control.updateBot(bot.id, { dedicatedWorkspace: true });
+    return realRemove(input);
+  };
+
+  const { operation } = await removeBot(w, bot.id, "rm-race", { deleteDedicatedWorkspace: true });
+  expect(operation.workspaceCleanup).toEqual({ outcome: "deleted", path: join(w.botsHome, "Reviewer") });
+  expect(existsSync(join(w.botsHome, "Reviewer"))).toBe(false);
+  expect(w.config.workspaces["Reviewer"]).toBeUndefined();
+});
+
+test("removing a Bot without a dedicated workspace records no workspace cleanup", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const { operation } = await removeBot(w, bot.id, "rm-plain");
+  expect(operation.workspaceCleanup).toBeUndefined();
+});
+
 test("a dedicated workspace is marked dedicated and hidden from listWorkspaces", async () => {
   const w = await wire();
   await w.control.createBot({ name: "Reviewer", agent: "codex" });
