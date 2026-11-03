@@ -897,6 +897,7 @@ var historyRunKeys = [
   "createdAt",
   "startedAt",
   "finishedAt",
+  "abandonedAt",
   "controlRevision",
   "progressRevision",
   "pauseReason",

@@ -861,7 +861,7 @@ const historyRunKeys = [
   "id", "conversationId", "topicId", "requestMessageId", "requestId", "mode", "state", "completionReason",
   "profileRevision", "activeBatch", "maxMemberTurns", "budgetEpoch", "consumedMemberTurns", "failedBotIds",
   "unavailableBotIds", "quarantinedBotIds", "routingState", "routingReason", "waitingQuestion", "createdAt",
-  "startedAt", "finishedAt",
+  "startedAt", "finishedAt", "abandonedAt",
   "controlRevision", "progressRevision", "pauseReason", "pauseRequestedAt", "pausedAt",
   "memberTurns", "profileSnapshot", "worktree",
 ] as const satisfies readonly (keyof ConversationRunHistoryDetailDto)[];

@@ -1178,6 +1178,12 @@ test("history details accepts complete public run metadata and optional historic
   expect(isRunsDetailsBatchResult({ runs: [] })).toBe(true);
 });
 
+test("history details keep a run a human abandoned instead of dropping the batch", () => {
+  const abandoned = { ...historyRun, state: "indeterminate" as const, waitingQuestion: undefined, abandonedAt: "2026-01-01T00:00:00.000Z" };
+  expect(isRunsDetailsBatchResult({ runs: [abandoned] })).toBe(true);
+  expect(isRunsDetailsBatchResult({ runs: [{ ...abandoned, abandonRequestId: "req" }] })).toBe(false);
+});
+
 test("history details accept the scoped cancellation reason and the followup sender", () => {
   const stopped = { ...historyMember, cancellationReason: "human-cancelled" };
   expect(isRunsDetailsBatchResult({ runs: [{ ...historyRun, memberTurns: [stopped] }] })).toBe(true);
