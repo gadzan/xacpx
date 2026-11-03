@@ -38,7 +38,7 @@ import { api } from "../api/client";
 import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectComposerStore } from "./direct-composer";
 import { pushToast } from "../lib/use-toasts";
-import { isActiveRunState, probeExecutingTopics, sortTopicsNewestFirst, type TopicRunsAuthority } from "../lib/topic-order";
+import { isActiveRunState, probeExecutingTopics, sortTopicsNewestFirst } from "../lib/topic-order";
 
 export interface DirectCancelScope {
   kind: "direct";
