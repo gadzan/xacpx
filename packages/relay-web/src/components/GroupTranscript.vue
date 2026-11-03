@@ -448,12 +448,16 @@ interface OpenDetail {
   explanation?: string;
   identityUncertain?: boolean;
 }
+const openDetailLocal = ref<OpenDetail | null>(null);
+const openDetailLocalKey = ref<string | null>(null);
 const openDetail = computed<OpenDetail | null>(() => {
   if (!openDetailKey.value) return null;
   for (const item of items.value) {
     if (item.kind === "message" && item.bubbleAnchor && item.memberTurn && item.run) {
       const key = `bubble:${item.memberTurn.id}`;
-      if (key === openDetailKey.value) return { itemKey: key, run: item.run.run, memberTurn: item.memberTurn };
+      if (key === openDetailKey.value) {
+        return { itemKey: key, run: item.run.run, memberTurn: item.memberTurn };
+      }
     }
     if (item.kind === "member-activity" && `bubble:${item.memberTurn.id}` === openDetailKey.value) {
       const identityUncertain = !!item.explanation && item.explanation !== "missing-request" && item.explanation !== "request-mismatch";
@@ -464,17 +468,30 @@ const openDetail = computed<OpenDetail | null>(() => {
       return { itemKey: openDetailKey.value, run: item.run.run, memberTurn: undefined, explanation: item.explanation, identityUncertain };
     }
   }
-  return null;
+  // The anchored row left the projection (promoted or rebuilt): the pinned
+  // open-time snapshot carries the drawer through the sealed tail.
+  return openDetailLocalKey.value === openDetailKey.value ? openDetailLocal.value : null;
 });
 
 watch(openDetail, (detail) => {
-  if (detail === null && openDetailKey.value) closeDetail();
+  if (detail === null) {
+    if (openDetailKey.value) closeDetail();
+    return;
+  }
+  // Freeze the open-time identity once; the snapshot resolver above takes
+  // over only for terminal turns that later lose their row.
+  if (openDetailLocalKey.value !== openDetailKey.value) {
+    openDetailLocalKey.value = openDetailKey.value;
+    openDetailLocal.value = detail;
+  }
 });
 
 function closeDetail(): void {
   openDetailKey.value = null;
   detailTriggerEl.value = null;
   selectedAttempt.value = undefined;
+  openDetailLocal.value = null;
+  openDetailLocalKey.value = null;
   groupsStore.setOpenTrace(null);
 }
 
@@ -497,8 +514,9 @@ function toggleDetail(key: string, trigger: HTMLElement | null): void {
   openDetailKey.value = key;
   detailTriggerEl.value = trigger;
   selectedAttempt.value = undefined;
-  const detail = openDetail.value;
-  if (detail?.memberTurn) selectedAttempt.value = detail.memberTurn.attempt;
+  openDetailLocal.value = openDetail.value;
+  openDetailLocalKey.value = openDetailLocal.value ? key : null;
+  if (openDetailLocal.value?.memberTurn) selectedAttempt.value = openDetailLocal.value.memberTurn.attempt;
 }
 
 function changeAttempt(attempt: number): void {
@@ -541,7 +559,8 @@ const detailLive = computed(() => {
 });
 const detailParts = computed<TurnPartDto[] | undefined>(() => {
   if (detailReplay.value?.parts.length || detailPage.value?.events.length) return detailReplay.value?.parts;
-  return detailLive.value?.parts;
+  return detailLive.value?.parts
+    ?? (detailReplay.value?.parts !== undefined ? [] : undefined);
 });
 
 const detailRecordingState = computed<TraceReplayStatus | undefined>(() => {

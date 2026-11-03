@@ -349,6 +349,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             data-test="run-empty-slot"
             :label="$t('bot.chat.working')"
             :still="activeRun?.state === 'waiting-human'"
+            :status="$t('bot.chat.working')"
             @open="emit('openTrace')"
           />
         </div>

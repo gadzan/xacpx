@@ -81,9 +81,10 @@ const { remember: memoizeScroll } = useDetailScrollMemory(
 
 function onOutsidePointer(event: PointerEvent): void {
   if (document.querySelector('[data-composer-confirm]')) return;
-  const layer = drawerEl.value?.parentElement;
-  if (layer && event.composedPath().includes(layer)) return;
+  // The layer itself is pointer-through (collapsed popover contract): only the
+  // drawer intercepts. Clicks that land on the drawer or the anchor stay.
   if (props.anchorEl && event.composedPath().includes(props.anchorEl)) return;
+  if (drawerEl.value && event.composedPath().includes(drawerEl.value)) return;
   // Outside click closes without refocusing: the pointer is elsewhere now and
   // focus must follow it, not snap back to the bubble.
   emit("close");
@@ -120,8 +121,7 @@ watch(() => props.anchorEl, observeAnchor, { flush: "post" });
   <div
     :id="`${id}-layer`"
     data-test="group-detail-layer"
-    class="fixed inset-0 z-50 flex justify-end bg-scrim backdrop-blur-sm"
-    @click.self="close"
+    class="detail-drawer-layer"
   >
     <aside
       :id="id"
@@ -152,3 +152,18 @@ watch(() => props.anchorEl, observeAnchor, { flush: "post" });
     </aside>
   </div>
 </template>
+
+<style scoped>
+.detail-drawer-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  /* Non-modal like the anchored popover it replaces: only the drawer itself
+   * takes pointer events, the rest of the page stays interactive. */
+  pointer-events: none;
+}
+.detail-drawer-layer > aside {
+  pointer-events: auto;
+  margin-left: auto;
+}
+</style>

@@ -79,6 +79,13 @@ const bubbleLabel = computed(() =>
   t("group.bubble.openDetail", { name: props.name }),
 );
 
+const bubbleStatusText = computed(() => {
+  if (props.stopped) return `⊘ ${t("group.bubble.status.stopped")}`;
+  const state = bubbleStatus.value;
+  if (state === "done") return t("group.bubble.status.done");
+  return t(`group.bubble.status.${state}`);
+});
+
 /** The task is one quiet line: enough to know what this member was asked for,
  *  never the whole assignment, which stays in the detail. */
 const taskHint = computed(() => {
@@ -148,6 +155,7 @@ defineExpose({ bubbleStatus });
         :still="singleMember && runState === 'waiting-human'"
         :expanded="expanded"
         :controls="controls"
+        :status="bubbleStatusText"
         @open="emit('toggle', $event)"
       />
     </template>
