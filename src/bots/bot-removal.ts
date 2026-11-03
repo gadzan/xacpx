@@ -2,7 +2,8 @@ import { copyBotAvatar, parseStoredBotAvatar, type BotAvatarConfig } from "@gang
 import { createHash } from "node:crypto";
 
 import { BotError } from "./bot-error";
-import type { BotProfile } from "./bot-types";
+import { isDedicatedWorkspaceMarker } from "./bot-types";
+import type { BotProfile, DedicatedWorkspaceMarker } from "./bot-types";
 
 /**
  * Removal phase for one Bot. `previewed` does not block work. `deleting` and
@@ -22,6 +23,11 @@ export interface BotTombstone {
   agent: string;
   workspace: string;
   retiredAt: string;
+  /** Snapshot of the profile marker at retire: the claim the Bot owned when it
+   *  stopped being executable. A concurrent allocator may commit a marker
+   *  after removal read the live profile but before it retired, so the
+   *  cleanup decision reads this, never the pre-removal profile. */
+  dedicatedWorkspace?: DedicatedWorkspaceMarker;
 }
 
 export interface BotRemovalRecord {
@@ -160,6 +166,7 @@ export function tombstoneFromProfile(bot: BotProfile, retiredAt: string): BotTom
     agent: bot.agent,
     workspace: bot.workspace,
     retiredAt,
+    ...(bot.dedicatedWorkspace ? { dedicatedWorkspace: { ...bot.dedicatedWorkspace } } : {}),
   };
 }
 
@@ -300,6 +307,11 @@ function parseTombstone(value: unknown, botId: string): BotTombstone | undefined
     agent: record.agent,
     workspace: record.workspace,
     retiredAt: record.retiredAt,
+    // A bad marker drops the field, not the whole record: retiring must not
+    // strand an executable profile that just happens to carry bad metadata.
+    ...(isDedicatedWorkspaceMarker(record.dedicatedWorkspace)
+      ? { dedicatedWorkspace: { ...(record.dedicatedWorkspace as DedicatedWorkspaceMarker) } }
+      : {}),
   };
 }
 
