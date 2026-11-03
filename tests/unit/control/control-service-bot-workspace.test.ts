@@ -667,6 +667,75 @@ test("removing a Bot without a dedicated workspace records no workspace cleanup"
   expect(operation.workspaceCleanup).toBeUndefined();
 });
 
+/** Deterministically fail the first post-barrier cleanup step. */
+function failFirstCleanup(w: BotWorkspaceHarness): void {
+  const real = w.runtime.runs.cancelDirectExecution.bind(w.runtime.runs);
+  let failed = false;
+  (w.runtime.runs as { cancelDirectExecution: typeof real }).cancelDirectExecution = async (botId) => {
+    if (!failed) {
+      failed = true;
+      return "indeterminate";
+    }
+    return real(botId);
+  };
+}
+
+test("a retried removal honours the delete flag frozen on the operation", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  const dir = join(w.botsHome, "Reviewer");
+  const impact = await w.control.previewBotRemoval(bot.id);
+  failFirstCleanup(w);
+
+  // The attempt fails after the barrier, so the operation keeps
+  // `deleteDedicatedWorkspace: true` as a frozen param.
+  await expect(w.control.removeBot({
+    botId: bot.id,
+    requestId: "rm-frozen-on",
+    previewRevision: impact.revision,
+    deleteDedicatedWorkspace: true,
+  })).rejects.toMatchObject({ code: "conversation_indeterminate" });
+
+  // The retry arrives with the box unchecked, but the operation already
+  // decided to delete: skipping the cleanup would strand the directory, its
+  // `dedicated: true` registration, and no workspaceCleanup record.
+  const retried = await w.control.removeBot({
+    botId: bot.id,
+    requestId: "rm-frozen-on",
+    previewRevision: impact.revision,
+    deleteDedicatedWorkspace: false,
+  });
+  expect(retried.operation.workspaceCleanup).toEqual({ outcome: "deleted", path: dir });
+  expect(existsSync(dir)).toBe(false);
+  expect(w.config.workspaces["Reviewer"]).toBeUndefined();
+});
+
+test("a retried removal whose operation froze the flag off keeps the workspace", async () => {
+  const w = await wire();
+  const bot = await w.control.createBot({ name: "Reviewer", agent: "codex" });
+  const dir = join(w.botsHome, "Reviewer");
+  const impact = await w.control.previewBotRemoval(bot.id);
+  failFirstCleanup(w);
+
+  await expect(w.control.removeBot({
+    botId: bot.id,
+    requestId: "rm-frozen-off",
+    previewRevision: impact.revision,
+  })).rejects.toMatchObject({ code: "conversation_indeterminate" });
+
+  // The retry asks to delete, but the operation froze the flag off: the
+  // workspace must survive exactly as the operation decided.
+  const retried = await w.control.removeBot({
+    botId: bot.id,
+    requestId: "rm-frozen-off",
+    previewRevision: impact.revision,
+    deleteDedicatedWorkspace: true,
+  });
+  expect(retried.operation.workspaceCleanup).toBeUndefined();
+  expect(existsSync(dir)).toBe(true);
+  expect(w.config.workspaces["Reviewer"]).toMatchObject({ dedicated: true });
+});
+
 test("a dedicated workspace is marked dedicated and hidden from listWorkspaces", async () => {
   const w = await wire();
   await w.control.createBot({ name: "Reviewer", agent: "codex" });
