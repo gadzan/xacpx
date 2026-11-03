@@ -150,6 +150,7 @@ import {
   type GroupDetailDto,
   type GroupSummaryDto,
   type ExecutionTargetDto,
+  type RunAbandonRequestDto,
   type RunControlRequestDto,
 } from "./conversation-control-dtos";
 
@@ -3170,6 +3171,7 @@ export class ControlService {
       bindings: impact.bindingChatKeys.map((chatKey) => ({ chatKey })),
       unsettledRunIds: impact.unsettledRunIds,
       indeterminateRunIds: impact.indeterminateRunIds,
+      abandonableRunIds: impact.abandonableRunIds,
       worktreeRunIds: impact.worktreeRunIds,
       actions: {
         rename: !deleting,
@@ -3441,6 +3443,21 @@ export class ControlService {
       await runtime.runs.cancelRun(runId);
       const result = runtime.runs.getRun(runId);
       return toRunDetail(result.run, result.memberTurns);
+    });
+  }
+
+  /**
+   * Authenticated human abandonment of a sealed `indeterminate` Run: the
+   * provider will never prove the outcome, so the operator accepts the loss.
+   * The Run stays `indeterminate` (no false `cancelled`); it just stops
+   * blocking topic teardown. Idempotent per Run, so a retried request is safe.
+   */
+  async abandonRun(input: RunAbandonRequestDto) {
+    return this.runConversationMutation(async (runtime) => {
+      if (runtime.runs.isPeerTopic(runtime.runs.getRun(input.runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
+      const run = await runtime.runs.abandonUnknownRun(input.runId, input.requestId);
+      const detail = runtime.runs.getRun(run.id);
+      return toRunDetail(detail.run, detail.memberTurns);
     });
   }
 

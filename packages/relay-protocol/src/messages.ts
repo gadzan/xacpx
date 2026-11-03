@@ -202,6 +202,7 @@ export const MSG = {
   runsCancelMember: "control.runs.cancelMember",
   runsPause: "control.runs.pause",
   runsResume: "control.runs.resume",
+  runsAbandon: "control.runs.abandon",
   /**
    * Connector -> hub: OPEN one interaction. Core's broker is the only production
    * caller (`RelayChannel.requestElicitation`), so the direction is dial-out:
@@ -807,6 +808,17 @@ export interface RunsCancelMemberPayload {
 }
 export interface RunsCancelMemberResult {
   run: ConversationRunDetailDto;
+}
+
+/**
+ * Authenticated abandonment of a sealed `indeterminate` Run. No CAS token: the
+ * Run has no competing state machine left, and the decision is idempotent — a
+ * retried `requestId` is a no-op. The Run stays `indeterminate`; it only stops
+ * blocking topic teardown.
+ */
+export interface RunsAbandonPayload {
+  runId: string;
+  requestId: string;
 }
 
 /**

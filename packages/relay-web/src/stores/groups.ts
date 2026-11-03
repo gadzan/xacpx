@@ -1645,6 +1645,10 @@ export const useGroupsStore = defineStore("groups", () => {
     retireGroupTopic(targetInstanceId, conversationId, topicId);
   }
 
+  async function abandonRun(targetInstanceId: string, runId: string, requestId: string): Promise<void> {
+    unwrapRpc(await api.rpc(targetInstanceId, MSG.runsAbandon, { runId, requestId }));
+  }
+
   async function clearTopic(
     targetInstanceId: string,
     conversationId: string,
@@ -3762,6 +3766,7 @@ export const useGroupsStore = defineStore("groups", () => {
     restoreTopic,
     previewTopic,
     teardownTopic,
+    abandonRun,
     clearTopic,
     loadHistory,
     loadOlder,

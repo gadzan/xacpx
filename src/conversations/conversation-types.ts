@@ -235,6 +235,14 @@ export interface ConversationRun {
    *  and writes exactly one `run_budget_decisions` audit row for that epoch. */
   budgetEpoch: number;
   finishedAt?: string;
+  /**
+   * A human explicitly gave up on this Run's unknown outcome. Only ever set on
+   * an `indeterminate` (sealed) Run, and it never rewrites the evidence: the
+   * state stays `indeterminate` because the side effects are still unknown.
+   * Gates that must not resurrect unknown work (topic teardown) stop treating
+   * it as blocking, because the operator has accepted the loss.
+   */
+  abandonedAt?: string;
 }
 
 export interface MemberTurnRecord {

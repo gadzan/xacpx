@@ -72,6 +72,7 @@ import {
   type RunsCancelMemberPayload,
   type RunsPausePayload,
   type RunsResumePayload,
+  type RunsAbandonPayload,
   type RunsGetPayload,
   type RunsDetailsBatchPayload,
   type RunsTraceGetPayload,
@@ -888,6 +889,12 @@ const validateRunsResume: Validator<RunsResumePayload> = (p) => {
   return traceProductId(o.runId) && traceProductId(o.requestId) && controlRevision(o.controlRevision)
     ? o as unknown as RunsResumePayload : null;
 };
+const validateRunsAbandon: Validator<RunsAbandonPayload> = (p) => {
+  const o = fields(p);
+  if (!o || !hasOnlyKeys(o, { runId: true, requestId: true })) return null;
+  return traceProductId(o.runId) && traceProductId(o.requestId)
+    ? o as unknown as RunsAbandonPayload : null;
+};
 
 /* --- relay interaction transport (shared by permission + elicitation) --- */
 
@@ -1230,7 +1237,7 @@ export type ControlRpcType =
   | typeof MSG.conversationWorktree
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel | typeof MSG.runsCancelMember
-  | typeof MSG.runsPause | typeof MSG.runsResume
+  | typeof MSG.runsPause | typeof MSG.runsResume | typeof MSG.runsAbandon
   | typeof MSG.runsDetailsBatch | typeof MSG.runsTraceGet
   | typeof MSG.interactionRequest | typeof MSG.interactionRespond
   | typeof MSG.interactionWithdraw;
@@ -1346,6 +1353,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsCancelMember]: validateRunsCancelMember,
   [MSG.runsPause]: validateRunsPause,
   [MSG.runsResume]: validateRunsResume,
+  [MSG.runsAbandon]: validateRunsAbandon,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
   [MSG.interactionWithdraw]: validateInteractionWithdraw,

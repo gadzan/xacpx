@@ -742,6 +742,11 @@ export interface ConversationStore {
     sourceTurn: { sessionAlias: string; turnId?: string };
     now: string;
   }): ReconcileLateResult;
+  /** Operator abandonment of a sealed `indeterminate` Run: the provider will
+   *  never prove the outcome, so a human accepts the loss. Durable marker
+   *  only — the Run stays `indeterminate` (never a false `cancelled`), and
+   *  teardown gates stop treating it as blocking. Idempotent. */
+  abandonUnknownRun(input: { runId: string; requestId: string; now: string }): { run: ConversationRun; changed: boolean };
   /** True when a nonterminal MemberTurn in this Conversation references the
    *  Bot. Membership removal must wait until that work terminals (PR6
    *  freeze: removed-member durable work has no correct interpretation). */

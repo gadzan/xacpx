@@ -104,6 +104,14 @@ async function clearTopic(topicId: string, requestId: string, releaseBindings: b
   await groupsStore.clearTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
 }
 
+async function abandonUnknownRuns(runIds: string[]): Promise<void> {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  for (const runId of runIds) {
+    await groupsStore.abandonRun(ctx.instanceId, runId, crypto.randomUUID());
+  }
+}
+
 const group = computed(() => groupsStore.currentGroup);
 /** One TopicSwitcher at a time: the mobile bar's below lg, the desktop header's from lg. */
 const isMobile = useIsMobile();
@@ -220,6 +228,7 @@ const worktreeRunId = computed(() => {
           :teardown-topic="teardownTopic"
           :clear-topic="clearTopic"
           :set-topic-isolation="isolationSupported ? setTopicIsolation : undefined"
+          :abandon-unknown-runs="abandonUnknownRuns"
           @select="groupsStore.switchTopic"
           @create="newTopicDialogOpen = true"
         />
@@ -257,6 +266,7 @@ const worktreeRunId = computed(() => {
             :teardown-topic="teardownTopic"
             :clear-topic="clearTopic"
             :set-topic-isolation="isolationSupported ? setTopicIsolation : undefined"
+            :abandon-unknown-runs="abandonUnknownRuns"
             @select="groupsStore.switchTopic"
             @create="newTopicDialogOpen = true"
           />

@@ -190,6 +190,14 @@ async function clearTopic(topicId: string, requestId: string, releaseBindings: b
   await directBotsStore.clearTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
 }
 
+async function abandonUnknownRuns(runIds: string[]): Promise<void> {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  for (const runId of runIds) {
+    await directBotsStore.abandonRun(ctx.instanceId, runId, crypto.randomUUID());
+  }
+}
+
 const removalOpen = ref(false);
 
 function openRemoval(): void {
@@ -242,6 +250,7 @@ function openRemoval(): void {
         :restore-topic="restoreTopic"
         :teardown-topic="teardownTopic"
         :clear-topic="clearTopic"
+        :abandon-unknown-runs="abandonUnknownRuns"
         @select="directBotsStore.switchTopic"
         @create="newTopicDialogOpen = true"
       />
@@ -284,6 +293,7 @@ function openRemoval(): void {
               :restore-topic="restoreTopic"
               :teardown-topic="teardownTopic"
               :clear-topic="clearTopic"
+              :abandon-unknown-runs="abandonUnknownRuns"
               @select="directBotsStore.switchTopic"
               @create="newTopicDialogOpen = true"
             />

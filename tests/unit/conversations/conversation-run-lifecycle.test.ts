@@ -2047,6 +2047,84 @@ test("group topic teardown releases member bindings and rows, retryable on relea
   expect(first.state.conversations[group.id]?.kind).toBe("group");
 });
 
+test("sealed unknown work blocks group topic teardown until a human abandons it", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const reviewer = Object.values(first.state.bots)[0]!;
+  const group = await first.bots.createGroup({ title: "Unknown Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint X", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id, topicId: topic.id, requestId: "abandon-unknown", text: "review",
+    target: { mode: "members", botIds: [reviewer.id] },
+  });
+  // Seal exactly like a wedged provider cancel: unknown side effects, and no
+  // proof will ever arrive.
+  first.store.failExecution({
+    runId: accepted.run.id,
+    memberTurnId: accepted.memberTurns[0]!.id,
+    now: NOW,
+    reason: "started_result_unknown",
+    terminalState: "indeterminate",
+  });
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
+  expect(first.store.getRun(accepted.run.id)?.abandonedAt).toBeUndefined();
+  expect(first.service.previewTopic(group.id, topic.id).abandonableRunIds).toEqual([accepted.run.id]);
+
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "conversation_indeterminate",
+  });
+  expect(first.state.conversation_topics[topic.id]?.status).toBe("deleting");
+
+  const abandoned = await first.service.abandonUnknownRun(accepted.run.id, "abandon-1");
+  expect(abandoned.state).toBe("indeterminate");
+  const abandonStamp = abandoned.abandonedAt;
+  expect(abandonStamp).toBeDefined();
+  expect((await first.service.abandonUnknownRun(accepted.run.id, "abandon-2")).abandonedAt).toBe(abandonStamp);
+  expect(first.service.previewTopic(group.id, topic.id).abandonableRunIds).toEqual([]);
+
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.store.listRuns(group.id, topic.id)).toEqual([]);
+  first.store.close();
+});
+
+test("abandoning unknown work refuses a proven Run and a Topic with live work", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const reviewer = Object.values(first.state.bots)[0]!;
+  const group = await first.bots.createGroup({ title: "Guard Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint Y", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const first_ = await first.service.acceptGroupPrompt({
+    conversationId: group.id, topicId: topic.id, requestId: "guard-1", text: "review",
+    target: { mode: "members", botIds: [reviewer.id] },
+  });
+  first.store.failExecution({
+    runId: first_.run.id,
+    memberTurnId: first_.memberTurns[0]!.id,
+    now: NOW,
+    reason: "started_result_unknown",
+    terminalState: "indeterminate",
+  });
+  const live = await first.service.acceptGroupPrompt({
+    conversationId: group.id, topicId: topic.id, requestId: "guard-2", text: "again",
+    target: { mode: "members", botIds: [reviewer.id] },
+  });
+  await expect(first.service.abandonUnknownRun(first_.run.id, "guard-abandon")).rejects.toMatchObject({
+    code: "conversation_not_settled",
+  });
+  first.store.cancelRun(live.run.id, NOW);
+  await expect(first.service.abandonUnknownRun(live.run.id, "guard-abandon-2")).rejects.toMatchObject({
+    code: "run_not_indeterminate",
+  });
+  first.store.close();
+});
+
 test("deleteGroup fails closed while topics, bindings, or durable rows exist", async () => {
   const first = await createLifecycle();
   const bots = first.bots;
