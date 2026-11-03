@@ -72,26 +72,39 @@ const botDialogFor = ref<{
 } | null>(null);
 const groupDialogFor = ref<{ instanceId: string; instanceName: string; group?: GroupSummaryDto } | null>(null);
 
-const instanceNavMode = ref<Record<string, "sessions" | "bots" | "groups">>({});
-function modeFor(instanceId: string): "sessions" | "bots" | "groups" {
-  return instanceNavMode.value[instanceId] ?? "sessions";
-}
-function setMode(instanceId: string, mode: "sessions" | "bots" | "groups"): void {
-  instanceNavMode.value = { ...instanceNavMode.value, [instanceId]: mode };
-  if (mode === "bots" && !directBotsStore.botsLoaded[instanceId]) {
-    void directBotsStore.loadBots(instanceId).catch(() => {});
-  }
-  if (mode === "groups") {
-    if (!groupsStore.groupsLoaded[instanceId]) {
-      void groupsStore.loadGroups(instanceId).catch(() => {});
+type NavMode = "sessions" | "bots" | "groups";
+/** One mode for the whole sidebar: the tab row sits above the instance cards, so
+ *  switching it switches every instance's section at once. */
+const navMode = ref<NavMode>("sessions");
+/** Bot and Group lists are per-instance facts fetched on demand, so entering the
+ *  mode for the whole list means fetching the rows of every online instance. */
+function loadModeData(): void {
+  if (navMode.value === "sessions") return;
+  for (const inst of store.instances) {
+    if (!inst.online) continue;
+    if (navMode.value === "bots" && !directBotsStore.botsLoaded[inst.id]) {
+      void directBotsStore.loadBots(inst.id).catch(() => {});
     }
-    // The group rows draw their members' avatars, so the catalog has to load
-    // with the list - not only when the Bot list itself is open.
-    if (!directBotsStore.botsLoaded[instanceId]) {
-      void directBotsStore.loadBots(instanceId).catch(() => {});
+    if (navMode.value === "groups") {
+      if (!groupsStore.groupsLoaded[inst.id]) void groupsStore.loadGroups(inst.id).catch(() => {});
+      // The group rows draw their members' avatars, so the catalog has to load
+      // with the list - not only when the Bot list itself is open.
+      if (!directBotsStore.botsLoaded[inst.id]) {
+        void directBotsStore.loadBots(inst.id).catch(() => {});
+      }
     }
   }
 }
+function setMode(mode: NavMode): void {
+  navMode.value = mode;
+  loadModeData();
+}
+// An instance that appears or comes back online while the sidebar shows Bots or
+// Groups has no rows yet, so its card would render an empty section.
+watch(
+  () => store.instances.filter((i) => i.online).map((i) => i.id).join("\u0000"),
+  () => loadModeData(),
+);
 function onBotTap(instanceId: string, botId: string): void {
   emit("selectBot", instanceId, botId);
 }
@@ -721,6 +734,42 @@ const rowSwipes = computed(() => {
 
 <template>
   <nav class="thin-scroll flex h-full flex-1 flex-col space-y-1.5 overflow-y-auto px-2 pb-2 pt-1.5 max-lg:pb-24">
+    <!-- Sticky so the instance list scrolls under the mode row. -->
+    <div v-if="store.instances.length" data-test="instance-nav-track-wrap"
+         class="sticky top-0 z-10 -mx-2 -mt-1.5 bg-surface px-2 pb-1 pt-1.5">
+      <div data-test="instance-nav-track" class="flex min-w-0 items-center gap-0.5 rounded-btn bg-fill-track p-0.5">
+        <button
+          type="button"
+          data-test="instance-nav-sessions"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          :class="navMode === 'sessions' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
+          @click="setMode('sessions')"
+        >
+          <MessageSquare :size="11" class="shrink-0" />
+          <span class="truncate" :title="$t('nav.sessions')">{{ $t("nav.sessions") }}</span>
+        </button>
+        <button
+          type="button"
+          data-test="instance-nav-bots"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          :class="navMode === 'bots' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
+          @click="setMode('bots')"
+        >
+          <Bot :size="11" class="shrink-0" />
+          <span class="truncate" :title="$t('nav.bots')">{{ $t("nav.bots") }}</span>
+        </button>
+        <button
+          type="button"
+          data-test="instance-nav-groups"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          :class="navMode === 'groups' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
+          @click="setMode('groups')"
+        >
+          <Users :size="11" class="shrink-0" />
+          <span class="truncate" :title="$t('nav.groups')">{{ $t("nav.groups") }}</span>
+        </button>
+      </div>
+    </div>
     <!-- One instance card: header row + session area (flat or grouped) + footer.
          The card background is the level-1 zone of the tinted-zone hierarchy; group
          zones inside are one step lighter (visually isomorphic across all modes). -->
@@ -760,7 +809,7 @@ const rowSwipes = computed(() => {
                 @click="emit('openDesktop', inst.id)">
           <Monitor :size="13" />
         </button>
-        <div v-if="inst.online && isExpanded(inst.id) && modeFor(inst.id) === 'sessions'" class="relative shrink-0">
+        <div v-if="inst.online && isExpanded(inst.id) && navMode === 'sessions'" class="relative shrink-0">
           <button type="button"
                   data-test="instance-filter"
                   :aria-label='$t("instance.filter")'
@@ -796,41 +845,8 @@ const rowSwipes = computed(() => {
            Instead of a border-l indent rail, hierarchy reads from background tint +
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
-        <div v-if="inst.online" data-test="instance-nav-track" class="mb-1 flex min-w-0 items-center gap-0.5 rounded-btn bg-fill-track p-0.5">
-          <button
-            type="button"
-            data-test="instance-nav-sessions"
-            class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'sessions' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
-            @click="setMode(inst.id, 'sessions')"
-          >
-            <MessageSquare :size="11" class="shrink-0" />
-            <span class="truncate" :title="$t('nav.sessions')">{{ $t("nav.sessions") }}</span>
-          </button>
-          <button
-            type="button"
-            data-test="instance-nav-bots"
-            class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'bots' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
-            @click="setMode(inst.id, 'bots')"
-          >
-            <Bot :size="11" class="shrink-0" />
-            <span class="truncate" :title="$t('nav.bots')">{{ $t("nav.bots") }}</span>
-          </button>
-          <button
-            type="button"
-            data-test="instance-nav-groups"
-            class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
-            :class="modeFor(inst.id) === 'groups' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
-            @click="setMode(inst.id, 'groups')"
-          >
-            <Users :size="11" class="shrink-0" />
-            <span class="truncate" :title="$t('nav.groups')">{{ $t("nav.groups") }}</span>
-          </button>
-        </div>
-
         <!-- BOTS MODE -->
-        <div v-if="inst.online && modeFor(inst.id) === 'bots'" class="space-y-px">
+        <div v-if="inst.online && navMode === 'bots'" class="space-y-px">
           <div v-if="directBotsStore.botsByInstance[inst.id]?.length"
                data-test="bots-list-count"
                class="flex items-center gap-1.5 py-1 pl-2.5 text-xs text-fg-muted">
@@ -939,7 +955,7 @@ const rowSwipes = computed(() => {
           </div>
         </div>
         <!-- GROUPS MODE -->
-        <div v-if="inst.online && modeFor(inst.id) === 'groups'" class="space-y-px">
+        <div v-if="inst.online && navMode === 'groups'" class="space-y-px">
           <div v-if="groupsStore.groupsByInstance[inst.id]?.length"
                data-test="groups-list-count"
                class="flex items-center gap-1.5 py-1 pl-2.5 text-xs text-fg-muted">
@@ -1023,7 +1039,7 @@ const rowSwipes = computed(() => {
         </div>
 
         <!-- SESSIONS MODE -->
-        <template v-else-if="modeFor(inst.id) === 'sessions'">
+        <template v-else-if="navMode === 'sessions'">
         <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
                 class="flex w-full items-center gap-1.5 rounded-sm px-2.5 py-1 text-left text-xs font-medium text-accent hover:bg-accent-soft"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
@@ -1217,7 +1233,7 @@ const rowSwipes = computed(() => {
              class="py-1 pl-2.5 text-xs text-fg-muted">{{ $t("instance.noSessions") }}</div>
 
         <!-- Per-instance footer: icon-only actions (new session / manage), labelled via title+aria.
-             The sleeping-sessions toggle moved to the tab row's filter menu. -->
+             The sleeping-sessions toggle lives in the instance header's filter menu. -->
         <div class="flex items-center gap-0.5 pb-px pl-2 pt-0.5">
           <button data-test="new-session" :title="$t('instance.newSession')" :aria-label="$t('instance.newSession')"
                   class="grid h-10 w-10 lg:h-6 lg:w-6 place-items-center rounded-sm text-accent transition-colors hover:bg-accent-soft"

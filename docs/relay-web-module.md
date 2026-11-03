@@ -293,6 +293,19 @@ Web 侧另有一层短命缓存，只用于消除重复 RPC：键为 instance + 
 - **Workspaces 管理器**：列已配置 workspace，可删除（`control.workspaces.remove {name}`，占用时同样 in-use 拒绝）。
 - **General tab 的「侧栏分组」三选**（不分组 / 按工作区 / 按 Agent）：按实例记忆的**纯视图偏好**，见下节。
 
+## 侧栏导航 tab（会话 / Bots / 群组）
+
+- **整条侧栏只有一个 tab 行**，固定在实例卡片列表上方（`InstanceTree.vue` 的
+  `data-test="instance-nav-track"`，`sticky top-0`），不再每个实例卡片各带一行。切换一次即同时
+  切换**所有实例**的内容区（会话行 / Bot 行 / 群组行）。实例展开折叠、已禁用 Bot 组、睡眠会话
+  开关仍按实例各自维护。
+- 模式是组件内状态（`navMode`，默认 `sessions`），刷新页面回到会话模式；不写 localStorage，
+  它表示「当前在看哪类内容」，不是配置。
+- 进入 Bots / 群组模式时为**每个在线实例**按需拉一次列表（`direct-bots` / `groups` store 自带的
+  `botsLoaded` / `groupsLoaded` 是幂等守卫）；模式不变而实例新上线或新增时，watcher 只补拉该实例。
+  离线实例在 Bots / 群组模式下不渲染内容。
+- 没有任何实例时整行不渲染。
+
 ## 侧栏会话分组（workspace / agent 二级分组）
 
 - 每个实例可独立选择侧栏分组模式：`instance`（平铺，默认）/ `workspace` / `agent`。偏好存
@@ -300,7 +313,7 @@ Web 侧另有一层短命缓存，只用于消除重复 RPC：键为 instance + 
   响应式镜像在 instances store（`groupModeFor`/`setGroupMode`），改动即时生效。
 - **组由活跃 session 派生**（不读 workspaces/agents 目录），按服务器首现顺序排列；组内 active
   保持顺序。分组模式下**取消 10 行截断**（组折叠即长度控制，折叠为会话内状态、不持久化）。
-- **睡眠会话只有一个实例级开关**：tab 行右侧筛选图标菜单（`Filter` 图标触发，勾选「已睡眠会话」
+- **睡眠会话只有一个实例级开关**：实例标题行右侧的筛选图标菜单（`Filter` 图标触发，勾选「已睡眠会话」
   `instance.sleepingSessions`，开启时图标带 accent 圆点）在平铺与分组模式下都显示、都生效。
   平铺模式开启时加载实例级睡眠快照；分组模式开启时为每个组经
   `control.sessions.list {archivedOnly, workspace|agent, offset, limit:5}` 拉第一页，睡眠行显示在
@@ -979,7 +992,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 - **Bot / Group 管理弹层的移动端布局**：`BotDialog.vue` 与 `GroupDialog.vue` 使用 Teleport 挂到 `body`，避免实例侧栏的 `transform` 把 fixed 遮罩限制在侧栏内。遮罩按动态视口高度和设备安全区留白；标题与操作栏不收缩，仅表单内容滚动。Group 的 fieldset 显式允许收缩，长成员名称和说明不会撑宽窄屏表单。
 
-- **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots | Groups` 模式切换，采用分段控件（segmented control）样式：凹槽轨道 `bg-fill-track rounded-btn p-0.5`，分段 `h-6 rounded-sm`，选中段 `bg-raised shadow-press font-semibold text-fg`，未选中段 `text-fg-muted hover:bg-fill-hover`（`data-test="instance-nav-track"`）。切到 Bots 时展示 Bot 列表（名称、角色、agent、workspace 与启用状态），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
+- **侧栏模式切换**：左栏顶部一行 `Sessions | Bots | Groups` 模式切换，全侧栏共用一行，切一次同时切换所有实例卡片（见上文「侧栏导航 tab」），采用分段控件（segmented control）样式：凹槽轨道 `bg-fill-track rounded-btn p-0.5`，分段 `h-6 rounded-sm`，选中段 `bg-raised shadow-press font-semibold text-fg`，未选中段 `text-fg-muted hover:bg-fill-hover`（`data-test="instance-nav-track"`）。切到 Bots 时展示 Bot 列表（名称、角色、agent、workspace 与启用状态），切到 Groups 时展示 Group 列表。Bots 与 Groups 列表顶部各自有标题行和总数；空间不足时模式标签保持单行并以省略号截断，不换行也不撑破导航行。会话过滤（睡眠会话）只在实例头部的过滤菜单里，且仅在 Sessions 模式展开时出现；
 - **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。新建时工作区默认选择「新建专属工作区」，由所选实例的 daemon 在 `~/.xacpx/bots/` 下创建并注册，也可选择实例已有工作区；自动选项在请求中省略 `workspace`。没有已注册工作区时仍可创建 Bot。编辑仅选择已注册工作区。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
 - **自定义动态头像（`BotAvatarEditor.vue` / `BotAvatarQuickView.vue` / `BotAvatar.vue`）**：Bot 弹层不再有「基本设置 / 头像外观」标签页；基本设置表单顶部直接展示头像。点击头像打开放大查看浮层（`BotAvatarQuickView.vue`，只读，不改变草稿）；该浮层是独立注册的一层（`useModalA11y`），Esc 或移动端返回只关闭浮层而不关弹层，焦点回到头像入口。头像右下角角标切到头像外观视图，标题栏返回按钮回到基本设置。外观视图支持 6 个预设、8 种形状、12 种颜色、16 种表情、动画开关及临时状态预览。预览模式由弹层草稿持有，两个视图间切换不丢失；保存只提交 dirty 头像，取消不写入，默认图标保存后以 `avatar: null` 清除配置。新建 Bot 时每次打开弹层随机生成一个角色头像（形状 / 颜色 / 表情），编辑沿用已保存配置。旧文本完整保留，不下载 URL 或执行 SVG。数据与验收见 [Bot 头像设计方案](superpowers/specs/2026-10-14-relay-web-bot-avatar-design.md)。
 - **头像状态与资源**：侧栏只展示身份，不聚合全局忙碌。Direct 按当前 Conversation / Topic / Run，Group 按精确 MemberTurn 与交互归属展示；完成动作只由已观察到的同任务完成事件授权，恢复快照与重连不回放。历史消息、选项、成员选择器和交接双头像静态渲染；可见动态头像共用一个帧时钟，离屏、隐藏、减少动态效果与卸载释放或暂停相应资源。普通 Session 与 Agent 品牌图标仍使用 `AgentIcon`。

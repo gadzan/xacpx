@@ -56,6 +56,17 @@ function seedInstance(): void {
   ];
 }
 
+function instanceRow(id: string, name: string, alias: string) {
+  return {
+    id, name, online: true, lastSeenAt: null,
+    sessions: [{ alias, agent: "codex", workspace: "repo", transportSession: `${id}-t`, running: false, archived: false }],
+    sessionsLoaded: true,
+    agents: [{ name: "codex", driver: "codex" }],
+    workspaces: [{ name: "repo", cwd: "/repo" }],
+    agentCatalog: [],
+  };
+}
+
 /** The element that carries the raised treatment, searched in the row INCLUDING
  *  its root (the bot / group / session rows all paint the raised background on
  *  the row itself, outside the session row's swipe clip layer). */
@@ -181,6 +192,33 @@ describe("sidebar mode segmented control", () => {
     await flushPromises();
     expect(w.find('[data-test="instance-nav-bots"]').classes()).toContain("bg-raised");
     expect(w.find('[data-test="instance-nav-sessions"]').classes()).not.toContain("bg-raised");
+  });
+
+  it("switches every instance card from the one global track", async () => {
+    const instances = useInstancesStore();
+    instances.instances = [instanceRow("i1", "pc-one", "backend"), instanceRow("i2", "pc-two", "frontend")] as never;
+    const direct = useDirectBotsStore();
+    direct.botsByInstance["i1"] = [{ ...BOT, name: "Reviewer" }];
+    direct.botsByInstance["i2"] = [{ ...BOT, id: "bot_b", name: "Builder" }];
+    direct.botsLoaded["i1"] = true;
+    direct.botsLoaded["i2"] = true;
+
+    const w = mount(InstanceTree);
+    await flushPromises();
+
+    // One tab row for the whole sidebar, however many instances render.
+    expect(w.findAll('[data-test="instance-nav-track"]')).toHaveLength(1);
+    expect(w.findAll('[data-test="session-row"]').map((r) => r.find('[data-test="session-name"]').text()))
+      .toEqual(["backend", "frontend"]);
+
+    await w.find('[data-test="instance-nav-bots"]').trigger("click");
+    await flushPromises();
+    expect(w.findAll('[data-test="bot-name"]').map((n) => n.text())).toEqual(["Reviewer", "Builder"]);
+    expect(w.findAll('[data-test="session-row"]')).toHaveLength(0);
+
+    await w.find('[data-test="instance-nav-sessions"]').trigger("click");
+    await flushPromises();
+    expect(w.findAll('[data-test="session-row"]')).toHaveLength(2);
   });
 });
 
