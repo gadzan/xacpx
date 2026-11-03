@@ -248,7 +248,9 @@ failure leaves the Bot retired and records
 the operation, so a retry reports the same result. `deleteDedicatedWorkspace`
 (like `clearDirectHistory` and `releaseDirectBindings`) is frozen on the first
 accepted attempt: a retry that arrives with a different value is ignored, and
-the dashboard disables those options once the operation is retryable.
+the dashboard disables each option the operation reports as frozen. An
+operation that reports no frozen flag (a core that predates them) leaves every
+option editable, because that core honours the retry's values.
 
 At accept, the Run stores `profileRevision` plus a snapshot of:
 
