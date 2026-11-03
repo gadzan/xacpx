@@ -122,14 +122,23 @@ describe("BotRemovalDialog", () => {
     expect(wrapper.get("[data-test=removal-finished]").text()).toContain("Group history stays");
   });
 
-  it("freezes the workspace-delete choice once a retry is pending", async () => {
-    // The core freezes `deleteDedicatedWorkspace` on the first accepted
-    // attempt, so a retried removal ignores a flipped box. Offer it read-only
-    // instead of letting the user pick something the operation will override.
-    const dedicatedWorkspace = { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false };
+  it("freezes the choices the operation already recorded once a retry is pending", async () => {
+    // The core freezes `deleteDedicatedWorkspace`, `clearDirectHistory` and
+    // `releaseDirectBindings` on the first accepted attempt, so a retried
+    // removal ignores a flipped box. Offer them read-only instead of letting
+    // the user pick something the operation will override.
+    const frozenChoices = [
+      "removal-clear-direct",
+      "removal-release-bindings",
+      "removal-delete-workspace",
+    ];
+    const previewPatch = {
+      dedicatedWorkspace: { name: "bots/reviewer", path: "/home/u/.xacpx/bots/reviewer", inUse: false },
+      externalBindings: [{ key: "binding-1", conversationId: "conversation_1", topicId: "topic_1" }],
+    };
     const retryable = mountDialog(impact({
       phase: "deleting",
-      dedicatedWorkspace,
+      ...previewPatch,
       operation: {
         id: "bot-remove:req-frozen",
         requestId: "req-frozen",
@@ -138,12 +147,16 @@ describe("BotRemovalDialog", () => {
       },
     }), async () => operation("completed", { requestId: "req-frozen" }), true);
     await flushPromises();
-    expect(retryable.wrapper.get("[data-test=removal-delete-workspace]").attributes("disabled")).toBeDefined();
+    for (const choice of frozenChoices) {
+      expect(retryable.wrapper.get(`[data-test=${choice}]`).attributes("disabled"), choice).toBeDefined();
+    }
     retryable.wrapper.unmount();
 
-    const fresh = mountDialog(impact({ dedicatedWorkspace }), undefined, true);
+    const fresh = mountDialog(impact(previewPatch), undefined, true);
     await flushPromises();
-    expect(fresh.wrapper.get("[data-test=removal-delete-workspace]").attributes("disabled")).toBeUndefined();
+    for (const choice of frozenChoices) {
+      expect(fresh.wrapper.get(`[data-test=${choice}]`).attributes("disabled"), choice).toBeUndefined();
+    }
   });
 
   it("offers the dedicated workspace folder and sends the delete flag", async () => {
