@@ -38,6 +38,7 @@ import { api } from "../api/client";
 import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectComposerStore } from "./direct-composer";
 import { pushToast } from "../lib/use-toasts";
+import { isActiveRunState, probeExecutingTopics, sortTopicsNewestFirst } from "../lib/topic-order";
 
 export interface DirectCancelScope {
   kind: "direct";
@@ -290,10 +291,6 @@ function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean
 async function listOwnedInstances(): Promise<Array<{ id: string }>> {
   const { instances: rows } = await api.get<{ instances: Array<{ id: string }> }>("/api/instances");
   return Array.isArray(rows) ? rows : [];
-}
-
-function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
-  return state === "queued" || state === "running" || state === "waiting-human" || state === "paused";
 }
 
 function shouldUpdateRunState(current: ConversationRunStateDto | undefined, incoming: ConversationRunStateDto): boolean {
@@ -773,16 +770,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   });
   const currentTopics = computed(() => {
     if (!instanceId.value || !activeConversationId.value) return [];
-    return topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? [];
+    return sortTopicsNewestFirst(topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? []);
   });
   const currentTopic = computed(() => {
     if (!activeTopicId.value) return undefined;
     return currentTopics.value.find((t) => t.id === activeTopicId.value);
   });
-  const isRunActive = computed(() => {
-    const s = activeRun.value?.state;
-    return s === "queued" || s === "running" || s === "waiting-human";
-  });
+  const isRunActive = computed(() => isActiveRunState(activeRun.value?.state));
 
   // RPC: Bot CRUD
   function dropBotDetail(targetInstanceId: string, botId: string): void {
@@ -1335,7 +1329,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   ): void {
     if (instanceId.value !== targetInstanceId || activeConversationId.value !== conversationId) return;
     if (!activeTopicId.value || topics.some((topic) => topic.id === activeTopicId.value)) return;
-    const fallback = topics.find((topic) => topic.status === "active") ?? topics[0];
+    const ordered = sortTopicsNewestFirst(topics);
+    const fallback = ordered.find((topic) => topic.status === "active") ?? ordered[0];
     if (fallback) {
       void switchTopic(fallback.id);
       return;
@@ -2202,6 +2197,28 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   }
 
   // Selection & Navigation
+  async function findExecutingTopicId(
+    targetInstanceId: string,
+    conversationId: string,
+    ordered: TopicSummaryDto[],
+  ): Promise<string | undefined> {
+    try {
+      const probe = await probeExecutingTopics(ordered, async (topicId) =>
+        unwrapRpc(
+          await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(
+            targetInstanceId,
+            MSG.runsList,
+            { conversationId, topicId },
+          ),
+        ),
+      );
+      if (probe.status !== "complete") return undefined;
+      return ordered.find((topic) => topic.status === "active" && probe.activeByTopicId[topic.id])?.id;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
     liveCompletedRunId.value = null;
     const generation = ++currentSelectionGeneration;
@@ -2267,7 +2284,17 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
           return;
         }
-        const targetTopicId = conv.defaultTopicId ?? topics[0]?.id;
+        const ordered = sortTopicsNewestFirst(topics);
+        const executingTopicId = await findExecutingTopicId(targetInstanceId, conv.id, ordered);
+        if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
+          return;
+        }
+        const live = topicsByConversation.value[`${targetInstanceId}:${conv.id}`];
+        const current = sortTopicsNewestFirst(live ?? topics);
+        const executing = executingTopicId !== undefined && current.some((topic) => topic.id === executingTopicId && topic.status === "active")
+          ? executingTopicId
+          : undefined;
+        const targetTopicId = executing ?? conv.defaultTopicId ?? current.find((topic) => topic.status === "active")?.id ?? current[0]?.id;
         if (targetTopicId) {
           activeTopicId.value = targetTopicId;
           // loadHistory owns topicReady from here: it reopens the gate only on
@@ -3419,8 +3446,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       }
     }
 
-    // Check active run if we believed one was active (same predicate as
-    // isRunActive: queued/running/waiting-human).
       if (rId && activeRun.value?.id === rId && isActiveRunState(activeRun.value.state)) {
         try {
           const res = unwrapRpc(

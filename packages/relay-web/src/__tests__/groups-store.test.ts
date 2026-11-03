@@ -272,6 +272,116 @@ describe("useGroupsStore", () => {
     expect(store.currentTopic?.status).toBe("active");
   });
 
+  it("lists currentTopics newest-first and lands on the Topic that owns an executing Run", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_old", conversationId: "conversation_g", title: "Old", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_new", conversationId: "conversation_g", title: "New", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        const p = payload as { topicId: string };
+        return p.topicId === "topic_old"
+          ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conversation_g", topicId: "topic_old", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+          : { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_new", "topic_old"]);
+    expect(store.activeTopicId).toBe("topic_old");
+  });
+
+  it("falls back to the plain default Topic when the runs.list probe fails", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_old", conversationId: "conversation_g", title: "Old", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_new", conversationId: "conversation_g", title: "New", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") throw new Error("authority down");
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.activeTopicId).toBe("topic_new");
+  });
+  it("skips an archived Topic that owns an executing Run and lands on the newest active one", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_archived", conversationId: "conversation_g", title: "Old", status: "archived", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+          { id: "topic_active", conversationId: "conversation_g", title: "New", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") return { bots: BOTS };
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        const p = payload as { topicId: string };
+        return p.topicId === "topic_archived"
+          ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conversation_g", topicId: "topic_archived", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+          : { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.activeTopicId).toBe("topic_active");
+  });
+
+  it("drops a stale executing election when the Topic vanishes during the probe", async () => {
+    const store = useGroupsStore();
+    let releaseProbe!: () => void;
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_stale", conversationId: "conversation_g", title: "S", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+          { id: "topic_live", conversationId: "conversation_g", title: "L", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") return { bots: BOTS };
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        const p = payload as { topicId: string };
+        if (p.topicId === "topic_stale") await probeGate;
+        return p.topicId === "topic_stale"
+          ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conversation_g", topicId: "topic_stale", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+          : { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    const selecting = store.selectGroup("inst_1", "conversation_g");
+    await flushPromises();
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_live", conversationId: "conversation_g", title: "L", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    releaseProbe();
+    await selecting;
+    expect(store.activeTopicId).toBe("topic_live");
+  });
+
   it("names the lead even when the catalog marks it disabled and lets the server refuse", async () => {
     const store = useGroupsStore();
     const disabledLead: GroupSummaryDto = { ...GROUP, leadBotId: "bot_a", botIds: ["bot_a", "bot_b"] };
@@ -2194,6 +2304,38 @@ describe("useGroupsStore", () => {
     // The active selection converges onto a Topic that still exists.
     expect(store.activeTopicId).toBe("topic_alive");
   });
+  it("converges the refresh fallback onto the newest active Topic", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_gone", conversationId: "conversation_g", title: "Gone", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    store.activeTopicId = "topic_gone";
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_old", conversationId: "conversation_g", title: "Old", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_new", conversationId: "conversation_g", title: "New", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_new" };
+      throw new Error(`unexpected ${type}`);
+    });
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversations-changed" },
+    } as never);
+    await flushPromises();
+    await flushPromises();
+    expect(store.activeTopicId).toBe("topic_new");
+  });
 
   it("aborts teardown reconciliation when a Topic event lands on every attempt", async () => {
     const store = useGroupsStore();
@@ -2240,7 +2382,7 @@ describe("useGroupsStore", () => {
     // success with a list it could not verify.
     expect(listCalls).toBeGreaterThan(1);
     expect(listCalls).toBeLessThanOrEqual(4);
-    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_deleted", "topic_alive"]);
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_alive", "topic_deleted"]);
     expect(store.activeTopicId).toBe("topic_deleted");
   });
 

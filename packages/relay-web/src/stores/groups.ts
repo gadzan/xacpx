@@ -31,6 +31,7 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { isActiveRunState, probeExecutingTopics, sortTopicsNewestFirst } from "../lib/topic-order";
 import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectBotsStore } from "./direct-bots";
 
@@ -220,12 +221,6 @@ const RUN_STATE_PRECEDENCE: Record<ConversationRunStateDto, number> = {
 
 function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean {
   return state === "completed" || state === "failed" || state === "cancelled" || state === "indeterminate";
-}
-
-function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
-  // A paused Run still owns the Topic and its queued work: the composer must
-  // stay closed until the user resumes or stops it, exactly like a running one.
-  return state === "queued" || state === "running" || state === "waiting-human" || state === "paused";
 }
 
 /** Mirrors the backend's group_member_has_work probe, which looks only at the
@@ -1038,7 +1033,7 @@ export const useGroupsStore = defineStore("groups", () => {
   });
   const currentTopics = computed(() => {
     if (!instanceId.value || !activeConversationId.value) return [];
-    return topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? [];
+    return sortTopicsNewestFirst(topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? []);
   });
   const currentTopic = computed(() => {
     if (!activeTopicId.value) return undefined;
@@ -1498,7 +1493,7 @@ export const useGroupsStore = defineStore("groups", () => {
       ? topics.some((topic) => topic.id === activeTopicId.value)
       : false;
     if (activeTopicId.value && !stillThere) {
-      const nextActive = topics.find((topic) => topic.status === "active");
+      const nextActive = sortTopicsNewestFirst(topics).find((topic) => topic.status === "active");
       if (nextActive) {
         await switchTopic(nextActive.id);
       } else {
@@ -1597,7 +1592,7 @@ export const useGroupsStore = defineStore("groups", () => {
       && activeConversationId.value === conversationId
       && activeTopicId.value === topicId
     ) {
-      const fallback = next.find((topic) => topic.status === "active");
+      const fallback = sortTopicsNewestFirst(next).find((topic) => topic.status === "active");
       if (fallback) void switchTopic(fallback.id);
       else activeTopicId.value = null;
     }
@@ -2239,6 +2234,28 @@ export const useGroupsStore = defineStore("groups", () => {
     }
   }
 
+  async function findExecutingTopicId(
+    targetInstanceId: string,
+    conversationId: string,
+    ordered: TopicSummaryDto[],
+  ): Promise<string | undefined> {
+    try {
+      const probe = await probeExecutingTopics(ordered, async (topicId) =>
+        unwrapRpc(
+          await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(
+            targetInstanceId,
+            MSG.runsList,
+            { conversationId, topicId },
+          ),
+        ),
+      );
+      if (probe.status !== "complete") return undefined;
+      return ordered.find((topic) => topic.status === "active" && probe.activeByTopicId[topic.id])?.id;
+    } catch {
+      return undefined;
+    }
+  }
+
   async function selectGroup(targetInstanceId: string, groupId: string): Promise<void> {
     liveCompletedMemberTurns.value = null;
     clearRunHistory();
@@ -2301,12 +2318,21 @@ export const useGroupsStore = defineStore("groups", () => {
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }
-      // Prefer the Group's default, else the first ACTIVE Topic: opening a Group
-      // whose oldest Topic is archived must not land the composer in a state
-      // where every send is refused with topic_not_active.
-      const targetTopicId = group.defaultTopicId
-        ?? topics.find((topic) => topic.status === "active")?.id
-        ?? topics[0]?.id;
+      // Prefer an ACTIVE Topic: the server refuses sends into an archived one.
+      const ordered = sortTopicsNewestFirst(topics);
+      const executingTopicId = await findExecutingTopicId(targetInstanceId, group.id, ordered);
+      if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
+        return;
+      }
+      const live = topicsByConversation.value[`${targetInstanceId}:${group.id}`];
+      const current = sortTopicsNewestFirst(live ?? topics);
+      const executing = executingTopicId !== undefined && current.some((topic) => topic.id === executingTopicId && topic.status === "active")
+        ? executingTopicId
+        : undefined;
+      const targetTopicId = executing
+        ?? group.defaultTopicId
+        ?? current.find((topic) => topic.status === "active")?.id
+        ?? current[0]?.id;
       if (targetTopicId) {
         activeTopicId.value = targetTopicId;
         await loadHistory(targetInstanceId, group.id, targetTopicId);

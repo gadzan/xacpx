@@ -558,6 +558,27 @@ describe("useDirectBotsStore", () => {
       expect(res).toEqual(mockTopics);
       expect(store.topicsByConversation["inst_1:conv_1"]).toEqual(mockTopics);
     });
+    it("converges a missing active Topic onto the newest active one", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_gone";
+      store.topicReady = true;
+      mockRpc.mockImplementation((_inst: string, type: string) => {
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [
+            { id: "top_old", conversationId: "conv_1", title: "Old", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+            { id: "top_new", conversationId: "conv_1", title: "New", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+          ] });
+        }
+        if (type === "control.conversation.history") return Promise.resolve({ conversationId: "conv_1", topicId: "top_new", messages: [], hasMoreBefore: false, hasMoreAfter: false });
+        if (type === "control.runs.list") return Promise.resolve({ runs: [] });
+        return Promise.resolve({});
+      });
+      await store.loadTopics("inst_1", "conv_1");
+      await flushPromises();
+      expect(store.activeTopicId).toBe("top_new");
+    });
 
     it("creates a topic and adds to topics list", async () => {
       const store = useDirectBotsStore();
@@ -797,6 +818,105 @@ describe("useDirectBotsStore", () => {
       expect(store.selectedBotId).toBe("bot_b");
       expect(store.generalError).toBeNull();
       expect(store.topicReady).toBe(false);
+    });
+  });
+
+  describe("Topic display order and executing-topic default selection", () => {
+    const CONV = { id: "conv_z", kind: "bot", title: "Z", botId: "bot_z", createdAt: "now", updatedAt: "now" };
+    function rpcFor(handlers: Record<string, (payload?: unknown) => unknown>) {
+      mockRpc.mockImplementation((_inst: string, type: string, payload?: unknown) => {
+        if (type === "control.bots.list") return Promise.resolve({ bots: [{ id: "bot_z", name: "Z", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] });
+        const h = handlers[type];
+        return h ? h(payload) : Promise.resolve({});
+      });
+    }
+    function topic(id: string, createdAt: string): TopicSummaryDto {
+      return { id, conversationId: "conv_z", title: id, status: "active", createdAt, updatedAt: createdAt };
+    }
+
+    it("lists currentTopics newest-first regardless of server order", async () => {
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV, defaultTopicId: "top_old" }] }),
+        "control.topics.list": () => Promise.resolve({ topics: [topic("top_old", "2026-01-01T00:00:00.000Z"), topic("top_mid", "2026-02-01T00:00:00.000Z"), topic("top_new", "2026-03-01T00:00:00.000Z")] }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_old", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": () => Promise.resolve({ runs: [] }),
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.currentTopics.map((t) => t.id)).toEqual(["top_new", "top_mid", "top_old"]);
+      expect(store.topicsByConversation["inst_1:conv_z"]?.map((t) => t.id)).toEqual(["top_old", "top_mid", "top_new"]);
+    });
+
+    it("selectBot lands on the Topic that owns an executing Run, ahead of the default Topic", async () => {
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV, defaultTopicId: "top_default" }] }),
+        "control.topics.list": () => Promise.resolve({ topics: [topic("top_default", "2026-03-01T00:00:00.000Z"), topic("top_executing", "2026-01-01T00:00:00.000Z")] }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_executing", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": (payload?: unknown) => {
+          const p = payload as { topicId: string };
+          return Promise.resolve(p.topicId === "top_executing"
+            ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conv_z", topicId: "top_executing", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+            : { runs: [] });
+        },
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.activeTopicId).toBe("top_executing");
+    });
+
+    it("falls back to the plain default Topic when the runs.list probe fails", async () => {
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV, defaultTopicId: "top_default" }] }),
+        "control.topics.list": () => Promise.resolve({ topics: [topic("top_default", "2026-03-01T00:00:00.000Z"), topic("top_other", "2026-01-01T00:00:00.000Z")] }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_default", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": () => Promise.reject(new Error("authority down")),
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.activeTopicId).toBe("top_default");
+    });
+    it("skips an archived Topic that owns an executing Run and lands on the newest active one", async () => {
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV }] }),
+        "control.topics.list": () => Promise.resolve({ topics: [
+          { ...topic("top_archived", "2026-03-01T00:00:00.000Z"), status: "archived" },
+          topic("top_active", "2026-02-01T00:00:00.000Z"),
+        ] }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_active", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": (payload?: unknown) => {
+          const p = payload as { topicId: string };
+          return Promise.resolve(p.topicId === "top_archived"
+            ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conv_z", topicId: "top_archived", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+            : { runs: [] });
+        },
+      });
+      const store = useDirectBotsStore();
+      await store.selectBot("inst_1", "bot_z");
+      expect(store.activeTopicId).toBe("top_active");
+    });
+
+    it("drops a stale executing election when the Topic vanishes during the probe", async () => {
+      let releaseProbe!: () => void;
+      const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+      rpcFor({
+        "control.conversations.list": () => Promise.resolve({ conversations: [{ ...CONV }] }),
+        "control.topics.list": () => Promise.resolve({ topics: [topic("top_stale", "2026-02-01T00:00:00.000Z"), topic("top_live", "2026-01-01T00:00:00.000Z")] }),
+        "control.conversation.history": () => Promise.resolve({ conversationId: "conv_z", topicId: "top_live", messages: [], hasMoreBefore: false, hasMoreAfter: false }),
+        "control.runs.list": async (payload?: unknown) => {
+          const p = payload as { topicId: string };
+          if (p.topicId === "top_stale") await probeGate;
+          return p.topicId === "top_stale"
+            ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conv_z", topicId: "top_stale", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+            : { runs: [] };
+        },
+      });
+      const store = useDirectBotsStore();
+      const selecting = store.selectBot("inst_1", "bot_z");
+      await flushPromises();
+      store.topicsByConversation["inst_1:conv_z"] = [topic("top_live", "2026-01-01T00:00:00.000Z")];
+      releaseProbe();
+      await selecting;
+      expect(store.activeTopicId).toBe("top_live");
     });
   });
 
