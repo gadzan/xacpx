@@ -41,6 +41,7 @@ import {
   createVerbatimReplySink,
 } from "../quota-gated-reply-sink";
 import { assertAcpxQueueOwnerAbsent } from "../acpx-queue-owner-launcher";
+import { explainSessionSpawnFailure } from "../session-spawn-failure";
 import { nativeCatalogIdentityForLaunch } from "../../sessions/native-session-guard";
 import { ensureNodePtyHelperExecutable, resolveNodePtyHelperPath } from "./node-pty-helper";
 import { terminateProcessTree } from "../../process/terminate-process-tree";
@@ -340,10 +341,14 @@ export class AcpxCliTransport implements SessionTransport {
       // drop it and retry once, falling back to the agent adapter's default model.
       const requestedModel = session.model?.trim();
       if (requestedModel && isModelNotAdvertisedError(error instanceof Error ? error.message : null)) {
-        await this.runEnsureSession({ ...session, model: undefined });
+        try {
+          await this.runEnsureSession({ ...session, model: undefined });
+        } catch (retryError) {
+          throw explainSessionSpawnFailure(session, retryError);
+        }
         return;
       }
-      throw error;
+      throw explainSessionSpawnFailure(session, error);
     }
   }
 
@@ -1019,10 +1024,14 @@ export class AcpxCliTransport implements SessionTransport {
       agentSessionId,
     ]);
     const runResume = session.agentCommand ? this.run : this.runWithPty;
-    await runResume.call(this, args, {
-      timeoutMs: this.sessionInitTimeoutMs,
-      env: this.effectiveSpawnEnvironment(session),
-    });
+    try {
+      await runResume.call(this, args, {
+        timeoutMs: this.sessionInitTimeoutMs,
+        env: this.effectiveSpawnEnvironment(session),
+      });
+    } catch (error) {
+      throw explainSessionSpawnFailure(session, error);
+    }
   }
 
 

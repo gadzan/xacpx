@@ -36,6 +36,12 @@ export const misc: MiscMessages = {
   agentNotRegistered: (agent: string) =>
     `Agent「${agent}」未注册`,
 
+  // transport/session-spawn-failure: a spawn ENOENT whose cause is a missing launch path
+  workspaceCwdMissing: (workspace: string, cwd: string) =>
+    `工作区「${workspace}」指向的路径不存在：${cwd}。请修正工作区路径（config.json 中的 workspaces.${workspace}.cwd，或该 worker 绑定的 cwd），或先创建该目录后重试。`,
+  agentLaunchPathMissing: (agent: string, path: string) =>
+    `Agent「${agent}」无法启动，启动路径不存在：${path}。请修正 config.json 中的 agents.${agent}.command 或 agents.${agent}.argv；若该路径属于 xacpx 自带组件，请重新安装 xacpx 后重试。`,
+
   // transport/quota-gated-reply-sink: heads-up text and overflow summary
   quotaHeadsUp: "—\n⏳ 推送已达上限。回复 /jx 续看进度，或等待最终结果。",
   quotaOverflowSummary: (count: number) =>

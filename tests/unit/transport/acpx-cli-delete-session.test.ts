@@ -1,13 +1,7 @@
-import { test, expect, spyOn, mock } from "bun:test";
-
-const deleteFiles = mock(async () => {});
-// Stub the sibling helper so we can assert deleteSession invokes the real file
-// delete with the resolved acpxRecordId, without touching the real ~/.acpx dir.
-// The impl imports "../acpx-session-files.js"; mock.module matches by resolved
-// module path, so stub the source module both transports/tests reference.
-mock.module("../../../src/transport/acpx-session-files", () => ({
-  deleteAcpxSessionFiles: deleteFiles,
-}));
+import { afterEach, beforeEach, expect, spyOn, mock, test } from "bun:test";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { AcpxCliTransport } from "../../../src/transport/acpx-cli/acpx-cli-transport";
 import type { ResolvedSession } from "../../../src/transport/types";
@@ -21,6 +15,33 @@ const session: ResolvedSession = {
   cwd: "/tmp/backend",
 };
 
+const originalHome = process.env.HOME;
+let home = "";
+let sessionsDir = "";
+
+// The file delete is the behavior under test, so it runs for real against a
+// throwaway acpx home instead of a module mock: Bun's module mocks outlive the
+// test file and would hand a stub to any sibling suite that runs later.
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), "acpx-delete-session-"));
+  process.env.HOME = home;
+  sessionsDir = join(home, ".acpx", "sessions");
+});
+
+afterEach(async () => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  await rm(home, { recursive: true, force: true });
+});
+
+async function seedRecord(recordId: string): Promise<void> {
+  const safe = encodeURIComponent(recordId);
+  await mkdir(sessionsDir, { recursive: true });
+  for (const name of [`${safe}.json`, `${safe}.stream.ndjson`, `${safe}.stream.lock`]) {
+    await writeFile(join(sessionsDir, name), "");
+  }
+}
+
 function makeTransport() {
   const run = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
   const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
@@ -28,9 +49,9 @@ function makeTransport() {
 }
 
 test("deleteSession closes then deletes files by acpxRecordId", async () => {
-  deleteFiles.mockClear();
-  const transport = makeTransport();
   const recordId = "ws:rec-123";
+  await seedRecord(recordId);
+  const transport = makeTransport();
 
   const readRecord = spyOn(transport as never, "readSessionRecord").mockResolvedValue({
     acpxRecordId: recordId,
@@ -44,12 +65,12 @@ test("deleteSession closes then deletes files by acpxRecordId", async () => {
   expect(remove).toHaveBeenCalledTimes(1);
   expect(remove).toHaveBeenCalledWith(session);
   // Then delete the on-disk record files for the resolved record id.
-  expect(deleteFiles).toHaveBeenCalledTimes(1);
-  expect(deleteFiles).toHaveBeenCalledWith({ acpxRecordId: recordId });
+  expect(await readdir(sessionsDir)).toEqual([]);
 });
 
 test("deleteSession is a no-op when the session can't be resolved", async () => {
-  deleteFiles.mockClear();
+  const recordId = "ws:rec-123";
+  await seedRecord(recordId);
   const transport = makeTransport();
 
   spyOn(transport as never, "readSessionRecord").mockRejectedValue(new Error("no session") as never);
@@ -57,5 +78,5 @@ test("deleteSession is a no-op when the session can't be resolved", async () => 
 
   await expect(transport.deleteSession?.(session)).resolves.toBeUndefined();
   expect(remove).not.toHaveBeenCalled();
-  expect(deleteFiles).not.toHaveBeenCalled();
+  expect((await readdir(sessionsDir)).length).toBe(3);
 });

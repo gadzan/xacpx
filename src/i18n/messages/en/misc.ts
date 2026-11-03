@@ -36,6 +36,12 @@ export const misc: MiscMessages = {
   agentNotRegistered: (agent: string) =>
     `Agent "${agent}" is not registered`,
 
+  // transport/session-spawn-failure: a spawn ENOENT whose cause is a missing launch path
+  workspaceCwdMissing: (workspace: string, cwd: string) =>
+    `Workspace "${workspace}" points at a path that does not exist: ${cwd}. Fix the workspace path (workspaces.${workspace}.cwd, or the worker binding's cwd) or create the directory, then retry.`,
+  agentLaunchPathMissing: (agent: string, path: string) =>
+    `Agent "${agent}" cannot start because this launch path does not exist: ${path}. Fix agents.${agent}.command or agents.${agent}.argv in config.json, or reinstall xacpx if the path belongs to a bundled helper, then retry.`,
+
   // transport/quota-gated-reply-sink: heads-up text and overflow summary
   quotaHeadsUp: "—\n⏳ Push limit reached. Reply /jx to continue watching, or wait for the final result.",
   quotaOverflowSummary: (count: number) =>

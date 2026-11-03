@@ -13,7 +13,7 @@ function createConfig(): AppConfig {
     channels: [{ id: "weixin", type: "weixin", enabled: true }],
     agents: {
       codex: { driver: "codex" },
-      opencode: { driver: "opencode", command: "npx -y opencode-ai acp" },
+      opencode: { driver: "opencode", argv: ["npx", "-y", "opencode-ai", "acp"] },
     },
     workspaces: { backend: { cwd: "/tmp/backend" } },
     orchestration: {
@@ -53,9 +53,8 @@ test("builds reap targets from worker bindings, resolving cwd and agent command"
     },
     {
       agent: "opencode",
-      acpxAgent: "opencode",
+      acpxAgent: "xacpx-managed-opencode-4764713cb6e3",
       agentCommand: "npx -y opencode-ai acp",
-      rawCommand: "npx -y opencode-ai acp",
       cwd: "/tmp/backend",
       transportSession: "backend:opencode:wk",
     },
@@ -225,4 +224,42 @@ test("worker binding without a snapshot reaps only the current resolution", () =
 
   expect(targets).toHaveLength(1);
   expect(targets[0]?.agentCommand).toContain("@agentclientprotocol/codex-acp@2.2.2");
+});
+
+test.skipIf(process.platform === "win32")("keeps a raw command selector for reap targets", () => {
+  const config = createConfig();
+  config.agents.opencode = { driver: "opencode", command: "npx -y opencode-ai acp" };
+  const state = createEmptyState();
+  state.orchestration.workerBindings["backend:opencode:wk"] = {
+    sourceHandle: "h2",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "opencode",
+  };
+
+  expect(workerBindingReapTargets(state.orchestration, config)).toEqual([
+    {
+      agent: "opencode",
+      acpxAgent: "opencode",
+      agentCommand: "npx -y opencode-ai acp",
+      rawCommand: "npx -y opencode-ai acp",
+      cwd: "/tmp/backend",
+      transportSession: "backend:opencode:wk",
+    },
+  ]);
+});
+
+test.skipIf(process.platform !== "win32")("refuses a multi-token raw command on Windows instead of reaping it", () => {
+  const config = createConfig();
+  config.agents.opencode = { driver: "opencode", command: "npx -y opencode-ai acp" };
+  const state = createEmptyState();
+  state.orchestration.workerBindings["backend:opencode:wk"] = {
+    sourceHandle: "h2",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "opencode",
+  };
+
+  expect(() => workerBindingReapTargets(state.orchestration, config))
+    .toThrow(/cannot be launched on Windows without lossy quoting/);
 });

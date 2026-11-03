@@ -25,6 +25,7 @@ import { withDefaultMcpIdentity } from "../../orchestration/coordinator-identity
 import type { BridgeEngineCapabilities, BridgeMethod } from "./acpx-bridge-protocol";
 import { decodeBridgeEngineCapabilities } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
+import { explainSessionSpawnFailure } from "../session-spawn-failure";
 
 interface BridgeRequestClient {
   request<TResult>(
@@ -38,15 +39,19 @@ export class AcpxBridgeTransport implements SessionTransport {
   constructor(private readonly client: BridgeRequestClient & { dispose?: () => Promise<void> }) {}
 
   async ensureSession(session: ResolvedSession, onProgress?: (progress: EnsureSessionProgress) => void): Promise<void> {
-    await this.client.request("ensureSession", this.toParams(session), onProgress
-      ? (event) => {
-          if (event.type === "session.progress" && event.stage) {
-            onProgress(event.stage as EnsureSessionProgressStage);
-          } else if (event.type === "session.note") {
-            onProgress({ kind: "note", text: event.text });
+    try {
+      await this.client.request("ensureSession", this.toParams(session), onProgress
+        ? (event) => {
+            if (event.type === "session.progress" && event.stage) {
+              onProgress(event.stage as EnsureSessionProgressStage);
+            } else if (event.type === "session.note") {
+              onProgress({ kind: "note", text: event.text });
+            }
           }
-        }
-      : undefined);
+        : undefined);
+    } catch (error) {
+      throw explainSessionSpawnFailure(session, error);
+    }
   }
 
   async tailSessionHistory(session: ResolvedSession, lines: number): Promise<{ text: string }> {
@@ -63,7 +68,11 @@ export class AcpxBridgeTransport implements SessionTransport {
   async resumeAgentSession(session: ResolvedSession, agentSessionId: string): Promise<void> {
     // Identity + engine affinity MUST ride along (plan §48): a hand-built
     // param set would silently re-key the session on the host side.
-    await this.client.request("resumeAgentSession", { ...this.toParams(session), agentSessionId });
+    try {
+      await this.client.request("resumeAgentSession", { ...this.toParams(session), agentSessionId });
+    } catch (error) {
+      throw explainSessionSpawnFailure(session, error);
+    }
   }
 
   async prompt(

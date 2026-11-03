@@ -496,8 +496,8 @@ If the command prefix is recognized, e.g. `/session`, `/group`, `/task`, but the
 
 Check three things first:
 
-1. The workspace path exists on the computer running `xacpx`.
+1. The workspace path exists on the computer running `xacpx`. When it does not, session creation fails with `Workspace "<name>" points at a path that does not exist: <path>`; fix `workspaces.<name>.cwd` in `config.json` (or the worker binding's `cwd`) or create the directory.
 2. The agent is registered; you can check with `/agents`.
-3. The underlying agent command itself is runnable.
+3. The underlying agent command itself is runnable. When an absolute launch path is missing, session creation fails with `Agent "<agent>" cannot start because this launch path does not exist: <path>`; fix `agents.<agent>.command` / `agents.<agent>.argv` in `config.json`, or reinstall `xacpx` when the path belongs to a bundled helper.
 
 If an underlying session already exists, you can bind it back with `/session attach ...`.

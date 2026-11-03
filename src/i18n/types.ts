@@ -1339,6 +1339,10 @@ export interface MiscMessages {
   workspaceDedicated: (workspace: string) => string;
   agentNotRegistered: (agent: string) => string;
 
+  // transport/session-spawn-failure
+  workspaceCwdMissing: (workspace: string, cwd: string) => string;
+  agentLaunchPathMissing: (agent: string, path: string) => string;
+
   // transport/quota-gated-reply-sink
   quotaHeadsUp: string;
   quotaOverflowSummary: (count: number) => string;
