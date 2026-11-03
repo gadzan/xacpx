@@ -5,7 +5,7 @@ import { AlertCircle } from "lucide-vue-next";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
-import { isAdapterAuthError } from "../lib/adapter-auth-error";
+import { isAuthShapedModelError } from "../lib/adapter-auth-error";
 
 // Global, viewport-anchored diagnostic for the model-control read path.
 //
@@ -19,18 +19,9 @@ const controls = useSessionControlsStore();
 const chat = useChatStore();
 const instances = useInstancesStore();
 const { t } = useI18n();
-// The cold-probe diagnostic composes `model catalog refresh failed for agent "<x>"
-// session "<y>": <failure>: <message>`. Its session alias can contain auth-ish words
-// ("relay:authoring"), so only the parsed <failure> token may select the login hint;
-// diagnostics without that shape (native reads) keep the shared broad predicate.
-const COMPOSED_PROBE_DIAGNOSTIC = /^model catalog refresh failed for agent "[^"]*" session "[^"]*": (\w+): /;
-function authShaped(detail: string): boolean {
-  const failure = COMPOSED_PROBE_DIAGNOSTIC.exec(detail)?.[1];
-  return failure === undefined ? isAdapterAuthError(detail) : failure === "unauthenticated";
-}
 const message = computed(() => {
   const detail = controls.modelError;
-  if (!authShaped(detail)) return t("chat.modelControlFailed", { detail });
+  if (!isAuthShapedModelError(detail)) return t("chat.modelControlFailed", { detail });
   const row = chat.instanceId && chat.sessionAlias
     ? instances.findSessionRow(chat.instanceId, chat.sessionAlias)
     : undefined;

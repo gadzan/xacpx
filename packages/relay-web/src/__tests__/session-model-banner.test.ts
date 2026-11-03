@@ -118,6 +118,33 @@ it("does not read an auth-shaped session alias as an auth failure", async () => 
   expect(text).not.toContain("isn't authenticated on the host");
 });
 
+it("ignores the alias prefix on a thrown probe diagnostic with no failure token", async () => {
+  const controls = useSessionControlsStore();
+  controls.modelError = 'model catalog refresh failed for agent "omp" session "relay:authoring": adapter offline';
+  controls.modelErrorSource = "load";
+
+  mount(SessionModelBanner);
+  await nextTick();
+
+  const text = banner()?.textContent ?? "";
+  expect(text).toContain("Model state unavailable");
+  expect(text).not.toContain("isn't authenticated on the host");
+});
+
+it("keeps the hint when the probe text itself reports an expired login", async () => {
+  const controls = useSessionControlsStore();
+  const detail = 'model catalog refresh failed for agent "omp" session "relay:authoring": transport: adapter auth expired';
+  controls.modelError = detail;
+  controls.modelErrorSource = "load";
+
+  mount(SessionModelBanner);
+  await nextTick();
+
+  const text = banner()?.textContent ?? "";
+  expect(text).toContain("isn't authenticated on the host");
+  expect(text.indexOf("isn't authenticated on the host")).toBeLessThan(text.indexOf(detail));
+});
+
 it("still leads unauthenticated when the session alias looks like auth", async () => {
   const instances = useInstancesStore();
   instances.instances = [{
