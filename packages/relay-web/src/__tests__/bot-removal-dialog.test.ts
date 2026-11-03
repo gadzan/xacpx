@@ -43,10 +43,10 @@ function mountDialog(previewValue: BotRemovalPreviewDto, removeImpl?: (input: {
   clearDirectHistory: boolean;
   releaseDirectBindings: boolean;
   deleteDedicatedWorkspace: boolean;
-}) => Promise<LifecycleOperationDto>, supportsWorkspaceCleanup = false) {
+}) => Promise<LifecycleOperationDto>, supportsWorkspaceCleanup = false, operationImpl?: () => Promise<LifecycleOperationDto>) {
   const preview = vi.fn(async () => previewValue);
   const remove = vi.fn(removeImpl ?? (async () => operation("completed", { clearDirectHistory: false })));
-  const getOperation = vi.fn(async () => operation("failed", { error: { code: "session_release_failed", message: "release failed" }, requestId: "req-kept" }));
+  const getOperation = vi.fn(operationImpl ?? (async () => operation("failed", { error: { code: "session_release_failed", message: "release failed" }, requestId: "req-kept" })));
   const wrapper = mount(BotRemovalDialog, {
     props: {
       botName: "Reviewer",
@@ -120,6 +120,75 @@ describe("BotRemovalDialog", () => {
     const { wrapper } = mountDialog(impact({ phase: "retired" }));
     await flushPromises();
     expect(wrapper.get("[data-test=removal-finished]").text()).toContain("Group history stays");
+  });
+
+  it("keeps retry reachable when the frozen operation asked to release bindings", async () => {
+    // The core freezes `releaseDirectBindings` and ignores the live checkbox,
+    // while the confirm button requires that flag whenever bindings remain. If
+    // the reopened dialog does not seed the box from the operation, the box is
+    // unchecked AND disabled, so Retry can never be pressed even though the
+    // core would accept it.
+    const previewValue = impact({
+      phase: "deleting",
+      externalBindings: [{ key: "binding-1", conversationId: "conversation_1", topicId: "topic_1" }],
+      operation: {
+        id: "bot-remove:req-seeded",
+        requestId: "req-seeded",
+        phase: "failed",
+        error: { code: "session_release_failed", message: "release failed" },
+      },
+    });
+    const { wrapper, remove } = mountDialog(
+      previewValue,
+      async () => operation("completed", { requestId: "req-seeded" }),
+      false,
+      async () => operation("failed", {
+        requestId: "req-seeded",
+        error: { code: "session_release_failed", message: "release failed" },
+        params: { clearDirectHistory: false, releaseDirectBindings: true, deleteDedicatedWorkspace: false },
+      }),
+    );
+    await flushPromises();
+    const checkbox = wrapper.get("[data-test=removal-release-bindings]");
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true);
+    expect(checkbox.attributes("disabled")).toBeDefined();
+    const confirm = wrapper.get("[data-test=removal-confirm]");
+    expect(confirm.text()).toContain("Retry cleanup");
+    expect(confirm.attributes("disabled")).toBeUndefined();
+    await confirm.trigger("click");
+    await flushPromises();
+    // What we send is what the core will apply, not a stale live value.
+    expect(remove.mock.calls[0]![0].releaseDirectBindings).toBe(true);
+  });
+
+  it("gates retry on the frozen bindings value rather than the live checkbox", async () => {
+    const previewValue = impact({
+      phase: "deleting",
+      externalBindings: [{ key: "binding-1", conversationId: "conversation_1", topicId: "topic_1" }],
+      operation: {
+        id: "bot-remove:req-kept-bindings",
+        requestId: "req-kept-bindings",
+        phase: "failed",
+        error: { code: "session_release_failed", message: "release failed" },
+      },
+    });
+    const { wrapper } = mountDialog(
+      previewValue,
+      undefined,
+      false,
+      async () => operation("failed", {
+        requestId: "req-kept-bindings",
+        error: { code: "session_release_failed", message: "release failed" },
+        params: { clearDirectHistory: false, releaseDirectBindings: false },
+      }),
+    );
+    await flushPromises();
+    const checkbox = wrapper.get("[data-test=removal-release-bindings]");
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false);
+    expect(checkbox.attributes("disabled")).toBeDefined();
+    // The frozen decision keeps the bindings, so retry stays blocked exactly
+    // as a fresh attempt with the box unchecked would be.
+    expect(wrapper.get("[data-test=removal-confirm]").attributes("disabled")).toBeDefined();
   });
 
   it("freezes the choices the operation already recorded once a retry is pending", async () => {
