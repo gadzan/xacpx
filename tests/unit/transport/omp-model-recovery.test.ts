@@ -193,9 +193,12 @@ test("escalates to SIGKILL and leaves no helper process alive", async () => {
   const pid = entries.find((entry) => entry.kind === "pid")?.pid;
   if (typeof pid !== "number") throw new Error("fixture did not report its pid");
   // The child saw the graceful attempt and the SIGTERM, then the SIGKILL
-  // escalation stopped it.
+  // escalation stopped it. Windows has no catchable SIGTERM: the kill terminates
+  // the child outright, so the fixture cannot record the signal there.
   expect(entries.some((entry) => entry.kind === "stdin-closed")).toBe(true);
-  expect(entries.some((entry) => entry.kind === "sigterm")).toBe(true);
+  if (process.platform !== "win32") {
+    expect(entries.some((entry) => entry.kind === "sigterm")).toBe(true);
+  }
   expect(await waitForProcessGone(pid, 5_000)).toBe(true);
 });
 

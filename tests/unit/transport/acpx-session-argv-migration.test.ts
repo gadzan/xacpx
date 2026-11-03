@@ -198,9 +198,9 @@ test("the warm queue owner is terminated before the record is written", async ()
 
 test("acpxSessionRecordFilePath matches acpx's encodeURIComponent layout", () => {
   expect(acpxSessionRecordFilePath("/sessions", "40d13b8a-876f-48d5-837b-5dcad2edba4e"))
-    .toBe("/sessions/40d13b8a-876f-48d5-837b-5dcad2edba4e.json");
+    .toBe(join("/sessions", "40d13b8a-876f-48d5-837b-5dcad2edba4e.json"));
   expect(acpxSessionRecordFilePath("/sessions", "a b/c"))
-    .toBe("/sessions/a%20b%2Fc.json");
+    .toBe(join("/sessions", "a%20b%2Fc.json"));
 });
 
 test("post-write verification fails when the write did not land", async () => {

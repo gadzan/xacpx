@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { createStructuredPromptFile } from "../../../src/transport/prompt-media";
 
@@ -153,16 +154,21 @@ test("createStructuredPromptFile writes multiple image blocks", async () => {
 
 test("createStructuredPromptFile converts non-images into resource blocks and summary text", async () => {
   const writes = new Map<string, string>();
+  // Attachment paths are absolute, so the expected resource URIs come from the
+  // platform's own file-URL encoding: a POSIX literal is not an absolute path on
+  // Windows and would encode as a drive-relative URL.
+  const pdfPath = join(tmpdir(), "report.pdf");
+  const audioPath = join(tmpdir(), "voice.opus");
   const file = await createStructuredPromptFile("summarize", [
     {
       type: "file",
-      filePath: "/Users/me/report.pdf",
+      filePath: pdfPath,
       mimeType: "application/pdf",
       fileName: "report.pdf",
     },
     {
       type: "audio",
-      filePath: "/Users/me/voice.opus",
+      filePath: audioPath,
       mimeType: "audio/opus",
       fileName: "voice.opus",
     },
@@ -179,13 +185,15 @@ test("createStructuredPromptFile converts non-images into resource blocks and su
   expect(file?.filePath.replaceAll("\\", "/")).toBe("/tmp/structured/prompt.json");
   const blocks = JSON.parse(writes.get(file!.filePath)!) as Array<Record<string, unknown>>;
   expect(blocks[0]).toMatchObject({ type: "text", text: "summarize" });
-  expect(String((blocks[1] as { text: string }).text)).toContain("Attachments available as local files");
+  const summaryText = blocks[1]?.text;
+  if (typeof summaryText !== "string") throw new Error("expected the attachment summary text block");
+  expect(summaryText).toContain("Attachments available as local files");
   expect(blocks[2]).toMatchObject({
     type: "resource",
-    resource: { uri: "file:///Users/me/report.pdf" },
+    resource: { uri: pathToFileURL(pdfPath).toString() },
   });
   expect(blocks[3]).toMatchObject({
     type: "resource",
-    resource: { uri: "file:///Users/me/voice.opus" },
+    resource: { uri: pathToFileURL(audioPath).toString() },
   });
 });
