@@ -413,11 +413,10 @@ export interface RunControlRequestDto {
   reason?: string;
 }
 
-/** Abandon input. No CAS token: the decision is idempotent and the sealed Run
- *  has no competing state machine left to race. */
+/** Abandon input. No CAS token and no request id: the decision is idempotent per
+ *  Run, and the sealed Run has no competing state machine left to race. */
 export interface RunAbandonRequestDto {
   runId: string;
-  requestId: string;
 }
 
 export interface RunControlResultDto {

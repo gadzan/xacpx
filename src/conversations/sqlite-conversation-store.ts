@@ -195,7 +195,6 @@ interface RunRow {
   started_at: string | null;
   finished_at: string | null;
   abandoned_at?: string | null;
-  abandon_request_id?: string | null;
 }
 
 interface MemberTurnRow {
@@ -2807,7 +2806,7 @@ export class SqliteConversationStore implements ConversationStore {
    * destroy the Run's only cleanup root (topic teardown) read the marker.
    * Idempotent: an already-abandoned Run is a no-op.
    */
-  abandonUnknownRun(input: { runId: string; requestId: string; now: string }): { run: ConversationRun; changed: boolean } {
+  abandonUnknownRun(input: { runId: string; now: string }): { run: ConversationRun; changed: boolean } {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(input.runId);
       if (run.state !== "indeterminate") {
@@ -2831,8 +2830,8 @@ export class SqliteConversationStore implements ConversationStore {
         );
       }
       this.sqlite.run(
-        "UPDATE runs SET abandoned_at = ?, abandon_request_id = ? WHERE id = ? AND abandoned_at IS NULL",
-        [input.now, input.requestId, run.id],
+        "UPDATE runs SET abandoned_at = ? WHERE id = ? AND abandoned_at IS NULL",
+        [input.now, run.id],
       );
       return { run: this.requireRun(run.id), changed: true };
     });
@@ -4275,9 +4274,6 @@ export class SqliteConversationStore implements ConversationStore {
     const names = new Set(this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)").map((col) => col.name));
     if (!names.has("abandoned_at")) {
       this.sqlite.exec("ALTER TABLE runs ADD COLUMN abandoned_at TEXT");
-    }
-    if (!names.has("abandon_request_id")) {
-      this.sqlite.exec("ALTER TABLE runs ADD COLUMN abandon_request_id TEXT");
     }
   }
 

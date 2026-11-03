@@ -194,7 +194,7 @@ async function abandonUnknownRuns(runIds: string[]): Promise<void> {
   const ctx = requireTopicContext();
   if (!ctx) return;
   for (const runId of runIds) {
-    await directBotsStore.abandonRun(ctx.instanceId, runId, crypto.randomUUID());
+    await directBotsStore.abandonRun(ctx.instanceId, runId);
   }
 }
 

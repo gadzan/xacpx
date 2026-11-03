@@ -40,7 +40,7 @@ export function useTopicActions(handlers: TopicActionHandlers) {
 
   const canAbandonUnknown = computed(() => confirmKind.value === "delete"
     && actionErrorCode.value === "conversation_indeterminate"
-    && (confirmImpact.value?.abandonableRunIds.length ?? 0) > 0
+    && (confirmImpact.value?.abandonableRunIds?.length ?? 0) > 0
     && handlers.abandonUnknownRuns !== undefined);
   const confirmBlocked = computed(() => {
     const bindings = confirmImpact.value?.bindings.length ?? 0;

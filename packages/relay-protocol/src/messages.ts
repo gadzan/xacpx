@@ -811,14 +811,13 @@ export interface RunsCancelMemberResult {
 }
 
 /**
- * Authenticated abandonment of a sealed `indeterminate` Run. No CAS token: the
- * Run has no competing state machine left, and the decision is idempotent — a
- * retried `requestId` is a no-op. The Run stays `indeterminate`; it only stops
- * blocking topic teardown.
+ * Authenticated abandonment of a sealed `indeterminate` Run. No CAS token and
+ * no request id: the Run has no competing state machine left, and the decision
+ * is idempotent per Run, so a retry is a no-op. The Run stays `indeterminate`;
+ * it only stops blocking topic teardown.
  */
 export interface RunsAbandonPayload {
   runId: string;
-  requestId: string;
 }
 
 /**

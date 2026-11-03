@@ -1848,14 +1848,14 @@ export class ConversationRunService {
    * Runs: their sessions are about to be released, which is a different
    * decision than accepting a sealed unknown.
    */
-  async abandonUnknownRun(runId: string, requestId: string): Promise<ConversationRun> {
+  async abandonUnknownRun(runId: string): Promise<ConversationRun> {
     this.assertOpen();
     const run = this.store.getRun(runId);
     if (!run) {
       throw new ConversationError("run_not_found", `run "${runId}" does not exist`);
     }
     this.assertTopicSettled(run.conversationId, run.topicId, "abandoning its unknown result");
-    const result = this.store.abandonUnknownRun({ runId, requestId, now: this.now().toISOString() });
+    const result = this.store.abandonUnknownRun({ runId, now: this.now().toISOString() });
     emitConversationProductEvent(this.onProductEvent, { type: "conversation-run-changed", run: result.run });
     return result.run;
   }
@@ -2074,7 +2074,7 @@ export class ConversationRunService {
     await this.dispatcher.flushOwnedClaimLeases();
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const remaining = this.store.listRuns(conversationId);
-    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    const indeterminate = this.blockingIndeterminate(remaining);
     if (indeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "conversation has indeterminate work", {
         runIds: indeterminate.map((run) => run.id),

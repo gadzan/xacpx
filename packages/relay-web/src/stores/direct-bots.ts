@@ -1473,8 +1473,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     retireTopic(targetInstanceId, conversationId, topicId);
   }
 
-  async function abandonRun(targetInstanceId: string, runId: string, requestId: string): Promise<void> {
-    unwrapRpc(await api.rpc(targetInstanceId, MSG.runsAbandon, { runId, requestId }));
+  async function abandonRun(targetInstanceId: string, runId: string): Promise<void> {
+    unwrapRpc(await api.rpc(targetInstanceId, MSG.runsAbandon, { runId }));
   }
 
   async function clearTopic(

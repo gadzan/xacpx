@@ -2078,11 +2078,11 @@ test("sealed unknown work blocks group topic teardown until a human abandons it"
   });
   expect(first.state.conversation_topics[topic.id]?.status).toBe("deleting");
 
-  const abandoned = await first.service.abandonUnknownRun(accepted.run.id, "abandon-1");
+  const abandoned = await first.service.abandonUnknownRun(accepted.run.id);
   expect(abandoned.state).toBe("indeterminate");
   const abandonStamp = abandoned.abandonedAt;
   expect(abandonStamp).toBeDefined();
-  expect((await first.service.abandonUnknownRun(accepted.run.id, "abandon-2")).abandonedAt).toBe(abandonStamp);
+  expect((await first.service.abandonUnknownRun(accepted.run.id)).abandonedAt).toBe(abandonStamp);
   expect(first.service.previewTopic(group.id, topic.id).abandonableRunIds).toEqual([]);
 
   await first.service.teardownGroupTopic(group.id, topic.id);
@@ -2115,11 +2115,11 @@ test("abandoning unknown work refuses a proven Run and a Topic with live work", 
     conversationId: group.id, topicId: topic.id, requestId: "guard-2", text: "again",
     target: { mode: "members", botIds: [reviewer.id] },
   });
-  await expect(first.service.abandonUnknownRun(first_.run.id, "guard-abandon")).rejects.toMatchObject({
+  await expect(first.service.abandonUnknownRun(first_.run.id)).rejects.toMatchObject({
     code: "conversation_not_settled",
   });
   first.store.cancelRun(live.run.id, NOW);
-  await expect(first.service.abandonUnknownRun(live.run.id, "guard-abandon-2")).rejects.toMatchObject({
+  await expect(first.service.abandonUnknownRun(live.run.id)).rejects.toMatchObject({
     code: "run_not_indeterminate",
   });
   first.store.close();

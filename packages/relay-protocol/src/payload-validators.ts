@@ -891,9 +891,8 @@ const validateRunsResume: Validator<RunsResumePayload> = (p) => {
 };
 const validateRunsAbandon: Validator<RunsAbandonPayload> = (p) => {
   const o = fields(p);
-  if (!o || !hasOnlyKeys(o, { runId: true, requestId: true })) return null;
-  return traceProductId(o.runId) && traceProductId(o.requestId)
-    ? o as unknown as RunsAbandonPayload : null;
+  if (!o || !hasOnlyKeys(o, { runId: true })) return null;
+  return traceProductId(o.runId) ? o as unknown as RunsAbandonPayload : null;
 };
 
 /* --- relay interaction transport (shared by permission + elicitation) --- */

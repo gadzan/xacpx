@@ -215,7 +215,7 @@ async function abandonRowUnknown(): Promise<void> {
         <div v-if="canAbandonUnknown"
              data-test="topic-abandon"
              class="mt-3 rounded-lg bg-warn/10 p-2.5 text-xs text-warn-overlay">
-          <p>{{ $t("bot.topic.abandonHint", { count: confirmImpact?.abandonableRunIds.length ?? 0 }) }}</p>
+          <p>{{ $t("bot.topic.abandonHint", { count: confirmImpact?.abandonableRunIds?.length ?? 0 }) }}</p>
           <button type="button"
                   data-test="topic-abandon-submit"
                   :disabled="abandoning"

@@ -2024,9 +2024,9 @@ var validateRunsResume = (p) => {
 };
 var validateRunsAbandon = (p) => {
   const o = fields(p);
-  if (!o || !hasOnlyKeys(o, { runId: true, requestId: true }))
+  if (!o || !hasOnlyKeys(o, { runId: true }))
     return null;
-  return traceProductId(o.runId) && traceProductId(o.requestId) ? o : null;
+  return traceProductId(o.runId) ? o : null;
 };
 var optObj = (v) => v === undefined || isObj(v);
 var isTimestamp = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;

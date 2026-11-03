@@ -558,6 +558,10 @@ export interface ConversationRunDto {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  /** Set when a human abandoned this sealed `indeterminate` Run's unknown
+   *  outcome. The state stays `indeterminate`; this only records the decision.
+   *  Absent on cores that predate `runs.abandon`. */
+  abandonedAt?: string;
 }
 
 export interface BotProfileSnapshotDto {

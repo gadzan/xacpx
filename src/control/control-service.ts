@@ -3455,7 +3455,7 @@ export class ControlService {
   async abandonRun(input: RunAbandonRequestDto) {
     return this.runConversationMutation(async (runtime) => {
       if (runtime.runs.isPeerTopic(runtime.runs.getRun(input.runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
-      const run = await runtime.runs.abandonUnknownRun(input.runId, input.requestId);
+      const run = await runtime.runs.abandonUnknownRun(input.runId);
       const detail = runtime.runs.getRun(run.id);
       return toRunDetail(detail.run, detail.memberTurns);
     });

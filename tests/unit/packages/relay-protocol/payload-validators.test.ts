@@ -257,14 +257,14 @@ test("recoverable terminal RPC payloads require hub-stamped viewerId and reject 
   })).toBeNull();
 });
 
-test("the abandon RPC carries one decision and cannot smuggle a Run state", () => {
-  expect(parseControlPayload(MSG.runsAbandon, { runId: "run_1", requestId: "req_1" })).not.toBeNull();
+test("the abandon RPC carries exactly one Run and cannot smuggle a state", () => {
+  expect(parseControlPayload(MSG.runsAbandon, { runId: "run_1" })).not.toBeNull();
   for (const bad of [
-    { requestId: "req_1" },
-    { runId: "run_1" },
-    { runId: "", requestId: "req_1" },
-    { runId: 42, requestId: "req_1" },
-    { runId: "run_1", requestId: "req_1", state: "cancelled" },
+    { runId: "run_1", requestId: "req_1" },
+    {},
+    { runId: "" },
+    { runId: 42 },
+    { runId: "run_1", state: "cancelled" },
     null,
   ]) {
     expect(parseControlPayload(MSG.runsAbandon, bad)).toBeNull();
