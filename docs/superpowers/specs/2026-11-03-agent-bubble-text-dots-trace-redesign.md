@@ -87,6 +87,7 @@ Direct Bot 的 `memberId` 为 `undefined`；群聊按 `MemberTurn.id` 填充。�
 | 2026-11-03 | 协议验证：`runsTraceGet` 对 Direct Bot 两层拦截（recorder 过滤 `kind !== "group"` + RPC scope 只认 public Group），结论见 §7.1 | 群聊路径可用；Direct Bot 方向待操作者确认后继续 |
 | 2026-11-03 | 操作者选定「核心扩展」：放宽 recorder + RPC scope 到 direct 会话 | 已实施：`group-member-trace-recorder` → `member-turn-trace-recorder`（`MemberTurnTraceRecorder`，identity 放行 `kind: "bot"`）；`assertPublicRunHistoryScope` 改为 `listTopics` 判定；测试更新 + 新增 direct 录制用例；docs 同步。单文件测试 66 pass；全量 conversations 套件与 tsc 后台验证中 |
 | 2026-11-03 | relay-web 壳切换完成：`TraceOverlay`/`TraceOverlayDrawer`/`ThinkingDotsTrigger` 落地，群聊与 Direct Bot 的 live 行改为 text 段泡 + dots，删除 `GroupRunDetailPopover`/`GroupRunDetailSheet` | relay-web 全量 203 文件 2955 用例 pass；`vue-tsc --noEmit` pass；`detail-scroll-memory` 迁移到新壳；`useModalA11y` 增加 `onEscape`（抽屉 Escape 走焦点还原路径，不弹历史栈） |
+| 2026-11-04 | #536 验收对齐(用户反馈与 demo 不符):重读 demo 源码纠正 4 处 —— ① 圆角方向:agent 气泡尖角在**左上**(4px 15px 15px 15px / dots 4px 16px 16px 16px),首版做成了左下;② 运行入口:灰色思考气泡(64×40,三点),删除状态词(spec §6 本就禁止);③ 完成态入口:「查看过程」藏进结论气泡内(hairline + 10px 灰字,hover accent),替换文字上方的状态胶囊;新增 TraceLink.vue 供群聊/Direct 共用;④ e2e/单测同步新契约(desktop 9 pass / mobile 9 pass)。教训:验收 demo 是像素级规格,实现前应逐条抄录其 CSS/交互,而不是按既有组件惯性拼装 |
 
 ## 8. 验证计划
 
