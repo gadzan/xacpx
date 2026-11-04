@@ -73,8 +73,6 @@ test("preview revision changes when membership or history changes", () => {
   expect(regrouped).toBe(sameGroup);
   expect(regrouped).not.toBe(first);
   expect(botRemovalRevision(facts({ history: { directMessages: 1, directRuns: 0, groupMessages: 0, groupRuns: 0 } }))).not.toBe(first);
-  // Abandoning the unknown result moves the stale-guard token, so a preview
-  // taken before the abandon cannot be replayed against the new state.
   expect(botRemovalRevision(facts({ indeterminateRunIds: ["run_1"] })))
     .not.toBe(botRemovalRevision(facts({ indeterminateRunIds: ["run_1"], abandonableRunIds: ["run_1"] })));
 });

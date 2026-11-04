@@ -582,8 +582,6 @@ test("an abandoned group run stops blocking a departed member's removal", async 
     await current.control.updateGroup(group.id, { botIds: [partner.id, keeper.id] });
 
     const impact = await current.control.previewBotRemoval(speaker.id);
-    // The stuck Run is group work, so the direct-only run lists stay empty and
-    // the abandon affordance is the only place the surface can name it.
     expect(impact.runs.indeterminate).toEqual([]);
     expect(impact.memberUnsettledRunIds).toEqual([]);
     expect(impact.abandonableRunIds).toEqual([accepted.run.id]);

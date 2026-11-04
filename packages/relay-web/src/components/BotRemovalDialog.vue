@@ -78,7 +78,9 @@ const needsRetry = computed(() => {
 
 const finished = computed(() => operation.value?.phase === "completed" || impact.value?.phase === "retired");
 
-/** Unknown work the operator may give up. Empty means no abandon can help. */
+/** Codes the impact list already reports, so they never repeat as an error line. */
+const stateOnlyCodes = new Set(["conversation_indeterminate"]);
+
 const abandonableRunIds = computed(() => impact.value?.abandonableRunIds ?? []);
 const canAbandon = computed(() => props.abandonRun !== undefined
   && abandonableRunIds.value.length > 0
@@ -130,8 +132,6 @@ async function confirmRemove(): Promise<void> {
       emit("removed");
       return;
     }
-    // A stuck removal is a state the preview list already reports; repeating
-    // the same sentence here would say it twice, in two tones, once per click.
     if (result.phase !== "indeterminate" && result.error) {
       errorText.value = t("bot.removal.failed", { code: result.error.code });
     }
@@ -153,8 +153,6 @@ async function confirmRemove(): Promise<void> {
   }
 }
 
-/** The unknown work is not provable, so a human decides to accept the loss and
- *  the removal retries under the same requestId: the core is idempotent. */
 async function abandonUnknown(): Promise<void> {
   const ids = abandonableRunIds.value;
   if (!props.abandonRun || ids.length === 0 || abandoning.value || pending.value) return;
