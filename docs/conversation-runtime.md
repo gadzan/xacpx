@@ -876,7 +876,8 @@ A capacity-skipped wake counts as returned, so successfully settled work still r
 
 ## Durable public member traces (PR #447)
 
-A Group MemberTurn's public execution trace is recorded in `conversations.sqlite`
+A MemberTurn's public execution trace — in a Group or in a direct Bot
+Conversation — is recorded in `conversations.sqlite`
 while the adapter runs. It survives browser reload, Topic switch, reconnect and
 a real daemon restart; a trace that never started is reported as unrecorded
 instead of as an empty success.

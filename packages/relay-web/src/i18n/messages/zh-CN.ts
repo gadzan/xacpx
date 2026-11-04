@@ -958,6 +958,7 @@ export default {
       running: "运行中",
       waitingHuman: "等待人工确认",
       paused: "已暂停",
+      viewProcess: "查看过程",
     },
     interaction: {
       waiting: "Agent 正在等待你的回答",

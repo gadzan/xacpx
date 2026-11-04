@@ -292,8 +292,15 @@ test("legacy trace reads report unavailable and reject foreign member and scope 
     expect(() => control.getRunTrace({ ...input, topicId: other.id })).toThrow();
     const direct = await control.promptConversation({ conversationId: createDirectConversationId(bot.id),
       topicId: createDirectTopicId(bot.id), requestId: "direct-scope", text: "hello" });
-    expect(() => control.getRunDetailsBatch({ conversationId: direct.conversationId, topicId: direct.topicId, runIds: [direct.run.id] })).toThrow();
-    expect(() => control.getRunTrace({ ...input, conversationId: direct.conversationId, topicId: direct.topicId })).toThrow();
+    const directDetail = control.getRunDetailsBatch({ conversationId: direct.conversationId, topicId: direct.topicId, runIds: [direct.run.id] });
+    expect(directDetail.runs[0]?.id).toBe(direct.run.id);
+    const directMember = control.getRun(direct.run.id).memberTurns[0]!;
+    expect(control.getRunTrace({ conversationId: direct.conversationId, topicId: direct.topicId,
+      runId: direct.run.id, memberTurnId: directMember.id, attempt: directMember.attempt })).toEqual({
+      memberTurnId: directMember.id, attempt: directMember.attempt,
+      recordingState: "unavailable", completenessReason: "not-recorded", events: [], hasMore: false,
+    });
+    expect(() => control.getRunTrace({ ...input, conversationId: "conversation_missing", topicId: direct.topicId })).toThrow();
     expect(control.getRun(direct.run.id).id).toBe(direct.run.id);
   } finally { await runtime.shutdown(); }
 });

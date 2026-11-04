@@ -9,8 +9,8 @@ import type { ConversationStore } from "./conversation-store";
 import type { MemberTurnTraceIdentity, MemberTurnTraceInputEvent } from "./member-turn-trace";
 import type { AppState } from "../state/types";
 
-/** Records only the already-public provider events of observed Group turns. */
-export interface GroupMemberTraceRecorderInput {
+/** Records only the already-public provider events of observed member turns (Group and direct Bot). */
+export interface MemberTurnTraceRecorderInput {
   store: ConversationStore;
   state: AppState;
   events: ControlEventBus;
@@ -49,7 +49,7 @@ function publicPlan(entries: PlanEntry[]): PlanEntryDto[] {
   });
 }
 
-export class GroupMemberTraceRecorder {
+export class MemberTurnTraceRecorder {
   private readonly store: ConversationStore;
   private readonly state: AppState;
   private readonly now: () => string;
@@ -63,7 +63,7 @@ export class GroupMemberTraceRecorder {
   private acceptingStarts = true;
   private readonly unsubscribe: () => void;
 
-  constructor(input: GroupMemberTraceRecorderInput) {
+  constructor(input: MemberTurnTraceRecorderInput) {
     this.store = input.store;
     this.state = input.state;
     this.now = input.now ?? (() => new Date().toISOString());
@@ -125,7 +125,7 @@ export class GroupMemberTraceRecorder {
     if (!correlation || correlation.attempt === undefined || !correlation.sourceTurnId) return undefined;
     if (!Number.isSafeInteger(correlation.attempt) || correlation.attempt < 1) return undefined;
     const conversation = this.state.conversations[correlation.conversationId];
-    if (!conversation || conversation.kind !== "group") return undefined;
+    if (!conversation || (conversation.kind !== "group" && conversation.kind !== "bot")) return undefined;
     const topic = this.state.conversation_topics[correlation.topicId];
     if (!topic || topic.conversationId !== correlation.conversationId || topic.peerScope) return undefined;
     const run = this.store.getRun(correlation.runId);

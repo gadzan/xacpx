@@ -19,7 +19,6 @@ import type {
 import type { DirectBotLiveTurn, PendingInteractionState } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
 import StreamMarkdown from "./StreamMarkdown.vue";
-import TurnParts from "./TurnParts.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import ConversationBubble from "./ConversationBubble.vue";
@@ -31,7 +30,8 @@ import ConversationInteractionForm from "./ConversationInteractionForm.vue";
 import { isMachineFailureReason } from "../lib/failure-reason";
 
 import RunStatusChip from "./RunStatusChip.vue";
-import ThinkingDots from "./ThinkingDots.vue";
+import ThinkingDotsTrigger from "./ThinkingDotsTrigger.vue";
+import { textSegmentsOf } from "../lib/turn-presentation";
 const props = defineProps<{
   messages: ConversationMessageDto[];
   liveTurn: DirectBotLiveTurn | null;
@@ -66,12 +66,19 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   loadOlder: [];
-  answer: [key: string, value: import("@ganglion/xacpx-relay-protocol").InteractionValueDto];
+  openTrace: [];
+  openTraceForRun: [runId: string];
+  answer: [key: string, value: InteractionValueDto];
   submitInteraction: [];
   declineInteraction: [];
   cancelInteraction: [];
   dismissInteraction: [];
 }>();
+
+/** Text bubbles for the running turn, straight from live parts. */
+const liveTexts = computed(() => props.liveTurn
+  ? textSegmentsOf(props.liveTurn.parts).filter((text) => text.length > 0)
+  : []);
 
 const instancesStore = useInstancesStore();
 
@@ -266,9 +273,16 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             :message="m"
             :attachments="m.attachments"
             :parts="partsForMessage(m)"
-            :collapse-trace="true"
-            :trace-key="`conv:${m.conversationId}:run:${m.runId}`"
           />
+          <button
+            v-if="partsForMessage(m)?.length && m.runId"
+            type="button"
+            data-test="direct-view-process"
+            class="mt-1 inline-flex items-center gap-1 self-start text-xs text-fg-muted underline decoration-dotted underline-offset-2 transition-colors hover:text-fg"
+            @click="emit('openTraceForRun', m.runId)"
+          >
+            {{ $t("bot.run.viewProcess") }}
+          </button>
           <ConversationMeta :message="m" :parts="partsForMessage(m)" />
         </TranscriptRow>
 
@@ -317,16 +331,27 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <!-- Plan Panel if plan emitted -->
           <PlanPanel v-if="planEntries && planEntries.length > 0" :entries="planEntries" class="w-full" />
 
-          <!-- Live Turn Content. While the run has produced nothing visible yet, the
-               thinking bubble is the only signal; streamed content replaces it. A run
-               blocked on the user is not "thinking", so its chip stands alone. -->
-          <div v-if="liveTurn && liveTurn.parts.length > 0" class="w-full rounded-2xl bg-surface/50 p-3">
-            <TurnParts
-              :parts="liveTurn.parts"
-              :streaming="liveTurn.status === 'streaming'"
-            />
-          </div>
-          <ThinkingDots v-else-if="activeRun?.state !== 'waiting-human'" data-test="run-empty-slot" />
+          <!-- Live turn: one text bubble per segment, dots entry under the last
+               (entry opens the execution-process overlay in the pane). No status
+               entry, no tool/reasoning rows. -->
+          <template v-if="liveTurn && liveTexts.length > 0">
+            <div
+              v-for="(text, index) in liveTexts"
+              :key="`live-text:${index}`"
+              class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
+              data-test="direct-live-text-bubble"
+            >
+              <StreamMarkdown :text="text" :streaming="index === liveTexts.length - 1 && liveTurn?.status === 'streaming'" />
+            </div>
+          </template>
+          <ThinkingDotsTrigger
+            v-if="liveTurn || (activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human'))"
+            data-test="run-empty-slot"
+            :label="$t('bot.chat.working')"
+            :still="activeRun?.state === 'waiting-human'"
+            :status="$t('bot.chat.working')"
+            @open="emit('openTrace')"
+          />
         </div>
       </TranscriptRow>
 

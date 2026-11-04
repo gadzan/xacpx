@@ -12,7 +12,7 @@ import { ConversationError } from "./conversation-error";
 import type { ConversationExecutionPort } from "./conversation-execution-port";
 import type { ConversationProductEventSink } from "./conversation-product-events";
 import type { ControlEventBus } from "../control/control-event-bus";
-import { GroupMemberTraceRecorder } from "./group-member-trace-recorder";
+import { MemberTurnTraceRecorder } from "./member-turn-trace-recorder";
 import { resolveRuntimeDirFromConfigPath } from "../daemon/daemon-files";
 import type { AsyncMutex } from "../orchestration/async-mutex";
 import { createStrictOwnedSessionRelease, type ReleaseOwnedSession } from "../sessions/owned-session-release";
@@ -145,7 +145,7 @@ export async function createConversationRuntime(
     // an operator rollback to the pre-P0-B1 batch semantics, not an opt-in.
     followupRedispatch: input.config.conversations?.followupRedispatch !== false,
   });
-  const traceRecorder = input.controlEvents ? new GroupMemberTraceRecorder({
+  const traceRecorder = input.controlEvents ? new MemberTurnTraceRecorder({
     store, state: input.state, events: input.controlEvents,
     ...(input.now ? { now: () => input.now!().toISOString() } : {}),
     ...(input.onTraceError ? { onError: input.onTraceError } : {}),

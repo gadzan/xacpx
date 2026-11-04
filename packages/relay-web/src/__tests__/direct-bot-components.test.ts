@@ -2248,12 +2248,15 @@ describe("Direct Bot Components", () => {
 
       expect(wrapper.find('[data-test="live-turn-container"]').exists()).toBe(true);
       expect(wrapper.text()).toContain("Analyzing code...");
-      // The status capsule is gone: no lifecycle label, no stop action, no second
-      // liveness indicator. Streamed content is the whole signal; Stop is the
-      // composer's.
+      // The status capsule is gone: no lifecycle label, no stop action. Stop is
+      // the composer's. The dots stay under the latest text bubble as the entry
+      // into the execution-process overlay.
       expect(wrapper.find('[data-test="run-status"]').exists()).toBe(false);
       expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="run-empty-slot"]').exists()).toBe(false);
+      const dots = wrapper.find('[data-test="run-empty-slot"]');
+      expect(dots.exists()).toBe(true);
+      expect(dots.element.tagName).toBe("BUTTON");
+      expect(wrapper.findAll('[data-test="direct-live-text-bubble"]')).toHaveLength(1);
     });
 
     it("shows the thinking bubble until the run produces output", () => {
@@ -2281,8 +2284,8 @@ describe("Direct Bot Components", () => {
       });
       const dots = wrapper.find('[data-test="run-empty-slot"]');
       expect(dots.exists()).toBe(true);
-      expect(dots.attributes("role")).toBe("status");
-      expect(dots.element.children).toHaveLength(3);
+      expect(dots.element.tagName).toBe("BUTTON");
+      expect(dots.attributes("aria-haspopup")).toBe("dialog");
       expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
     });
 
@@ -2317,8 +2320,9 @@ describe("Direct Bot Components", () => {
       expect(dot.classes()).not.toContain("pulse-dot");
       expect(dot.classes()).toContain("bg-warn");
       expect(chip.find('[data-test="hud-quip"]').text()).toBe("Waiting for human");
-      // A run blocked on the user is not thinking: the chip stands alone.
-      expect(wrapper.find('[data-test="run-empty-slot"]').exists()).toBe(false);
+      // Blocked on the user the dots stay but still: the entry keeps its place
+      // under the chip instead of vanishing.
+      expect(wrapper.find('[data-test="run-empty-slot"]').exists()).toBe(true);
     });
 
     it("hides the HUD stop button for terminal runs so no second cancel fires", async () => {

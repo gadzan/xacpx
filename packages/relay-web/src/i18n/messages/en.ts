@@ -960,6 +960,7 @@ export default {
       running: "Running",
       waitingHuman: "Waiting for human",
       paused: "Paused",
+      viewProcess: "View process",
     },
     interaction: {
       waiting: "Agent is waiting for an answer",

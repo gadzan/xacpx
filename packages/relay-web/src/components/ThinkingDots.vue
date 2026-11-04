@@ -10,7 +10,7 @@
   <div
     role="status"
     :aria-label="$t('bot.chat.working')"
-    class="inline-flex items-center gap-1.5 rounded-2xl rounded-bl-[4px] bg-surface px-4 py-3"
+    class="inline-flex items-center gap-1.5"
   >
     <span class="dot" /><span class="dot" /><span class="dot" />
   </div>

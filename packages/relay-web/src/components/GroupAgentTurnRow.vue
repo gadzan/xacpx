@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type {
   BotSummaryDto,
   ConversationMessageDto,
   ConversationRunDto,
   MemberTurnSummaryDto,
+  TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
-import TranscriptRow from "./TranscriptRow.vue";
 import BotAvatar from "./BotAvatar.vue";
 import ConversationBubble from "./ConversationBubble.vue";
+import TranscriptRow from "./TranscriptRow.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import AgentThinkingBubble, { type BubbleStatus } from "./AgentThinkingBubble.vue";
 import { botAvatarState } from "../lib/bot-avatar-state";
+import { textSegmentsOf } from "../lib/turn-presentation";
+import StreamMarkdown from "./StreamMarkdown.vue";
+import ThinkingDotsTrigger from "./ThinkingDotsTrigger.vue";
 
 /**
  * One MemberTurn's ordinary Bot-like activity/reply row (frozen spec §3.1/3.2):
@@ -42,12 +46,15 @@ const props = defineProps<{
   /** True when the user stopped this member: the bubble names the stop
    *  instead of the member's own durable state. */
   stopped?: boolean;
+  /** Live streaming parts for the still-running member: rendered as one text
+   *  bubble per text segment plus the thinking-dots entry, never the detail
+   *  popover content. Absent for finished/posted rows. */
+  liveParts?: TurnPartDto[];
 }>();
-
-const emit = defineEmits<{ toggle: [element: HTMLElement | null] }>();
 
 const { t } = useI18n();
 
+const liveTexts = computed(() => props.liveParts ? textSegmentsOf(props.liveParts).filter((text) => text.length > 0) : []);
 const bubbleStatus = computed<BubbleStatus>(() => {
   if (props.singleMember && props.runState === "waiting-human") return "waiting";
   const state = props.memberTurn.state;
@@ -72,6 +79,13 @@ const bubbleLabel = computed(() =>
   t("group.bubble.openDetail", { name: props.name }),
 );
 
+const bubbleStatusText = computed(() => {
+  if (props.stopped) return `⊘ ${t("group.bubble.status.stopped")}`;
+  const state = bubbleStatus.value;
+  if (state === "done") return t("group.bubble.status.done");
+  return t(`group.bubble.status.${state}`);
+});
+
 /** The task is one quiet line: enough to know what this member was asked for,
  *  never the whole assignment, which stays in the detail. */
 const taskHint = computed(() => {
@@ -90,6 +104,8 @@ const avatarState = computed(() =>
     waiting: false,
   }),
 );
+
+const emit = defineEmits<{ toggle: [trigger: HTMLElement | null] }>();
 
 defineExpose({ bubbleStatus });
 </script>
@@ -123,23 +139,43 @@ defineExpose({ bubbleStatus });
     <p v-if="taskHint" class="w-full text-xs leading-relaxed text-fg-muted" data-test="group-member-task-hint">
       {{ taskHint }}
     </p>
-    <AgentThinkingBubble
-      :status="bubbleStatus"
-      :label="bubbleLabel"
-      :expanded="expanded"
-      :attempt="memberTurn.attempt"
-      :controls="controls"
-      :stopped="stopped === true"
-      @toggle="emit('toggle', $event)"
-    />
-    <template v-if="message">
-      <ConversationBubble
-        :message="message"
-        :attachments="message.attachments"
-        :collapse-trace="true"
-        :trace-key="`group:${memberTurn.conversationId}:${memberTurn.runId}:${memberTurn.id}:${memberTurn.attempt}`"
+    <template v-if="liveParts !== undefined">
+      <!-- Running member: one text bubble per segment, dots beneath the last.
+           No status entry, no tool/reasoning rows, no folded trace header. -->
+      <div
+        v-for="(text, index) in liveTexts"
+        :key="`${memberTurn.id}:text:${index}`"
+        class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
+        data-test="group-member-text-bubble"
+      >
+        <StreamMarkdown :text="text" :streaming="index === liveTexts.length - 1" />
+      </div>
+      <ThinkingDotsTrigger
+        :label="bubbleLabel"
+        :still="singleMember && runState === 'waiting-human'"
+        :expanded="expanded"
+        :controls="controls"
+        :status="bubbleStatusText"
+        @open="emit('toggle', $event)"
       />
-      <ConversationMeta :message="message" />
+    </template>
+    <template v-else>
+      <AgentThinkingBubble
+        :status="bubbleStatus"
+        :label="bubbleLabel"
+        :expanded="expanded"
+        :attempt="memberTurn.attempt"
+        :controls="controls"
+        :stopped="stopped === true"
+        @toggle="emit('toggle', $event)"
+      />
+      <template v-if="message">
+        <ConversationBubble
+          :message="message"
+          :attachments="message.attachments"
+        />
+        <ConversationMeta :message="message" />
+      </template>
     </template>
   </TranscriptRow>
 </template>

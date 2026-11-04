@@ -374,3 +374,10 @@ export function extractCollapsedTraceSummary(
 export function finalReplyTextOf(presentation: TurnPresentationPlan): string {
   return presentation.finalReplyNodes.map((node) => node.copyText).join("").trimEnd();
 }
+
+/** Text-only segments of a turn, in wire order. The Direct Bot and Group live
+ *  rows render one bubble per segment while the turn runs; reasoning and tool
+ *  activity stay in the execution-process overlay, never in these bubbles. */
+export function textSegmentsOf(parts: TurnPartDto[]): string[] {
+  return parts.flatMap((part) => part.type === "text" ? [part.text] : []);
+}

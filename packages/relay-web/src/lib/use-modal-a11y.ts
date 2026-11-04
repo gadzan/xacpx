@@ -24,6 +24,10 @@ export interface ModalA11yOptions {
    *  there). Crossing to ≥lg closes it instead of leaving it mounted and invisible. */
   mobileOnly?: boolean;
   initialFocus?: () => HTMLElement | null;
+  /** Escape normally goes through navigateBack (history pop). A drawer that
+   *  must restore focus synchronously handles it here instead: return true
+   *  to claim the key. */
+  onEscape?: () => boolean | void;
 }
 
 export function useModalA11y(
@@ -44,6 +48,7 @@ export function useModalA11y(
       if (e.defaultPrevented) return;
       if (modalLayers.value[modalLayers.value.length - 1]?.close !== close) return; // a nested dialog on top owns Escape
       e.preventDefault();
+      if (options.onEscape?.() === true) return;
       navigateBack();
       return;
     }

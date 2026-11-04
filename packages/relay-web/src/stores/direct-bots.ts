@@ -3,6 +3,7 @@ import { computed, ref, toRaw } from "vue";
 import {
   MSG,
   isErrorPayload,
+  isRunsTraceGetResult,
   isBotAvatarConfig,
   type AgentMention,
   type PromptAttachmentRef,
@@ -25,6 +26,8 @@ import {
   type InteractionValueDto,
   type LiveTurnSnapshotDto,
   type MemberTurnSummaryDto,
+  type ConversationRunTraceDto,
+  type ConversationRunTraceEventDto,
   type PlanEntryDto,
   type ToolStepDto,
   type TopicImpactDto,
@@ -707,7 +710,139 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return null;
   }
 
-  // Accumulated trace parts retained per runId so completed assistant messages keep their rich cards
+  // Durable execution trace pages for the opened process drawer, keyed by
+  // scope + run + member + attempt. Direct Bot has no run-history read model,
+  // so the payload uses the live activeRun/activeMemberTurn identities
+  // directly; scope switches drop the cache (see reset points below).
+  const directTracePages = ref<Record<string, {
+    events: ConversationRunTraceEventDto[];
+    nextSeq?: number;
+    hasMore: boolean;
+    recordingState: ConversationRunTraceDto["recordingState"];
+    loading: boolean;
+    error: string | null;
+  }>>({});
+  const directTraceRequests: Record<string, Promise<void>> = {};
+  let directTraceGeneration = 0;
+  function directTraceScopeKey(
+    iId: string | null = instanceId.value,
+    cId: string | null = activeConversationId.value,
+    tId: string | null = activeTopicId.value,
+  ): string | null {
+    if (!iId || !cId || !tId) return null;
+    return `${iId}:${cId}:${tId}`;
+  }
+
+  function directTracePageKey(scope: string, runId: string, memberTurnId: string, attempt: number): string {
+    return `${scope}:${runId}:${memberTurnId}:${attempt}`;
+  }
+
+  /** Drop the trace drawer cache when the scope moves. */
+  function clearDirectTracePages(): void {
+    directTraceGeneration += 1;
+    directTracePages.value = {};
+    for (const key of Object.keys(directTraceRequests)) delete directTraceRequests[key];
+  }
+
+  /**
+   * Lazy paged trace read for the Direct Bot process drawer. Same RPC and
+   * strict decode as the Group path; identity comes from the live
+   * activeRun/activeMemberTurn instead of the run-history read model.
+   */
+  function ensureDirectTracePage(runId: string, memberTurnId: string, attempt: number, afterSeq?: number): void {
+    const scope = directTraceScopeKey();
+    const iId = instanceId.value;
+    const cId = activeConversationId.value;
+    const tId = activeTopicId.value;
+    if (!scope || !iId || !cId || !tId || !runId || !memberTurnId
+      || !Number.isSafeInteger(attempt) || attempt < 1
+      || (afterSeq !== undefined && (!Number.isSafeInteger(afterSeq) || afterSeq < 0))) return;
+    const key = directTracePageKey(scope, runId, memberTurnId, attempt);
+    const cursor = afterSeq ?? directTracePages.value[key]?.nextSeq ?? 0;
+    const requestKey = `${key}:${cursor}`;
+    if (directTraceRequests[requestKey] !== undefined) return;
+    if (!directTracePages.value[key]) {
+      directTracePages.value = {
+        ...directTracePages.value,
+        [key]: { events: [], nextSeq: undefined, hasMore: true, recordingState: "recording" as const, loading: true, error: null },
+      };
+    } else {
+      directTracePages.value = {
+        ...directTracePages.value,
+        [key]: { ...directTracePages.value[key]!, loading: true, error: null },
+      };
+    }
+    const generation = directTraceGeneration;
+    const pending = api
+      .rpc<ConversationRunTraceDto>(iId, MSG.runsTraceGet, {
+        conversationId: cId, topicId: tId, runId, memberTurnId, attempt,
+        ...(cursor > 0 ? { afterSeq: cursor } : {}),
+        limit: 100,
+      })
+      .then((raw) => {
+        if (generation !== directTraceGeneration) return;
+        if (directTraceRequests[requestKey] !== pending || !directTracePages.value[key]) return;
+        if (directTraceScopeKey() !== scope) return;
+        let decoded: ConversationRunTraceDto;
+        try {
+          decoded = unwrapRpc(raw);
+          if (!isRunsTraceGetResult(decoded) || decoded.memberTurnId !== memberTurnId || decoded.attempt !== attempt
+            || decoded.events.length > 100
+            || decoded.events.some((event, index) => index > 0 && event.seq !== decoded.events[index - 1]!.seq + 1)
+            || (decoded.events.length > 0 && decoded.events[0]!.seq !== cursor && decoded.events[0]!.seq !== cursor + 1)) {
+            throw new Error("invalid_trace_response");
+          }
+          const previous = directTracePages.value[key]!;
+          const prevEvents = previous.error ? [] : previous.events;
+          const bySeq = new Map<number, ConversationRunTraceEventDto>();
+          for (const event of prevEvents) bySeq.set(event.seq, event);
+          for (const event of decoded.events) bySeq.set(event.seq, event);
+          const events = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+          directTracePages.value = {
+            ...directTracePages.value,
+            [key]: {
+              events,
+              nextSeq: decoded.nextSeq ?? previous.nextSeq,
+              hasMore: decoded.hasMore,
+              recordingState: decoded.recordingState,
+              loading: false,
+              error: null,
+            },
+          };
+        } catch (err) {
+          const current = directTracePages.value[key];
+          if (!current) return;
+          directTracePages.value = {
+            ...directTracePages.value,
+            [key]: {
+              ...current,
+              loading: false,
+              recordingState: current.events.length ? "interrupted" : "unavailable",
+              error: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
+      })
+      .catch((err: unknown) => {
+        if (generation !== directTraceGeneration || directTraceScopeKey() !== scope || directTraceRequests[requestKey] !== pending) return;
+        const current = directTracePages.value[key];
+        if (!current) return;
+        directTracePages.value = {
+          ...directTracePages.value,
+          [key]: {
+            ...current,
+            loading: false,
+            recordingState: current.events.length ? "interrupted" : "unavailable",
+            error: err instanceof Error ? err.message : String(err),
+          },
+        };
+      })
+      .finally(() => {
+        if (directTraceRequests[requestKey] !== pending) return;
+        delete directTraceRequests[requestKey];
+      });
+    directTraceRequests[requestKey] = pending;
+  }
   const runParts = ref<Record<string, TurnPartDto[]>>({});
   // Completeness evidence: only a runId that actually received its stream's
   // turn-finished may keep its cached parts. A partial snapshot (stream cut
@@ -1341,6 +1476,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     messages.value = [];
     activeRun.value = null;
     queuedOwnRuns.value = {};
+    clearDirectTracePages();
     activeMemberTurn.value = null;
     liveTurn.value = null;
     topicReady.value = true;
@@ -1385,6 +1521,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     hasMoreAfter.value = false;
     activeRun.value = null;
     queuedOwnRuns.value = {};
+    clearDirectTracePages();
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2250,6 +2387,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     hasMoreAfter.value = false;
     activeRun.value = null;
     queuedOwnRuns.value = {};
+    clearDirectTracePages();
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2357,6 +2495,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     hasMoreAfter.value = false;
     activeRun.value = null;
     queuedOwnRuns.value = {};
+    clearDirectTracePages();
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2400,6 +2539,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeMemberTurn.value = null;
     activeRun.value = null;
     queuedOwnRuns.value = {};
+    clearDirectTracePages();
     liveTurn.value = null;
     latestPlanRunId.value = null;
     planByRunId.value = {};
@@ -4236,6 +4376,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     planEntries,
     cancellingRunId,
     cancelUncertaintyRunId,
+    directTracePages,
+    ensureDirectTracePage,
+    clearDirectTracePages,
+    directTraceScopeKey,
+    directTracePageKey,
     runParts,
     completeRunParts,
     currentDraftRequestId,

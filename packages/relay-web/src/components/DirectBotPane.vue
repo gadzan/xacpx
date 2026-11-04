@@ -15,13 +15,22 @@ import {
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
 import { supportsBotDedicatedWorkspaceCleanup, useInstancesStore } from "../stores/instances";
-import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
+import type {
+  ConversationRunDetailDto,
+  ConversationRunDto,
+  InteractionValueDto,
+  MemberTurnSummaryDto,
+} from "@ganglion/xacpx-relay-protocol";
+import { MSG, isErrorPayload } from "@ganglion/xacpx-relay-protocol";
+import { api } from "../api/client";
 import BotAvatar from "./BotAvatar.vue";
 import MobileSheet from "./MobileSheet.vue";
 import MobileConnStrip from "./MobileConnStrip.vue";
 import { avatarHasOpenInteraction, botAvatarState } from "../lib/bot-avatar-state";
 import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
+import TraceOverlay from "./TraceOverlay.vue";
+import { traceEventsToParts } from "../lib/group-run-presentation";
 import BotDialog from "./BotDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
@@ -83,6 +92,52 @@ const observedCompletion = computed(() => !!directBotsStore.activeRun
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
+/** Execution-process drawer target: live turn or finished history run.
+ *  The history path resolves run → member through runsGet. */
+const traceTarget = ref<{ run: ConversationRunDto; memberTurn: MemberTurnSummaryDto } | null>(null);
+function openTraceOverlay(): void {
+  const run = directBotsStore.activeRun;
+  const member = directBotsStore.activeMemberTurn;
+  if (!run || !member) return;
+  directBotsStore.ensureDirectTracePage(run.id, member.id, member.attempt);
+  traceTarget.value = { run, memberTurn: member };
+}
+async function openTraceForHistoryRun(runId: string): Promise<void> {
+  const iId = directBotsStore.instanceId;
+  if (!iId) return;
+  try {
+    const raw = await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId });
+    if (isErrorPayload(raw)) return;
+    const res = raw;
+    const member = res.run.memberTurns[res.run.memberTurns.length - 1];
+    if (!member) return;
+    directBotsStore.ensureDirectTracePage(res.run.id, member.id, member.attempt);
+    traceTarget.value = { run: res.run, memberTurn: member };
+  } catch {
+    // History detail unavailable: no drawer, the finished bubble stays.
+  }
+}
+function closeTraceOverlay(): void {
+  traceTarget.value = null;
+}
+const traceRun = computed(() => traceTarget.value?.run ?? null);
+const traceMemberTurn = computed(() => traceTarget.value?.memberTurn ?? null);
+const tracePage = computed(() => {
+  const run = traceRun.value;
+  const member = traceMemberTurn.value;
+  if (!run || !member) return null;
+  const scope = directBotsStore.directTraceScopeKey();
+  if (!scope) return null;
+  return directBotsStore.directTracePages[directBotsStore.directTracePageKey(scope, run.id, member.id, member.attempt)] ?? null;
+});
+const traceDecoded = computed(() => traceEventsToParts(tracePage.value?.events ?? []));
+const traceParts = computed(() => {
+  const decoded = traceDecoded.value;
+  if (decoded.parts.length || (tracePage.value?.events.length ?? 0) > 0) return decoded.parts;
+  // While the drawer opens mid-stream the durable pages may still be empty:
+  // fall back to the live parts so the drawer is never blank.
+  return directBotsStore.liveTurn?.parts;
+});
 // Mobile (<lg) chrome: one 52px bar (avatar + name + topic switcher subtitle + ⋯) plus
 // the sheets its ⋯ entries open. The topic switcher is the group chat's TopicSwitcher
 // (popover on desktop, its own MobileSheet below lg).
@@ -401,12 +456,32 @@ function openRemoval(): void {
       @decline-interaction="directBotsStore.declineInteraction()"
       @cancel-interaction="directBotsStore.cancelInteraction()"
       @dismiss-interaction="directBotsStore.dismissResolvedInteraction()"
+      @open-trace="openTraceOverlay"
+      @open-trace-for-run="openTraceForHistoryRun"
+    />
+    <TraceOverlay
+      v-if="traceTarget"
+      id="direct-trace-overlay"
+      :run="traceTarget.run"
+      :member-turn="traceMemberTurn ?? undefined"
+      :member-name="bot?.name"
+      :topic-title="directBotsStore.currentTopic?.title"
+      :attempt="traceMemberTurn?.attempt"
+      :parts="traceParts"
+      :recording-state="tracePage?.recordingState"
+      :trace-loading="tracePage?.loading"
+      :trace-error="tracePage?.error"
+      :trace-has-more="tracePage?.hasMore"
+      :trace-streaming="!tracePage?.events.length && !!directBotsStore.liveTurn"
+      @close="closeTraceOverlay"
+      @load-more="traceRun && traceMemberTurn ? directBotsStore.ensureDirectTracePage(traceRun.id, traceMemberTurn.id, traceMemberTurn.attempt) : undefined"
+      @retry-trace="traceRun && traceMemberTurn ? directBotsStore.ensureDirectTracePage(traceRun.id, traceMemberTurn.id, traceMemberTurn.attempt) : undefined"
     />
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
       :disabled="bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
-      :deliver="(text, mentions, media) => directBotsStore.sendPrompt(text, mentions, media)"
+      :deliver="directBotsStore.sendPrompt"
     />
     <!-- History failure: Retry reloads the topic (history + durable run
       discovery). Shown whenever the transcript failed to converge — the
