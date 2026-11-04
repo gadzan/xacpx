@@ -1,4 +1,69 @@
 # Changelog
+## [relay-protocol 0.6.4-beta.9] - 2026-11-04
+
+### Added
+
+- `BotUpdateRequestDto.dedicatedWorkspace?: boolean` lets an update ask the daemon to allocate a Bot's private workspace at edit time, and `BotSummaryDto` / `BotDetailDto` carry `dedicatedWorkspace: { name, path }` so a client can label that slot without asking the workspace list it is hidden from. The new capability `bots.dedicated-workspace-update.v1` is advertised only when the core probe and this payload validator both accept it (#531).
+- `SessionModelSetResult.pending` (optional) reports a model switch whose management call timed out but whose value is still being reconciled, and `SessionModelSetResult.refresh` asks a read to bypass the runtime's metadata cache — both additive, so an older client or bridge keeps working unchanged (#521).
+- Topic preview returns `abandonableRunIds` and the Run detail returns `abandonedAt`, the wire side of the new operator decision that lets a sealed `indeterminate` Run stop blocking a Topic delete (#534).
+
+## [relay 0.14.12-beta.16] - 2026-11-04
+
+### Added
+
+- 侧边栏的 Sessions / Bots / Groups 切换改成一个 sticky 的侧边栏级控件，一次点击切换所有实例卡片，不再每张卡片各自维护；Bot 与 Group 数据按需向在线实例扇出加载，后出现或重新上线的实例也会补上。模式不持久化，刷新后回到 Sessions；折叠、禁用 Bot 分组与休眠过滤仍按实例保存（#528）。
+- Topic 列表改为最新在上（后端升序契约不变，只在 `currentTopics` 展示层排序，无法解析的 `createdAt` 沉到最旧、并列按 id 决胜），并且回到一个仍有任务在执行的 Bot / 群组时会直接落到执行中的 Topic，而不是落到默认/最旧的那个：探测对每个 Topic 并行发一次 `control.runs.list`，2s 硬期限，超时或失败就退回原有默认链，慢探测也不会覆盖更新的选择。`isActiveRunState` 移到 `lib/topic-order.ts` 成为唯一判据（#530）。
+- 编辑 Bot 时可以在能力允许且尚无专属工作区的情况下「新建专属工作区」；已有专属工作区的 Bot 把该值显示为「专属工作区」，不再以裸名字混进注册工作区列表，也不再提供新建（后端同样拒绝）。群成员选择器改用 `botWorkspaceRunnable()`（注册项命中，或 Bot 的 `dedicatedWorkspace.name` 与它自己的工作区一致），专属工作区的 Bot 不再恒为 `No runtime`；并发编辑输家看到的是本地化的 `dedicatedWorkspaceExists` 文案而不是原始后端串（#531、#533）。
+- 运行中的 turn 改为「每个流式文本段落一个气泡 + 一个可点的思考点」：推理与工具活动收进执行过程浮层，移动端是底部 sheet、桌面是右侧抽屉，turn 结束后回到既有的状态气泡与正式回复。新增 `ThinkingDotsTrigger`、`TraceOverlay` / `TraceOverlayDrawer`，替换并删除 `GroupRunDetailPopover` 与 `GroupRunDetailSheet`；`waiting-human` 时思考点静止不动（#535）。
+
+### Changed
+
+- 移动端浮动 Bot 身份的玻璃边从整圈实心描边改成 6–8% 前景色 hairline，去掉生硬的 inset 高光，深度改由顶部高光渐变与一道宽而淡的阴影承担；填充提到 88%（头像下方 94%）并加 `blur(24px) saturate(140%)`，转录内容不再与 Bot 名字打架。名字底座改为 pill，图标用 `text-fg` 保证对比，hover 保持半透明、press 缩到 0.96（`prefers-reduced-motion` 下关闭），焦点环改成显式 `outline: 2px accent`（避免被全局 `button:focus-visible` 的 6px 圆角方化）。`backdrop-filter` 仍留在叶子面板上，TopicSwitcher 的弹层不会被重新定位（#525）。
+- 模型诊断从输入框内联挪到全局可关闭的视口横幅（teleport 到 `body`，固定、可换行滚动），且只显示自动加载失败；显式切换失败仍走既有 toast，超时后进入 pending 协调时 chip 回滚并给信息性提示，诊断文案由「操作失败」改为「模型状态不可用」（#521）。
+
+### Fixed
+
+- 队列条目不再显示两遍：connector 在入队时同步发出 `queue-updated`，因此 `control.prompt` 响应落地时队列条里已经有该项，fallback chip 现在同时检查转录气泡与队列条上的同 id 项，不再插入重复的 `v-for` key（#526）。
+- 侧边栏 Bot 行去掉启用/禁用状态点，`⋯` 菜单与 Group 铅笔改为遵循 Session 行的规则：默认可见，仅在 `@media (hover:hover)` 下隐藏并由行 hover 或键盘焦点揭示——触摸设备上不再出现点了看不见的按钮。透明期间控件保留盒子，行宽与点击区域不变（#529）。
+- 模型列表刷新遇到鉴权失败时先给登录提示：横幅以 `session.authHint` 开头并点名该会话的 agent（会话行还没进 store 时说「该 agent」），后面仍保留原始诊断给运维看；鉴权判定复用 `NewSessionDialog` 的同一个判定函数，两个界面不会漂移。非鉴权的刷新失败仍用 `chat.modelControlFailed`（#532）。
+- 删除 Topic 不再因为一个封印的 `indeterminate` Run 永远卡住：确认框在该失败码且仍有封印 Run 时才提供「放弃」步骤，放弃后以同一 `requestId` 重试删除；`deleting` 状态的行也保留删除入口，因此重试失败能看到错误码而不是无出口（#534）。
+
+## [channel-relay 0.7.8-beta.12] - 2026-11-04
+
+### Added
+
+- Relay connector passes `runs.abandon` through to the daemon and forwards `abandonableRunIds` / `abandonedAt`, so the dashboard can offer the abandon step instead of leaving a `deleting` Topic stuck behind a sealed `indeterminate` Run (#534).
+- Relay connector advertises `bots.dedicated-workspace-update.v1` only when the core probe and its own payload validator both accept it, keeping the edit-time workspace allocation hidden on older cores (#531).
+
+### Changed
+
+- Relay connector forwards `SessionModelSetResult.pending` and the new `refresh` read hint, so a timed-out model switch surfaces as a pending reconciliation rather than a duplicated 45s failure, and a client-triggered refresh bypasses the runtime's metadata cache (#521).
+
+## [0.24.10-beta.12] - 2026-11-04
+
+### Added
+
+- 编辑 Bot 时可以直接新建它的专属工作区：`control.bots.update { dedicatedWorkspace: true }` 复用创建时的分配器，在 workspaces 事务内独占 `mkdir` → 注册 `dedicated: true` → 写 profile marker，失败回滚注册与空目录；与显式 `workspace` 同传返回 `dedicated_workspace_conflict`，Bot 已有专属工作区返回 `dedicated_workspace_exists`（替换会让旧注册无人可引用）。同时修掉同一隐私模型的客户端遗漏：拥有专属工作区的 Bot 在群成员选择器里不再恒为 `No runtime`（#531）。
+
+### Changed
+
+- 执行过程记录器 `GroupMemberTraceRecorder` 改名为 `MemberTurnTraceRecorder` 并同时记录 direct bot 的 turn，`assertPublicRunHistoryScope` 从只服务 Group 扩大到所有公开 Conversation —— 于是 Direct Bot 的运行历史也能通过既有公开端点读取（#535）。
+
+### Fixed
+
+- 模型切换不再叠加两次 45s 超时：management 调用超时的 `setModel` 立即返回 `{ applied: false, pending: true }`，把权威值回读挪到请求路径之外的后台协调（按 alias 的 mutation generation 保证新选择永远压过旧的协调结果，失败只记 `control.session.model.timeout_reconciled`）。bridge 运行时的 `getSessionModel` / `getSessionEffort` 改由每会话元数据快照（60s TTL）服务，冷或陈旧的读立刻返回空列表并在后台刷新，因此读永远不会等一个忙碌、轮换或恢复中的 worker（#521）。
+- 会话创建时如果工作目录或 agent 的启动路径不存在，报错现在点名缺失的那一个：只对已证实的 acpx spawn ENOENT（`AGENT_SPAWN_ENOENT` 或那条只讲 launch path 的句式）生效，且只有 cwd 的 stat 本身给出 `ENOENT`/`ENOTDIR` 时才指名 workspace，只有 `agentArgv[0]` 算启动路径；裸 spawn 失败与其他错误原样透出，acpx 原始错误保留为 `cause`（#527）。
+- 已知结果未知（`indeterminate`）的 Run 不再让 Topic 永久删不掉：`runs.abandon` 记录一次人类决定（`runs.abandoned_at`），Run 本身仍是 `indeterminate`，迟到的 provider 结算仍然生效且不改写任何证据；Topic teardown 与 clear 跳过已放弃的 Run，每个 Run 一次决定、幂等，仍有未结算 Run 时拒绝。Bot 移除、成员释放与 Topic 恢复依旧对 `indeterminate` fail-closed，删除或清空 Topic 才是出口（#534）。
+- 删除 Bot 时勾选「同时删除专属目录」不会再漏清理：claim 改从 retire 之后的 tombstone 读取（`BotTombstone.dedicatedWorkspace`），因此 removal 启动窗口内并发完成的专属工作区分配同样会被记录并删除，不再留下 `dedicated: true` 注册行与 `~/.xacpx/bots/` 下的无主目录；坏的 marker 只丢弃该字段而不是整条 tombstone（#533）。
+
+## [channel-feishu 0.8.7-beta.12] - 2026-11-04
+
+- Compatibility floor raised to `0.24.10-beta.12` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.12] - 2026-11-04
+
+- Compatibility floor raised to `0.24.10-beta.12` with no channel behavior change.
+
 ## [relay 0.14.12-beta.15] - 2026-11-02
 
 ### Added
