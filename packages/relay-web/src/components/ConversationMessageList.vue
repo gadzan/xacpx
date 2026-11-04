@@ -31,6 +31,7 @@ import { isMachineFailureReason } from "../lib/failure-reason";
 
 import RunStatusChip from "./RunStatusChip.vue";
 import ThinkingDotsTrigger from "./ThinkingDotsTrigger.vue";
+import TraceLink from "./TraceLink.vue";
 import { textSegmentsOf } from "../lib/turn-presentation";
 const props = defineProps<{
   messages: ConversationMessageDto[];
@@ -269,20 +270,20 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <template #avatar>
             <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32" static :retired="bot?.retired" />
           </template>
-          <ConversationBubble
-            :message="m"
-            :attachments="m.attachments"
-            :parts="partsForMessage(m)"
-          />
-          <button
-            v-if="partsForMessage(m)?.length && m.runId"
-            type="button"
-            data-test="direct-view-process"
-            class="mt-1 inline-flex items-center gap-1 self-start text-xs text-fg-muted underline decoration-dotted underline-offset-2 transition-colors hover:text-fg"
-            @click="emit('openTraceForRun', m.runId)"
-          >
-            {{ $t("bot.run.viewProcess") }}
-          </button>
+          <div class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg">
+            <ConversationBubble
+              :message="m"
+              :attachments="m.attachments"
+              :parts="partsForMessage(m)"
+            />
+            <TraceLink
+              v-if="partsForMessage(m)?.length && m.runId"
+              data-test="direct-view-process"
+              :label="$t('bot.run.viewProcess')"
+              :text="$t('bot.run.viewProcess')"
+              @toggle="emit('openTraceForRun', m.runId)"
+            />
+          </div>
           <ConversationMeta :message="m" :parts="partsForMessage(m)" />
         </TranscriptRow>
 
@@ -349,7 +350,6 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             data-test="run-empty-slot"
             :label="$t('bot.chat.working')"
             :still="activeRun?.state === 'waiting-human'"
-            :status="$t('bot.chat.working')"
             @open="emit('openTrace')"
           />
         </div>

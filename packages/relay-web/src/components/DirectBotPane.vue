@@ -100,6 +100,7 @@ function openTraceOverlay(): void {
   const member = directBotsStore.activeMemberTurn;
   if (!run || !member) return;
   directBotsStore.ensureDirectTracePage(run.id, member.id, member.attempt);
+  directBotsStore.setDirectTraceFollow(run.id, member.id, member.attempt);
   traceTarget.value = { run, memberTurn: member };
 }
 async function openTraceForHistoryRun(runId: string): Promise<void> {
@@ -112,12 +113,14 @@ async function openTraceForHistoryRun(runId: string): Promise<void> {
     const member = res.run.memberTurns[res.run.memberTurns.length - 1];
     if (!member) return;
     directBotsStore.ensureDirectTracePage(res.run.id, member.id, member.attempt);
+    directBotsStore.setDirectTraceFollow(res.run.id, member.id, member.attempt);
     traceTarget.value = { run: res.run, memberTurn: member };
   } catch {
     // History detail unavailable: no drawer, the finished bubble stays.
   }
 }
 function closeTraceOverlay(): void {
+  directBotsStore.clearDirectTraceFollow();
   traceTarget.value = null;
 }
 const traceRun = computed(() => traceTarget.value?.run ?? null);

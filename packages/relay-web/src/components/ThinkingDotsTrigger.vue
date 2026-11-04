@@ -13,9 +13,6 @@ defineProps<{
   label: string;
   disabled?: boolean;
   still?: boolean;
-  /** Visible status word next to the dots (mirrors the finished bubble's
-   *  status text so the state reads without opening anything). */
-  status?: string;
   /** True when this entry currently owns the open overlay (mirrors the
    *  finished bubble's expanded contract for e2e/a11y parity). */
   expanded?: boolean;
@@ -44,7 +41,6 @@ function onOpen(event: Event): void {
     @click.stop="onOpen"
   >
     <ThinkingDots />
-    <span v-if="status" data-test="group-bubble-status" class="dots-status" aria-hidden="true">{{ status }}</span>
   </button>
 </template>
 
@@ -52,41 +48,28 @@ function onOpen(event: Event): void {
 .dots-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  min-width: 44px;
-  min-height: 44px;
+  justify-content: center;
+  min-width: 64px;
+  min-height: 40px;
   max-width: 100%;
   margin: 0;
-  padding: 0 10px;
+  padding: 0 15px;
   color: rgb(var(--c-fg-muted));
-  background: transparent;
+  background: rgb(var(--c-fg) / 0.055);
   border: none;
-  border-radius: 12px;
+  border-radius: 4px 16px 16px 16px;
   cursor: pointer;
   transition: color 160ms ease, background-color 160ms ease;
 }
-/* The painted surface is the entry itself, so the visible chip and the hit
+/* The painted surface is the entry itself, so the visible bubble and the hit
    target never disagree about what is clickable. */
-.dots-trigger:hover { color: rgb(var(--c-fg)); background: rgb(var(--c-fg) / 0.05); }
+.dots-trigger:hover { color: rgb(var(--c-fg)); background: rgb(var(--c-fg) / 0.09); }
 .dots-trigger:active { transform: scale(0.98); }
 .dots-trigger:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; }
 /* Stillness when waiting on the user: keep the entry, still the wave. */
 .dots-trigger.is-still { color: rgb(var(--c-warn)); }
 .dots-trigger.is-still :deep(.dot) {
   animation-play-state: paused;
-}
-/* Mirrors the finished bubble: the status word carries meaning, never the
- * color alone; open state echoes hover. */
-.dots-status {
-  display: block;
-  min-width: 0;
-  max-width: 11rem;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 12px;
-  line-height: 1.35;
-  font-weight: 500;
 }
 .dots-trigger.is-expanded { color: rgb(var(--c-accent)); background: rgb(var(--c-accent) / 0.1); }
 @media (prefers-reduced-motion: reduce) {

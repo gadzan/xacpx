@@ -17,6 +17,7 @@ import { botAvatarState } from "../lib/bot-avatar-state";
 import { textSegmentsOf } from "../lib/turn-presentation";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ThinkingDotsTrigger from "./ThinkingDotsTrigger.vue";
+import TraceLink from "./TraceLink.vue";
 
 /**
  * One MemberTurn's ordinary Bot-like activity/reply row (frozen spec §3.1/3.2):
@@ -78,13 +79,34 @@ const bubbleStatus = computed<BubbleStatus>(() => {
 const bubbleLabel = computed(() =>
   t("group.bubble.openDetail", { name: props.name }),
 );
-
-const bubbleStatusText = computed(() => {
-  if (props.stopped) return `⊘ ${t("group.bubble.status.stopped")}`;
+/** Finished rows name what the entry opens; a non-completed member keeps its
+ *  word so a failure never hides behind a neutral label. */
+const traceText = computed(() => {
+  if (props.stopped) return `${t("bot.run.viewProcess")} · ${t("group.bubble.status.stopped")}`;
   const state = bubbleStatus.value;
-  if (state === "done") return t("group.bubble.status.done");
-  return t(`group.bubble.status.${state}`);
+  return state === "done"
+    ? t("bot.run.viewProcess")
+    : `${t("bot.run.viewProcess")} · ${t(`group.bubble.status.${state}`)}`;
 });
+const traceTone = computed<"muted" | "warn" | "accent">(() => {
+  if (props.stopped) return "muted";
+  switch (bubbleStatus.value) {
+    case "failed":
+    case "indeterminate":
+    case "waiting":
+      return "warn";
+    case "cancelled":
+      return "muted";
+    default:
+      return "muted";
+  }
+});
+/** The accessible name's state part: a stop says "stopped" regardless of the
+ *  member's own durable state, anything else says what the row is. */
+const statusWord = computed(() =>
+  props.stopped ? t("group.bubble.status.stopped") : t(`group.bubble.status.${bubbleStatus.value}`));
+
+
 
 /** The task is one quiet line: enough to know what this member was asked for,
  *  never the whole assignment, which stays in the detail. */
@@ -155,12 +177,29 @@ defineExpose({ bubbleStatus });
         :still="singleMember && runState === 'waiting-human'"
         :expanded="expanded"
         :controls="controls"
-        :status="bubbleStatusText"
         @open="emit('toggle', $event)"
       />
     </template>
     <template v-else>
+      <!-- Finished member: the conclusion reads as text; the process entry is
+           a quiet footer inside that same bubble, never a pill above it. -->
+      <div v-if="message" class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg">
+        <ConversationBubble
+          :message="message"
+          :attachments="message.attachments"
+        />
+        <TraceLink
+          :label="bubbleLabel"
+          :text="traceText"
+          :state-word="stopped || bubbleStatus !== 'done' ? statusWord : undefined"
+          :expanded="expanded"
+          :controls="controls"
+          :tone="traceTone"
+          @toggle="emit('toggle', $event)"
+        />
+      </div>
       <AgentThinkingBubble
+        v-else
         :status="bubbleStatus"
         :label="bubbleLabel"
         :expanded="expanded"
@@ -169,13 +208,7 @@ defineExpose({ bubbleStatus });
         :stopped="stopped === true"
         @toggle="emit('toggle', $event)"
       />
-      <template v-if="message">
-        <ConversationBubble
-          :message="message"
-          :attachments="message.attachments"
-        />
-        <ConversationMeta :message="message" />
-      </template>
+      <ConversationMeta v-if="message" :message="message" />
     </template>
   </TranscriptRow>
 </template>

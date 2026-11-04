@@ -656,7 +656,7 @@ for (const distance of ["nearby", "distant"] as const) {
     await page.keyboard.press("Tab");
     await page.screenshot({ path: info.outputPath(`dispatch-result-${distance}-keyboard.png`) });
     expect(focusedAfterJump).toBe("reply_second");
-    await expect(target.getByTestId("agent-thinking-bubble")).toBeFocused();
+    await expect(target.getByTestId("trace-link")).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(target.getByRole("button", { name: "Copy", exact: true })).toBeFocused();
     await expect(replyText).toBeInViewport({ ratio: 1 });
