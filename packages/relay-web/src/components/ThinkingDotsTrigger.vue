@@ -57,7 +57,7 @@ function onOpen(event: Event): void {
   color: rgb(var(--c-fg-muted));
   background: rgb(var(--c-fg) / 0.055);
   border: none;
-  border-radius: 16px 16px 16px 4px;
+  border-radius: 4px 16px 16px 16px;
   cursor: pointer;
   transition: color 160ms ease, background-color 160ms ease;
 }

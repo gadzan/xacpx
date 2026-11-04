@@ -249,7 +249,7 @@ for (const theme of ["light", "dark"] as const) {
       const style = getComputedStyle(el);
       return { radius: style.borderRadius, display: style.display };
     });
-    expect(bubblePaint.radius).toBe("16px 16px 16px 4px");
+    expect(bubblePaint.radius).toBe("4px 16px 16px");
     expect(bubblePaint.display).toBe("inline-flex");
     // The entry is the thinking bubble itself: dots only, no status word.
     await expect(trigger).toHaveText("");
@@ -428,3 +428,4 @@ test("history prepend, duplicate live messages and canonical promotion preserve 
   expect(ordered.indexOf("reply_live")).toBeGreaterThan(ordered.indexOf("tail_44"));
   await screenshot(page, info, "historical-anchor-after-live-promotion");
 });
+

@@ -59,7 +59,7 @@ function onToggle(event: MouseEvent): void {
   cursor: pointer;
   transition: color 160ms ease;
 }
-.trace-link:hover { color: rgb(var(--c-fg)); }
+.trace-link:hover { color: rgb(var(--c-accent)); }
 .trace-link:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; }
 .trace-link-icon { width: 11px; height: 11px; flex: none; }
 .trace-link.is-warn { color: rgb(var(--c-warn)); }
