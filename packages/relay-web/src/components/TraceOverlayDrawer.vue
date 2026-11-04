@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
@@ -57,10 +57,34 @@ const emit = defineEmits<{
 const drawerEl = ref<HTMLElement | null>(null);
 const drawerScroll = ref<HTMLElement | null>(null);
 
-function close(): void {
+// Focus restore target. Resolved at close-time: the trigger button if still
+// connected, else its [data-row-id] ancestor; when the button was detached
+// from its row (trigger swap) some engines skip detached subtrees in
+// closest(), so the row is finally recovered by the member-turn id the row
+// and the drawer share. The parent clears :anchor-el synchronously with the
+// close, so nothing here re-reads the prop after emit.
+function resolveFocusFallback(): HTMLElement | null {
   const anchor = props.anchorEl;
+  if (anchor?.isConnected) return anchor;
+  const memberTurnId = props.memberTurn?.id;
+  const row = anchor?.closest<HTMLElement>("[data-row-id]")
+    ?? (memberTurnId
+      ? Array.from(document.querySelectorAll<HTMLElement>("[data-row-id]"))
+        .find((el) => el.getAttribute("data-row-id") === memberTurnId)
+      : undefined);
+  return row?.isConnected ? row : null;
+}
+
+function close(): void {
+  const fallback = resolveFocusFallback();
   emit("close");
-  anchor?.focus({ preventScroll: true });
+  // A trigger swap can detach the button between open and close; focusing a
+  // detached node is a silent no-op that drops the reader onto <body>. If
+  // nothing else took focus during unmount, fall back to the row.
+  void nextTick(() => {
+    if (document.activeElement !== document.body && document.activeElement !== null) return;
+    fallback?.focus({ preventScroll: true });
+  });
 }
 
 // Escape closes through the same focus-restoring path as the ✕ button — not

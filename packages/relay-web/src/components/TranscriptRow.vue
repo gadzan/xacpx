@@ -33,6 +33,7 @@ const props = defineProps<{
     :class="[own ? 'items-end' : '', enterClass]"
     :style="enterStyle"
     :data-row-id="rowId"
+    tabindex="-1"
   >
     <div class="flex w-full gap-3" :class="own ? 'justify-end' : ''">
       <div v-if="!own && !hideLeadingAvatar" class="agent-avatar mt-0.5 h-8 w-8 shrink-0 self-start" :class="hideIdentityOnMobile ? 'hidden lg:block' : ''" data-avatar-key="row">

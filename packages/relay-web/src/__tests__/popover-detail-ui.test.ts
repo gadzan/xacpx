@@ -243,6 +243,22 @@ describe("GroupThinkingBubbles UI", () => {
     expect(document.activeElement).toBe(trigger.element);
     wrapper.unmount();
   });
+  it("keeps focus off <body> when the trigger was swapped out before close", async () => {
+    const groups = seedEnvironment();
+    seedLiveRun();
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const wrapper = mountTranscript();
+    await openFirstBubble(wrapper);
+    // The trigger swap (live ⇄ finished branch) detaches the button that
+    // opened the drawer; Escape must still land focus on a real element.
+    wrapper.get('[data-test="agent-thinking-bubble"]').element.remove();
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(card()).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    wrapper.unmount();
+  });
+
 
   it("closes from an outside pointerdown without moving the reader's focus", async () => {
     const groups = seedEnvironment();
