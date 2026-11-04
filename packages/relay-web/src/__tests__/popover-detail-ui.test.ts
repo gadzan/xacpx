@@ -104,7 +104,7 @@ function mountTranscript(): VueWrapper {
 }
 
 async function openFirstBubble(wrapper: VueWrapper): Promise<void> {
-  await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+  await wrapper.get('[data-test="agent-thinking-bubble"], [data-test="trace-link"]').trigger("click");
   await flushPromises();
 }
 
@@ -720,7 +720,7 @@ describe("GroupThinkingBubbles UI", () => {
     const wrapper = mount(AgentThinkingBubble, {
       props: { status: "running", label: "Open process for Reviewer", controls: "group-detail-x", expanded: true },
     });
-    await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+    await wrapper.get('[data-test="agent-thinking-bubble"], [data-test="trace-link"]').trigger("click");
     const emitted = wrapper.emitted("toggle")?.[0]?.[0];
     expect(emitted).toBe(wrapper.get('[data-test="agent-thinking-bubble"]').element);
     expect(wrapper.get('[data-test="agent-thinking-bubble"]').attributes("aria-haspopup")).toBe("dialog");

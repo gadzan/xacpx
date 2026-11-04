@@ -30,7 +30,8 @@ function message(id: string, seq: number, content: string, extra: Partial<Conver
   return { ...scope, id, seq, role: "human", content, createdAt, ...extra };
 }
 function bubble(page: Page, memberId: string): Locator {
-  return page.locator(`[data-test="agent-turn-row"][data-member-turn-id="${memberId}"]`).getByTestId("agent-thinking-bubble");
+  return page.locator(`[data-test="agent-turn-row"][data-member-turn-id="${memberId}"]`)
+    .locator('[data-test="agent-thinking-bubble"], [data-test="trace-link"]');
 }
 const detail = (page: Page) => page.locator('[data-test="group-detail-card"], [data-test="group-detail-sheet"]');
 async function screenshot(page: Page, info: TestInfo, name: string) {
@@ -151,7 +152,7 @@ for (const scenario of ["one", "multi", "same-bot"] as const) {
       await expect(trigger).toHaveCount(1);
       const reply = page.locator(`[data-row-id="reply_${turn.id}"]`);
       await expect(reply).toContainText(`CANONICAL ${turn.id}`);
-      await expect(reply.getByTestId("agent-thinking-bubble")).toHaveCount(1);
+      await expect(reply.locator('[data-test="agent-thinking-bubble"], [data-test="trace-link"]')).toHaveCount(1);
       await expect(page.getByText(`CANONICAL ${turn.id}`, { exact: true })).toHaveCount(1);
       await trigger.click();
       await expect(detail(page)).toHaveAttribute("data-member-turn-id", turn.id);
@@ -248,15 +249,14 @@ for (const theme of ["light", "dark"] as const) {
       const style = getComputedStyle(el);
       return { radius: style.borderRadius, display: style.display };
     });
-    expect(bubblePaint.radius).toBe("12px");
+    expect(bubblePaint.radius).toBe("16px 16px 16px 4px");
     expect(bubblePaint.display).toBe("inline-flex");
-    // The status word is visible without opening anything: the reader can tell
-    // which state the member is in straight from the transcript.
-    await expect(trigger).toContainText("Working");
+    // The entry is the thinking bubble itself: dots only, no status word.
+    await expect(trigger).toHaveText("");
     await expectInsideViewport(page);
     const hitArea = await trigger.boundingBox();
-    expect(hitArea!.width).toBeGreaterThanOrEqual(44);
-    expect(hitArea!.height).toBeGreaterThanOrEqual(44);
+    expect(hitArea!.width).toBeGreaterThanOrEqual(64);
+    expect(hitArea!.height).toBeGreaterThanOrEqual(40);
     const animations = await trigger.evaluate((el) => [el, ...el.querySelectorAll("*")].map((node) => getComputedStyle(node).animationName));
     expect(animations.every((name) => name === "none")).toBe(true);
     await page.keyboard.press("Escape");
@@ -421,7 +421,7 @@ test("history prepend, duplicate live messages and canonical promotion preserve 
   hub.send(delivery);
   await expect(page.locator('[data-row-id="reply_live"]')).toHaveCount(1);
   await expect(bubble(page, "turn_live")).toHaveCount(1);
-  await expect(page.locator('[data-row-id="reply_live"]').getByTestId("agent-thinking-bubble")).toHaveCount(1);
+  await expect(page.locator('[data-row-id="reply_live"]').locator('[data-test="agent-thinking-bubble"], [data-test="trace-link"]')).toHaveCount(1);
   await expect.poll(offset).toBeCloseTo(before, 0);
   await expect(trigger).toHaveAttribute("aria-expanded", "true");
   const ordered = await scroller.locator("[data-row-id]").evaluateAll((rows) => rows.map((row) => row.getAttribute("data-row-id")));
