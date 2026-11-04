@@ -104,6 +104,10 @@ export interface BotRemovalPreviewDto {
     groupRuns: number;
   };
   controllerResidue: { bindingIds: string[]; sessionAliases: string[] };
+  /** Sealed `indeterminate` Runs a human has NOT abandoned. They are exactly
+   *  what blocks the removal's release gates, and the removal therefore
+   *  offers "give up the unknown result" for these ids. */
+  abandonableRunIds: string[];
   dedicatedWorkspace?: {
     name: string;
     path: string;

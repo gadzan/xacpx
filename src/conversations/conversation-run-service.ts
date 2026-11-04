@@ -1365,7 +1365,10 @@ export class ConversationRunService {
         runIds: blocking.map((run) => run.id),
       });
     }
-    if (remaining.some((run) => run.state === "indeterminate")) {
+    // An abandoned Sealed Run is a human decision to accept the lost side
+    // effects, the same reading topic teardown uses. Counting it here would
+    // leave the Bot's removal with no exit but rewriting evidence.
+    if (this.blockingIndeterminate(remaining).length > 0) {
       return "indeterminate";
     }
     return "clean";
@@ -1417,7 +1420,10 @@ export class ConversationRunService {
         runIds: [...new Set(live.map((turn) => turn.runId))],
       });
     }
-    if (turns.some((turn) => turn.state === "indeterminate")) {
+    // A member turn whose Run a human abandoned is the same accepted loss as
+    // topic teardown reads. A turn with no readable Run fails closed.
+    if (turns.some((turn) => turn.state === "indeterminate"
+      && this.store.getRun(turn.runId)?.abandonedAt === undefined)) {
       return "indeterminate";
     }
     const topics = new Map<string, { conversationId: string; topicId: string }>();

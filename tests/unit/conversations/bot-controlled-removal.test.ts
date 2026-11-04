@@ -524,6 +524,91 @@ test("an indeterminate run keeps the barrier and does not look finished", async 
   }
 });
 
+test("an abandoned direct run no longer blocks the removal", async () => {
+  const current = await compose();
+  try {
+    const created = await bot(current, "Unknown");
+    const accepted = await current.control.promptConversation({
+      conversationId: createDirectConversationId(created.id),
+      topicId: createDirectTopicId(created.id),
+      requestId: "unknown-run",
+      text: "maybe",
+    });
+    const memberId = accepted.memberTurn?.id ?? current.runtime.store.listMemberTurns(accepted.run.id)[0]?.id;
+    current.runtime.store.completeCancel(accepted.run.id, memberId!, NOW, true);
+    const impact = await current.control.previewBotRemoval(created.id);
+    expect(impact.abandonableRunIds).toEqual([accepted.run.id]);
+    await expect(current.control.removeBot({
+      botId: created.id,
+      requestId: "remove-abandoned",
+      previewRevision: impact.revision,
+    })).rejects.toMatchObject({ code: "conversation_indeterminate" });
+
+    await current.control.abandonRun({ runId: accepted.run.id });
+    const retried = await current.control.previewBotRemoval(created.id);
+    expect(retried.abandonableRunIds).toEqual([]);
+    const done = await current.control.removeBot({
+      botId: created.id,
+      requestId: "remove-abandoned",
+      previewRevision: retried.revision,
+    });
+    expect(done.operation.phase).toBe("completed");
+    expect(current.runtime.store.botRemovalPhase(created.id)).toBe("retired");
+  } finally {
+    await current.close();
+  }
+});
+
+test("an abandoned group run stops blocking a departed member's removal", async () => {
+  const current = await compose();
+  try {
+    const speaker = await bot(current, "Speaker");
+    const partner = await bot(current, "Partner");
+    const keeper = await bot(current, "Keeper");
+    const group = await current.control.createGroup({ title: "Team", botIds: [speaker.id, partner.id, keeper.id] });
+    const groupTopic = await current.control.createGroupTopic(group.id, "Sprint", {
+      workspace: "backend",
+      isolation: "shared",
+    });
+    const accepted = await current.control.promptConversation({
+      conversationId: group.id,
+      topicId: groupTopic.id,
+      requestId: "group-unknown",
+      text: "maybe",
+      target: { mode: "members", botIds: [speaker.id] },
+    });
+    const memberId = accepted.memberTurn?.id ?? current.runtime.store.listMemberTurns(accepted.run.id)[0]?.id;
+    current.runtime.store.completeCancel(accepted.run.id, memberId!, NOW, true);
+    await current.control.updateGroup(group.id, { botIds: [partner.id, keeper.id] });
+
+    const impact = await current.control.previewBotRemoval(speaker.id);
+    // The stuck Run is group work, so the direct-only run lists stay empty and
+    // the abandon affordance is the only place the surface can name it.
+    expect(impact.runs.indeterminate).toEqual([]);
+    expect(impact.memberUnsettledRunIds).toEqual([]);
+    expect(impact.abandonableRunIds).toEqual([accepted.run.id]);
+    await expect(current.control.removeBot({
+      botId: speaker.id,
+      requestId: "remove-departed",
+      previewRevision: impact.revision,
+    })).rejects.toMatchObject({ code: "conversation_indeterminate" });
+
+    await current.control.abandonRun({ runId: accepted.run.id });
+    const retried = await current.control.previewBotRemoval(speaker.id);
+    expect(retried.abandonableRunIds).toEqual([]);
+    const done = await current.control.removeBot({
+      botId: speaker.id,
+      requestId: "remove-departed",
+      previewRevision: retried.revision,
+    });
+    expect(done.operation.phase).toBe("completed");
+    expect(current.control.listBots().some((item) => item.id === speaker.id)).toBe(false);
+    expect(current.state.conversations[group.id]?.botIds).toEqual([partner.id, keeper.id]);
+  } finally {
+    await current.close();
+  }
+});
+
 test("the same removal request returns the same result", async () => {
   const current = await compose();
   try {

@@ -311,6 +311,15 @@ export class BotRemovalService {
       activeRunIds: runs.filter((run) => run.state === "running" || run.state === "waiting-human").map((run) => run.id),
       queuedRunIds: runs.filter((run) => run.state === "queued").map((run) => run.id),
       indeterminateRunIds: runs.filter((run) => run.state === "indeterminate").map((run) => run.id),
+      abandonableRunIds: [...new Set([
+        ...runs
+          .filter((run) => run.state === "indeterminate" && run.abandonedAt === undefined)
+          .map((run) => run.id),
+        ...memberTurns
+          .filter((turn) => turn.state === "indeterminate"
+            && this.store.getRun(turn.runId)?.abandonedAt === undefined)
+          .map((turn) => turn.runId),
+      ])].sort(),
       memberUnsettledRunIds: [...new Set(memberTurns.filter((turn) => LIVE_MEMBER.has(turn.state)).map((turn) => turn.runId))],
       groups,
       memberRuntimeKeys: runtimes,
@@ -367,6 +376,7 @@ export class BotRemovalService {
       history: facts.history,
       controllerResidue: this.bots.directControllerResidue(botId),
       memberUnsettledRunIds: facts.memberUnsettledRunIds,
+      abandonableRunIds: facts.abandonableRunIds,
       ...(operation
         ? {
           operation: {
