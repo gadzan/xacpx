@@ -704,6 +704,7 @@ function describeSubmitError(err: unknown): string {
       :preview="() => directBotsStore.previewBotRemoval(props.instanceId, props.bot!.id)"
       :remove="(input) => directBotsStore.removeBot(props.instanceId, { botId: props.bot!.id, ...input })"
       :get-operation="(id) => directBotsStore.getLifecycleOperation(props.instanceId, id)"
+      :abandon-run="(runId) => directBotsStore.abandonRun(props.instanceId, runId)"
       :supports-workspace-cleanup="supportsBotDedicatedWorkspaceCleanup(inst)"
       @close="removalOpen = false"
       @removed="removalOpen = false; emit('close')"

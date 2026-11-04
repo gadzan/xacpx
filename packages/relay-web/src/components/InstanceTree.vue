@@ -1258,6 +1258,7 @@ const rowSwipes = computed(() => {
       :preview="() => directBotsStore.previewBotRemoval(removalFor!.instanceId, removalFor!.bot.id)"
       :remove="(input) => directBotsStore.removeBot(removalFor!.instanceId, { botId: removalFor!.bot.id, ...input })"
       :get-operation="(id) => directBotsStore.getLifecycleOperation(removalFor!.instanceId, id)"
+      :abandon-run="(runId) => directBotsStore.abandonRun(removalFor!.instanceId, runId)"
       :supports-workspace-cleanup="supportsBotDedicatedWorkspaceCleanup(store.byId(removalFor!.instanceId))"
       @close="removalFor = null"
       @removed="removalFor = null"

@@ -21,6 +21,7 @@ function impact(patch: Partial<BotRemovalPreviewDto> = {}): BotRemovalPreviewDto
     history: { directMessages: 2, directRuns: 1, groupMessages: 4, groupRuns: 1 },
     controllerResidue: { bindingIds: [], sessionAliases: [] },
     memberUnsettledRunIds: [],
+    abandonableRunIds: [],
     ...patch,
   };
 }
@@ -43,7 +44,7 @@ function mountDialog(previewValue: BotRemovalPreviewDto, removeImpl?: (input: {
   clearDirectHistory: boolean;
   releaseDirectBindings: boolean;
   deleteDedicatedWorkspace: boolean;
-}) => Promise<LifecycleOperationDto>, supportsWorkspaceCleanup = false, operationImpl?: () => Promise<LifecycleOperationDto>) {
+}) => Promise<LifecycleOperationDto>, supportsWorkspaceCleanup = false, operationImpl?: () => Promise<LifecycleOperationDto>, abandonRun?: (runId: string) => Promise<void>) {
   const preview = vi.fn(async () => previewValue);
   const remove = vi.fn(removeImpl ?? (async () => operation("completed", { clearDirectHistory: false })));
   const getOperation = vi.fn(operationImpl ?? (async () => operation("failed", { error: { code: "session_release_failed", message: "release failed" }, requestId: "req-kept" })));
@@ -54,6 +55,7 @@ function mountDialog(previewValue: BotRemovalPreviewDto, removeImpl?: (input: {
       remove,
       getOperation,
       supportsWorkspaceCleanup,
+      ...(abandonRun ? { abandonRun } : {}),
     },
     global: { plugins: [i18n] },
   });
@@ -259,5 +261,67 @@ describe("BotRemovalDialog", () => {
     await wrapper.get("[data-test=removal-confirm]").trigger("click");
     await flushPromises();
     expect(useToasts().value.some((toast) => toast.key.startsWith("bot.removal.workspace"))).toBe(false);
+  });
+});
+
+describe("BotRemovalDialog with unknown work", () => {
+  const stuck = impact({
+    abandonableRunIds: ["run_1"],
+    operation: {
+      id: "bot-remove:req-1",
+      requestId: "req-1",
+      phase: "indeterminate",
+      error: { code: "conversation_indeterminate", message: "unknown" },
+    },
+  });
+  const SENTENCE = "A run is still indeterminate. Removal is not finished.";
+
+  it("says it once and offers to give up the unknown result", async () => {
+    const abandonRun = vi.fn(async () => {});
+    const { wrapper, remove } = mountDialog(
+      stuck,
+      async () => operation("completed", { requestId: "req-1" }),
+      false,
+      undefined,
+      abandonRun,
+    );
+    await flushPromises();
+    expect(wrapper.text().split(SENTENCE).length - 1).toBe(1);
+    expect(wrapper.find("[data-test=removal-error]").exists()).toBe(false);
+    expect(wrapper.get("[data-test=removal-abandon]").text()).toContain("1 Run(s)");
+
+    await wrapper.get("[data-test=removal-abandon-submit]").trigger("click");
+    await flushPromises();
+    expect(abandonRun).toHaveBeenCalledWith("run_1");
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove.mock.calls[0]![0].requestId).toBe("req-1");
+    expect(wrapper.find("[data-test=removal-finished]").exists()).toBe(true);
+  });
+
+  it("does not repeat the sentence when the retry fails on the same unknown work", async () => {
+    const { wrapper } = mountDialog(
+      stuck,
+      async () => { throw Object.assign(new Error("unknown"), { code: "conversation_indeterminate" }); },
+      false,
+      undefined,
+      async () => {},
+    );
+    await flushPromises();
+    await wrapper.get("[data-test=removal-confirm]").trigger("click");
+    await flushPromises();
+    expect(wrapper.text().split(SENTENCE).length - 1).toBe(1);
+    expect(wrapper.find("[data-test=removal-error]").exists()).toBe(false);
+  });
+
+  it("keeps a plain cleanup failure in the error line", async () => {
+    const { wrapper } = mountDialog(
+      impact({ phase: "deleting", operation: { id: "bot-remove:req-1", requestId: "req-1", phase: "failed" } }),
+      async () => { throw Object.assign(new Error("release failed"), { code: "session_release_failed" }); },
+    );
+    await flushPromises();
+    await wrapper.get("[data-test=removal-confirm]").trigger("click");
+    await flushPromises();
+    expect(wrapper.get("[data-test=removal-error]").text()).toContain("session_release_failed");
+    expect(wrapper.find("[data-test=removal-indeterminate]").exists()).toBe(false);
   });
 });

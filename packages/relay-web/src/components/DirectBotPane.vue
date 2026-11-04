@@ -510,6 +510,7 @@ function openRemoval(): void {
       :preview="() => directBotsStore.previewBotRemoval(directBotsStore.instanceId!, bot!.id)"
       :remove="(input) => directBotsStore.removeBot(directBotsStore.instanceId!, { botId: bot!.id, ...input })"
       :get-operation="(id) => directBotsStore.getLifecycleOperation(directBotsStore.instanceId!, id)"
+      :abandon-run="(runId) => directBotsStore.abandonRun(directBotsStore.instanceId!, runId)"
       :supports-workspace-cleanup="supportsBotDedicatedWorkspaceCleanup(instance)"
       @close="removalOpen = false"
       @removed="removalOpen = false"

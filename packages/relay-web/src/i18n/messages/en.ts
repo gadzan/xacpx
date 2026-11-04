@@ -875,6 +875,8 @@ export default {
       memberWork: "This bot still has unfinished work in a group. Stop that run, then retry.",
       controller: "A hidden controller session is still attached. Removal cannot retire this bot yet.",
       indeterminate: "A run is still indeterminate. Removal is not finished.",
+      abandon: "Give up the unknown result",
+      abandonHint: "Removal is blocked by {count} Run(s) whose result the agent never reported. Giving up discards them and continues the removal.",
       failed: "Cleanup did not finish ({code}).",
       retry: "Retry cleanup",
       confirm: "Remove bot",
