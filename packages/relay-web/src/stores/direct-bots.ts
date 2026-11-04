@@ -744,6 +744,41 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     for (const key of Object.keys(directTraceRequests)) delete directTraceRequests[key];
   }
 
+  interface DirectTraceFollow {
+    runId: string;
+    memberTurnId: string;
+    attempt: number;
+    timer: ReturnType<typeof setTimeout> | undefined;
+  }
+
+  /** Live-follow state for an OPEN process drawer: while the turn runs, the
+   *  drawer keeps pulling newly committed trace events (the demo contract,
+   *  "过程会随着输出继续更新"). */
+  let directTraceFollow: DirectTraceFollow | null = null;
+
+  function setDirectTraceFollow(runId: string, memberTurnId: string, attempt: number): void {
+    if (directTraceFollow?.timer) clearTimeout(directTraceFollow.timer);
+    directTraceFollow = { runId, memberTurnId, attempt, timer: undefined };
+  }
+
+  function clearDirectTraceFollow(): void {
+    if (directTraceFollow?.timer) clearTimeout(directTraceFollow.timer);
+    directTraceFollow = null;
+  }
+
+  /** One follow fetch, throttled past Core's commit batching; a terminal
+   *  frame flushes immediately so the sealed tail lands without lag. */
+  function flushDirectTraceFollow(immediate = false): void {
+    const follow = directTraceFollow;
+    if (!follow) return;
+    const fetchNow = (): void => {
+      follow.timer = undefined;
+      ensureDirectTracePage(follow.runId, follow.memberTurnId, follow.attempt);
+    };
+    if (immediate) fetchNow();
+    else if (follow.timer === undefined) follow.timer = setTimeout(fetchNow, 500);
+  }
+
   /**
    * Lazy paged trace read for the Direct Bot process drawer. Same RPC and
    * strict decode as the Group path; identity comes from the live
@@ -1477,6 +1512,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     queuedOwnRuns.value = {};
     clearDirectTracePages();
+    if (directTraceFollow) clearDirectTraceFollow();
     activeMemberTurn.value = null;
     liveTurn.value = null;
     topicReady.value = true;
@@ -1522,6 +1558,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     queuedOwnRuns.value = {};
     clearDirectTracePages();
+    if (directTraceFollow) clearDirectTraceFollow();
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2388,6 +2425,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     queuedOwnRuns.value = {};
     clearDirectTracePages();
+    if (directTraceFollow) clearDirectTraceFollow();
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2496,6 +2534,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     queuedOwnRuns.value = {};
     clearDirectTracePages();
+    if (directTraceFollow) clearDirectTraceFollow();
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -2540,6 +2579,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     queuedOwnRuns.value = {};
     clearDirectTracePages();
+    if (directTraceFollow) clearDirectTraceFollow();
     liveTurn.value = null;
     latestPlanRunId.value = null;
     planByRunId.value = {};
@@ -4291,6 +4331,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         return;
       }
 
+      // An open drawer follows the committed trace: live frames schedule one
+      // throttled fetch; the durable tail is the drawer's source of truth.
+      const follow = directTraceFollow;
+      if (follow && corr.runId === follow.runId && corr.memberTurnId === follow.memberTurnId
+        && (corr.attempt === undefined || corr.attempt === follow.attempt)) {
+        flushDirectTraceFollow(e.type === "turn-finished");
+      }
+
       if (!liveTurn.value) {
         liveTurn.value = {
           parts: [],
@@ -4299,7 +4347,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           revision: 0,
         };
       }
-
       const parts = liveTurn.value.parts;
       const bumpStream = (): void => {
         if (liveTurn.value) liveTurn.value.revision += 1;
@@ -4377,10 +4424,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     cancellingRunId,
     cancelUncertaintyRunId,
     directTracePages,
-    ensureDirectTracePage,
     clearDirectTracePages,
     directTraceScopeKey,
     directTracePageKey,
+    ensureDirectTracePage,
+    setDirectTraceFollow,
+    clearDirectTraceFollow,
     runParts,
     completeRunParts,
     currentDraftRequestId,

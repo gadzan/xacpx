@@ -194,9 +194,12 @@ watch(rowEl, observeAnchor, { flush: "post" });
   position: fixed;
   inset: 0;
   z-index: 50;
-  /* Non-modal like the anchored popover it replaces: only the drawer itself
-   * takes pointer events, the rest of the page stays interactive. */
-  pointer-events: none;
+  /* Modal like the accepted demo: a scrim covers the chat while the drawer is
+   * open; pointerdown on the scrim reaches the outside-close handler, and
+   * keyboard focus stays inside the drawer. */
+  pointer-events: auto;
+  background: rgb(var(--c-fg) / 0.22);
+  backdrop-filter: blur(2px);
 }
 .detail-drawer-layer > aside {
   pointer-events: auto;

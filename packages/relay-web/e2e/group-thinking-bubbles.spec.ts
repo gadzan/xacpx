@@ -240,9 +240,15 @@ for (const theme of ["light", "dark"] as const) {
     const replyTrigger = bubble(page, "turn_first");
     await expect(replyRow).not.toHaveClass(/is-detail-open/);
     await expect(reply).not.toHaveClass(/turn-reply-wash/);
-    if (page.viewportSize()!.width >= 1024) await replyTrigger.hover();
-    await expect(replyRow).not.toHaveClass(/is-detail-open/);
-    await expect(reply).not.toHaveClass(/turn-reply-wash/);
+    // The demo drawer is modal: a scrim covers the transcript, so transcript
+    // rows are not hover targets while it is open. The drawer holds focus and
+    // the trigger stays expanded behind the scrim.
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect(detail(page)).toHaveAttribute("data-member-turn-id", "turn_live");
+    // Desktop drawer: scrim layer visible. Mobile uses the bottom sheet.
+    if (page.viewportSize()!.width >= 1024) {
+      await expect(page.locator('[data-test="group-detail-layer"]')).toBeVisible();
+    }
     // The entry paints its own surface (no separate inner chip), so the
     // visible chip and the hit target are the same box.
     const bubblePaint = await trigger.evaluate((el) => {
@@ -269,16 +275,21 @@ for (const theme of ["light", "dark"] as const) {
     await page.keyboard.press("Space");
     await expect(detail(page)).toBeVisible();
     if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
-    else await trigger.click();
+    else await page.locator('[data-test="group-detail-layer"]').click({ position: { x: 40, y: 40 } });
     await expect(detail(page)).toHaveCount(0);
     await trigger.click();
     if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
+    else await page.locator('[data-test="group-detail-layer"]').click({ position: { x: 40, y: 40 } });
+    await expect(detail(page)).toHaveCount(0);
+    // A finished member's entry lives inside its conclusion bubble.
     await bubble(page, "turn_first").click();
     await expect(detail(page)).toHaveCount(1);
     await expect(detail(page)).toContainText("Reviewer");
     // Opening the topic panel must close the detail. Dismiss the panel again
     // (sheet close below lg, pill toggle above) so nothing intercepts taps.
     if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
+    else await page.locator('[data-test="group-detail-layer"]').click({ position: { x: 40, y: 40 } });
+    await expect(detail(page)).toHaveCount(0);
     await page.getByTestId("group-topic-pill").click();
     await expect(detail(page)).toHaveCount(0);
     const panelClose = page.getByTestId("sheet-close");
@@ -311,7 +322,11 @@ for (const theme of ["light", "dark"] as const) {
 }
 
 async function switchTopic(page: Page, topicId: string) {
-  if (page.viewportSize()!.width < 1024 && await detail(page).isVisible()) await detail(page).getByTestId("group-detail-close").click();
+  if (await detail(page).isVisible()) {
+    if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
+    else await page.locator('[data-test="group-detail-layer"]').click({ position: { x: 40, y: 40 } });
+    await expect(detail(page)).toHaveCount(0);
+  }
   await page.getByTestId("group-topic-pill").click();
   await page.locator(`[data-test="topic-row"][data-topic-id="${topicId}"]`).getByRole("button").first().click();
   await expect(page.getByTestId("group-topic-pill")).toContainText(topicId === scope.topicId ? "Implementation" : "Other topic");
@@ -404,6 +419,8 @@ test("history prepend, duplicate live messages and canonical promotion preserve 
   await expect.poll(offset).toBeCloseTo(before, 0);
   await trigger.click();
   if (page.viewportSize()!.width < 1024) await detail(page).getByTestId("group-detail-close").click();
+  else await page.locator('[data-test="group-detail-layer"]').click({ position: { x: 40, y: 40 } });
+  await expect(detail(page)).toHaveCount(0);
   await page.getByTestId("group-load-older-button").click();
   await expect(page.locator('[data-message-id="older_0"]')).toHaveCount(1);
   await expect.poll(offset).toBeCloseTo(before, 0);
