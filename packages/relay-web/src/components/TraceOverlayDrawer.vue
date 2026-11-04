@@ -61,8 +61,10 @@ const drawerScroll = ref<HTMLElement | null>(null);
 // connected, else its [data-row-id] ancestor; when the button was detached
 // from its row (trigger swap) some engines skip detached subtrees in
 // closest(), so the row is finally recovered by the member-turn id the row
-// and the drawer share. The parent clears :anchor-el synchronously with the
-// close, so nothing here re-reads the prop after emit.
+// and the drawer share. A promoted (message-anchored) row carries that id in
+// data-anchor-id instead — its data-row-id is the reply message id — so the
+// scan matches either attribute. The parent clears :anchor-el synchronously
+// with the close, so nothing here re-reads the prop after emit.
 function resolveFocusFallback(): HTMLElement | null {
   const anchor = props.anchorEl;
   if (anchor?.isConnected) return anchor;
@@ -70,7 +72,8 @@ function resolveFocusFallback(): HTMLElement | null {
   const row = anchor?.closest<HTMLElement>("[data-row-id]")
     ?? (memberTurnId
       ? Array.from(document.querySelectorAll<HTMLElement>("[data-row-id]"))
-        .find((el) => el.getAttribute("data-row-id") === memberTurnId)
+        .find((el) => el.getAttribute("data-row-id") === memberTurnId
+          || el.getAttribute("data-anchor-id") === memberTurnId)
       : undefined);
   return row?.isConnected ? row : null;
 }

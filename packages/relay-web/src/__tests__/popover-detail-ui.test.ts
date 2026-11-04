@@ -258,6 +258,29 @@ describe("GroupThinkingBubbles UI", () => {
     expect(document.activeElement).not.toBe(document.body);
     wrapper.unmount();
   });
+  it("restores focus to a promoted message-anchored row after a trigger swap", async () => {
+    const groups = seedEnvironment();
+    seedLiveRun();
+    // A proven canonical reply promotes the row: data-row-id becomes the
+    // message id; the shared turn id moves to data-anchor-id.
+    groups.messages = [
+      ...groups.messages,
+      { id: "reply_a", conversationId: "conversation_g", topicId: "topic_1", seq: 2, role: "bot",
+        senderBotId: "bot_a", runId: "run_1", promptRequestId: "p_1", content: "Reviewed", createdAt: "now" },
+    ];
+    vi.spyOn(groups, "setOpenTrace").mockImplementation(() => {});
+    const wrapper = mountTranscript();
+    await openFirstBubble(wrapper);
+    const bubble = wrapper.get('[data-test="agent-thinking-bubble"]').element as HTMLElement;
+    const promotedRow = bubble.closest("[data-row-id]") as HTMLElement;
+    bubble.remove();
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(card()).toBeNull();
+    expect(document.activeElement).toBe(promotedRow);
+    wrapper.unmount();
+  });
+
 
 
   it("closes from an outside pointerdown without moving the reader's focus", async () => {
