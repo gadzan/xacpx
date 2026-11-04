@@ -1434,7 +1434,7 @@ describe("useGroupsStore", () => {
       const { wrapper } = await setup(false, "source_second");
       const canonical = wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer");
       expect(canonical).toHaveLength(1);
-      expect(wrapper.find('[data-message-id="msg_second"] [data-test="agent-thinking-bubble"]').exists()).toBe(false);
+      expect(wrapper.find('[data-message-id="msg_second"] [data-test="trace-link"]').exists()).toBe(false);
       expect(wrapper.find('[data-test="group-unresolved-activity"]').exists()).toBe(true);
       await wrapper.get('[data-member-turn-id="first_a"] [data-test="agent-thinking-bubble"]').trigger("click");
       await flushPromises();
@@ -1450,7 +1450,7 @@ describe("useGroupsStore", () => {
     it("does not guess a legacy source among multiple assignments of the same Bot", async () => {
       const { wrapper } = await setup(true);
       expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
-      expect(wrapper.find('[data-message-id="msg_second"] [data-test="agent-thinking-bubble"]').exists()).toBe(false);
+      expect(wrapper.find('[data-message-id="msg_second"] [data-test="trace-link"]').exists()).toBe(false);
       expect(wrapper.findAll('[data-test="group-unresolved-activity"]')).toHaveLength(2);
       await wrapper.get('[data-member-turn-id="first_a"] [data-test="agent-thinking-bubble"]').trigger("click");
       await flushPromises();
@@ -1468,7 +1468,7 @@ describe("useGroupsStore", () => {
       const row = wrapper.get('[data-member-turn-id="second_a"]');
       expect(row.findAllComponents({ name: "StreamMarkdown" }).map((part: { props: (name: string) => unknown }) => part.props("text") as string)).toEqual(["Canonical second answer"]);
       expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
-      await row.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await row.get('[data-test="trace-link"]').trigger("click");
       await flushPromises();
       const detail = document.querySelector('[data-test="group-detail-card"]');
       expect(detail?.textContent).toContain("Second assignment trace");
@@ -1482,7 +1482,7 @@ describe("useGroupsStore", () => {
       const row = wrapper.get('[data-member-turn-id="first_a"]');
       expect(row.findAllComponents({ name: "StreamMarkdown" }).map((part: { props: (name: string) => unknown }) => part.props("text") as string)).toEqual(["Canonical second answer"]);
       expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
-      await row.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await row.get('[data-test="trace-link"]').trigger("click");
       await flushPromises();
       const detail = document.querySelector('[data-test="group-detail-card"]');
       expect(detail?.getAttribute("data-member-turn-id")).toBe("first_a");

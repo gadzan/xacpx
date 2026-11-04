@@ -101,6 +101,11 @@ const traceTone = computed<"muted" | "warn" | "accent">(() => {
       return "muted";
   }
 });
+/** The accessible name's state part: a stop says "stopped" regardless of the
+ *  member's own durable state, anything else says what the row is. */
+const statusWord = computed(() =>
+  props.stopped ? t("group.bubble.status.stopped") : t(`group.bubble.status.${bubbleStatus.value}`));
+
 
 
 /** The task is one quiet line: enough to know what this member was asked for,
@@ -186,6 +191,7 @@ defineExpose({ bubbleStatus });
         <TraceLink
           :label="bubbleLabel"
           :text="traceText"
+          :state-word="stopped || bubbleStatus !== 'done' ? statusWord : undefined"
           :expanded="expanded"
           :controls="controls"
           :tone="traceTone"

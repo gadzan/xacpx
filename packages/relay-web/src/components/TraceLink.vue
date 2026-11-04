@@ -9,6 +9,9 @@ defineProps<{
   /** Localized accessible name for the whole entry. */
   label: string;
   text: string;
+  /** A non-completed tone member keeps its state word in the accessible
+   *  name: the label alone would hide a stop behind a neutral phrasing. */
+  stateWord?: string;
   expanded?: boolean;
   controls?: string;
   /** Failure tones keep a colour cue next to the word. */
@@ -28,11 +31,11 @@ function onToggle(event: MouseEvent): void {
     data-test="trace-link"
     class="trace-link"
     :class="`is-${tone ?? 'muted'}`"
-    :aria-label="label"
+    :aria-label="stateWord ? `${label} — ${stateWord}` : label"
     aria-haspopup="dialog"
     :aria-expanded="expanded === true"
     :aria-controls="controls"
-    :title="label"
+    :title="stateWord ? `${label} — ${stateWord}` : label"
     @click.stop="onToggle"
   >
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" class="trace-link-icon">
