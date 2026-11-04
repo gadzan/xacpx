@@ -15,6 +15,9 @@ const props = defineProps<{
     deleteDedicatedWorkspace: boolean;
   }) => Promise<LifecycleOperationDto>;
   getOperation: (id: string) => Promise<LifecycleOperationDto>;
+  /** Absent when the connector cannot serve `runs.abandon`, in which case the
+   *  dialog never offers to give up the unknown result. */
+  abandonRun?: (runId: string) => Promise<void>;
   /** The instance's core deletes a dedicated workspace on request. */
   supportsWorkspaceCleanup?: boolean;
 }>();
@@ -75,6 +78,15 @@ const needsRetry = computed(() => {
 
 const finished = computed(() => operation.value?.phase === "completed" || impact.value?.phase === "retired");
 
+/** Codes the impact list already reports, so they never repeat as an error line. */
+const stateOnlyCodes = new Set(["conversation_indeterminate"]);
+
+const abandonableRunIds = computed(() => impact.value?.abandonableRunIds ?? []);
+const canAbandon = computed(() => props.abandonRun !== undefined
+  && abandonableRunIds.value.length > 0
+  && !finished.value);
+const abandoning = ref(false);
+
 onMounted(() => {
   void loadPreview();
 });
@@ -120,26 +132,40 @@ async function confirmRemove(): Promise<void> {
       emit("removed");
       return;
     }
-    if (result.phase === "indeterminate") {
-      errorText.value = t("bot.removal.indeterminate");
-    } else if (result.error) {
+    if (result.phase !== "indeterminate" && result.error) {
       errorText.value = t("bot.removal.failed", { code: result.error.code });
     }
     impact.value = await props.preview();
   } catch (error) {
     const code = error instanceof Error && "code" in error ? String(error.code) : "";
-    errorText.value = code === "conversation_indeterminate"
-      ? t("bot.removal.indeterminate")
-      : code
+    if (code !== "conversation_indeterminate") {
+      errorText.value = code
         ? t("bot.removal.failed", { code })
         : error instanceof Error ? error.message : String(error);
+    }
     try {
       impact.value = await props.preview();
-    } catch {
-      // The removal error above is the one the user can act on.
+    } catch (previewError) {
+      errorText.value = previewError instanceof Error ? previewError.message : String(previewError);
     }
   } finally {
     pending.value = false;
+  }
+}
+
+async function abandonUnknown(): Promise<void> {
+  const ids = abandonableRunIds.value;
+  if (!props.abandonRun || ids.length === 0 || abandoning.value || pending.value) return;
+  abandoning.value = true;
+  errorText.value = "";
+  try {
+    for (const runId of ids) await props.abandonRun(runId);
+    impact.value = await props.preview();
+    await confirmRemove();
+  } catch (error) {
+    errorText.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    abandoning.value = false;
   }
 }
 
@@ -188,6 +214,18 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
             {{ t("bot.removal.directHistoryHint") }}
           </li>
         </ul>
+        <div v-if="canAbandon"
+             data-test="removal-abandon"
+             class="rounded-lg bg-warn/10 p-2.5 text-xs text-warn-overlay">
+          <p>{{ t("bot.removal.abandonHint", { count: abandonableRunIds.length }) }}</p>
+          <button type="button"
+                  data-test="removal-abandon-submit"
+                  :disabled="abandoning || pending"
+                  class="mt-2 rounded-btn bg-warn/20 px-2 py-0.5 font-medium transition-colors hover:bg-warn/30 disabled:opacity-50"
+                  @click="abandonUnknown">
+            {{ t("bot.removal.abandon") }}
+          </button>
+        </div>
         <label v-if="impact && !finished" class="flex items-start gap-2 text-xs">
           <input v-model="clearDirectHistory" data-test="removal-clear-direct" type="checkbox" :disabled="freezeFlag('clearDirectHistory')" />
           <span>{{ t("bot.removal.directHistory") }}</span>

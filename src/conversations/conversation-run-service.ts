@@ -1365,7 +1365,7 @@ export class ConversationRunService {
         runIds: blocking.map((run) => run.id),
       });
     }
-    if (remaining.some((run) => run.state === "indeterminate")) {
+    if (this.blockingIndeterminate(remaining).length > 0) {
       return "indeterminate";
     }
     return "clean";
@@ -1417,9 +1417,13 @@ export class ConversationRunService {
         runIds: [...new Set(live.map((turn) => turn.runId))],
       });
     }
-    if (turns.some((turn) => turn.state === "indeterminate")) {
+    if (turns.some((turn) => this.isBlockingIndeterminateTurn(turn.runId, turn.state))) {
       return "indeterminate";
     }
+    return await this.releaseDepartedMemberRuntime(botId);
+  }
+
+  private async releaseDepartedMemberRuntime(botId: string): Promise<"clean" | "indeterminate"> {
     const topics = new Map<string, { conversationId: string; topicId: string }>();
     for (const binding of Object.values(this.state.bot_runtime_bindings)) {
       if (binding.scope === "group-member" && binding.botId === botId) {
@@ -1458,6 +1462,18 @@ export class ConversationRunService {
       await this.persist(next);
     });
     return "clean";
+  }
+
+  /**
+   * One departed member turn that keeps blocking the bot's removal: its result
+   * is still unknown AND no human accepted that loss. An unreadable Run keeps
+   * blocking, so a torn record cannot launder unknown work past the gate.
+   */
+  private isBlockingIndeterminateTurn(runId: string, state: string): boolean {
+    if (state !== "indeterminate") {
+      return false;
+    }
+    return this.store.getRun(runId)?.abandonedAt === undefined;
   }
 
   /** Delete one bot's direct transcript. Group messages that name the bot stay. */

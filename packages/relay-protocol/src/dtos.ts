@@ -350,6 +350,10 @@ export interface BotRemovalPreviewDto {
   };
   controllerResidue: { bindingIds: string[]; sessionAliases: string[] };
   memberUnsettledRunIds: string[];
+  /** Sealed `indeterminate` Runs a human has NOT abandoned. They block the
+   *  removal's release gates and the surface offers "give up the unknown
+   *  result" for exactly these. */
+  abandonableRunIds: string[];
   /** The Bot's daemon-allocated workspace, present only when the daemon
    *  created it. `inUse` is true when something still keeps the directory. */
   dedicatedWorkspace?: {

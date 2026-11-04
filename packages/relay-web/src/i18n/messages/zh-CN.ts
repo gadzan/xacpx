@@ -873,6 +873,8 @@ export default {
       memberWork: "该 Bot 在群组中仍有未结束的工作。请先停止该次运行，再重试。",
       controller: "仍有隐藏的控制器会话。现在还不能让该 Bot 退休。",
       indeterminate: "仍有一次运行结果不确定。移除尚未完成。",
+      abandon: "放弃未知结果",
+      abandonHint: "移除被 {count} 个结果未知的 Run 挡住（代理没有回报结果）。放弃它们会丢掉这些结果，并继续移除。",
       failed: "清理没有完成（{code}）。",
       retry: "重试清理",
       confirm: "移除 Bot",

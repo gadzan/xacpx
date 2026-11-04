@@ -63,6 +63,10 @@ export interface BotRemovalFacts {
   activeRunIds: string[];
   queuedRunIds: string[];
   indeterminateRunIds: string[];
+  /** Sealed `indeterminate` Runs a human has NOT abandoned: the only unknown
+   *  work the operator can clear, and the exact set that blocks the release
+   *  gates. Empty means no abandon can help. */
+  abandonableRunIds: string[];
   memberUnsettledRunIds: string[];
   groups: Array<{ conversationId: string; memberCount: number; botIds: string[] }>;
   memberRuntimeKeys: string[];
@@ -102,6 +106,9 @@ export interface BotRemovalPreview {
   history: BotRemovalFacts["history"];
   controllerResidue: { bindingIds: string[]; sessionAliases: string[] };
   memberUnsettledRunIds: string[];
+  /** Unknown work the operator may give up so the release gates stop
+   *  blocking. Empty means the unknown work is not theirs to clear. */
+  abandonableRunIds: string[];
   operation?: {
     id: string;
     requestId: string;
@@ -141,6 +148,7 @@ export function botRemovalRevision(facts: BotRemovalFacts): string {
     activeRunIds: sorted(facts.activeRunIds),
     queuedRunIds: sorted(facts.queuedRunIds),
     indeterminateRunIds: sorted(facts.indeterminateRunIds),
+    abandonableRunIds: sorted(facts.abandonableRunIds),
     memberUnsettledRunIds: sorted(facts.memberUnsettledRunIds),
     groups: [...facts.groups]
       .map((group) => ({
