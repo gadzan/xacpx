@@ -1182,7 +1182,7 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
             <GroupAgentTurnRow
               v-for="row in (liveStreamAnchorKeys.get(item.memberTurn.runId) === item.key ? liveStreamByRun.get(item.memberTurn.runId) ?? [] : [])"
               :row-id="row.latest ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
-              :anchor-id="`${row.memberTurn.id}:seg:${row.index}`"
+              :anchor-id="row.placeholder ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
               :key="row.key"
               :member-turn="row.memberTurn"
               :bot="botById[row.memberTurn.botId]"
