@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { BotSummaryDto, GroupSummaryDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import { groupDraftKey, loadDraft } from "../lib/composer-drafts";
 import { useDirectBotsStore } from "../stores/direct-bots";
@@ -1198,6 +1198,239 @@ describe("Group Components", () => {
       expect(bubbles[0]!.classes()).toContain("is-done");
       // A still-running member owns the dots entry, not a status bubble.
       expect(bubbles[1]!.classes()).toContain("dots-trigger");
+    });
+
+    it("interleaves two running members' text segments in arrival order, dots on each latest", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const tool = (id: string): TurnPartDto => ({
+        type: "tool",
+        step: { toolCallId: id, toolName: "read", kind: "read", title: "read", status: "running" },
+      });
+      groups.liveTurnsByMember = {
+        turn_a: { parts: [{ type: "text", text: "A1" }, tool("a"), { type: "text", text: "A2" }], status: "streaming", startedAt: 1, revision: 1 },
+        turn_b: { parts: [{ type: "text", text: "B1" }, tool("b"), { type: "text", text: "B2" }], status: "streaming", startedAt: 1, revision: 1 },
+      };
+      groups.liveSegmentOrder = [
+        { memberTurnId: "turn_a", index: 0, order: 1 },
+        { memberTurnId: "turn_b", index: 0, order: 2 },
+        { memberTurnId: "turn_a", index: 2, order: 3 },
+        { memberTurnId: "turn_b", index: 2, order: 4 },
+      ];
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const texts = wrapper.findAll('[data-test="group-member-text-bubble"]').map((bubble) => bubble.text());
+      expect(texts).toEqual(["A1", "B1", "A2", "B2"]);
+      const dots = wrapper.findAll('[data-test="agent-thinking-bubble"]');
+      expect(dots).toHaveLength(2);
+      expect(dots.every((bubble) => bubble.classes().includes("dots-trigger"))).toBe(true);
+    });
+
+    it("gives each live segment row its own scroll anchor", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "A1" },
+            { type: "tool", step: { toolCallId: "t", toolName: "read", kind: "read", title: "read", status: "running" } },
+            { type: "text", text: "A2" },
+          ],
+          status: "streaming", startedAt: 1, revision: 1,
+        },
+      };
+      groups.liveSegmentOrder = [
+        { memberTurnId: "turn_a", index: 0, order: 1 },
+        { memberTurnId: "turn_a", index: 2, order: 2 },
+      ];
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const rows = wrapper.findAll('[data-test="agent-turn-row"]');
+      expect(rows.map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a:seg:0", "turn_a:seg:2"]);
+      const before = rows.map((row) => row.attributes("data-anchor-id"));
+
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "A1" },
+            { type: "tool", step: { toolCallId: "t", toolName: "read", kind: "read", title: "read", status: "running" } },
+            { type: "text", text: "A2" },
+            { type: "text", text: "A3" },
+          ],
+          status: "streaming", startedAt: 1, revision: 2,
+        },
+      };
+      groups.liveSegmentOrder = [
+        { memberTurnId: "turn_a", index: 0, order: 1 },
+        { memberTurnId: "turn_a", index: 2, order: 2 },
+        { memberTurnId: "turn_a", index: 3, order: 3 },
+      ];
+      await flushPromises();
+      const after = wrapper.findAll('[data-test="agent-turn-row"]').map((row) => row.attributes("data-anchor-id"));
+      expect(after).toEqual([...before, "turn_a:seg:3"]);
+    });
+
+    it("moves an open process drawer to the member's new last segment", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      groups.liveTurnsByMember = {
+        turn_a: { parts: [{ type: "text", text: "A1" }], status: "streaming", startedAt: 1, revision: 1 },
+      };
+      groups.liveSegmentOrder = [{ memberTurnId: "turn_a", index: 0, order: 1 }];
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.findComponent({ name: "TraceOverlay" }).exists()).toBe(true);
+
+      groups.liveTurnsByMember = {
+        turn_a: { parts: [{ type: "text", text: "A1" }, { type: "text", text: "A2" }], status: "streaming", startedAt: 1, revision: 2 },
+      };
+      groups.liveSegmentOrder = [
+        { memberTurnId: "turn_a", index: 0, order: 1 },
+        { memberTurnId: "turn_a", index: 1, order: 2 },
+      ];
+      await flushPromises();
+      const anchor = wrapper.findComponent({ name: "TraceOverlay" }).props("anchorEl") as HTMLElement | null;
+      expect(anchor?.isConnected).toBe(true);
+      expect(anchor?.closest('[data-test="agent-turn-row"]')?.textContent).toContain("A2");
+      wrapper.unmount();
+    });
+
+    it("keeps each text segment in its own bubble after the turn settles", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        { id: "reply_a", conversationId: "conversation_g", topicId: "topic_1", seq: 2, role: "bot",
+          senderBotId: "bot_a", runId: "run_1", promptRequestId: "p_a",
+          content: "Alpha ①：一段一个泡。\n\nAlpha ②：另一个泡。", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", promptRequestId: "p_a", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const bubbles = wrapper.findAll('[data-test="group-finished-text-bubble"]');
+      expect(bubbles).toHaveLength(2);
+      expect(bubbles[0]!.text()).toBe("Alpha ①：一段一个泡。");
+      expect(bubbles[1]!.text()).toContain("Alpha ②：另一个泡。");
+      expect(bubbles[1]!.find('[data-test="trace-link"]').exists()).toBe(true);
+      expect(wrapper.findAll('[data-test="trace-link"]')).toHaveLength(1);
+      expect(wrapper.findAll('[data-test="agent-turn-row"] [data-test="msg-actions"]')).toHaveLength(1);
+    });
+
+    it("interleaves settled segments of parallel members, not per-member blocks", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        { id: "reply_a", conversationId: "conversation_g", topicId: "topic_1", seq: 2, role: "bot",
+          senderBotId: "bot_a", runId: "run_1", promptRequestId: "p_a",
+          content: "A1\n\nA2", createdAt: "now" },
+        { id: "reply_b", conversationId: "conversation_g", topicId: "topic_1", seq: 3, role: "bot",
+          senderBotId: "bot_b", runId: "run_1", promptRequestId: "p_b",
+          content: "B1\n\nB2", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", promptRequestId: "p_a", createdAt: "now",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "human-explicit",
+          state: "completed", promptRequestId: "p_b", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const rows = wrapper.findAll('[data-test="agent-turn-row"]');
+      expect(rows.map((row) => row.attributes("data-member-turn-id"))).toEqual(["turn_a", "turn_b", "turn_a", "turn_b"]);
+      const bubbles = wrapper.findAll('[data-test="group-finished-text-bubble"]');
+      expect(bubbles.map((bubble) => bubble.text())).toHaveLength(4);
+      expect(bubbles[0]!.text()).toBe("A1");
+      expect(bubbles[1]!.text()).toBe("B1");
+      expect(bubbles[2]!.text()).toContain("A2");
+      expect(bubbles[3]!.text()).toContain("B2");
+      expect(wrapper.find('[data-row-id="reply_a"]').exists()).toBe(true);
+      expect(wrapper.find('[data-row-id="reply_b"]').exists()).toBe(true);
     });
 
     it("opens the anchored detail popover from one bubble and stops the exact active run from it", async () => {

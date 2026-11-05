@@ -1460,6 +1460,45 @@ test("starts a queue owner with orchestration MCP before prompting an MCP-bound 
   }]);
 });
 
+test("creates the missing record of an owned session before prompting it", async () => {
+  // A bot-owned Conversation session (Direct or Group member) is only a logical
+  // row until its first turn; nothing ensures the acpx record. The prompt must
+  // create it instead of failing every turn with "No named session".
+  const ownedSession: ResolvedSession = { ...session, mcpCoordinatorSession: "conversation:topic" };
+  const calls: string[][] = [];
+  let shows = 0;
+  const run = mock(async (_command: string, args: string[]) => {
+    calls.push(args);
+    if (args.includes("show")) {
+      shows += 1;
+      return shows === 1
+        ? { code: 1, stdout: "", stderr: "No named session \"backend:api-fix\" for cwd /tmp/backend" }
+        : { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-owned" }), stderr: "" };
+    }
+    if (args.includes("prompt")) {
+      return { code: 0, stdout: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "abc", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "owned reply" } } },
+      }), stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const launches: Array<{ acpxRecordId: string }> = [];
+  const queueOwnerLauncher = {
+    launch: async (input: { acpxRecordId: string }) => {
+      launches.push(input);
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, undefined, queueOwnerLauncher);
+
+  await expect(transport.prompt(ownedSession, "hello")).resolves.toEqual({ text: "owned reply" });
+
+  expect(calls.some((args) => args.includes("ensure"))).toBe(true);
+  expect(shows).toBe(2);
+  expect(launches).toEqual([{ acpxRecordId: "acpx-record-owned", coordinatorSession: "conversation:topic", sourceHandle: undefined, permissionMode: "approve-all", nonInteractivePermissions: "deny" }]);
+});
+
 test("persists effort before launching the queue owner so reconnect replays it", async () => {
   const events: string[] = [];
   const effortSession: ResolvedSession = {

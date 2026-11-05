@@ -755,6 +755,31 @@ describe("useGroupsStore", () => {
       expect(store.runParts[member.id]).toBeUndefined();
       expect(store.completeRunParts[member.id]).toBeUndefined();
     });
+    it("retires live segment stamps when a higher attempt starts", async () => {
+      const { store, run, member, load } = setup();
+      const frame = (type: string, chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type, chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a",
+        conversation: { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+          memberTurnId: member.id, botId: member.botId }, chunk,
+      } } as never);
+      frame("turn-output", "A1");
+      frame("turn-thought", "thinking");
+      frame("turn-output", "A2");
+      expect(store.liveSegmentOrder).toEqual([
+        { memberTurnId: member.id, index: 0, order: 1 },
+        { memberTurnId: member.id, index: 2, order: 2 },
+      ]);
+
+      const incoming = { ...member, attempt: 2, origin: "recovery" as const, state: "queued" as const };
+      delete incoming.promptRequestId;
+      delete incoming.startedAt;
+      await load(incoming);
+      expect(store.liveSegmentOrder).toEqual([]);
+
+      frame("turn-output", "B1");
+      expect(store.liveSegmentOrder).toEqual([{ memberTurnId: member.id, index: 0, order: 3 }]);
+    });
+
 
     it("a new attempt start cannot expose a completed trace from the retired execution", () => {
       const { store, run, member } = setup();
@@ -1377,6 +1402,44 @@ describe("useGroupsStore", () => {
     const liveB = store.liveTurnsByMember["turn_b"];
     expect(liveA?.parts).toEqual([{ type: "text", text: "alpha work" }]);
     expect(liveB?.parts).toEqual([{ type: "text", text: "beta work" }]);
+  });
+
+  it("stamps live text segments in cross-member arrival order, once per segment", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const run: ConversationRunDto = { id: "run_seg", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_seg", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
+    store.activeRun = run;
+    const members = ["turn_a", "turn_b"].map((id, index): MemberTurnSummaryDto => ({
+      id, runId: run.id, conversationId: "conversation_g", topicId: "topic_1",
+      botId: index === 0 ? "bot_a" : "bot_b", batch: 1, memberIndex: index, attempt: 1,
+      origin: "human-explicit", state: "running", promptRequestId: `prompt_${id}`, createdAt: "now",
+    }));
+    store.memberTurnsById = Object.fromEntries(members.map((member) => [member.id, member]));
+    const frame = (member: MemberTurnSummaryDto, event: Record<string, unknown>) => store.applyEvent({
+      kind: "control-event", instanceId: "inst_1",
+      event: { chatKey: "bot:conversation_g:topic_1", sessionAlias: "s_a", ...event,
+        conversation: { conversationId: "conversation_g", topicId: "topic_1", runId: run.id, memberTurnId: member.id, botId: member.botId, attempt: 1 } },
+    } as never);
+    frame(members[0]!, { type: "turn-output", chunk: "A1" });
+    frame(members[1]!, { type: "turn-output", chunk: "B1" });
+    frame(members[0]!, { type: "turn-output", chunk: " and more" });
+    frame(members[0]!, { type: "turn-thought", chunk: "thinking" });
+    frame(members[1]!, { type: "turn-thought", chunk: "thinking" });
+    frame(members[0]!, { type: "turn-output", chunk: "A2" });
+    frame(members[1]!, { type: "turn-output", chunk: "B2" });
+
+    expect(store.liveSegmentOrder).toEqual([
+      { memberTurnId: "turn_a", index: 0, order: 1 },
+      { memberTurnId: "turn_b", index: 0, order: 2 },
+      { memberTurnId: "turn_a", index: 2, order: 3 },
+      { memberTurnId: "turn_b", index: 2, order: 4 },
+    ]);
+    expect(store.liveTurnsByMember["turn_a"]!.parts).toEqual([
+      { type: "text", text: "A1 and more" }, { type: "reasoning", text: "thinking" }, { type: "text", text: "A2" },
+    ]);
   });
 
   describe("PR9 repeated Bot assignment trace joins", () => {

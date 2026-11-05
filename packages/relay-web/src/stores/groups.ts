@@ -565,6 +565,16 @@ export const useGroupsStore = defineStore("groups", () => {
   const liveCompletedMemberTurns = ref<{ runId: string; ids: Record<string, true> } | null>(null);
   const memberTurnsById = ref<Record<string, MemberTurnSummaryDto>>({});
   const liveTurnsByMember = ref<Record<string, GroupLiveTurn>>({});
+  /** Member parts arrays have no order relative to each other; the stamp is
+   *  assigned when a segment's first chunk arrives. */
+  const liveSegmentOrder = ref<{ memberTurnId: string; index: number; order: number }[]>([]);
+  let liveOrderCursor = 0;
+  /** A retried or retired member restarts its parts at index 0: drop its
+   *  stamps or the same segment renders twice under one key. */
+  function dropSegmentOrder(keys: readonly string[]): void {
+    if (!liveSegmentOrder.value.some((entry) => keys.includes(entry.memberTurnId))) return;
+    liveSegmentOrder.value = liveSegmentOrder.value.filter((entry) => !keys.includes(entry.memberTurnId));
+  }
   const planByRunId = ref<Record<string, PlanEntryDto[]>>({});
   const latestPlanRunId = ref<string | null>(null);
   const planEntries = computed<PlanEntryDto[]>(() => {
@@ -675,6 +685,7 @@ export const useGroupsStore = defineStore("groups", () => {
         delete runPartsTruncated.value[key];
         delete runPartsAttempt[key];
       }
+      dropSegmentOrder(keys);
     }
     memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, incoming);
   }
@@ -1692,6 +1703,9 @@ export const useGroupsStore = defineStore("groups", () => {
       if (liveKeys.has(key) || owned.has(key)) stillTruncated[key] = true;
     }
     runPartsTruncated.value = stillTruncated;
+    if (liveSegmentOrder.value.some((entry) => !liveKeys.has(entry.memberTurnId))) {
+      liveSegmentOrder.value = liveSegmentOrder.value.filter((entry) => liveKeys.has(entry.memberTurnId));
+    }
   }
 
   function mergeHistoryPage(
@@ -3561,9 +3575,11 @@ export const useGroupsStore = defineStore("groups", () => {
         const next = { ...liveTurnsByMember.value };
         delete next[memberTurn.id];
         liveTurnsByMember.value = next;
+        dropSegmentOrder([memberTurn.id]);
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurnsByMember.value = {};
           resolveCancelUncertainty(run.id);
+          liveSegmentOrder.value = [];
           if (
             retiringActiveRun &&
             instanceId.value && activeConversationId.value && activeTopicId.value
@@ -3626,7 +3642,16 @@ export const useGroupsStore = defineStore("groups", () => {
           };
         }
       } else if (e.type === "turn-output") {
+        // Only the first chunk of a segment gets an arrival stamp; later chunks
+        // coalesce into the same bubble and must keep its position.
+        const startsSegment = e.chunk.length > 0 && parts[parts.length - 1]?.type !== "text";
         appendText(parts, e.chunk);
+        if (startsSegment) {
+          liveSegmentOrder.value = [
+            ...liveSegmentOrder.value,
+            { memberTurnId: key, index: parts.length - 1, order: ++liveOrderCursor },
+          ];
+        }
         setStatus("streaming");
         bumpStream();
       } else if (e.type === "turn-thought") {
@@ -3702,6 +3727,7 @@ export const useGroupsStore = defineStore("groups", () => {
     liveTurns,
     liveTurnsByMember,
     liveTurnForMember,
+    liveSegmentOrder,
     completeRunPartsForMember,
     planEntries,
     planByRunId,

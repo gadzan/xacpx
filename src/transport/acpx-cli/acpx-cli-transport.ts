@@ -1147,9 +1147,27 @@ export class AcpxCliTransport implements SessionTransport {
     if (!session.mcpCoordinatorSession) {
       return;
     }
-    const record = await this.readSessionRecord(session);
+    const record = await this.readOwnedSessionRecord(session);
     const prepared = await this.queueOwnerLauncher.launch(this.queueOwnerLaunchInput(session, record.acpxRecordId));
     if (prepared?.agentCommand) session.agentCommand = prepared.agentCommand;
+  }
+
+  // A bot-owned Conversation session (Direct or Group member) is created as a
+  // logical row only; nothing ensures its acpx record, so the first turn
+  // arrives with no named session and every lookup here and in `prompt` fails.
+  // Missing is not "the caller's intent is broken": create the record, then read
+  // it back. Any other read failure still fails closed.
+  private async readOwnedSessionRecord(session: ResolvedSession): Promise<{ acpxRecordId: string; agentSessionId?: string; acpSessionId?: string }> {
+    try {
+      return await this.readSessionRecord(session);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isMissingAcpxSessionError("", message)) {
+        throw error;
+      }
+    }
+    await this.ensureSession(session);
+    return await this.readSessionRecord(session);
   }
 
   private async readSessionRecord(session: ResolvedSession, timeoutMs = this.managementCommandTimeoutMs): Promise<{ acpxRecordId: string; agentSessionId?: string; acpSessionId?: string }> {

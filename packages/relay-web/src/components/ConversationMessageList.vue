@@ -32,7 +32,7 @@ import { isMachineFailureReason } from "../lib/failure-reason";
 import RunStatusChip from "./RunStatusChip.vue";
 import ThinkingDotsTrigger from "./ThinkingDotsTrigger.vue";
 import TraceLink from "./TraceLink.vue";
-import { textSegmentsOf } from "../lib/turn-presentation";
+import { splitTextBubbles, textBubblesOf } from "../lib/turn-presentation";
 const props = defineProps<{
   messages: ConversationMessageDto[];
   liveTurn: DirectBotLiveTurn | null;
@@ -76,10 +76,17 @@ const emit = defineEmits<{
   dismissInteraction: [];
 }>();
 
-/** Text bubbles for the running turn, straight from live parts. */
-const liveTexts = computed(() => props.liveTurn
-  ? textSegmentsOf(props.liveTurn.parts).filter((text) => text.length > 0)
-  : []);
+const liveTexts = computed(() => props.liveTurn ? textBubblesOf(props.liveTurn.parts) : []);
+
+function settledBubblesOf(message: ConversationMessageDto) {
+  const segments = splitTextBubbles(message.content ?? "");
+  const bubbles = segments.length ? segments : [""];
+  return bubbles.map((segment, index) => ({
+    segment,
+    last: index === bubbles.length - 1,
+    message,
+  }));
+}
 
 const instancesStore = useInstancesStore();
 
@@ -270,19 +277,25 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <template #avatar>
             <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32" static :retired="bot?.retired" />
           </template>
-          <div class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg">
-            <ConversationBubble
-              :message="m"
-              :attachments="m.attachments"
-              :parts="partsForMessage(m)"
-            />
-            <TraceLink
-              v-if="partsForMessage(m)?.length && m.runId"
-              data-test="direct-view-process"
-              :label="$t('bot.run.viewProcess')"
-              :text="$t('bot.run.viewProcess')"
-              @toggle="emit('openTraceForRun', m.runId)"
-            />
+          <div class="flex flex-col items-start min-w-0 w-full space-y-2">
+            <div
+              v-for="(row, index) in settledBubblesOf(m)"
+              :key="`${m.id}:settled:${index}`"
+              class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
+              data-test="direct-finished-text-bubble"
+            >
+              <ConversationBubble
+                :message="{ ...row.message, content: row.segment }"
+                :attachments="row.last ? row.message.attachments : undefined"
+              />
+              <TraceLink
+                v-if="row.last && partsForMessage(m)?.length && m.runId"
+                data-test="direct-view-process"
+                :label="$t('bot.run.viewProcess')"
+                :text="$t('bot.run.viewProcess')"
+                @toggle="emit('openTraceForRun', m.runId)"
+              />
+            </div>
           </div>
           <ConversationMeta :message="m" :parts="partsForMessage(m)" />
         </TranscriptRow>
@@ -339,7 +352,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             <div
               v-for="(text, index) in liveTexts"
               :key="`live-text:${index}`"
-              class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
+              class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
               data-test="direct-live-text-bubble"
             >
               <StreamMarkdown :text="text" :streaming="index === liveTexts.length - 1 && liveTurn?.status === 'streaming'" />

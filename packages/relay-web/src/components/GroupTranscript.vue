@@ -45,6 +45,12 @@ import {
   type GroupTranscriptItem,
   type TraceReplayStatus,
 } from "../lib/group-run-presentation";
+import { buildSettledStreams, interleaveGroupLiveStream, type GroupLiveStreamRow } from "../lib/group-live-stream";
+import { splitTextBubbles } from "../lib/turn-presentation";
+
+function isLiveMemberState(state: MemberTurnSummaryDto["state"] | undefined): boolean {
+  return state === "queued" || state === "dispatched" || state === "running";
+}
 
 const props = defineProps<{
   bots: BotSummaryDto[];
@@ -139,6 +145,83 @@ const items = computed<GroupTranscriptItem[]>(() =>
     runs: runRecords.value,
   }),
 );
+
+/** Grouped per Run: a stale Run whose member still claims to run must never
+ *  contribute bubbles to the live Run's block. */
+const liveStreamByRun = computed<Map<string, GroupLiveStreamRow[]>>(() => {
+  const membersByRun = new Map<string, MemberTurnSummaryDto[]>();
+  for (const item of items.value) {
+    if (item.kind !== "member-activity" || !isLiveMemberState(item.memberTurn.state)) continue;
+    const members = membersByRun.get(item.memberTurn.runId);
+    if (members) members.push(item.memberTurn);
+    else membersByRun.set(item.memberTurn.runId, [item.memberTurn]);
+  }
+  const streams = new Map<string, GroupLiveStreamRow[]>();
+  for (const [runId, members] of membersByRun) {
+    streams.set(runId, interleaveGroupLiveStream({
+      members,
+      liveParts: (memberTurnId) => groupsStore.liveTurnForMember(memberTurnId)?.parts,
+      segmentOrder: groupsStore.liveSegmentOrder,
+      isRunning: (turn) => isLiveMemberState(turn.state),
+    }));
+  }
+  return streams;
+});
+const liveStreamMemberIds = computed(() => new Set(
+  [...liveStreamByRun.value.values()].flat().map((row) => row.memberTurn.id),
+));
+/** The stream is emitted once, from the LAST live item: live text is the newest
+ *  thing in the Run's block, so it belongs at the block's tail. */
+const liveStreamAnchorKeys = computed<Map<string, string>>(() => {
+  const anchors = new Map<string, string>();
+  for (const item of items.value) {
+    if (item.kind !== "member-activity" || !liveStreamMemberIds.value.has(item.memberTurn.id)) continue;
+    anchors.set(item.memberTurn.runId, item.key);
+  }
+  return anchors;
+});
+
+/** Built from durable messages only, so a reload keeps the interleaved order.
+ *  The last segment of a member keeps that member's trace entry, time and copy. */
+const settledStreams = computed(() => buildSettledStreams(
+  items.value.flatMap((item) => {
+    if (item.kind !== "message" || !item.bubbleAnchor || !item.memberTurn) return [];
+    const segments = splitTextBubbles(item.message.content ?? "");
+    return [{
+      key: item.key,
+      runId: item.memberTurn.runId,
+      memberTurnId: item.memberTurn.id,
+      segments: segments.length ? segments : [""],
+    }];
+  }),
+));
+const settledStreamItemKeys = computed(() => new Set(
+  [...settledStreams.value.values()].flatMap((stream) => stream.memberKeys),
+));
+const settledRowsByAnchor = computed(() => {
+  const byKey = new Map(items.value.map((item) => [item.key, item]));
+  const out = new Map<string, {
+    key: string; message: ConversationMessageDto; memberTurn: MemberTurnSummaryDto;
+    text: string; last: boolean; rowId: string; anchorId: string;
+  }[]>();
+  for (const stream of settledStreams.value.values()) {
+    const rows = stream.rows.flatMap((row) => {
+      const item = byKey.get(row.sourceKey);
+      if (!item || item.kind !== "message" || !item.memberTurn) return [];
+      return [{
+        key: row.key,
+        message: item.message,
+        memberTurn: item.memberTurn,
+        text: row.text,
+        last: row.last,
+        rowId: row.last ? item.message.id : `${item.message.id}:seg:${row.index}`,
+        anchorId: row.last ? item.memberTurn.id : `${item.memberTurn.id}:seg:${row.index}`,
+      }];
+    });
+    out.set(stream.anchorKey, rows);
+  }
+  return out;
+});
 
 /** The core can cancel ONE member turn of a Run: the per-row ■ and the
  *  leader pill scope their stop to that member. An older core has no scoped
@@ -713,6 +796,22 @@ const pendingAnchor = ref<ScrollAnchor | null>(null);
 let readingAnchor: ScrollAnchor | null = null;
 const content = ref<HTMLElement | null>(null);
 let contentObserver: ResizeObserver | null = null;
+/** Row replacement detaches the drawer's anchor and its IntersectionObserver
+ *  would close the open process. Re-resolve the anchor onto the member's
+ *  current entry after the stream rebuilds. */
+function reanchorOpenDetail(): void {
+  const anchor = detailTriggerEl.value;
+  const key = openDetailKey.value;
+  if (!anchor || anchor.isConnected || !key?.startsWith("bubble:")) return;
+  const memberTurnId = key.slice("bubble:".length);
+  const rows = content.value?.querySelectorAll<HTMLElement>('[data-test="agent-turn-row"]') ?? [];
+  for (const row of rows) {
+    if (row.dataset["memberTurnId"] !== memberTurnId) continue;
+    const next = row.querySelector<HTMLElement>('[data-test="agent-thinking-bubble"], [data-test="trace-link"]');
+    if (next) { detailTriggerEl.value = next; return; }
+  }
+}
+watch([items, liveStreamByRun], reanchorOpenDetail, { flush: "post" });
 /** Last read position in the detail's trace, per member and attempt; in-memory
  *  so reopening the same process resumes where the reader left off, while a
  *  fresh browser session still starts at the top. */
@@ -1018,10 +1117,31 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           </TranscriptRow>
         </template>
 
-        <!-- Canonical bubble-anchored reply: bubble above the reply body.
-             A leader's own reply can own the aggregate row: it renders below. -->
+        <!-- A multi-member Run emits its interleaved stream once, from the
+             first reply item. The other reply items render no bubble here. -->
         <template v-else-if="item.kind === 'message' && item.bubbleAnchor && item.memberTurn">
+          <template v-if="settledStreamItemKeys.has(item.key)">
+            <GroupAgentTurnRow
+              v-for="row in (settledRowsByAnchor.get(item.key) ?? [])"
+              :key="row.key"
+              :member-turn="row.memberTurn"
+              :bot="row.memberTurn.botId ? botById[row.memberTurn.botId] : undefined"
+              :driver="row.memberTurn.botId ? driverForBot(row.memberTurn.botId) : undefined"
+              :message="row.message"
+              :segment="{ text: row.text, last: row.last }"
+              :row-id="row.rowId"
+              :anchor-id="row.anchorId"
+              :name="senderName(row.memberTurn.botId)"
+              :expanded="openDetailKey === bubbleKeyOf(row.memberTurn.id)"
+              :controls="openDetailKey === bubbleKeyOf(row.memberTurn.id) ? detailId : undefined"
+              :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === row.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[row.memberTurn.id] === true"
+              :disabled="row.memberTurn.botId ? botById[row.memberTurn.botId] ? !botById[row.memberTurn.botId]!.enabled : false : false"
+              :stopped="stoppedLeaderTurnIds.has(row.memberTurn.id)"
+              @toggle="handleToggle(bubbleKeyOf(row.memberTurn.id), $event)"
+            />
+          </template>
           <GroupAgentTurnRow
+          v-else
           :key="item.key"
           :member-turn="item.memberTurn"
           :bot="item.memberTurn.botId ? botById[item.memberTurn.botId] : undefined"
@@ -1056,7 +1176,33 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           :data-member-turn-id="item.memberTurn.id"
         >
           <p v-if="item.explanation" class="mb-1 text-xs text-warning" data-test="group-unresolved-activity">{{ explanationText(item.explanation) }}</p>
+          <!-- One row per live segment, in arrival order. This Run's stream is
+               emitted once, from its LAST live item. -->
+          <template v-if="liveStreamMemberIds.has(item.memberTurn.id)">
+            <GroupAgentTurnRow
+              v-for="row in (liveStreamAnchorKeys.get(item.memberTurn.runId) === item.key ? liveStreamByRun.get(item.memberTurn.runId) ?? [] : [])"
+              :row-id="row.latest ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
+              :anchor-id="row.placeholder ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
+              :key="row.key"
+              :member-turn="row.memberTurn"
+              :bot="botById[row.memberTurn.botId]"
+              :driver="driverForBot(row.memberTurn.botId)"
+              :name="senderName(row.memberTurn.botId)"
+              :expanded="openDetailKey === bubbleKeyOf(row.memberTurn.id)"
+              :controls="openDetailKey === bubbleKeyOf(row.memberTurn.id) ? detailId : undefined"
+              :observed-completion="groupsStore.liveCompletedMemberTurns?.runId === row.memberTurn.runId && groupsStore.liveCompletedMemberTurns.ids[row.memberTurn.id] === true"
+              :disabled="botById[row.memberTurn.botId] ? !botById[row.memberTurn.botId]!.enabled : false"
+              :stopped="stoppedLeaderTurnIds.has(row.memberTurn.id)"
+              :single-member="item.run.memberTurns.length <= 1"
+              :run-state="item.run.run.state"
+              :live-parts="row.placeholder ? [] : [{ type: 'text', text: row.text }]"
+              :live-dots="row.latest && row.running"
+              :live-streaming="row.latest && row.running"
+              @toggle="handleToggle(bubbleKeyOf(row.memberTurn.id), $event)"
+            />
+          </template>
           <GroupAgentTurnRow
+            v-else
             :member-turn="item.memberTurn"
             :bot="botById[item.memberTurn.botId]"
             :driver="driverForBot(item.memberTurn.botId)"
