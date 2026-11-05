@@ -6,6 +6,8 @@ export interface GroupLiveStreamRow {
   memberTurn: MemberTurnSummaryDto;
   /** Segment text; empty on a placeholder (dots-only) row. */
   text: string;
+  /** Part index of this segment inside the member's live parts. */
+  index: number;
   /** True on the member's last segment while it runs: its dots sit under it. */
   latest: boolean;
   /** True on a row that only carries the dots (member has produced no text). */
@@ -57,6 +59,7 @@ export function interleaveGroupLiveStream(input: GroupLiveStreamInput): GroupLiv
     rows.push({
       key: `${entry.memberTurn.id}:${entry.index}`,
       memberTurn: entry.memberTurn,
+      index: entry.index,
       text,
       latest: latestIndexByMember[entry.memberTurn.id] === entry.index,
       placeholder: false,
@@ -69,6 +72,7 @@ export function interleaveGroupLiveStream(input: GroupLiveStreamInput): GroupLiv
     rows.push({
       key: `${turn.id}:placeholder`,
       memberTurn: turn,
+      index: -1,
       text: "",
       latest: true,
       placeholder: true,

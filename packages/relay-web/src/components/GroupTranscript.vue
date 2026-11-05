@@ -803,10 +803,13 @@ function reanchorOpenDetail(): void {
   const anchor = detailTriggerEl.value;
   const key = openDetailKey.value;
   if (!anchor || anchor.isConnected || !key?.startsWith("bubble:")) return;
-  const row = content.value?.querySelector<HTMLElement>(
-    `[data-member-turn-id="${CSS.escape(key.slice("bubble:".length))}"]`);
-  const next = row?.querySelector<HTMLElement>('[data-test="agent-thinking-bubble"], [data-test="trace-link"]');
-  if (next) detailTriggerEl.value = next;
+  const memberTurnId = key.slice("bubble:".length);
+  const rows = content.value?.querySelectorAll<HTMLElement>('[data-test="agent-turn-row"]') ?? [];
+  for (const row of rows) {
+    if (row.dataset["memberTurnId"] !== memberTurnId) continue;
+    const next = row.querySelector<HTMLElement>('[data-test="agent-thinking-bubble"], [data-test="trace-link"]');
+    if (next) { detailTriggerEl.value = next; return; }
+  }
 }
 watch([items, liveStreamByRun], reanchorOpenDetail, { flush: "post" });
 /** Last read position in the detail's trace, per member and attempt; in-memory
@@ -1178,6 +1181,8 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           <template v-if="liveStreamMemberIds.has(item.memberTurn.id)">
             <GroupAgentTurnRow
               v-for="row in (liveStreamAnchorKeys.get(item.memberTurn.runId) === item.key ? liveStreamByRun.get(item.memberTurn.runId) ?? [] : [])"
+              :row-id="row.latest ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
+              :anchor-id="row.latest ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
               :key="row.key"
               :member-turn="row.memberTurn"
               :bot="botById[row.memberTurn.botId]"

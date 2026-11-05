@@ -1248,6 +1248,91 @@ describe("Group Components", () => {
       expect(dots.every((bubble) => bubble.classes().includes("dots-trigger"))).toBe(true);
     });
 
+    it("gives each live segment row its own scroll anchor", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "A1" },
+            { type: "tool", step: { toolCallId: "t", toolName: "read", kind: "read", title: "read", status: "running" } },
+            { type: "text", text: "A2" },
+          ],
+          status: "streaming", startedAt: 1, revision: 1,
+        },
+      };
+      groups.liveSegmentOrder = [
+        { memberTurnId: "turn_a", index: 0, order: 1 },
+        { memberTurnId: "turn_a", index: 2, order: 2 },
+      ];
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const rows = wrapper.findAll('[data-test="agent-turn-row"]');
+      expect(rows.map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a:seg:0", "turn_a"]);
+    });
+
+    it("moves an open process drawer to the member's new last segment", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      groups.liveTurnsByMember = {
+        turn_a: { parts: [{ type: "text", text: "A1" }], status: "streaming", startedAt: 1, revision: 1 },
+      };
+      groups.liveSegmentOrder = [{ memberTurnId: "turn_a", index: 0, order: 1 }];
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.findComponent({ name: "TraceOverlay" }).exists()).toBe(true);
+
+      groups.liveTurnsByMember = {
+        turn_a: { parts: [{ type: "text", text: "A1" }, { type: "text", text: "A2" }], status: "streaming", startedAt: 1, revision: 2 },
+      };
+      groups.liveSegmentOrder = [
+        { memberTurnId: "turn_a", index: 0, order: 1 },
+        { memberTurnId: "turn_a", index: 1, order: 2 },
+      ];
+      await flushPromises();
+      const anchor = wrapper.findComponent({ name: "TraceOverlay" }).props("anchorEl") as HTMLElement | null;
+      expect(anchor?.isConnected).toBe(true);
+      expect(anchor?.closest('[data-test="agent-turn-row"]')?.textContent).toContain("A2");
+      wrapper.unmount();
+    });
+
     it("keeps each text segment in its own bubble after the turn settles", async () => {
       const groups = seedGroupSelection();
       groups.messages = [

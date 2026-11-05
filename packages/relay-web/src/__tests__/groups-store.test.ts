@@ -755,6 +755,31 @@ describe("useGroupsStore", () => {
       expect(store.runParts[member.id]).toBeUndefined();
       expect(store.completeRunParts[member.id]).toBeUndefined();
     });
+    it("retires live segment stamps when a higher attempt starts", async () => {
+      const { store, run, member, load } = setup();
+      const frame = (type: string, chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type, chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a",
+        conversation: { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+          memberTurnId: member.id, botId: member.botId }, chunk,
+      } } as never);
+      frame("turn-output", "A1");
+      frame("turn-thought", "thinking");
+      frame("turn-output", "A2");
+      expect(store.liveSegmentOrder).toEqual([
+        { memberTurnId: member.id, index: 0, order: 1 },
+        { memberTurnId: member.id, index: 2, order: 2 },
+      ]);
+
+      const incoming = { ...member, attempt: 2, origin: "recovery" as const, state: "queued" as const };
+      delete incoming.promptRequestId;
+      delete incoming.startedAt;
+      await load(incoming);
+      expect(store.liveSegmentOrder).toEqual([]);
+
+      frame("turn-output", "B1");
+      expect(store.liveSegmentOrder).toEqual([{ memberTurnId: member.id, index: 0, order: 3 }]);
+    });
+
 
     it("a new attempt start cannot expose a completed trace from the retired execution", () => {
       const { store, run, member } = setup();
