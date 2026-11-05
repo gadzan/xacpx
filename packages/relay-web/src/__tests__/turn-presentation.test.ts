@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { deriveTurnPresentation, extractCollapsedTraceSummary, type TurnPresentationOptions } from "../lib/turn-presentation";
+import { deriveTurnPresentation, extractCollapsedTraceSummary, splitTextBubbles, textBubblesOf, type TurnPresentationOptions } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
 
 const tool = (id: string): ToolStepDto => ({
@@ -491,5 +491,30 @@ describe("deriveTurnPresentation", () => {
       { type: "agent-message", id: "m1", anchor: "send-1" },
       { type: "tool", id: "send-2" },
     ]);
+  });
+});
+
+describe("per-segment bubbles", () => {
+  it("splits a durable reply back into the segments the transport joined", () => {
+    expect(splitTextBubbles("Alpha ①：气泡只装文本，一段一个泡。\n\nAlpha ②：dots 挂在我最新那段下面。"))
+      .toEqual(["Alpha ①：气泡只装文本，一段一个泡。", "Alpha ②：dots 挂在我最新那段下面。"]);
+  });
+
+  it("keeps blank lines inside fenced code as content, not boundaries", () => {
+    const text = "before\n\n```js\nconst a = 1;\n\nconsole.log(a);\n```\n\nafter";
+    expect(splitTextBubbles(text)).toEqual([
+      "before",
+      "```js\nconst a = 1;\n\nconsole.log(a);\n```",
+      "after",
+    ]);
+  });
+
+  it("splits live parts by blank line too, so live and settled bubbles agree", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "one" },
+      { type: "tool", step: tool("t1") },
+      { type: "text", text: "\n\ntwo\n\nthree" },
+    ];
+    expect(textBubblesOf(parts)).toEqual(["one", "two", "three"]);
   });
 });

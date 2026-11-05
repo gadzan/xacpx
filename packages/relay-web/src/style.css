@@ -282,6 +282,8 @@ select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
    ConversationBubble.vue; this class is the shared look for agent text in
    Direct Bot live rows, Direct Bot finished rows and Group member rows. */
 .agent-bubble {
+  width: fit-content;
+  max-width: 100%;
   background: rgb(var(--c-raised));
   border: 1px solid var(--hairline);
   border-radius: 4px 15px 15px 15px;

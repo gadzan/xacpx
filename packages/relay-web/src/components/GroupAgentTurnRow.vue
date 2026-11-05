@@ -14,7 +14,7 @@ import TranscriptRow from "./TranscriptRow.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import AgentThinkingBubble, { type BubbleStatus } from "./AgentThinkingBubble.vue";
 import { botAvatarState } from "../lib/bot-avatar-state";
-import { textSegmentsOf } from "../lib/turn-presentation";
+import { splitTextBubbles, textBubblesOf } from "../lib/turn-presentation";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ThinkingDotsTrigger from "./ThinkingDotsTrigger.vue";
 import TraceLink from "./TraceLink.vue";
@@ -26,7 +26,7 @@ import TraceLink from "./TraceLink.vue";
  * under the entry. Hidden reasoning and tool text never leak into the copied
  * canonical reply.
  */
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   /** Durable MemberTurn owning this row. */
   memberTurn: MemberTurnSummaryDto;
   bot?: BotSummaryDto;
@@ -51,11 +51,32 @@ const props = defineProps<{
    *  bubble per text segment plus the thinking-dots entry, never the detail
    *  popover content. Absent for finished/posted rows. */
   liveParts?: TurnPartDto[];
-}>();
+  segment?: { text: string; last: boolean };
+  rowId?: string;
+  anchorId?: string;
+  /** False on an interleaved segment row that is NOT the member's latest: the
+   *  dots live under that member's newest bubble only. Defaults to true so a
+   *  member rendered on its own keeps its entry. */
+  liveDots?: boolean;
+  /** False on a segment whose member has already moved on: no streaming caret. */
+  liveStreaming?: boolean;
+}>(), {
+  liveDots: true,
+  liveStreaming: true,
+});
 
 const { t } = useI18n();
 
-const liveTexts = computed(() => props.liveParts ? textSegmentsOf(props.liveParts).filter((text) => text.length > 0) : []);
+const liveTexts = computed(() => props.liveParts ? textBubblesOf(props.liveParts) : []);
+const finishedBubbles = computed(() => {
+  const message = props.message;
+  if (!message) return [];
+  if (props.segment) return [{ segment: props.segment.text, message, last: props.segment.last }];
+  const segments = splitTextBubbles(message.content ?? "");
+  const bubbles = segments.length ? segments : [""];
+  return bubbles.map((segment, index) => ({ segment, message, last: index === bubbles.length - 1 }));
+});
+const showMeta = computed(() => !props.segment || props.segment.last);
 const bubbleStatus = computed<BubbleStatus>(() => {
   if (props.singleMember && props.runState === "waiting-human") return "waiting";
   const state = props.memberTurn.state;
@@ -134,12 +155,12 @@ defineExpose({ bubbleStatus });
 
 <template>
   <TranscriptRow
-    :row-id="message?.id ?? memberTurn.id"
+    :row-id="rowId ?? message?.id ?? memberTurn.id"
     data-test="agent-turn-row"
     :data-member-turn-id="memberTurn.id"
     :data-run-id="memberTurn.runId"
     :data-message-id="message?.id"
-    :data-anchor-id="memberTurn.id"
+    :data-anchor-id="anchorId ?? memberTurn.id"
     :driver="driver"
     :speaker="name"
     :speaker-role="bot?.role"
@@ -170,9 +191,10 @@ defineExpose({ bubbleStatus });
         class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
         data-test="group-member-text-bubble"
       >
-        <StreamMarkdown :text="text" :streaming="index === liveTexts.length - 1" />
+        <StreamMarkdown :text="text" :streaming="index === liveTexts.length - 1 && liveStreaming !== false" />
       </div>
       <ThinkingDotsTrigger
+        v-if="liveDots !== false"
         :label="bubbleLabel"
         :still="singleMember && runState === 'waiting-human'"
         :expanded="expanded"
@@ -181,23 +203,31 @@ defineExpose({ bubbleStatus });
       />
     </template>
     <template v-else>
-      <!-- Finished member: the conclusion reads as text; the process entry is
-           a quiet footer inside that same bubble, never a pill above it. -->
-      <div v-if="message" class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg">
-        <ConversationBubble
-          :message="message"
-          :attachments="message.attachments"
-        />
-        <TraceLink
-          :label="bubbleLabel"
-          :text="traceText"
-          :state-word="stopped || bubbleStatus !== 'done' ? statusWord : undefined"
-          :expanded="expanded"
-          :controls="controls"
-          :tone="traceTone"
-          @toggle="emit('toggle', $event)"
-        />
-      </div>
+      <!-- Each segment keeps its own bubble; the process entry belongs to the
+           LAST one. -->
+      <template v-if="finishedBubbles.length">
+        <div
+          v-for="(row, index) in finishedBubbles"
+          :key="`${memberTurn.id}:settled:${index}`"
+          class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
+          data-test="group-finished-text-bubble"
+        >
+          <ConversationBubble
+            :message="{ ...row.message, content: row.segment }"
+            :attachments="row.last ? row.message.attachments : undefined"
+          />
+          <TraceLink
+            v-if="row.last"
+            :label="bubbleLabel"
+            :text="traceText"
+            :state-word="stopped || bubbleStatus !== 'done' ? statusWord : undefined"
+            :expanded="expanded"
+            :controls="controls"
+            :tone="traceTone"
+            @toggle="emit('toggle', $event)"
+          />
+        </div>
+      </template>
       <AgentThinkingBubble
         v-else
         :status="bubbleStatus"
@@ -208,7 +238,7 @@ defineExpose({ bubbleStatus });
         :stopped="stopped === true"
         @toggle="emit('toggle', $event)"
       />
-      <ConversationMeta v-if="message" :message="message" />
+      <ConversationMeta v-if="message && showMeta" :message="message" />
     </template>
   </TranscriptRow>
 </template>
