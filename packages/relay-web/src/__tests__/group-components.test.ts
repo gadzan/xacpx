@@ -1285,7 +1285,28 @@ describe("Group Components", () => {
       });
       await flushPromises();
       const rows = wrapper.findAll('[data-test="agent-turn-row"]');
-      expect(rows.map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a:seg:0", "turn_a"]);
+      expect(rows.map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a:seg:0", "turn_a:seg:2"]);
+      const before = rows.map((row) => row.attributes("data-anchor-id"));
+
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "A1" },
+            { type: "tool", step: { toolCallId: "t", toolName: "read", kind: "read", title: "read", status: "running" } },
+            { type: "text", text: "A2" },
+            { type: "text", text: "A3" },
+          ],
+          status: "streaming", startedAt: 1, revision: 2,
+        },
+      };
+      groups.liveSegmentOrder = [
+        { memberTurnId: "turn_a", index: 0, order: 1 },
+        { memberTurnId: "turn_a", index: 2, order: 2 },
+        { memberTurnId: "turn_a", index: 3, order: 3 },
+      ];
+      await flushPromises();
+      const after = wrapper.findAll('[data-test="agent-turn-row"]').map((row) => row.attributes("data-anchor-id"));
+      expect(after).toEqual([...before, "turn_a:seg:3"]);
     });
 
     it("moves an open process drawer to the member's new last segment", async () => {
