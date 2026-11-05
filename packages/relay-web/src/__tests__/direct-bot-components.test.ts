@@ -2257,6 +2257,10 @@ describe("Direct Bot Components", () => {
       expect(dots.exists()).toBe(true);
       expect(dots.element.tagName).toBe("BUTTON");
       expect(wrapper.findAll('[data-test="direct-live-text-bubble"]')).toHaveLength(1);
+      // The agent text bubble carries the accepted demo's visual: raised
+      // surface, hairline edge, sharp corner at the top-left. jsdom does not
+      // compute class-based CSS, so assert on the class contract instead.
+      expect(wrapper.find('[data-test="direct-live-text-bubble"]').classes()).toContain("agent-bubble");
     });
 
     it("shows the thinking bubble until the run produces output", () => {

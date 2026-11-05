@@ -274,6 +274,24 @@ select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
   animation: blink 1s step-end infinite;
 }
 
+/* Agent text bubble — the accepted demo's agent-side visual (frozen in
+   docs/superpowers/specs/2026-11-03-agent-bubble-text-dots-trace-redesign.md):
+   white raised surface, hairline edge, light shadow, corner radius with the
+   sharp corner at the TOP LEFT pointing at the speaker's avatar. The human
+   "own" bubble (accent fill, sharp corner bottom-right) stays where it is in
+   ConversationBubble.vue; this class is the shared look for agent text in
+   Direct Bot live rows, Direct Bot finished rows and Group member rows. */
+.agent-bubble {
+  background: rgb(var(--c-raised));
+  border: 1px solid var(--hairline);
+  border-radius: 4px 15px 15px 15px;
+  padding: 10px 13px;
+  box-shadow: 0 2px 7px rgb(0 0 0 / 0.03);
+}
+.dark .agent-bubble {
+  box-shadow: 0 2px 7px rgb(0 0 0 / 0.22);
+}
+
 /* Thin themed scrollbars. */
 .thin-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
 .thin-scroll::-webkit-scrollbar-thumb { background: rgb(var(--c-fg-muted) / 0.28); border-radius: 8px; }

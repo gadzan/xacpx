@@ -167,7 +167,7 @@ defineExpose({ bubbleStatus });
       <div
         v-for="(text, index) in liveTexts"
         :key="`${memberTurn.id}:text:${index}`"
-        class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
+        class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
         data-test="group-member-text-bubble"
       >
         <StreamMarkdown :text="text" :streaming="index === liveTexts.length - 1" />
@@ -183,7 +183,7 @@ defineExpose({ bubbleStatus });
     <template v-else>
       <!-- Finished member: the conclusion reads as text; the process entry is
            a quiet footer inside that same bubble, never a pill above it. -->
-      <div v-if="message" class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg">
+      <div v-if="message" class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg">
         <ConversationBubble
           :message="message"
           :attachments="message.attachments"

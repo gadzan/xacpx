@@ -270,7 +270,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
           <template #avatar>
             <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="32" static :retired="bot?.retired" />
           </template>
-          <div class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg">
+          <div class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg">
             <ConversationBubble
               :message="m"
               :attachments="m.attachments"
@@ -339,7 +339,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             <div
               v-for="(text, index) in liveTexts"
               :key="`live-text:${index}`"
-              class="conversation-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
+              class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
               data-test="direct-live-text-bubble"
             >
               <StreamMarkdown :text="text" :streaming="index === liveTexts.length - 1 && liveTurn?.status === 'streaming'" />
