@@ -160,7 +160,6 @@ const liveStreamByRun = computed<Map<string, GroupLiveStreamRow[]>>(() => {
     streams.set(runId, interleaveGroupLiveStream({
       members,
       liveParts: (memberTurnId) => groupsStore.liveTurnForMember(memberTurnId)?.parts,
-      segmentOrder: groupsStore.liveSegmentOrder,
       isRunning: (turn) => isLiveMemberState(turn.state),
     }));
   }
@@ -1179,8 +1178,8 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           <template v-if="liveStreamMemberIds.has(item.memberTurn.id)">
             <GroupAgentTurnRow
               v-for="row in (liveStreamAnchorKeys.get(item.memberTurn.runId) === item.key ? liveStreamByRun.get(item.memberTurn.runId) ?? [] : [])"
-              :row-id="row.latest ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
-              :anchor-id="row.placeholder ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
+              :row-id="row.memberTurn.id"
+              :anchor-id="row.memberTurn.id"
               :key="row.key"
               :member-turn="row.memberTurn"
               :bot="botById[row.memberTurn.botId]"

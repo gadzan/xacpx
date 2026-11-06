@@ -755,7 +755,7 @@ describe("useGroupsStore", () => {
       expect(store.runParts[member.id]).toBeUndefined();
       expect(store.completeRunParts[member.id]).toBeUndefined();
     });
-    it("retires live segment stamps when a higher attempt starts", async () => {
+    it("retires the live text when a higher attempt starts", async () => {
       const { store, run, member, load } = setup();
       const frame = (type: string, chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
         type, chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a",
@@ -765,19 +765,20 @@ describe("useGroupsStore", () => {
       frame("turn-output", "A1");
       frame("turn-thought", "thinking");
       frame("turn-output", "A2");
-      expect(store.liveSegmentOrder).toEqual([
-        { memberTurnId: member.id, index: 0, order: 1 },
-        { memberTurnId: member.id, index: 2, order: 2 },
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([
+        { type: "text", text: "A1" },
+        { type: "reasoning", text: "thinking" },
+        { type: "text", text: "A2" },
       ]);
 
       const incoming = { ...member, attempt: 2, origin: "recovery" as const, state: "queued" as const };
       delete incoming.promptRequestId;
       delete incoming.startedAt;
       await load(incoming);
-      expect(store.liveSegmentOrder).toEqual([]);
+      expect(store.liveTurnForMember(member.id)).toBeNull();
 
       frame("turn-output", "B1");
-      expect(store.liveSegmentOrder).toEqual([{ memberTurnId: member.id, index: 0, order: 3 }]);
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([{ type: "text", text: "B1" }]);
     });
 
 
@@ -1404,7 +1405,7 @@ describe("useGroupsStore", () => {
     expect(liveB?.parts).toEqual([{ type: "text", text: "beta work" }]);
   });
 
-  it("stamps live text segments in cross-member arrival order, once per segment", () => {
+  it("coalesces each member's live text in place, without cross-member stamps", () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
     store.selectedGroupId = store.activeConversationId = "conversation_g";
@@ -1431,14 +1432,11 @@ describe("useGroupsStore", () => {
     frame(members[0]!, { type: "turn-output", chunk: "A2" });
     frame(members[1]!, { type: "turn-output", chunk: "B2" });
 
-    expect(store.liveSegmentOrder).toEqual([
-      { memberTurnId: "turn_a", index: 0, order: 1 },
-      { memberTurnId: "turn_b", index: 0, order: 2 },
-      { memberTurnId: "turn_a", index: 2, order: 3 },
-      { memberTurnId: "turn_b", index: 2, order: 4 },
-    ]);
     expect(store.liveTurnsByMember["turn_a"]!.parts).toEqual([
       { type: "text", text: "A1 and more" }, { type: "reasoning", text: "thinking" }, { type: "text", text: "A2" },
+    ]);
+    expect(store.liveTurnsByMember["turn_b"]!.parts).toEqual([
+      { type: "text", text: "B1" }, { type: "reasoning", text: "thinking" }, { type: "text", text: "B2" },
     ]);
   });
 

@@ -38,6 +38,7 @@ import type {
   FailExecutionInput,
   FollowupReservationRecord,
   ListMessagesQuery,
+  PublicMemoryEntry,
   RunBudgetDecisionRecord,
   RunWorkCapacity,
   MarkExecutionStartedInput,
@@ -119,6 +120,12 @@ export interface SqliteConversationStoreOptions {
    * keeps the pre-P0-B1 semantics byte for byte, including the wake task text.
    */
   followupRedispatch?: boolean;
+  /**
+   * Live Group membership for the public-memory projection. The store must
+   * not own AppState, so the composition supplies this read. Returning
+   * `undefined` means "not a public Group Topic": no memory rows are written.
+   */
+  publicMemoryMembers?: (conversationId: string, topicId: string) => readonly string[] | undefined;
 }
 
 /** Admission refusal carrying durable intent (a pause request or the legacy
@@ -328,6 +335,19 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL,
   UNIQUE (topic_id, seq)
 );
+
+-- Public Group messages projected per member for its private prompt. The
+-- message body is never copied; readers join messages by id.
+CREATE TABLE IF NOT EXISTS bot_public_memory (
+  bot_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  topic_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (bot_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bot_public_memory_bot_created
+  ON bot_public_memory (bot_id, created_at);
 
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
@@ -849,6 +869,7 @@ export class SqliteConversationStore implements ConversationStore {
   private readonly beforeDispatchMigrationCommit?: () => void;
   private readonly beforeLeaseRenewal?: () => void;
   private readonly followupRedispatch: boolean;
+  private readonly publicMemoryMembers?: (conversationId: string, topicId: string) => readonly string[] | undefined;
 
   private closed = false;
 
@@ -861,6 +882,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.beforeDispatchMigrationCommit = options?.beforeDispatchMigrationCommit;
     this.beforeLeaseRenewal = options?.beforeLeaseRenewal;
     this.followupRedispatch = options?.followupRedispatch === true;
+    this.publicMemoryMembers = options?.publicMemoryMembers;
     this.sqlite.exec(SCHEMA);
     this.worktrees = new ConversationWorktreeStore(this.sqlite);
     this.ensureDispatchAuthorityEpochColumn();
@@ -1567,6 +1589,51 @@ export class SqliteConversationStore implements ConversationStore {
     );
     const messages = rows.map(mapMessage);
     return orderDescending ? messages.reverse() : messages;
+  }
+
+  listPublicMemory(input: { botId: string; limit?: number }): PublicMemoryEntry[] {
+    const limit = Math.max(1, Math.min(input.limit ?? 20, 50));
+    const rows = this.sqlite.all<{
+      message_id: string;
+      conversation_id: string;
+      topic_id: string;
+      role: string;
+      sender_bot_id: string | null;
+      content: string;
+      created_at: string;
+    }>(
+      `SELECT memory.message_id, memory.conversation_id, memory.topic_id,
+              message.role, message.sender_bot_id, message.content, message.created_at
+       FROM bot_public_memory memory
+       JOIN messages message ON message.id = memory.message_id
+       WHERE memory.bot_id = ?
+       ORDER BY message.created_at DESC, message.rowid DESC
+       LIMIT ?`,
+      [input.botId, limit],
+    ).reverse();
+    return rows.flatMap((row) => {
+      if (row.role !== "human" && row.role !== "bot") return [];
+      return [{
+        messageId: row.message_id,
+        conversationId: row.conversation_id,
+        topicId: row.topic_id,
+        role: row.role,
+        ...(row.sender_bot_id ? { senderBotId: row.sender_bot_id } : {}),
+        content: row.content,
+        createdAt: row.created_at,
+      }];
+    });
+  }
+
+  deletePublicMemoryForGroupMember(conversationId: string, botId: string): void {
+    this.sqlite.run(
+      "DELETE FROM bot_public_memory WHERE conversation_id = ? AND bot_id = ?",
+      [conversationId, botId],
+    );
+  }
+
+  deletePublicMemoryForBot(botId: string): void {
+    this.sqlite.run("DELETE FROM bot_public_memory WHERE bot_id = ?", [botId]);
   }
 
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined {
@@ -2653,6 +2720,15 @@ export class SqliteConversationStore implements ConversationStore {
           input.now,
         ],
       );
+      this.indexPublicMemory({
+        messageId,
+        conversationId: run.conversationId,
+        topicId: run.topicId,
+        role: "bot",
+        senderBotId: member.botId,
+        content: input.content,
+        createdAt: input.now,
+      });
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
         [input.now, member.id],
@@ -2722,6 +2798,15 @@ export class SqliteConversationStore implements ConversationStore {
           input.now,
         ],
       );
+      this.indexPublicMemory({
+        messageId,
+        conversationId: run.conversationId,
+        topicId: run.topicId,
+        role: "bot",
+        senderBotId: member.botId,
+        content: input.content ?? "",
+        createdAt: input.now,
+      });
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
         [member.id],
@@ -2914,6 +2999,15 @@ export class SqliteConversationStore implements ConversationStore {
               input.now,
             ],
           );
+          this.indexPublicMemory({
+            messageId,
+            conversationId: run.conversationId,
+            topicId: run.topicId,
+            role: "bot",
+            senderBotId: member.botId,
+            content: entry.content ?? "",
+            createdAt: input.now,
+          });
           this.sqlite.run(
             `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
             [input.now, member.id],
@@ -3868,6 +3962,10 @@ export class SqliteConversationStore implements ConversationStore {
         [conversationId, topicId],
       );
       this.sqlite.run(
+        "DELETE FROM bot_public_memory WHERE conversation_id = ? AND topic_id = ?",
+        [conversationId, topicId],
+      );
+      this.sqlite.run(
         "DELETE FROM messages WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
@@ -3986,6 +4084,10 @@ export class SqliteConversationStore implements ConversationStore {
       [conversationId, topicId],
     );
     this.sqlite.run(
+      "DELETE FROM bot_public_memory WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
       "DELETE FROM messages WHERE conversation_id = ? AND topic_id = ?",
       [conversationId, topicId],
     );
@@ -4018,6 +4120,7 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run("DELETE FROM followup_reservations WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM run_budget_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM member_turns WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM bot_public_memory WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
@@ -4465,6 +4568,31 @@ export class SqliteConversationStore implements ConversationStore {
     }
   }
 
+  /** Materialize one public Group message for every current member. Callers
+   *  run inside the message's write transaction; the membership read is the
+   *  composition's live AppState view. */
+  private indexPublicMemory(input: {
+    messageId: string;
+    conversationId: string;
+    topicId: string;
+    role: "human" | "bot";
+    senderBotId?: string;
+    content: string;
+    createdAt: string;
+  }): void {
+    if (!input.content.trim()) return;
+    const members = this.publicMemoryMembers?.(input.conversationId, input.topicId);
+    if (!members?.length) return;
+    for (const botId of new Set(members)) {
+      this.sqlite.run(
+        `INSERT OR IGNORE INTO bot_public_memory
+           (bot_id, conversation_id, topic_id, message_id, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [botId, input.conversationId, input.topicId, input.messageId, input.createdAt],
+      );
+    }
+  }
+
   private insertAccepted(input: AcceptRequestInput): AcceptRequestResult {
     const seq = this.allocateSeq(input.conversationId, input.topicId);
     const messageId = this.ids.messageId();
@@ -4527,6 +4655,15 @@ export class SqliteConversationStore implements ConversationStore {
     if (metadata) this.sqlite.run(
       "UPDATE messages SET input_metadata_json = ?, role = ?, sender_bot_id = ? WHERE id = ?",
       [JSON.stringify(metadata), metadata.peer ? "bot" : "human", metadata.peer?.sourceBotId ?? null, messageId]);
+    this.indexPublicMemory({
+      messageId,
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      role: metadata?.peer ? "bot" : "human",
+      ...(metadata?.peer ? { senderBotId: metadata.peer.sourceBotId } : {}),
+      content: input.content,
+      createdAt: input.now,
+    });
     this.sqlite.run(
       `INSERT INTO runs (
          id, conversation_id, topic_id, request_message_id, request_id, mode, state, completion_reason,
@@ -5296,6 +5433,15 @@ export class SqliteConversationStore implements ConversationStore {
               input.now,
             ],
           );
+          this.indexPublicMemory({
+            messageId,
+            conversationId: run.conversationId,
+            topicId: run.topicId,
+            role: "bot",
+            senderBotId: member.botId,
+            content: input.content ?? "",
+            createdAt: input.now,
+          });
           this.sqlite.run(
             `UPDATE member_turns SET state = 'completed', failure_reason = NULL, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
             [input.now, member.id],

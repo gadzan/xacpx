@@ -9,6 +9,7 @@ export function composeBotTurnPrompt(
   profile: Pick<BotProfile, "name" | "instructions">,
   body: string | CollaborationPromptInput,
   group?: { title?: string; description?: string },
+  sharedGroupContext?: string,
 ): string {
   // A turn with no assignment carries its request verbatim as evidence, so the
   // whole-input command check still sees exactly what it saw before layers.
@@ -24,6 +25,7 @@ export function composeBotTurnPrompt(
     profile.instructions ? `Instructions:\n${profile.instructions}` : undefined,
     "This Bot profile does not change the underlying model, tools, or permission policy.",
     groupScopeLine(group),
+    sharedGroupContext,
   ].filter((line): line is string => Boolean(line));
 
   const content = typeof body === "string" ? body : buildCollaborationPrompt(body);
@@ -37,11 +39,12 @@ export function composeBotTurnPromptFromSnapshot(
   snapshot: BotProfileSnapshot,
   body: string | CollaborationPromptInput,
   group?: { title?: string; description?: string },
+  sharedGroupContext?: string,
 ): string {
   return composeBotTurnPrompt({
     name: snapshot.presentation.name,
     instructions: snapshot.behavior.instructions,
-  }, body, group);
+  }, body, group, sharedGroupContext);
 }
 
 /** Group scope header: the Group title/description is presentation, not

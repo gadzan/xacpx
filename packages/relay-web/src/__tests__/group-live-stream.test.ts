@@ -11,78 +11,54 @@ const tool = (): TurnPartDto => ({ type: "tool", step: { toolCallId: `t${Math.ra
 const text = (value: string): TurnPartDto => ({ type: "text", text: value });
 
 describe("interleaveGroupLiveStream", () => {
-  it("orders parallel members' segments by arrival, not by member block", () => {
+  it("keeps one stable row per member showing only its newest text", () => {
     const mira = turn("mira");
     const sol = turn("sol");
     const parts: Record<string, TurnPartDto[]> = {
-      mira: [text("A1"), tool(), text("A2")],
-      sol: [text("B1"), tool(), text("B2")],
+      mira: [text("A1"), tool(), text("A2 A3")],
+      sol: [text("B1"), tool()],
     };
     const rows = interleaveGroupLiveStream({
       members: [mira, sol],
       liveParts: (id) => parts[id],
-      segmentOrder: [
-        { memberTurnId: "mira", index: 0, order: 1 },
-        { memberTurnId: "sol", index: 0, order: 2 },
-        { memberTurnId: "mira", index: 2, order: 3 },
-        { memberTurnId: "sol", index: 2, order: 4 },
-      ],
       isRunning: () => true,
     });
 
-    expect(rows.map((row) => row.text)).toEqual(["A1", "B1", "A2", "B2"]);
-    expect(rows.map((row) => row.latest)).toEqual([false, false, true, true]);
-    expect(rows.every((row) => row.running)).toBe(true);
+    expect(rows.map((row) => row.memberTurn.id)).toEqual(["mira", "sol"]);
+    expect(rows.map((row) => row.text)).toEqual(["A2 A3", "B1"]);
+    expect(rows.map((row) => row.index)).toEqual([2, 0]);
+    expect(rows.every((row) => row.latest && !row.placeholder && row.running)).toBe(true);
   });
 
-  it("gives a member with no text yet a dots-only row at the tail", () => {
+  it("gives a member with no text yet a dots-only row", () => {
     const mira = turn("mira");
     const sol = turn("sol");
     const parts: Record<string, TurnPartDto[]> = { mira: [text("A1")] };
     const rows = interleaveGroupLiveStream({
       members: [mira, sol],
       liveParts: (id) => parts[id],
-      segmentOrder: [{ memberTurnId: "mira", index: 0, order: 1 }],
       isRunning: () => true,
     });
 
     expect(rows).toHaveLength(2);
     expect(rows[1].placeholder).toBe(true);
+    expect(rows[1].text).toBe("");
     expect(rows[1].memberTurn.id).toBe("sol");
-    expect(rows[1].latest).toBe(true);
   });
 
-  it("keeps a finished member's segments but drops its dots", () => {
+  it("keeps a finished member's newest text but drops its dots", () => {
     const mira = turn("mira", "completed");
     const sol = turn("sol");
     const parts: Record<string, TurnPartDto[]> = { mira: [text("A1")], sol: [text("B1")] };
     const rows = interleaveGroupLiveStream({
       members: [mira, sol],
       liveParts: (id) => parts[id],
-      segmentOrder: [
-        { memberTurnId: "mira", index: 0, order: 1 },
-        { memberTurnId: "sol", index: 0, order: 2 },
-      ],
       isRunning: (candidate) => candidate.state === "running",
     });
 
-    expect(rows.map((row) => row.memberTurn.id)).toEqual(["mira", "sol"]);
+    expect(rows.map((row) => row.text)).toEqual(["A1", "B1"]);
     expect(rows[0].running).toBe(false);
     expect(rows[1].running).toBe(true);
-  });
-
-  it("keeps unattributed snapshot segments visible, in part order, after the ordered ones", () => {
-    const mira = turn("mira");
-    const parts: Record<string, TurnPartDto[]> = { mira: [text("A1"), text("A2")] };
-    const rows = interleaveGroupLiveStream({
-      members: [mira],
-      liveParts: (id) => parts[id],
-      segmentOrder: [{ memberTurnId: "mira", index: 0, order: 5 }],
-      isRunning: () => true,
-    });
-
-    expect(rows.map((row) => row.text)).toEqual(["A1", "A2"]);
-    expect(rows[1].latest).toBe(true);
   });
 });
 
