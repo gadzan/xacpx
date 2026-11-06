@@ -1,4 +1,40 @@
 # Changelog
+## [relay-protocol 0.6.4-beta.10] - 2026-11-06
+
+### Added
+
+- Bot removal preview returns `abandonableRunIds`: the sealed `indeterminate` Runs a human has not abandoned, which are exactly what blocks the removal's release gates, so a client can offer "give up the unknown result" for those ids alone. Additive; an older client ignores the field (#537).
+
+## [relay 0.14.12-beta.17] - 2026-11-06
+
+### Changed
+
+- 运行中的思考点变成真正的气泡：`ThinkingDotsTrigger` 是 64×40 的灰色气泡，不再是一个透明热区加 Thinking 状态词；turn 结束后「查看过程」的入口收进结论气泡内部，做成 hairline 小字，新增 `TraceLink.vue` 由群聊与 Direct Bot 共用（#536）。
+- 转录改成每个 agent 文本段落一个气泡：`splitTextBubbles` / `textBubblesOf` 按单个空行切分（围栏代码块里的空行仍算内容），`buildSettledStreams` 与 `interleaveGroupLiveStream` 让结算后的顺序按 Run 内段落 index 轮转重建，直播与结算视图因此一致；每段各自成行并带 `<memberTurnId>:seg:<index>` 滚动锚点，`.agent-bubble` 改为 `width: fit-content` + `max-width: 100%`，短回复不再撑满整列（#538）。
+
+### Fixed
+
+- 删除 Bot 不再因为一个封印的 `indeterminate` 成员 turn 永久卡在闸门上：影响列表出现 `abandonableRunIds` 时，`BotRemovalDialog` 给出「放弃未知结果」按钮（connector 不提供 `runs.abandon` 时整个入口不出现），逐个放弃后以同一 `requestId` 重试移除；`conversation_indeterminate` 不再重复成一条错误行，重新预览失败时才把预览本身的错误显示出来（#537）。
+
+## [channel-relay 0.7.8-beta.13] - 2026-11-06
+
+- Compatibility floor raised to `0.24.10-beta.13` with no channel behavior change.
+
+## [0.24.10-beta.13] - 2026-11-06
+
+### Fixed
+
+- Bot 移除预览新增 `abandonableRunIds`：`BotRemovalService` 把「Run 为 `indeterminate` 且 `abandonedAt` 未设置」的 Run 与成员的同类 turn 去重排序后返回，并计入 `botRemovalRevision`，于是释放闸门只对人还没有放弃的未知工作 fail-closed；已放弃的 turn 不再挡住成员释放（两者都在 `isBlockingIndeterminateTurn` 里判定，读不出的 Run 仍然阻塞），成员 runtime 释放改在该判定之后执行（#537）。
+- Bot 拥有的 Conversation 会话（Direct 与群成员）第一轮不再因为缺少 acpx 记录而失败：`readOwnedSessionRecord` 只在确认「记录不存在」时建一次记录再回读，其他读失败照旧 fail-closed（#538）。
+
+## [channel-feishu 0.8.7-beta.13] - 2026-11-06
+
+- Compatibility floor raised to `0.24.10-beta.13` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.13] - 2026-11-06
+
+- Compatibility floor raised to `0.24.10-beta.13` with no channel behavior change.
+
 ## [relay-protocol 0.6.4-beta.9] - 2026-11-04
 
 ### Added
