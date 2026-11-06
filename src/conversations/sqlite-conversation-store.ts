@@ -1342,7 +1342,10 @@ export class SqliteConversationStore implements ConversationStore {
       const sender = this.requireMemberTurn(input.senderMemberTurnId);
       const run = this.requireRun(sender.runId);
       const prior = this.sqlite.get<MessageRow>(
-        "SELECT * FROM messages WHERE json_extract(group_say_json, '$.invocationId') = ?", [input.invocationId]);
+        `SELECT * FROM messages
+         WHERE json_extract(group_say_json, '$.memberTurnId') = ?
+           AND json_extract(group_say_json, '$.invocationId') = ?`,
+        [sender.id, input.invocationId]);
       if (prior) {
         const existing = mapMessage(prior);
         if (existing.content !== input.text) {
@@ -1386,8 +1389,8 @@ export class SqliteConversationStore implements ConversationStore {
   ): ConversationMessage | undefined {
     const row = this.sqlite.get<MessageRow>(
       `SELECT * FROM messages WHERE json_extract(group_say_json, '$.memberTurnId') = ?
-       AND source_turn_json IS NULL AND TRIM(content) = TRIM(?) ORDER BY seq DESC LIMIT 1`, [memberTurnId, content]);
-    if (!row) return undefined;
+       AND source_turn_json IS NULL ORDER BY seq DESC LIMIT 1`, [memberTurnId]);
+    if (!row || row.content.trim() !== content.trim()) return undefined;
     this.sqlite.run("UPDATE messages SET source_turn_json = ? WHERE id = ?",
       [JSON.stringify(sourceTurn), row.id]);
     return mapMessage({ ...row, source_turn_json: JSON.stringify(sourceTurn) });
@@ -2785,15 +2788,15 @@ export class SqliteConversationStore implements ConversationStore {
             input.now,
           ],
         );
-            this.indexPublicMemory({
-              messageId,
-              conversationId: run.conversationId,
-              topicId: run.topicId,
-              role: "bot",
-              senderBotId: member.botId,
-            content: input.content,
-              createdAt: input.now,
-            });
+        this.indexPublicMemory({
+          messageId,
+          conversationId: run.conversationId,
+          topicId: run.topicId,
+          role: "bot",
+          senderBotId: member.botId,
+          content: input.content,
+          createdAt: input.now,
+        });
       }
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
@@ -2868,15 +2871,15 @@ export class SqliteConversationStore implements ConversationStore {
             input.now,
           ],
         );
-            this.indexPublicMemory({
-              messageId,
-              conversationId: run.conversationId,
-              topicId: run.topicId,
-              role: "bot",
-              senderBotId: member.botId,
-            content: input.content ?? "",
-              createdAt: input.now,
-            });
+        this.indexPublicMemory({
+          messageId,
+          conversationId: run.conversationId,
+          topicId: run.topicId,
+          role: "bot",
+          senderBotId: member.botId,
+          content: input.content ?? "",
+          createdAt: input.now,
+        });
       }
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
@@ -3074,15 +3077,15 @@ export class SqliteConversationStore implements ConversationStore {
                 input.now,
               ],
             );
-          this.indexPublicMemory({
-            messageId,
-            conversationId: run.conversationId,
-            topicId: run.topicId,
-            role: "bot",
-            senderBotId: member.botId,
-          content: entry.content ?? "",
-            createdAt: input.now,
-          });
+            this.indexPublicMemory({
+              messageId,
+              conversationId: run.conversationId,
+              topicId: run.topicId,
+              role: "bot",
+              senderBotId: member.botId,
+              content: entry.content ?? "",
+              createdAt: input.now,
+            });
           }
           this.sqlite.run(
             `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
@@ -4249,8 +4252,10 @@ export class SqliteConversationStore implements ConversationStore {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_followup_sender ON member_turns
           (followup_sender_member_turn_id) WHERE followup_sender_member_turn_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_envelope ON messages (json_extract(handoff_json, '$.memberTurnId')) WHERE handoff_json IS NOT NULL;
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_group_say_invocation ON messages
-          (json_extract(group_say_json, '$.invocationId')) WHERE group_say_json IS NOT NULL;
+        DROP INDEX IF EXISTS idx_group_say_invocation;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_group_say_turn_invocation ON messages
+          (json_extract(group_say_json, '$.memberTurnId'), json_extract(group_say_json, '$.invocationId'))
+          WHERE group_say_json IS NOT NULL;
         CREATE TABLE IF NOT EXISTS recovery_attempts (
           member_turn_id TEXT NOT NULL, run_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
           generation INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(member_turn_id, source_turn_id));`);
@@ -5516,15 +5521,15 @@ export class SqliteConversationStore implements ConversationStore {
                 input.now,
               ],
             );
-          this.indexPublicMemory({
-            messageId,
-            conversationId: run.conversationId,
-            topicId: run.topicId,
-            role: "bot",
-            senderBotId: member.botId,
-          content: input.content ?? "",
-            createdAt: input.now,
-          });
+            this.indexPublicMemory({
+              messageId,
+              conversationId: run.conversationId,
+              topicId: run.topicId,
+              role: "bot",
+              senderBotId: member.botId,
+              content: input.content ?? "",
+              createdAt: input.now,
+            });
           }
           this.sqlite.run(
             `UPDATE member_turns SET state = 'completed', failure_reason = NULL, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
