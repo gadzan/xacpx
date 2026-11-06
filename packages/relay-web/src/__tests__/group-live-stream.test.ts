@@ -108,4 +108,14 @@ describe("buildSettledStreams", () => {
     expect(streams.get("r1")!.rows.map((row) => row.text)).toEqual(["A1", "B1", "A2", "A3"]);
     expect(streams.has("r2")).toBe(false);
   });
+  it("treats one segment per member as a single last row in member order", () => {
+    const streams = buildSettledStreams([
+      { key: "msg:a", runId: "r1", memberTurnId: "a", segments: ["A1\n\nA2"] },
+      { key: "msg:b", runId: "r1", memberTurnId: "b", segments: ["B1\n\nB2"] },
+    ]);
+    const stream = streams.get("r1")!;
+    expect(stream.rows.map((row) => row.text)).toEqual(["A1\n\nA2", "B1\n\nB2"]);
+    expect(stream.rows.map((row) => row.last)).toEqual([true, true]);
+    expect(stream.anchorKey).toBe("msg:a");
+  });
 });

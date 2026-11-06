@@ -106,12 +106,13 @@ test("parallel members' text segments interleave by arrival, dots on each member
   await info.attach("parallel-interleave", { body: await page.screenshot(), contentType: "image/png" });
 });
 
-test("settled canonical replies keep one bubble per text segment", async ({ page, hub }, info) => {
+test("settled canonical replies keep one bubble per member", async ({ page, hub }, info) => {
   const fixture = await openParallelRun(page);
   await expect.poll(() => hub.sockets.some((socket) => socket.readyState === 1), { timeout: 20_000 }).toBe(true);
   await expect(page.locator('[data-test="agent-thinking-bubble"]')).toHaveCount(2);
 
-  // The core persists one message per member with segments joined by "\n\n".
+  // The core persists one message per member; internal blank lines are markdown
+  // content rendered inside that member's single bubble, never bubble boundaries.
   const replies: ConversationMessageDto[] = [
     { ...scope, id: "reply_a", seq: 2, role: "bot", senderBotId: fixture.first.botId,
       runId: fixture.run.id, promptRequestId: fixture.first.promptRequestId,
@@ -125,22 +126,16 @@ test("settled canonical replies keep one bubble per text segment", async ({ page
     hub.send({ kind: "control-event", instanceId: "i1", event: { type: "conversation-message", message: reply } });
   }
   const bubbles = page.locator('[data-test="group-finished-text-bubble"]');
-  await expect(bubbles).toHaveCount(4);
+  await expect(bubbles).toHaveCount(2);
   const texts = await bubbles.evaluateAll((nodes) => nodes.map((node) => node.textContent?.trim() ?? ""));
-  expect(texts).toHaveLength(4);
-  for (const [index, expected] of [
-    "Alpha ①：气泡只装文本，一段一个泡。",
-    "Bravo ①：并行时按到达顺序交错。",
-    "Alpha ②：dots 挂在我最新那段下面。",
-    "Bravo ②：结束后收进结论气泡。",
-  ].entries()) {
-    expect(texts[index]).toContain(expected);
-  }
-  expect(texts[0]).not.toContain("Alpha ②");
-  expect(texts[1]).not.toContain("Bravo ②");
+  expect(texts).toHaveLength(2);
+  expect(texts[0]).toContain("Alpha ①");
+  expect(texts[0]).toContain("Alpha ②");
+  expect(texts[1]).toContain("Bravo ①");
+  expect(texts[1]).toContain("Bravo ②");
   const authors = await page.locator('[data-test="agent-turn-row"]:has([data-test="group-finished-text-bubble"])').evaluateAll(
     (rows) => rows.map((row) => row.getAttribute("data-member-turn-id")),
   );
-  expect(authors).toEqual(["turn_a", "turn_b", "turn_a", "turn_b"]);
+  expect(authors).toEqual(["turn_a", "turn_b"]);
   await info.attach("settled-segments", { body: await page.screenshot(), contentType: "image/png" });
 });

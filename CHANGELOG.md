@@ -10,7 +10,7 @@
 ### Changed
 
 - 运行中的思考点变成真正的气泡：`ThinkingDotsTrigger` 是 64×40 的灰色气泡，不再是一个透明热区加 Thinking 状态词；turn 结束后「查看过程」的入口收进结论气泡内部，做成 hairline 小字，新增 `TraceLink.vue` 由群聊与 Direct Bot 共用（#536）。
-- 转录改成每个 agent 文本段落一个气泡：`splitTextBubbles` / `textBubblesOf` 按单个空行切分（围栏代码块里的空行仍算内容），`buildSettledStreams` 与 `interleaveGroupLiveStream` 让结算后的顺序按 Run 内段落 index 轮转重建，直播与结算视图因此一致；每段各自成行并带 `<memberTurnId>:seg:<index>` 滚动锚点，`.agent-bubble` 改为 `width: fit-content` + `max-width: 100%`，短回复不再撑满整列（#538）。
+- 转录改成每个 text 节点一个气泡：live 由 `textBubblesOf` 按 `TurnPartDto` text 段出泡（只 `trimEnd`），完成态一条持久消息一个气泡；换行、空行、CRLF、markdown 段落/表格/列表都留在同一泡内渲染，不以分行切泡。同一 Run 的持久回复 `buildSettledStreams` 每成员仅一段（`longest=1`），每成员一条、按消息/到达序排列；完成态单泡恒 `last:true`，`rowId=message.id` / `anchorId=memberTurn.id` 唯一（`:seg:<index>` 分支不再触发，取 #538 前原值），查看过程/时间/复制/附件/trace 各只出现一次。已知差异：被 tool/thought 分隔的多 text part 轮次 live 显示 N 泡、完成态合并为 1 泡（pre-#538 既有），两阶段泡数不一致。`.agent-bubble` 改为 `width: fit-content` + `max-width: 100%`，短回复不再撑满整列（#538）。
 
 ### Fixed
 

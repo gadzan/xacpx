@@ -46,7 +46,6 @@ import {
   type TraceReplayStatus,
 } from "../lib/group-run-presentation";
 import { buildSettledStreams, interleaveGroupLiveStream, type GroupLiveStreamRow } from "../lib/group-live-stream";
-import { splitTextBubbles } from "../lib/turn-presentation";
 
 function isLiveMemberState(state: MemberTurnSummaryDto["state"] | undefined): boolean {
   return state === "queued" || state === "dispatched" || state === "running";
@@ -186,12 +185,11 @@ const liveStreamAnchorKeys = computed<Map<string, string>>(() => {
 const settledStreams = computed(() => buildSettledStreams(
   items.value.flatMap((item) => {
     if (item.kind !== "message" || !item.bubbleAnchor || !item.memberTurn) return [];
-    const segments = splitTextBubbles(item.message.content ?? "");
     return [{
       key: item.key,
       runId: item.memberTurn.runId,
       memberTurnId: item.memberTurn.id,
-      segments: segments.length ? segments : [""],
+      segments: [(item.message.content ?? "").trimEnd()],
     }];
   }),
 ));

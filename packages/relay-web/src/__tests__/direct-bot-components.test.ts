@@ -2214,6 +2214,25 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain("Looks good to me!");
     });
 
+    it("keeps one settled bubble for an empty bot message so the status row survives", async () => {
+      const messages: ConversationMessageDto[] = [
+        { id: "msg_empty", conversationId: "c1", topicId: "t1", seq: 1, role: "bot", content: "", createdAt: "2026-09-18T00:02:00.000Z" },
+      ];
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages,
+          liveTurn: null,
+          activeRun: null,
+          activeMemberTurn: null,
+          runParts: {},
+          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect(wrapper.findAll('[data-test="direct-finished-text-bubble"]')).toHaveLength(1);
+    });
+
     it("renders a streaming live turn without a status capsule or stop button", async () => {
       const activeRun: ConversationRunDto = {
         id: "run_1",

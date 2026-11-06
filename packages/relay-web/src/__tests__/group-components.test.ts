@@ -1354,7 +1354,7 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
-    it("keeps each text segment in its own bubble after the turn settles", async () => {
+    it("keeps a settled reply in one bubble with blank lines preserved", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
         { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
@@ -1380,15 +1380,78 @@ describe("Group Components", () => {
       });
       await flushPromises();
       const bubbles = wrapper.findAll('[data-test="group-finished-text-bubble"]');
-      expect(bubbles).toHaveLength(2);
-      expect(bubbles[0]!.text()).toBe("Alpha ①：一段一个泡。");
-      expect(bubbles[1]!.text()).toContain("Alpha ②：另一个泡。");
-      expect(bubbles[1]!.find('[data-test="trace-link"]').exists()).toBe(true);
+      expect(bubbles).toHaveLength(1);
+      expect(bubbles[0]!.text()).toContain("Alpha ①：一段一个泡。");
+      expect(bubbles[0]!.text()).toContain("Alpha ②：另一个泡。");
+      expect(bubbles[0]!.find('[data-test="trace-link"]').exists()).toBe(true);
       expect(wrapper.findAll('[data-test="trace-link"]')).toHaveLength(1);
       expect(wrapper.findAll('[data-test="agent-turn-row"] [data-test="msg-actions"]')).toHaveLength(1);
     });
 
-    it("interleaves settled segments of parallel members, not per-member blocks", async () => {
+    it("keeps one settled bubble for an empty reply instead of the thinking bubble", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        { id: "reply_a", conversationId: "conversation_g", topicId: "topic_1", seq: 2, role: "bot",
+          senderBotId: "bot_a", runId: "run_1", promptRequestId: "p_a", content: "", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", promptRequestId: "p_a", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect(wrapper.findAll('[data-test="group-finished-text-bubble"]')).toHaveLength(1);
+      expect(wrapper.find('[data-test="agent-thinking-bubble"]').exists()).toBe(false);
+    });
+
+    it("keeps one bubble per member when both settled replies are empty", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+        { id: "reply_a", conversationId: "conversation_g", topicId: "topic_1", seq: 2, role: "bot",
+          senderBotId: "bot_a", runId: "run_1", promptRequestId: "p_a", content: "", createdAt: "now" },
+        { id: "reply_b", conversationId: "conversation_g", topicId: "topic_1", seq: 3, role: "bot",
+          senderBotId: "bot_b", runId: "run_1", promptRequestId: "p_b", content: "", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", promptRequestId: "p_a", createdAt: "now",
+        },
+        turn_b: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "human-explicit",
+          state: "completed", promptRequestId: "p_b", createdAt: "now",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect(wrapper.findAll('[data-test="group-finished-text-bubble"]')).toHaveLength(2);
+      expect(wrapper.find('[data-test="agent-thinking-bubble"]').exists()).toBe(false);
+    });
+
+    it("interleaves settled replies of parallel members, one bubble per member", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
         { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
@@ -1422,13 +1485,13 @@ describe("Group Components", () => {
       });
       await flushPromises();
       const rows = wrapper.findAll('[data-test="agent-turn-row"]');
-      expect(rows.map((row) => row.attributes("data-member-turn-id"))).toEqual(["turn_a", "turn_b", "turn_a", "turn_b"]);
+      expect(rows.map((row) => row.attributes("data-member-turn-id"))).toEqual(["turn_a", "turn_b"]);
       const bubbles = wrapper.findAll('[data-test="group-finished-text-bubble"]');
-      expect(bubbles.map((bubble) => bubble.text())).toHaveLength(4);
-      expect(bubbles[0]!.text()).toBe("A1");
-      expect(bubbles[1]!.text()).toBe("B1");
-      expect(bubbles[2]!.text()).toContain("A2");
-      expect(bubbles[3]!.text()).toContain("B2");
+      expect(bubbles).toHaveLength(2);
+      expect(bubbles[0]!.text()).toContain("A1");
+      expect(bubbles[0]!.text()).toContain("A2");
+      expect(bubbles[1]!.text()).toContain("B1");
+      expect(bubbles[1]!.text()).toContain("B2");
       expect(wrapper.find('[data-row-id="reply_a"]').exists()).toBe(true);
       expect(wrapper.find('[data-row-id="reply_b"]').exists()).toBe(true);
     });
