@@ -1046,19 +1046,36 @@ async function awaitTestRun(head) {
   }
 }
 
-/** Tag -> the publish workflow run it triggered, or null. */
+
+/** Tag to workflow run for that tag, branch-scoped so older runs do not shadow it. */
 function findRunForTag(tag) {
   let runs;
   try {
     runs = JSON.parse(execFileSync(
       "gh",
-      ["run", "list", "--limit", "30", "--json", "databaseId,headBranch,status,conclusion,name"],
+      ["run", "list", "--branch", tag, "--limit", "30", "--json", "databaseId,headBranch,status,conclusion,name"],
       { cwd: ROOT, encoding: "utf8" },
     ));
   } catch {
     return undefined; // gh unavailable; distinguished from "no run yet"
   }
   return runs.find((run) => run.headBranch === tag) ?? null;
+}
+
+// Only a concluded failure can name `gh run rerun --failed`, which GitHub rejects when no job failed.
+function workflowRepairLine(tag, run) {
+  if (run === undefined) {
+    return `workflow state could not be read for ${tag}, so check \`gh run list\` before retrying`;
+  }
+  if (run === null) return `git push origin ${tag}, since the tag may have produced no workflow run`;
+  if (run.conclusion === "failure") return `gh run rerun ${run.databaseId} --failed`;
+  if (run.status === "queued" || run.status === "in_progress") {
+    return `wait for workflow run ${run.databaseId} with \`gh run view ${run.databaseId} --watch\`, then re-run \`publish --yes\``;
+  }
+  if (run.conclusion === "success") {
+    return `npm is still propagating ${tag}, so re-check the dist-tags endpoint for its version, then re-run \`publish --yes\``;
+  }
+  return `re-run workflow run ${run.databaseId} in full because it concluded ${run.conclusion} with \`gh run rerun ${run.databaseId}\`, then re-run \`publish --yes\``;
 }
 
 /**
@@ -1129,14 +1146,14 @@ function tagRunFailureMessage(tag, run) {
   if (details?.url) lines.push(`  run: ${details.url}`);
   if (failed.length > 0) lines.push(`  failed jobs: ${failed.join(", ")}`);
   if (nothingPublished) {
-    lines.push("  No publish job ran, so nothing reached npm. Re-run its failed jobs:");
-    lines.push(`    gh run rerun ${run.databaseId} --failed`);
+    lines.push("  No publish job ran, so nothing reached npm.");
   } else {
-    lines.push("  A publish job may have reached npm — check before retrying (npm refuses E403):");
+    lines.push("  A publish job may have reached npm, so check the registry before retrying. npm refuses E403.");
     if (entry) lines.push(`    npm view ${entry.npmName} dist-tags`);
     lines.push(`    gh run view ${run.databaseId} --log-failed`);
   }
-  lines.push("  Then re-run `publish --yes`: it confirms every pushed tag on npm before tagging the rest.");
+  lines.push(`    ${workflowRepairLine(tag, run)}`);
+  lines.push("  Then re-run `publish --yes`. It confirms every pushed tag on npm before tagging the rest.");
   lines.push("  See docs/release-automation.md for the rest of the recovery playbook.");
   return lines.join("\n");
 }
@@ -1200,17 +1217,7 @@ async function confirmPushedTags() {
   const blockers = await collectResumeBlockers({
     tagged,
     confirm: reportRegistry,
-    repairFor: (entry) => {
-      const run = findRunForTag(entry.tag);
-      if (run === undefined) {
-        return `workflow state could not be read for ${entry.tag}; check \`gh run list\` before retrying`;
-      }
-      if (run === null) return null;
-      // `gh run rerun --failed` is rejected for a run with no failed jobs, so
-      // only a concluded failure can name that command.
-      if (run.conclusion === "failure") return `gh run rerun ${run.databaseId} --failed`;
-      return `wait for workflow run ${run.databaseId} (status ${run.status}) to settle, then re-run \`publish --yes\``;
-    },
+    repairFor: (entry) => workflowRepairLine(entry.tag, findRunForTag(entry.tag)),
   });
   if (blockers.length === 0) return 0;
   console.log(`\nstopped before tagging the remaining waves. ${blockers.length} already-pushed tag(s) are not live on npm.`);
@@ -1218,8 +1225,8 @@ async function confirmPushedTags() {
     console.log(`  ${blocker.tag}  ${blocker.npmName}@${blocker.version}`);
     console.log(`    ${blocker.repair}`);
   }
-  console.log("  A tag is pushed before its workflow runs, so the tag may have produced no workflow run or the");
-  console.log("  version may still be propagating to npm. Follow the guidance above, then re-run `publish --yes`.");
+  console.log("  A tag is pushed before its workflow runs; its version may be propagating to npm.");
+  console.log("  Follow the repair line above for each tag, then re-run `publish --yes`.");
   return 1;
 }
 

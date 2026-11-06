@@ -108,6 +108,8 @@ function virtualClock() {
   };
 }
 
+type WorkflowOutcome = { status: string; conclusion?: "success" | "failure" | "cancelled" | "timed_out" | null };
+
 function harness(options: {
   pending?: string[];
   clean?: boolean;
@@ -117,10 +119,8 @@ function harness(options: {
   failPushOf?: (tag: string) => boolean;
   remoteTags?: Set<string>;
   remoteProbeOutcome?: "error";
-  workflowByTag?: Record<string, { status: string; conclusion?: string | null }>;
-  workflowRun?: {
-    status: string;
-    conclusion?: string | null;
+  workflowByTag?: Record<string, WorkflowOutcome>;
+  workflowRun?: WorkflowOutcome & {
     jobs?: Array<{ name: string; conclusion: string }>;
     url?: string;
   };
@@ -444,7 +444,7 @@ test("a failed publish workflow stops the run before the registry is polled", as
   expect(fixture.events.some((event) => event === `git push origin ${relayTag}`)).toBe(false);
 });
 
-test("a failed tag run on a resume yields the rerun command before any remaining tag is created", async () => {
+test("a failed tag run on a resume yields the failed-only rerun command before any remaining tag is created", async () => {
   const relayTag = releaseLib.tagFor("relay", version);
   const fixture = harness({
     pending: ["relay"],
@@ -460,11 +460,12 @@ test("a failed tag run on a resume yields the rerun command before any remaining
   expect(fixture.commands.some((args) => args.join(" ") === `git tag ${relayTag} release-head`)).toBe(false);
   const output = fixture.output.join("\n");
   expect(output).toContain("not live on npm");
-  expect(output).toContain("gh run rerun 42148236185 --failed");
+  expect(output).toContain("    gh run rerun 42148236185 --failed");
   expect(output).toContain("publish --yes");
+  expect(fixture.events.some((event) => event.includes(`gh run list --branch ${protocolTag} --limit 30`))).toBe(true);
 });
 
-test("a successful tag run on a resume tells the operator to wait and never names gh run rerun", async () => {
+test("a successful tag run on a resume names propagation and re-checks the dist-tags endpoint", async () => {
   const fixture = harness({
     pending: ["relay"],
     clean: true,
@@ -475,12 +476,12 @@ test("a successful tag run on a resume tells the operator to wait and never name
 
   expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
   const output = fixture.output.join("\n");
-  expect(output).toContain("wait for workflow run 42148236185 (status completed) to settle");
-  expect(output).toContain("publish --yes");
+  expect(output).toContain("    npm is still propagating relay-protocol-v1.2.3, so re-check the dist-tags endpoint for its version, then re-run `publish --yes`");
   expect(output).not.toContain("gh run rerun");
+  expect(output).not.toContain("git push origin");
 });
 
-test("an in-progress tag run on a resume tells the operator to wait and names its run id and status", async () => {
+test("an in-progress tag run on a resume names the watch command and never a rerun", async () => {
   const fixture = harness({
     pending: ["relay"],
     clean: true,
@@ -492,7 +493,7 @@ test("an in-progress tag run on a resume tells the operator to wait and names it
 
   expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
   const output = fixture.output.join("\n");
-  expect(output).toContain("wait for workflow run 42148236185 (status in_progress) to settle");
+  expect(output).toContain("    wait for workflow run 42148236185 with `gh run view 42148236185 --watch`, then re-run `publish --yes`");
   expect(output).not.toContain("gh run rerun");
 });
 
@@ -508,12 +509,42 @@ test("an unreadable gh run list on a resume names the query failure and never a 
 
   expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
   const output = fixture.output.join("\n");
-  expect(output).toContain("workflow state could not be read");
-  expect(output).toContain("gh run list");
+  expect(output).toContain("    workflow state could not be read for relay-protocol-v1.2.3, so check `gh run list` before retrying");
   expect(output).not.toContain("git push origin");
   expect(output).not.toContain("gh run rerun");
 });
 
+test("a timed-out tag run on a resume names the conclusion and a full rerun, never --failed", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "timed_out" } },
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("    re-run workflow run 42148236185 in full because it concluded timed_out with `gh run rerun 42148236185`, then re-run `publish --yes`");
+  expect(output).not.toContain("gh run rerun 42148236185 --failed");
+});
+
+test("a cancelled tag run on a resume names a full rerun and the conclusion, never --failed", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "cancelled" } },
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("    re-run workflow run 42148236185 in full because it concluded cancelled with `gh run rerun 42148236185`, then re-run `publish --yes`");
+  expect(output).not.toContain("gh run rerun 42148236185 --failed");
+});
 test("a tag with no workflow run on a resume keeps the re-push repair and says a run may be missing", async () => {
   const fixture = harness({
     pending: ["relay"],
@@ -526,8 +557,7 @@ test("a tag with no workflow run on a resume keeps the re-push repair and says a
 
   expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
   const output = fixture.output.join("\n");
-  expect(output).toContain(`git push origin ${protocolTag}`);
-  expect(output).toContain("may have produced no workflow run");
+  expect(output).toContain("    git push origin relay-protocol-v1.2.3, since the tag may have produced no workflow run");
   expect(output).not.toContain("gh run rerun");
 });
 
@@ -545,14 +575,32 @@ test("a resume confirms already-pushed tags before tagging the remaining wave", 
   expect(fixture.output.join("\n")).toContain("confirming 1 already-pushed tag");
 });
 
-test("a resume skips the no-op push of main when the remote already has the commit", async () => {
-  const fixture = harness({ pending: ["relay-protocol"], clean: true, remoteMain: "release-head" });
+test("a cancelled tag run names a full rerun in the failure message, never --failed", async () => {
+  const fixture = harness({
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "cancelled" } },
+    workflowRun: {
+      status: "completed",
+      conclusion: "cancelled",
+      url: "https://github.com/gadzan/xacpx/actions/runs/42148236185",
+      jobs: [
+        { name: "publish-platforms", conclusion: "skipped" },
+        { name: "publish-channel-relay", conclusion: "skipped" },
+      ],
+    },
+  });
   const plan = fixture.api.buildPublishPlan();
 
-  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(0);
-  expect(fixture.commands.some((args) => args.join(" ") === "git push origin main")).toBe(false);
-  expect(fixture.commands).toContainEqual(["git", "push", "origin", protocolTag]);
-  expect(fixture.output.join("\n")).toContain("skipping the no-op push");
+  let message = "";
+  try {
+    await fixture.api.cmdPublish(plan, publishOptions);
+  } catch (error) {
+    message = String((error as Error).message);
+  }
+  expect(message).toContain("publish run concluded cancelled");
+  expect(message).toContain("No publish job ran");
+  expect(message).toContain("    re-run workflow run 42148236185 in full because it concluded cancelled with `gh run rerun 42148236185`, then re-run `publish --yes`");
+  expect(message).toContain("https://github.com/gadzan/xacpx/actions/runs/42148236185");
+  expect(message).not.toContain("gh run rerun 42148236185 --failed");
 });
 
 test("a failed tag workflow names the failed jobs and the rerun command", async () => {
