@@ -3626,8 +3626,6 @@ export const useGroupsStore = defineStore("groups", () => {
           };
         }
       } else if (e.type === "turn-output") {
-        // Text parts are rendered as one live bubble per member, so no
-        // cross-member arrival stamp is needed.
         appendText(parts, e.chunk);
         setStatus("streaming");
         bumpStream();

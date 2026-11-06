@@ -45,8 +45,6 @@ import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES, type ConversationRun, type
  *  than this still hands members the closest prior context. */
 export const PUBLIC_TRANSCRIPT_MESSAGES = 500;
 
-/** A Direct turn sees the newest public Group messages this Bot can access;
- *  this is context, not a second transcript. */
 const PUBLIC_MEMORY_MESSAGES = 20;
 const PUBLIC_MEMORY_ENTRY_CHARS = 800;
 

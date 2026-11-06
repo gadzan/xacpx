@@ -145,9 +145,8 @@ export async function createConversationRuntime(
     // V2 P0-B is the production behavior (design §4.2/§6). The config key is
     // an operator rollback to the pre-P0-B1 batch semantics, not an opt-in.
     followupRedispatch: input.config.conversations?.followupRedispatch !== false,
-    // Public Group messages are projected per member for private prompts.
-    // Private peer Topics are not public memory; membership is read live so a
-    // Bot that just left cannot gain future rows.
+    // Membership is read live, so an ex-member gains no future rows; peer
+    // Topics are excluded.
     publicMemoryMembers: (conversationId, topicId) => {
       const group = input.state.conversations[conversationId];
       if (group?.kind !== "group") return undefined;
@@ -168,8 +167,6 @@ export async function createConversationRuntime(
   const worktrees = new ConversationWorktreeManager(store.worktrees, resolve(dirname(input.sqlitePath), "..", "worktrees", "conversations"), input.config);
   input.sessions.setConversationWorktreeResolver?.(session => worktrees.resolveSessionCwd(session));
   const bots = new BotService(input.config, input.state, input.stateStore, shared);
-  // The store itself backs BotService's cleanup hook, so membership removal
-  // drops the leaving member's projection immediately.
   const botsWorkBridge: BotConversationWork = {
     hasDurableBotWork: (botId) => store.hasDurableBotWork(botId),
     hasDurableGroupWork: (conversationId) => store.hasDurableGroupWork(conversationId),

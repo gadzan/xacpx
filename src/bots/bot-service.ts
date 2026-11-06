@@ -298,8 +298,7 @@ export interface BotConversationWork {
    *  its claims would requeue forever). Optional so older implementers
    *  (tests) keep working; absence means "unknown, do not block". */
   hasNonterminalGroupMemberWork?: (conversationId: string, botId: string) => boolean;
-  /** Drop the leaving member's public Group memory projection. Optional so
-   *  older implementers (tests) keep working. */
+  /** Drop the leaving member's public Group memory projection. */
   forgetGroupMemberMemory?: (conversationId: string, botId: string) => void;
   /** SQLite removal barrier. Absence means the store has no row. */
   botRemovalPhase?: (botId: string) => "deleting" | "indeterminate" | "retired" | undefined;

@@ -8,8 +8,6 @@ export interface GroupLiveStreamRow {
   text: string;
   /** Part index of the displayed text, or -1 on a placeholder. */
   index: number;
-  /** One live row per member: always the member's newest bubble. */
-  latest: boolean;
   /** True on a row that only carries the dots (member has produced no text). */
   placeholder: boolean;
   /** True when this member's turn has not ended: the row may carry dots. */
@@ -22,11 +20,10 @@ export interface GroupLiveStreamInput {
   isRunning: (turn: MemberTurnSummaryDto) => boolean;
 }
 
-/** One row per live member, showing only the newest text part. Earlier text
- *  segments belong to the trace; keeping them in the Group narration made the
- *  conversation unreadable. Membership order is stable, so a new segment
+/** One row per live member, showing only the newest text part. Earlier
+ *  segments belong to the trace. Membership order is stable, so a new segment
  *  updates its own row instead of appending another one. */
-export function interleaveGroupLiveStream(input: GroupLiveStreamInput): GroupLiveStreamRow[] {
+export function projectGroupLivePreview(input: GroupLiveStreamInput): GroupLiveStreamRow[] {
   return input.members.map((turn) => {
     const parts = input.liveParts(turn.id) ?? [];
     let index = -1;
@@ -44,7 +41,6 @@ export function interleaveGroupLiveStream(input: GroupLiveStreamInput): GroupLiv
       memberTurn: turn,
       text,
       index,
-      latest: true,
       placeholder: index < 0,
       running: input.isRunning(turn),
     };

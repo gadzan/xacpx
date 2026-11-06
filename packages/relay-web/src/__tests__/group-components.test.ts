@@ -1276,7 +1276,11 @@ describe("Group Components", () => {
       });
       await flushPromises();
       expect(wrapper.findAll('[data-test="agent-turn-row"]').map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a"]);
-      expect(wrapper.findAll('[data-test="group-member-text-bubble"]').map((bubble) => bubble.text())).toEqual(["A2"]);
+      // StreamMarkdown paints its HTML on the next animation frame, so the
+      // bubble text lands one frame after the part change.
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-test="group-member-text-bubble"]').map((bubble) => bubble.text())).toEqual(["A2"]);
+      });
 
       groups.liveTurnsByMember = {
         turn_a: {
@@ -1291,7 +1295,9 @@ describe("Group Components", () => {
       await nextTick();
       await flushPromises();
       expect(wrapper.findAll('[data-test="agent-turn-row"]').map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a"]);
-      expect(wrapper.findAll('[data-test="group-member-text-bubble"]').map((bubble) => bubble.text())).toEqual(["A2 — fixed talk"]);
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-test="group-member-text-bubble"]').map((bubble) => bubble.text())).toEqual(["A2 — fixed talk"]);
+      });
     });
 
     it("keeps an open process drawer anchored to the member's live row", async () => {

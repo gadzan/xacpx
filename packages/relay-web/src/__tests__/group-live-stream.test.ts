@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MemberTurnSummaryDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { buildSettledStreams, interleaveGroupLiveStream } from "../lib/group-live-stream";
+import { buildSettledStreams, projectGroupLivePreview } from "../lib/group-live-stream";
 
 function turn(id: string, state: MemberTurnSummaryDto["state"] = "running"): MemberTurnSummaryDto {
   return { id, runId: "run_1", conversationId: "c1", topicId: "t1", botId: `bot_${id}`,
@@ -10,7 +10,7 @@ function turn(id: string, state: MemberTurnSummaryDto["state"] = "running"): Mem
 const tool = (): TurnPartDto => ({ type: "tool", step: { toolCallId: `t${Math.random()}`, toolName: "read", kind: "read", title: "x", status: "success" } });
 const text = (value: string): TurnPartDto => ({ type: "text", text: value });
 
-describe("interleaveGroupLiveStream", () => {
+describe("projectGroupLivePreview", () => {
   it("keeps one stable row per member showing only its newest text", () => {
     const mira = turn("mira");
     const sol = turn("sol");
@@ -18,7 +18,7 @@ describe("interleaveGroupLiveStream", () => {
       mira: [text("A1"), tool(), text("A2 A3")],
       sol: [text("B1"), tool()],
     };
-    const rows = interleaveGroupLiveStream({
+    const rows = projectGroupLivePreview({
       members: [mira, sol],
       liveParts: (id) => parts[id],
       isRunning: () => true,
@@ -27,14 +27,14 @@ describe("interleaveGroupLiveStream", () => {
     expect(rows.map((row) => row.memberTurn.id)).toEqual(["mira", "sol"]);
     expect(rows.map((row) => row.text)).toEqual(["A2 A3", "B1"]);
     expect(rows.map((row) => row.index)).toEqual([2, 0]);
-    expect(rows.every((row) => row.latest && !row.placeholder && row.running)).toBe(true);
+    expect(rows.every((row) => !row.placeholder && row.running)).toBe(true);
   });
 
   it("gives a member with no text yet a dots-only row", () => {
     const mira = turn("mira");
     const sol = turn("sol");
     const parts: Record<string, TurnPartDto[]> = { mira: [text("A1")] };
-    const rows = interleaveGroupLiveStream({
+    const rows = projectGroupLivePreview({
       members: [mira, sol],
       liveParts: (id) => parts[id],
       isRunning: () => true,
@@ -50,7 +50,7 @@ describe("interleaveGroupLiveStream", () => {
     const mira = turn("mira", "completed");
     const sol = turn("sol");
     const parts: Record<string, TurnPartDto[]> = { mira: [text("A1")], sol: [text("B1")] };
-    const rows = interleaveGroupLiveStream({
+    const rows = projectGroupLivePreview({
       members: [mira, sol],
       liveParts: (id) => parts[id],
       isRunning: (candidate) => candidate.state === "running",
