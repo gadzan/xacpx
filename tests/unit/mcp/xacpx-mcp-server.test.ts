@@ -30,8 +30,8 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
   try {
     await server.connect(b); await client.connect(a);
     const list = await client.listTools();
-    expect(list.tools.map((tool) => tool.name)).toEqual(["group_send", "group_read_result"]);
-    expect(Object.keys(list.tools[0]!.inputSchema.properties!)).toEqual(["to", "task", "expectedOutput"]);
+    expect(list.tools.map((tool) => tool.name)).toEqual(["group_say", "group_send", "group_read_result"]);
+    expect(Object.keys(list.tools[0]!.inputSchema.properties!)).toEqual(["text"]);
     expect(list.tools[0]!.inputSchema.additionalProperties).toBe(false);
     await expect(client.callTool({ name: "group_send", arguments: { to: "bot_b", task: "task", from: "bot_spoof" } })).rejects.toBeDefined();
     expect(calls).toHaveLength(0);
@@ -40,7 +40,7 @@ test("Group MCP exposes only public assignment tools with runtime-bound identity
     expect(calls).toEqual([{ executionToken: token, invocationId: expect.stringMatching(/^number:\d+$/), args: { to: "bot_b", task: "task", expectedOutput: "output" } }]);
     await expect(client.callTool({ name: "agent_send", arguments: { to: "any", message: "private" } })).rejects.toBeDefined();
     expect(JSON.stringify(result)).not.toContain(token);
-    expect(Object.keys(list.tools[1]!.inputSchema.properties!)).toEqual(["assignmentId", "offset", "limit"]);
+    expect(Object.keys(list.tools[2]!.inputSchema.properties!)).toEqual(["assignmentId", "offset", "limit"]);
     await expect(client.callTool({ name: "group_read_result", arguments: { runId: "foreign" } })).rejects.toBeDefined();
     await expect(client.callTool({ name: "group_read_result", arguments: { assignmentId: "assignment", limit: 4_001 } })).rejects.toBeDefined();
     expect(reads).toEqual([]);
@@ -176,7 +176,7 @@ test("every advertised tool still documents its own parameters", async () => {
       await groupServer.connect(groupServerTransport);
       await groupClient.connect(groupClientTransport);
       const groupTools = (await groupClient.listTools()).tools;
-      expect(groupTools.map((tool) => tool.name)).toEqual(["group_send", "group_read_result"]);
+      expect(groupTools.map((tool) => tool.name)).toEqual(["group_say", "group_send", "group_read_result"]);
       for (const tool of groupTools) {
         const parameters = Object.keys(tool.inputSchema.properties ?? {});
         expect(parameters.length).toBeGreaterThan(0);

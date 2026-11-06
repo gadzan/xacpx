@@ -5,7 +5,7 @@ import type {
 import type { XacpxMcpTransport } from "./xacpx-mcp-transport";
 import type { PeerRequest } from "../peer/peer-types";
 import { PEER_NOT_BOUND_MESSAGE } from "../peer/peer-types";
-import { GROUP_EXECUTION_PREFIX, MAX_GROUP_TASK_LENGTH, MAX_GROUP_EXPECTED_OUTPUT_LENGTH } from "../conversations/group-handoff";
+import { GROUP_EXECUTION_PREFIX, MAX_GROUP_EXPECTED_OUTPUT_LENGTH, MAX_GROUP_SAY_LENGTH, MAX_GROUP_SAY_PER_TURN, MAX_GROUP_TASK_LENGTH } from "../conversations/group-handoff";
 import {
   DEFAULT_TASK_WATCH_POLL_INTERVAL_MS,
   DEFAULT_TASK_WATCH_TIMEOUT_MS,
@@ -127,6 +127,15 @@ export function buildXacpxMcpToolRegistry(input: {
   // Agent Messaging door into product-owned hidden sessions.
   if (sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)) {
     return [{
+      name: "group_say",
+      description: `Say one short sentence publicly in this Group Topic: \`text\` is the remark itself. Use it only to report what you are doing right now; it is not the turn's answer. At most ${MAX_GROUP_SAY_PER_TURN} calls per turn and at most ${MAX_GROUP_SAY_LENGTH} characters each; the runtime refuses past either bound. It never wakes or dispatches another member, and your final reply still has to carry the conclusion.`,
+      inputSchema: z.object({ text: z.string().min(1).max(MAX_GROUP_SAY_LENGTH) }).strict(),
+      handler: async (args, context) => await asToolResult(async () => {
+        if (!context?.invocationId || !transport.groupSay) throw new Error("group_say requires a bound runtime invocation");
+        const result = await transport.groupSay({ executionToken: sourceHandle, invocationId: context.invocationId, args });
+        return createSuccessResult(`Public remark posted; ${result.remaining} of ${MAX_GROUP_SAY_PER_TURN} says remain this turn.`, result);
+      }),
+    }, {
       name: "group_send",
       description: "Publicly assign a concrete task to another current Group Bot in this Run. `to` is the target Bot id, `task` the concrete assignment, and `expectedOutput` an optional statement of the result you need. Acceptance is durable and grants no human permission authority; the filesystem scheduler decides when it starts.",
       inputSchema: z.object({ to: z.string().min(1).max(128), task: z.string().min(1).max(MAX_GROUP_TASK_LENGTH),

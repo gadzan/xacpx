@@ -1920,6 +1920,10 @@ export async function buildApp(
         return { runId: receipt.run.id, assignmentId: receipt.memberTurn.assignmentId!,
           memberTurnId: receipt.memberTurn.id, messageId: receipt.message.id };
       }),
+      groupSay: async (invocation) => await conversations.withOperation(async () => {
+        const receipt = await conversations.handoffs.say(invocation);
+        return { messageId: receipt.message.id, remaining: receipt.remaining, reused: receipt.reused };
+      }),
       groupReadResult: async (invocation) => await conversations.withOperation(async () => conversations.handoffs.readResult(invocation)),
       agentMessaging: {
         listReachable: async binding => binding.sourceHandle?.startsWith('direct-execution:')

@@ -1396,7 +1396,7 @@ test("Direct launch exposes only truthful one-way messaging tools and preserves 
   for(const extra of [{mode:"interrupt"},{mode:"steer"},{completion:"result"},{completion:"notify"},{replyTo:"msg"},{selector:{agent:"codex"}},{sourceHandle:"spoofed"}]) {
     expect(send.inputSchema.safeParse({to:"agent:node:bot",message:"work",...extra}).success).toBe(false);
   }
-  expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send", "group_read_result"]);
+  expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_say", "group_send", "group_read_result"]);
 });
 
 test("Group handoff tools describe their own surface instead of restating the contract", async () => {
@@ -1440,4 +1440,23 @@ test("Group handoff tools describe their own surface instead of restating the co
     { executionToken: "group-execution:live", invocationId: "call", args: { to: "bot_b", task: "Collect evidence" } },
     { executionToken: "group-execution:live", args: { assignmentId: "older-assignment", offset: 10 } },
   ]);
+});
+
+test("Group speech tool binds the runtime identity and reports the remaining budget", async () => {
+  const calls: unknown[] = [];
+  const transport = {
+    ...createMemoryTransport(async () => ({ taskId: "unused", status: "running" })),
+    async groupSay(input: unknown) { calls.push(input); return { messageId: "message-1", remaining: 2, reused: false }; },
+  };
+  const registry = buildXacpxMcpToolRegistry({ transport, coordinatorSession: "group-execution:live", sourceHandle: "group-execution:live" });
+  const say = registry.find((tool) => tool.name === "group_say")!;
+  expect(say.description).toContain("text");
+  expect(say.inputSchema.safeParse({ text: "Checking the rollback." }).success).toBe(true);
+  for (const extra of [{ executionToken: "group-execution:spoofed" }, { text: "x".repeat(1_001) }, { extra: 1 }]) {
+    expect(say.inputSchema.safeParse({ text: "Checking the rollback.", ...extra }).success).toBe(false);
+  }
+  const result = await say.handler({ text: "Checking the rollback." }, { invocationId: "call" });
+  expect(result.structuredContent).toEqual({ messageId: "message-1", remaining: 2, reused: false });
+  expect(JSON.stringify(result.content)).toContain("2 of 3 says remain this turn.");
+  expect(calls).toEqual([{ executionToken: "group-execution:live", invocationId: "call", args: { text: "Checking the rollback." } }]);
 });

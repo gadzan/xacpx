@@ -21,6 +21,8 @@ import type {
   WatchTaskResult,
   WorkerRaiseQuestionInput,
 } from "./orchestration-service";
+import type { GroupSayInvocation } from "../conversations/group-handoff";
+import type { GroupSayReceipt } from "../conversations/conversation-store";
 import type {
   ExternalCoordinatorRecord,
   OrchestrationGroupRecord,
@@ -234,6 +236,10 @@ export class OrchestrationClient {
 
   async groupReadResult(input: import("../conversations/group-handoff").GroupReadResultInvocation): Promise<import("../conversations/group-handoff").GroupResultPage> {
     return await this.request("conversation.group_read_result", input);
+  }
+
+  async groupSay(input: GroupSayInvocation): Promise<GroupSayReceipt> {
+    return await this.request("conversation.group_say", input);
   }
 
   async agentSend(input: AgentSendRpcInput): Promise<AgentMessageReceipt> {

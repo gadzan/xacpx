@@ -1,5 +1,6 @@
 import { OrchestrationClient } from "../orchestration/orchestration-client";
-import type { GroupSendInvocation } from "../conversations/group-handoff";
+import type { GroupSayInvocation, GroupSendInvocation } from "../conversations/group-handoff";
+import type { GroupSayReceipt } from "../conversations/conversation-store";
 import type { OrchestrationIpcEndpoint } from "../orchestration/orchestration-ipc";
 import type { ScheduledCreateFromRouteInput } from "../scheduled/scheduled-route-create";
 import type {
@@ -160,6 +161,7 @@ export interface XacpxMcpPeerWatchArgs {
 export interface XacpxMcpTransport {
   groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: (input: GroupSendInvocation) => Promise<{ runId: string; assignmentId: string; memberTurnId: string; messageId: string }>;
+  groupSay?: (input: GroupSayInvocation) => Promise<GroupSayReceipt>;
   delegateRequest: (input: XacpxMcpDelegateRequest) => Promise<RequestDelegateRpcResult>;
   createGroup: (input: XacpxMcpGroupNewArgs) => Promise<OrchestrationGroupRecord>;
   getTask: (input: XacpxMcpTaskIdArgs) => Promise<OrchestrationTaskRecord | null>;
@@ -204,7 +206,7 @@ export interface XacpxMcpTransport {
 interface OrchestrationClientLike {
   groupReadResult?: OrchestrationClient["groupReadResult"];
   groupSend?: OrchestrationClient["groupSend"];
-  registerExternalCoordinator?: OrchestrationClient["registerExternalCoordinator"];
+  groupSay?: OrchestrationClient["groupSay"];
   delegateRequest: OrchestrationClient["delegateRequest"];
   createGroup: OrchestrationClient["createGroup"];
   getTaskForCoordinator: OrchestrationClient["getTaskForCoordinator"];
@@ -244,6 +246,10 @@ export function createOrchestrationTransport(
     groupSend: async (input) => {
       if (!client.groupSend) throw new Error("Group handoff transport is not configured");
       return await client.groupSend(input);
+    },
+    groupSay: async (input) => {
+      if (!client.groupSay) throw new Error("Group speech transport is not configured");
+      return await client.groupSay(input);
     },
     delegateRequest: async (input) =>
       // For coordinator-side tool calls, coordinatorSession is the actual
