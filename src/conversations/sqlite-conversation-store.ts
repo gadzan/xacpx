@@ -1396,6 +1396,51 @@ export class SqliteConversationStore implements ConversationStore {
     return mapMessage({ ...row, source_turn_json: JSON.stringify(sourceTurn) });
   }
 
+  /**
+   * A completed member turn that ends with no final text still owes the Group
+   * something to read, but its settled evidence row carries empty content —
+   * that row exists for `getMemberResult` and must never be drawn. So a turn
+   * that never spoke through `group_say` gets one plain system status row in
+   * the same settlement transaction. A turn that already spoke keeps that
+   * public message and gets no status; trace text is never consulted here.
+   * Returns the status row, or undefined when none is owed.
+   */
+  private noteEmptyPublicReply(input: {
+    run: ConversationRun;
+    member: MemberTurnRecord;
+    content: string;
+    now: string;
+  }): ConversationMessage | undefined {
+    if (input.content.trim()) return undefined;
+    // The composition's public Group read is the store's only view of "public
+    // Group Topic"; a Direct or peer Topic keeps its silence.
+    if (this.publicMemoryMembers?.(input.run.conversationId, input.run.topicId) === undefined) return undefined;
+    if (this.hasGroupSay(input.member.id)) return undefined;
+    const seq = this.allocateSeq(input.run.conversationId, input.run.topicId);
+    const messageId = this.ids.messageId();
+    this.sqlite.run(
+      `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at)
+       VALUES (?, ?, ?, ?, 'system', NULL, ?, ?, ?)`,
+      [
+        messageId,
+        input.run.conversationId,
+        input.run.topicId,
+        seq,
+        `No public reply from ${input.member.profileSnapshot?.presentation.name ?? input.member.botId}.`,
+        input.run.id,
+        input.now,
+      ],
+    );
+    return this.getMessage(messageId);
+  }
+
+  private hasGroupSay(memberTurnId: string): boolean {
+    return this.sqlite.get(
+      "SELECT 1 FROM messages WHERE json_extract(group_say_json, '$.memberTurnId') = ? LIMIT 1",
+      [memberTurnId],
+    ) !== undefined;
+  }
+
   listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[] {
     return this.sqlite.all<MemberTurnRow>(`SELECT child.* FROM member_turns child
       JOIN member_turns sender ON child.handoff_source_turn_id = sender.source_turn_id AND child.run_id = sender.run_id
@@ -2744,6 +2789,7 @@ export class SqliteConversationStore implements ConversationStore {
             run: evidence.run,
             memberTurn: evidence.memberTurn,
             assistantMessage: evidence.message,
+            ...(evidence.statusMessage ? { statusMessage: evidence.statusMessage } : {}),
             resurrected: false,
           };
         }
@@ -2798,6 +2844,7 @@ export class SqliteConversationStore implements ConversationStore {
           createdAt: input.now,
         });
       }
+      const statusMessage = this.noteEmptyPublicReply({ run, member, content: input.content, now: input.now });
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
         [input.now, member.id],
@@ -2818,6 +2865,7 @@ export class SqliteConversationStore implements ConversationStore {
         run: aggregated,
         memberTurn: this.requireMemberTurn(member.id),
         assistantMessage: this.getMessage(messageId),
+        ...(statusMessage ? { statusMessage } : {}),
         resurrected: false,
       };
     });
@@ -2841,13 +2889,14 @@ export class SqliteConversationStore implements ConversationStore {
     reason?: string;
     sourceTurn: { sessionAlias: string; turnId?: string };
     now: string;
-  }): { run: ConversationRun; memberTurn: MemberTurnRecord; message?: ConversationMessage } {
+  }): { run: ConversationRun; memberTurn: MemberTurnRecord; message?: ConversationMessage; statusMessage?: ConversationMessage } {
     const run = this.requireRun(input.runId);
     const member = this.requireMemberTurn(input.memberTurnId);
     if (member.runId !== run.id || member.state !== "indeterminate") {
       throw new ConversationError("stale_claim", `member turn "${input.memberTurnId}" is not sealed evidence for run "${run.id}"`);
     }
     let message: ConversationMessage | undefined;
+    let statusMessage: ConversationMessage | undefined;
     if (input.outcome === "completed") {
       const adopted = (input.content ?? "").trim()
         ? this.promoteIdenticalLastSayToResult(member.id, input.content!, input.sourceTurn)
@@ -2881,6 +2930,7 @@ export class SqliteConversationStore implements ConversationStore {
           createdAt: input.now,
         });
       }
+      statusMessage = this.noteEmptyPublicReply({ run, member, content: input.content ?? "", now: input.now });
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
         [member.id],
@@ -2913,6 +2963,7 @@ export class SqliteConversationStore implements ConversationStore {
         run: reconciledRun,
         memberTurn: this.requireMemberTurn(member.id),
         ...(message ? { message } : {}),
+        ...(statusMessage ? { statusMessage } : {}),
       };
     }
     const reconciledRun = this.aggregateRunOnWorkGraph(
@@ -2926,6 +2977,7 @@ export class SqliteConversationStore implements ConversationStore {
       run: reconciledRun,
       memberTurn: this.requireMemberTurn(member.id),
       ...(message ? { message } : {}),
+      ...(statusMessage ? { statusMessage } : {}),
     };
   }
 
@@ -3087,6 +3139,7 @@ export class SqliteConversationStore implements ConversationStore {
               createdAt: input.now,
             });
           }
+          const statusMessage = this.noteEmptyPublicReply({ run, member, content: entry.content ?? "", now: input.now });
           this.sqlite.run(
             `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
             [input.now, member.id],
@@ -3100,6 +3153,7 @@ export class SqliteConversationStore implements ConversationStore {
             member: this.requireMemberTurn(member.id),
             outcome: entry.outcome,
             message: this.getMessage(messageId),
+            ...(statusMessage ? { statusMessage } : {}),
           });
           continue;
         }
@@ -3146,6 +3200,7 @@ export class SqliteConversationStore implements ConversationStore {
             member: this.requireMemberTurn(entry.member.id),
             outcome: entry.outcome,
             ...(entry.message ? { message: entry.message } : {}),
+            ...(entry.statusMessage ? { statusMessage: entry.statusMessage } : {}),
           })),
         };
       }
@@ -3179,6 +3234,7 @@ export class SqliteConversationStore implements ConversationStore {
           member: this.requireMemberTurn(entry.member.id),
           outcome: entry.outcome,
           ...(entry.message ? { message: entry.message } : {}),
+          ...(entry.statusMessage ? { statusMessage: entry.statusMessage } : {}),
         })),
       };
     });
@@ -5498,6 +5554,7 @@ export class SqliteConversationStore implements ConversationStore {
         // the later batch settlement skips it via its terminal-member fence.
         const alreadyCounted = member.state === "indeterminate";
         let pendingMessage: ConversationMessage | undefined;
+        let pendingStatus: ConversationMessage | undefined;
         if (input.outcome === "completed") {
           const adopted = (input.content ?? "").trim()
             ? this.promoteIdenticalLastSayToResult(member.id, input.content!, input.sourceTurn)
@@ -5531,6 +5588,7 @@ export class SqliteConversationStore implements ConversationStore {
               createdAt: input.now,
             });
           }
+          pendingStatus = this.noteEmptyPublicReply({ run, member, content: input.content ?? "", now: input.now });
           this.sqlite.run(
             `UPDATE member_turns SET state = 'completed', failure_reason = NULL, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
             [input.now, member.id],
@@ -5568,6 +5626,7 @@ export class SqliteConversationStore implements ConversationStore {
           run: this.requireRun(input.runId),
           memberTurn: this.requireMemberTurn(member.id),
           ...(pendingMessage ? { message: pendingMessage } : {}),
+          ...(pendingStatus ? { statusMessage: pendingStatus } : {}),
           reconciled: true,
         };
       }
@@ -5591,6 +5650,7 @@ export class SqliteConversationStore implements ConversationStore {
         run: evidence.run,
         memberTurn: evidence.memberTurn,
         ...(evidence.message ? { message: evidence.message } : {}),
+        ...(evidence.statusMessage ? { statusMessage: evidence.statusMessage } : {}),
         reconciled: true,
       };
     });

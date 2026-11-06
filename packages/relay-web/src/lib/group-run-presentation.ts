@@ -106,7 +106,11 @@ export function projectGroupTranscript(input: GroupProjectionInput): GroupTransc
     const key = `${message.conversationId}\u0000${message.topicId}\u0000${message.id}`;
     if (seenMessages.has(key)) return false;
     seenMessages.add(key);
-    return true;
+    // A settled MemberTurn that ended with nothing public to say keeps an
+    // empty evidence row so its result can still be resolved. That row is not
+    // something the Group asked to see: drawing it would show an empty bubble
+    // and hide the member's own activity row. Attachment-only rows stay.
+    return !(message.role === "bot" && message.content.trim() === "" && !message.attachments?.length);
   });
   const owners = new Map<ConversationMessageDto, MemberTurnSummaryDto>();
   const problems = new Map<ConversationMessageDto, UnresolvedReason>();

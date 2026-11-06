@@ -38,7 +38,7 @@ import type {
   ConversationTurnRunResult,
   ConversationTurnRunner,
 } from "./conversation-turn-runner";
-import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES, type ConversationRun, type MemberTurnRecord, type PendingDispatch } from "./conversation-types";
+import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES, type ConversationMessage, type ConversationRun, type MemberTurnRecord, type PendingDispatch } from "./conversation-types";
 
 /** Public transcript bound for one frozen Group batch. The window is taken
  *  newest-first immediately before the request boundary, so a Topic longer
@@ -979,8 +979,8 @@ export class ConversationDispatcher {
       ...(cancelFailed ? { deferRunAggregate: true } : {}),
     });
     for (const entry of settled.settled) {
-      if (entry.outcome === "completed" && entry.message) {
-        this.emitTerminalProjection(settled.run, entry.member, entry.message);
+      if (entry.outcome === "completed" && (entry.message || entry.statusMessage)) {
+        this.emitTerminalProjection(settled.run, entry.member, entry.message, entry.statusMessage);
       } else {
         this.emitRunAndMember(settled.run, entry.member.id);
       }
@@ -1902,7 +1902,7 @@ export class ConversationDispatcher {
         now,
         forceRunTerminalOnSettle,
       });
-      this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
+      this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage, completed.statusMessage);
       return;
     }
     if (result.outcome === "failed") {
@@ -1936,7 +1936,7 @@ export class ConversationDispatcher {
         sourceTurn: { sessionAlias: started.sessionAlias ?? "", turnId: started.sourceTurnId },
         now,
       });
-      this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
+      this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage, completed.statusMessage);
       // PR8 automatic continuation: once every member of the active batch is
       // terminal on an automatic Run, the Router decides the next step. The
       // store is the authority on "batch settled" — it only leaves the Run
@@ -2032,7 +2032,7 @@ export class ConversationDispatcher {
           now: this.now().toISOString(),
         });
         if (reconciled.reconciled) {
-          this.emitTerminalProjection(reconciled.run, reconciled.memberTurn, reconciled.message);
+          this.emitTerminalProjection(reconciled.run, reconciled.memberTurn, reconciled.message, reconciled.statusMessage);
         }
         return;
       }
@@ -2060,19 +2060,23 @@ export class ConversationDispatcher {
   }
 
   private emitTerminalProjection(
-    run: import("./conversation-types").ConversationRun,
+    run: ConversationRun,
     memberTurn: MemberTurnRecord,
-    assistantMessage?: import("./conversation-types").ConversationMessage,
+    assistantMessage?: ConversationMessage,
+    statusMessage?: ConversationMessage,
   ): void {
     this.emitProduct({ type: "conversation-run-changed", run });
     this.emitProduct({ type: "member-turn-finished", run, memberTurn });
     if (assistantMessage) {
       this.emitProduct({ type: "conversation-message", message: assistantMessage });
     }
+    if (statusMessage) {
+      this.emitProduct({ type: "conversation-message", message: statusMessage });
+    }
   }
 
   private emitRunAndMember(
-    run: import("./conversation-types").ConversationRun,
+    run: ConversationRun,
     memberTurnId: string,
   ): void {
     this.emitProduct({ type: "conversation-run-changed", run });

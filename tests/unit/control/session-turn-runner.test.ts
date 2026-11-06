@@ -918,3 +918,23 @@ test("B4: dedupeStreamedSuffix normalizes whitespace only for the decision and s
   expect(dedupeStreamedSuffix("All done", "done again")).toBe("done again");
   expect(dedupeStreamedSuffix("| 列 |\n| --- |\n", "| 值 |")).toBe("| 值 |");
 });
+
+test("a Group turn that only thinks and calls tools settles with no final text", async () => {
+  const conversation = {
+    conversationId: "group_1", topicId: "topic_1", botId: "bot_1", runId: "run_1", memberTurnId: "member_1",
+  };
+  const { runner, captured } = makeRunner(async (opts) => {
+    opts.onThought("I should check the migration first.");
+    opts.onToolEvent({ toolCallId: "tool_1", title: "Read migration", status: "completed" });
+    return {};
+  });
+  const result = await runner.run({ ...REQ, turnOrigin: "orchestration", conversation }, new AbortController().signal,
+    () => {});
+  // Reasoning and tool output stay in the trace; the settled text is empty, so
+  // Group settlement must narrate the emptiness instead of borrowing them.
+  expect(result).toMatchObject({ ok: true, text: "" });
+  expect(captured.some((event) => event.type === "turn-output")).toBe(false);
+  expect(captured.find((event) => event.type === "turn-thought")).toMatchObject({
+    chunk: "I should check the migration first.",
+  });
+});

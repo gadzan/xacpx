@@ -277,6 +277,9 @@ export interface CompleteExecutionResult {
   run: ConversationRun;
   memberTurn: MemberTurnRecord;
   assistantMessage?: ConversationMessage;
+  /** System status row the settlement wrote because the turn ended with
+   *  nothing public to say. Emitted with the reply, never drawn as a bubble. */
+  statusMessage?: ConversationMessage;
   resurrected: boolean;
 }
 
@@ -326,6 +329,7 @@ export interface SettledCancelMember {
   member: MemberTurnRecord;
   outcome: CancelMemberOutcome["outcome"];
   message?: ConversationMessage;
+  statusMessage?: ConversationMessage;
 }
 
 export interface SettleCancelBatchResult {
@@ -505,6 +509,7 @@ export interface ReconcileLateResult {
   run: ConversationRun;
   memberTurn: MemberTurnRecord;
   message?: ConversationMessage;
+  statusMessage?: ConversationMessage;
   reconciled: boolean;
 }
 

@@ -1375,7 +1375,7 @@ describe("Group Components", () => {
       expect(wrapper.findAll('[data-test="agent-turn-row"] [data-test="msg-actions"]')).toHaveLength(1);
     });
 
-    it("keeps one settled bubble for an empty reply instead of the thinking bubble", async () => {
+    it("shows the member activity row instead of an empty settled bubble", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
         { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
@@ -1399,11 +1399,15 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       await flushPromises();
-      expect(wrapper.findAll('[data-test="group-finished-text-bubble"]')).toHaveLength(1);
-      expect(wrapper.find('[data-test="agent-thinking-bubble"]').exists()).toBe(false);
+      // An empty settled reply is evidence, not speech: no speech bubble is
+      // drawn, and the member keeps its activity row with the state entry and
+      // trace, instead of a blank reply bubble swallowing that row.
+      expect(wrapper.findAll('[data-test="group-finished-text-bubble"]')).toHaveLength(0);
+      expect(wrapper.findAll('[data-test="agent-turn-row"]')).toHaveLength(1);
+      expect(wrapper.findAll('[data-test="agent-thinking-bubble"]')).toHaveLength(1);
     });
 
-    it("keeps one bubble per member when both settled replies are empty", async () => {
+    it("draws no bubble at all when both settled replies are empty", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
         { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
@@ -1434,8 +1438,9 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       await flushPromises();
-      expect(wrapper.findAll('[data-test="group-finished-text-bubble"]')).toHaveLength(2);
-      expect(wrapper.find('[data-test="agent-thinking-bubble"]').exists()).toBe(false);
+      expect(wrapper.findAll('[data-test="group-finished-text-bubble"]')).toHaveLength(0);
+      expect(wrapper.findAll('[data-test="agent-turn-row"]')).toHaveLength(2);
+      expect(wrapper.findAll('[data-test="agent-thinking-bubble"]')).toHaveLength(2);
     });
 
     it("interleaves settled replies of parallel members, one bubble per member", async () => {
