@@ -124,6 +124,7 @@ function harness(options: {
     jobs?: Array<{ name: string; conclusion: string }>;
     url?: string;
   };
+  runListOutcome?: "error" | "empty";
 } = {}) {
   const clock = virtualClock();
   const remoteTags = options.remoteTags ?? new Set<string>();
@@ -161,6 +162,8 @@ function harness(options: {
       commands.push([command, ...args]);
       events.push([command, ...args].join(" "));
       if (command === "gh" && args[0] === "run" && args[1] === "list") {
+        if (options.runListOutcome === "error") throw new Error("gh unavailable");
+        if (options.runListOutcome === "empty") return "[]";
         return JSON.stringify([...tags].map((tag) => {
           const outcome = fixture.workflowByTag[tag];
           return {
@@ -441,12 +444,13 @@ test("a failed publish workflow stops the run before the registry is polled", as
   expect(fixture.events.some((event) => event === `git push origin ${relayTag}`)).toBe(false);
 });
 
-test("a tagged-but-unpublished wave stops a resume before any remaining tag is created", async () => {
+test("a failed tag run on a resume yields the rerun command before any remaining tag is created", async () => {
   const relayTag = releaseLib.tagFor("relay", version);
   const fixture = harness({
     pending: ["relay"],
     clean: true,
     headTags: [protocolTag],
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "failure" } },
     fetch: async () => notFound(),
   });
   const plan = fixture.api.buildPublishPlan();
@@ -458,6 +462,73 @@ test("a tagged-but-unpublished wave stops a resume before any remaining tag is c
   expect(output).toContain("not live on npm");
   expect(output).toContain("gh run rerun 42148236185 --failed");
   expect(output).toContain("publish --yes");
+});
+
+test("a successful tag run on a resume tells the operator to wait and never names gh run rerun", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("wait for workflow run 42148236185 (status completed) to settle");
+  expect(output).toContain("publish --yes");
+  expect(output).not.toContain("gh run rerun");
+});
+
+test("an in-progress tag run on a resume tells the operator to wait and names its run id and status", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    workflowByTag: { [protocolTag]: { status: "in_progress", conclusion: null } },
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("wait for workflow run 42148236185 (status in_progress) to settle");
+  expect(output).not.toContain("gh run rerun");
+});
+
+test("an unreadable gh run list on a resume names the query failure and never a tag re-push", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    runListOutcome: "error",
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("workflow state could not be read");
+  expect(output).toContain("gh run list");
+  expect(output).not.toContain("git push origin");
+  expect(output).not.toContain("gh run rerun");
+});
+
+test("a tag with no workflow run on a resume keeps the re-push repair and says a run may be missing", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    runListOutcome: "empty",
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain(`git push origin ${protocolTag}`);
+  expect(output).toContain("may have produced no workflow run");
+  expect(output).not.toContain("gh run rerun");
 });
 
 test("a resume confirms already-pushed tags before tagging the remaining wave", async () => {

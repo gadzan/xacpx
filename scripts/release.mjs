@@ -1196,20 +1196,30 @@ async function reportRegistry(npmName, version) {
 async function confirmPushedTags() {
   const tagged = taggedAtHead();
   if (tagged.length === 0) return 0;
-  console.log(`\n== resume: confirming ${tagged.length} already-pushed tag(s) on npm ==`);
+  console.log(`\n== resume confirming ${tagged.length} already-pushed tag(s) on npm ==`);
   const blockers = await collectResumeBlockers({
     tagged,
     confirm: reportRegistry,
-    runForTag: (tag) => findRunForTag(tag)?.databaseId ?? null,
+    repairFor: (entry) => {
+      const run = findRunForTag(entry.tag);
+      if (run === undefined) {
+        return `workflow state could not be read for ${entry.tag}; check \`gh run list\` before retrying`;
+      }
+      if (run === null) return null;
+      // `gh run rerun --failed` is rejected for a run with no failed jobs, so
+      // only a concluded failure can name that command.
+      if (run.conclusion === "failure") return `gh run rerun ${run.databaseId} --failed`;
+      return `wait for workflow run ${run.databaseId} (status ${run.status}) to settle, then re-run \`publish --yes\``;
+    },
   });
   if (blockers.length === 0) return 0;
-  console.log(`\nstopped before tagging the remaining waves: ${blockers.length} already-pushed tag(s) are not live on npm.`);
+  console.log(`\nstopped before tagging the remaining waves. ${blockers.length} already-pushed tag(s) are not live on npm.`);
   for (const blocker of blockers) {
     console.log(`  ${blocker.tag}  ${blocker.npmName}@${blocker.version}`);
-    console.log(`    repair: ${blocker.repair}`);
+    console.log(`    ${blocker.repair}`);
   }
-  console.log("  A tag is pushed before its workflow runs; repair that workflow before the remaining waves");
-  console.log("  ship, or they install a version that is not on npm. Then re-run `publish --yes`.");
+  console.log("  A tag is pushed before its workflow runs, so the tag may have produced no workflow run or the");
+  console.log("  version may still be propagating to npm. Follow the guidance above, then re-run `publish --yes`.");
   return 1;
 }
 

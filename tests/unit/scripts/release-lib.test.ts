@@ -462,8 +462,13 @@ test("collectResumeBlockers names only unconfirmed tags and their repair command
     version: "0.7.8-beta.13",
   };
 
-  expect(await collectResumeBlockers({ tagged, confirm, runForTag: () => 42148236185 })).toEqual([
-    { ...blocker, repair: "gh run rerun 42148236185 --failed" },
+  expect(await collectResumeBlockers({
+    tagged, confirm, repairFor: (entry) => `wait for run of ${entry.tag}`,
+  })).toEqual([
+    { ...blocker, repair: `wait for run of ${blocker.tag}` },
+  ]);
+  expect(await collectResumeBlockers({ tagged, confirm, repairFor: () => null })).toEqual([
+    { ...blocker, repair: `git push origin ${blocker.tag}` },
   ]);
   expect(await collectResumeBlockers({ tagged, confirm: async () => true })).toEqual([]);
   expect(await collectResumeBlockers({ tagged: [blocker], confirm: async () => false })).toEqual([

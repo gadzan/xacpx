@@ -481,21 +481,19 @@ export function releaseTagsAtHead(tags, registry = PACKAGE_REGISTRY) {
  * `publish` drops a package from its pending set as soon as its tag exists. A
  * workflow that failed before publishing would otherwise be skipped silently
  * on resume, and the remaining waves would ship against a version that is not
- * on the registry. The I/O stays injected: `confirm` checks the registry and
- * `runForTag` finds the workflow run whose failed jobs the operator re-runs.
+ * on the registry. The I/O stays injected. `confirm` checks the registry and
+ * `repairFor` returns the operator's next command for one unconfirmed tag, or
+ * null when re-pushing the tag is the answer.
  */
-export async function collectResumeBlockers({ tagged, confirm, runForTag = () => null }) {
+export async function collectResumeBlockers({ tagged, confirm, repairFor = () => null }) {
   const checked = await Promise.all(tagged.map(async (entry) => ({
     entry,
     ok: await confirm(entry.npmName, entry.version),
   })));
-  return checked.filter(({ ok }) => !ok).map(({ entry }) => {
-    const runId = runForTag(entry.tag);
-    return {
-      ...entry,
-      repair: runId ? `gh run rerun ${runId} --failed` : `git push origin ${entry.tag}`,
-    };
-  });
+  return checked.filter(({ ok }) => !ok).map(({ entry }) => ({
+    ...entry,
+    repair: repairFor(entry) ?? `git push origin ${entry.tag}`,
+  }));
 }
 
 /**
