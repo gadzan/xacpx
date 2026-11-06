@@ -1,0 +1,1324 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot 群聊调度与协作 · DS-Bot / Grok Bot / xacpx</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --bg:#0a0c11;
+    --bg2:#0e1118;
+    --panel:#121620;
+    --panel2:#171c27;
+    --panel3:#1d2330;
+    --line:#2a3142;
+    --line2:#3a4357;
+    --fg:#e9ecf3;
+    --muted:#99a3b6;
+    --dim:#6f7a8f;
+    --accent:#7c9cff;
+    --accent2:#5ad2e6;
+    --green:#5bd6a2;
+    --amber:#f2b35c;
+    --red:#ff7a85;
+    --purple:#c08cff;
+    --pink:#ff8fc7;
+    --radius:16px;
+    --shadow:0 18px 60px rgba(0,0,0,.35);
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  [data-theme="light"]{
+    color-scheme: light;
+    --bg:#f5f7fb;
+    --bg2:#eef2f8;
+    --panel:#ffffff;
+    --panel2:#f7f9fd;
+    --panel3:#eef2f8;
+    --line:#dce3ee;
+    --line2:#c6d0e0;
+    --fg:#182033;
+    --muted:#58657a;
+    --dim:#7c889c;
+    --accent:#3d63d9;
+    --accent2:#087f95;
+    --green:#138a5b;
+    --amber:#a7650a;
+    --red:#c02d3c;
+    --purple:#7a3fc4;
+    --pink:#b02d75;
+    --shadow:0 18px 50px rgba(30,45,70,.12);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;
+    background:
+      radial-gradient(1200px 600px at 15% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%),
+      radial-gradient(900px 500px at 95% 0%, color-mix(in srgb, var(--purple) 10%, transparent), transparent 55%),
+      var(--bg);
+    color:var(--fg);
+    font-family:var(--sans);
+    font-size:15px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,.mono{font-family:var(--mono);font-size:.92em}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 22px}
+  .hero{padding:64px 0 28px}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;
+    color:var(--accent2);font-size:12px;letter-spacing:.12em;text-transform:uppercase;
+    font-weight:700;
+  }
+  .eyebrow::before{content:"";width:22px;height:1px;background:currentColor}
+  h1{
+    font-size:clamp(30px,4.8vw,54px);
+    line-height:1.1;letter-spacing:-.035em;margin:16px 0 14px;
+    max-width:920px;
+  }
+  .lede{max-width:820px;color:var(--muted);font-size:17px;margin:0 0 22px}
+  .hero-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .pill{
+    display:inline-flex;align-items:center;gap:7px;
+    border:1px solid var(--line);background:color-mix(in srgb,var(--panel) 70%,transparent);
+    color:var(--muted);border-radius:999px;padding:6px 11px;font-size:12px;
+  }
+  .pill b{color:var(--fg);font-weight:650}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;background:var(--accent)}
+  .dot.green{background:var(--green)} .dot.amber{background:var(--amber)} .dot.purple{background:var(--purple)}
+  .dot.cyan{background:var(--accent2)} .dot.red{background:var(--red)} .dot.pink{background:var(--pink)}
+
+  nav.tabs{
+    position:sticky;top:0;z-index:30;
+    backdrop-filter:blur(16px);
+    background:color-mix(in srgb,var(--bg) 82%,transparent);
+    border-bottom:1px solid var(--line);
+    margin-top:26px;
+  }
+  .tabs-inner{display:flex;gap:4px;overflow-x:auto;padding:10px 0;scrollbar-width:none}
+  .tabs-inner::-webkit-scrollbar{display:none}
+  .tab{
+    appearance:none;border:0;background:transparent;color:var(--muted);
+    font:inherit;font-size:13px;font-weight:600;white-space:nowrap;
+    padding:8px 12px;border-radius:10px;cursor:pointer;
+  }
+  .tab:hover{color:var(--fg);background:color-mix(in srgb,var(--panel2) 80%,transparent)}
+  .tab[aria-selected="true"]{color:var(--fg);background:var(--panel3);box-shadow:inset 0 0 0 1px var(--line)}
+  main{padding:30px 0 80px}
+  section[data-panel]{display:none;animation:fade .28s ease}
+  section[data-panel].active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+  h2{font-size:clamp(23px,3vw,32px);line-height:1.2;letter-spacing:-.02em;margin:12px 0 10px}
+  h3{font-size:18px;letter-spacing:-.01em;margin:26px 0 10px}
+  h4{font-size:14px;margin:18px 0 8px;color:var(--fg)}
+  p{margin:0 0 12px}
+  .sub{color:var(--muted);max-width:820px}
+  .section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-bottom:8px}
+  .kicker{font-size:12px;color:var(--accent2);font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .card{
+    background:linear-gradient(180deg,color-mix(in srgb,var(--panel) 92%,transparent),var(--panel));
+    border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px;box-shadow:var(--shadow);
+  }
+  .card.flat{box-shadow:none;background:var(--panel2)}
+  .card h4{margin-top:0}
+  .card p:last-child{margin-bottom:0}
+  .tag{
+    display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;
+    padding:3px 8px;font-size:11px;color:var(--muted);background:var(--panel2);
+  }
+  .tag.green{color:var(--green);border-color:color-mix(in srgb,var(--green) 35%,var(--line))}
+  .tag.amber{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 35%,var(--line))}
+  .tag.purple{color:var(--purple);border-color:color-mix(in srgb,var(--purple) 35%,var(--line))}
+  .tag.cyan{color:var(--accent2);border-color:color-mix(in srgb,var(--accent2) 35%,var(--line))}
+
+  .callout{
+    border-left:3px solid var(--accent);
+    background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 9%,transparent),transparent 70%);
+    padding:16px 18px;border-radius:0 12px 12px 0;margin:18px 0;
+  }
+  .callout strong{color:var(--fg)}
+  .callout.warn{border-left-color:var(--amber);background:linear-gradient(90deg,color-mix(in srgb,var(--amber) 9%,transparent),transparent 70%)}
+  .callout.good{border-left-color:var(--green);background:linear-gradient(90deg,color-mix(in srgb,var(--green) 9%,transparent),transparent 70%)}
+
+  .sys-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:18px 0}
+  .sys{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);overflow:hidden;box-shadow:var(--shadow)}
+  .sys-head{padding:16px 18px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .logo{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-weight:800;font-size:13px;color:#fff;flex:none}
+  .logo.ds{background:linear-gradient(135deg,#4f7cff,#8a5cff)}
+  .logo.grok{background:linear-gradient(135deg,#111827,#4b5563)}
+  .logo.xa{background:linear-gradient(135deg,#0f766e,#06b6d4)}
+  .sys-head b{display:block;font-size:14px}
+  .sys-head span{display:block;font-size:11px;color:var(--muted)}
+  .sys-body{padding:14px 18px 16px;font-size:13px;color:var(--muted)}
+  .sys-body b{color:var(--fg)}
+  .sys-body ul{margin:8px 0 0;padding-left:18px}
+  .sys-body li{margin:4px 0}
+
+  .flow{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap;margin:12px 0}
+  .node{
+    flex:1;min-width:120px;border:1px solid var(--line);border-radius:12px;background:var(--panel2);
+    padding:10px 11px;font-size:12px;color:var(--muted)
+  }
+  .node b{display:block;color:var(--fg);font-size:13px;margin-bottom:2px}
+  .arrow{display:grid;place-items:center;color:var(--dim);font-size:15px;min-width:18px}
+  .flow.vertical{flex-direction:column}
+
+  .tabs2{display:inline-flex;gap:3px;padding:3px;border:1px solid var(--line);background:var(--panel2);border-radius:12px;flex-wrap:wrap}
+  .tabs2 button{
+    appearance:none;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:650;
+    padding:7px 11px;border-radius:9px;cursor:pointer
+  }
+  .tabs2 button[aria-pressed="true"]{background:var(--panel);color:var(--fg);box-shadow:0 1px 0 rgba(255,255,255,.04),inset 0 0 0 1px var(--line)}
+  .pane{display:none}
+  .pane.on{display:block}
+
+  .tablewrap{overflow:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+  table{border-collapse:collapse;width:100%;min-width:720px;font-size:13px}
+  th,td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+  th{background:var(--panel2);color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase;position:sticky;top:0;z-index:1}
+  tr:last-child td{border-bottom:0}
+  td b{color:var(--fg)}
+  .yes{color:var(--green);font-weight:700}
+  .no{color:var(--red);font-weight:700}
+  .part{color:var(--amber);font-weight:700}
+
+  .sim{
+    display:grid;grid-template-columns:1.1fr 1fr;gap:14px;margin-top:14px
+  }
+  .sim-input{display:flex;flex-direction:column;gap:10px}
+  .sim-input label{font-size:12px;color:var(--muted)}
+  .sim-input input,.sim-input select,.sim-input textarea{
+    width:100%;background:var(--bg2);border:1px solid var(--line2);border-radius:10px;
+    color:var(--fg);font:inherit;font-size:13px;padding:10px 12px;outline:none
+  }
+  .sim-input input:focus,.sim-input select:focus,.sim-input textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+  .btn{
+    appearance:none;border:1px solid var(--line2);background:var(--panel3);color:var(--fg);
+    font:inherit;font-size:13px;font-weight:650;padding:9px 13px;border-radius:10px;cursor:pointer
+  }
+  .btn:hover{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--panel3))}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#08101f}
+  [data-theme="light"] .btn.primary{color:#fff}
+  .btn.ghost{background:transparent}
+  .result-cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .result{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:12px}
+  .result h5{margin:0 0 6px;font-size:12px;color:var(--muted);letter-spacing:.03em;text-transform:uppercase}
+  .result .who{font-size:13px;line-height:1.5}
+  .result .who b{display:inline-block;margin-right:4px}
+  .badge{display:inline-flex;align-items:center;border-radius:6px;padding:1px 6px;font-size:10px;font-weight:700;background:var(--panel3);color:var(--muted);border:1px solid var(--line);margin-left:4px}
+  .badge.seq{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 35%,var(--line))}
+  .badge.par{color:var(--green);border-color:color-mix(in srgb,var(--green) 35%,var(--line))}
+  .badge.lead{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--line))}
+
+  .chatboard{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
+  .chatcol{border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden;min-height:440px;display:flex;flex-direction:column}
+  .chathead{padding:11px 12px;border-bottom:1px solid var(--line);background:var(--panel2);display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .chathead b{font-size:12px}
+  .chathead span{font-size:10px;color:var(--muted)}
+  .msgs{padding:10px;display:flex;flex-direction:column;gap:7px;flex:1;overflow:auto;max-height:420px}
+  .m{max-width:94%;border-radius:12px;padding:7px 9px;font-size:12px;line-height:1.5;opacity:0;transform:translateY(5px);animation:pop .25s ease forwards}
+  @keyframes pop{to{opacity:1;transform:none}}
+  .m.user{align-self:flex-end;background:color-mix(in srgb,var(--accent) 20%,var(--panel3));border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line))}
+  .m.bot{align-self:flex-start;background:var(--panel2);border:1px solid var(--line)}
+  .m.bot b{display:block;font-size:10px;color:var(--accent2);margin-bottom:1px;letter-spacing:.03em}
+  .m.sys{align-self:center;background:transparent;border:1px dashed var(--line2);color:var(--muted);font-size:10px;max-width:100%;text-align:center;border-radius:8px;padding:4px 8px}
+  .m.pass{color:var(--dim);font-style:italic}
+  .m.trace{border-left:2px solid var(--purple)}
+  .typing{display:flex;align-items:center;gap:5px;color:var(--dim);font-size:10px;padding:2px 4px}
+  .typing i{width:4px;height:4px;border-radius:50%;background:currentColor;display:inline-block;animation:blink 1.2s infinite}
+  .typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
+  @keyframes blink{0%,60%,100%{opacity:.2}30%{opacity:1}}
+  .chatfoot{padding:9px 12px;border-top:1px solid var(--line);font-size:10px;color:var(--muted);background:var(--panel2)}
+
+  .legend{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--muted);margin:8px 0}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .sw{width:9px;height:9px;border-radius:3px;display:inline-block}
+
+  .matrix td:first-child{position:sticky;left:0;background:var(--panel);font-weight:600;color:var(--fg);z-index:2;min-width:150px}
+  .matrix th:first-child{left:0;z-index:3}
+  .table-wrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .filters{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+  .filters button{
+    appearance:none;border:1px solid var(--line);background:var(--panel2);color:var(--muted);
+    font:inherit;font-size:12px;padding:6px 10px;border-radius:999px;cursor:pointer
+  }
+  .filters button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#08101f;font-weight:700}
+  [data-theme="light"] .filters button[aria-pressed="true"]{color:#fff}
+
+  .borrow{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+  .borrow .card h4{display:flex;align-items:center;gap:8px}
+  .check{color:var(--green)} .cross{color:var(--red)}
+  .phase{position:relative;padding-left:26px;margin:14px 0}
+  .phase::before{content:"";position:absolute;left:7px;top:6px;bottom:6px;width:1px;background:var(--line2)}
+  .phase-item{position:relative;margin:0 0 12px}
+  .phase-item::before{content:"";position:absolute;left:-24px;top:6px;width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--bg)}
+  .phase-item.p1::before{background:var(--amber)}
+  .phase-item.p2::before{background:var(--purple)}
+  .phase-item b{display:block;font-size:13px}
+  .phase-item p{font-size:12px;color:var(--muted);margin:2px 0 0}
+
+  .code{
+    background:#070a10;border:1px solid #263044;border-radius:12px;padding:14px 16px;
+    overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.6;color:#c8d4ea
+  }
+  [data-theme="light"] .code{background:#0e1522;color:#dbe6f7;border-color:#1e2a40}
+  .code .k{color:#c08cff}.code .s{color:#7ee2b8}.code .c{color:#6f7a8f}.code .n{color:#7c9cff}
+
+  .toggle-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}
+  .toggle-row .btn[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#08101f}
+  [data-theme="light"] .toggle-row .btn[aria-pressed="true"]{color:#fff}
+
+  .seqviz{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
+  .seqbox{border:1px solid var(--line);border-radius:14px;background:var(--panel2);padding:14px;min-height:210px}
+  .seqrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .chip{border:1px solid var(--line);background:var(--panel);border-radius:9px;padding:5px 9px;font-size:11px;color:var(--muted)}
+  .chip b{color:var(--fg)}
+  .chip.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,var(--panel));color:var(--fg)}
+  .lineh{height:1px;background:var(--line);flex:1;min-width:12px}
+  .note{font-size:11px;color:var(--muted);margin-top:8px}
+
+  details{border:1px solid var(--line);border-radius:12px;background:var(--panel2);padding:10px 12px;margin:8px 0}
+  summary{cursor:pointer;font-size:13px;font-weight:650}
+  details p,details ul{font-size:12px;color:var(--muted)}
+  details ul{padding-left:18px}
+
+  .footer{border-top:1px solid var(--line);padding:26px 0 60px;color:var(--dim);font-size:12px}
+  .footer b{color:var(--muted)}
+  .small{font-size:11px;color:var(--dim)}
+  .nowrap{white-space:nowrap}
+  .mt0{margin-top:0}.mt8{margin-top:8px}.mt16{margin-top:16px}.mt24{margin-top:24px}
+  .flex{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .between{justify-content:space-between}
+  .muted{color:var(--muted)}
+  .accent{color:var(--accent)}
+  .green{color:var(--green)}.amber{color:var(--amber)}.red{color:var(--red)}.purple{color:var(--purple)}.cyan{color:var(--accent2)}
+
+  @media (max-width:980px){
+    .g4{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .sys-grid,.chatboard,.result-cols{grid-template-columns:1fr}
+    .sim,.seqviz,.g2,.borrow{grid-template-columns:1fr}
+    .g3{grid-template-columns:1fr}
+    .chatcol{min-height:0}
+  }
+  @media (max-width:620px){
+    .hero{padding-top:40px}
+    .g4{grid-template-columns:1fr}
+    th,td{padding:8px 9px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero wrap">
+  <div class="eyebrow">xacpx · research note</div>
+  <h1>Bot 群聊：<span class="accent">谁先说</span>，<span class="cyan">谁接着说</span>，<span class="green">谁最后收口</span></h1>
+  <p class="lede">
+    把 DS-Bot、Grok Bot 0.18 和 xacpx 放在同一张桌子上，看三个问题：
+    一条消息之后谁回答、Bot 之间怎么派活、用户在群里到底看到什么。
+    结论不是“抄哪个”，而是“xacpx 该补哪一层”。
+  </p>
+  <div class="hero-meta">
+    <span class="pill"><span class="dot"></span><b>DS-Bot</b> 0.2.7 · 房间 + 发言位</span>
+    <span class="pill"><span class="dot purple"></span><b>Grok Bot</b> 0.18 · 有界轮询</span>
+    <span class="pill"><span class="dot green"></span><b>xacpx</b> 0.24.10 · Run + MemberTurn</span>
+  </div>
+</header>
+
+<nav class="tabs" aria-label="章节">
+  <div class="wrap tabs-inner" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-tab="overview">总览</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="dispatch">调度</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="collab">协作</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="interaction">群聊交互</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="compare">对比矩阵</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="blueprint">xacpx 架构</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="risks">风险与验收</button>
+  </div>
+</nav>
+
+<main class="wrap">
+
+<!-- ================= OVERVIEW ================= -->
+<section data-panel="overview" class="active" role="tabpanel">
+  <div class="section-head">
+    <div>
+      <div class="kicker">00 · the short version</div>
+      <h2>三个系统，三种群聊</h2>
+    </div>
+    <div class="tabs2" role="group" aria-label="主题切换">
+      <button aria-pressed="true" data-sys="ds">DS-Bot</button>
+      <button aria-pressed="false" data-sys="grok">Grok Bot</button>
+      <button aria-pressed="false" data-sys="xa">xacpx</button>
+    </div>
+  </div>
+
+  <div class="callout">
+    <strong>一句话：</strong>xacpx 缺的不是“群”，而是“聊天室感”。它已经是可审计的任务执行型群聊；DS-Bot 和 Grok Bot 值得借的是
+    <b>依次发言、跳过、过程可见</b>，不是把它们的调度器搬进来。
+  </div>
+
+  <div class="sys-grid">
+    <article class="sys">
+      <div class="sys-head"><span class="logo ds">DS</span><div><b>DS-Bot</b><span>房间日志 + 发言位</span></div></div>
+      <div class="sys-body">
+        <p><b>一个房间，一条日志。</b>群自己有一个不跑模型的 Session，用合成的 <code>group_relay</code> 驱动一轮。</p>
+        <ul>
+          <li>普通消息默认先给 <b>admin</b>；<code>everyone</code> 模式按顺序全员。</li>
+          <li><code>@Name</code> 一发出来就<b>并行</b>开工。</li>
+          <li>干活 15 秒就让出本轮；结果晚到也发回群。</li>
+          <li>Bot 之间是一棵 <b>work tree</b>，结果自动向上收。</li>
+        </ul>
+      </div>
+    </article>
+    <article class="sys">
+      <div class="sys-head"><span class="logo grok">G</span><div><b>Grok Bot 0.18</b><span>有界轮询</span></div></div>
+      <div class="sys-body">
+        <p><b>群是一个没有模型的 agent 文件夹。</b><code>GroupChatOrchestrator</code> 逐成员跑回合。</p>
+        <ul>
+          <li>最多 <b>3 轮 / 10 条</b>；每人每轮最多 2 条。</li>
+          <li>每轮从“上次用户发言以来”的 @ 重算响应者。</li>
+          <li><code>(pass)</code> 可以不说；失败也算 pass。</li>
+          <li>成员复用自己 Session，群历史带 <code>[Group chat]</code> 标签。</li>
+        </ul>
+      </div>
+    </article>
+    <article class="sys">
+      <div class="sys-head"><span class="logo xa">xa</span><div><b>xacpx</b><span>Run + MemberTurn</span></div></div>
+      <div class="sys-body">
+        <p><b>一次用户请求 = 一个 Run。</b>选中的每个 Bot 一个 MemberTurn，派活用结构化 <code>group_send</code>。</p>
+        <ul>
+          <li>Topic 内一次只有一个活动 Run；队列 64。</li>
+          <li>并行 cohort 受 writer slot / worktree 约束。</li>
+          <li>结果精确 join，trace 持久化，可恢复。</li>
+          <li>没有内建轮询、pass、过程发言。</li>
+        </ul>
+      </div>
+    </article>
+  </div>
+
+  <div class="grid g3">
+    <div class="card">
+      <h4><span class="dot amber"></span> 调度</h4>
+      <p class="muted">DS-Bot：讨论串行、派活并行；Grok：严格串行；xacpx：同一批并行，没“依次发言”。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot purple"></span> 协作</h4>
+      <p class="muted">DS-Bot：树 + 自动向上收；Grok：异步消息；xacpx：结构化 assignment + work graph。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot green"></span> 交互</h4>
+      <p class="muted">DS-Bot：过程进群；Grok：流式预览；xacpx：最终结果进群，过程在 trace。</p>
+    </div>
+  </div>
+
+  <h3>三条架构路线</h3>
+  <div class="grid g3">
+    <div class="card flat">
+      <h4>DS-Bot · 房间</h4>
+      <div class="flow vertical">
+        <div class="node"><b>Room Session</b>不跑模型，合成 group_relay</div>
+        <div class="arrow">↓</div>
+        <div class="node"><b>Room log</b>seq + 每成员 seen</div>
+        <div class="arrow">↓</div>
+        <div class="node"><b>Bot A · 群内 Session</b>与私聊隔离；read_own_chat</div>
+        <div class="node"><b>Bot B · 群内 Session</b>与 A 同一轮并行/顺序</div>
+      </div>
+    </div>
+    <div class="card flat">
+      <h4>Grok · 轮询</h4>
+      <div class="flow vertical">
+        <div class="node"><b>Group agent</b>group.json memberIds</div>
+        <div class="arrow">↓</div>
+        <div class="node"><b>Orchestrator</b>3 轮 / 10 条 / pass</div>
+        <div class="arrow">↓</div>
+        <div class="node"><b>Member Session</b>复用私聊，统一历史</div>
+        <div class="node"><b>Group transcript</b>send-message(author)</div>
+      </div>
+    </div>
+    <div class="card flat">
+      <h4>xacpx · Run</h4>
+      <div class="flow vertical">
+        <div class="node"><b>Group / Topic</b>botIds + lead + target</div>
+        <div class="arrow">↓</div>
+        <div class="node"><b>Run</b>一次人类请求</div>
+        <div class="arrow">↓</div>
+        <div class="node"><b>MemberTurn A/B</b>assignment + dispatch</div>
+        <div class="node"><b>SQLite</b>结果 / trace / lease</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout warn mt24">
+    <strong>读法提醒：</strong>Grok Bot 仓库是 0.18.0 的重建工程，<code>source/host/groups/*</code> 与 <code>source/host/extensions/transcript/*</code> 是仓库中可读的重建运行时；
+    共享房间/云中继只按仓库中可读的实现描述，不外推 Anysphere 服务端未公开的部分。DS-Bot 与 xacpx 是完整实现。
+  </div>
+</section>
+
+<!-- ================= DISPATCH ================= -->
+<section data-panel="dispatch" role="tabpanel">
+  <div class="section-head">
+    <div>
+      <div class="kicker">01 · who speaks next</div>
+      <h2>调度：一条消息之后谁说话</h2>
+    </div>
+    <div class="tabs2" role="group" aria-label="系统">
+      <button aria-pressed="true" data-dsys="ds">DS-Bot</button>
+      <button aria-pressed="false" data-dsys="grok">Grok</button>
+      <button aria-pressed="false" data-dsys="xa">xacpx</button>
+    </div>
+  </div>
+
+  <div class="pane on" data-dpane="ds">
+    <div class="callout">
+      <strong>DS-Bot 的规则：</strong>普通消息先给 admin；<code>everyone</code> 模式全员按顺序；<code>@</code> 点名的人立刻并行。
+      关键不是“选谁”，而是“选完之后，本轮还有没有一个发言位”。
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h4>openingCall 决策表</h4>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>开场</th><th>谁回答</th><th>顺序</th></tr></thead>
+            <tbody>
+              <tr><td>用户普通消息 · admin 模式</td><td>管理员</td><td><span class="badge">单发</span></td></tr>
+              <tr><td>用户普通消息 · everyone 模式</td><td>全体</td><td><span class="badge seq">有序</span> admin 第一</td></tr>
+              <tr><td>用户 <code>@Name</code></td><td>被点名者</td><td><span class="badge par">并行</span></td></tr>
+              <tr><td>用户 <code>@all</code></td><td>全体</td><td><span class="badge par">并行</span></td></tr>
+              <tr><td>Main/管理员 post</td><td>按规则</td><td>按规则</td></tr>
+              <tr><td>普通成员 post</td><td>只叫它 @ 的人</td><td><span class="badge par">并行</span></td></tr>
+              <tr><td>Goal draft / nudge</td><td>管理员</td><td><span class="badge">单发</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h4>一轮的生命周期</h4>
+        <div class="flow vertical">
+          <div class="node"><b>slots</b>waiting → speaking → posted / passed / working / missed</div>
+          <div class="arrow">↓</div>
+          <div class="node"><b>startable()</b>同成员不能同时说；有序 slot 等前面的</div>
+          <div class="arrow">↓</div>
+          <div class="node"><b>roomTurn()</b>投递到群内 Session；touch/work/approval</div>
+          <div class="arrow">↓</div>
+          <div class="node"><b>nudge()</b>turn 结束、call 进来、用户写入 → 再跑一轮循环</div>
+        </div>
+        <p class="note">普通消息的有序槽位保证“报数/讨论”不会乱；<code>@</code> 产生的槽位不带 ordered，谁有空谁先开工。</p>
+      </div>
+    </div>
+    <div class="grid g3 mt16">
+      <div class="card flat"><h4>15 秒</h4><p class="muted">首次非团队工具调用后仍在干活 → 本轮不再等它，标 <code>working</code>，结果晚到再发。</p></div>
+      <div class="card flat"><h4>4 分钟</h4><p class="muted">只有成员 Session 完全无事件才计时；有工具/流事件会不断重置。</p></div>
+      <div class="card flat"><h4>6 次</h4><p class="muted">连续 0 工具、重复/客套的 Bot 接力 → 暂停下一次调用，等用户发言后放行。</p></div>
+    </div>
+  </div>
+
+  <div class="pane" data-dpane="grok">
+    <div class="callout">
+      <strong>Grok 的规则：</strong>每一轮重新扫“自上次用户发言以来”的历史；谁被 <code>@</code> 就谁答，没人被 @ 就全员。
+      轮次固定 3 轮，成员按轮次循环移位，每人只看到“自上次自己发言以来”的新消息。
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h4>resolveResponders</h4>
+        <div class="code"><span class="c">// 从最后一条 user 消息开始扫</span>
+everyone = <span class="k">false</span>; mentioned = <span class="k">new</span> Set()
+<span class="k">for</span> message <span class="k">in</span> history.slice(lastUserIndex):
+  targets = parseGroupMentions(message.content, members)
+  everyone ||= targets.isEveryone
+  mentioned.add(...targets.memberIds)
+<span class="k">return</span> everyone || mentioned.size === <span class="n">0</span>
+  ? allMembers
+  : members.filter(m =&gt; mentioned.has(m.id))</div>
+        <p class="note">所以成员在本轮写 <code>@C</code>，影响的是下一轮的响应者，而不是立刻调用 C。</p>
+      </div>
+      <div class="card">
+        <h4>轮询上限</h4>
+        <div class="grid g2">
+          <div class="card flat"><h4>3</h4><p class="muted">最多轮数</p></div>
+          <div class="card flat"><h4>10</h4><p class="muted">成员消息总数</p></div>
+          <div class="card flat"><h4>2</h4><p class="muted">每人每轮消息</p></div>
+          <div class="card flat"><h4>6</h4><p class="muted">群成员上限</p></div>
+        </div>
+        <p class="note">全员 pass 时本轮提前结束；成员回合失败视为 pass，不让整轮失败。</p>
+      </div>
+    </div>
+    <div class="card mt16">
+      <h4>一轮内的顺序</h4>
+      <div class="flow">
+        <div class="node"><b>Round 0</b>A → B → C</div>
+        <div class="arrow">→</div>
+        <div class="node"><b>Round 1</b>B → C → A</div>
+        <div class="arrow">→</div>
+        <div class="node"><b>Round 2</b>C → A → B</div>
+      </div>
+      <p class="note">循环移位保证每轮第一个说话的人不同；没有“谁先抢到”的并发。</p>
+    </div>
+  </div>
+
+  <div class="pane" data-dpane="xa">
+    <div class="callout">
+      <strong>xacpx 的规则：</strong>target 是结构化 union；没有 target 默认 Lead。
+      选中成员在同一个 Run 里各有一个 MemberTurn；同批并行，受 writer slot / worktree 约束。
+      现在没有“依次发言”，但已有 <code>dependsOn</code> 串行栅栏可以复用。
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h4>target union</h4>
+        <div class="code"><span class="k">type</span> ConversationTarget =
+  | { botId: <span class="k">string</span> }
+  | { mode: <span class="s">"members"</span>; botIds: <span class="k">string</span>[] }
+  | { mode: <span class="s">"everyone"</span> }
+  | { mode: <span class="s">"automatic"</span> }</div>
+        <p class="note">正文 <code>@</code> 不直接路由；Relay composer 把 <code>@</code> 换算成 target。外部频道只认开头 <code>@Name</code>。</p>
+      </div>
+      <div class="card">
+        <h4>一次请求的持久对象</h4>
+        <div class="flow vertical">
+          <div class="node"><b>Run</b>requestId 幂等；Topic 内排队</div>
+          <div class="arrow">↓</div>
+          <div class="node"><b>MemberTurn × N</b>profile 快照 / effect / attempt</div>
+          <div class="arrow">↓</div>
+          <div class="node"><b>PendingDispatch × N</b>lease / generation / writer slot</div>
+        </div>
+      </div>
+    </div>
+    <div class="grid g3 mt16">
+      <div class="card flat"><h4>并行 cohort</h4><p class="muted">同批成员共享请求前 baseline；互相看不到对方本轮结果，除非显式依赖。</p></div>
+      <div class="card flat"><h4>single writer</h4><p class="muted">不是 read-only + declared-enforced 的 work 会串行，避免共享目录并发写。</p></div>
+      <div class="card flat"><h4>自动 Router</h4><p class="muted">受限、无状态；Jev 每次选一个成员；完成需要验证。</p></div>
+    </div>
+  </div>
+
+  <h3>模拟一下：同一句话，三个系统怎么选人</h3>
+  <div class="sim">
+    <div class="card flat sim-input">
+      <label for="simText">群消息</label>
+      <input id="simText" value="帮我看下登录模块，@Reviewer 看代码，@Tester 跑用例" autocomplete="off">
+      <div class="grid g2">
+        <div>
+          <label for="simMode">DS-Bot 模式</label>
+          <select id="simMode">
+            <option value="admin">admin（默认）</option>
+            <option value="everyone">everyone</option>
+          </select>
+        </div>
+        <div>
+          <label for="simLead">xacpx 无 target 时</label>
+          <select id="simLead">
+            <option value="lead">Lead</option>
+            <option value="all">Everyone</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex">
+        <button class="btn primary" id="simRun">模拟</button>
+        <button class="btn ghost" id="simReset">清空 @</button>
+      </div>
+      <p class="note">这是行为模拟，不是实际调用。Grok 这里按“第 1 轮”展示；后续轮次会重新计算。</p>
+    </div>
+    <div class="card">
+      <div class="result-cols">
+        <div class="result" id="simDs"><h5>DS-Bot</h5><div class="who muted">等待模拟</div></div>
+        <div class="result" id="simGrok"><h5>Grok</h5><div class="who muted">等待模拟</div></div>
+        <div class="result" id="simXa"><h5>xacpx</h5><div class="who muted">等待模拟</div></div>
+      </div>
+      <div class="legend mt8">
+        <span><i class="sw" style="background:var(--green)"></i> 并行</span>
+        <span><i class="sw" style="background:var(--amber)"></i> 串行</span>
+        <span><i class="sw" style="background:var(--accent)"></i> Lead / 单发</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= COLLAB ================= -->
+<section data-panel="collab" role="tabpanel">
+  <div class="section-head">
+    <div><div class="kicker">02 · bot to bot</div><h2>协作：派活、回收、防绕圈</h2></div>
+  </div>
+
+  <div class="grid g3">
+    <div class="card">
+      <h4>DS-Bot · work tree</h4>
+      <p class="muted">A 派给 B 的活是一棵树：B 再派给 C/D 的活挂在下面；B 的回答要等 C/D 都交回，再连同它们的结果一起交给 A。</p>
+      <div class="flow vertical">
+        <div class="node"><b>A</b>work1</div>
+        <div class="arrow">↓ message_bot</div>
+        <div class="node"><b>B</b>做 work1</div>
+        <div class="arrow">↓ ↓</div>
+        <div class="node"><b>C</b>work2 · parent=work1</div>
+        <div class="node"><b>D</b>work3 · parent=work1</div>
+        <div class="arrow">↓ 结果自动向上收</div>
+        <div class="node"><b>A</b>拿到 B 的回复 + C/D 结果</div>
+      </div>
+      <p class="note">发给“正在等这件活结果的上游”会被拒绝；结果本来就会自己上去。</p>
+    </div>
+    <div class="card">
+      <h4>Grok · 异步消息</h4>
+      <p class="muted"><code>SendToAgent</code> 是发短信，不是 RPC：发完就结束本回合，对方以后自己回；群目标会变成往群里发帖。</p>
+      <div class="flow vertical">
+        <div class="node"><b>A</b>SendToAgent(B)</div>
+        <div class="arrow">↓ 立即返回</div>
+        <div class="node"><b>B</b>入站队列 / priority 可打断</div>
+        <div class="arrow">↓ 隐藏 [agent] 回合</div>
+        <div class="node"><b>B</b>可选回复 SendToAgent(A)</div>
+        <div class="arrow">↓ 以后</div>
+        <div class="node"><b>A</b>收到新消息，不等待</div>
+      </div>
+      <p class="note">没有树、预算或自动回收；靠 prompt 规则“不要 ping-pong 确认”。</p>
+    </div>
+    <div class="card">
+      <h4>xacpx · 结构化 assignment</h4>
+      <p class="muted"><code>group_send({to, task, expectedOutput?})</code> 在同一 Run 内写公共 handoff + 子 MemberTurn + dispatch。</p>
+      <div class="flow vertical">
+        <div class="node"><b>A</b>live claim + capability</div>
+        <div class="arrow">↓ group_send</div>
+        <div class="node"><b>SQLite</b>handoff message + MemberTurn + dispatch</div>
+        <div class="arrow">↓</div>
+        <div class="node"><b>B</b>assignment 执行</div>
+        <div class="arrow">↓ 全部子项结算</div>
+        <div class="node"><b>A</b>恰好唤醒一次 + group_read_result</div>
+      </div>
+      <p class="note">work graph 检查 6 个条件；started unknown 不盲重试，转 indeterminate。</p>
+    </div>
+  </div>
+
+  <h3>结果回收的三种“收口”</h3>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>场景</th><th>DS-Bot</th><th>Grok</th><th>xacpx</th></tr></thead>
+      <tbody>
+        <tr><td>A 同时派给 B、C</td><td>B/C 并行；批次齐后唤醒 A 一次</td><td>没有同消息并行；下一轮重算</td><td>同一批 MemberTurn 并行；全部结算后唤醒 A 一次</td></tr>
+        <tr><td>B 再派给 C</td><td>c 挂在 B 的 work 下；B 等 C 回来再答 A</td><td>C 是另一条异步消息；B 不自动等</td><td>C 是 B 发出的子 assignment；B 被唤醒后再答 A</td></tr>
+        <tr><td>A 等结果时 B 又发消息</td><td>拒绝发给上游，避免绕圈</td><td>没有硬约束</td><td>waiting cycle 拒绝；budget/quarantine 兜底</td></tr>
+        <tr><td>B 卡在等用户批准</td><td>A 一直等；状态里看得到</td><td>B 回合阻塞本轮</td><td>A 保持 waiting；可取消/恢复</td></tr>
+        <tr><td>结果太长</td><td>放 handoff-results 文件，state.json 只留头</td><td>消息 clamp 8k</td><td>4k 分页 group_read_result；原结果在 SQLite</td></tr>
+        <tr><td>重复请求</td><td><code>request_id</code> + 内容指纹</td><td>MCP invocation identity</td><td><code>(sourceTurnId, invocationId)</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout good mt16">
+    <strong>xacpx 的最强项：</strong>它不是“发完消息希望对方回”，而是“派活、占预算、可读结果、可恢复、可验证”。
+    DS-Bot 的 work tree 提供了更自然的“父等子”语义；xacpx 的 work graph 则把同一件事做成了可审计状态机。两者思想一致，xacpx 不需要换模型。
+  </div>
+</section>
+
+<!-- ================= INTERACTION ================= -->
+<section data-panel="interaction" role="tabpanel">
+  <div class="section-head">
+    <div><div class="kicker">03 · what the user sees</div><h2>群聊交互：Bot 怎么“说话”</h2></div>
+    <div class="flex">
+      <button class="btn primary" id="playChat">播放对话</button>
+      <button class="btn ghost" id="resetChat">重置</button>
+    </div>
+  </div>
+  <p class="sub">同一件“登录模块评审”，三个系统在用户眼里完全不一样。点“播放对话”看它们各自怎么开口、怎么让出、怎么收口。</p>
+
+  <div class="chatboard" id="chatboard">
+    <div class="chatcol" data-chat="ds">
+      <div class="chathead"><b><span class="dot amber"></span> DS-Bot</b><span>房间 + 发言位</span></div>
+      <div class="msgs" id="chat-ds"></div>
+      <div class="chatfoot">状态胶囊：Reviewer 等批准 · Tester 正在跑 · <b>全部停止</b></div>
+    </div>
+    <div class="chatcol" data-chat="grok">
+      <div class="chathead"><b><span class="dot purple"></span> Grok Bot</b><span>有界轮询</span></div>
+      <div class="msgs" id="chat-grok"></div>
+      <div class="chatfoot">每轮顺序 · 每人最多 2 条 · <code>(pass)</code> 不显示</div>
+    </div>
+    <div class="chatcol" data-chat="xa">
+      <div class="chathead"><b><span class="dot green"></span> xacpx</b><span>Run + MemberTurn</span></div>
+      <div class="msgs" id="chat-xa"></div>
+      <div class="chatfoot">per-member bubble · dispatch row · trace detail · Stop</div>
+    </div>
+  </div>
+
+  <div class="grid g3 mt16">
+    <div class="card flat">
+      <h4>DS-Bot 的“说话”</h4>
+      <p class="muted">成员每个 assistant text：非最后一步立即进群；最后一步作为结果；<code>[PASS]</code> 不发布。群里的每一条 @ 都会立刻叫人。</p>
+    </div>
+    <div class="card flat">
+      <h4>Grok 的“说话”</h4>
+      <p class="muted">成员的 <code>SendMessage</code> 被 transport 收集，流式文本先做临时预览，sealed 后写进 transcript；pass 被过滤。</p>
+    </div>
+    <div class="card flat">
+      <h4>xacpx 的“说话”</h4>
+      <p class="muted">只有最终 public message 进群；过程在 trace 里。派活用 <code>group_send</code>，不是正文 @。</p>
+    </div>
+  </div>
+
+  <div class="legend mt16">
+    <span><i class="sw" style="background:var(--accent)"></i> 用户</span>
+    <span><i class="sw" style="background:var(--accent2)"></i> Bot</span>
+    <span><i class="sw" style="background:var(--purple)"></i> 过程 / trace</span>
+    <span><i class="sw" style="background:var(--line2)"></i> 系统事件</span>
+  </div>
+</section>
+
+<!-- ================= COMPARE ================= -->
+<section data-panel="compare" role="tabpanel">
+  <div class="section-head">
+    <div><div class="kicker">04 · side by side</div><h2>对比矩阵</h2></div>
+  </div>
+  <div class="filters" role="group" aria-label="过滤">
+    <button aria-pressed="true" data-filter="all">全部</button>
+    <button aria-pressed="false" data-filter="dispatch">调度</button>
+    <button aria-pressed="false" data-filter="collab">协作</button>
+    <button aria-pressed="false" data-filter="ux">交互</button>
+    <button aria-pressed="false" data-filter="safety">恢复/安全</button>
+  </div>
+  <div class="tablewrap">
+    <table class="matrix">
+      <thead><tr><th>维度</th><th>DS-Bot</th><th>Grok Bot 0.18</th><th>xacpx</th></tr></thead>
+      <tbody>
+        <tr data-cat="dispatch"><td>群身份</td><td>room + members + admin + mode</td><td>group agent + group.json</td><td>Conversation(group) + lead + topics</td></tr>
+        <tr data-cat="dispatch"><td>成员上限</td><td>12</td><td>6</td><td>target 64；成员数受 gate/预算</td></tr>
+        <tr data-cat="dispatch"><td>群自身跑模型</td><td class="yes">否，合成 relay</td><td class="yes">否，orchestrator</td><td class="yes">否，dispatcher</td></tr>
+        <tr data-cat="dispatch"><td>成员会话</td><td>每群每成员独立隐藏</td><td>复用成员私聊，统一历史</td><td>每群×Topic×成员独立隐藏</td></tr>
+        <tr data-cat="dispatch"><td>默认响应者</td><td>admin</td><td>全员（无人 @）</td><td>lead</td></tr>
+        <tr data-cat="dispatch"><td>正文 @ 路由</td><td class="yes">是</td><td class="part">是，下一轮</td><td class="no">否，结构化 target</td></tr>
+        <tr data-cat="dispatch"><td>同消息多人</td><td class="yes">并行</td><td class="no">串行</td><td class="yes">并行 cohort</td></tr>
+        <tr data-cat="dispatch"><td>多轮讨论</td><td class="yes">即时 @ 接力，无上限</td><td class="part">最多 3 轮</td><td class="no">无内建；group_send / Router</td></tr>
+        <tr data-cat="collab"><td>派活载体</td><td>message_bot / report_back</td><td>SendToAgent / 群消息</td><td>group_send</td></tr>
+        <tr data-cat="collab"><td>结构化程度</td><td class="part">文本 + request_id</td><td class="no">文本</td><td class="yes">to / task / expectedOutput</td></tr>
+        <tr data-cat="collab"><td>结果回收</td><td class="yes">work tree 自动向上</td><td class="no">目标以后回消息</td><td class="yes">子结算唤醒 + work graph</td></tr>
+        <tr data-cat="collab"><td>防绕圈</td><td class="part">拒绝发上游 + 6 次空转</td><td class="no">prompt 规则</td><td class="yes">waiting cycle + budget + quarantine</td></tr>
+        <tr data-cat="ux"><td>群历史</td><td>连续 room log + seen</td><td>连续 transcript(author)</td><td>公共消息 + 每 Run/MemberTurn</td></tr>
+        <tr data-cat="ux"><td>过程发言</td><td class="yes">进群，首句/@ 立即</td><td class="part">流式预览</td><td class="no">trace 内</td></tr>
+        <tr data-cat="ux"><td>跳过</td><td class="yes">[PASS]</td><td class="yes">(pass)</td><td class="no">无</td></tr>
+        <tr data-cat="ux"><td>状态 UI</td><td>胶囊 + 动画 + Goal 吊舱</td><td>头像动画 + 成员/共享房间</td><td>per-member bubble + dispatch + trace</td></tr>
+        <tr data-cat="safety"><td>审批</td><td>群内胶囊/详情</td><td>本地权限/auto review</td><td>permission route；群内不做专门 UI</td></tr>
+        <tr data-cat="safety"><td>停止</td><td>全群 / 单成员 / 子代理</td><td>回合中断 / DM 抢占</td><td>Run / 成员 Stop</td></tr>
+        <tr data-cat="safety"><td>恢复</td><td>state.json + 文件</td><td>transcript + 重试</td><td>SQLite + lease + trace + indeterminate</td></tr>
+        <tr data-cat="safety"><td>跨用户</td><td class="no">无</td><td class="yes">Shared rooms</td><td class="no">无；仅外部频道绑定</td></tr>
+        <tr data-cat="safety"><td>群目标</td><td class="yes">room.goal 阶段/任务/证据</td><td class="no">无</td><td class="part">自动 Router + 验证</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid g3 mt16">
+    <div class="card"><h4>DS-Bot 赢在</h4><p class="muted">房间感、即时 @、过程可见、work tree、Goal。</p></div>
+    <div class="card"><h4>Grok 赢在</h4><p class="muted">自然轮询、pass、统一成员记忆、跨用户 shared room。</p></div>
+    <div class="card"><h4>xacpx 赢在</h4><p class="muted">持久化、恢复、预算、证据、精确关联、权限 provenance。</p></div>
+  </div>
+</section>
+
+<!-- ================= BLUEPRINT ================= -->
+<section data-panel="blueprint" role="tabpanel">
+  <div class="section-head">
+    <div><div class="kicker">05 · target architecture</div><h2>一个 Run，一条时间线</h2></div>
+    <a class="tag cyan" href="../design/2026-11-06-bot-conversation-architecture.md">完整技术方案 ↗</a>
+  </div>
+
+  <div class="callout good">
+    <strong>决策：</strong>保留“一次用户请求 = 一个 Run”。不建 Room 表、不建 Round 表、不建第二套 scheduler。
+    Run 增加 <code>shape</code>：<code>single</code>（Direct）、<code>fanout</code>（Lead 派活）、<code>roundtable</code>（依次讨论）。
+    圆桌在 accept 时预生成所有 MemberTurn，顺序由持久行和 claim 谓词决定。
+  </div>
+
+  <div class="grid g4">
+    <div class="card flat"><h4>一个写模型</h4><p class="muted">Run / MemberTurn / dispatch / work graph 继续拥有执行、预算、暂停、恢复和终态。</p></div>
+    <div class="card flat"><h4>一个读模型</h4><p class="muted">消息、成员活动、handoff、轮次摘要都来自一个纯投影；UI 不再自己猜归属。</p></div>
+    <div class="card flat"><h4>一个输入框</h4><p class="muted">默认交给 Lead；<code>@</code> 指定成员；“讨论”切换为依次发言。</p></div>
+    <div class="card flat"><h4>一条时间线</h4><p class="muted">Bot 回复是普通气泡；handoff 折成一行；trace 进详情抽屉。</p></div>
+  </div>
+
+  <h3>三种形状，一套内核</h3>
+  <div class="grid g3">
+    <div class="card">
+      <h4>single · Direct</h4>
+      <p class="muted">一个 Bot，一个 MemberTurn。和 Group 用同一个 composer、同一个时间线组件。</p>
+    </div>
+    <div class="card">
+      <h4>fanout · Lead 主持</h4>
+      <p class="muted">Lead 先答；需要分工时调用 <code>group_send</code>。子 turn 全部结算后，系统只唤醒一次。现有 work graph 不动。</p>
+    </div>
+    <div class="card">
+      <h4>roundtable · 讨论</h4>
+      <p class="muted">选中的成员按顺序各说一次；后来者能看到前面人的公开消息；无话可说回 <code>(pass)</code>。圆桌禁止 <code>group_send</code>。</p>
+    </div>
+  </div>
+
+  <div class="callout warn mt16">
+    <strong>关键边界：</strong>圆桌不能递归派活。否则 Run 的完成条件会变成“模型是否停止递归”，work graph、wake、预算都要重新证明。
+    递归委派只属于 fanout；圆桌的完成条件保持为“所有预生成 turn 终态”。
+  </div>
+
+  <h3>为什么不是 Room / Round 表</h3>
+  <div class="grid g3">
+    <div class="card flat"><h4>A · Run-centric</h4><p class="muted">Run 加 shape；圆桌预生成所有 turn；claim 顺序；pass。复用现有 work graph。选为骨架。</p><span class="tag green">采用</span></div>
+    <div class="card flat"><h4>B · Room + Round</h4><p class="muted">新增 rounds / round_decisions / RoundCoordinator。能表达跨 Run wave，但引入第二套协调状态，且没有解决圆桌/pass。</p><span class="tag amber">只借 Room 读模型</span></div>
+    <div class="card flat"><h4>C · Event timeline</h4><p class="muted">现有行投影成一条时间线；归属精确、分页可测。没有协作语义，不能决定“谁下一位”。</p><span class="tag cyan">作为读模型</span></div>
+  </div>
+
+  <div class="table-wrap">
+  <table class="matrix mt16">
+    <thead><tr><th>维度</th><th>A · Run</th><th>B · Room/Round</th><th>C · Timeline</th></tr></thead>
+    <tbody>
+      <tr><td>交互简约</td><td class="green">5</td><td>3</td><td class="green">5</td></tr>
+      <tr><td>协作吞吐与控制</td><td class="green">5</td><td>3</td><td>1</td></tr>
+      <tr><td>持久化 / 恢复</td><td>4</td><td>3</td><td>4</td></tr>
+      <tr><td>读者负担 / 迁移</td><td>4</td><td>2</td><td>4</td></tr>
+      <tr><td>复用现有机制</td><td class="green">5</td><td>2</td><td>4</td></tr>
+      <tr><td>可实现性</td><td>4</td><td>2</td><td>3</td></tr>
+      <tr><td><b>合计</b></td><td class="green"><b>27</b></td><td><b>15</b></td><td><b>21</b></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>圆桌：顺序不靠内存游标</h3>
+  <div class="card">
+    <div class="flex between">
+      <div class="tabs2" role="group" aria-label="协作形状">
+        <button aria-pressed="true" data-order="fanout">Lead 主持 · fanout</button>
+        <button aria-pressed="false" data-order="roundtable">讨论 · roundtable</button>
+      </div>
+      <span class="tag cyan">所有顺序都能从 SQLite 重建</span>
+    </div>
+    <div class="seqviz">
+      <div class="seqbox" id="seqViz">
+        <div class="seqrow"><span class="chip"><b>User</b>请求</span><span class="lineh"></span><span class="chip on"><b>Lead</b></span><span class="chip">A</span><span class="chip">B</span></div>
+        <div class="seqrow"><span class="chip on">Lead 先答</span><span class="lineh"></span><span class="chip">需要时 group_send</span></div>
+        <p class="note">普通消息默认发给 Lead；Lead 可以只回答，也可以派活。</p>
+      </div>
+      <div class="seqbox">
+        <h4 class="mt0">持久字段</h4>
+        <div class="code"><span class="k">run</span>.shape = <span class="s">"roundtable"</span>
+<span class="k">run</span>.rounds = 1
+<span class="k">member</span>.memberIndex = 0,1,2
+<span class="k">member</span>.roundIndex = 1,1,1
+<span class="k">member</span>.speakerIndex = 0,1,2
+<span class="k">member</span>.speechOutcome = <span class="s">"message"</span> | <span class="s">"pass"</span></div>
+        <p class="note">所有 turn 仍在 batch 1；<code>memberIndex</code> 是全局顺序，claim 谓词挡住后一位。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid g2 mt16">
+    <div class="card">
+      <h4>Claim 资格</h4>
+      <div class="code"><span class="c">-- 前一位未终态，后一位不能开始</span>
+<span class="k">AND NOT EXISTS</span> (
+  <span class="k">SELECT</span> 1 <span class="k">FROM</span> member_turns earlier
+  <span class="k">WHERE</span> earlier.run_id = m.run_id
+    <span class="k">AND</span> earlier.member_index &lt; m.member_index
+    <span class="k">AND</span> earlier.state <span class="k">IN</span> (<span class="s">'queued'</span>,<span class="s">'dispatched'</span>,<span class="s">'running'</span>)
+)</div>
+      <p class="note">重启后只看行；不需要恢复“下一位是谁”。</p>
+    </div>
+    <div class="card">
+      <h4>Pass 与失败</h4>
+      <div class="code"><span class="c">// 圆桌专属</span>
+(pass)  → completed + speechOutcome=<span class="s">"pass"</span>
+         <span class="c">// 不写公开消息，不算完成证据</span>
+空文本   → failed(empty-speech)
+失败     → 取消尚未开始的后置 turn
+全部 pass → completed(roundtable-no-speech)</div>
+      <p class="note">Pass 留下终态和 trace，但不产生空气泡。</p>
+    </div>
+  </div>
+
+  <h3>读模型：每条消息只出现一次</h3>
+  <div class="grid g4">
+    <div class="card flat"><h4>message</h4><p class="muted">人类 / Bot / 系统消息。Bot 消息用 <code>member_turn_id</code> 精确归属。</p></div>
+    <div class="card flat"><h4>activity</h4><p class="muted">没有最终消息的当前发言者、失败或取消成员。未来 queued 成员不逐条渲染。</p></div>
+    <div class="card flat"><h4>handoff</h4><p class="muted">仍是 messages 行，但 UI 折成“A → B · 任务”一行，不再出 dispatch 卡片。</p></div>
+    <div class="card flat"><h4>notice</h4><p class="muted">排队、全员 pass、Run 失败。由持久状态合成，不写伪消息。</p></div>
+  </div>
+
+  <div class="code mt16"><span class="k">type</span> TimelineEntry =
+  | { kind: <span class="s">"message"</span>; message; memberTurnId?; ownership? }
+  | { kind: <span class="s">"activity"</span>; memberTurn; live? }
+  | { kind: <span class="s">"notice"</span>; tone; text; runId? }
+
+<span class="c">// 投影只读 durable 行；不持 SqlDriver，不决定谁发言</span>
+projectConversationTimeline(messages, runs, memberTurns)
+  → entries + activeRound + page cursor</div>
+
+  <h3>界面：去掉控制台，留下对话</h3>
+  <div class="chatboard" style="grid-template-columns:minmax(0,1fr);max-width:860px">
+    <div class="chatcol">
+      <div class="chathead"><b>产品组</b><span>Lead Ada · Reviewer Bob · Tester Cara</span></div>
+      <div class="msgs">
+        <div class="m user">登录重构先看并发和回滚，大家给意见。</div>
+        <div class="m bot"><b>Ada · Lead</b>先拆两条：会话锁和 token 回滚。</div>
+        <div class="m sys">Ada → Bob · 检查会话锁</div>
+        <div class="m bot"><b>Bob · Reviewer</b>这里有一个 TOCTOU 窗口：锁释放和 token 写入不在同一事务里。建议先补失败用例，再改实现。<div class="typing"><i></i><i></i><i></i></div></div>
+        <div class="m sys">Cara · Tester · 本轮旁听</div>
+      </div>
+      <div class="chatfoot">● Bob 正在说 · 1/3 已发言 · 1 跳过　　<span class="accent">Stop</span></div>
+      <div class="chatfoot">@　讨论　Message Ada…　　↑</div>
+    </div>
+  </div>
+  <p class="note">同一套组件渲染 Direct 和 Group。没有常驻 target 下拉、dispatch 卡片、per-member trace 气泡。</p>
+
+  <div class="grid g2 mt16">
+    <div class="card">
+      <h4>保留</h4>
+      <ul class="muted">
+        <li>一个输入框、附件、slash、<code>@</code> 菜单。</li>
+        <li>Lead 派活、子结果、单次 wake、预算、quota、权限。</li>
+        <li>流式回复：live 文本是预览，持久消息到达即替换。</li>
+        <li>Stop all；失败、暂停、indeterminate 的原始原因。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>删除</h4>
+      <ul class="muted">
+        <li><code>GroupComposer</code> 的常驻 target 下拉和 automatic 开关。</li>
+        <li><code>GroupDispatchRow</code> 的展开卡片；handoff 折成一行。</li>
+        <li><code>GroupAgentTurnRow</code> / <code>GroupWorkingRow</code> 的 trace 气泡。</li>
+        <li>两套 transcript 和客户端归属 / 轮次推断。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>迁移：先语义，再界面</h3>
+  <div class="phase">
+    <div class="phase-item">
+      <b>P0 · 后端语义</b>
+      <p><code>shape</code> / <code>rounds</code> / <code>roundIndex</code> / <code>speakerIndex</code> / <code>speechOutcome</code>；预生成圆桌；claim floor；pass；失败尾部；协议校验。旧 UI 不动。</p>
+    </div>
+    <div class="phase-item p1">
+      <b>P1 · 一条时间线</b>
+      <p><code>messages.member_turn_id</code> + 纯投影 + <code>conversation.timeline</code>；一个 Timeline 组件、一个 composer、一条状态条、一个详情抽屉；删除旧组件。</p>
+    </div>
+    <div class="phase-item p2">
+      <b>P2 · 可选增强</b>
+      <p>圆桌轮数设置；圆桌不暴露 group 工具；频道适配器复用同一投影；automatic 变成 Group 设置。</p>
+    </div>
+  </div>
+
+  <div class="callout mt16">
+    <strong>不借的东西：</strong>DS-Bot 的 15 秒让出和运行中插话；Grok 的隐藏轮转和无 durable 任务图。
+    它们会让一个 Run 被多个用户消息共同推进，或让顺序依赖内存状态，和当前的审计/恢复边界冲突。
+  </div>
+
+  <p class="small">完整字段、SQL、prompt、测试与风险见 <a href="../design/2026-11-06-bot-conversation-architecture.md">docs/design/2026-11-06-bot-conversation-architecture.md</a>。</p>
+
+</section>
+
+<!-- ================= RISKS ================= -->
+<section data-panel="risks" role="tabpanel">
+  <div class="section-head">
+    <div><div class="kicker">06 · tradeoffs</div><h2>风险、验收、度量</h2></div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h4>风险与取舍</h4>
+      <ul class="muted">
+        <li><b>延迟</b>：sequential 比并行慢；只用于讨论/依次发言，派活仍默认并行。</li>
+        <li><b>成本</b>：N 个成员仍 N 次模型调用；sequential 不更便宜。lead-first 才是省钱手段。</li>
+        <li><b>Prompt 证据</b>：依赖结果必须继续 exact join；不能靠同 Bot 后来的一条消息。</li>
+        <li><b>pass 与验证</b>：pass 不能当成功证据；自动 Router 的 verification 不能被 discussion pass 绕过。</li>
+        <li><b>UI 复杂度</b>：不为“轮次”新增 Run 卡片；用 per-member row + batch 分隔。</li>
+        <li><b>兼容性</b>：<code>order</code> 省略 = 现状；旧 daemon 不支持时拒绝，不静默丢弃。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>验收清单</h4>
+      <ul class="muted">
+        <li><span class="check">✓</span> sequential：A→B→C 严格顺序；B/C prompt 精确含前序结果。</li>
+        <li><span class="check">✓</span> 取消 A 后 B/C 不启动；重启后从 durable 依赖继续。</li>
+        <li><span class="check">✓</span> 重复 requestId 不重复执行。</li>
+        <li><span class="check">✓</span> pass 不产生 public message；Run 正常完成；不进证据。</li>
+        <li><span class="check">✓</span> trace 刷新/重连/重启可回放；不泄漏私有 reasoning。</li>
+        <li><span class="check">✓</span> 旧客户端省略 order 行为 byte-for-byte 不变。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="grid g3 mt16">
+    <div class="card flat"><h4>time-to-first-speaker</h4><p class="muted">lead-first vs everyone；衡量群聊“响应感”。</p></div>
+    <div class="card flat"><h4>turns / request</h4><p class="muted">每个用户请求的 MemberTurn 数与成本。</p></div>
+    <div class="card flat"><h4>idle 命中率</h4><p class="muted">空转保护命中/误报；只在 P1 开启后测。</p></div>
+  </div>
+
+  <details class="mt16">
+    <summary>为什么 xacpx 不应把正文 @ 变成路由</summary>
+    <p>DS-Bot 和 Grok 都能从文本里解析 @，因为它们的目标是“聊天室”，消息本身就是控制面。xacpx 的目标是“可远程控制、可审计的多 Agent 执行”：</p>
+    <ul>
+      <li>文本可以来自模型、外部频道、提示注入；一旦它能触发副作用，就需要重新证明 sender、run、permission provenance。</li>
+      <li>xacpx 已经用 `group_send` 把 sender/run 绑定在运行时 capability 上；正文 @ 会绕过这层。</li>
+      <li>人类输入的 @ 可以在客户端/适配器转成结构化 target；Bot 的 @ 只作为文本提及，不产生副作用。</li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>为什么 xacpx 不应合并成员的群会话与私聊</summary>
+    <p>Grok 的“统一历史”让成员在群里也记得私聊，体验自然；但 xacpx 的群会话按 Conversation×Topic×Bot 隔离，是证据/权限/恢复边界的一部分。</p>
+    <ul>
+      <li>合并后，群里的结果可能混入私聊内容，`group_read_result` 的公共性不再成立。</li>
+      <li>不同 Group/Topic 的任务会互相污染，难以做 per-Topic 审计与 teardown。</li>
+      <li>如果产品需要“记得用户”，应通过显式的 Bot memory / 私聊引用，而不是共享 Session。</li>
+    </ul>
+  </details>
+
+  <details>
+    <summary>为什么 DS-Bot 的 15 秒让出不适合直接照搬</summary>
+    <p>DS-Bot 的回合可以“让出”是因为它把成员的最终回复和过程分开，群聊是唯一真相；xacpx 的 MemberTurn 是一次 durable claim，结果必须归到 exact sourceTurn/attempt。</p>
+    <ul>
+      <li>中途让出会让“谁的结果对应哪个 assignment”变得模糊，恢复时容易重复或丢结果。</li>
+      <li>xacpx 已有 trace，可以在不让出执行的情况下给用户“过程可见”。</li>
+      <li>如果确实需要提前让出，应作为显式的“长任务后台化”设计，而不是群聊默认行为。</li>
+    </ul>
+  </details>
+</section>
+
+</main>
+
+<footer class="footer wrap">
+  <p><b>来源</b> · DS-Bot <code>ds-bot/src/host/groups.js</code>、<code>handoffs.js</code>、<code>turns.js</code>、<code>roster.js</code>、<code>tools.js</code>、<code>goals.js</code>；Grok Bot <code>source/host/groups/group-chat.ts</code>、<code>source/host/extensions/transcript/group-chat-orchestrator.ts</code>、<code>group-chat-glue.ts</code>、<code>agent-to-agent-messaging.ts</code>、<code>shared-rooms.ts</code>；xacpx <code>src/conversations/*</code>、<code>src/bots/collaboration-prompt.ts</code>、<code>docs/conversation-runtime.md</code>。</p>
+  <p><b>完整报告</b> · <a href="./2026-11-06-bot-group-collaboration-benchmark.md">2026-11-06-bot-group-collaboration-benchmark.md</a></p>
+  <p class="small">Grok Bot 仓库是 0.18.0 的重建工程；共享房间/云中继只依据仓库中可读的重建实现。DS-Bot 与 xacpx 为完整实现。</p>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---- theme toggle (double-click the hero eyebrow) ----
+  const root = document.documentElement;
+  const eyebrow = document.querySelector(".eyebrow");
+  if (eyebrow) {
+    eyebrow.style.cursor = "pointer";
+    eyebrow.title = "双击切换明暗";
+    eyebrow.addEventListener("dblclick", () => {
+      root.dataset.theme = root.dataset.theme === "light" ? "dark" : "light";
+    });
+  }
+
+  // ---- main tabs ----
+  const tabs = [...document.querySelectorAll("[data-tab]")];
+  const panels = [...document.querySelectorAll("[data-panel]")];
+  const activate = (name) => {
+    tabs.forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === name)));
+    panels.forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
+    history.replaceState(null, "", "#" + name);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  tabs.forEach((t) => t.addEventListener("click", () => activate(t.dataset.tab)));
+  const initial = location.hash.replace("#", "");
+  if (initial && panels.some((p) => p.dataset.panel === initial)) activate(initial);
+
+  // ---- overview system toggles (just highlights, no hidden panes) ----
+  document.querySelectorAll("[data-sys]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      btn.parentElement.querySelectorAll("[data-sys]").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+    });
+  });
+
+  // ---- dispatch system panes ----
+  const dButtons = [...document.querySelectorAll("[data-dsys]")];
+  const dPanes = [...document.querySelectorAll("[data-dpane]")];
+  dButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      dButtons.forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+      dPanes.forEach((p) => p.classList.toggle("on", p.dataset.dpane === btn.dataset.dsys));
+    });
+  });
+
+  // ---- responder simulator ----
+  const NAMES = ["Lead", "Reviewer", "Tester", "Writer"];
+  const getMentions = (text) => {
+    const out = [];
+    const lower = text.toLowerCase();
+    for (const name of NAMES) {
+      const needle = "@" + name.toLowerCase();
+      let at = lower.indexOf(needle);
+      while (at >= 0) {
+        const before = lower[at - 1] || "";
+        const after = lower[at + needle.length] || "";
+        const beforeOk = !/[a-z0-9_.]/i.test(before);
+        const afterOk = !/[a-z0-9_-]/.test(after);
+        if (beforeOk && afterOk && !out.includes(name)) out.push(name);
+        at = lower.indexOf(needle, at + 1);
+      }
+    }
+    return out;
+  };
+  const hasAll = (text) => /@(all|everyone|所有人|全体)\b/i.test(text);
+  const sim = () => {
+    const text = (document.getElementById("simText").value || "").trim();
+    const mode = document.getElementById("simMode").value;
+    const leadMode = document.getElementById("simLead").value;
+    const mentions = getMentions(text);
+    const all = hasAll(text);
+
+    // DS-Bot
+    let dsWho, dsOrder;
+    if (all) { dsWho = NAMES.slice(); dsOrder = "并行"; }
+    else if (mentions.length) { dsWho = mentions.slice(); dsOrder = "并行"; }
+    else if (mode === "admin") { dsWho = ["Lead"]; dsOrder = "单发"; }
+    else { dsWho = NAMES.slice(); dsOrder = "串行"; }
+
+    // Grok: no admin special case; no mention => all; all => all
+    let grokWho;
+    if (all || mentions.length === 0) grokWho = NAMES.slice();
+    else grokWho = mentions.slice();
+    const grokOrder = "串行（第 1 轮）";
+
+    // xacpx: mentions become structured target; no mention => lead/everyone
+    let xaWho, xaOrder;
+    if (all) { xaWho = NAMES.slice(); xaOrder = "并行"; }
+    else if (mentions.length) { xaWho = mentions.slice(); xaOrder = "并行（默认）"; }
+    else if (leadMode === "all") { xaWho = NAMES.slice(); xaOrder = "并行"; }
+    else { xaWho = ["Lead"]; xaOrder = "Lead 单发"; }
+
+    const render = (el, who, order, note) => {
+      const badge = order.includes("串行") ? "seq" : order.includes("并行") ? "par" : "lead";
+      el.innerHTML = `<div class="who">${who.map(n => `<b>${n}</b>`).join(" ") ||
+        `<span class="muted">无人</span>`}<span class="badge ${badge}">${order}</span></div>
+        <div class="note">${note}</div>`;
+    };
+    const dsNote = all
+      ? "@all 触发全员并行。"
+      : mentions.length
+        ? "被 @ 的人立即并行；未点名的成员不回答。"
+        : mode === "admin"
+          ? "普通消息先给 admin；admin 可再 @ 人。"
+          : "全员按成员顺序回答，Lead 第一。";
+    const grokNote = all
+      ? "@all 触发全员；本轮按成员顺序。"
+      : mentions.length
+        ? "被 @ 的人在本轮回答；后续轮次重新计算响应者。"
+        : "无人被 @，本轮全员按成员顺序。";
+    const xaNote = mentions.length || all
+      ? "正文 @ 在服务端不路由；这里模拟客户端把 @ 转成 target。"
+      : "无 target 时默认 Lead；也可以用 Everyone。";
+    render(document.getElementById("simDs"), dsWho, dsOrder, dsNote);
+    render(document.getElementById("simGrok"), grokWho, grokOrder, grokNote);
+    render(document.getElementById("simXa"), xaWho, xaOrder, xaNote);
+  };
+  document.getElementById("simRun").addEventListener("click", sim);
+  document.getElementById("simReset").addEventListener("click", () => {
+    document.getElementById("simText").value = "帮我看下登录模块";
+    sim();
+  });
+  sim();
+  // ---- chat playback ----
+  const scripts = {
+    ds: [
+      ["user", "帮我把登录模块的安全评审做一下，@Reviewer @Tester", 0],
+      ["bot:Lead", "收到，我先拆一下：Reviewer 看代码，Tester 跑用例。", 600],
+      ["sys", "Reviewer 和 Tester 同时开工", 500],
+      ["bot:Reviewer", "我先看 token 刷新路径。", 700],
+      ["trace", "Reviewer 正在执行 grep · auth/refresh.ts", 500],
+      ["bot:Tester", "我先跑现有用例。", 700],
+      ["trace", "Tester 正在执行 bun test · 12/12", 600],
+      ["bot:Reviewer", "发现 1 个高危：刷新令牌没有绑定设备。", 800],
+      ["bot:Tester", "12/12 通过，但缺少并发刷新覆盖。", 700],
+      ["bot:Lead", "结论：两个问题。Reviewer 补设备绑定方案，Tester 补并发用例。", 800],
+      ["sys", "Reviewer 等待你的批准 · Tester 正在跑…", 500],
+    ],
+    grok: [
+      ["user", "帮我把登录模块的安全评审做一下，@Reviewer @Tester", 0],
+      ["sys", "Round 0 · 全员（无人被 @）", 500],
+      ["bot:Writer", "我负责代码路径，先看刷新逻辑。", 700],
+      ["bot:Reviewer", "我看 token 刷新与设备绑定。", 700],
+      ["bot:Tester", "我看测试覆盖。", 700],
+      ["sys", "Round 1 · 成员仍全员", 500],
+      ["bot:Writer", "发现刷新令牌没有绑定设备。", 800],
+      ["bot:Reviewer", "同意；另外并发刷新没有覆盖。", 700],
+      ["bot:Writer", "@Tester 请确认威胁模型。", 700],
+      ["bot:Tester", "威胁模型允许同设备多会话，但要求绑定。", 800],
+      ["sys", "Round 2 · 达到 3 轮上限，结束", 500],
+    ],
+    xa: [
+      ["user", "帮我把登录模块的安全评审做一下，@Reviewer @Tester", 0],
+      ["sys", "Run 已接受 · target = Reviewer, Tester（并行）", 500],
+      ["trace", "Reviewer · thinking bubble: 正在分析 auth/refresh.ts", 600],
+      ["trace", "Tester · thinking bubble: 正在跑测试", 600],
+      ["bot:Reviewer", "发现 1 个高危：刷新令牌未绑定设备。", 900],
+      ["bot:Tester", "12/12 通过；建议补并发刷新用例。", 800],
+      ["sys", "handoff · Reviewer → Tester（两个叠头像的公共入口）", 700],
+      ["trace", "Tester · 已补用例，等待确认", 700],
+      ["bot:Tester", "已补并发刷新用例，等待 Reviewer 确认。", 800],
+      ["sys", "Run completed · 2 个公开结果 + 1 个子 assignment", 500],
+    ],
+  };
+  const labels = { ds: "DS-Bot", grok: "Grok", xa: "xacpx" };
+  let timers = [];
+  const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
+  const addMsg = (id, kind, text) => {
+    const box = document.getElementById(id);
+    const el = document.createElement("div");
+    el.className = "m " + (kind.startsWith("bot:") ? "bot" : kind === "trace" ? "trace" : kind);
+    if (kind.startsWith("bot:")) {
+      const name = kind.slice(4);
+      el.innerHTML = `<b>${name}</b>${text}`;
+    } else {
+      el.textContent = text;
+    }
+    box.appendChild(el);
+    box.scrollTop = box.scrollHeight;
+  };
+  const play = () => {
+    clearTimers();
+    Object.keys(scripts).forEach((key) => { document.getElementById("chat-" + key).innerHTML = ""; });
+    Object.entries(scripts).forEach(([key, list]) => {
+      let t = 0;
+      list.forEach(([kind, text, delay]) => {
+        t += delay;
+        timers.push(setTimeout(() => addMsg("chat-" + key, kind, text), t));
+      });
+    });
+  };
+  document.getElementById("playChat").addEventListener("click", play);
+  document.getElementById("resetChat").addEventListener("click", () => {
+    clearTimers();
+    Object.keys(scripts).forEach((key) => { document.getElementById("chat-" + key).innerHTML = ""; });
+  });
+  // seed with user message so the board isn't empty before play
+  Object.keys(scripts).forEach((key) => addMsg("chat-" + key, "user", scripts[key][0][1]));
+
+  // ---- comparison filters ----
+  const filterButtons = [...document.querySelectorAll("[data-filter]")];
+  const rows = [...document.querySelectorAll("tr[data-cat]")];
+  filterButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      filterButtons.forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+      const f = btn.dataset.filter;
+      rows.forEach((row) => { row.style.display = f === "all" || row.dataset.cat === f ? "" : "none"; });
+    });
+  });
+
+  // ---- fanout / roundtable visual ----
+  const orderButtons = [...document.querySelectorAll("[data-order]")];
+  const seqViz = document.getElementById("seqViz");
+  const renderOrder = (mode) => {
+    if (!seqViz) return;
+    orderButtons.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.order === mode)));
+    if (mode === "roundtable") {
+      seqViz.innerHTML = `<div class="seqrow"><span class="chip"><b>User</b>请求</span><span class="lineh"></span><span class="chip on"><b>Lead</b></span><span class="lineh"></span><span class="chip on"><b>B</b></span><span class="lineh"></span><span class="chip on"><b>C</b></span></div>
+        <div class="seqrow"><span class="chip on">Lead 发言</span><span class="lineh"></span><span class="chip">B 看到 Lead</span><span class="lineh"></span><span class="chip">C 看到 Lead + B</span></div>
+        <p class="note">claim floor 挡住后一位；B 可以回 (pass)，不写公开消息。</p>`;
+    } else {
+      seqViz.innerHTML = `<div class="seqrow"><span class="chip"><b>User</b>请求</span><span class="lineh"></span><span class="chip on"><b>Lead</b></span><span class="chip">A</span><span class="chip">B</span></div>
+        <div class="seqrow"><span class="chip on">Lead 先答</span><span class="lineh"></span><span class="chip">需要时 group_send</span><span class="lineh"></span><span class="chip">子结果回来后单次 wake</span></div>
+        <p class="note">普通消息默认交给 Lead；Lead 可以只回答，也可以派活。</p>`;
+    }
+  };
+  orderButtons.forEach((b) => b.addEventListener("click", () => renderOrder(b.dataset.order)));
+  renderOrder("fanout");
+
+})();
+</script>
+</body>
+</html>

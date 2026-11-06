@@ -47,18 +47,16 @@ const props = withDefaults(defineProps<{
   /** True when the user stopped this member: the bubble names the stop
    *  instead of the member's own durable state. */
   stopped?: boolean;
-  /** Live streaming parts for the still-running member: rendered as one text
-   *  bubble per text segment plus the thinking-dots entry, never the detail
-   *  popover content. Absent for finished/posted rows. */
+  /** Live streaming parts for the still-running member: rendered as the
+   *  member's newest text bubble plus the thinking-dots entry, never the
+   *  detail popover content. Absent for finished/posted rows. */
   liveParts?: TurnPartDto[];
   segment?: { text: string; last: boolean };
   rowId?: string;
   anchorId?: string;
-  /** False on an interleaved segment row that is NOT the member's latest: the
-   *  dots live under that member's newest bubble only. Defaults to true so a
-   *  member rendered on its own keeps its entry. */
+  /** Dots under the member's live bubble; shown only while the member runs. */
   liveDots?: boolean;
-  /** False on a segment whose member has already moved on: no streaming caret. */
+  /** Streaming caret on the live bubble; shown only while the member runs. */
   liveStreaming?: boolean;
 }>(), {
   liveDots: true,
@@ -67,7 +65,14 @@ const props = withDefaults(defineProps<{
 
 const { t } = useI18n();
 
-const liveTexts = computed(() => props.liveParts ? textBubblesOf(props.liveParts) : []);
+const livePreviewText = computed(() => {
+  const texts = props.liveParts ? textBubblesOf(props.liveParts) : [];
+  for (let index = texts.length - 1; index >= 0; index -= 1) {
+    const text = texts[index]!;
+    if (text.trim().length > 0) return text;
+  }
+  return "";
+});
 const finishedBubbles = computed(() => {
   const message = props.message;
   if (!message) return [];
@@ -181,15 +186,13 @@ defineExpose({ bubbleStatus });
       {{ taskHint }}
     </p>
     <template v-if="liveParts !== undefined">
-      <!-- Running member: one text bubble per segment, dots beneath the last.
-           No status entry, no tool/reasoning rows, no folded trace header. -->
       <div
-        v-for="(text, index) in liveTexts"
-        :key="`${memberTurn.id}:text:${index}`"
+        v-if="livePreviewText"
+        :key="`${memberTurn.id}:text`"
         class="conversation-bubble agent-bubble min-w-0 max-w-full text-sm leading-relaxed text-fg"
         data-test="group-member-text-bubble"
       >
-        <StreamMarkdown :text="text" :streaming="index === liveTexts.length - 1 && liveStreaming !== false" />
+        <StreamMarkdown :text="livePreviewText" :streaming="liveStreaming !== false" />
       </div>
       <ThinkingDotsTrigger
         v-if="liveDots !== false"

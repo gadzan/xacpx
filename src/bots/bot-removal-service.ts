@@ -157,6 +157,7 @@ export class BotRemovalService {
     if (clearDirectHistory) {
       await this.runs.eraseDirectHistory(botId);
     }
+    this.store.deletePublicMemoryForBot(botId);
   }
 
   private async retire(botId: string, operationId: string): Promise<LifecycleOperation> {

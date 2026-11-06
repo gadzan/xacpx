@@ -45,7 +45,7 @@ import {
   type GroupTranscriptItem,
   type TraceReplayStatus,
 } from "../lib/group-run-presentation";
-import { buildSettledStreams, interleaveGroupLiveStream, type GroupLiveStreamRow } from "../lib/group-live-stream";
+import { buildSettledStreams, projectGroupLivePreview, type GroupLiveStreamRow } from "../lib/group-live-stream";
 
 function isLiveMemberState(state: MemberTurnSummaryDto["state"] | undefined): boolean {
   return state === "queued" || state === "dispatched" || state === "running";
@@ -157,10 +157,9 @@ const liveStreamByRun = computed<Map<string, GroupLiveStreamRow[]>>(() => {
   }
   const streams = new Map<string, GroupLiveStreamRow[]>();
   for (const [runId, members] of membersByRun) {
-    streams.set(runId, interleaveGroupLiveStream({
+    streams.set(runId, projectGroupLivePreview({
       members,
       liveParts: (memberTurnId) => groupsStore.liveTurnForMember(memberTurnId)?.parts,
-      segmentOrder: groupsStore.liveSegmentOrder,
       isRunning: (turn) => isLiveMemberState(turn.state),
     }));
   }
@@ -1174,13 +1173,13 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
           :data-member-turn-id="item.memberTurn.id"
         >
           <p v-if="item.explanation" class="mb-1 text-xs text-warning" data-test="group-unresolved-activity">{{ explanationText(item.explanation) }}</p>
-          <!-- One row per live segment, in arrival order. This Run's stream is
+          <!-- One row per live member. This Run's stream is
                emitted once, from its LAST live item. -->
           <template v-if="liveStreamMemberIds.has(item.memberTurn.id)">
             <GroupAgentTurnRow
               v-for="row in (liveStreamAnchorKeys.get(item.memberTurn.runId) === item.key ? liveStreamByRun.get(item.memberTurn.runId) ?? [] : [])"
-              :row-id="row.latest ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
-              :anchor-id="row.placeholder ? row.memberTurn.id : `${row.memberTurn.id}:seg:${row.index}`"
+              :row-id="row.memberTurn.id"
+              :anchor-id="row.memberTurn.id"
               :key="row.key"
               :member-turn="row.memberTurn"
               :bot="botById[row.memberTurn.botId]"
@@ -1194,8 +1193,8 @@ function zeroMemberRunStatus(state: ConversationRunDto["state"]): BubbleStatus {
               :single-member="item.run.memberTurns.length <= 1"
               :run-state="item.run.run.state"
               :live-parts="row.placeholder ? [] : [{ type: 'text', text: row.text }]"
-              :live-dots="row.latest && row.running"
-              :live-streaming="row.latest && row.running"
+              :live-dots="row.running"
+              :live-streaming="row.running"
               @toggle="handleToggle(bubbleKeyOf(row.memberTurn.id), $event)"
             />
           </template>

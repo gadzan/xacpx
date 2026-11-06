@@ -7,6 +7,7 @@ import { ROUTER_CONFIG_PATH, type RouterAvailability } from "@ganglion/xacpx-rel
 
 import { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { BotService } from "../bots/bot-service";
+import type { BotConversationWork } from "../bots/bot-service";
 import type { AppConfig } from "../config/types";
 import { ConversationError } from "./conversation-error";
 import type { ConversationExecutionPort } from "./conversation-execution-port";
@@ -144,6 +145,15 @@ export async function createConversationRuntime(
     // V2 P0-B is the production behavior (design §4.2/§6). The config key is
     // an operator rollback to the pre-P0-B1 batch semantics, not an opt-in.
     followupRedispatch: input.config.conversations?.followupRedispatch !== false,
+    // Membership is read live, so an ex-member gains no future rows; peer
+    // Topics are excluded.
+    publicMemoryMembers: (conversationId, topicId) => {
+      const group = input.state.conversations[conversationId];
+      if (group?.kind !== "group") return undefined;
+      const topic = input.state.conversation_topics[topicId];
+      if (!topic || topic.conversationId !== conversationId || topic.peerScope) return undefined;
+      return group.botIds;
+    },
   });
   const traceRecorder = input.controlEvents ? new MemberTurnTraceRecorder({
     store, state: input.state, events: input.controlEvents,
@@ -157,6 +167,15 @@ export async function createConversationRuntime(
   const worktrees = new ConversationWorktreeManager(store.worktrees, resolve(dirname(input.sqlitePath), "..", "worktrees", "conversations"), input.config);
   input.sessions.setConversationWorktreeResolver?.(session => worktrees.resolveSessionCwd(session));
   const bots = new BotService(input.config, input.state, input.stateStore, shared);
+  const botsWorkBridge: BotConversationWork = {
+    hasDurableBotWork: (botId) => store.hasDurableBotWork(botId),
+    hasDurableGroupWork: (conversationId) => store.hasDurableGroupWork(conversationId),
+    hasNonterminalGroupMemberWork: (conversationId, botId) => store.hasNonterminalGroupMemberWork(conversationId, botId),
+    botRemovalPhase: (botId) => store.botRemovalPhase(botId),
+    rememberBotRemovalBarrier: (botId, phase, now) => store.rememberBotRemovalBarrier(botId, phase, now),
+    forgetGroupMemberMemory: (conversationId, botId) => store.deletePublicMemoryForGroupMember(conversationId, botId),
+  };
+  bots.setConversationWork(botsWorkBridge);
   const productSinkRef: ConversationProductEventSink | undefined = input.onProductEvent;
   const botRuntime = new BotRuntimeManager(bots, input.sessions, input.state, input.stateStore, {
     releaseOwnedSession: input.releaseOwnedSession,
@@ -255,6 +274,9 @@ export async function createConversationRuntime(
     },
   );
   runsRef = runs;
+  // RunService installs the store as the default work view; reinstall the
+  // wider bridge so membership removal also drops public memory.
+  bots.setConversationWork(botsWorkBridge);
   const directMessaging = new DirectMessagingService({ state: input.state, bots, store, runs, ...(input.now ? {now:input.now} : {}), nodeId: input.messagingNodeId ?? "test-node" });
   runs.setMentionResolver((botId, mentions) => directMessaging.registry.mentions(botId, mentions));
   dispatcher.setDirectMessaging(directMessaging);

@@ -71,7 +71,7 @@ async function openParallelRun(page: Page) {
   return { run, first, second, messages };
 }
 
-test("parallel members' text segments interleave by arrival, dots on each member's newest", async ({ page, hub }, info) => {
+test("parallel members keep one live bubble each, showing newest text", async ({ page, hub }, info) => {
   const fixture = await openParallelRun(page);
   const send = (memberTurn: MemberTurnSummaryDto, event: Record<string, unknown>) => hub.send({
     kind: "control-event", instanceId: "i1",
@@ -83,26 +83,27 @@ test("parallel members' text segments interleave by arrival, dots on each member
   send(fixture.first, { type: "turn-output", chunk: "ALPHA ONE" });
   send(fixture.second, { type: "turn-output", chunk: "BRAVO ONE" });
   await expect(page.locator('[data-test="group-member-text-bubble"]')).toHaveCount(2);
-  // A thought closes the segment, so the next turn-output opens a new bubble.
+  // A thought no longer opens a new bubble: the member's single live bubble
+  // keeps showing its newest text segment.
   send(fixture.first, { type: "turn-thought", chunk: "checking the diff" });
   send(fixture.second, { type: "turn-thought", chunk: "running the suite" });
   send(fixture.first, { type: "turn-output", chunk: "ALPHA TWO" });
   send(fixture.second, { type: "turn-output", chunk: "BRAVO TWO" });
 
   const order = page.locator('[data-test="group-member-text-bubble"]');
-  await expect(order).toHaveCount(4);
+  await expect(order).toHaveCount(2);
   await expect.poll(() => order.evaluateAll((nodes) => nodes.map((node) => node.textContent?.trim()))).toEqual([
-    "ALPHA ONE", "BRAVO ONE", "ALPHA TWO", "BRAVO TWO",
+    "ALPHA TWO", "BRAVO TWO",
   ]);
   await expect(page.locator('[data-test="agent-thinking-bubble"]')).toHaveCount(2);
   for (const member of [fixture.first, fixture.second]) {
     const rows = page.locator(`[data-test="agent-turn-row"][data-member-turn-id="${member.id}"]`);
-    await expect(rows).toHaveCount(2);
+    await expect(rows).toHaveCount(1);
     await expect(rows.locator('[data-test="agent-thinking-bubble"]')).toHaveCount(1);
   }
   send(fixture.first, { type: "turn-output", chunk: " (more)" });
-  await expect(order).toHaveCount(4);
-  await expect(order.nth(2)).toHaveText("ALPHA TWO (more)");
+  await expect(order).toHaveCount(2);
+  await expect(order.nth(0)).toHaveText("ALPHA TWO (more)");
   await info.attach("parallel-interleave", { body: await page.screenshot(), contentType: "image/png" });
 });
 

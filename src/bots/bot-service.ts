@@ -298,6 +298,8 @@ export interface BotConversationWork {
    *  its claims would requeue forever). Optional so older implementers
    *  (tests) keep working; absence means "unknown, do not block". */
   hasNonterminalGroupMemberWork?: (conversationId: string, botId: string) => boolean;
+  /** Drop the leaving member's public Group memory projection. */
+  forgetGroupMemberMemory?: (conversationId: string, botId: string) => void;
   /** SQLite removal barrier. Absence means the store has no row. */
   botRemovalPhase?: (botId: string) => "deleting" | "indeterminate" | "retired" | undefined;
   /** Install the SQLite barrier when AppState is ahead of it. */
@@ -690,6 +692,7 @@ export class BotService {
       for (const botId of mustExist) {
         this.getBot(botId);
       }
+      let removedMembers: string[] = [];
       const committed = await this.runLifecycleAll([...gateSet], async () => {
         const live = this.state.conversations[id];
         if (!live || live.kind !== "group") {
@@ -721,6 +724,7 @@ export class BotService {
             this.assertAcceptsWork(botId);
           }
           const removed = live.botIds.filter((botId) => !patch.botIds!.includes(botId));
+          removedMembers = removed;
           for (const botId of removed) {
             if (this.conversationWork?.hasNonterminalGroupMemberWork?.(id, botId)) {
               throw new BotError(
@@ -744,6 +748,9 @@ export class BotService {
         },
       );
       if (committed !== null) {
+        for (const botId of removedMembers) {
+          this.conversationWork?.forgetGroupMemberMemory?.(id, botId);
+        }
         return committed;
       }
     }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import type { BotSummaryDto, GroupSummaryDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
@@ -1200,7 +1201,7 @@ describe("Group Components", () => {
       expect(bubbles[1]!.classes()).toContain("dots-trigger");
     });
 
-    it("interleaves two running members' text segments in arrival order, dots on each latest", async () => {
+    it("shows each running member's newest text in one live bubble, dots on each member", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
         { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
@@ -1230,25 +1231,19 @@ describe("Group Components", () => {
         turn_a: { parts: [{ type: "text", text: "A1" }, tool("a"), { type: "text", text: "A2" }], status: "streaming", startedAt: 1, revision: 1 },
         turn_b: { parts: [{ type: "text", text: "B1" }, tool("b"), { type: "text", text: "B2" }], status: "streaming", startedAt: 1, revision: 1 },
       };
-      groups.liveSegmentOrder = [
-        { memberTurnId: "turn_a", index: 0, order: 1 },
-        { memberTurnId: "turn_b", index: 0, order: 2 },
-        { memberTurnId: "turn_a", index: 2, order: 3 },
-        { memberTurnId: "turn_b", index: 2, order: 4 },
-      ];
       const wrapper = mount(GroupTranscript, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
       await flushPromises();
       const texts = wrapper.findAll('[data-test="group-member-text-bubble"]').map((bubble) => bubble.text());
-      expect(texts).toEqual(["A1", "B1", "A2", "B2"]);
+      expect(texts).toEqual(["A2", "B2"]);
       const dots = wrapper.findAll('[data-test="agent-thinking-bubble"]');
       expect(dots).toHaveLength(2);
       expect(dots.every((bubble) => bubble.classes().includes("dots-trigger"))).toBe(true);
     });
 
-    it("gives each live segment row its own scroll anchor", async () => {
+    it("keeps one stable scroll anchor per live member", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
         { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
@@ -1275,41 +1270,37 @@ describe("Group Components", () => {
           status: "streaming", startedAt: 1, revision: 1,
         },
       };
-      groups.liveSegmentOrder = [
-        { memberTurnId: "turn_a", index: 0, order: 1 },
-        { memberTurnId: "turn_a", index: 2, order: 2 },
-      ];
       const wrapper = mount(GroupTranscript, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
       await flushPromises();
-      const rows = wrapper.findAll('[data-test="agent-turn-row"]');
-      expect(rows.map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a:seg:0", "turn_a:seg:2"]);
-      const before = rows.map((row) => row.attributes("data-anchor-id"));
+      expect(wrapper.findAll('[data-test="agent-turn-row"]').map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a"]);
+      // StreamMarkdown paints its HTML on the next animation frame, so the
+      // bubble text lands one frame after the part change.
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-test="group-member-text-bubble"]').map((bubble) => bubble.text())).toEqual(["A2"]);
+      });
 
       groups.liveTurnsByMember = {
         turn_a: {
           parts: [
             { type: "text", text: "A1" },
             { type: "tool", step: { toolCallId: "t", toolName: "read", kind: "read", title: "read", status: "running" } },
-            { type: "text", text: "A2" },
-            { type: "text", text: "A3" },
+            { type: "text", text: "A2 — fixed talk" },
           ],
           status: "streaming", startedAt: 1, revision: 2,
         },
       };
-      groups.liveSegmentOrder = [
-        { memberTurnId: "turn_a", index: 0, order: 1 },
-        { memberTurnId: "turn_a", index: 2, order: 2 },
-        { memberTurnId: "turn_a", index: 3, order: 3 },
-      ];
+      await nextTick();
       await flushPromises();
-      const after = wrapper.findAll('[data-test="agent-turn-row"]').map((row) => row.attributes("data-anchor-id"));
-      expect(after).toEqual([...before, "turn_a:seg:3"]);
+      expect(wrapper.findAll('[data-test="agent-turn-row"]').map((row) => row.attributes("data-anchor-id"))).toEqual(["turn_a"]);
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-test="group-member-text-bubble"]').map((bubble) => bubble.text())).toEqual(["A2 — fixed talk"]);
+      });
     });
 
-    it("moves an open process drawer to the member's new last segment", async () => {
+    it("keeps an open process drawer anchored to the member's live row", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
         { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
@@ -1329,7 +1320,6 @@ describe("Group Components", () => {
       groups.liveTurnsByMember = {
         turn_a: { parts: [{ type: "text", text: "A1" }], status: "streaming", startedAt: 1, revision: 1 },
       };
-      groups.liveSegmentOrder = [{ memberTurnId: "turn_a", index: 0, order: 1 }];
       const wrapper = mount(GroupTranscript, {
         attachTo: document.body,
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
@@ -1343,14 +1333,11 @@ describe("Group Components", () => {
       groups.liveTurnsByMember = {
         turn_a: { parts: [{ type: "text", text: "A1" }, { type: "text", text: "A2" }], status: "streaming", startedAt: 1, revision: 2 },
       };
-      groups.liveSegmentOrder = [
-        { memberTurnId: "turn_a", index: 0, order: 1 },
-        { memberTurnId: "turn_a", index: 1, order: 2 },
-      ];
+      await nextTick();
       await flushPromises();
       const anchor = wrapper.findComponent({ name: "TraceOverlay" }).props("anchorEl") as HTMLElement | null;
       expect(anchor?.isConnected).toBe(true);
-      expect(anchor?.closest('[data-test="agent-turn-row"]')?.textContent).toContain("A2");
+      expect(anchor?.closest('[data-test="agent-turn-row"]')?.getAttribute("data-member-turn-id")).toBe("turn_a");
       wrapper.unmount();
     });
 

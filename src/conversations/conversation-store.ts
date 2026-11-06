@@ -65,6 +65,18 @@ export interface ListMessagesQuery {
   direction?: "oldest-first" | "newest-first";
 }
 
+/** One public Group message materialized for a member's private prompt. The
+ *  body is joined from `messages` at read time, never copied. */
+export interface PublicMemoryEntry {
+  messageId: string;
+  conversationId: string;
+  topicId: string;
+  role: "human" | "bot";
+  senderBotId?: string;
+  content: string;
+  createdAt: string;
+}
+
 export interface AcceptMemberInput {
   botId: string;
   profileSnapshot: BotProfileSnapshot;
@@ -531,6 +543,13 @@ export interface ConversationStore {
   listRuns(conversationId: string, topicId?: string): ConversationRun[];
   getMessage(messageId: string): ConversationMessage | undefined;
   listMessages(query: ListMessagesQuery): ConversationMessage[];
+  /** Recent public Group messages this Bot may see in its private prompt.
+   *  Rows are member-scoped projections, never a second transcript. */
+  listPublicMemory(input: { botId: string; limit?: number }): PublicMemoryEntry[];
+  /** Drop one member's projection when it leaves a Group. */
+  deletePublicMemoryForGroupMember(conversationId: string, botId: string): void;
+  /** Drop every projection for a Bot that is being removed. */
+  deletePublicMemoryForBot(botId: string): void;
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
   /**
