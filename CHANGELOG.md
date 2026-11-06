@@ -1,4 +1,38 @@
 # Changelog
+## [relay 0.14.12-beta.18] - 2026-11-06
+
+### Added
+
+- 群聊 live 预览收敛为「每个成员一个气泡」：每个成员只显示自己最新的 text 段，跨成员的 segment 顺序戳一并移除；完成态仍按持久消息逐条出泡（#541）。
+- 成员 turn 结束且没有任何公开内容时，Transcript 显示一条 `role='system'` 状态行 `No public reply from <name>.`：`projectGroupTranscript` 丢弃既无文本也无附件、仅作成员证据的 bot 行，于是不再画空气泡，也不会吞掉该成员的活动行（附件回复仍正常渲染）；状态行走 `emitTerminalProjection`，无需刷新即可出现（#543）。
+
+### Fixed
+
+- 转录回到「一条消息一个气泡」：删除 #538 引入的按空行切分，`textBubblesOf` 每个 text part 出一个气泡，完成态每条持久消息一个气泡；markdown 空行、CRLF、表格、列表与代码块都留在同一泡内由 StreamMarkdown 渲染（#540）。
+
+## [channel-relay 0.7.8-beta.14] - 2026-11-06
+
+- Compatibility floor raised to `0.24.10-beta.14` with no channel behavior change.
+
+## [0.24.10-beta.14] - 2026-11-06
+
+### Added
+
+- 群成员新增 `group_say({ text })` 公开发言能力：经与最终回复相同的公开消息写路径发布到自己的 Group Topic，并按成员快照投影进每位成员的公开记忆。运行时强制每个成员 turn 最多 3 次、单次 1000 字符，空串/NUL/未知字段在写入前拒绝，重放调用按 `invocationId` 唯一索引返回首次消息；不会唤醒任何人、不派发、不改变发言顺序。最终回复与最后一次 say 相同（trim 比较）时把该 say 提升为成员结果，不再插入第二条消息（#542）。
+- 群公开消息投影进每位 Bot 的共享上下文：新增 `bot_public_memory` 引用表，消息仍是唯一事实源，表内只在消息插入事务中写入 (bot, message, conversation, topic) 投影；按当前成员快照索引人类消息与 Bot 最终回复，排除 peer Topic 与空内容，并在 Topic 清理/清空、会话删除、成员移除、Bot 移除时同步清理。最新公开记忆以不可信 `Shared group context`（上限 20 条 × 800 字符）只注入 Direct prompt，群聊 turn 仍走冻结转录（#541）。
+
+### Fixed
+
+- 成员 turn 以空最终文本结束时不再写一条内容为空的 `role='bot'` 消息：四条最终内容写入路径共用结算事务中的同一条规则——有最终文本则用最终文本；没有但发过 `group_say` 则用该 say 且不加状态行；两者都没有则写一条带 `run_id`、无 `sender_bot_id` 的 `role='system'` 状态行 `No public reply from <name>.`，且不进入公开记忆。Direct Topic 行为不变（#543）。
+
+## [channel-feishu 0.8.7-beta.14] - 2026-11-06
+
+- Compatibility floor raised to `0.24.10-beta.14` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.14] - 2026-11-06
+
+- Compatibility floor raised to `0.24.10-beta.14` with no channel behavior change.
+
 ## [relay-protocol 0.6.4-beta.10] - 2026-11-06
 
 ### Added
