@@ -43,6 +43,7 @@ const {
   changelogMaterial,
   collectEdits,
   collectFloorViolations,
+  collectResumeBlockers,
   expandReleaseSet,
   gateScope,
   nextVersion,
@@ -50,6 +51,7 @@ const {
   parseVersion,
   prsForPackages,
   publishWaves,
+  releaseTagsAtHead,
   renderChangelog,
   rootManifestShipsChanges,
   spliceChangelog,
@@ -165,6 +167,26 @@ function assertUpToDate() {
     + "\nA release reads the working tree, so pull first:"
     + "\n  git pull --ff-only origin main",
   );
+}
+
+/** Release tags pointing at HEAD — the waves already pushed in this batch. */
+function taggedAtHead() {
+  const tags = git(["tag", "--points-at", "HEAD"], { allowFailure: true })
+    .split("\n").map((tag) => tag.trim()).filter(Boolean);
+  return releaseTagsAtHead(tags);
+}
+
+/**
+ * Whether the remote main already points at this commit.
+ *
+ * A resumed publish re-pushes main even when the release commit is already
+ * remote; a transient TLS error on that no-op push used to abort the whole
+ * release before a single tag went out. A read-only ls-remote settles it, and
+ * an unreadable remote falls through to the push as before.
+ */
+function remoteMainAt(head) {
+  return git(["ls-remote", "origin", "refs/heads/main"], { allowFailure: true })
+    .split("\n").some((line) => line.trim().split(/\s+/)[0] === head);
 }
 
 const readJson = (relativePath) => JSON.parse(readFileSync(join(ROOT, relativePath), "utf8"));
@@ -439,6 +461,17 @@ function floorViolations() {
 
 function printPlan(plan) {
   const out = [`target: ${plan.target} (--bump ${plan.bump})`];
+  // An applied-but-unpublished tree still makes `plan` propose the NEXT bump,
+  // while `publish` would tag only what is untagged. Say so before that table
+  // is read as the release about to ship.
+  const pending = buildPublishPlan().releases;
+  if (pending.length > 0) {
+    out.push("", "resume state: the tree already carries an applied bump — `publish` tags only the untagged set,");
+    out.push("  and the release table below is the NEXT bump (`apply` would refuse without --force):");
+    for (const release of pending) out.push(`  ${release.id.padEnd(16)} ${release.to}   ${release.tag}`);
+    const tagged = taggedAtHead();
+    if (tagged.length > 0) out.push(`  already pushed at HEAD: ${tagged.map((entry) => entry.tag).join(", ")}`);
+  }
   if (plan.releases.length === 0) {
     out.push("", "nothing to release: no package has changes since its last tag.");
     return out.join("\n");
@@ -1013,19 +1046,36 @@ async function awaitTestRun(head) {
   }
 }
 
-/** Tag -> the publish workflow run it triggered, or null. */
+
+/** Tag to workflow run for that tag, branch-scoped so older runs do not shadow it. */
 function findRunForTag(tag) {
   let runs;
   try {
     runs = JSON.parse(execFileSync(
       "gh",
-      ["run", "list", "--limit", "30", "--json", "databaseId,headBranch,status,conclusion,name"],
+      ["run", "list", "--branch", tag, "--limit", "30", "--json", "databaseId,headBranch,status,conclusion,name"],
       { cwd: ROOT, encoding: "utf8" },
     ));
   } catch {
     return undefined; // gh unavailable; distinguished from "no run yet"
   }
   return runs.find((run) => run.headBranch === tag) ?? null;
+}
+
+// Only a concluded failure can name `gh run rerun --failed`, which GitHub rejects when no job failed.
+function workflowRepairLine(tag, run) {
+  if (run === undefined) {
+    return `workflow state could not be read for ${tag}, so check \`gh run list\` before retrying`;
+  }
+  if (run === null) return `git push origin ${tag}, since the tag may have produced no workflow run`;
+  if (run.conclusion === "failure") return `gh run rerun ${run.databaseId} --failed`;
+  if (run.status === "queued" || run.status === "in_progress") {
+    return `wait for workflow run ${run.databaseId} with \`gh run view ${run.databaseId} --watch\`, then re-run \`publish --yes\``;
+  }
+  if (run.conclusion === "success") {
+    return `npm is still propagating ${tag}, so re-check the dist-tags endpoint for its version, then re-run \`publish --yes\``;
+  }
+  return `re-run workflow run ${run.databaseId} in full because it concluded ${run.conclusion} with \`gh run rerun ${run.databaseId}\`, then re-run \`publish --yes\``;
 }
 
 /**
@@ -1067,11 +1117,45 @@ async function awaitTagRun(tag) {
     run.conclusion = refreshed.conclusion;
   }
   console.log(`  ${run.name} completed ${run.conclusion}`);
-  if (run.conclusion !== "success") {
-    throw new Error(
-      `${tag}: publish run concluded ${run.conclusion}. See docs/release-automation.md for the recovery playbook.`,
-    );
+  if (run.conclusion !== "success") throw new Error(tagRunFailureMessage(tag, run));
+}
+
+/**
+ * A failed tag run is only recoverable if the operator knows whether npm saw
+ * the publish: re-running the failed jobs is safe when every publish job was
+ * skipped, and an E403 trap when one already published. Read the job list so
+ * the error names the actual failure and the exact command to repair it.
+ */
+function tagRunFailureMessage(tag, run) {
+  let details = null;
+  try {
+    details = JSON.parse(execFileSync(
+      "gh",
+      ["run", "view", String(run.databaseId), "--json", "jobs,url"],
+      { cwd: ROOT, encoding: "utf8" },
+    ));
+  } catch {
+    // gh is optional here; without it the message stays at the generic advice.
   }
+  const jobs = Array.isArray(details?.jobs) ? details.jobs : [];
+  const failed = jobs.filter((job) => job.conclusion === "failure").map((job) => job.name);
+  const publishJobs = jobs.filter((job) => /^publish\b/i.test(job.name));
+  const nothingPublished = publishJobs.length > 0 && publishJobs.every((job) => job.conclusion === "skipped");
+  const entry = releaseTagsAtHead([tag])[0];
+  const lines = [`${tag}: publish run concluded ${run.conclusion} (run ${run.databaseId}).`];
+  if (details?.url) lines.push(`  run: ${details.url}`);
+  if (failed.length > 0) lines.push(`  failed jobs: ${failed.join(", ")}`);
+  if (nothingPublished) {
+    lines.push("  No publish job ran, so nothing reached npm.");
+  } else {
+    lines.push("  A publish job may have reached npm, so check the registry before retrying. npm refuses E403.");
+    if (entry) lines.push(`    npm view ${entry.npmName} dist-tags`);
+    lines.push(`    gh run view ${run.databaseId} --log-failed`);
+  }
+  lines.push(`    ${workflowRepairLine(tag, run)}`);
+  lines.push("  Then re-run `publish --yes`. It confirms every pushed tag on npm before tagging the rest.");
+  lines.push("  See docs/release-automation.md for the rest of the recovery playbook.");
+  return lines.join("\n");
 }
 
 /**
@@ -1115,6 +1199,37 @@ async function reportRegistry(npmName, version) {
   return false;
 }
 
+/**
+ * Before a resumed publish tags anything, confirm that every wave already
+ * pushed in this batch actually reached npm.
+ *
+ * `buildPublishPlan()` drops a package as soon as its tag exists, but the tag
+ * is created immediately before its workflow runs. A workflow that failed
+ * before publishing (0.7.8-beta.13's smoke job) would otherwise be skipped
+ * silently on resume, and the remaining waves would ship against a version
+ * that is not on the registry. This check does not replace the older protocol
+ * re-confirmation below, which also covers a protocol tag on an older commit.
+ */
+async function confirmPushedTags() {
+  const tagged = taggedAtHead();
+  if (tagged.length === 0) return 0;
+  console.log(`\n== resume confirming ${tagged.length} already-pushed tag(s) on npm ==`);
+  const blockers = await collectResumeBlockers({
+    tagged,
+    confirm: reportRegistry,
+    repairFor: (entry) => workflowRepairLine(entry.tag, findRunForTag(entry.tag)),
+  });
+  if (blockers.length === 0) return 0;
+  console.log(`\nstopped before tagging the remaining waves. ${blockers.length} already-pushed tag(s) are not live on npm.`);
+  for (const blocker of blockers) {
+    console.log(`  ${blocker.tag}  ${blocker.npmName}@${blocker.version}`);
+    console.log(`    ${blocker.repair}`);
+  }
+  console.log("  A tag is pushed before its workflow runs; its version may be propagating to npm.");
+  console.log("  Follow the repair line above for each tag, then re-run `publish --yes`.");
+  return 1;
+}
+
 async function cmdPublish(plan, options) {
   if (plan.releases.length === 0) {
     console.log("nothing to release: no manifest carries an unreleased version (run `apply` first)");
@@ -1149,6 +1264,7 @@ async function cmdPublish(plan, options) {
   const resuming = assertReleaseTreeIsSweepable();
   if (resuming) {
     console.log("working tree is clean: these bumps are already committed, so this run resumes at the tags");
+    if (await confirmPushedTags()) return 1;
   }
 
   if (!options.skipGates) runGates(plan);
@@ -1181,7 +1297,11 @@ async function cmdPublish(plan, options) {
     git(["commit", "-m", subject]);
   }
   const head = git(["rev-parse", "HEAD"]);
-  git(["push", "origin", "main"]);
+  if (resuming && remoteMainAt(head)) {
+    console.log(`origin/main already at ${head.slice(0, 7)} — skipping the no-op push`);
+  } else {
+    git(["push", "origin", "main"]);
+  }
   console.log(resuming ? `tagging the existing commit ${head}` : `committed ${head}`);
 
   // Worth it only when more than one package ships: one duplicate suite is

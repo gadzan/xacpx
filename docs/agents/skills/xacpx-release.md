@@ -51,6 +51,20 @@ work around it.
   (manifests, `package-lock.json`, `bun.lock`, `CHANGELOG.md`, the core floor
   trackers, the metadata tests, `packages/relay-protocol/dist`). A half-finished
   edit never rides into a release commit.
+- **An already-pushed tag in this batch whose version is not on npm** (resume
+  only). A tag is created before its workflow runs, so the remaining waves must
+  not ship against a version that is not on npm. The message names the tag and
+  the version, and one shared helper picks the repair line from that tag's
+  workflow run. An unreadable `gh run list` gets a line saying the workflow
+  state could not be read and asking for `gh run list`. A tag with no run gets
+  `git push origin <tag>`. A concluded failure gets `gh run rerun <run-id>
+  --failed`. A queued or in-progress run gets `gh run view <run-id> --watch`
+  and a later `publish --yes`. A successful run gets a propagation line that
+  asks for a dist-tags re-check. Any other terminal conclusion gets a full
+  `gh run rerun <run-id>` and names that conclusion. A failed tag workflow
+  prints the run URL and failed jobs only when `gh run view` answers, and its
+  repair line comes from the same helper. `plan` shows the same state in a
+  `resume state` section.
 
 **A clean tree is not a refusal — it is the resume path.** When the bump is
 already committed, `publish` says so and picks up at the tags, so a release that

@@ -66,6 +66,7 @@ interface ReleaseApi {
   reportRegistry: (npmName: string, version: string) => Promise<boolean>;
   buildPublishPlan: () => ReleasePlan;
   cmdPublish: (plan: ReleasePlan, options: { yes: boolean; skipGates: boolean }) => Promise<number>;
+  printPlan: (plan: unknown) => string;
 }
 
 interface RegistryResponse {
@@ -107,15 +108,23 @@ function virtualClock() {
   };
 }
 
+type WorkflowOutcome = { status: string; conclusion?: "success" | "failure" | "cancelled" | "timed_out" | null };
+
 function harness(options: {
   pending?: string[];
   clean?: boolean;
+  headTags?: string[];
+  remoteMain?: string;
   fetch?: RegistryFetch;
   failPushOf?: (tag: string) => boolean;
   remoteTags?: Set<string>;
   remoteProbeOutcome?: "error";
-  workflowByTag?: Record<string, { status: string; conclusion?: string | null }>;
-  workflowRun?: { status: string; conclusion?: string | null };
+  workflowByTag?: Record<string, WorkflowOutcome>;
+  workflowRun?: WorkflowOutcome & {
+    jobs?: Array<{ name: string; conclusion: string }>;
+    url?: string;
+  };
+  runListOutcome?: "error" | "empty";
 } = {}) {
   const clock = virtualClock();
   const remoteTags = options.remoteTags ?? new Set<string>();
@@ -134,7 +143,7 @@ function harness(options: {
     events.push(`registry ${url}`);
     return options.fetch ? options.fetch(url, request) : { ok: true, json: async () => ({ latest: version }) };
   };
-  const api = runInNewContext(`${declarations}\n({ reportRegistry, buildPublishPlan, cmdPublish });`, {
+  const api = runInNewContext(`${declarations}\n({ reportRegistry, buildPublishPlan, cmdPublish, printPlan });`, {
     ROOT: root,
     LIB: releaseLib,
     join,
@@ -153,11 +162,14 @@ function harness(options: {
       commands.push([command, ...args]);
       events.push([command, ...args].join(" "));
       if (command === "gh" && args[0] === "run" && args[1] === "list") {
+        if (options.runListOutcome === "error") throw new Error("gh unavailable");
+        if (options.runListOutcome === "empty") return "[]";
         return JSON.stringify([...tags].map((tag) => {
           const outcome = fixture.workflowByTag[tag];
           return {
             headBranch: tag,
             name: "publish",
+            databaseId: 42148236185,
             status: outcome?.status ?? "completed",
             conclusion: outcome?.conclusion ?? "success",
           };
@@ -173,6 +185,7 @@ function harness(options: {
       if (args[0] === "status") return options.clean ? "" : " M packages/relay/package.json\0";
       if (args[0] === "diff") return "";
       if (args[0] === "rev-parse") return "release-head";
+      if (args[0] === "tag" && args[1] === "--points-at") return fixture.headTags.join("\n");
       if (args[0] === "tag" && args[1] === "--list") {
         const pattern = args[2]!;
         return [...tags].filter((tag) => pattern.endsWith("*")
@@ -188,6 +201,12 @@ function harness(options: {
         return "";
       }
       if (args[0] === "ls-remote") {
+        if (args[args.length - 1] === "refs/heads/main") {
+          if (fixture.remoteProbeOutcome === "error") {
+            throw Object.assign(new Error("network unreachable"), { status: 128 });
+          }
+          return fixture.remoteMain ? `${fixture.remoteMain}\trefs/heads/main\n` : "";
+        }
         if (fixture.remoteProbeOutcome === "error") {
           throw Object.assign(new Error("network unreachable"), { status: 128 });
         }
@@ -213,7 +232,14 @@ function harness(options: {
     AbortSignal: clock.AbortSignal,
     setTimeout: clock.setTimeout,
   }, { filename: "release.mjs" }) as ReleaseApi;
-  const fixture = { api, clock, tags, remoteTags, workflowByTag: options.workflowByTag ?? {}, remoteProbeOutcome: options.remoteProbeOutcome, commands, events, output };
+  const fixture = {
+    api, clock, tags, remoteTags,
+    headTags: options.headTags ?? [],
+    remoteMain: options.remoteMain,
+    workflowByTag: options.workflowByTag ?? {},
+    remoteProbeOutcome: options.remoteProbeOutcome,
+    commands, events, output,
+  };
   return fixture;
 }
 
@@ -416,6 +442,206 @@ test("a failed publish workflow stops the run before the registry is polled", as
   await expect(fixture.api.cmdPublish(plan, publishOptions)).rejects.toThrow("publish run concluded failure");
   expect(fixture.events.some((event) => event.startsWith("registry "))).toBe(false);
   expect(fixture.events.some((event) => event === `git push origin ${relayTag}`)).toBe(false);
+});
+
+test("a failed tag run on a resume yields the failed-only rerun command before any remaining tag is created", async () => {
+  const relayTag = releaseLib.tagFor("relay", version);
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "failure" } },
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(plan.releases.map((release) => release.id)).toEqual(["relay"]);
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  expect(fixture.commands.some((args) => args.join(" ") === `git tag ${relayTag} release-head`)).toBe(false);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("not live on npm");
+  expect(output).toContain("    gh run rerun 42148236185 --failed");
+  expect(output).toContain("publish --yes");
+  expect(fixture.events.some((event) => event.includes(`gh run list --branch ${protocolTag} --limit 30`))).toBe(true);
+});
+
+test("a successful tag run on a resume names propagation and re-checks the dist-tags endpoint", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("    npm is still propagating relay-protocol-v1.2.3, so re-check the dist-tags endpoint for its version, then re-run `publish --yes`");
+  expect(output).not.toContain("gh run rerun");
+  expect(output).not.toContain("git push origin");
+});
+
+test("an in-progress tag run on a resume names the watch command and never a rerun", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    workflowByTag: { [protocolTag]: { status: "in_progress", conclusion: null } },
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("    wait for workflow run 42148236185 with `gh run view 42148236185 --watch`, then re-run `publish --yes`");
+  expect(output).not.toContain("gh run rerun");
+});
+
+test("an unreadable gh run list on a resume names the query failure and never a tag re-push", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    runListOutcome: "error",
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("    workflow state could not be read for relay-protocol-v1.2.3, so check `gh run list` before retrying");
+  expect(output).not.toContain("git push origin");
+  expect(output).not.toContain("gh run rerun");
+});
+
+test("a timed-out tag run on a resume names the conclusion and a full rerun, never --failed", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "timed_out" } },
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("    re-run workflow run 42148236185 in full because it concluded timed_out with `gh run rerun 42148236185`, then re-run `publish --yes`");
+  expect(output).not.toContain("gh run rerun 42148236185 --failed");
+});
+
+test("a cancelled tag run on a resume names a full rerun and the conclusion, never --failed", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "cancelled" } },
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("    re-run workflow run 42148236185 in full because it concluded cancelled with `gh run rerun 42148236185`, then re-run `publish --yes`");
+  expect(output).not.toContain("gh run rerun 42148236185 --failed");
+});
+test("a tag with no workflow run on a resume keeps the re-push repair and says a run may be missing", async () => {
+  const fixture = harness({
+    pending: ["relay"],
+    clean: true,
+    headTags: [protocolTag],
+    runListOutcome: "empty",
+    fetch: async () => notFound(),
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(1);
+  const output = fixture.output.join("\n");
+  expect(output).toContain("    git push origin relay-protocol-v1.2.3, since the tag may have produced no workflow run");
+  expect(output).not.toContain("gh run rerun");
+});
+
+test("a resume confirms already-pushed tags before tagging the remaining wave", async () => {
+  const relayTag = releaseLib.tagFor("relay", version);
+  const fixture = harness({ pending: ["relay"], clean: true, headTags: [protocolTag] });
+  const plan = fixture.api.buildPublishPlan();
+
+  expect(await fixture.api.cmdPublish(plan, publishOptions)).toBe(0);
+  const confirmIndex = fixture.events.findIndex((event) =>
+    event.includes(`/-/package/${protocol.npmName.replace("/", "%2F")}/dist-tags`));
+  const tagIndex = fixture.events.indexOf(`git tag ${relayTag} release-head`);
+  expect(confirmIndex).toBeGreaterThanOrEqual(0);
+  expect(confirmIndex).toBeLessThan(tagIndex);
+  expect(fixture.output.join("\n")).toContain("confirming 1 already-pushed tag");
+});
+
+test("a cancelled tag run names a full rerun in the failure message, never --failed", async () => {
+  const fixture = harness({
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "cancelled" } },
+    workflowRun: {
+      status: "completed",
+      conclusion: "cancelled",
+      url: "https://github.com/gadzan/xacpx/actions/runs/42148236185",
+      jobs: [
+        { name: "publish-platforms", conclusion: "skipped" },
+        { name: "publish-channel-relay", conclusion: "skipped" },
+      ],
+    },
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  let message = "";
+  try {
+    await fixture.api.cmdPublish(plan, publishOptions);
+  } catch (error) {
+    message = String((error as Error).message);
+  }
+  expect(message).toContain("publish run concluded cancelled");
+  expect(message).toContain("No publish job ran");
+  expect(message).toContain("    re-run workflow run 42148236185 in full because it concluded cancelled with `gh run rerun 42148236185`, then re-run `publish --yes`");
+  expect(message).toContain("https://github.com/gadzan/xacpx/actions/runs/42148236185");
+  expect(message).not.toContain("gh run rerun 42148236185 --failed");
+});
+
+test("a failed tag workflow names the failed jobs and the rerun command", async () => {
+  const fixture = harness({
+    workflowByTag: { [protocolTag]: { status: "completed", conclusion: "failure" } },
+    workflowRun: {
+      status: "completed",
+      conclusion: "failure",
+      url: "https://github.com/gadzan/xacpx/actions/runs/42148236185",
+      jobs: [
+        { name: "smoke-platform-package", conclusion: "failure" },
+        { name: "publish-channel-relay", conclusion: "skipped" },
+      ],
+    },
+  });
+  const plan = fixture.api.buildPublishPlan();
+
+  let message = "";
+  try {
+    await fixture.api.cmdPublish(plan, publishOptions);
+  } catch (error) {
+    message = String((error as Error).message);
+  }
+  expect(message).toContain("publish run concluded failure");
+  expect(message).toContain("smoke-platform-package");
+  expect(message).toContain("No publish job ran");
+  expect(message).toContain("gh run rerun 42148236185 --failed");
+  expect(message).toContain("https://github.com/gadzan/xacpx/actions/runs/42148236185");
+});
+
+test("plan marks an applied-but-unpublished tree as a resume instead of the next bump", () => {
+  const fixture = harness({ pending: ["core"], headTags: [protocolTag] });
+  const output = fixture.api.printPlan({
+    target: "beta", bump: "patch", releases: [], floorTrackers: [],
+    changedPaths: {}, lastTags: {}, waves: [], edits: [],
+    changelogWindows: [], changelogSource: "commit subjects", changelog: "",
+  });
+
+  expect(output).toContain("resume state");
+  expect(output).toContain(`core             ${version}   v${version}`);
+  expect(output).toContain(`already pushed at HEAD: ${protocolTag}`);
 });
 
 test("lock reconciliation restores missing bridge pins and check rejects drift", () => {
