@@ -484,3 +484,40 @@ describe("computePopoverPlacement", () => {
     expect(placement.left + 420 <= 360 - 8 + 1 || placement.left === 8).toBe(true);
   });
 });
+
+describe("projectGroupTranscript empty public replies", () => {
+  it("drops an empty bot evidence row and keeps the member activity row", () => {
+    const rec = record(run("r1"), [turn("t1", "r1", "bot_a")]);
+    const items = projectGroupTranscript({
+      messages: [
+        message("req_msg", 1, { runId: "r1" }),
+        message("empty", 2, { role: "bot", runId: "r1", senderBotId: "bot_a", promptRequestId: "src_t1", content: "" }),
+        message("status", 3, { role: "system", runId: "r1", content: "No public reply from Ada." }),
+      ],
+      runs: { r1: rec },
+    });
+    // The status narrates the silence; the activity row still closes the Run
+    // block so the member keeps its own turn chip and trace entry.
+    expect(items.map((item) => (item.kind === "message" ? item.message.id : item.kind)))
+      .toEqual(["req_msg", "status", "member-activity"]);
+    const activity = items.find((item) => item.kind === "member-activity");
+    expect(activity).toMatchObject({ memberTurn: { id: "t1" } });
+  });
+
+  it("keeps an attachment-only bot row, which is a real reply", () => {
+    const rec = record(run("r1"), [turn("t1", "r1", "bot_a")]);
+    const items = projectGroupTranscript({
+      messages: [
+        message("req_msg", 1, { runId: "r1" }),
+        message("files", 2, {
+          role: "bot", runId: "r1", senderBotId: "bot_a", promptRequestId: "src_t1", content: "",
+          attachments: [{ id: "att_1", filename: "report.pdf", mimeType: "application/pdf", size: 10, kind: "file" }],
+        }),
+      ],
+      runs: { r1: rec },
+    });
+    expect(items.map((item) => (item.kind === "message" ? item.message.id : item.kind)))
+      .toEqual(["req_msg", "files"]);
+    expect(items.some((item) => item.kind === "member-activity")).toBe(false);
+  });
+});

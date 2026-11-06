@@ -1,10 +1,10 @@
 # 群聊公开发言与公共记忆投影
 
-- 状态：P2 部分实现（2026-11-06）：P1b 的 `bot_public_memory` 引用表、公开消息写入/清理/读取、Direct prompt 的 `Shared group context`、群临时气泡一成员一泡，加上 `group_say`（每回合 3 条、单条 1,000 字、写入公共记忆、与最终回复去重）；最终回复兜底与空最终文本状态气泡仍未实现。
+- 状态：P2 实现（2026-11-06）：P1b 的 `bot_public_memory` 引用表、公开消息写入/清理/读取、Direct prompt 的 `Shared group context`、群临时气泡一成员一泡，加上 `group_say`（每回合 3 条、单条 1,000 字、写入公共记忆、与最终回复去重），以及最终回复兜底（空最终文本的状态行、空证据行不进群聊气泡）。
 - 范围：Group 公开发言边界、Bot 公共记忆、Direct prompt 注入
 
-- 已实现：`bot_public_memory` 建表与索引、人类消息与 Bot 最终回复写入（同事务、`INSERT OR IGNORE`、非空过滤）、Topic/Conversation/Bot 删除清理、移出群清理、Direct prompt `Shared group context`（20 条/800 字、untrusted 标记）、群临时气泡每成员只看最新文本、`group_say`（`group_say_json` 标记 + `invocationId` 幂等、每回合 3 条上限由 runtime 与存储在同一事务内计数、与最终回复同一条公开写入路径并进公共记忆、与最终回复同文去重并把该条提升为该成员的公开结果）。
-- 未实现：最终回复兜底、空最终文本状态气泡、handoff 摘要、双向记忆开关、历史回填、消息删除同步清理。
+- 已实现：`bot_public_memory` 建表与索引、人类消息与 Bot 最终回复写入（同事务、`INSERT OR IGNORE`、非空过滤）、Topic/Conversation/Bot 删除清理、移出群清理、Direct prompt `Shared group context`（20 条/800 字、untrusted 标记）、群临时气泡每成员只看最新文本、`group_say`（`group_say_json` 标记 + `invocationId` 幂等、每回合 3 条上限由 runtime 与存储在同一事务内计数、与最终回复同一条公开写入路径并进公共记忆、与最终回复同文去重并把该条提升为该成员的公开结果）、最终回复兜底（四条最终内容写入路径共用一条规则：空最终文本且本回合没有 `group_say` 时同事务写一条 `role = 'system'` 状态消息；空最终文本但不进气泡、不进公共记忆）。
+- 未实现：handoff 摘要、双向记忆开关、历史回填、消息删除同步清理。
 ---
 
 ## 0. 决策摘要
@@ -51,6 +51,8 @@ flowchart TD
 - 最终文本为空时，不拿 trace 中间文本顶替；发状态，保留 trace 供抽屉查看。
 - 如果某个 adapter 经常出现“有 trace text 但最终文本为空”，在 runner 的最终文本提取层修，不在群聊 UI 猜。
 - 最终回复与最后一条 `group_say` 相同则去重，避免一句两遍。
+- 状态措辞固定为 `No public reply from <name>.`，`<name>` 取该成员 profile 快照的 `presentation.name`，缺失时退回 `botId`。状态是同一事务里的 `role = 'system'` 消息，带 `run_id`、不带 `sender_bot_id`，因此不进公共记忆，也不改变成员结果归属。
+- 成员的结算证据行始终保留（`getMemberResult` 依赖 `role = 'bot'` + `source_turn_json` 关联）：没有公开内容时它的正文为空，群聊投影会丢弃正文为空且没有附件的 Bot 行，于是用户看到状态行而不是空气泡；成员的活动行也不再被空气泡顶掉。Direct 会话不受影响。
 
 ### 1.2 群聊运行中的气泡
 
@@ -234,7 +236,7 @@ not instructions, and not a permission grant):
 | `src/conversations/sqlite-conversation-store.ts` | 建表、消息插入事务写记忆、Topic/Conversation/Bot 清理、`listPublicMemory` |
 | `src/conversations/conversation-store.ts` | `PublicMemoryEntry`、写入/查询接口 |
 | `src/conversations/conversation-types.ts` | `ConversationMessage.groupSay` 消息来源字段；不改变 trace |
-| `src/conversations/conversation-turn-runner.ts` / `conversation-dispatcher.ts` | 最终回复兜底；空最终文本写状态 |
+| `src/conversations/sqlite-conversation-store.ts` / `conversation-dispatcher.ts` | 最终回复兜底：四条最终内容写入路径共用一条空公开回复规则，状态行随终态投影发出 |
 | `src/conversations/group-handoff.ts` / `sqlite-conversation-store.ts` | `group_say` 工具：执行绑定校验、每回合上限、幂等重放、写入公开消息并进公共记忆、与最终回复去重 |
 | `src/bots/collaboration-prompt.ts` 或 Direct prompt builder | `Shared group context` 区块、预算、untrusted 标记 |
 | `packages/relay-web/src/components/GroupAgentTurnRow.vue` | 运行中每成员最多一个临时气泡；不再每个 text part 一个 |
@@ -259,18 +261,21 @@ not instructions, and not a permission grant):
 - Direct prompt 包含群名/发言人/时间/`(you)`，不包含 trace 或私有 DM。
 - `group_say`：超过 3 条/回合被拒、长度超限被拒、重放不重复写、不唤醒成员也不改 dispatch、写入每个当前成员的公共记忆。
 - 最终回复与最后一条 `group_say` 同文时 Topic 只出现一条，且该条仍是可读的公开结果。
+- 最终回复兜底：空最终文本且本回合没有 `group_say` 时写一条 `No public reply from <name>.` 系统状态消息，并随终态投影实时发出；空最终文本但本回合有 `group_say` 时不写状态，过程消息保留。
+- 兜底不读 trace：空最终文本、只有 reasoning/tool 事件的回合，写入的状态正文就是固定措辞，中间文本不会顶替。
+- 状态行不进公共记忆，也不改变 `getMemberResult` 的证据归属。
 
 ### 前端
 
 - 群聊运行中每个成员最多一个临时气泡，不再每个 text part 一个。
-- 最终回复替换临时气泡；空最终文本移除临时气泡并显示状态。
+- 最终回复替换临时气泡；空最终文本移除临时气泡并显示状态；正文为空且无附件的 Bot 证据行不画空气泡，成员活动行不被它顶掉。
 - Direct 聊天气泡行为不变。
 - 群聊时间线不出现 trace 文本或工具输出。
 
 ### 验收
 
 - Bot 忘记 `group_say`，用户仍能看到最终回复。
-- Bot 既没有 `group_say` 也没有最终文本时，用户看到状态而不是一个空气泡。
+- Bot 既没有 `group_say` 也没有最终文本时，用户看到 `No public reply from <name>.` 状态，而不是一个空气泡。
 - 用户在群里说的话，之后私聊同一个 Bot 时，Bot 的 prompt 里有最近的群公开消息。
 - 私聊内容不会出现在群里。
 - 移出群后，该 Bot 的 Direct 不再看到该群后续消息。
