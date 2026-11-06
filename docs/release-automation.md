@@ -207,10 +207,28 @@ That stop is resumable by design. Tags are created only when their package is
 about to be pushed, so waves that never started remain in the pending set.
 Re-running `publish --yes` picks up those waves. A **clean tree is the marker for
 that resume**: the bumps are already committed, so `publish` skips the commit and
-refuses to tag if the gates left the tree altered. Before resuming a relay or
-channel-relay release whose protocol tag already exists, it confirms that
-protocol version on the registry again. An unconfirmed protocol stops the retry
-before any new tag is pushed.
+refuses to tag if the gates left the tree altered. It also skips
+`git push origin main` when `ls-remote` shows the remote already at that commit —
+a transient TLS error on a no-op push used to abort the retry before the first
+tag went out.
+
+A tag is pushed **before** its workflow runs, so a workflow that failed before
+publishing would drop out of the pending set on resume and let later waves ship
+against a version that is not on npm. On resume, `publish` therefore confirms
+every release tag pointing at HEAD on the registry (in parallel, using the same
+dist-tags endpoint as wave confirmation) before it tags anything. An
+unconfirmed one stops the run with the tag, the version and the repair command —
+`gh run rerun <run-id> --failed`, or `git push origin <tag>` when no workflow run
+was found. Before resuming a relay or channel-relay release whose protocol tag
+already exists, the older protocol-specific check still re-confirms that version
+on the registry; it also covers a protocol tag on an older commit, which the
+HEAD-tag check does not. An unconfirmed protocol stops the retry before any new
+tag is pushed.
+
+`plan` on an applied-but-unpublished tree prints a **resume state** section
+above the release table: the untagged set `publish` would actually tag, and the
+tags already pushed at HEAD. The release table in that state proposes the *next*
+bump; `apply` would refuse it without `--force`.
 
 ## Recovery
 
@@ -219,6 +237,9 @@ before any new tag is pushed.
 | A tag produced no workflow run | Re-push that one tag: `git push origin <tag>`. GitHub drops some multi-tag push events. |
 | `git push` of a release tag fails | If the remote has no such tag (`ls-remote --exit-code` exits 2), `publish` deletes its local tag and exits, so the next run re-tags. If the remote already has it, recovery is `git push origin <tag>` (the row above). An `ls-remote` network or auth failure is neither outcome: the tag is kept and the run exits without polling the registry for that wave. Then check `git ls-remote --tags origin <tag>`: if it is absent, delete the local tag and re-run `publish --yes`; if it is present, `git push origin <tag>` and let its workflow run before continuing. |
 | Smoke step fails with `ETARGET` | The previous wave is not on npm yet. Do not bump versions — re-run the failed jobs of the same tag. |
+| A tag's publish workflow concluded failure | The error prints the run URL, the failed jobs and whether every publish job was skipped. If none ran, nothing reached npm: `gh run rerun <run-id> --failed`, then `publish --yes`. If one did publish, check `npm view <pkg> dist-tags` before retrying — npm refuses `E403`. |
+| `publish` stops on a resume with "already-pushed tag(s) are not live on npm" | Repair the workflow named in the printed command, then re-run `publish --yes` once the version is visible. Do not delete the tag or bump versions. |
+| `git push origin main` fails on a resumed release | Retry `publish --yes`. Resumes no longer push main when the remote already has the release commit, so a transient network error cannot abort the retry before the first tag. |
 | `publish` stopped after a wave as unconfirmed | Not a failed publish: the workflows reported success and the registry is catching up. Re-check the printed URLs, then re-run `publish --yes` — it resumes at the untagged waves. |
 | `npm test` fails on one unrelated timeout | Confirm locally on the release commit, then re-run the same tag. npm will not republish, so a new version would only add noise. |
 | `E403 ... previously published versions` | That package already published. Verify with `npm view <pkg> dist-tags` and treat it as done. |

@@ -11,6 +11,7 @@ import {
   changelogMaterial,
   collectEdits,
   collectFloorViolations,
+  collectResumeBlockers,
   compareVersions,
   detectChanged,
   expandReleaseSet,
@@ -21,6 +22,7 @@ import {
   precedingBeta,
   prsForPackages,
   publishWaves,
+  releaseTagsAtHead,
   renderChangelog,
   splitBullet,
   rootManifestShipsChanges,
@@ -432,6 +434,41 @@ test("every registry entry carries a complete tag prefix and manifest", () => {
     expect(pkg.sourcePaths.length).toBeGreaterThan(0);
     expect([1, 2, 3]).toContain(pkg.wave);
   }
+});
+
+test("releaseTagsAtHead maps batch tags and ignores unrelated or non-semver tags", () => {
+  expect(releaseTagsAtHead([
+    "relay-protocol-v0.6.4-beta.10",
+    "relay-v0.14.12-beta.17",
+    "channel-relay-v0.7.8-beta.13",
+    "v0.24.10-beta.13",
+    "nightly",
+    "vnot-a-version",
+  ])).toEqual([
+    { tag: "relay-protocol-v0.6.4-beta.10", id: "relay-protocol", npmName: "@ganglion/xacpx-relay-protocol", version: "0.6.4-beta.10" },
+    { tag: "relay-v0.14.12-beta.17", id: "relay", npmName: "@ganglion/xacpx-relay", version: "0.14.12-beta.17" },
+    { tag: "channel-relay-v0.7.8-beta.13", id: "channel-relay", npmName: "@ganglion/xacpx-channel-relay", version: "0.7.8-beta.13" },
+    { tag: "v0.24.10-beta.13", id: "core", npmName: "@ganglion/xacpx", version: "0.24.10-beta.13" },
+  ]);
+});
+
+test("collectResumeBlockers names only unconfirmed tags and their repair command", async () => {
+  const tagged = releaseTagsAtHead(["relay-protocol-v0.6.4-beta.10", "channel-relay-v0.7.8-beta.13"]);
+  const confirm = async (_name: string, version: string) => version === "0.6.4-beta.10";
+  const blocker = {
+    tag: "channel-relay-v0.7.8-beta.13",
+    id: "channel-relay",
+    npmName: "@ganglion/xacpx-channel-relay",
+    version: "0.7.8-beta.13",
+  };
+
+  expect(await collectResumeBlockers({ tagged, confirm, runForTag: () => 42148236185 })).toEqual([
+    { ...blocker, repair: "gh run rerun 42148236185 --failed" },
+  ]);
+  expect(await collectResumeBlockers({ tagged, confirm: async () => true })).toEqual([]);
+  expect(await collectResumeBlockers({ tagged: [blocker], confirm: async () => false })).toEqual([
+    { ...blocker, repair: `git push origin ${blocker.tag}` },
+  ]);
 });
 
 test("renderChangelog labels core without a package prefix and others with one", () => {

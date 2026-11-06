@@ -454,6 +454,51 @@ export function tagFor(id, version) {
 }
 
 /**
+ * Which tags pointing at the release commit belong to this batch.
+ *
+ * A tag is created immediately before its workflow is pushed, so on a resumed
+ * publish the release tags at HEAD are exactly the waves that already went out.
+ * An arbitrary tag, or one whose suffix is not semver, is not a release wave.
+ * Longest prefix first keeps an overlapping future prefix from claiming a tag.
+ *
+ * @param {string[]} tags
+ * @returns {Array<{tag:string,id:string,npmName:string,version:string}>}
+ */
+export function releaseTagsAtHead(tags, registry = PACKAGE_REGISTRY) {
+  const byPrefix = [...registry].sort((a, b) => b.tagPrefix.length - a.tagPrefix.length);
+  return tags.flatMap((tag) => {
+    const entry = byPrefix.find((pkg) => tag.startsWith(pkg.tagPrefix));
+    if (!entry) return [];
+    const version = tag.slice(entry.tagPrefix.length);
+    if (!parseVersion(version)) return [];
+    return [{ tag, id: entry.id, npmName: entry.npmName, version }];
+  });
+}
+
+/**
+ * Already-pushed tags whose versions never reached npm.
+ *
+ * `publish` drops a package from its pending set as soon as its tag exists. A
+ * workflow that failed before publishing would otherwise be skipped silently
+ * on resume, and the remaining waves would ship against a version that is not
+ * on the registry. The I/O stays injected: `confirm` checks the registry and
+ * `runForTag` finds the workflow run whose failed jobs the operator re-runs.
+ */
+export async function collectResumeBlockers({ tagged, confirm, runForTag = () => null }) {
+  const checked = await Promise.all(tagged.map(async (entry) => ({
+    entry,
+    ok: await confirm(entry.npmName, entry.version),
+  })));
+  return checked.filter(({ ok }) => !ok).map(({ entry }) => {
+    const runId = runForTag(entry.tag);
+    return {
+      ...entry,
+      repair: runId ? `gh run rerun ${runId} --failed` : `git push origin ${entry.tag}`,
+    };
+  });
+}
+
+/**
  * The "expected floor" invariants a released tree must satisfy.
  *
  * These are the ones that have actually broken CI: a plugin whose published
