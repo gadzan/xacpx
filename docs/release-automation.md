@@ -217,9 +217,13 @@ publishing would drop out of the pending set on resume and let later waves ship
 against a version that is not on npm. On resume, `publish` therefore confirms
 every release tag pointing at HEAD on the registry (in parallel, using the same
 dist-tags endpoint as wave confirmation) before it tags anything. An
-unconfirmed one stops the run with the tag, the version and the repair command —
-`gh run rerun <run-id> --failed`, or `git push origin <tag>` when no workflow run
-was found. Before resuming a relay or channel-relay release whose protocol tag
+unconfirmed one stops the run with the tag and the version, and the repair
+advice follows the state of that tag's workflow run, so a concluded failure
+names `gh run rerun <run-id> --failed`, a run that succeeded or is queued, in
+progress or cancelled names a wait for that run and then `publish --yes`, a
+failed `gh run list` names the unreadable workflow state and asks for
+`gh run list`, and a tag with no run names `git push origin <tag>`. Before
+resuming a relay or channel-relay release whose protocol tag
 already exists, the older protocol-specific check still re-confirms that version
 on the registry; it also covers a protocol tag on an older commit, which the
 HEAD-tag check does not. An unconfirmed protocol stops the retry before any new
@@ -238,7 +242,7 @@ bump; `apply` would refuse it without `--force`.
 | `git push` of a release tag fails | If the remote has no such tag (`ls-remote --exit-code` exits 2), `publish` deletes its local tag and exits, so the next run re-tags. If the remote already has it, recovery is `git push origin <tag>` (the row above). An `ls-remote` network or auth failure is neither outcome: the tag is kept and the run exits without polling the registry for that wave. Then check `git ls-remote --tags origin <tag>`: if it is absent, delete the local tag and re-run `publish --yes`; if it is present, `git push origin <tag>` and let its workflow run before continuing. |
 | Smoke step fails with `ETARGET` | The previous wave is not on npm yet. Do not bump versions — re-run the failed jobs of the same tag. |
 | A tag's publish workflow concluded failure | The error prints the run URL, the failed jobs and whether every publish job was skipped. If none ran, nothing reached npm: `gh run rerun <run-id> --failed`, then `publish --yes`. If one did publish, check `npm view <pkg> dist-tags` before retrying — npm refuses `E403`. |
-| `publish` stops on a resume with "already-pushed tag(s) are not live on npm" | Repair the workflow named in the printed command, then re-run `publish --yes` once the version is visible. Do not delete the tag or bump versions. |
+| `publish` stops on a resume with "already-pushed tag(s) are not live on npm" | Follow the printed repair line and re-run `publish --yes` once the version is visible. A wait line means npm is still propagating rather than a failed publish, so leave the workflow alone. Do not delete the tag or bump versions. |
 | `git push origin main` fails on a resumed release | Retry `publish --yes`. Resumes no longer push main when the remote already has the release commit, so a transient network error cannot abort the retry before the first tag. |
 | `publish` stopped after a wave as unconfirmed | Not a failed publish: the workflows reported success and the registry is catching up. Re-check the printed URLs, then re-run `publish --yes` — it resumes at the untagged waves. |
 | `npm test` fails on one unrelated timeout | Confirm locally on the release commit, then re-run the same tag. npm will not republish, so a new version would only add noise. |
