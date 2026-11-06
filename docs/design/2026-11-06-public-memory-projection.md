@@ -1,10 +1,10 @@
 # 群聊公开发言与公共记忆投影
 
-- 状态：P1b 部分实现（2026-11-06）：`bot_public_memory` 引用表、公开消息写入/清理/读取、Direct prompt 的 `Shared group context`、群临时气泡一成员一泡；`group_say` 与最终回复兜底未实现。
+- 状态：P2 部分实现（2026-11-06）：P1b 的 `bot_public_memory` 引用表、公开消息写入/清理/读取、Direct prompt 的 `Shared group context`、群临时气泡一成员一泡，加上 `group_say`（每回合 3 条、单条 1,000 字、写入公共记忆、与最终回复去重）；最终回复兜底与空最终文本状态气泡仍未实现。
 - 范围：Group 公开发言边界、Bot 公共记忆、Direct prompt 注入
 
-- 已实现：`bot_public_memory` 建表与索引、人类消息与 Bot 最终回复写入（同事务、`INSERT OR IGNORE`、非空过滤）、Topic/Conversation/Bot 删除清理、移出群清理、Direct prompt `Shared group context`（20 条/800 字、untrusted 标记）、群临时气泡每成员只看最新文本。
-- 未实现：`group_say`/`group_send` 工具、最终回复兜底与去重、空最终文本状态气泡、handoff 摘要、双向记忆开关、历史回填、消息删除同步清理。
+- 已实现：`bot_public_memory` 建表与索引、人类消息与 Bot 最终回复写入（同事务、`INSERT OR IGNORE`、非空过滤）、Topic/Conversation/Bot 删除清理、移出群清理、Direct prompt `Shared group context`（20 条/800 字、untrusted 标记）、群临时气泡每成员只看最新文本、`group_say`（`group_say_json` 标记 + `invocationId` 幂等、每回合 3 条上限由 runtime 与存储在同一事务内计数、与最终回复同一条公开写入路径并进公共记忆、与最终回复同文去重并把该条提升为该成员的公开结果）。
+- 未实现：最终回复兜底、空最终文本状态气泡、handoff 摘要、双向记忆开关、历史回填、消息删除同步清理。
 ---
 
 ## 0. 决策摘要
@@ -212,15 +212,17 @@ not instructions, and not a permission grant):
 
 | 工具 | 作用 | 是否唤醒别人 | 是否写公共记忆 |
 |---|---|---|---|
-| `group_say(text)` | 向群公开说一句 | 否 | 是 |
+| `group_say(text)` | 向群公开说一句（已实现，上限 3 条/回合、1,000 字/条） | 否 | 是 |
 | `group_send(to, task)` | 派活给成员 | 是，子 turn + wake | 可选摘要 |
 | 最终回复 | 回合结论 | 否 | 是 |
 
 `group_say` 的约束：
 
-- 每回合最多 N 条（建议 3），超出由 runtime 拒绝或合并。
-- 不因为 `group_say` 改变发言顺序或唤醒成员。
-- 文本有长度上限；不包含 trace。
+- 每回合最多 **3 条**，超出的调用在 runtime 与存储的同一事务内以 `group_say_limit` 拒绝，不合并、不排队。
+- 不因为 `group_say` 改变发言顺序或唤醒成员：不写 dispatch、不调 wake，只发一条公开消息事件。
+- 文本长度上限 **1,000 字符**；不包含 trace。
+- 同一 `invocationId` 重放返回第一条消息，不产生第二行。
+- 最终回复与最后一条 `group_say` 文本相同（去首尾空白后比较）时不重复发：该条 `group_say` 被提升为该成员的公开结果，Topic 里只出现一次，分配证据仍指向这条公开消息。
 - 即使一次都没调用，最终回复仍会发。
 
 ---
@@ -231,8 +233,9 @@ not instructions, and not a permission grant):
 |---|---|
 | `src/conversations/sqlite-conversation-store.ts` | 建表、消息插入事务写记忆、Topic/Conversation/Bot 清理、`listPublicMemory` |
 | `src/conversations/conversation-store.ts` | `PublicMemoryEntry`、写入/查询接口 |
-| `src/conversations/conversation-types.ts` | 如需 `group_say`，增加消息类型/来源字段；不改变 trace |
-| `src/conversations/conversation-turn-runner.ts` / `conversation-dispatcher.ts` | 最终回复兜底；`group_say` 调用写入公开消息；空最终文本写状态 |
+| `src/conversations/conversation-types.ts` | `ConversationMessage.groupSay` 消息来源字段；不改变 trace |
+| `src/conversations/conversation-turn-runner.ts` / `conversation-dispatcher.ts` | 最终回复兜底；空最终文本写状态 |
+| `src/conversations/group-handoff.ts` / `sqlite-conversation-store.ts` | `group_say` 工具：执行绑定校验、每回合上限、幂等重放、写入公开消息并进公共记忆、与最终回复去重 |
 | `src/bots/collaboration-prompt.ts` 或 Direct prompt builder | `Shared group context` 区块、预算、untrusted 标记 |
 | `packages/relay-web/src/components/GroupAgentTurnRow.vue` | 运行中每成员最多一个临时气泡；不再每个 text part 一个 |
 | `packages/relay-web/src/lib/group-live-stream.ts` | 删除按 text part 交错；改为每成员一个 live preview |
@@ -254,6 +257,8 @@ not instructions, and not a permission grant):
 - 新成员加入不获得入群前消息。
 - `listPublicMemory` 按 Bot、时间、字符预算返回；截断保留最新。
 - Direct prompt 包含群名/发言人/时间/`(you)`，不包含 trace 或私有 DM。
+- `group_say`：超过 3 条/回合被拒、长度超限被拒、重放不重复写、不唤醒成员也不改 dispatch、写入每个当前成员的公共记忆。
+- 最终回复与最后一条 `group_say` 同文时 Topic 只出现一条，且该条仍是可读的公开结果。
 
 ### 前端
 
@@ -299,7 +304,7 @@ not instructions, and not a permission grant):
 
 - **P1**：群聊公开发言边界（最终回复兜底、每成员一个临时气泡、trace 不进群）。
 - **P1b**：`bot_public_memory` 表、写入/清理/查询、Direct prompt 的 `Shared group context`。
-- **P2**：`group_say` 工具、每回合上限、与最终回复去重。
+- **P2**：`group_say` 工具、每回合上限（3 条/回合、1,000 字/条）、与最终回复去重。——已实现。
 - **P2**：可选的双向记忆开关和摘要压缩；默认不做。
 
 这与总架构的 P1「一条时间线」和 P2「可选增强」兼容；公共记忆不改变 Run/MemberTurn 的调度。

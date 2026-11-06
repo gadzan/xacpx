@@ -15,6 +15,8 @@ import { isExternalIngressRejectionCode } from "./conversation-ingress-rejection
 import type { LifecycleOperation, LifecycleOperationKind } from "./lifecycle-operation";
 import { parseLifecycleOperation } from "./lifecycle-operation";
 import type {
+  AppendGroupSayInput,
+  GroupSayReceipt,
   AcceptMemberInput,
   AcceptPublicHandoffInput,
   GroupSendInput,
@@ -81,7 +83,7 @@ import type {
 } from "./conversation-types";
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
-import { parseGroupSend } from "./group-handoff";
+import { MAX_GROUP_SAY_PER_TURN, parseGroupSend } from "./group-handoff";
 import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 import {
   buildWaitingGraph,
@@ -157,6 +159,7 @@ interface MessageRow {
   media_json?: string | null;
   input_metadata_json?: string | null;
   handoff_json?: string | null;
+  group_say_json?: string | null;
   id: string;
   conversation_id: string;
   topic_id: string;
@@ -333,6 +336,7 @@ CREATE TABLE IF NOT EXISTS messages (
   run_id TEXT,
   source_turn_json TEXT,
   created_at TEXT NOT NULL,
+  group_say_json TEXT,
   UNIQUE (topic_id, seq)
 );
 
@@ -633,6 +637,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
     ...(media?.length ? { media } : {}),
     ...(row.input_metadata_json !== null && row.input_metadata_json !== undefined ? { inputMetadata: parseDirectInputMetadata(row.content, JSON.parse(row.input_metadata_json)) } : {}),
     ...(row.handoff_json ? { handoff: JSON.parse(row.handoff_json) as ConversationMessage["handoff"] } : {}),
+    ...(row.group_say_json ? { groupSay: JSON.parse(row.group_say_json) as ConversationMessage["groupSay"] } : {}),
     ...(optionalString(row.run_id) ? { runId: row.run_id as string } : {}),
     createdAt: row.created_at,
     ...(sourceTurn ? { sourceTurn } : {}),
@@ -1330,6 +1335,62 @@ export class SqliteConversationStore implements ConversationStore {
     });
     if ("refusal" in outcome) throw outcome.refusal;
     return outcome;
+  }
+
+  appendGroupSay(input: AppendGroupSayInput): GroupSayReceipt {
+    return this.sqlite.transaction(() => {
+      const sender = this.requireMemberTurn(input.senderMemberTurnId);
+      const run = this.requireRun(sender.runId);
+      const prior = this.sqlite.get<MessageRow>(
+        "SELECT * FROM messages WHERE json_extract(group_say_json, '$.invocationId') = ?", [input.invocationId]);
+      if (prior) {
+        const existing = mapMessage(prior);
+        if (existing.content !== input.text) {
+          throw new ConversationError("group_say_invocation_conflict", "runtime invocation was already committed with different text");
+        }
+        return { reused: true, message: existing, remaining: this.groupSaysRemaining(sender.id) };
+      }
+      if (this.groupSaysRemaining(sender.id) === 0) {
+        throw new ConversationError("group_say_limit", `a member turn writes at most ${MAX_GROUP_SAY_PER_TURN} group_say messages`);
+      }
+      const seq = this.allocateSeq(run.conversationId, run.topicId);
+      const messageId = this.ids.messageId();
+      this.sqlite.run(
+        `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, group_say_json)
+         VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+        [messageId, run.conversationId, run.topicId, seq, sender.botId, input.text, run.id, input.now,
+          JSON.stringify({ memberTurnId: sender.id, invocationId: input.invocationId })]);
+      this.indexPublicMemory({
+        messageId,
+        conversationId: run.conversationId,
+        topicId: run.topicId,
+        role: "bot",
+        senderBotId: sender.botId,
+        content: input.text,
+        createdAt: input.now,
+      });
+      return { reused: false, message: this.requireMessage(messageId), remaining: this.groupSaysRemaining(sender.id) };
+    });
+  }
+
+  private groupSaysRemaining(memberTurnId: string): number {
+    const used = this.sqlite.get<{ total: number }>(
+      "SELECT COUNT(*) AS total FROM messages WHERE json_extract(group_say_json, '$.memberTurnId') = ?", [memberTurnId]);
+    return Math.max(0, MAX_GROUP_SAY_PER_TURN - (used?.total ?? 0));
+  }
+
+  private promoteIdenticalLastSayToResult(
+    memberTurnId: string,
+    content: string,
+    sourceTurn: { sessionAlias: string; turnId?: string },
+  ): ConversationMessage | undefined {
+    const row = this.sqlite.get<MessageRow>(
+      `SELECT * FROM messages WHERE json_extract(group_say_json, '$.memberTurnId') = ?
+       AND source_turn_json IS NULL AND TRIM(content) = TRIM(?) ORDER BY seq DESC LIMIT 1`, [memberTurnId, content]);
+    if (!row) return undefined;
+    this.sqlite.run("UPDATE messages SET source_turn_json = ? WHERE id = ?",
+      [JSON.stringify(sourceTurn), row.id]);
+    return mapMessage({ ...row, source_turn_json: JSON.stringify(sourceTurn) });
   }
 
   listUnsettledPublicHandoffs(senderMemberTurnId: string): MemberTurnRecord[] {
@@ -2699,36 +2760,41 @@ export class SqliteConversationStore implements ConversationStore {
         // no double progress count; the Run aggregate already observed it.
         return { run, memberTurn: member, resurrected: false };
       }
-      const seq = this.allocateSeq(run.conversationId, run.topicId);
-      const messageId = this.ids.messageId();
-      this.sqlite.run(
-        `INSERT INTO messages (
-           id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-         ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
-        [
-          messageId,
-          run.conversationId,
-          run.topicId,
-          seq,
-          // Sender derives from the member turn itself, never from a
-          // caller-supplied botId: a mismatched caller value cannot
-          // misattribute the transcript.
-          member.botId,
-          input.content,
-          run.id,
-          JSON.stringify(input.sourceTurn),
-          input.now,
-        ],
-      );
-      this.indexPublicMemory({
-        messageId,
-        conversationId: run.conversationId,
-        topicId: run.topicId,
-        role: "bot",
-        senderBotId: member.botId,
-        content: input.content,
-        createdAt: input.now,
-      });
+      const adopted = input.content.trim()
+        ? this.promoteIdenticalLastSayToResult(member.id, input.content, input.sourceTurn)
+        : undefined;
+      const messageId = adopted?.id ?? this.ids.messageId();
+      if (!adopted) {
+        const seq = this.allocateSeq(run.conversationId, run.topicId);
+        this.sqlite.run(
+          `INSERT INTO messages (
+             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+          [
+            messageId,
+            run.conversationId,
+            run.topicId,
+            seq,
+            // Sender derives from the member turn itself, never from a
+            // caller-supplied botId: a mismatched caller value cannot
+            // misattribute the transcript.
+            member.botId,
+            input.content,
+            run.id,
+            JSON.stringify(input.sourceTurn),
+            input.now,
+          ],
+        );
+            this.indexPublicMemory({
+              messageId,
+              conversationId: run.conversationId,
+              topicId: run.topicId,
+              role: "bot",
+              senderBotId: member.botId,
+            content: input.content,
+              createdAt: input.now,
+            });
+      }
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
         [input.now, member.id],
@@ -2780,33 +2846,38 @@ export class SqliteConversationStore implements ConversationStore {
     }
     let message: ConversationMessage | undefined;
     if (input.outcome === "completed") {
-      const seq = this.allocateSeq(run.conversationId, run.topicId);
-      const messageId = this.ids.messageId();
-      this.sqlite.run(
-        `INSERT INTO messages (
-           id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-         ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
-        [
-          messageId,
-          run.conversationId,
-          run.topicId,
-          seq,
-          member.botId,
-          input.content ?? "",
-          run.id,
-          JSON.stringify(input.sourceTurn),
-          input.now,
-        ],
-      );
-      this.indexPublicMemory({
-        messageId,
-        conversationId: run.conversationId,
-        topicId: run.topicId,
-        role: "bot",
-        senderBotId: member.botId,
-        content: input.content ?? "",
-        createdAt: input.now,
-      });
+      const adopted = (input.content ?? "").trim()
+        ? this.promoteIdenticalLastSayToResult(member.id, input.content!, input.sourceTurn)
+        : undefined;
+      const messageId = adopted?.id ?? this.ids.messageId();
+      if (!adopted) {
+        const seq = this.allocateSeq(run.conversationId, run.topicId);
+        this.sqlite.run(
+          `INSERT INTO messages (
+             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+          [
+            messageId,
+            run.conversationId,
+            run.topicId,
+            seq,
+            member.botId,
+            input.content ?? "",
+            run.id,
+            JSON.stringify(input.sourceTurn),
+            input.now,
+          ],
+        );
+            this.indexPublicMemory({
+              messageId,
+              conversationId: run.conversationId,
+              topicId: run.topicId,
+              role: "bot",
+              senderBotId: member.botId,
+            content: input.content ?? "",
+              createdAt: input.now,
+            });
+      }
       this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
         [member.id],
@@ -2981,33 +3052,38 @@ export class SqliteConversationStore implements ConversationStore {
               `source turn does not match member turn "${member.id}" execution identity`,
             );
           }
-          const seq = this.allocateSeq(run.conversationId, run.topicId);
-          const messageId = this.ids.messageId();
-          this.sqlite.run(
-            `INSERT INTO messages (
-               id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-             ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
-            [
-              messageId,
-              run.conversationId,
-              run.topicId,
-              seq,
-              member.botId,
-              entry.content ?? "",
-              run.id,
-              JSON.stringify(entry.sourceTurn ?? { sessionAlias: member.sessionAlias ?? "" }),
-              input.now,
-            ],
-          );
+          const adopted = (entry.content ?? "").trim()
+            ? this.promoteIdenticalLastSayToResult(member.id, entry.content!, entry.sourceTurn ?? { sessionAlias: member.sessionAlias ?? "" })
+            : undefined;
+          const messageId = adopted?.id ?? this.ids.messageId();
+          if (!adopted) {
+            const seq = this.allocateSeq(run.conversationId, run.topicId);
+            this.sqlite.run(
+              `INSERT INTO messages (
+                 id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+               ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+              [
+                messageId,
+                run.conversationId,
+                run.topicId,
+                seq,
+                member.botId,
+                entry.content ?? "",
+                run.id,
+                JSON.stringify(entry.sourceTurn ?? { sessionAlias: member.sessionAlias ?? "" }),
+                input.now,
+              ],
+            );
           this.indexPublicMemory({
             messageId,
             conversationId: run.conversationId,
             topicId: run.topicId,
             role: "bot",
             senderBotId: member.botId,
-            content: entry.content ?? "",
+          content: entry.content ?? "",
             createdAt: input.now,
           });
+          }
           this.sqlite.run(
             `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
             [input.now, member.id],
@@ -4150,6 +4226,7 @@ export class SqliteConversationStore implements ConversationStore {
         }
       };
       ensure("messages", "handoff_json", "TEXT");
+      ensure("messages", "group_say_json", "TEXT");
       ensure("member_turns", "handoff_source_turn_id", "TEXT");
       ensure("member_turns", "handoff_invocation_id", "TEXT");
       ensure("member_turns", "cancellation_reason", "TEXT CHECK (cancellation_reason = 'human-cancelled')");
@@ -4172,6 +4249,8 @@ export class SqliteConversationStore implements ConversationStore {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_followup_sender ON member_turns
           (followup_sender_member_turn_id) WHERE followup_sender_member_turn_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_envelope ON messages (json_extract(handoff_json, '$.memberTurnId')) WHERE handoff_json IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_group_say_invocation ON messages
+          (json_extract(group_say_json, '$.invocationId')) WHERE group_say_json IS NOT NULL;
         CREATE TABLE IF NOT EXISTS recovery_attempts (
           member_turn_id TEXT NOT NULL, run_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
           generation INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(member_turn_id, source_turn_id));`);
@@ -5415,33 +5494,38 @@ export class SqliteConversationStore implements ConversationStore {
         const alreadyCounted = member.state === "indeterminate";
         let pendingMessage: ConversationMessage | undefined;
         if (input.outcome === "completed") {
-          const seq = this.allocateSeq(run.conversationId, run.topicId);
-          const messageId = this.ids.messageId();
-          this.sqlite.run(
-            `INSERT INTO messages (
-               id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-             ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
-            [
-              messageId,
-              run.conversationId,
-              run.topicId,
-              seq,
-              member.botId,
-              input.content ?? "",
-              run.id,
-              JSON.stringify(input.sourceTurn),
-              input.now,
-            ],
-          );
+          const adopted = (input.content ?? "").trim()
+            ? this.promoteIdenticalLastSayToResult(member.id, input.content!, input.sourceTurn)
+            : undefined;
+          const messageId = adopted?.id ?? this.ids.messageId();
+          if (!adopted) {
+            const seq = this.allocateSeq(run.conversationId, run.topicId);
+            this.sqlite.run(
+              `INSERT INTO messages (
+                 id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+               ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+              [
+                messageId,
+                run.conversationId,
+                run.topicId,
+                seq,
+                member.botId,
+                input.content ?? "",
+                run.id,
+                JSON.stringify(input.sourceTurn),
+                input.now,
+              ],
+            );
           this.indexPublicMemory({
             messageId,
             conversationId: run.conversationId,
             topicId: run.topicId,
             role: "bot",
             senderBotId: member.botId,
-            content: input.content ?? "",
+          content: input.content ?? "",
             createdAt: input.now,
           });
+          }
           this.sqlite.run(
             `UPDATE member_turns SET state = 'completed', failure_reason = NULL, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
             [input.now, member.id],

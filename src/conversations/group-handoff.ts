@@ -5,12 +5,14 @@ import type { BotService } from "../bots/bot-service";
 import type { AppState } from "../state/types";
 import { ConversationError } from "./conversation-error";
 import { emitConversationProductEvent, type ConversationProductEventSink } from "./conversation-product-events";
-import type { AcceptPublicHandoffInput, ConversationStore, GroupSendInput, PublicHandoffReceipt } from "./conversation-store";
+import type { AcceptPublicHandoffInput, ConversationStore, GroupSayReceipt, GroupSendInput, PublicHandoffReceipt } from "./conversation-store";
 import { isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
 
 export const GROUP_EXECUTION_PREFIX = "group-execution:";
 export const MAX_GROUP_TASK_LENGTH = 16_000;
 export const MAX_GROUP_EXPECTED_OUTPUT_LENGTH = 8_000;
+export const MAX_GROUP_SAY_LENGTH = 1_000;
+export const MAX_GROUP_SAY_PER_TURN = 3;
 /** Roster budget inside the dynamic snapshot, which is bounded as a whole. */
 export const MAX_MEMBER_ROSTER_CHARS = 480;
 
@@ -35,6 +37,21 @@ export function parseGroupSend(value: unknown): GroupSendInput {
   };
 }
 
+export function parseGroupSay(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ConversationError("invalid_group_say", "group_say requires an object");
+  }
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some((key) => key !== "text")) {
+    throw new ConversationError("invalid_group_say", "group_say accepts only text");
+  }
+  const text = raw.text;
+  if (typeof text !== "string" || !text.trim() || text.length > MAX_GROUP_SAY_LENGTH || text.includes("\u0000")) {
+    throw new ConversationError("invalid_group_say", `text must be a nonempty string of at most ${MAX_GROUP_SAY_LENGTH} characters`);
+  }
+  return text;
+}
+
 /** Private wire envelope stamped by the MCP server, never model tool args. */
 export interface GroupSendInvocation {
   executionToken: string;
@@ -44,6 +61,12 @@ export interface GroupSendInvocation {
 
 export interface GroupReadResultInvocation {
   executionToken: string;
+  args: unknown;
+}
+
+export interface GroupSayInvocation {
+  executionToken: string;
+  invocationId: string;
   args: unknown;
 }
 
@@ -274,6 +297,46 @@ export class GroupHandoffService {
       emitConversationProductEvent(this.options.onProductEvent, { type: "conversation-message", message: receipt.message });
       emitConversationProductEvent(this.options.onProductEvent, { type: "conversation-run-changed", run: receipt.run });
       this.options.wake();
+    }
+    return receipt;
+  }
+
+  async say(input: GroupSayInvocation): Promise<GroupSayReceipt> {
+    if (this.closed) throw new ConversationError("runtime_closed", "Group say runtime is closed");
+    const binding = this.executions.get(input.executionToken);
+    if (!binding) throw new ConversationError("group_execution_unknown", "group_say requires a live bound Group execution");
+    if (typeof input.invocationId !== "string" || !input.invocationId || input.invocationId.length > 128) {
+      throw new ConversationError("invalid_group_invocation", "missing bounded runtime invocation identity");
+    }
+    const text = parseGroupSay(input.args);
+    const sender = this.options.store.getMemberTurn(binding.senderMemberTurnId);
+    if (!sender) throw new ConversationError("group_execution_unknown", "sender execution disappeared");
+    await this.options.beforeCommitGates?.();
+    const receipt = await this.options.bots.runLifecycleAll([sender.botId], async () => {
+      if (this.closed || this.executions.get(input.executionToken) !== binding) {
+        throw new ConversationError("group_execution_unknown", "sender execution ended");
+      }
+      const live = this.options.store.getMemberTurn(sender.id);
+      const group = this.options.state.conversations[sender.conversationId];
+      const topic = this.options.state.conversation_topics[sender.topicId];
+      const session = live?.sessionAlias ? this.options.state.sessions[live.sessionAlias] : undefined;
+      const owner = session?.owner;
+      const runtime = owner?.bindingId ? this.options.state.bot_runtime_bindings[owner.bindingId] : undefined;
+      if (!live || !group || group.kind !== "group" || !group.botIds.includes(live.botId)
+        || live.sourceTurnId !== binding.sourceTurnId || live.state !== "running" || live.cancellationReason !== undefined
+        || group.lifecycle === "deleting" || topic?.status !== "active" || topic.conversationId !== group.id
+        || owner?.kind !== "group-member" || owner.botId !== live.botId
+        || owner.conversationId !== group.id || owner.topicId !== topic.id
+        || session?.logical_session_id !== live.logicalSessionId || runtime?.scope !== "group-member"
+        || runtime.botId !== live.botId || runtime.conversationId !== group.id || runtime.topicId !== topic.id
+        || runtime.sessionAlias !== live.sessionAlias || runtime.logicalSessionId !== live.logicalSessionId) {
+        throw new ConversationError("group_binding_mismatch", "sender no longer owns the current execution binding");
+      }
+      return this.options.store.appendGroupSay({ senderMemberTurnId: live.id, sourceTurnId: binding.sourceTurnId,
+        invocationId: input.invocationId, text, now: (this.options.now?.() ?? new Date()).toISOString() });
+    });
+    if (!receipt.reused) {
+      emitConversationProductEvent(this.options.onProductEvent, { type: "conversation-message", message: receipt.message });
     }
     return receipt;
   }

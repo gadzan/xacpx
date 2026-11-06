@@ -24,6 +24,11 @@ import {
 } from "./task-watch-timeouts";
 import { sameCoordinatorSession } from "./coordinator-identity";
 import { canConnectToEndpoint } from "./endpoint-probe";
+import type {
+  GroupReadResultInvocation,
+  GroupSayInvocation,
+  GroupSendInvocation,
+} from "../conversations/group-handoff";
 import type { ScheduledCreateFromRouteInput } from "../scheduled/scheduled-route-create";
 import type {
   ScheduledCancelFromRouteInput,
@@ -46,6 +51,7 @@ import type { PeerRequest, PeerRequestStatus, PeerWatchResult } from "../peer/pe
 class OrchestrationInvalidRequestError extends Error {}
 
 const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
+  "conversation.group_say",
   "conversation.group_send",
   "conversation.group_read_result",
   "agent.list",
@@ -77,8 +83,9 @@ const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
 ]);
 
 interface OrchestrationServerDeps {
-  groupReadResult?: (input: import("../conversations/group-handoff").GroupReadResultInvocation) => Promise<unknown>;
-  groupSend?: (input: import("../conversations/group-handoff").GroupSendInvocation) => Promise<unknown>;
+  groupReadResult?: (input: GroupReadResultInvocation) => Promise<unknown>;
+  groupSend?: (input: GroupSendInvocation) => Promise<unknown>;
+  groupSay?: (input: GroupSayInvocation) => Promise<unknown>;
   createServer?: typeof createServer;
   removeFile?: (path: string) => Promise<void>;
   chmodFile?: (path: string, mode: number) => Promise<void>;
@@ -220,6 +227,14 @@ export class OrchestrationServer {
 
   private async dispatch(method: OrchestrationRpcMethod, params: Record<string, unknown>): Promise<unknown> {
     switch (method) {
+      case "conversation.group_say": {
+        requireOnlyKeys(params, ["executionToken", "invocationId", "args"], "params");
+        const executionToken = requireString(params, "executionToken");
+        const invocationId = requireString(params, "invocationId");
+        if (executionToken.length > 128 || invocationId.length > 128) throw new OrchestrationInvalidRequestError("Group execution identity is too large");
+        if (!this.deps.groupSay) throw new OrchestrationInvalidRequestError("Group speech is unavailable");
+        return await this.deps.groupSay({ executionToken, invocationId, args: params.args });
+      }
       case "conversation.group_read_result": {
         requireOnlyKeys(params, ["executionToken", "args"], "params");
         const executionToken = requireString(params, "executionToken");

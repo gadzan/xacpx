@@ -101,7 +101,7 @@ export function createXacpxMcpServer(options: XacpxMcpServerOptions): Server {
         },
       },
       instructions: options.sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)
-        ? "Use group_send to publicly assign a concrete downstream task to another current Group Bot, and group_read_result to read this Run's settled public results. Sender, Run and permission provenance are bound by the runtime; no tool argument can name them."
+        ? "Use group_say to publish a short progress remark in this Group Topic, group_send to publicly assign a concrete downstream task to another current Group Bot, and group_read_result to read this Run's settled public results. Sender, Run and permission provenance are bound by the runtime; no tool argument can name them."
         : XACPX_MCP_SERVER_INSTRUCTIONS,
       taskStore: createXacpxTaskStore(async () => await getToolState(), taskOptionsById, watchTasksById),
     },

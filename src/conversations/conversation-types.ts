@@ -161,6 +161,7 @@ export interface ConversationMessage {
   media?: PromptAttachmentRef[];
   /** Public structured assignment; never a private message or a model identity. */
   handoff?: PublicHandoffEnvelope;
+  groupSay?: GroupSayMarker;
   replyTo?: string;
   runId?: string;
   createdAt: string;
@@ -177,6 +178,11 @@ export interface PublicHandoffEnvelope {
   memberTurnId: string;
   task: string;
   expectedOutput?: string;
+}
+
+export interface GroupSayMarker {
+  memberTurnId: string;
+  invocationId: string;
 }
 
 export interface ConversationRun {

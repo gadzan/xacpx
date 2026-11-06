@@ -519,6 +519,7 @@ export interface ConversationStore {
   /** Internal trusted execution input. No public caller supplies its identity. */
   acceptPublicHandoff(input: AcceptPublicHandoffInput): PublicHandoffReceipt;
   getPublicHandoff(sourceTurnId: string, invocationId: string, args: GroupSendInput): PublicHandoffReceipt | undefined;
+  appendGroupSay(input: AppendGroupSayInput): GroupSayReceipt;
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult;
   getRun(runId: string): ConversationRun | undefined;
   /**
@@ -845,4 +846,18 @@ export interface PublicHandoffReceipt {
   run: ConversationRun;
   memberTurn: MemberTurnRecord;
   message: ConversationMessage;
+}
+
+export interface AppendGroupSayInput {
+  senderMemberTurnId: string;
+  sourceTurnId: string;
+  invocationId: string;
+  text: string;
+  now: string;
+}
+
+export interface GroupSayReceipt {
+  reused: boolean;
+  message: ConversationMessage;
+  remaining: number;
 }

@@ -28,6 +28,7 @@ import type { ScheduledTaskRecord } from "../scheduled/scheduled-types";
 import type { AgentMessagingErrorCode } from "./agent-messaging-error";
 
 export type OrchestrationRpcMethod =
+  | "conversation.group_say"
   | "conversation.group_send"
   | "conversation.group_read_result"
   | "agent.list"
