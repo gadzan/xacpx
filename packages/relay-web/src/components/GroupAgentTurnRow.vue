@@ -14,7 +14,7 @@ import TranscriptRow from "./TranscriptRow.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import AgentThinkingBubble, { type BubbleStatus } from "./AgentThinkingBubble.vue";
 import { botAvatarState } from "../lib/bot-avatar-state";
-import { splitTextBubbles, textBubblesOf } from "../lib/turn-presentation";
+import { textBubblesOf } from "../lib/turn-presentation";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ThinkingDotsTrigger from "./ThinkingDotsTrigger.vue";
 import TraceLink from "./TraceLink.vue";
@@ -72,9 +72,7 @@ const finishedBubbles = computed(() => {
   const message = props.message;
   if (!message) return [];
   if (props.segment) return [{ segment: props.segment.text, message, last: props.segment.last }];
-  const segments = splitTextBubbles(message.content ?? "");
-  const bubbles = segments.length ? segments : [""];
-  return bubbles.map((segment, index) => ({ segment, message, last: index === bubbles.length - 1 }));
+  return [{ segment: (message.content ?? "").trimEnd(), message, last: true }];
 });
 const showMeta = computed(() => !props.segment || props.segment.last);
 const bubbleStatus = computed<BubbleStatus>(() => {
@@ -203,8 +201,7 @@ defineExpose({ bubbleStatus });
       />
     </template>
     <template v-else>
-      <!-- Each segment keeps its own bubble; the process entry belongs to the
-           LAST one. -->
+      <!-- One settled bubble per message; the process entry, meta and copy render once. -->
       <template v-if="finishedBubbles.length">
         <div
           v-for="(row, index) in finishedBubbles"

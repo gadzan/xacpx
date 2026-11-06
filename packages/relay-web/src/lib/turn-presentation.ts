@@ -382,29 +382,9 @@ export function textSegmentsOf(parts: TurnPartDto[]): string[] {
   return parts.flatMap((part) => part.type === "text" ? [part.text] : []);
 }
 
-/** The transport joins batched segments with `\n\n` and streaming adapters keep
- *  that break, so a blank line is the boundary that survives into the durable
- *  reply. Blank lines inside fenced code are content, not boundaries. */
-export function splitTextBubbles(text: string): string[] {
-  const bubbles: string[] = [];
-  let lines: string[] = [];
-  let fenced = false;
-  const flush = () => {
-    if (lines.length) bubbles.push(lines.join("\n").trimEnd());
-    lines = [];
-  };
-  for (const line of text.split("\n")) {
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-    if (!fenced && line.trim() === "") {
-      flush();
-      continue;
-    }
-    lines.push(line);
-  }
-  flush();
-  return bubbles.filter((bubble) => bubble.length > 0);
-}
-
+/** One bubble per text part. A durable reply is one message, so a finished
+ *  turn renders as a single bubble; newlines and blank lines are markdown
+ *  content for StreamMarkdown, never bubble boundaries. */
 export function textBubblesOf(parts: TurnPartDto[]): string[] {
-  return textSegmentsOf(parts).flatMap(splitTextBubbles);
+  return textSegmentsOf(parts).map(t => t.trimEnd()).filter(t => t.length > 0);
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { deriveTurnPresentation, extractCollapsedTraceSummary, splitTextBubbles, textBubblesOf, type TurnPresentationOptions } from "../lib/turn-presentation";
+import { deriveTurnPresentation, extractCollapsedTraceSummary, textBubblesOf, type TurnPresentationOptions } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
 
 const tool = (id: string): ToolStepDto => ({
@@ -494,27 +494,24 @@ describe("deriveTurnPresentation", () => {
   });
 });
 
-describe("per-segment bubbles", () => {
-  it("splits a durable reply back into the segments the transport joined", () => {
-    expect(splitTextBubbles("Alpha ①：气泡只装文本，一段一个泡。\n\nAlpha ②：dots 挂在我最新那段下面。"))
-      .toEqual(["Alpha ①：气泡只装文本，一段一个泡。", "Alpha ②：dots 挂在我最新那段下面。"]);
+describe("per-text-part bubbles", () => {
+  it("keeps blank lines and CRLF inside one text part as one bubble", () => {
+    const text = "Alpha ①：气泡只装文本。\n\nAlpha ②：仍在同一泡。\r\n\r\n结尾。  ";
+    expect(textBubblesOf([{ type: "text", text }])).toEqual([text.trimEnd()]);
   });
 
-  it("keeps blank lines inside fenced code as content, not boundaries", () => {
-    const text = "before\n\n```js\nconst a = 1;\n\nconsole.log(a);\n```\n\nafter";
-    expect(splitTextBubbles(text)).toEqual([
-      "before",
-      "```js\nconst a = 1;\n\nconsole.log(a);\n```",
-      "after",
-    ]);
+  it("keeps fenced code and tables inside one bubble", () => {
+    const text = "before\n\n```js\nconst a = 1;\n\nconsole.log(a);\n```\n\n| a | b |\n| --- | --- |";
+    expect(textBubblesOf([{ type: "text", text }])).toEqual([text]);
   });
 
-  it("splits live parts by blank line too, so live and settled bubbles agree", () => {
+  it("still renders one bubble per text part and drops empty parts", () => {
     const parts: TurnPartDto[] = [
       { type: "text", text: "one" },
       { type: "tool", step: tool("t1") },
-      { type: "text", text: "\n\ntwo\n\nthree" },
+      { type: "text", text: "\n\ntwo\n\nthree   \n" },
+      { type: "text", text: "   " },
     ];
-    expect(textBubblesOf(parts)).toEqual(["one", "two", "three"]);
+    expect(textBubblesOf(parts)).toEqual(["one", "\n\ntwo\n\nthree"]);
   });
 });

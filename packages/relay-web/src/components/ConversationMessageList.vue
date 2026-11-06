@@ -32,7 +32,7 @@ import { isMachineFailureReason } from "../lib/failure-reason";
 import RunStatusChip from "./RunStatusChip.vue";
 import ThinkingDotsTrigger from "./ThinkingDotsTrigger.vue";
 import TraceLink from "./TraceLink.vue";
-import { splitTextBubbles, textBubblesOf } from "../lib/turn-presentation";
+import { textBubblesOf } from "../lib/turn-presentation";
 const props = defineProps<{
   messages: ConversationMessageDto[];
   liveTurn: DirectBotLiveTurn | null;
@@ -79,13 +79,7 @@ const emit = defineEmits<{
 const liveTexts = computed(() => props.liveTurn ? textBubblesOf(props.liveTurn.parts) : []);
 
 function settledBubblesOf(message: ConversationMessageDto) {
-  const segments = splitTextBubbles(message.content ?? "");
-  const bubbles = segments.length ? segments : [""];
-  return bubbles.map((segment, index) => ({
-    segment,
-    last: index === bubbles.length - 1,
-    message,
-  }));
+  return [{ segment: (message.content ?? "").trimEnd(), last: true, message }];
 }
 
 const instancesStore = useInstancesStore();
