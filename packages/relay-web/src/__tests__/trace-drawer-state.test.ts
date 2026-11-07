@@ -86,6 +86,19 @@ describe("trace drawer state", () => {
     wrapper.unmount();
   });
 
+  it("keeps an expanded step across a remount of the same member and attempt", async () => {
+    const first = mountContent([tool(0), tool(1)]);
+    await flushPromises();
+    await first.get('[data-test="group-trace-step-head"]').trigger("click");
+    expect(first.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
+    first.unmount();
+
+    const second = mountContent([tool(0), tool(1)]);
+    await flushPromises();
+    expect(second.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
+    second.unmount();
+  });
+
   it("freezes the viewport and counts new events while the reader is above the tail", async () => {
     const wrapper = mountContent([tool(0)]);
     await flushPromises();
