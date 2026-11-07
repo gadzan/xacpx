@@ -273,14 +273,17 @@ export function supportsGroupTopicIsolation(control: unknown): boolean {
  * corresponding history fields: the core exposes the probe AND this
  * connector's validator accepts both wire halves.
  */
-export function supportsRoundtableV1(control: unknown): boolean {
+export function supportsRoundtableV1(
+  control: unknown,
+  parse: typeof parseControlPayload = parseControlPayload,
+): boolean {
   const probe = (control as { supportsRoundtableV1?: unknown } | null)?.supportsRoundtableV1;
   if (typeof probe !== "function") return false;
   if ((probe as () => unknown).call(control) !== true) return false;
-  if (parseControlPayload(MSG.runsDetailsBatch, {
+  if (parse(MSG.runsDetailsBatch, {
     conversationId: "probe", topicId: "probe", runIds: ["probe"], roundtableV1: true,
   }) === null) return false;
-  return parseControlPayload(MSG.conversationPrompt, {
+  return parse(MSG.conversationPrompt, {
     conversationId: "probe", topicId: "probe", requestId: "probe", text: "probe",
     target: { mode: "roundtable", botIds: ["probe_a", "probe_b"] },
   }) !== null;

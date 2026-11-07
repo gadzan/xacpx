@@ -8,6 +8,11 @@ import type {
 } from "./control-service.js";
 import type { ConversationPromptRequestDto } from "./conversation-control-dtos.js";
 import { ConversationError } from "../conversations/conversation-error.js";
+import {
+  MAX_ROUNDTABLE_MEMBER_TURNS,
+  MAX_ROUNDTABLE_ROUNDS,
+  MIN_ROUNDTABLE_SPEAKERS,
+} from "../conversations/conversation-roundtable.js";
 
 export type {
   ControlExecuteCommandInput,
@@ -70,7 +75,7 @@ export function sanitizePublicConversationPrompt(
     const invalid = (): never => {
       throw new ConversationError(
         "invalid-target",
-        "conversation prompt target must be exactly one variant: {botId}, {mode:\"members\", botIds}, {mode:\"everyone\"}, or {mode:\"automatic\"}",
+        "conversation prompt target must be exactly one variant: {botId}, {mode:\"members\", botIds}, {mode:\"everyone\"}, {mode:\"automatic\"}, or {mode:\"roundtable\", botIds, rounds?}",
       );
     };
     if (target === null || typeof target !== "object") {
@@ -79,7 +84,11 @@ export function sanitizePublicConversationPrompt(
     const hasBotId = "botId" in target;
     const hasMode = "mode" in target;
     const hasBotIds = "botIds" in target;
-    const mixed = (hasBotId && (hasMode || hasBotIds)) || (hasMode && hasBotIds && target.mode !== "members");
+    if ("rounds" in target && target.mode !== "roundtable") {
+      invalid();
+    }
+    const mixed = (hasBotId && (hasMode || hasBotIds))
+      || (hasMode && hasBotIds && target.mode !== "members" && target.mode !== "roundtable");
     if (mixed) {
       invalid();
     }
@@ -88,8 +97,27 @@ export function sanitizePublicConversationPrompt(
     } else if (hasMode && target.mode === "members" && hasBotIds
       && Array.isArray(target.botIds) && target.botIds.every((entry): entry is string => typeof entry === "string")) {
       sanitized = { mode: "members", botIds: [...target.botIds] };
-    } else if (hasMode && (target.mode === "everyone" || target.mode === "automatic")) {
+    } else if (hasMode && target.mode === "everyone" || (hasMode && target.mode === "automatic")) {
       sanitized = { mode: target.mode };
+    } else if (hasMode && target.mode === "roundtable" && hasBotIds
+      && Array.isArray(target.botIds)
+      && target.botIds.every((entry): entry is string => typeof entry === "string" && entry.length > 0)) {
+      // Shape and bounds only. Group membership and enablement are live state
+      // that the accept path revalidates under its gates; the sanitizer cannot
+      // see them, but it must not admit a plan the service can never accept.
+      const botIds = target.botIds;
+      const rounds = target.rounds;
+      if (botIds.length < MIN_ROUNDTABLE_SPEAKERS || botIds.length > MAX_ROUNDTABLE_MEMBER_TURNS
+        || new Set(botIds).size !== botIds.length
+        || (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 1 || rounds > MAX_ROUNDTABLE_ROUNDS))
+        || botIds.length * (rounds ?? 1) > MAX_ROUNDTABLE_MEMBER_TURNS) {
+        invalid();
+      }
+      sanitized = {
+        mode: "roundtable",
+        botIds: [...botIds],
+        ...(rounds !== undefined ? { rounds } : {}),
+      };
     } else {
       invalid();
     }

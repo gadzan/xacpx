@@ -85,7 +85,7 @@ import type {
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 import { MAX_GROUP_SAY_PER_TURN, parseGroupSend } from "./group-handoff";
-import { isRoundtablePassText, MAX_ROUNDTABLE_MEMBER_TURNS, MAX_ROUNDTABLE_ROUNDS, parseRoundtableSpeech } from "./conversation-roundtable";
+import { MAX_ROUNDTABLE_MEMBER_TURNS, MAX_ROUNDTABLE_ROUNDS, parseRoundtableSpeech } from "./conversation-roundtable";
 import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 import {
   buildWaitingGraph,

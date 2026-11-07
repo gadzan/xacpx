@@ -124,11 +124,3 @@ export function parseRoundtableSpeech(text: string): RoundtableSpeech {
   }
   return { outcome: "message", content: text };
 }
-
-/** True exactly when a roundtable turn's final text is an explicit `(pass)`.
- *  The single decision point for every persistence path that can receive a
- *  turn's final text, so late, sealed, and cancel-converged settlements agree
- *  with the live dispatcher: a pass writes no public message anywhere. */
-export function isRoundtablePassText(text: string): boolean {
-  return parseRoundtableSpeech(text).outcome === "pass";
-}
