@@ -195,6 +195,12 @@ export function supportsGroupTopicIsolation(instance: { capabilities?: string[] 
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupTopicIsolationV1);
 }
 
+/** True when the instance accepts the roundtable target and history fields.
+ *  It gates both the future "discuss" entry and the history compat flag. */
+export function supportsRoundtableV1(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.roundtableV1);
+}
+
 /** True when the instance is online and advertises the Phase A desktop capability. */
 export function supportsDesktop(instance: {
   online: boolean;

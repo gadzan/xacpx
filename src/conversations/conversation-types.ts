@@ -7,6 +7,13 @@ export type ConversationTopicStatus = "active" | "archived" | "deleting";
 export type ConversationMessageRole = "human" | "bot" | "system";
 
 export type ConversationRunMode = "explicit" | "automatic";
+/**
+ * Durable collaboration shape of a Run. `single` is a Direct one-Bot Run,
+ * `fanout` is a Group Run with Lead handoff/wake (`group_send`), and
+ * `roundtable` is a pre-planned sequential Group discussion. Legacy rows read
+ * as `fanout` (the SQLite default); new accepts always write the real shape.
+ */
+export type ConversationShape = "single" | "fanout" | "roundtable";
 export type WorkspaceIsolationPolicy = "shared" | "shared-single-writer" | "worktree-per-member";
 /**
  * Where a Group's members execute. Chosen once at Group creation and never
@@ -79,7 +86,7 @@ export type ConversationRoutingState = "queued" | "routing" | "dispatching" | "d
  *  per-dispatch from authorityEpoch + human ingress. Fresh orchestration work
  *  (Router-selected, handoff, followup) is NEVER "recovery": recovery means a
  *  prior claim existed and is being redriven after failure/expiry. */
-export type MemberTurnOrigin = "human-explicit" | "router" | "handoff" | "followup" | "retry" | "recovery";
+export type MemberTurnOrigin = "human-explicit" | "router" | "handoff" | "followup" | "retry" | "recovery" | "roundtable";
 
 export type MemberTurnState =
   | "queued"
@@ -96,6 +103,9 @@ export type PendingDispatchState = "pending" | "claimed" | "completed";
  *  can prove read-only; omitted policy is unproven. Identity/text never prove it. */
 export type MemberTurnEffect = "unknown" | "read-only" | "mutating";
 
+/** How a roundtable MemberTurn ended: a real public message or an explicit
+ *  `(pass)` abstention. Only roundtable turns carry this. */
+export type MemberTurnSpeechOutcome = "message" | "pass";
 /** Server-owned enforced capability proof, rechecked before execution.
  *  Absence means unproven. Never supplied by a model or public client. */
 export type MemberTurnEffectProvenance = "declared-enforced";
@@ -194,6 +204,13 @@ export interface ConversationRun {
   mode: ConversationRunMode;
   state: ConversationRunState;
   completionReason?: string;
+  /** Collaboration shape. Required on every Run read: legacy rows map to
+   *  `fanout` through the SQLite column default. */
+  shape: ConversationShape;
+  /** Planned round count. Roundtable only (1–3). */
+  rounds?: number;
+  /** Opening speaker snapshot. Roundtable only. */
+  leadBotId?: string;
   /** Durable Router question, projected only for automatic waiting-human Runs. */
   waitingQuestion?: string;
   generation: number;
@@ -317,6 +334,13 @@ export interface MemberTurnRecord {
    * orchestration origin and the human creates a NEW explicit request.
    * Absent means the turn is not permission-blocked. */
   blockedReason?: "human-authority-required" | "human-authority-unknown";
+  /** Roundtable position: 1-based round, 0-based speaker within the round.
+   *  Absent on every other shape. */
+  roundIndex?: number;
+  speakerIndex?: number;
+  /** Terminal speech outcome. Roundtable only: `pass` is an explicit
+   *  abstention that writes no public message. */
+  speechOutcome?: MemberTurnSpeechOutcome;
 }
 
 /** Server-derived authenticated human ingress. Clients cannot mint this. */

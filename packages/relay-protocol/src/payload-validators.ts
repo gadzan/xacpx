@@ -131,6 +131,8 @@ import {
   MAX_DESKTOP_STREAM_ID_LENGTH,
   MAX_DESKTOP_TICKET_LENGTH,
   MAX_GROUP_TARGET_MEMBERS,
+  MAX_ROUNDTABLE_MEMBER_TURNS,
+  MAX_ROUNDTABLE_ROUNDS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
@@ -745,8 +747,11 @@ const isConversationTarget = (v: unknown): boolean => {
   const hasDiscriminant = hasBotId || hasMode || hasBotIds;
   if (!hasDiscriminant) return false;
   const mixed = (hasBotId && (hasMode || hasBotIds))
-    || (hasMode && hasBotIds && v.mode !== "members");
+    || (hasMode && hasBotIds && v.mode !== "members" && v.mode !== "roundtable");
   if (mixed) return false;
+  // `rounds` belongs to the roundtable variant only: silently ignoring it on
+  // `members`/`everyone` would accept a plan the caller did not get.
+  if ("rounds" in v && v.mode !== "roundtable") return false;
   // Same resource bound as the members branch: a legacy-shaped single-Bot target
   // is normalized into a members target by the server, so an oversized id would
   // reach gate acquisition unbounded.
@@ -762,6 +767,17 @@ const isConversationTarget = (v: unknown): boolean => {
       // unique members (the server rejects duplicates with invalid-target).
       && new Set(v.botIds).size === v.botIds.length
       && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
+  }
+  if (v.mode === "roundtable") {
+    return Array.isArray(v.botIds)
+      && v.botIds.length >= 2
+      && v.botIds.length <= MAX_ROUNDTABLE_MEMBER_TURNS
+      && new Set(v.botIds).size === v.botIds.length
+      && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH)
+      && (v.rounds === undefined
+        || (typeof v.rounds === "number" && Number.isInteger(v.rounds)
+          && v.rounds >= 1 && v.rounds <= MAX_ROUNDTABLE_ROUNDS))
+      && v.botIds.length * (v.rounds === undefined ? 1 : v.rounds as number) <= MAX_ROUNDTABLE_MEMBER_TURNS;
   }
   return v.mode === "everyone" || v.mode === "automatic";
 };
@@ -828,8 +844,9 @@ const traceInteger = (v: unknown, min: number, max = Number.MAX_SAFE_INTEGER): v
   typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max;
 const validateRunsDetailsBatch: Validator<RunsDetailsBatchPayload> = (p) => {
   const o = fields(p);
-  if (!o || Object.keys(o).some(k => !["conversationId", "topicId", "runIds"].includes(k))) return null;
+  if (!o || Object.keys(o).some(k => !["conversationId", "topicId", "runIds", "roundtableV1"].includes(k))) return null;
   return traceProductId(o.conversationId) && traceProductId(o.topicId)
+    && (o.roundtableV1 === undefined || typeof o.roundtableV1 === "boolean")
     && Array.isArray(o.runIds) && o.runIds.length >= 1 && o.runIds.length <= 50
     && o.runIds.every(traceProductId) && new Set(o.runIds).size === o.runIds.length
     ? o as unknown as RunsDetailsBatchPayload : null;

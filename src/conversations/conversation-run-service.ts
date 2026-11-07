@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { validAgentMentions, validPromptAttachments } from "@ganglion/xacpx-relay-protocol";
 import type { AgentMention, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { snapshotBotProfile, snapshotGroupMemberProfile, type BotProfile } from "../bots/bot-types";
+import { MAX_ROUNDTABLE_MEMBER_TURNS, MAX_ROUNDTABLE_ROUNDS, MIN_ROUNDTABLE_SPEAKERS, planRoundtable } from "./conversation-roundtable";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import {
@@ -402,6 +403,7 @@ export class ConversationRunService {
       const mentions = input.agentMentions?.length ? this.mentionResolver?.(bot.id, input.agentMentions) : undefined;
       if (input.agentMentions?.length && !mentions) throw new ConversationError("mentions_unavailable", "Direct mention resolution is unavailable");
       const created = this.store.acceptRequest({
+        shape: "single",
         ...(input.peerInput ? { inputMetadata: input.peerInput } : mentions ? { inputMetadata: { version: 1, mentions } } : {}),
         ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
         conversationId,
@@ -462,7 +464,7 @@ export class ConversationRunService {
     topicId: string;
     requestId: string;
     text: string;
-    target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" };
+    target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | { mode: "roundtable"; botIds: string[]; rounds?: number };
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertAccepting();
@@ -626,6 +628,58 @@ export class ConversationRunService {
               : {}),
           });
         }
+        if (parsed.kind === "roundtable") {
+          // One user prompt, one Run, every planned turn pre-generated in this
+          // transaction. There is no later accept and no in-memory cursor: the
+          // claim floor reads the durable rows.
+          const plan = planRoundtable({
+            botIds: selected,
+            rounds: parsed.rounds,
+            ...(live.leadBotId ? { leadBotId: live.leadBotId } : {}),
+          });
+          const effectByBot = new Map(selected.map((botId, index) => [botId, effects[index]]));
+          const planned = plan.turns.map((turn) => {
+            const index = selected.indexOf(turn.botId);
+            return {
+              botId: turn.botId,
+              profileSnapshot: snapshots[index]!,
+              ...effectByBot.get(turn.botId),
+              roundIndex: turn.roundIndex,
+              speakerIndex: turn.speakerIndex,
+            };
+          });
+          const [primary, ...rest] = planned;
+          if (!primary) {
+            throw new ConversationError("empty_target", "a roundtable selects no speakers");
+          }
+          this.assertAccepting();
+          return this.store.acceptRequest({
+            ...(worktreeBase ? { worktreeBase } : {}),
+            ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
+            conversationId: input.conversationId,
+            topicId: input.topicId,
+            requestId: input.requestId,
+            botId: primary.botId,
+            content: input.text,
+            ...(input.media?.length ? { media: input.media } : {}),
+            profileSnapshot: primary.profileSnapshot,
+            primaryMember: {
+              ...(primary.effect ? { effect: primary.effect } : {}),
+              ...(primary.effectProvenance ? { effectProvenance: primary.effectProvenance } : {}),
+              roundIndex: primary.roundIndex,
+              speakerIndex: primary.speakerIndex,
+            },
+            members: rest,
+            shape: "roundtable",
+            rounds: plan.rounds,
+            leadBotId: plan.leadBotId,
+            maxMemberTurns: plan.turns.length,
+            now: timestamp,
+            ...(humanIngress
+              ? { authorityEpoch: this.dispatcher.authorityEpoch, humanIngress }
+              : {}),
+          });
+        }
         const [firstId, ...restIds] = selected;
         const [firstSnapshot, ...restSnapshots] = snapshots;
         if (!firstId || !firstSnapshot) {
@@ -637,6 +691,7 @@ export class ConversationRunService {
         // caller that CAN prove read-only has a visible seam to extend.
         this.assertAccepting();
         const created = this.store.acceptRequest({
+          shape: "fanout",
           ...(worktreeBase ? { worktreeBase } : {}),
           ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
           conversationId: input.conversationId,
@@ -699,7 +754,7 @@ export class ConversationRunService {
     requestId: string;
     text: string;
     targetBotId?: string;
-    target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" };
+    target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | { mode: "roundtable"; botIds: string[]; rounds?: number };
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertOpen();
@@ -1583,8 +1638,9 @@ export class ConversationRunService {
    *  batch, so the parsed target carries no members (and the accept path
    *  requires a capability-restricted Router before admitting it). */
   private parseGroupTarget(
-    target: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | undefined,
-  ): { kind: "lead" } | { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" } {
+    target: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | { mode: "roundtable"; botIds: string[]; rounds?: number } | undefined,
+  ): { kind: "lead" } | { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" }
+    | { kind: "roundtable"; botIds: string[]; rounds: number } {
     if (!target) {
       return { kind: "lead" };
     }
@@ -1596,7 +1652,8 @@ export class ConversationRunService {
     const hasBotId = "botId" in target;
     const hasMode = "mode" in target;
     const hasBotIds = "botIds" in target;
-    if ((hasBotId && (hasMode || hasBotIds)) || (hasMode && hasBotIds && target.mode !== "members")) {
+    if ((hasBotId && (hasMode || hasBotIds))
+      || (hasMode && hasBotIds && target.mode !== "members" && target.mode !== "roundtable")) {
       throw new ConversationError("invalid-target", "explicit Group target carries keys from multiple variants");
     }
     if (hasBotId) {
@@ -1604,6 +1661,9 @@ export class ConversationRunService {
         throw new ConversationError("invalid-target", "explicit Group target member must be a Bot id");
       }
       return { kind: "members", botIds: [target.botId] };
+    }
+    if ("rounds" in target && (!("mode" in target) || target.mode !== "roundtable")) {
+      throw new ConversationError("invalid-target", "rounds is a roundtable-only target field");
     }
     if (target.mode === "members") {
       if (!Array.isArray(target.botIds)) {
@@ -1621,6 +1681,28 @@ export class ConversationRunService {
         }
       }
       return { kind: "members", botIds: [...target.botIds] };
+    }
+    if (target.mode === "roundtable") {
+      if (!Array.isArray(target.botIds) || target.botIds.length < MIN_ROUNDTABLE_SPEAKERS) {
+        throw new ConversationError("invalid-target", `a roundtable needs at least ${MIN_ROUNDTABLE_SPEAKERS} speakers`);
+      }
+      if (new Set(target.botIds).size !== target.botIds.length) {
+        throw new ConversationError("invalid-target", "a roundtable speaker list must be unique");
+      }
+      for (const botId of target.botIds) {
+        if (typeof botId !== "string" || !botId) {
+          throw new ConversationError("invalid-target", "a roundtable speaker must be a Bot id");
+        }
+      }
+      const rounds = target.rounds ?? 1;
+      if (!Number.isInteger(rounds) || rounds < 1 || rounds > MAX_ROUNDTABLE_ROUNDS) {
+        throw new ConversationError("invalid-target", `a roundtable holds between 1 and ${MAX_ROUNDTABLE_ROUNDS} rounds`);
+      }
+      if (target.botIds.length > MAX_ROUNDTABLE_MEMBER_TURNS
+        || target.botIds.length * rounds > MAX_ROUNDTABLE_MEMBER_TURNS) {
+        throw new ConversationError("invalid-target", `a roundtable plans at most ${MAX_ROUNDTABLE_MEMBER_TURNS} member turns`);
+      }
+      return { kind: "roundtable", botIds: [...target.botIds], rounds };
     }
     if (target.mode === "everyone") {
       return { kind: "everyone" };
@@ -1660,7 +1742,7 @@ export class ConversationRunService {
    *  Everyone whose actual target set is tiny. */
   private groupMemberCandidates(
     conversationId: string,
-    parsed: { kind: "lead" } | { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" },
+    parsed: { kind: "lead" } | { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" } | { kind: "roundtable"; botIds: string[]; rounds: number },
   ): string[] {
     if (parsed.kind === "automatic") {
       const conversation = this.requireConversation(conversationId);
@@ -1688,7 +1770,7 @@ export class ConversationRunService {
       }
       return conversation.leadBotId ? [conversation.leadBotId] : [];
     }
-    if (parsed.kind === "members") {
+    if (parsed.kind === "members" || parsed.kind === "roundtable") {
       // Gate acquisition is process-lifetime state: `runLifecycleAll` creates a
       // permanent mutex entry per supplied id and never releases them. So the
       // wire cap bounds growth RATE but cannot bound the map — a caller can send
@@ -1769,7 +1851,7 @@ export class ConversationRunService {
    *  explicitly); unknown selections and an empty eligible set reject. */
   private resolveGroupMembers(
     conversation: ConversationRecord,
-    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
+    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "roundtable"; botIds: string[]; rounds: number },
   ): string[] {
     const membership = [...conversation.botIds];
     if (parsed.kind === "everyone") {

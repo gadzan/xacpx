@@ -6,11 +6,13 @@ import type {
   ConversationRun,
   ConversationRoutingState,
   ConversationRunState,
+  ConversationShape,
   HumanIngressContext,
   MemberTurnEffect,
   MemberTurnEffectProvenance,
   MemberTurnOrigin,
   MemberTurnRecord,
+  MemberTurnSpeechOutcome,
   MemberTurnState,
   PendingDispatch,
 } from "./conversation-types";
@@ -99,6 +101,9 @@ export interface AcceptMemberInput {
   expectedOutput?: string;
   /** Assignment ids this member depends on. */
   dependsOn?: string[];
+  /** Roundtable position of this member. Roundtable accepts only. */
+  roundIndex?: number;
+  speakerIndex?: number;
 }
 
 /**
@@ -154,6 +159,17 @@ export interface AcceptRequestInput {
   authorityEpoch?: string;
   /** Trusted human ingress bound to `authorityEpoch`. Absent ⇒ orchestration. */
   humanIngress?: HumanIngressContext;
+  /**
+   * Durable collaboration shape. New accepts MUST write it explicitly:
+   * `single` for Direct, `fanout` for Group Lead/fanout and automatic Runs,
+   * `roundtable` for a pre-planned discussion. Absent defaults to `fanout`
+   * for legacy/replay callers only.
+   */
+  shape?: ConversationShape;
+  /** Planned rounds. Roundtable only, 1–3. */
+  rounds?: number;
+  /** Opening speaker snapshot. Roundtable only. */
+  leadBotId?: string;
 }
 
 /**
@@ -271,6 +287,8 @@ export interface CompleteExecutionInput {
   /** Whole-Run human cancel path: settle the batch to its terminal outcome
    *  even on automatic Runs (which otherwise stay running for the Router). */
   forceRunTerminalOnSettle?: boolean;
+  /** Roundtable abstention. `pass` is roundtable-only and writes no message. */
+  speechOutcome?: MemberTurnSpeechOutcome;
 }
 
 export interface CompleteExecutionResult {

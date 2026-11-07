@@ -33,6 +33,7 @@ import {
 import { api } from "../api/client";
 import { isActiveRunState, probeExecutingTopics, sortTopicsNewestFirst } from "../lib/topic-order";
 import { useConversationCommandsStore } from "./conversation-commands";
+import { supportsRoundtableV1, useInstancesStore } from "./instances";
 import { useDirectBotsStore } from "./direct-bots";
 
 export interface GroupCancelScope {
@@ -759,6 +760,9 @@ export const useGroupsStore = defineStore("groups", () => {
     );
     if (missing.length === 0) return;
     // Bounded concurrency: chunks of ≤50 per the wire cap.
+    const includeRoundtable = supportsRoundtableV1(
+      useInstancesStore().instances.find((entry) => entry.id === iId),
+    );
     for (let start = 0; start < missing.length; start += 50) {
       const chunk = missing.slice(start, start + 50).sort();
       const requestKey = `${scope}:batch:${chunk.join(",")}`;
@@ -766,7 +770,10 @@ export const useGroupsStore = defineStore("groups", () => {
       const generation = runHistoryGeneration;
       const pending = api
         .rpc<{ runs: ConversationRunHistoryDetailDto[]; missingRunIds?: string[] }>(
-          iId, MSG.runsDetailsBatch, { conversationId: cId, topicId: tId, runIds: chunk },
+          iId, MSG.runsDetailsBatch, {
+            conversationId: cId, topicId: tId, runIds: chunk,
+            ...(includeRoundtable ? { roundtableV1: true } : {}),
+          },
         )
         .then((raw) => {
           if (generation !== runHistoryGeneration) return;
