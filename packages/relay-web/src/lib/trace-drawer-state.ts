@@ -182,19 +182,31 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
 
   function firstVisibleRow(scrollerEl: HTMLElement): TraceFreezeAnchor | null {
     const ownerTop = scrollerEl.getBoundingClientRect().top;
-    const rows = Array.from(listEl()?.querySelectorAll<HTMLElement>("[data-trace-key]") ?? []);
-    const rendered = (candidate: HTMLElement): boolean => !isIntrinsicEstimate(candidate);
-    const visible = rows.filter((candidate) => candidate.getBoundingClientRect().bottom > ownerTop);
+    const rows = listEl()?.querySelectorAll<HTMLElement>("[data-trace-key]") ?? [];
+    let fallback: HTMLElement | undefined;
+    let scanned = 0;
     // A rect can be a 72px intrinsic estimate for a row the browser has not
     // painted yet (a programmatic jump under load). Pin a row that is actually
     // rendered; its real height is what the rows below it are laid out from.
-    const row = visible.find(rendered) ?? visible[0];
-    if (!row) return null;
-    const key = row.getAttribute("data-trace-key") ?? "";
+    // Stop at the first match: a long trace must not measure every row.
+    for (const candidate of rows) {
+      const rect = candidate.getBoundingClientRect();
+      if (rect.bottom <= ownerTop) continue;
+      fallback ??= candidate;
+      if (isIntrinsicEstimate(candidate)) {
+        if (++scanned >= 32) break;
+        continue;
+      }
+      const key = candidate.getAttribute("data-trace-key") ?? "";
+      if (!key) continue;
+      // Bottom edge: if the anchor row itself re-measures (estimate -> real),
+      // the rows below it must not move; its own top may.
+      return { key, offset: rect.bottom - ownerTop };
+    }
+    if (!fallback) return null;
+    const key = fallback.getAttribute("data-trace-key") ?? "";
     if (!key) return null;
-    // Bottom edge: if the anchor row itself re-measures (estimate -> real), the
-    // rows below it must not move; its own top may.
-    return { key, offset: row.getBoundingClientRect().bottom - ownerTop };
+    return { key, offset: fallback.getBoundingClientRect().bottom - ownerTop };
   }
 
   /** Put the captured row back where the reader last saw it. */
