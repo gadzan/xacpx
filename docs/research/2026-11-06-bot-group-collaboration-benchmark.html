@@ -334,7 +334,7 @@
   <div class="hero-meta">
     <span class="pill"><span class="dot"></span><b>DS-Bot</b> 0.2.7 · 房间 + 发言位</span>
     <span class="pill"><span class="dot purple"></span><b>Grok Bot</b> 0.18 · 有界轮询</span>
-    <span class="pill"><span class="dot green"></span><b>xacpx</b> 0.24.10 · Run + MemberTurn</span>
+    <span class="pill"><span class="dot green"></span><b>xacpx</b> 0.24.10 · Run + MemberTurn · main <code>8d660cf7</code></span>
   </div>
 </header>
 
@@ -991,16 +991,19 @@ projectConversationTimeline(messages, runs, memberTurns)
   <h3>迁移：先语义，再界面</h3>
   <div class="phase">
     <div class="phase-item">
-      <b>P0 · 后端语义</b>
+      <b>P0 · 后端语义 <span class="badge lead">DONE</span></b>
       <p><code>shape</code> / <code>rounds</code> / <code>roundIndex</code> / <code>speakerIndex</code> / <code>speechOutcome</code>；预生成圆桌；claim floor；pass；失败尾部；协议校验。旧 UI 不动。</p>
+      <p>已由 <a href="https://github.com/gadzan/xacpx/pull/546">#546</a> 落地，main <code>8d660cf7</code>；含旧客户端 history 兼容与 <code>conversations.roundtable.v1</code>。</p>
     </div>
     <div class="phase-item p1">
-      <b>P1 · 一条时间线</b>
+      <b>P1 · 一条时间线 <span class="badge">NEXT</span></b>
       <p><code>messages.member_turn_id</code> + 纯投影 + <code>conversation.timeline</code>；一个 Timeline 组件、一个 composer、一条状态条、一个详情抽屉；删除旧组件。</p>
+      <p>未开始；trace 抽屉 P1a–P1c 已由 <a href="https://github.com/gadzan/xacpx/pull/544">#544</a>/<a href="https://github.com/gadzan/xacpx/pull/545">#545</a> 完成。</p>
     </div>
     <div class="phase-item p2">
-      <b>P2 · 可选增强</b>
+      <b>P2 · 可选增强 <span class="badge">PARTIAL</span></b>
       <p>圆桌轮数设置；圆桌不暴露 group 工具；频道适配器复用同一投影；automatic 变成 Group 设置。</p>
+      <p>公共记忆 / <code>group_say</code> / 空回复兜底已由 <a href="https://github.com/gadzan/xacpx/pull/541">#541</a>–<a href="https://github.com/gadzan/xacpx/pull/543">#543</a> 完成；其余未开始。</p>
     </div>
   </div>
 
