@@ -2,22 +2,39 @@
 import { computed, ref } from "vue";
 import { Brain, ChevronDown, ChevronRight } from "lucide-vue-next";
 
-const props = withDefaults(defineProps<{ reasoning: string; defaultOpen?: boolean; streaming?: boolean }>(), {
+const props = withDefaults(defineProps<{
+  reasoning: string;
+  defaultOpen?: boolean;
+  streaming?: boolean;
+  /** Controlled expansion: when present the parent owns the toggle (the trace
+   *  drawer keys it by node so it survives streaming re-renders). */
+  expanded?: boolean;
+}>(), {
   defaultOpen: false,
   streaming: false,
+  // Absent Boolean props are cast to false by Vue; an explicit undefined default
+  // keeps "no parent control" distinguishable from "parent says collapsed".
+  expanded: undefined,
 });
+
+const emit = defineEmits<{ toggle: [] }>();
 
 // Reasoning is collapsed by default — de-cardified single line (zcode-style) with a
 // live shimmer while streaming. The user expands it on demand into an indented block.
 const localOpen = ref(props.defaultOpen ?? false);
-const open = computed(() => localOpen.value);
+const open = computed(() => props.expanded ?? localOpen.value);
+
+function toggle(): void {
+  if (props.expanded !== undefined) emit("toggle");
+  else localOpen.value = !localOpen.value;
+}
 </script>
 
 <template>
   <div class="text-xs">
-    <button type="button"
+    <button type="button" data-test="reasoning-toggle"
             class="group flex items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-sm text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
-            @click="localOpen = !localOpen">
+            @click="toggle">
       <Brain :size="13" class="shrink-0 transition-colors"
              :class="streaming ? 'text-accent' : 'text-fg-muted/80 group-hover:text-fg'" />
       <span class="text-ui font-medium transition-colors"
