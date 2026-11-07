@@ -76,7 +76,7 @@ describe("group process timeline", () => {
     await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
 
-    const appended = [...parts, ...Array.from({ length: 20 }, (_, i) => tool(i + 2)), { type: "text", text: "Final public report" }];
+    const appended: TurnPartDto[] = [...parts, ...Array.from({ length: 20 }, (_, i) => tool(i + 2)), { type: "text", text: "Final public report" }];
     await wrapper.setProps({ parts: appended });
     expect(wrapper.findAll('[data-test="group-trace-step"]')).toHaveLength(22);
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
