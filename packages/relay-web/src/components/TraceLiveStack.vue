@@ -15,10 +15,12 @@ import type { TurnPresentationItem } from "../lib/turn-presentation";
 import {
   TRACE_LIVE_RATE_WINDOW_MS,
   TRACE_LIVE_THROTTLE_MS,
+  appendedTraceNodeCount,
   traceLiveBurstActive,
   traceLiveItems,
   traceLiveLimit,
   traceLiveTypeLabelKey,
+  traceNodeIdentity,
   type TraceLiveItem,
 } from "../lib/trace-live";
 import { useIsMobile } from "../lib/use-dropdown";
@@ -68,9 +70,11 @@ let throttleTimer: ReturnType<typeof setTimeout> | undefined;
 let burstTimer: ReturnType<typeof setTimeout> | undefined;
 let pending: TraceLiveItem[] | undefined;
 let lastFlushAt = 0;
-/** Arrival stamps of new events only (same-key streaming updates are not events). */
+/** Arrival stamps of genuinely new events. Streaming growth of an existing
+ *  node (markdown length, status flips) never stamps: identities come from
+ *  `traceNodeIdentity`, so only appended identities count. */
 let arrivals: number[] = [];
-let lastEventSignature = "";
+let lastNodeIds: string[] | null = null;
 
 const stackHeight = computed(() => `${limit.value * ROW_HEIGHT}px`);
 
@@ -81,16 +85,7 @@ function flush(): void {
   snapshot.value = pending;
   pending = undefined;
 }
-
-/** Coarse signature: a new key (or a longer list) is an event; text growth is not. */
-function eventSignature(nodes: TraceLiveItem[] | readonly TurnPresentationItem[]): string {
-  if (nodes.length === 0) return "";
-  const last = nodes[nodes.length - 1]!;
-  return `${nodes.length}:${"key" in last ? last.key : ""}`;
-}
-
-/** Wake exactly when the oldest arrival leaves the window, so a burst clears
- *  by rate even if no further event ever arrives. */
+/** Wake exactly when the oldest arrival leaves the window, so a burst clears by rate. */
 function scheduleBurstClear(): void {
   clearTimeout(burstTimer);
   burstTimer = undefined;
@@ -108,8 +103,8 @@ function scheduleBurstClear(): void {
   }, Math.max(1, oldest + TRACE_LIVE_RATE_WINDOW_MS + 1 - now));
 }
 
-function noteArrival(now: number): void {
-  arrivals.push(now);
+function noteArrivals(count: number, now: number): void {
+  for (let index = 0; index < count; index++) arrivals.push(now);
   const cutoff = now - TRACE_LIVE_RATE_WINDOW_MS;
   while (arrivals.length > 0 && arrivals[0]! < cutoff) arrivals.shift();
   burst.value = traceLiveBurstActive(arrivals, now);
@@ -124,16 +119,18 @@ function schedule(): void {
     burstTimer = undefined;
     pending = undefined;
     arrivals = [];
-    burst.value = false;
+    lastNodeIds = null;
     return;
   }
   const next = traceLiveItems(props.nodes, limit.value, labels.value, props.streaming);
   const now = Date.now();
-  const signature = eventSignature(props.nodes);
-  if (signature !== lastEventSignature) {
-    lastEventSignature = signature;
-    noteArrival(now);
-  }
+  // Markdown keys embed streamed length, so a growing paragraph must not read
+  // as a new event: compare stable identities, not raw keys. Load-earlier
+  // prepends and wholesale replacements are not appends either.
+  const ids = props.nodes.map((node) => traceNodeIdentity(node));
+  const appended = lastNodeIds === null ? 0 : appendedTraceNodeCount(lastNodeIds, ids);
+  lastNodeIds = ids;
+  if (appended > 0) noteArrivals(appended, now);
   if (throttleTimer === undefined && now - lastFlushAt >= THROTTLE_MS) {
     lastFlushAt = now;
     snapshot.value = next;

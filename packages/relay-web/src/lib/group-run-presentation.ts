@@ -268,58 +268,81 @@ export function traceEventsToParts(events: ConversationRunTraceEventDto[]): {
  *
  * Durable pages are authoritative for history but lag the hub by a refetch
  * window; the live channel has the freshest tail. Both channels describe the
- * same event stream, so this is a selection, not a concatenation:
+ * same event stream, so this is a selection, not a concatenation. Order always
+ * follows the durable page, with genuinely live-only events appended at the
+ * tail:
  *
- * - tools upsert by `toolCallId` and never produce a second row; a terminal
- *   replay status never regresses to the live `running` snapshot;
- * - prose (text/reasoning) is coalesced per channel, so the longer superset
- *   wins; a live fragment already contained in the durable block is dropped
- *   instead of being appended as a duplicate paragraph.
- *
- * Order follows the durable page, with live-only events appended at the tail.
+ * - tools upsert by `toolCallId`. A durable terminal status (`success`/`error`)
+ *   is the audited record and is never regressed by a lagging live frame; a
+ *   durable `running` snapshot always loses to the fresher live frame;
+ * - prose (`text`/`reasoning`) is matched per block in channel order: an exact
+ *   text match is the same block, a live block containing the durable text is
+ *   the grown superset, and a live fragment already contained in the durable
+ *   block is a late-subscription duplicate. Anything else is a genuinely new
+ *   block and is appended once. This keeps `[text, tool, text]` aligned block
+ *   by block instead of collapsing prose to "the last block";
+ * - when the member is terminal and the durable page has content, the page is
+ *   authoritative and any stale live tail is dropped. A terminal member with
+ *   an empty page (not recorded / unavailable) keeps the live fallback.
  */
 export function mergeLiveTraceParts(
   replay: readonly TurnPartDto[] | undefined,
   live: readonly TurnPartDto[] | undefined,
+  options?: { terminal?: boolean },
 ): TurnPartDto[] | undefined {
+  if (options?.terminal === true && replay !== undefined && replay.length > 0) return [...replay];
   if (!live || live.length === 0) return replay ? [...replay] : replay;
   if (!replay || replay.length === 0) return [...live];
   const merged = replay.map((part) => (part.type === "tool" ? { ...part, step: part.step } : { ...part }));
+  const consumed = new Array<boolean>(merged.length).fill(false);
   for (const part of live) {
     if (part.type === "tool") {
       const index = merged.findIndex((candidate) =>
         candidate.type === "tool" && candidate.step.toolCallId === part.step.toolCallId);
       if (index < 0) {
         merged.push({ type: "tool", step: part.step });
+        consumed.push(true);
         continue;
       }
       const current = merged[index]!;
-      // A durable success/error is final; the live channel may still hold the
-      // pre-finish running snapshot.
-      if (current.type === "tool"
-        && !(part.step.status === "running" && current.step.status !== "running")) {
+      // A durable terminal status is final; a durable `running` snapshot is
+      // stale the moment the live frame disagrees.
+      if (current.type === "tool" && current.step.status === "running") {
         merged[index] = { type: "tool", step: part.step };
       }
       continue;
     }
-    let target = -1;
-    for (let index = merged.length - 1; index >= 0; index--) {
-      if (merged[index]!.type === part.type) { target = index; break; }
-    }
-    if (target < 0) {
-      merged.push({ type: part.type, text: part.text });
+    const match = (predicate: (text: string) => boolean): number => {
+      for (let index = 0; index < merged.length; index++) {
+        if (consumed[index] === true) continue;
+        const candidate = merged[index]!;
+        if (candidate.type !== part.type || !predicate(candidate.text)) continue;
+        return index;
+      }
+      return -1;
+    };
+    // The same block, streamed through both channels.
+    const exact = match((text) => text === part.text);
+    if (exact >= 0) {
+      consumed[exact] = true;
       continue;
     }
-    const current = merged[target]!;
-    if (current.type !== part.type) continue;
-    const durableText = current.text;
-    if (part.text === durableText) continue;
-    if (part.text.includes(durableText)) {
-      merged[target] = { type: part.type, text: part.text };
+    // The same block, grown further on the live channel.
+    const grown = match((text) => part.text.includes(text));
+    if (grown >= 0) {
+      merged[grown] = { type: part.type, text: part.text };
+      consumed[grown] = true;
       continue;
     }
-    // Durable already contains the live fragment (late subscription) — no dup.
-    if (!durableText.includes(part.text)) merged.push({ type: part.type, text: part.text });
+    // A fragment the durable page already contains (late subscription).
+    const contained = match((text) => text.includes(part.text));
+    if (contained >= 0) {
+      consumed[contained] = true;
+      continue;
+    }
+    // Genuinely new prose: one block, appended once.
+    merged.push({ type: part.type, text: part.text });
+    consumed.push(true);
   }
   return merged;
 }

@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import type { ToolStepStatus } from "@ganglion/xacpx-relay-protocol";
 import TraceLiveStack from "../components/TraceLiveStack.vue";
 import type { TurnPresentationItem } from "../lib/turn-presentation";
-import { TRACE_LIVE_THROTTLE_MS, traceLiveBurstActive, traceLiveTypeLabelKey } from "../lib/trace-live";
+import { TRACE_LIVE_THROTTLE_MS, appendedTraceNodeCount, traceLiveBurstActive, traceLiveTypeLabelKey } from "../lib/trace-live";
 
 function toolNode(id: string, title = `Step ${id}`, status: ToolStepStatus = "success"): TurnPresentationItem {
   return {
@@ -148,12 +148,42 @@ describe("trace live stack", () => {
     vi.setSystemTime(1_000);
     const nodes = [toolNode("s0")];
     const wrapper = mount(TraceLiveStack, { props: { nodes: [...nodes], streaming: true } });
-    // The mount itself is the first arrival; nine more make ten in the window.
+    // The mount sets the baseline; nine appended nodes make ten arrivals, not eleven.
     for (let index = 1; index <= 9; index++) {
       nodes.push(toolNode(`s${index}`));
       await wrapper.setProps({ nodes: [...nodes] });
       await vi.advanceTimersByTimeAsync(10);
     }
+    expect(wrapper.find(".relative").classes()).not.toContain("trace-live--static");
+    wrapper.unmount();
+  });
+
+  it("ignores a growing markdown paragraph: twelve length changes are not twelve events", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    let text = "hello";
+    const wrapper = mount(TraceLiveStack, {
+      props: { nodes: [markdownNode(text.length, text)], streaming: true },
+    });
+    // The stable identity is `markdown:<start>`; the embedded length churns.
+    for (let index = 0; index < 12; index++) {
+      text += " more";
+      await wrapper.setProps({ nodes: [markdownNode(text.length, text)] });
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(wrapper.find(".relative").classes()).not.toContain("trace-live--static");
+    expect(wrapper.get('[data-test="trace-live-preview"]').text()).toContain("more");
+    wrapper.unmount();
+  });
+
+  it("ignores load-earlier prepends: twelve older rows at the head are not events", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const tail = [toolNode("a"), toolNode("b")];
+    const wrapper = mount(TraceLiveStack, { props: { nodes: [...tail], streaming: true } });
+    const head = Array.from({ length: 12 }, (_, index) => toolNode(`old-${index}`));
+    await wrapper.setProps({ nodes: [...head, ...tail] });
+    await vi.advanceTimersByTimeAsync(10);
     expect(wrapper.find(".relative").classes()).not.toContain("trace-live--static");
     wrapper.unmount();
   });
@@ -282,6 +312,18 @@ describe("trace live stack", () => {
     expect(traceLiveBurstActive(arrivals, 1_010)).toBe(true);
     // Older arrivals leave the window instead of accumulating forever.
     expect(traceLiveBurstActive(arrivals, 2_500)).toBe(false);
+  });
+
+  it("counts only tail appends of stable identities", () => {
+    expect(appendedTraceNodeCount(["a", "b"], ["a", "b", "c"])).toBe(1);
+    expect(appendedTraceNodeCount(["a", "b"], ["a", "b"])).toBe(0);
+    expect(appendedTraceNodeCount(["a", "b"], ["a"])).toBe(0);
+    // Load-earlier prepend: the old tail survives, so nothing was appended.
+    expect(appendedTraceNodeCount(["a", "b"], ["old-0", "old-1", "a", "b"])).toBe(0);
+    // Wholesale replacement (attempt switch) resets the baseline, not a burst.
+    expect(appendedTraceNodeCount(["a", "b"], ["x", "y", "z"])).toBe(0);
+    // A markdown paragraph growing longer keeps its stable `markdown:<start>` identity.
+    expect(appendedTraceNodeCount(["markdown:0"], ["markdown:0"])).toBe(0);
   });
 
   it("keeps its only visual delay under the 150ms freshness contract", () => {

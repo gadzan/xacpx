@@ -75,6 +75,24 @@ export function traceLiveBurstActive(
   return count > limit;
 }
 
+/**
+ * How many genuinely NEW events the tail gained between two observations.
+ * Identities come from `traceNodeIdentity`, so a streaming markdown paragraph
+ * growing longer (same `markdown:<start>`) or a same-key status update counts
+ * as zero. Only a tail append counts; a head prepend (load-earlier page) and a
+ * wholesale replacement (attempt switch) both reset the baseline with zero.
+ */
+export function appendedTraceNodeCount(
+  previous: readonly string[],
+  next: readonly string[],
+): number {
+  if (next.length <= previous.length) return 0;
+  for (let index = 0; index < previous.length; index++) {
+    if (next[index] !== previous[index]) return 0;
+  }
+  return next.length - previous.length;
+}
+
 /** Rows the fixed stack can show; the full list keeps the same tail rendered. */
 export const TRACE_LIVE_LIMIT_MOBILE = 2;
 export const TRACE_LIVE_LIMIT_DESKTOP = 3;

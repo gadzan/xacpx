@@ -1402,6 +1402,114 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("renders overlapping prose-tool-prose through both channels as two paragraphs, not four", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const durableStep = { toolCallId: "tc1", toolName: "read", kind: "read", title: "Durable tool", status: "success" } as const;
+      groups.tracePages = {
+        "i1:conversation_g:topic_1:turn_a:1": {
+          events: [
+            { seq: 1, createdAt: "now", kind: "text", payload: { text: "Alpha narrative" } },
+            { seq: 2, createdAt: "now", kind: "tool", payload: { step: durableStep } },
+            { seq: 3, createdAt: "now", kind: "text", payload: { text: "Omega narrative" } },
+          ],
+          nextSeq: 3, hasMore: false, recordingState: "recording", loading: false, error: null,
+        },
+      };
+      // The hub carries the same turn: identical prose, so the merge must align
+      // block by block instead of appending a second copy of each paragraph.
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "Alpha narrative" },
+            { type: "tool", step: { ...durableStep, status: "running" } },
+            { type: "text", text: "Omega narrative" },
+          ],
+          status: "streaming", startedAt: 1, revision: 2,
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((bot) => GROUP.botIds.includes(bot.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const narratives = [...document.body.querySelectorAll('[data-test="group-trace-narrative"]')]
+        .map((node) => node.textContent);
+      expect(narratives).toEqual(["Alpha narrative", "Omega narrative"]);
+      expect(document.body.querySelectorAll('[data-test="group-trace-step"]')).toHaveLength(1);
+      wrapper.unmount();
+    });
+
+    it("drops a stale live tail for a terminal member with committed events", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", createdAt: "now",
+        },
+      };
+      const durableStep = { toolCallId: "tc1", toolName: "read", kind: "read", title: "Durable tool", status: "success" } as const;
+      groups.tracePages = {
+        "i1:conversation_g:topic_1:turn_a:1": {
+          events: [
+            { seq: 1, createdAt: "now", kind: "text", payload: { text: "Committed output" } },
+            { seq: 2, createdAt: "now", kind: "tool", payload: { step: durableStep } },
+          ],
+          nextSeq: 2, hasMore: false, recordingState: "complete", loading: false, error: null,
+        },
+      };
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "Committed output" },
+            { type: "tool", step: durableStep },
+            { type: "text", text: "STALE TAIL" },
+          ],
+          status: "streaming", startedAt: 1, revision: 2,
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((bot) => GROUP.botIds.includes(bot.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const card = document.body.querySelector('[data-test="group-detail-card"]')!;
+      expect(card.querySelectorAll('[data-test="group-trace-narrative"]')).toHaveLength(1);
+      expect(card.querySelectorAll('[data-test="group-trace-step"]')).toHaveLength(1);
+      expect(card.textContent).toContain("Committed output");
+      expect(card.textContent).not.toContain("STALE TAIL");
+      wrapper.unmount();
+    });
+
     it("keeps a settled reply in one bubble with blank lines preserved", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
