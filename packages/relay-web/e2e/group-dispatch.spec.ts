@@ -361,7 +361,7 @@ async function openRound(page: Page, locale = "en", messages = roundInitial) {
   await page.getByTestId("instance-nav-groups").click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
   await expect(page.getByTestId("group-transcript-scroller")).toBeVisible();
-  await expect(page.getByTestId("group-target-button")).toBeEnabled();
+  await expect(page.getByTestId("group-composer-textarea")).toBeEnabled();
   return roundHistory;
 }
 

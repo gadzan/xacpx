@@ -341,8 +341,8 @@ describe("Disabled Bots", () => {
       );
       expect(wrapper.find('[data-test="group-lead-disabled"]').exists()).toBe(false);
       expect(wrapper.text()).toContain("3 members");
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      const sleeper = wrapper.find('[data-test="group-target-member-bot_off"]');
+      await wrapper.find('[data-test="group-mention-chip"]').trigger("click");
+      const sleeper = wrapper.find('[data-test="group-mention-item"][data-bot-id="bot_off"]');
       expect(sleeper.text()).toContain("Disabled");
       expect(sleeper.attributes("aria-disabled")).toBe("true");
       expect(sleeper.attributes("disabled")).toBeUndefined();

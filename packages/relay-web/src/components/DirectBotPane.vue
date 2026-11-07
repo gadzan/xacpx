@@ -14,7 +14,12 @@ import {
 } from "lucide-vue-next";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
-import { supportsBotDedicatedWorkspaceCleanup, useInstancesStore } from "../stores/instances";
+import {
+  supportsBotDedicatedWorkspaceCleanup,
+  supportsConversationTimelineV1,
+  supportsRoundtableV1,
+  useInstancesStore,
+} from "../stores/instances";
 import type {
   ConversationRunDetailDto,
   ConversationRunDto,
@@ -28,9 +33,15 @@ import MobileSheet from "./MobileSheet.vue";
 import MobileConnStrip from "./MobileConnStrip.vue";
 import { avatarHasOpenInteraction, botAvatarState } from "../lib/bot-avatar-state";
 import ConversationMessageList from "./ConversationMessageList.vue";
+import ConversationTimeline from "./ConversationTimeline.vue";
+import ConversationStatusBar from "./ConversationStatusBar.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
+import ConversationInteractionForm from "./ConversationInteractionForm.vue";
 import TraceOverlay from "./TraceOverlay.vue";
 import { traceEventsToParts } from "../lib/group-run-presentation";
+import { useConversationTimelineFeed } from "../lib/use-timeline-feed";
+import { activeSpeakerTurnId, type RoomView, type TimelineLiveTurn } from "../lib/room-view";
+import { textBubblesOf } from "../lib/turn-presentation";
 import BotDialog from "./BotDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
@@ -262,6 +273,83 @@ function openRemoval(): void {
   if (!bot.value || bot.value.retired) return;
   removalOpen.value = true;
 }
+
+// --- One timeline, one status bar (design §8) -------------------------------
+const timelineEnabled = computed(() => supportsConversationTimelineV1(instance.value));
+
+/** Direct is the single-participant Room: same read model, same shell. */
+const roomView = computed<RoomView>(() => ({
+  kind: "direct",
+  instanceId: directBotsStore.instanceId ?? null,
+  conversationId: directBotsStore.activeConversationId ?? null,
+  topicId: directBotsStore.activeTopicId ?? null,
+  participants: bot.value
+    ? [{
+        botId: bot.value.id,
+        name: bot.value.name,
+        ...(bot.value.role ? { role: bot.value.role } : {}),
+        ...(botDriver.value ? { driver: botDriver.value } : {}),
+        ...(bot.value.avatar ? { avatar: bot.value.avatar } : {}),
+        enabled: bot.value.enabled,
+        ...(bot.value.retired ? { retired: true } : {}),
+      }]
+    : [],
+  run: directBotsStore.activeRun,
+  capability: {
+    timelineV1: timelineEnabled.value,
+    roundtableV1: supportsRoundtableV1(instance.value),
+  },
+}));
+
+/** The live bubble exists only while the MemberTurn is known: the overlay is
+ *  keyed by `memberTurnId`, so a reply can never attach to the wrong turn. */
+const liveOverlay = computed<TimelineLiveTurn[]>(() => {
+  const live = directBotsStore.liveTurn;
+  const member = directBotsStore.activeMemberTurn;
+  if (!live || !member) return [];
+  return [{
+    memberTurnId: member.id,
+    botId: member.botId,
+    text: textBubblesOf(live.parts).join("\n\n"),
+    status: live.status,
+    revision: live.revision,
+  }];
+});
+
+const timelineReloadKey = computed(() => [
+  directBotsStore.messages.length,
+  directBotsStore.newestSeq ?? 0,
+  directBotsStore.activeRun?.id ?? "",
+  directBotsStore.activeRun?.state ?? "",
+  directBotsStore.activeMemberTurn?.id ?? "",
+  directBotsStore.activeMemberTurn?.state ?? "",
+].join(":"));
+
+const timelineFeed = useConversationTimelineFeed({
+  instanceId: computed(() => directBotsStore.instanceId),
+  conversationId: computed(() => directBotsStore.activeConversationId),
+  topicId: computed(() => directBotsStore.activeTopicId),
+  enabled: timelineEnabled,
+  reloadKey: timelineReloadKey,
+});
+
+const timelineSpeakerName = computed(() => {
+  const id = activeSpeakerTurnId(undefined, directBotsStore.activeMemberTurn ? [directBotsStore.activeMemberTurn] : []);
+  return id ? bot.value?.name : undefined;
+});
+
+/** A bot row opens the same per-member drawer the legacy transcript opens. */
+function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }): void {
+  if (payload.runId && payload.runId !== directBotsStore.activeRun?.id) {
+    void openTraceForHistoryRun(payload.runId);
+    return;
+  }
+  openTraceOverlay();
+}
+
+function handleStopAll(): void {
+  void directBotsStore.stopCurrentAndQueued();
+}
 </script>
 
 <template>
@@ -433,7 +521,25 @@ function openRemoval(): void {
     <!-- The floating identity chip costs no layout height, so the transcript
          reserves scroll padding instead: content starts below the chip, then
          scrolls beneath its glass. -->
+    <!-- One timeline for Direct and Group. Without `conversations.timeline.v1`
+         the legacy transcript is untouched, so an old daemon behaves exactly as
+         before. -->
+    <ConversationTimeline
+      v-if="timelineEnabled"
+      :room="roomView"
+      :timeline="timelineFeed.timeline.value"
+      :live-overlay="liveOverlay"
+      :loading="timelineFeed.loading.value"
+      :loading-older="timelineFeed.loadingOlder.value"
+      :error="timelineFeed.error.value"
+      :empty-hint="emptyHint"
+      :is-run-queued="directBotsStore.isRunQueued"
+      :load-older="timelineFeed.loadOlder"
+      top-inset-class="pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5"
+      @open-detail="openTimelineDetail"
+    />
     <ConversationMessageList
+      v-else
       :messages="directBotsStore.messages"
       top-inset-class="pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5"
       :empty-hint="emptyHint"
@@ -479,6 +585,38 @@ function openRemoval(): void {
       @close="closeTraceOverlay"
       @load-more="traceRun && traceMemberTurn ? directBotsStore.ensureDirectTracePage(traceRun.id, traceMemberTurn.id, traceMemberTurn.attempt) : undefined"
       @retry-trace="traceRun && traceMemberTurn ? directBotsStore.ensureDirectTracePage(traceRun.id, traceMemberTurn.id, traceMemberTurn.attempt) : undefined"
+    />
+
+    <!-- A pending human-authority ask stays answerable on the timeline path:
+         the form belongs to the turn that asked, so it sits right above the
+         composer rather than inside a bubble this shell no longer draws. -->
+    <div
+      v-if="timelineEnabled && directBotsStore.pendingInteraction"
+      class="mx-auto w-full max-w-3xl px-4 lg:px-0"
+    >
+      <ConversationInteractionForm
+        :request="directBotsStore.pendingInteraction.request"
+        :answers="directBotsStore.pendingInteraction.answers"
+        :submitting="directBotsStore.pendingInteraction.submitting"
+        :error-code="directBotsStore.pendingInteraction.errorCode"
+        :outcome="directBotsStore.pendingInteraction.outcome"
+        @answer="(key: string, value: InteractionValueDto) => directBotsStore.setInteractionAnswer(key, value)"
+        @submit="directBotsStore.submitInteraction('accept')"
+        @decline="directBotsStore.declineInteraction()"
+        @cancel="directBotsStore.cancelInteraction()"
+        @dismiss="directBotsStore.dismissResolvedInteraction()"
+      />
+    </div>
+
+    <ConversationStatusBar
+      v-if="timelineEnabled"
+      :room="roomView"
+      :run="directBotsStore.activeRun"
+      :member-turns="directBotsStore.activeMemberTurn ? [directBotsStore.activeMemberTurn] : []"
+      :active-speaker-name="timelineSpeakerName"
+      :stopping="!!directBotsStore.cancellingRunId"
+      @stop-all="handleStopAll"
+      @open-detail="openTimelineDetail"
     />
 
     <!-- Prompt Composer -->

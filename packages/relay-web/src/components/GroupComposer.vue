@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { AtSign, Bot, Check, ChevronDown, Users } from "lucide-vue-next";
-import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import { AtSign, MessagesSquare } from "lucide-vue-next";
+import type { BotSummaryDto, ConversationTargetDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import { completionKey, replaceRange, slashQuery } from "../lib/composer-completion";
 import {
   filterMentionMembers,
@@ -14,17 +14,15 @@ import {
 } from "../lib/group-mention";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useComposerStore } from "../stores/composer";
-import { useInstancesStore } from "../stores/instances";
+import { supportsRoundtableV1, useInstancesStore } from "../stores/instances";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
-import BotAvatar from "./BotAvatar.vue";
 import ConversationComposer from "./ConversationComposer.vue";
 import ComposerAttachments from "./ComposerAttachments.vue";
-import DropdownPanel from "./DropdownPanel.vue";
 import ComposerAttachPicker from "./ComposerAttachPicker.vue";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
 import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
 import MobileSheet from "./MobileSheet.vue";
-import { useIsMobile, useDropdown } from "../lib/use-dropdown";
+import { useIsMobile } from "../lib/use-dropdown";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -39,11 +37,14 @@ const props = defineProps<{
    *  primary action, so the member target picker and its hint are not mounted
    *  and the (disabled) composer says why. */
   needsFirstTopic?: boolean;
+  /** The status bar above the composer owns Stop all. An old daemon keeps the
+   *  legacy transcript (and no status bar), so it keeps the in-card Stop. */
+  hideStop?: boolean;
 }>();
 
 const emit = defineEmits<{
-  send: [text: string, media: PromptAttachmentRef[]];
-  cancel: [];
+  /** `target` is null for the implicit lead: the server resolves it. */
+  send: [text: string, media: PromptAttachmentRef[], target: ConversationTargetDto | null];
 }>();
 
 const { t } = useI18n();
@@ -76,7 +77,6 @@ const everyoneConfirm = ref<EveryoneConfirmation | null>(null);
  *  snapshots it so a typed change invalidates the frozen recipient list. */
 const draftRevision = ref(0);
 const composer = ref<InstanceType<typeof ConversationComposer> | null>(null);
-const targetDd = useDropdown();
 const composing = ref(false);
 const collapsedCaret = ref(true);
 const cmdActiveIdx = ref(0);
@@ -106,52 +106,53 @@ watch(attachKey, () => {
 }, { immediate: true });
 const readyMedia = computed(() => attachments.pending.some((entry) => entry.status === "ready"));
 
+/** The stored structured selection. The picker is gone; this now only carries
+ *  what the mention machinery resolved (`@Name`, `@everyone`). A plain message
+ *  ignores it entirely and lets the server resolve the Group lead. */
 const selection = computed(() => groupsStore.targetSelection);
 const isEveryone = computed(() => selection.value?.mode === "everyone");
-const isAutomatic = computed(() => selection.value?.mode === "automatic");
-const availability = computed(() => {
+
+const roundtableSupported = computed(() => {
   const id = props.instanceId ?? groupsStore.instanceId;
-  if (!id) {
-    return {
-      status: "unsupported" as const,
-      configPath: "conversations.router" as const,
-      reason: { code: "not-advertised" as const, message: t("group.router.noInstance") },
-    };
-  }
-  return instancesStore.routerAvailabilityFor(id);
+  return id ? supportsRoundtableV1(instancesStore.byId(id)) : false;
 });
-const automaticReady = computed(() => availability.value.status === "ready");
-/** The Jev panel state for the same instance. The automatic option is only
- *  offered when the daemon both reports the router ready AND has a Jev key
- *  configured; an older daemon (read-only panel) hides it entirely. */
-const jevPanel = computed(() => {
-  const id = props.instanceId ?? groupsStore.instanceId;
-  return id ? instancesStore.jevPanelFor(id) : { phase: "read-only" as const, notice: "" };
+
+/** Enabled members in the Group's own membership order: the discussion
+ *  speaker pool when no `@` selection narrows it. */
+const enabledMemberIds = computed<string[]>(() => {
+  const group = groupsStore.currentGroup;
+  if (!group) return [];
+  const byId = new Map(props.bots.filter((bot) => bot.retired !== true).map((bot) => [bot.id, bot] as const));
+  return group.botIds.filter((id) => byId.get(id)?.enabled === true);
 });
-const jevConfigured = computed(() =>
-  jevPanel.value.phase === "editable" && jevPanel.value.settings.keyConfigured);
-const automaticVisible = computed(() => automaticReady.value && jevConfigured.value);
-const selectedIds = computed<string[]>(() =>
-  selection.value?.mode === "members" ? selection.value.botIds : [],
-);
-// Rows the picker lists: every live member, disabled ones shown but not
-// pickable. A removed Bot is not listed at all — the daemon's catalog drops
-// the row and this only bridges a stale snapshot.
-const pickableBots = computed(() => props.bots.filter((b) => b.retired !== true));
-const eligibleBots = computed(() => pickableBots.value.filter((b) => b.enabled));
-const selectionLabel = computed(() => {
-  if (isAutomatic.value) return t("group.target.automatic");
-  if (isEveryone.value) return t("group.target.everyone");
-  if (selectedIds.value.length === 0) return t("group.target.selectMembers");
-  if (selectedIds.value.length === 1) {
-    const onlyId = selectedIds.value[0]!;
-    // The Bot name is presentation; when the catalog row is missing fall back to
-    // the Lead label rather than pretending the selection is empty.
-    return props.bots.find((b) => b.id === onlyId)?.name
-      ?? (groupsStore.currentGroup?.leadBotId === onlyId ? t("group.target.lead") : onlyId);
-  }
-  return t("group.target.memberCount", { count: selectedIds.value.length });
+
+/** The lead's display name for the placeholder. An unknown catalog row keeps
+ *  the neutral copy rather than inventing a name. */
+const leadName = computed(() => {
+  const leadId = groupsStore.currentGroup?.leadBotId;
+  return props.bots.find((bot) => bot.id === leadId)?.name;
 });
+
+const composerPlaceholder = computed(() => {
+  if (props.needsFirstTopic) return t("group.prompt.createTopicFirst");
+  if (isNarrow.value) return t("group.prompt.placeholderShort");
+  return leadName.value
+    ? t("conversation.composer.placeholder", { name: leadName.value })
+    : t("conversation.composer.placeholderLead");
+});
+
+/** 讨论 speakers: the `@` selection when it names at least two members, else
+ *  every enabled member. The lead goes first, as the design requires the UI to
+ *  open the discussion. */
+const discussionSpeakers = computed<string[]>(() => {
+  const selected = mentionBindings.value.length >= 2
+    ? mentionBindings.value.map((binding) => binding.botId)
+    : enabledMemberIds.value;
+  const leadId = groupsStore.currentGroup?.leadBotId;
+  return [...new Set(selected)].sort((left, right) =>
+    left === leadId ? -1 : right === leadId ? 1 : 0);
+});
+const discussionReady = computed(() => roundtableSupported.value && discussionSpeakers.value.length >= 2);
 
 /** Drop everything tied to a draft that is no longer editable: the text, the
  *  derived-mention suppression, the autogrow height and the picker menu.
@@ -163,6 +164,11 @@ function clearSentDraft(): void {
   mentionOwned.value = false;
   cmdDismissed.value = false;
   mentionDismissed.value = false;
+  // The target belongs to ONE message: a sent `@everyone` or `@member` selection
+  // must not linger and silently route the next plain message. Reset to the
+  // Group default (the lead), which the send path only uses as a fallback.
+  const group = groupsStore.currentGroup;
+  if (group) groupsStore.setTarget(groupsStore.defaultTargetFor(group));
   closeMenu();
 }
 
@@ -235,96 +241,25 @@ function memberUnavailableReason(bot: BotSummaryDto): string | null {
   return bot.enabled ? null : t("bot.status.disabled");
 }
 
-function toggleMenu(): void {
-  if (props.disabled) return;
-  targetDd.toggle();
-}
-
+/** Close every transient completion surface (Escape, send, draft swap). */
 function closeMenu(): void {
-  targetDd.closeMenu();
+  mentionDismissed.value = true;
+  cmdDismissed.value = true;
 }
 
-/** Unavailable rows retain keyboard focus and explain why activation is ignored. */
-const navRows = computed<Array<() => void>>(() => {
-  const rows: Array<() => void> = [() => pickLead()];
-  if (automaticVisible.value) rows.push(() => pickAutomatic());
-  rows.push(() => pickEveryone());
-  for (const b of props.bots) {
-    rows.push(() => toggleMember(b.id));
-  }
-  return rows;
-});
-const navCount = computed(() => navRows.value.length);
-function onNavSelect(index: number): void {
-  navRows.value[index]?.();
-}
-
-function pickEveryone(): void {
-  mentionOwned.value = false;
-  groupsStore.mentionEveryone();
-  closeMenu();
-}
-
-function pickAutomatic(): void {
-  if (!automaticVisible.value) return;
-  mentionOwned.value = false;
-  groupsStore.setTarget({ mode: "automatic" });
-  closeMenu();
-}
-
-watch(() => props.instanceId ?? groupsStore.instanceId, (id) => {
-  if (id) {
-    void instancesStore.loadRouterAvailability(id);
-    void instancesStore.loadJevSettings(id);
-  }
-}, { immediate: true });
-
-watch(availability, (state) => {
-  if (state.status === "ready" || groupsStore.targetSelection?.mode !== "automatic") return;
-  const group = groupsStore.currentGroup;
-  groupsStore.setTarget(group ? groupsStore.defaultTargetFor(group) : { mode: "members", botIds: [] });
-}, { immediate: true });
-
-// Losing the Jev key (cleared in another tab, or an instance that stopped
-// reporting it) drops an in-progress automatic selection exactly like losing
-// router readiness does.
-watch(automaticVisible, (visible) => {
-  if (visible || groupsStore.targetSelection?.mode !== "automatic") return;
-  const group = groupsStore.currentGroup;
-  groupsStore.setTarget(group ? groupsStore.defaultTargetFor(group) : { mode: "members", botIds: [] });
-});
-
-/** The Lead shortcut and the Group-open default share one resolver: the server
- *  owns the implicit rule, so this only names the lead and lets the backend
- *  refuse a lead that is disabled or no longer a member. */
-function pickLead(): void {
-  const group = groupsStore.currentGroup;
-  if (!group) return;
-  const selection = groupsStore.defaultTargetFor(group);
-  mentionOwned.value = false;
-  groupsStore.setTarget(selection);
-  closeMenu();
-}
-
-function toggleMember(botId: string): void {
-  const bot = props.bots.find(row => row.id === botId);
-  if (!bot || memberUnavailableReason(bot)) return;
-  mentionOwned.value = false;
-  groupsStore.toggleTargetMember(botId);
-}
-
-/** Agent driver for the picker's per-member icon. Same resolution as the
- *  transcript rows: instance agent catalog by agent name. Undefined (unknown
- *  agent, missing instance) renders the generic Bot glyph — identical to the
- *  transcript's `v-else` fallback. */
-/** Agent driver for the picker's per-member icon. Same resolution as the
- *  transcript rows: instance agent catalog by agent name. Undefined (unknown
- *  agent, missing instance) renders the generic Bot glyph — identical to the
- *  transcript's `v-else` fallback. */
-function driverFor(bot: BotSummaryDto): string | undefined {
-  const instId = props.instanceId ?? groupsStore.instanceId;
-  if (!instId) return undefined;
-  return instancesStore.byId(instId)?.agents.find((a) => a.name === bot.agent)?.driver;
+/** The `@` chip inserts the mention trigger at the caret and opens the same
+ *  mention menu typing `@` opens. */
+function startMention(): void {
+  if (props.disabled || groupsStore.hasUncertainPrompt) return;
+  const at = Math.min(caret.value, promptText.value.length);
+  promptText.value = `${promptText.value.slice(0, at)}@${promptText.value.slice(at)}`;
+  mentionDismissed.value = false;
+  cmdDismissed.value = true;
+  caret.value = at + 1;
+  void nextTick(() => {
+    composer.value?.focus();
+    composer.value?.setSelectionRange(at + 1, at + 1);
+  });
 }
 
 const mentionMembers = computed<GroupMentionMember[]>(() => {
@@ -340,10 +275,9 @@ const mentionMembers = computed<GroupMentionMember[]>(() => {
     }));
 });
 
-const singleMemberId = computed(() => {
-  if (selection.value?.mode !== "members" || selectedIds.value.length !== 1) return null;
-  return selectedIds.value[0] ?? null;
-});
+const singleMemberId = computed(() => (mentionBindings.value.length === 1
+  ? mentionBindings.value[0]!.botId
+  : null));
 
 function commandsFor(botId: string) {
   const instanceId = props.instanceId ?? groupsStore.instanceId;
@@ -353,14 +287,40 @@ function commandsFor(botId: string) {
   return commandStore.commandsFor({ instanceId, conversationId, topicId, botId });
 }
 
-const slash = computed(() => slashQuery(promptText.value));
+/** A slash command may follow leading mentions: `@Tester /compact`. The
+ *  mention selects the Bot whose commands are offered; without a mention the
+ *  Group's lead is the implicit target (the same rule a plain message uses). */
+const LEADING_MENTIONS = /^(?:@(?:"[^"]*"|[^\s@,;:!?.，。：；！？]+)\s+)+/;
+
+const slashPrefixLength = computed(() => LEADING_MENTIONS.exec(promptText.value)?.[0].length ?? 0);
+
+const slash = computed(() => {
+  const text = promptText.value;
+  const prefix = slashPrefixLength.value;
+  const query = slashQuery(text.slice(prefix));
+  if (!query) return null;
+  return {
+    query: query.query,
+    range: {
+      start: query.range.start + prefix,
+      end: query.range.end + prefix,
+    },
+  };
+});
+
+/** The Bot whose command catalog backs completion and the send. One mentioned
+ *  member wins; otherwise the lead is the Group's default target. */
+const slashTargetBotId = computed(() => singleMemberId.value ?? groupsStore.currentGroup?.leadBotId ?? null);
+
 const slashMatches = computed(() => {
   const query = slash.value;
-  const botId = singleMemberId.value;
+  const botId = slashTargetBotId.value;
   if (!query || !botId || cmdDismissed.value) return [];
   return commandsFor(botId).filter((command) => command.name.toLowerCase().startsWith(query.query)).slice(0, 8);
 });
-const slashHint = computed(() => Boolean(slash.value) && !singleMemberId.value && !cmdDismissed.value);
+/** The command menu cannot offer rows without a target Bot (a Group with no
+ *  lead and no selected member). The hint explains why, exactly as before. */
+const slashHint = computed(() => Boolean(slash.value) && !slashTargetBotId.value && !cmdDismissed.value);
 const caret = ref(0);
 const mentionQuery = computed(() => groupMentionQuery(promptText.value, caret.value));
 const mentionMatches = computed(() => {
@@ -371,7 +331,7 @@ const mentionMatches = computed(() => {
 /** The completion menu (slash hint, slash rows or mention rows) is showing. */
 const cmdMenuOpen = computed(() => slashHint.value || slashMatches.value.length > 0 || mentionMatches.value.length > 0);
 
-watch(singleMemberId, () => {
+watch([singleMemberId, () => groupsStore.currentGroup?.leadBotId], () => {
   cmdDismissed.value = false;
   cmdActiveIdx.value = 0;
 });
@@ -476,15 +436,6 @@ function pickSlash(name: string): void {
   });
 }
 
-function slashBroadcastBlocked(text: string): boolean {
-  if (singleMemberId.value) return false;
-  if (slashQuery(text)) return true;
-  const token = text.trim().split(/\s+/, 1)[0] ?? "";
-  if (!token.startsWith("/") || token.length < 2 || text.includes("\n")) return false;
-  const name = token.slice(1).toLowerCase();
-  return props.bots.some((bot) => commandsFor(bot.id).some((command) => command.name.toLowerCase() === name));
-}
-
 function onKeydown(e: KeyboardEvent): void {
   const mentionOpen = mentionMatches.value.length > 0;
   const slashOpen = !mentionOpen && slashMatches.value.length > 0;
@@ -537,8 +488,8 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 /** Target-independent send guards. Checked first so the boundary mention can be
- *  committed before the target is re-evaluated — a mention is what makes an empty
- *  target valid for this very send. */
+ *  committed before the target is derived — a mention is what selects members
+ *  for this very send. */
 const baseCanSend = computed(() => !props.disabled
   && !groupsStore.promptInFlight
   && !groupsStore.cancellingRunId
@@ -549,20 +500,50 @@ const baseCanSend = computed(() => !props.disabled
   && !groupsStore.hasUncertainPrompt);
 
 /** Final send guard: evaluated after any pending mention has been committed.
- *  Staged attachments make an empty text sendable. */
+ *  Staged attachments make an empty text sendable. There is no target guard:
+ *  a plain message is the implicit lead, which the server resolves. */
 const canSend = computed(() => baseCanSend.value
-  && groupsStore.targetResolvable
   && !sendBusy.value
   && (promptText.value.trim().length > 0 || readyMedia.value));
 
-async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnresolved = false): Promise<void> {
-  if (sendBusy.value || !baseCanSend.value) {
-    // Refuse before touching the draft: the store reports why (targetRequired /
-    // targetEmpty), and clearing the textarea would throw the typed message away
-    // with no recoverable request id and no Retry content.
-    groupsStore.reportTargetProblem();
-    return;
+/** 讨论 is a send variant, so it needs the same draft and the speaker floor. */
+const canDiscuss = computed(() => canSend.value && discussionReady.value);
+
+/** True when the draft carries a slash command after any leading mentions.
+ *  Commands are per-Bot, so such a send must never broadcast: it goes to the
+ *  mentioned member, else the lead. */
+function hasSlashCommand(text: string): boolean {
+  const prefix = LEADING_MENTIONS.exec(text)?.[0] ?? "";
+  const token = text.slice(prefix.length).trim().split(/\s+/, 1)[0] ?? "";
+  return token.startsWith("/") && token.length > 1;
+}
+
+/** The structured target for this send.
+ *
+ *  - no mention: `null` — the backend resolves the Group's live lead inside its
+ *    accept gates (design §8.3);
+ *  - `@Name` mentions: exactly those members, in parallel;
+ *  - `@everyone`: everyone, still parallel (never silently a roundtable);
+ *  - 讨论: a one-round roundtable over the selected members or all enabled. */
+function sendTarget(discuss: boolean): ConversationTargetDto | null {
+  if (discuss) {
+    return { mode: "roundtable", botIds: discussionSpeakers.value, rounds: 1 };
   }
+  // A slash command is per-Bot: never broadcast it. It targets the mentioned
+  // member, else the lead, exactly like the completion catalog above.
+  if (hasSlashCommand(promptText.value)) {
+    const botId = slashTargetBotId.value;
+    return botId ? { mode: "members", botIds: [botId] } : null;
+  }
+  if (isEveryone.value) return { mode: "everyone" };
+  const bindings = mentionBindings.value;
+  if (bindings.length > 0) return { mode: "members", botIds: bindings.map((binding) => binding.botId) };
+  return null;
+}
+
+async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnresolved = false, discuss = false): Promise<void> {
+  if (sendBusy.value || !baseCanSend.value) return;
+  if (discuss && !discussionReady.value) return;
   if (confirmedEveryone && (confirmedEveryone.key !== draftKey.value
     || confirmedEveryone.text !== promptText.value || confirmedEveryone.revision !== draftRevision.value
     || !isEveryone.value)) { everyoneConfirm.value = null; return; }
@@ -570,28 +551,15 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
   const staged = attachments.snapshot(attachKey.value);
   if (!text && staged.media.length === 0) return;
   if (attachments.uploading) return;
-  if (slashBroadcastBlocked(text)) {
-    groupsStore.promptError = "slashSelectMember";
-    groupsStore.promptErrorDetail = null;
-    return;
-  }
   // The token under the caret is now final, so the structured target must
-  // reflect it before the store resolves the send target.
+  // reflect it before the target is derived.
   const resolved = commitMentionAtBoundary();
   confirmedUnresolved ||= confirmedEveryone?.unresolvedConfirmed === true;
   if (!resolved && !confirmedUnresolved) {
     unresolvedConfirm.value = { key: draftKey.value, text: promptText.value, target: JSON.stringify(selection.value) };
     return;
   }
-  // Re-check after the boundary commit: the mention is what makes an empty
-  // target valid for this very send, and entering text with no resolvable
-  // target (e.g. deselected all members and typed nothing mentionable) must
-  // surface the translated banner — not a send the local store refuses.
-  if (!groupsStore.targetResolvable) {
-    groupsStore.reportTargetProblem();
-    return;
-  }
-  if (isEveryone.value) {
+  if (!discuss && isEveryone.value && !hasSlashCommand(text)) {
     const recipientIds = everyoneRecipients.value.map(member => member.id);
     if (!recipientIds.length) { groupsStore.promptError = "targetEmpty"; return; }
     const snapshot = { key: draftKey.value, revision: draftRevision.value, recipientIds, text: promptText.value, unresolvedConfirmed: confirmedUnresolved };
@@ -599,10 +567,10 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
       everyoneConfirm.value = snapshot;
       return;
     }
-    groupsStore.setTarget({ mode: "members", botIds: recipientIds });
   }
   everyoneConfirm.value = null;
   unresolvedConfirm.value = null;
+  const target = sendTarget(discuss);
   sendBusy.value = true;
   // The parent resolves the send against the store and reports the outcome, so
   // the draft decision uses the real result: an accepted prompt is in the
@@ -610,7 +578,7 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
   // refusal has neither and must leave the typed text in place.
   const sent = { key: draftKey.value, text: promptText.value };
   inFlightDraft = sent;
-  emit("send", text, staged.media);
+  emit("send", text, staged.media, target);
   if (props.sendOutcome) {
     // Textbook semantics: after a send the text no longer carries a mention, so
     // the derived state must reset or the next draft would inherit suppression.
@@ -639,10 +607,9 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
   clearSentDraft();
 }
 
-async function handleCancel(): Promise<void> {
-  const run = groupsStore.activeRun;
-  if (!run || groupsStore.cancellingRunId) return;
-  await groupsStore.stopCurrentAndQueued();
+/** 讨论: send the same draft as a one-round discussion. */
+function handleDiscuss(): void {
+  void handleSend(undefined, false, true);
 }
 
 async function onPaste(e: ClipboardEvent): Promise<void> {
@@ -712,75 +679,8 @@ function handleRetry(): void {
     </ComposerConfirmDialog>
     <ComposerConfirmDialog v-if="unresolvedConfirm" :title="$t('group.mentionConfirm.title')" :confirm-label="$t('group.confirmEveryone.send')" @cancel="unresolvedConfirm = null" @confirm="confirmUnresolved">
       <p>{{ $t('group.mentionConfirm.body') }}</p>
-      <p class="mt-2 text-xs text-fg-muted">{{ selectionLabel }}</p>
+      <p class="mt-2 text-xs text-fg-muted">{{ everyoneRecipients.map(member => member.name).join(", ") }}</p>
     </ComposerConfirmDialog>
-    <div v-if="!needsFirstTopic" class="mx-auto w-full max-w-3xl mb-2 flex items-center gap-2">
-      <div class="relative">
-        <button
-          type="button"
-          :ref="(el) => (targetDd.trigger = el as HTMLElement | null)"
-          data-test="group-target-button"
-          :disabled="disabled || groupsStore.hasUncertainPrompt"
-          :aria-haspopup="true"
-          :aria-expanded="targetDd.open"
-          class="flex items-center gap-1.5 rounded-sm px-1 text-xs font-medium transition-colors disabled:opacity-50"
-          :class="targetDd.open ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
-          @click="toggleMenu"
-        >
-          <Users :size="13" class="text-accent" />
-          <span class="max-w-[180px] truncate">{{ selectionLabel }}</span>
-          <ChevronDown :size="12" class="text-fg-muted transition-transform" :class="targetDd.open ? 'rotate-180' : ''" />
-        </button>
-        <!-- One panel (unified §F): rows render in a slot (avatars + disabled notes);
-             composer panels open upward. -->
-        <DropdownPanel :dd="targetDd" width="w-64" placement="top"
-                       :title='$t("group.target.sendTo")' test-id="group-target-menu"
-                       :nav-count="navCount" @navigate="onNavSelect">
-          <template #default="{ mobile }">
-            <button type="button" data-test="group-target-lead"
-                    class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-                    :class="[mobile ? 'h-11' : 'h-8', 'text-fg']"
-                    @click="pickLead">
-              <AtSign :size="14" class="shrink-0 text-fg-muted" />
-              <span class="flex-1 truncate font-medium">{{ $t("group.target.lead") }}</span>
-            </button>
-            <button v-if="automaticVisible" type="button" data-test="group-target-automatic"
-                    class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-                    :class="[mobile ? 'h-11' : 'h-8', 'text-fg']"
-                    @click="pickAutomatic">
-              <Bot :size="14" class="shrink-0 text-fg-muted" />
-              <span class="min-w-0 flex-1 truncate font-medium">{{ $t("group.target.automatic") }}</span>
-              <Check v-if="isAutomatic" :size="14" class="shrink-0 text-accent" />
-            </button>
-            <button type="button" data-test="group-target-everyone"
-                    class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-                    :class="[mobile ? 'h-11' : 'h-8', 'text-fg']"
-                    @click="pickEveryone">
-              <Users :size="14" class="shrink-0 text-fg-muted" />
-              <span class="flex-1 truncate font-medium">{{ $t("group.target.everyone") }}</span>
-              <Check v-if="isEveryone" :size="14" class="shrink-0 text-accent" />
-            </button>
-            <p class="px-2 pb-1 pt-2 text-xs text-fg-muted">{{ $t("group.target.selectMembers") }}</p>
-            <button v-for="b in pickableBots" :key="b.id"
-                    :data-test="`group-target-member-${b.id}`"
-                    :aria-disabled="!!memberUnavailableReason(b)"
-                    :title="memberUnavailableReason(b) ?? undefined"
-                    class="flex w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-                    :class="[mobile ? 'h-11' : 'h-8', !b.enabled ? 'cursor-not-allowed text-fg-muted/50' : 'text-fg']"
-                    @click="toggleMember(b.id)">
-              <BotAvatar :avatar="b.avatar" :driver="driverFor(b)" :name="b.name" :size="24" static
-                         :disabled="!b.enabled" :retired="b.retired" :class="!b.enabled ? 'opacity-50' : ''" />
-              <span class="min-w-0 flex-1 truncate" :class="!b.enabled ? 'text-fg-muted' : 'text-fg'">{{ b.name }}</span>
-              <span v-if="memberUnavailableReason(b)" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(b) }}</span>
-              <Check v-else-if="selectedIds.includes(b.id)" :size="14" class="shrink-0 text-accent" />
-            </button>
-            <p v-if="eligibleBots.length === 0" class="px-2 py-2 text-sm text-fg-muted">
-              {{ $t("group.target.noEligible") }}
-            </p>
-          </template>
-        </DropdownPanel>
-      </div>
-    </div>
 
     <ConversationComposer
       ref="composer"
@@ -792,12 +692,12 @@ function handleRetry(): void {
       :send-disabled="!canSend"
       :has-attachments="readyMedia"
       :attachments-send-disabled="attachments.uploading"
-      :placeholder="needsFirstTopic ? $t('group.prompt.createTopicFirst') : isNarrow ? $t('group.prompt.placeholderShort') : $t('group.prompt.placeholder')"
+      :placeholder="composerPlaceholder"
+      :hide-stop="hideStop"
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
       stop-test-id="group-stop-run-button"
       @send="handleSend()"
-      @cancel="handleCancel"
       @keydown="onKeydown"
       @input="onInput"
       @paste="onPaste"
@@ -807,6 +707,37 @@ function handleRetry(): void {
       @compositionend="onCompositionEnd"
       @blur="onComposerBlur"
     >
+      <!-- One-line chips: @ selects members for this send (parallel), 讨论 turns
+           the same draft into a sequential one-round discussion. The chip is
+           absent when the daemon does not advertise roundtable v1. -->
+      <template #chips>
+        <button
+          type="button"
+          data-test="group-mention-chip"
+          :title="$t('conversation.composer.mention')"
+          :aria-label="$t('conversation.composer.mention')"
+          :disabled="disabled || groupsStore.hasUncertainPrompt"
+          class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+          @click="startMention"
+        >
+          <AtSign :size="13" />
+          <span>@</span>
+        </button>
+        <button
+          v-if="roundtableSupported"
+          type="button"
+          data-test="group-discuss-chip"
+          :title="discussionReady ? $t('conversation.composer.discussHint') : $t('conversation.composer.discussNeedsSpeakers')"
+          :aria-label="$t('conversation.composer.discuss')"
+          :disabled="!canDiscuss"
+          class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors"
+          :class="canDiscuss ? 'text-accent-text hover:bg-accent/10' : 'cursor-not-allowed text-fg-muted/60'"
+          @click="handleDiscuss"
+        >
+          <MessagesSquare :size="13" />
+          <span>{{ $t("conversation.composer.discuss") }}</span>
+        </button>
+      </template>
       <template #attachments>
         <ComposerAttachments
           v-if="props.instanceId ?? groupsStore.instanceId"

@@ -46,8 +46,11 @@ const props = withDefaults(
     /** A layer the card owns (dropdown, sheet, popover) is open: the fold must
      *  never hide it, including when a pane opens it from outside the card. */
     pinExpanded?: boolean;
+    /** The pane renders Stop elsewhere (the status bar's Stop all), so the card
+     *  only offers Send and never a second, competing stop control. */
+    hideStop?: boolean;
   }>(),
-  { busy: false, disabled: false, sending: false, cancelling: false, pinExpanded: false },
+  { busy: false, disabled: false, sending: false, cancelling: false, pinExpanded: false, hideStop: false },
 );
 
 const emit = defineEmits<{
@@ -91,7 +94,8 @@ const sendBlocked = computed(
  *  Send spinner, so `sending` is deliberately not a Stop condition. The card
  *  stays expanded for the whole run so the button has somewhere to sit. */
 const showStop = computed(
-  () => props.busy && !props.sending && (props.cancelling || !hasSendable.value || sendBlocked.value),
+  () => !props.hideStop && props.busy && !props.sending
+    && (props.cancelling || !hasSendable.value || sendBlocked.value),
 );
 
 function reportCaret(): void {
@@ -224,6 +228,18 @@ function onInput(event: Event): void {
            fold). Padding is not animated and the textarea keeps a constant pr-12,
            so applyHeight always measures a settled box. -->
       <div class="relative">
+        <!-- One-line chip row (@, Discuss) that belongs to the input surface
+             itself, above the textarea. Hidden while the card rests on mobile so
+             the pill stays one line; a press inside the card keeps it mounted
+             through the blur (see `engaged`). -->
+        <div
+          v-if="slots.chips"
+          v-show="expanded"
+          data-test="composer-chips"
+          class="flex min-w-0 items-center gap-1 px-2.5 pt-2"
+        >
+          <slot name="chips" />
+        </div>
         <slot name="menus" />
         <!-- Staged-image previews and the picker entry fold with the composer:
              staging anything flips hasAttachments -> expanded, so previews are

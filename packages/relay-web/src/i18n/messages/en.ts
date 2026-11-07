@@ -28,6 +28,52 @@ export default {
     online: "Connected",
     reconnecting: "Reconnecting…",
   },
+  // The one conversation shell (design §8): timeline, status bar, round strip,
+  // and the composer chips. Shared by Direct Bot and Group.
+  conversation: {
+    timeline: {
+      openDetail: "Process for {name}",
+      unresolved: "This reply could not be linked to one member turn, so it has no process.",
+      empty: "No messages yet. Say something to start.",
+    },
+    handoff: {
+      open: "Open the process for {name}",
+    },
+    activity: {
+      working: "Working…",
+      speaking: "Speaking…",
+      failed: "Failed",
+      cancelled: "Stopped",
+    },
+    notice: {
+      queued: "Queued",
+      empty: "No member added to this discussion.",
+      failed: "Run failed",
+    },
+    round: {
+      label: "Round {index}",
+      labelOf: "Round {index}/{rounds}",
+      spoken: "{spoken}/{total} spoken",
+      passed: "{count} passed",
+    },
+    status: {
+      speaking: "{name} is speaking",
+      queued: "Queued",
+      working: "Running",
+      waiting: "Needs you",
+      active: "{count} active",
+      stopAll: "Stop all",
+      openDetail: "Open the process for this run",
+    },
+    composer: {
+      mention: "Mention a member",
+      discuss: "Discuss",
+      discussHint: "Let the members speak one after another",
+      discussNeedsSpeakers: "Discussion needs at least 2 enabled members",
+      placeholder: "Message {name}",
+      placeholderLead: "Message the lead",
+    },
+  },
   nav: {
     toLight: "Switch to light",
     toDark: "Switch to dark",

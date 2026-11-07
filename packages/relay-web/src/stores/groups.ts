@@ -985,7 +985,9 @@ export const useGroupsStore = defineStore("groups", () => {
   interface UncertainPrompt {
     requestId: string;
     text: string;
-    target: ConversationTargetDto;
+    /** Null means "no explicit target": the server resolves the Group lead.
+     *  The frozen tuple replays that exact request shape. */
+    target: ConversationTargetDto | null;
     media: PromptAttachmentRef[];
   }
   const uncertainPrompt = ref<UncertainPrompt | null>(null);
@@ -2443,7 +2445,7 @@ export const useGroupsStore = defineStore("groups", () => {
   /** requestId for a fresh send. An existing uncertain tuple keeps its identity
    *  only when the text AND target still match it; any divergence means this is
    *  a genuinely new request and must get a new durable identity. */
-  function preparePromptRequestId(text: string, target: ConversationTargetDto, media: PromptAttachmentRef[] = []): string {
+  function preparePromptRequestId(text: string, target: ConversationTargetDto | null, media: PromptAttachmentRef[] = []): string {
     const prior = uncertainPrompt.value;
     if (prior && prior.text === text && JSON.stringify(prior.target) === JSON.stringify(target)
       && JSON.stringify(prior.media) === JSON.stringify(media)) {
@@ -2463,7 +2465,7 @@ export const useGroupsStore = defineStore("groups", () => {
   async function retryUncertainPrompt(): Promise<void> {
     const prior = uncertainPrompt.value;
     if (!prior) return;
-    await sendPrompt(prior.text, prior.target, prior.media);
+    await sendPromptTo(prior.text, prior.target, prior.media);
   }
 
   /** Resolve an uncertain prompt against a canonically observed Run. Durable
@@ -2530,6 +2532,34 @@ export const useGroupsStore = defineStore("groups", () => {
     return await outcome;
   }
 
+  /** Send with an explicit wire target, or `null` for the implicit lead.
+   *
+   *  The one Composer uses this: a plain Group message carries NO target (the
+   *  server resolves the Group's live lead inside its accept gates), an `@`
+   *  selection carries the selected members, and 讨论 carries a roundtable
+   *  target. Unlike `sendPrompt` it never reads the stored target selection, so
+   *  the UI can stop maintaining a default selection at all.
+   *
+   *  The frozen-tuple path ranks above the live guards for the same reason as
+   *  the replay branch in `sendPrompt`: a request that may already be durable
+   *  must remain reachable after reconnection. */
+  async function sendPromptTo(
+    text: string,
+    target: ConversationTargetDto | null,
+    media: PromptAttachmentRef[] = [],
+  ): Promise<GroupSendOutcome> {
+    if (promptInFlight.value) return "rejected";
+    const trimmed = text.trim();
+    if ((!trimmed && media.length === 0) || !instanceId.value || !selectedGroupId.value
+      || !activeConversationId.value || !activeTopicId.value) {
+      return "rejected";
+    }
+    const reqId = preparePromptRequestId(trimmed, target, media);
+    const outcome = runPromptSend(trimmed, target, reqId, media);
+    inFlightSend.value = outcome;
+    return await outcome;
+  }
+
   async function sendPromptInner(text: string, forcedTarget?: ConversationTargetDto, media: PromptAttachmentRef[] = []): Promise<GroupSendOutcome> {
     const trimmed = text.trim();
     if ((!trimmed && media.length === 0) || !instanceId.value || !selectedGroupId.value || !activeConversationId.value || !activeTopicId.value) {
@@ -2580,7 +2610,7 @@ export const useGroupsStore = defineStore("groups", () => {
    *  separate so a frozen-tuple retry shares exactly one code path. */
   async function runPromptSend(
     runText: string,
-    target: ConversationTargetDto,
+    target: ConversationTargetDto | null,
     reqId: string,
     media: PromptAttachmentRef[] = [],
   ): Promise<GroupSendOutcome> {
@@ -2613,7 +2643,7 @@ export const useGroupsStore = defineStore("groups", () => {
           topicId: targetTopicId,
           requestId: reqId,
           text: runText,
-          target,
+          ...(target ? { target } : {}),
           ...(frozenMedia.length ? { media: frozenMedia } : {}),
         }),
       );
@@ -3782,6 +3812,7 @@ export const useGroupsStore = defineStore("groups", () => {
     clearSelection,
     preparePromptRequestId,
     sendPrompt,
+    sendPromptTo,
     retryUncertainPrompt,
     cancelCurrentRun,
     stopCurrentAndQueued,

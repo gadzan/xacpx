@@ -2,11 +2,25 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArrowLeft, MessageSquare, MoreHorizontal, Pencil, Plus, Users, X } from "lucide-vue-next";
-import type { BotSummaryDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import type {
+  BotSummaryDto,
+  ConversationRunDto,
+  ConversationTargetDto,
+  MemberTurnSummaryDto,
+  PromptAttachmentRef,
+} from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
-import { supportsGroupTopicIsolation, useInstancesStore } from "../stores/instances";
+import {
+  supportsConversationTimelineV1,
+  supportsGroupTopicIsolation,
+  supportsRoundtableV1,
+  useInstancesStore,
+} from "../stores/instances";
 import GroupTranscript from "./GroupTranscript.vue";
+import ConversationTimeline from "./ConversationTimeline.vue";
+import ConversationStatusBar from "./ConversationStatusBar.vue";
+import TraceOverlay from "./TraceOverlay.vue";
 import GroupComposer from "./GroupComposer.vue";
 import GroupTopicDialog from "./GroupTopicDialog.vue";
 import GroupDialog from "./GroupDialog.vue";
@@ -21,6 +35,14 @@ import { useIsMobile } from "../lib/use-dropdown";
 import { backInFlight } from "../lib/mobile-back";
 import { presentGroupWorkingMembers } from "../lib/group-members";
 import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
+import { useConversationTimelineFeed } from "../lib/use-timeline-feed";
+import {
+  activeSpeakerTurnId,
+  type RoomView,
+  type TimelineLiveTurn,
+} from "../lib/room-view";
+import { textBubblesOf } from "../lib/turn-presentation";
+import { mergeLiveTraceParts, traceEventsToParts } from "../lib/group-run-presentation";
 
 const emit = defineEmits<{
   /** Mobile top bar's ←: back to the home list (DashboardView clears the selection). */
@@ -175,14 +197,186 @@ function sendPromptOutcome(): Promise<GroupSendOutcome> {
   return groupsStore.sendPromptOutcomePromise;
 }
 
-function handleSend(text: string, media: PromptAttachmentRef[] = []): void {
-  void groupsStore.sendPrompt(text, undefined, media);
+/** `target === null` is the implicit lead: the server resolves it. */
+function handleSend(
+  text: string,
+  media: PromptAttachmentRef[] = [],
+  target: ConversationTargetDto | null = null,
+): void {
+  void groupsStore.sendPromptTo(text, target, media);
 }
 
-function handleCancel(): void {
+function handleStopAll(): void {
   void groupsStore.stopCurrentAndQueued();
 }
 
+function driverForBot(bot: BotSummaryDto): string | undefined {
+  const instId = groupsStore.instanceId;
+  if (!instId) return undefined;
+  return instancesStore.byId(instId)?.agents.find((agent) => agent.name === bot.agent)?.driver;
+}
+
+const instance = computed(() =>
+  groupsStore.instanceId ? instancesStore.byId(groupsStore.instanceId) : undefined);
+const timelineEnabled = computed(() => supportsConversationTimelineV1(instance.value));
+
+/** One Room for the timeline, status bar and (in P1c) the drawer. Direct is the
+ *  single-participant case of the same shape. */
+const roomView = computed<RoomView>(() => ({
+  kind: "group",
+  instanceId: groupsStore.instanceId ?? null,
+  conversationId: groupsStore.activeConversationId ?? null,
+  topicId: groupsStore.activeTopicId ?? null,
+  participants: memberBots.value.map((bot) => ({
+    botId: bot.id,
+    name: bot.name,
+    ...(bot.role ? { role: bot.role } : {}),
+    ...(driverForBot(bot) ? { driver: driverForBot(bot) } : {}),
+    ...(bot.avatar ? { avatar: bot.avatar } : {}),
+    enabled: bot.enabled,
+    ...(bot.retired ? { retired: true } : {}),
+    ...(group.value?.leadBotId === bot.id ? { lead: true } : {}),
+  })),
+  ...(group.value?.leadBotId ? { leadBotId: group.value.leadBotId } : {}),
+  run: groupsStore.activeRun,
+  capability: {
+    timelineV1: timelineEnabled.value,
+    roundtableV1: supportsRoundtableV1(instance.value),
+  },
+}));
+
+/** Live text keyed by MemberTurn: coalesced streamed prose only. The durable
+ *  message removes the overlay (the timeline dedupes by memberTurnId). */
+const liveOverlay = computed<TimelineLiveTurn[]>(() =>
+  Object.entries(groupsStore.liveTurnsByMember).map(([memberTurnId, live]) => {
+    const member = groupsStore.memberTurns.find((turn) => turn.id === memberTurnId);
+    return {
+      memberTurnId,
+      ...(member?.botId ? { botId: member.botId } : {}),
+      text: textBubblesOf(live.parts).join("\n\n"),
+      status: live.status === "streaming" ? "streaming" : "working",
+      revision: live.revision,
+    } satisfies TimelineLiveTurn;
+  }));
+
+/** Any store change that can move a durable row (message, Run, member turn,
+ *  history detail) refreshes the newest timeline page. */
+const timelineReloadKey = computed(() => [
+  groupsStore.messages.length,
+  groupsStore.newestSeq ?? 0,
+  groupsStore.activeRun?.id ?? "",
+  groupsStore.activeRun?.state ?? "",
+  groupsStore.memberTurns.length,
+  groupsStore.runHistoryDetailRevision,
+].join(":"));
+
+const timelineFeed = useConversationTimelineFeed({
+  instanceId: computed(() => groupsStore.instanceId),
+  conversationId: computed(() => groupsStore.activeConversationId),
+  topicId: computed(() => groupsStore.activeTopicId),
+  enabled: timelineEnabled,
+  reloadKey: timelineReloadKey,
+});
+
+const activeSpeakerName = computed(() => {
+  const id = activeSpeakerTurnId(timelineFeed.activeRound.value, groupsStore.memberTurns);
+  const turn = groupsStore.memberTurns.find((member) => member.id === id);
+  return turn ? memberBots.value.find((bot) => bot.id === turn.botId)?.name : undefined;
+});
+
+// --- Per-member detail drawer (P1c owns the run-wide drawer and the merge) ---
+const traceTarget = ref<{ run: ConversationRunDto; memberTurn: MemberTurnSummaryDto } | null>(null);
+const traceAttempt = ref<number | undefined>(undefined);
+const pendingDetail = ref<{ runId?: string; memberTurnId?: string } | null>(null);
+
+function findRun(runId: string | undefined): ConversationRunDto | undefined {
+  if (!runId) return groupsStore.activeRun ?? undefined;
+  if (groupsStore.activeRun?.id === runId) return groupsStore.activeRun;
+  return Object.values(groupsStore.runHistoryDetails).find((detail) => detail.id === runId);
+}
+
+function findMember(runId: string | undefined, memberTurnId: string | undefined): MemberTurnSummaryDto | undefined {
+  if (memberTurnId) {
+    const active = groupsStore.memberTurns.find((turn) => turn.id === memberTurnId);
+    if (active) return active;
+  }
+  for (const detail of Object.values(groupsStore.runHistoryDetails)) {
+    if (runId && detail.id !== runId) continue;
+    const hit = memberTurnId
+      ? detail.memberTurns.find((turn) => turn.id === memberTurnId)
+      : detail.memberTurns[detail.memberTurns.length - 1];
+    if (hit) return hit;
+  }
+  if (!runId || groupsStore.activeRun?.id === runId) {
+    return memberTurnId
+      ? groupsStore.memberTurns.find((turn) => turn.id === memberTurnId)
+      : groupsStore.memberTurns[groupsStore.memberTurns.length - 1];
+  }
+  return undefined;
+}
+
+function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }): void {
+  const run = findRun(payload.runId);
+  const member = findMember(payload.runId, payload.memberTurnId);
+  if (run && member) {
+    traceTarget.value = { run, memberTurn: member };
+    traceAttempt.value = member.attempt;
+    groupsStore.ensureTracePage(member.id, member.attempt);
+    return;
+  }
+  // The Run's durable detail is not cached yet: fetch it and retry once the
+  // read model lands (the trace drawer needs a real Run, never a guess).
+  if (payload.runId) {
+    pendingDetail.value = payload;
+    groupsStore.ensureRunDetails([payload.runId]);
+  }
+}
+
+watch(() => groupsStore.runHistoryDetailRevision, () => {
+  const pending = pendingDetail.value;
+  if (!pending) return;
+  pendingDetail.value = null;
+  openTimelineDetail(pending);
+});
+
+function closeTimelineDetail(): void {
+  traceTarget.value = null;
+  traceAttempt.value = undefined;
+}
+
+const tracePage = computed(() => {
+  const target = traceTarget.value;
+  const attempt = traceAttempt.value;
+  if (!target || attempt === undefined) return null;
+  const scope = [groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId].join(":");
+  return groupsStore.tracePages[`${scope}:${target.memberTurn.id}:${attempt}`] ?? null;
+});
+
+const traceParts = computed(() => {
+  const target = traceTarget.value;
+  if (!target) return undefined;
+  const replay = tracePage.value ? traceEventsToParts(tracePage.value.events).parts : undefined;
+  const live = traceAttempt.value === target.memberTurn.attempt
+    ? groupsStore.liveTurnForMember(target.memberTurn.id)?.parts
+    : undefined;
+  return mergeLiveTraceParts(replay, live);
+});
+
+
+/** Durable Run details for the Runs the timeline shows: the process drawer and
+ *  member names need them, and the legacy transcript loaded them the same way.
+ *  Bounded by the loaded page, so history stays one batch. */
+const timelineRunIds = computed<string[]>(() => {
+  const ids = new Set<string>();
+  for (const entry of timelineFeed.entries.value) {
+    if (entry.runId) ids.add(entry.runId);
+  }
+  return [...ids];
+});
+
+watch(timelineRunIds, (ids) => {
+  if (ids.length > 0) groupsStore.ensureRunDetails(ids);
+}, { immediate: true });
 // An archived Topic stays browsable (its transcript is durable history), but it
 // cannot accept new Runs — sending there is a guaranteed `topic_not_active`.
 const isActiveTopic = computed(() => groupsStore.currentTopic?.status === "active");
@@ -292,9 +486,9 @@ const worktreeRunId = computed(() => {
       </button>
     </header>
 
-    <!-- "Who is working": the members that currently hold a turn. Renders
-         nothing while the Group is idle. -->
-    <GroupWorkingRow :members="workingMembers" />
+    <!-- "Who is working" is the legacy surface: the timeline path shows the same
+         fact in the status bar and per-row activity instead. -->
+    <GroupWorkingRow v-if="!timelineEnabled" :members="workingMembers" />
 
     <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>
@@ -330,18 +524,42 @@ const worktreeRunId = computed(() => {
         <span>{{ $t("group.firstTopic.action") }}</span>
       </button>
     </div>
-    <GroupTranscript v-else :bots="memberBots" :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds" />
+    <!-- One timeline for Group and Direct. An old daemon without
+         `conversations.timeline.v1` keeps the legacy transcript untouched. -->
+    <ConversationTimeline
+      v-if="timelineEnabled && !needsFirstTopic"
+      :room="roomView"
+      :timeline="timelineFeed.timeline.value"
+      :live-overlay="liveOverlay"
+      :loading="timelineFeed.loading.value"
+      :loading-older="timelineFeed.loadingOlder.value"
+      :error="timelineFeed.error.value"
+      :load-older="timelineFeed.loadOlder"
+      @open-detail="openTimelineDetail"
+    />
+    <GroupTranscript v-else-if="!timelineEnabled" :bots="memberBots" :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds" />
     <ConversationWorktreePanel v-if="groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
       :instance-id="groupsStore.instanceId" :run-id="worktreeRunId" />
 
+    <ConversationStatusBar
+      v-if="timelineEnabled && !needsFirstTopic"
+      :room="roomView"
+      :run="groupsStore.activeRun"
+      :member-turns="groupsStore.memberTurns"
+      :round="timelineFeed.activeRound.value"
+      :active-speaker-name="activeSpeakerName"
+      :stopping="!!groupsStore.cancellingRunId"
+      @stop-all="handleStopAll"
+      @open-detail="openTimelineDetail"
+    />
     <GroupComposer
       :bots="memberBots"
       :disabled="!groupsStore.activeTopicId || !groupsStore.topicReady || !isActiveTopic"
       :needs-first-topic="needsFirstTopic"
       :instance-id="groupsStore.instanceId"
       :send-outcome="sendPromptOutcome"
+      :hide-stop="timelineEnabled"
       @send="handleSend"
-      @cancel="handleCancel"
     />
     <div v-if="groupsStore.historyError && groupsStore.activeTopicId"
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
@@ -381,5 +599,29 @@ const worktreeRunId = computed(() => {
         <span>{{ $t("group.manage.editTitle") }}</span>
       </button>
     </MobileSheet>
+
+    <!-- Per-member process drawer: the same TraceOverlay the legacy transcript
+         mounts. P1c owns the run-wide drawer and the legacy deletion. -->
+    <TraceOverlay
+      v-if="traceTarget"
+      id="group-timeline-trace-overlay"
+      :run="traceTarget.run"
+      :member-turn="traceTarget.memberTurn"
+      :member-name="memberBots.find((bot) => bot.id === traceTarget?.memberTurn.botId)?.name"
+      :topic-title="groupsStore.currentTopic?.title"
+      :attempt="traceAttempt"
+      :parts="traceParts"
+      :recording-state="tracePage?.recordingState"
+      :plan="tracePage?.plan"
+      :trace-loading="tracePage?.loading"
+      :trace-error="tracePage?.error"
+      :trace-has-more="tracePage?.hasMore"
+      :trace-has-earlier="tracePage?.hasEarlier"
+      :trace-streaming="!tracePage?.events.length && !!groupsStore.liveTurnForMember(traceTarget.memberTurn.id)"
+      @close="closeTimelineDetail"
+      @load-more="traceTarget && groupsStore.ensureTracePage(traceTarget.memberTurn.id, traceAttempt ?? traceTarget.memberTurn.attempt)"
+      @load-earlier="traceTarget && groupsStore.ensureTracePage(traceTarget.memberTurn.id, traceAttempt ?? traceTarget.memberTurn.attempt, 0)"
+      @retry-trace="traceTarget && groupsStore.ensureTracePage(traceTarget.memberTurn.id, traceAttempt ?? traceTarget.memberTurn.attempt)"
+    />
   </div>
 </template>
