@@ -1,5 +1,10 @@
 import { copyBotAvatar, type BotAvatarConfig } from "@ganglion/xacpx-relay-protocol";
-import type { AttachmentMetadata, ConversationRunHistoryDetailDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import type {
+  AttachmentMetadata,
+  ConversationRunHistoryDetailDto,
+  ConversationTimelineDto,
+  PromptAttachmentRef,
+} from "@ganglion/xacpx-relay-protocol";
 import type { DedicatedWorkspaceCleanupOutcome } from "../bots/dedicated-workspace-cleanup";
 import type { BotProfile, BotProfileSnapshot } from "../bots/bot-types";
 import type {
@@ -9,6 +14,7 @@ import type {
   ConversationTopic,
   MemberTurnRecord,
 } from "../conversations/conversation-types";
+import type { ConversationTimeline } from "../conversations/conversation-timeline";
 
 /** Exact join from a live turn event onto ConversationRun / MemberTurn. */
 export interface ConversationTurnCorrelation {
@@ -251,6 +257,8 @@ export interface ConversationMessageDto {
   content: string;
   replyTo?: string;
   runId?: string;
+  /** Durable physical execution that produced this message (design §5.4). */
+  memberTurnId?: string;
   createdAt: string;
   /** Join onto live turn-started.promptRequestId when this message came from a MemberTurn. */
   promptRequestId?: string;
@@ -469,6 +477,18 @@ export interface ConversationHistoryResponseDto {
   hasMoreAfter: boolean;
 }
 
+/** Cursor shape matches `conversationHistory`: `direction` is initial-page-only
+ *  and never combines with a seq cursor. Non-terminal Runs are returned
+ *  regardless of the window. */
+export interface ConversationTimelineRequestDto {
+  conversationId: string;
+  topicId: string;
+  afterSeq?: number;
+  beforeSeq?: number;
+  limit?: number;
+  direction?: "oldest-first" | "newest-first";
+}
+
 function dedicatedWorkspaceDto(marker: BotProfile["dedicatedWorkspace"]) {
   return marker === undefined ? undefined : { name: marker.name, path: marker.cwd };
 }
@@ -582,6 +602,7 @@ export function toConversationMessage(message: ConversationMessage): Conversatio
     ...(message.senderBotId ? { senderBotId: message.senderBotId } : {}),
     ...(message.replyTo ? { replyTo: message.replyTo } : {}),
     ...(message.runId ? { runId: message.runId } : {}),
+    ...(message.memberTurnId ? { memberTurnId: message.memberTurnId } : {}),
     ...(message.sourceTurn?.turnId ? { promptRequestId: message.sourceTurn.turnId } : {}),
     ...(message.media && message.media.length > 0 ? { attachments: message.media.map(toAttachmentMetadata) } : {}),
   };
@@ -687,6 +708,55 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
   };
 }
 
+/**
+ * Wire projection of the pure Conversation timeline. Only the domain rows are
+ * mapped here; ordering, ownership and counts are already decided by
+ * `projectConversationTimeline`, so the wire and the projection cannot drift.
+ */
+export function toConversationTimelineDto(timeline: ConversationTimeline): ConversationTimelineDto {
+  return {
+    conversationId: timeline.conversationId,
+    topicId: timeline.topicId,
+    entries: timeline.entries.map((entry) => {
+      switch (entry.kind) {
+        case "message":
+          return {
+            kind: "message" as const,
+            key: entry.key,
+            anchorSeq: entry.anchorSeq,
+            message: toConversationMessage(entry.message),
+            ...(entry.memberTurnId !== undefined ? { memberTurnId: entry.memberTurnId } : {}),
+            ...(entry.runId !== undefined ? { runId: entry.runId } : {}),
+            ...(entry.ownership !== undefined ? { ownership: entry.ownership } : {}),
+          };
+        case "activity":
+          return {
+            kind: "activity" as const,
+            key: entry.key,
+            anchorSeq: entry.anchorSeq,
+            runId: entry.runId,
+            memberTurn: toMemberTurnSummary(entry.memberTurn),
+            ...(entry.live ? { live: true as const } : {}),
+          };
+        case "notice":
+          return {
+            kind: "notice" as const,
+            key: entry.key,
+            anchorSeq: entry.anchorSeq,
+            tone: entry.tone,
+            ...(entry.runId !== undefined ? { runId: entry.runId } : {}),
+            text: entry.text,
+          };
+      }
+    }),
+    ...(timeline.activeRound !== undefined ? { activeRound: { ...timeline.activeRound } } : {}),
+    ...(timeline.oldestSeq !== undefined ? { oldestSeq: timeline.oldestSeq } : {}),
+    ...(timeline.newestSeq !== undefined ? { newestSeq: timeline.newestSeq } : {}),
+    hasMoreBefore: timeline.hasMoreBefore,
+    hasMoreAfter: timeline.hasMoreAfter,
+  };
+}
+
 export function toRunDetail(run: ConversationRun, memberTurns: MemberTurnRecord[]): ConversationRunDetailDto {
   return {
     ...toConversationRun(run),
@@ -717,3 +787,14 @@ export function toLegacyRunHistoryDetail(detail: ConversationRunHistoryDetailDto
     }),
   };
 }
+
+/**
+ * The timeline read-model DTOs live in the shared wire package: the connector,
+ * the hub, and the Web all read one definition, so there is no second control
+ * mirror that could drift from the wire.
+ */
+export type {
+  ConversationRoundSummaryDto,
+  ConversationTimelineDto,
+  ConversationTimelineEntryDto,
+} from "@ganglion/xacpx-relay-protocol";

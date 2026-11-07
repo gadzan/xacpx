@@ -1,6 +1,6 @@
 import type { BotAvatarConfig } from "./bot-avatar.js";
 import type { AgentMention } from "./agent-mentions.js";
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunHistoryDetailDto, ConversationRunTraceDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunHistoryDetailDto, ConversationRunTraceDto, ConversationRunDto, ConversationSummaryDto, ConversationTimelineDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
 import type { JevSettingsDto, JevTestResult } from "./jev-settings.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
@@ -136,6 +136,13 @@ export declare const MSG: {
     readonly conversationBindingsSet: "control.conversation.bindings.set";
     readonly conversationBindingsDelete: "control.conversation.bindings.delete";
     readonly conversationHistory: "control.conversation.history";
+    /**
+     * The single Conversation read model (design §9.3): one page of messages plus
+     * the runs and member turns needed to render ownership, activity and round
+     * status. Additive; old connectors answer `unknown-type`, so the Web gates it
+     * on `conversationTimelineV1`. `control.conversation.history` is unchanged.
+     */
+    readonly conversationTimeline: "control.conversation.timeline";
     readonly runsGet: "control.runs.get";
     readonly runsDetailsBatch: "control.runs.details.batch";
     readonly runsTraceGet: "control.runs.trace.get";
@@ -668,6 +675,21 @@ export interface ConversationHistoryPayload {
     direction?: "oldest-first" | "newest-first";
 }
 export type ConversationHistoryResult = ConversationHistoryResponseDto;
+/**
+ * Cursor shape matches `control.conversation.history`: `beforeSeq` / `afterSeq`
+ * select which side of the topic the page covers and `direction` is
+ * initial-page-only, so it is never combined with a cursor. Non-terminal Runs
+ * are returned regardless of the message window.
+ */
+export interface ConversationTimelinePayload {
+    conversationId: string;
+    topicId: string;
+    afterSeq?: number;
+    beforeSeq?: number;
+    limit?: number;
+    direction?: "oldest-first" | "newest-first";
+}
+export type ConversationTimelineResult = ConversationTimelineDto;
 export interface RunsGetPayload {
     runId: string;
 }
@@ -1338,6 +1360,11 @@ export declare const RELAY_CAPABILITIES: {
      *  the connector validator and the core both implement pre-generated
      *  sequential discussion. The Web hides the "discuss" entry when absent. */
     readonly roundtableV1: "conversations.roundtable.v1";
+    /** `control.conversation.timeline` exists on both ends: the core projects the
+     *  single read model and the connector validator accepts the request. The Web
+     *  keeps the legacy transcript until an instance advertises this, so an old
+     *  daemon (or old connector) never receives a new RPC it cannot answer. */
+    readonly conversationTimelineV1: "conversations.timeline.v1";
     /** `control.groups.create` accepts `workspaceMode` and `control.group.topics.create`
      *  accepts an omitted `target` for a `per-member` Group. Advertised only when
      *  the connector's validator and the core both accept it, so the web never

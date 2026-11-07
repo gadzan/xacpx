@@ -289,6 +289,24 @@ export function supportsRoundtableV1(
   }) !== null;
 }
 
+/**
+ * True when this instance can serve the single Conversation timeline: the core
+ * exposes the probe AND this connector's validator understands the request, so
+ * the Web never sends an RPC that an older half would reject. The legacy
+ * transcript keeps working either way.
+ */
+export function supportsConversationTimeline(
+  control: unknown,
+  parse: typeof parseControlPayload = parseControlPayload,
+): boolean {
+  const probe = (control as { supportsConversationTimelineV1?: unknown } | null)?.supportsConversationTimelineV1;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parse(MSG.conversationTimeline, {
+    conversationId: "probe", topicId: "probe", limit: 1,
+  }) !== null;
+}
+
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
   readonly nativeSessionListFormat = "table" as const;
@@ -421,6 +439,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsRoundtableV1(control)) {
       capabilities.push(RELAY_CAPABILITIES.roundtableV1);
+    }
+    if (supportsConversationTimeline(control)) {
+      capabilities.push(RELAY_CAPABILITIES.conversationTimelineV1);
     }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);
