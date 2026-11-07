@@ -197,13 +197,26 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   });
   await expect(newEvents).toHaveCount(0);
   await scroll.evaluate((el) => {
-    el.scrollTop = el.scrollHeight - 600;
+    // Clear the tail by more than a viewport, otherwise the bottom is still
+    // on screen and follow mode is (correctly) still active.
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 800);
     el.dispatchEvent(new Event("scroll"));
   });
   // The acceptance contract is "the reader's viewport does not move", not "the
-  // scrollTop number is frozen": `content-visibility` estimates are replaced by
-  // measured sizes as rows render, so let the programmatic jump settle first,
-  // track a visible row, then append 20 events and prove that row did not move.
+  // scrollTop number is frozen". Under CPU load the renderer can still be
+  // showing 72px intrinsic estimates for rows it has not painted; a reader only
+  // ever sees rendered rows, so wait for the row under the viewport top to be
+  // rendered, then track it across the append.
+  await expect.poll(async () => scroll.evaluate((el) => {
+    const ownerTop = el.getBoundingClientRect().top;
+    const row = Array.from(el.querySelectorAll<HTMLElement>("[data-trace-key]"))
+      .find((candidate) => candidate.getBoundingClientRect().bottom > ownerTop + 80);
+    if (!row) return false;
+    const style = getComputedStyle(row);
+    const match = /([\d.]+)px\s*$/.exec(style.containIntrinsicSize ?? "");
+    if (!match) return true;
+    return Math.abs(row.getBoundingClientRect().height - Number.parseFloat(match[1]!)) >= 0.5;
+  })).toBe(true);
   let previous = -1;
   for (let attempt = 0; attempt < 30; attempt++) {
     const current = await scroll.evaluate((el) => el.scrollTop);
@@ -221,10 +234,12 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   fixture.appendEvents(57, 76);
   fixture.triggerRefetch(2);
   await expect(detailEl.getByTestId("group-trace-step")).toHaveCount(76);
-  await expect.poll(async () => Math.abs(await detailEl.locator(`[data-trace-key="${anchor.key}"]`).evaluate((el) => {
+  const drift = async () => Math.abs(await detailEl.locator(`[data-trace-key="${anchor.key}"]`).evaluate((el) => {
     const owner = el.closest(".group-detail-scroll, .thin-scroll")!;
     return el.getBoundingClientRect().top - owner.getBoundingClientRect().top;
-  }) - anchor.offset)).toBeLessThanOrEqual(2);
+  }) - anchor.offset);
+  await expect.poll(drift).toBeLessThanOrEqual(1);
+  console.log("FREEZE_DRIFT", mobile ? "mobile" : "desktop", await drift());
   await expect(newEvents).toBeVisible();
   await expect(newEvents).toContainText("20 new events");
   await screenshot(page, info, mobile ? "mobile-unread-chip" : "desktop-unread-chip");
