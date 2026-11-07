@@ -334,7 +334,7 @@
   <div class="hero-meta">
     <span class="pill"><span class="dot"></span><b>DS-Bot</b> 0.2.7 · 房间 + 发言位</span>
     <span class="pill"><span class="dot purple"></span><b>Grok Bot</b> 0.18 · 有界轮询</span>
-    <span class="pill"><span class="dot green"></span><b>xacpx</b> 0.24.10 · Run + MemberTurn · main <code>8d660cf7</code></span>
+    <span class="pill"><span class="dot green"></span><b>xacpx</b> 0.24.10 · Run + MemberTurn · main <code>8e095e32</code></span>
   </div>
 </header>
 
@@ -996,9 +996,9 @@ projectConversationTimeline(messages, runs, memberTurns)
       <p>已由 <a href="https://github.com/gadzan/xacpx/pull/546">#546</a> 落地，main <code>8d660cf7</code>；含旧客户端 history 兼容与 <code>conversations.roundtable.v1</code>。</p>
     </div>
     <div class="phase-item p1">
-      <b>P1 · 一条时间线 <span class="badge">NEXT</span></b>
-      <p><code>messages.member_turn_id</code> + 纯投影 + <code>conversation.timeline</code>；一个 Timeline 组件、一个 composer、一条状态条、一个详情抽屉；删除旧组件。</p>
-      <p>未开始；trace 抽屉 P1a–P1c 已由 <a href="https://github.com/gadzan/xacpx/pull/544">#544</a>/<a href="https://github.com/gadzan/xacpx/pull/545">#545</a> 完成。</p>
+      <b>P1 · 一条时间线 <span class="badge lead">DONE*</span></b>
+      <p><code>messages.member_turn_id</code> + 纯投影 + <code>conversation.timeline</code>；一个 Timeline 组件、一个 composer、一条状态条、一个 Run-wide 详情抽屉。</p>
+      <p>P1a/b/c 已合并（<a href="https://github.com/gadzan/xacpx/pull/548">#548</a>/<a href="https://github.com/gadzan/xacpx/pull/549">#549</a>/<a href="https://github.com/gadzan/xacpx/pull/550">#550</a>）；旧 daemon 回退组件保留，删除待最低版本提升。</p>
     </div>
     <div class="phase-item p2">
       <b>P2 · 可选增强 <span class="badge">PARTIAL</span></b>
