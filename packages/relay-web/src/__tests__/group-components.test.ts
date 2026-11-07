@@ -2791,6 +2791,7 @@ describe("Group Components", () => {
           state: "running", createdAt: "now",
         }],
       };
+      const batchGate = Promise.withResolvers<{ runs: (typeof detail)[]; missingRunIds: string[] }>();
       const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
         if (type === MSG.conversationTimeline) {
           return {
@@ -2809,7 +2810,7 @@ describe("Group Components", () => {
             hasMoreAfter: false,
           } as never;
         }
-        if (type === MSG.runsDetailsBatch) return { runs: [detail], missingRunIds: [] } as never;
+        if (type === MSG.runsDetailsBatch) return batchGate.promise as never;
         if (type === MSG.runsTraceGet) return { events: [], hasMore: false } as never;
         return {} as never;
       });
@@ -2819,8 +2820,11 @@ describe("Group Components", () => {
       });
       await flushPromises();
       await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
-      // The detail batch lands asynchronously: flush until the store adopts it,
-      // and the drawer must be open by then rather than silently dropped.
+      // The click landed while the Run was still uncached: nothing may open yet.
+      await flushPromises();
+      expect(document.body.querySelector('[data-test="group-detail-card"]')).toBeNull();
+      // The batch lands now and the pending open must be retried.
+      batchGate.resolve({ runs: [detail], missingRunIds: [] });
       await flushPromises();
       await flushPromises();
       const card = document.body.querySelector('[data-test="group-detail-card"]');
