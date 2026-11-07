@@ -1987,9 +1987,9 @@ var traceProductId = (v) => typeof v === "string" && v.length > 0 && v.length <=
 var traceInteger = (v, min, max = Number.MAX_SAFE_INTEGER) => typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max;
 var validateRunsDetailsBatch = (p) => {
   const o = fields(p);
-  if (!o || Object.keys(o).some((k) => !["conversationId", "topicId", "runIds"].includes(k)))
+  if (!o || Object.keys(o).some((k) => !["conversationId", "topicId", "runIds", "roundtableV1"].includes(k)))
     return null;
-  return traceProductId(o.conversationId) && traceProductId(o.topicId) && Array.isArray(o.runIds) && o.runIds.length >= 1 && o.runIds.length <= 50 && o.runIds.every(traceProductId) && new Set(o.runIds).size === o.runIds.length ? o : null;
+  return traceProductId(o.conversationId) && traceProductId(o.topicId) && (o.roundtableV1 === undefined || typeof o.roundtableV1 === "boolean") && Array.isArray(o.runIds) && o.runIds.length >= 1 && o.runIds.length <= 50 && o.runIds.every(traceProductId) && new Set(o.runIds).size === o.runIds.length ? o : null;
 };
 var validateRunsTraceGet = (p) => {
   const o = fields(p);

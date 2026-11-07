@@ -91,3 +91,13 @@ test("old Run/MemberTurn DTOs remain readable and roundtable fields validate", (
       .toBe(false);
   }
 });
+
+
+test("history batch accepts the optional roundtableV1 compat flag", () => {
+  const base = { conversationId: "c", topicId: "t", runIds: ["r"] };
+  expect(parseControlPayload(MSG.runsDetailsBatch, base)).not.toBeNull();
+  expect(parseControlPayload(MSG.runsDetailsBatch, { ...base, roundtableV1: true })).not.toBeNull();
+  expect(parseControlPayload(MSG.runsDetailsBatch, { ...base, roundtableV1: false })).not.toBeNull();
+  expect(parseControlPayload(MSG.runsDetailsBatch, { ...base, roundtableV1: "yes" })).toBeNull();
+  expect(parseControlPayload(MSG.runsDetailsBatch, { ...base, roundtable: true })).toBeNull();
+});

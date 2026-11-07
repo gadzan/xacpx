@@ -1,5 +1,5 @@
 import { copyBotAvatar, type BotAvatarConfig } from "@ganglion/xacpx-relay-protocol";
-import type { AttachmentMetadata, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import type { AttachmentMetadata, ConversationRunHistoryDetailDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { DedicatedWorkspaceCleanupOutcome } from "../bots/dedicated-workspace-cleanup";
 import type { BotProfile, BotProfileSnapshot } from "../bots/bot-types";
 import type {
@@ -697,5 +697,23 @@ export function toRunDetail(run: ConversationRun, memberTurns: MemberTurnRecord[
       execution: { ...run.profileSnapshot.execution },
     },
     memberTurns: memberTurns.map(toMemberTurnSummary),
+  };
+}
+
+
+/**
+ * Legacy history projection for a caller that does not advertise
+ * `conversations.roundtable.v1`. It removes every shape/round field the old
+ * strict validator does not know, and maps the new `roundtable` origin back to
+ * the old vocabulary. The durable rows are unchanged; only the wire view is.
+ */
+export function toLegacyRunHistoryDetail(detail: ConversationRunHistoryDetailDto): ConversationRunHistoryDetailDto {
+  const { shape: _shape, rounds: _rounds, leadBotId: _leadBotId, memberTurns, ...rest } = detail;
+  return {
+    ...rest,
+    memberTurns: memberTurns.map((member) => {
+      const { roundIndex: _roundIndex, speakerIndex: _speakerIndex, speechOutcome: _speechOutcome, origin, ...turn } = member;
+      return { ...turn, origin: origin === "roundtable" ? "human-explicit" as const : origin };
+    }),
   };
 }

@@ -268,6 +268,24 @@ export function supportsGroupTopicIsolation(control: unknown): boolean {
   }) !== null;
 }
 
+/**
+ * True when this instance can accept a roundtable target and return the
+ * corresponding history fields: the core exposes the probe AND this
+ * connector's validator accepts both wire halves.
+ */
+export function supportsRoundtableV1(control: unknown): boolean {
+  const probe = (control as { supportsRoundtableV1?: unknown } | null)?.supportsRoundtableV1;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  if (parseControlPayload(MSG.runsDetailsBatch, {
+    conversationId: "probe", topicId: "probe", runIds: ["probe"], roundtableV1: true,
+  }) === null) return false;
+  return parseControlPayload(MSG.conversationPrompt, {
+    conversationId: "probe", topicId: "probe", requestId: "probe", text: "probe",
+    target: { mode: "roundtable", botIds: ["probe_a", "probe_b"] },
+  }) !== null;
+}
+
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
   readonly nativeSessionListFormat = "table" as const;
@@ -397,6 +415,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsGroupWorkspaceMode(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);
+    }
+    if (supportsRoundtableV1(control)) {
+      capabilities.push(RELAY_CAPABILITIES.roundtableV1);
     }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);

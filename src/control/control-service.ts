@@ -136,6 +136,7 @@ import {
   toGroupSummary,
   toMemberTurnSummary,
   toRunDetail,
+  toLegacyRunHistoryDetail,
   toTopicSummary,
   type BotCreateRequestDto,
   type BotRemovalPreviewDto,
@@ -2738,6 +2739,16 @@ export class ControlService {
     return true;
   }
 
+  /**
+   * Feature probe for connectors: the explicit Group target accepts
+   * `mode:"roundtable"` and history batches accept `roundtableV1`. Connectors
+   * advertise `RELAY_CAPABILITIES.roundtableV1` only when this exists, so the
+   * web never offers a discussion an older core would reject.
+   */
+  supportsRoundtableV1(): true {
+    return true;
+  }
+
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
       const bot = input.workspace !== undefined
@@ -3342,7 +3353,7 @@ export class ControlService {
         throw new ConversationError("run_not_found", "Run does not belong to this public Topic");
       }
       const { profileSnapshot, ...detail } = this.getRun(runId);
-      runs.push({
+      const projected = {
         ...detail,
         ...(profileSnapshot ? {
           profileSnapshot: {
@@ -3351,7 +3362,11 @@ export class ControlService {
             presentation: profileSnapshot.presentation,
           },
         } : {}),
-      });
+      };
+      // Default is the legacy wire shape: only a caller that opted into
+      // `conversations.roundtable.v1` receives the new Run/MemberTurn fields.
+      // Old strict history validators therefore keep accepting the response.
+      runs.push(input.roundtableV1 === true ? projected : toLegacyRunHistoryDetail(projected));
     }
     const result = missingRunIds.length > 0 ? { runs, missingRunIds } : { runs };
     if (Buffer.byteLength(JSON.stringify(result), "utf8") > 1024 * 1024) {

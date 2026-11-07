@@ -678,6 +678,11 @@ export interface RunsDetailsBatchPayload {
     conversationId: string;
     topicId: string;
     runIds: string[];
+    /** Optional history compat flag: true only when the caller understands the
+     *  roundtable Run/MemberTurn fields (`conversations.roundtable.v1`). Absent
+     *  keeps the legacy projection so a strict older client validator accepts
+     *  the response unchanged. */
+    roundtableV1?: boolean;
 }
 export interface RunsDetailsBatchResult {
     runs: ConversationRunHistoryDetailDto[];

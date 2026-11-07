@@ -844,8 +844,9 @@ const traceInteger = (v: unknown, min: number, max = Number.MAX_SAFE_INTEGER): v
   typeof v === "number" && Number.isSafeInteger(v) && v >= min && v <= max;
 const validateRunsDetailsBatch: Validator<RunsDetailsBatchPayload> = (p) => {
   const o = fields(p);
-  if (!o || Object.keys(o).some(k => !["conversationId", "topicId", "runIds"].includes(k))) return null;
+  if (!o || Object.keys(o).some(k => !["conversationId", "topicId", "runIds", "roundtableV1"].includes(k))) return null;
   return traceProductId(o.conversationId) && traceProductId(o.topicId)
+    && (o.roundtableV1 === undefined || typeof o.roundtableV1 === "boolean")
     && Array.isArray(o.runIds) && o.runIds.length >= 1 && o.runIds.length <= 50
     && o.runIds.every(traceProductId) && new Set(o.runIds).size === o.runIds.length
     ? o as unknown as RunsDetailsBatchPayload : null;

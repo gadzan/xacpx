@@ -1894,14 +1894,29 @@ export class ConversationDispatcher {
     const now = this.now().toISOString();
     const forceRunTerminalOnSettle = latest !== undefined && isRunCancelling(latest);
     if (result.outcome === "completed") {
+      const text = result.text ?? "";
+      const speech = latest?.shape === "roundtable" ? parseRoundtableSpeech(text) : undefined;
+      if (speech?.outcome === "empty") {
+        const run = this.store.failExecution({
+          runId,
+          memberTurnId: member.id,
+          now,
+          reason: "empty-speech",
+          sourceTurnId: member.sourceTurnId,
+          forceRunTerminalOnSettle,
+        });
+        this.emitRunAndMember(run, member.id);
+        return;
+      }
       const completed = this.store.completeExecution({
         runId,
         memberTurnId: member.id,
         botId: member.botId,
-        content: result.text ?? "",
+        content: text,
         sourceTurn: { sessionAlias: member.sessionAlias ?? "", turnId: member.sourceTurnId },
         now,
         forceRunTerminalOnSettle,
+        ...(speech?.outcome === "pass" ? { speechOutcome: "pass" as const } : {}),
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage, completed.statusMessage);
       return;
