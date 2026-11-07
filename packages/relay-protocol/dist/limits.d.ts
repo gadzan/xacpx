@@ -15,6 +15,11 @@ export declare const MAX_TOOL_STEPS = 200;
  *  members are enabled, while `everyone` is refused with `target_too_large`
  *  once its eligible probe set exceeds the budget. */
 export declare const MAX_GROUP_TARGET_MEMBERS = 64;
+/** Roundtable bounds (design §5.3). Mirrored by the daemon's
+ *  `conversation-roundtable.ts`; the wire refuses anything either side would
+ *  truncate, so an over-limit plan never reaches accept. */
+export declare const MAX_ROUNDTABLE_ROUNDS = 3;
+export declare const MAX_ROUNDTABLE_MEMBER_TURNS = 24;
 export declare const MAX_BOT_ID_LENGTH = 128;
 export declare const REASONING_CAP = 16000;
 /** How long a finished turn may wait for its persistence ack. The CONNECTOR evicts

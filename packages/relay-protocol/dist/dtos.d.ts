@@ -511,6 +511,13 @@ export interface ConversationRunDto {
     requestMessageId: string;
     requestId: string;
     mode: "explicit" | "automatic";
+    /** Collaboration shape. Absent on older wire shapes (legacy Runs read
+     *  `fanout`); new cores always project it. */
+    shape?: "single" | "fanout" | "roundtable";
+    /** Planned round count. Roundtable only. */
+    rounds?: number;
+    /** Opening speaker snapshot. Roundtable only. */
+    leadBotId?: string;
     state: ConversationRunStateDto;
     completionReason?: string;
     profileRevision: number;
@@ -594,6 +601,10 @@ export type ConversationTargetDto = {
     mode: "everyone";
 } | {
     mode: "automatic";
+} | {
+    mode: "roundtable";
+    botIds: string[];
+    rounds?: number;
 };
 export interface MemberTurnSummaryDto {
     effect?: "unknown" | "read-only" | "mutating";
@@ -607,7 +618,7 @@ export interface MemberTurnSummaryDto {
     /** Durable accept order within the batch (0-based). Absent on older wire shapes. */
     memberIndex?: number;
     attempt: number;
-    origin: "human-explicit" | "human" | "router" | "handoff" | "followup" | "retry" | "recovery";
+    origin: "human-explicit" | "human" | "router" | "handoff" | "followup" | "retry" | "recovery" | "roundtable";
     state: "queued" | "dispatched" | "running" | "completed" | "failed" | "cancelled" | "indeterminate";
     promptRequestId?: string;
     createdAt: string;
@@ -632,6 +643,12 @@ export interface MemberTurnSummaryDto {
      *  turn whose assignments this wake summarizes; absent on every other
      *  turn. */
     followupSenderMemberTurnId?: string;
+    /** Roundtable position: 1-based round, 0-based speaker. Absent on other
+     *  shapes and on older wire shapes. */
+    roundIndex?: number;
+    speakerIndex?: number;
+    /** Roundtable terminal speech: `pass` wrote no public message. */
+    speechOutcome?: "message" | "pass";
 }
 export interface ConversationRunDetailDto extends ConversationRunDto {
     profileSnapshot?: BotProfileSnapshotDto;

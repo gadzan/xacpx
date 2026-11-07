@@ -746,6 +746,9 @@ function validConversationRun(value: unknown): boolean {
     && typeof c.requestMessageId === "string"
     && typeof c.requestId === "string"
     && (c.mode === "explicit" || c.mode === "automatic")
+    && (c.shape === undefined || c.shape === "single" || c.shape === "fanout" || c.shape === "roundtable")
+    && (c.rounds === undefined || (typeof c.rounds === "number" && Number.isSafeInteger(c.rounds) && c.rounds >= 1))
+    && optStr(c.leadBotId)
     && (c.state === "queued" || c.state === "running" || c.state === "waiting-human"
       || c.state === "paused"
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
@@ -819,7 +822,7 @@ function validMemberTurnSummary(value: unknown): boolean {
     && typeof c.attempt === "number"
     && (c.origin === "human-explicit" || c.origin === "human"
       || c.origin === "router" || c.origin === "handoff" || c.origin === "followup"
-      || c.origin === "retry" || c.origin === "recovery")
+      || c.origin === "retry" || c.origin === "recovery" || c.origin === "roundtable")
     && (c.state === "queued" || c.state === "dispatched" || c.state === "running"
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
       || c.state === "indeterminate")
@@ -835,7 +838,12 @@ function validMemberTurnSummary(value: unknown): boolean {
     // Scoped human-Stop evidence: only the known reason is accepted.
     && (c.cancellationReason === undefined || c.cancellationReason === "human-cancelled")
     // The wake turn names the leader turn it summarizes.
-    && optStr(c.followupSenderMemberTurnId);
+    && optStr(c.followupSenderMemberTurnId)
+    // Roundtable position and terminal speech outcome. Absent on every other
+    // shape and on older wire shapes.
+    && (c.roundIndex === undefined || (typeof c.roundIndex === "number" && Number.isSafeInteger(c.roundIndex) && c.roundIndex >= 1))
+    && (c.speakerIndex === undefined || optNonNegInt(c.speakerIndex))
+    && (c.speechOutcome === undefined || c.speechOutcome === "message" || c.speechOutcome === "pass");
 }
 
 const historyObject = (value: unknown): value is Record<string, unknown> =>
@@ -861,6 +869,7 @@ export function isPublicPlanEntriesDto(value: unknown): value is PlanEntryDto[] 
 const historyRunKeys = [
   "id", "conversationId", "topicId", "requestMessageId", "requestId", "mode", "state", "completionReason",
   "profileRevision", "activeBatch", "maxMemberTurns", "budgetEpoch", "consumedMemberTurns", "failedBotIds",
+  "shape", "rounds", "leadBotId",
   "unavailableBotIds", "quarantinedBotIds", "routingState", "routingReason", "waitingQuestion", "createdAt",
   "startedAt", "finishedAt", "abandonedAt",
   "controlRevision", "progressRevision", "pauseReason", "pauseRequestedAt", "pausedAt",
@@ -870,6 +879,7 @@ const historyMemberKeys = [
   "id", "runId", "conversationId", "topicId", "botId", "batch", "memberIndex", "attempt", "origin", "state",
   "effect", "effectProvenance", "promptRequestId", "createdAt", "startedAt", "finishedAt", "assignmentId", "task",
   "expectedOutput", "dependsOn", "failureReason", "blockedReason", "cancellationReason",
+  "roundIndex", "speakerIndex", "speechOutcome",
   "followupSenderMemberTurnId",
 ] as const satisfies readonly (keyof MemberTurnSummaryDto)[];
 

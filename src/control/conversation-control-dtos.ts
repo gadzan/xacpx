@@ -267,6 +267,12 @@ export interface ConversationRunDto {
   requestMessageId: string;
   requestId: string;
   mode: ConversationRun["mode"];
+  /** Collaboration shape; absent on older cores and legacy rows. */
+  shape?: ConversationRun["shape"];
+  /** Planned round count (roundtable only). */
+  rounds?: number;
+  /** Opening speaker snapshot (roundtable only). */
+  leadBotId?: string;
   state: ConversationRun["state"];
   completionReason?: string;
   profileRevision: number;
@@ -327,6 +333,11 @@ export interface MemberTurnSummaryDto {
   attempt: number;
   origin: MemberTurnRecord["origin"];
   state: MemberTurnRecord["state"];
+  /** Roundtable position; absent on every other shape. */
+  roundIndex?: number;
+  speakerIndex?: number;
+  /** Roundtable terminal speech; `pass` wrote no public message. */
+  speechOutcome?: MemberTurnRecord["speechOutcome"];
   /** Exact join onto turn-started.promptRequestId / Control promptRequestId. */
   promptRequestId?: string;
   createdAt: string;
@@ -371,7 +382,8 @@ export type ConversationTarget =
   | { botId: string }
   | { mode: "members"; botIds: string[] }
   | { mode: "everyone" }
-  | { mode: "automatic" };
+  | { mode: "automatic" }
+  | { mode: "roundtable"; botIds: string[]; rounds?: number };
 
 export interface ConversationPromptRequestDto {
   agentMentions?: import("@ganglion/xacpx-relay-protocol").AgentMention[];
@@ -600,6 +612,9 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     requestMessageId: run.requestMessageId,
     requestId: run.requestId,
     mode: run.mode,
+    shape: run.shape,
+    ...(run.rounds !== undefined ? { rounds: run.rounds } : {}),
+    ...(run.leadBotId !== undefined ? { leadBotId: run.leadBotId } : {}),
     state: run.state,
     profileRevision: run.profileRevision,
     // PR8: automatic Runs project their routing substate; explicit Runs never
@@ -650,6 +665,9 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     memberIndex: turn.memberIndex,
     attempt: turn.attempt,
     origin: turn.origin,
+    ...(turn.roundIndex !== undefined ? { roundIndex: turn.roundIndex } : {}),
+    ...(turn.speakerIndex !== undefined ? { speakerIndex: turn.speakerIndex } : {}),
+    ...(turn.speechOutcome !== undefined ? { speechOutcome: turn.speechOutcome } : {}),
     state: turn.state,
     createdAt: turn.createdAt,
     ...(turn.sourceTurnId ? { promptRequestId: turn.sourceTurnId } : {}),

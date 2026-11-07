@@ -48,6 +48,8 @@ var STATE_SYNC_TEXT_CAP = 256 * 1024;
 var STATE_SYNC_PARTS_CAP = 1000;
 var MAX_TOOL_STEPS = 200;
 var MAX_GROUP_TARGET_MEMBERS = 64;
+var MAX_ROUNDTABLE_ROUNDS = 3;
+var MAX_ROUNDTABLE_MEMBER_TURNS = 24;
 var MAX_BOT_ID_LENGTH = 128;
 var REASONING_CAP = 16000;
 var RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -272,6 +274,7 @@ var RELAY_CAPABILITIES = {
   runsCancelMemberV1: "runs.cancel-member.v1",
   runsPauseV1: "runs.pause.v1",
   groupTopicIsolationV1: "group.topics.isolation.v1",
+  roundtableV1: "conversations.roundtable.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
@@ -830,7 +833,7 @@ function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && (c.worktree === undefined || isConversationWorktreeStatus(c.worktree)) && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "paused" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.budgetEpoch === undefined || typeof c.budgetEpoch === "number" && Number.isSafeInteger(c.budgetEpoch) && c.budgetEpoch >= 0) && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.routingReason) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.abandonedAt) && optStr(c.pauseReason) && optStr(c.pauseRequestedAt) && optStr(c.pausedAt) && (c.controlRevision === undefined || typeof c.controlRevision === "number" && Number.isSafeInteger(c.controlRevision) && c.controlRevision >= 0) && (c.progressRevision === undefined || typeof c.progressRevision === "number" && Number.isSafeInteger(c.progressRevision) && c.progressRevision >= 0) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
+  return typeof c.id === "string" && (c.worktree === undefined || isConversationWorktreeStatus(c.worktree)) && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.shape === undefined || c.shape === "single" || c.shape === "fanout" || c.shape === "roundtable") && (c.rounds === undefined || typeof c.rounds === "number" && Number.isSafeInteger(c.rounds) && c.rounds >= 1) && optStr(c.leadBotId) && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "paused" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.budgetEpoch === undefined || typeof c.budgetEpoch === "number" && Number.isSafeInteger(c.budgetEpoch) && c.budgetEpoch >= 0) && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.routingReason) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.abandonedAt) && optStr(c.pauseReason) && optStr(c.pauseRequestedAt) && optStr(c.pausedAt) && (c.controlRevision === undefined || typeof c.controlRevision === "number" && Number.isSafeInteger(c.controlRevision) && c.controlRevision >= 0) && (c.progressRevision === undefined || typeof c.progressRevision === "number" && Number.isSafeInteger(c.progressRevision) && c.progressRevision >= 0) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
 }
 function isConversationWorktreeStatus(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -855,7 +858,7 @@ function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && (c.effect === undefined || c.effect === "unknown" || c.effect === "read-only" || c.effect === "mutating") && (c.effectProvenance === undefined || c.effect === "read-only" && c.effectProvenance === "declared-enforced") && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown") && (c.cancellationReason === undefined || c.cancellationReason === "human-cancelled") && optStr(c.followupSenderMemberTurnId);
+  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && (c.effect === undefined || c.effect === "unknown" || c.effect === "read-only" || c.effect === "mutating") && (c.effectProvenance === undefined || c.effect === "read-only" && c.effectProvenance === "declared-enforced") && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery" || c.origin === "roundtable") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown") && (c.cancellationReason === undefined || c.cancellationReason === "human-cancelled") && optStr(c.followupSenderMemberTurnId) && (c.roundIndex === undefined || typeof c.roundIndex === "number" && Number.isSafeInteger(c.roundIndex) && c.roundIndex >= 1) && (c.speakerIndex === undefined || optNonNegInt(c.speakerIndex)) && (c.speechOutcome === undefined || c.speechOutcome === "message" || c.speechOutcome === "pass");
 }
 var historyObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var historyId = (value) => typeof value === "string" && value.length > 0 && value.length <= 128;
@@ -889,6 +892,9 @@ var historyRunKeys = [
   "budgetEpoch",
   "consumedMemberTurns",
   "failedBotIds",
+  "shape",
+  "rounds",
+  "leadBotId",
   "unavailableBotIds",
   "quarantinedBotIds",
   "routingState",
@@ -931,6 +937,9 @@ var historyMemberKeys = [
   "failureReason",
   "blockedReason",
   "cancellationReason",
+  "roundIndex",
+  "speakerIndex",
+  "speechOutcome",
   "followupSenderMemberTurnId"
 ];
 function historyWorktree(value, runId) {
@@ -1901,8 +1910,10 @@ var isConversationTarget = (v) => {
   const hasDiscriminant = hasBotId || hasMode || hasBotIds;
   if (!hasDiscriminant)
     return false;
-  const mixed = hasBotId && (hasMode || hasBotIds) || hasMode && hasBotIds && v.mode !== "members";
+  const mixed = hasBotId && (hasMode || hasBotIds) || hasMode && hasBotIds && v.mode !== "members" && v.mode !== "roundtable";
   if (mixed)
+    return false;
+  if ("rounds" in v && v.mode !== "roundtable")
     return false;
   if (hasBotId) {
     const botId = v.botId;
@@ -1910,6 +1921,9 @@ var isConversationTarget = (v) => {
   }
   if (v.mode === "members") {
     return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS && new Set(v.botIds).size === v.botIds.length && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
+  }
+  if (v.mode === "roundtable") {
+    return Array.isArray(v.botIds) && v.botIds.length >= 2 && v.botIds.length <= MAX_ROUNDTABLE_MEMBER_TURNS && new Set(v.botIds).size === v.botIds.length && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH) && (v.rounds === undefined || typeof v.rounds === "number" && Number.isInteger(v.rounds) && v.rounds >= 1 && v.rounds <= MAX_ROUNDTABLE_ROUNDS) && v.botIds.length * (v.rounds === undefined ? 1 : v.rounds) <= MAX_ROUNDTABLE_MEMBER_TURNS;
   }
   return v.mode === "everyone" || v.mode === "automatic";
 };
@@ -3202,6 +3216,8 @@ export {
   MAX_DESKTOP_WS_PATH_LENGTH,
   MAX_GROUP_TARGET_MEMBERS,
   MAX_PROMPT_ATTACHMENT_BYTES,
+  MAX_ROUNDTABLE_MEMBER_TURNS,
+  MAX_ROUNDTABLE_ROUNDS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
   MAX_TERMINAL_COLS,

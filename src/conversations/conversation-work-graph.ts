@@ -221,7 +221,10 @@ export function buildWaitingGraph(
       childWorkIds: [],
       phase: "executing",
       wakeSuppressedByBudget: false,
-      sawCompletion: group.some((turn) => turn.state === "completed"),
+      // A roundtable `(pass)` is a terminal turn but NOT completion evidence:
+      // an all-pass discussion must classify as `roundtable-no-speech`, not as
+      // a completed speech carried by silence.
+      sawCompletion: group.some((turn) => turn.state === "completed" && turn.speechOutcome !== "pass"),
       subtreeSawFailure: false,
       unobservedFailure: false,
       ...(frontier.failureReason !== undefined ? { frontierFailureReason: frontier.failureReason } : {}),

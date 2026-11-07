@@ -1329,6 +1329,10 @@ export declare const RELAY_CAPABILITIES: {
      *  offer the Group topic isolation switch. An older core has no such RPC and
      *  would answer `unknown-type`, which is not a failure a user can act on. */
     readonly groupTopicIsolationV1: "group.topics.isolation.v1";
+    /** A Group Roundtable target (`mode: "roundtable"`) is accepted end to end:
+     *  the connector validator and the core both implement pre-generated
+     *  sequential discussion. The Web hides the "discuss" entry when absent. */
+    readonly roundtableV1: "conversations.roundtable.v1";
     /** `control.groups.create` accepts `workspaceMode` and `control.group.topics.create`
      *  accepts an omitted `target` for a `per-member` Group. Advertised only when
      *  the connector's validator and the core both accept it, so the web never
