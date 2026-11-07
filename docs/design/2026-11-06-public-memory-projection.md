@@ -1,10 +1,10 @@
 # 群聊公开发言与公共记忆投影
 
-- 状态：P2 实现（2026-11-06）：P1b 的 `bot_public_memory` 引用表、公开消息写入/清理/读取、Direct prompt 的 `Shared group context`、群临时气泡一成员一泡，加上 `group_say`（每回合 3 条、单条 1,000 字、写入公共记忆、与最终回复去重），以及最终回复兜底（空最终文本的状态行、空证据行不进群聊气泡）。
+- 状态：P2 实现（2026-11-06 起，2026-11-07 完成合并）：P1b 的 `bot_public_memory` 引用表、公开消息写入/清理/读取、Direct prompt 的 `Shared group context`、群临时气泡一成员一泡，加上 `group_say`（每回合 3 条、单条 1,000 字、写入公共记忆、与最终回复去重），以及最终回复兜底（空最终文本的状态行、空证据行不进群聊气泡）。
 - 范围：Group 公开发言边界、Bot 公共记忆、Direct prompt 注入
 
 - 已实现：`bot_public_memory` 建表与索引、人类消息与 Bot 最终回复写入（同事务、`INSERT OR IGNORE`、非空过滤）、Topic/Conversation/Bot 删除清理、移出群清理、Direct prompt `Shared group context`（20 条/800 字、untrusted 标记）、群临时气泡每成员只看最新文本、`group_say`（`group_say_json` 标记 + `invocationId` 幂等、每回合 3 条上限由 runtime 与存储在同一事务内计数、与最终回复同一条公开写入路径并进公共记忆、与最终回复同文去重并把该条提升为该成员的公开结果）、最终回复兜底（四条最终内容写入路径共用一条规则：空最终文本且本回合没有 `group_say` 时同事务写一条 `role = 'system'` 状态消息；空最终文本但不进气泡、不进公共记忆）。
-- 未实现：handoff 摘要、双向记忆开关、历史回填、消息删除同步清理。
+- 明确不在当前范围（不是欠账）：handoff 摘要、双向记忆开关、历史回填、消息删除同步清理。当前清理只覆盖 Topic/Conversation/Bot 与移出群，不做 per-message delete sync。
 ---
 
 ## 0. 决策摘要

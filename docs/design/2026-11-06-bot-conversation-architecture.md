@@ -1,7 +1,7 @@
 # xacpx Bot 会话与群聊协作：目标架构与技术方案
 
 - 日期：2026-11-06
-- 状态：提案，未实现
+- 状态：提案；P0 后端圆桌已实现（2026-11-07，#546，main `8d660cf7`）；P1「一条时间线」未实现；trace 抽屉 P1a–P1c 已实现（#544/#545）；P2 公共记忆已实现（#541–#543）。
 - 范围：Direct Bot 会话、Group 群聊、Run / MemberTurn 调度、Web 交互
 - 目标：一个简约的会话界面，一组可证明的协作语义；Direct 与 Group 不再是两套产品
 - 前置阅读：`docs/research/2026-11-06-bot-group-collaboration-benchmark.md`
@@ -754,6 +754,8 @@ conversationTimelineV1: "conversations.timeline.v1",
 
 ### P0：后端协作语义（可独立上线，旧 UI 行为不变）
 
+> 实施状态（2026-11-07）：本节 P0 已由 #546 落地，merge `8d660cf7`；含类型/列/迁移、planner/parser、target/capability、预生成 accept、claim floor、pass/空文本、全 pass reason、失败尾部、scoped stop/handoff 拒绝、旧客户端 history 兼容。P1 尚未开始。
+
 1. `conversation-types.ts`：`ConversationShape`、`rounds`、`leadBotId`、`roundIndex`、`speakerIndex`、`speechOutcome`、`origin:"roundtable"`。
 2. `conversation-roundtable.ts`：纯 `planRoundtable()`、`parseRoundtableSpeech()`、上限常量。
 3. `sqlite-conversation-store.ts`：
@@ -776,6 +778,8 @@ conversationTimelineV1: "conversations.timeline.v1",
 P0 结束时，旧 UI 仍能工作；API 可以创建圆桌，只是没有入口。
 
 ### P1：一条时间线与一个 composer
+
+> 实施状态（2026-11-07）：未开始。trace 抽屉子项已由 #544/#545 完成，但不含 `ConversationTimeline` 迁移、`member_turn_id` 或 composer/status bar 收口。
 
 1. `messages.member_turn_id` 列、索引、所有插入点、回填。
 2. `conversation-timeline.ts` 纯投影 + `conversation.timeline` RPC + capability。
