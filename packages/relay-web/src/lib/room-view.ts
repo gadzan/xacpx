@@ -11,11 +11,9 @@ import type {
  * The room every conversation pane renders (design §4.2, §8).
  *
  * Direct and Group are the same product: one timeline, one composer, one status
- * bar. They differ only in `kind` and `participants` — Direct is the
- * single-participant case. A Room is the read model of a Topic; it is never
- * persisted.
+ * bar. Direct is the single-participant case. A Room is the read model of a
+ * Topic; it is never persisted.
  */
-export type RoomKind = "direct" | "group";
 
 /** One member as the timeline needs to draw it. Display metadata only: routing
  *  remains the server's decision, so a missing row renders a neutral name
@@ -29,30 +27,12 @@ export interface RoomParticipant {
   avatar?: BotAvatarConfig;
   enabled: boolean;
   retired?: boolean;
-  /** The Group's lead member. Direct rooms omit it (there is one participant). */
-  lead?: boolean;
-}
-
-/** Capabilities that decide which shell renders. Both come from the instance's
- *  advertised capability list; an old daemon advertises neither, so the pane
- *  keeps the legacy transcript and hides the discussion entry. */
-export interface RoomCapability {
-  /** `conversations.timeline.v1`: `control.conversation.timeline` exists. */
-  timelineV1: boolean;
-  /** `conversations.roundtable.v1`: a roundtable target is accepted. */
-  roundtableV1: boolean;
 }
 
 export interface RoomView {
-  kind: RoomKind;
-  instanceId: string | null;
   conversationId: string | null;
   topicId: string | null;
   participants: RoomParticipant[];
-  leadBotId?: string;
-  /** The Run that currently owns the Topic, when one does. */
-  run?: ConversationRunDto | null;
-  capability: RoomCapability;
 }
 
 /**

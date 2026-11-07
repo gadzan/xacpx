@@ -1098,20 +1098,6 @@ export const useGroupsStore = defineStore("groups", () => {
     return { target: { mode: "members", botIds: deduped } };
   }
 
-  /** True when the current selection can be resolved into a wire target. Lets the
-   *  composer disable Send (and keep the draft) instead of throwing the typed
-   *  message away after the store rejects it. */
-  const targetResolvable = computed<boolean>(() => !("error" in resolveTarget()));
-
-  /** Surface the reason a prompt was refused without touching the draft. */
-  function reportTargetProblem(): void {
-    const resolved = resolveTarget();
-    if ("error" in resolved) {
-      promptError.value = resolved.error === "targetRequired" ? "targetRequired" : "targetEmpty";
-      promptErrorDetail.value = null;
-    }
-  }
-
   function setTarget(selection: GroupTargetSelection): void {
     if (selection.mode === "members") {
       targetSelection.value = { mode: "members", botIds: [...new Set(selection.botIds)] };
@@ -1120,45 +1106,6 @@ export const useGroupsStore = defineStore("groups", () => {
     } else {
       targetSelection.value = { mode: "everyone" };
     }
-  }
-
-  function toggleTargetMember(botId: string): void {
-    const current = targetSelection.value;
-    // Automatic and everyone both mean "no member list yet": picking a member
-    // from either is an explicit human selection and replaces it.
-    if (!current || current.mode === "everyone" || current.mode === "automatic") {
-      targetSelection.value = { mode: "members", botIds: [botId] };
-      return;
-    }
-    const next = current.botIds.includes(botId)
-      ? current.botIds.filter((id) => id !== botId)
-      : [...current.botIds, botId];
-    targetSelection.value = { mode: "members", botIds: [...new Set(next)] };
-  }
-
-  function mentionBot(botId: string): void {
-    const group = currentGroup.value;
-    if (!group) return;
-    if (!group.botIds.includes(botId)) return;
-    const current = targetSelection.value;
-    if (!current) {
-      targetSelection.value = { mode: "members", botIds: [botId] };
-      return;
-    }
-    if (current.mode === "everyone" || current.mode === "automatic") {
-      // Explicit mention narrows the target back to members: staying in
-      // everyone (or letting the Router decide) would ignore every later
-      // `@Name`.
-      targetSelection.value = { mode: "members", botIds: [botId] };
-      return;
-    }
-    if (!current.botIds.includes(botId)) {
-      targetSelection.value = { mode: "members", botIds: [...current.botIds, botId] };
-    }
-  }
-
-  function mentionEveryone(): void {
-    targetSelection.value = { mode: "everyone" };
   }
 
   /** Per-instance groups-list failures. Empty state must only render for a
@@ -2554,6 +2501,29 @@ export const useGroupsStore = defineStore("groups", () => {
       || !activeConversationId.value || !activeTopicId.value) {
       return "rejected";
     }
+    // A frozen-tuple replay carries the exact requestId/text/target the server
+    // may already have durably accepted, so it stays reachable through these
+    // guards exactly like the forced-target branch of `sendPromptInner`: the
+    // retry is the sole escape hatch, never a fresh send.
+    const pending = uncertainPrompt.value;
+    const isReplay = !!pending && pending.text === trimmed
+      && JSON.stringify(pending.target) === JSON.stringify(target)
+      && JSON.stringify(pending.media) === JSON.stringify(media);
+    if (!isReplay) {
+      if (!topicReady.value) {
+        promptError.value = "topicRecovering";
+        promptErrorDetail.value = null;
+        return "uncertain";
+      }
+      // A Run already executing is not a barrier, but an unknown prompt
+      // outcome is: minting a fresh requestId while the tuple is pending
+      // would double-execute (see `sendPromptInner`).
+      if (pending) {
+        promptError.value = "promptPendingConfirmation";
+        promptErrorDetail.value = null;
+        return "uncertain";
+      }
+    }
     const reqId = preparePromptRequestId(trimmed, target, media);
     const outcome = runPromptSend(trimmed, target, reqId, media);
     inFlightSend.value = outcome;
@@ -3779,12 +3749,7 @@ export const useGroupsStore = defineStore("groups", () => {
     currentTopic,
     isRunActive,
     resolveTarget,
-    targetResolvable,
-    reportTargetProblem,
     setTarget,
-    toggleTargetMember,
-    mentionBot,
-    mentionEveryone,
     senderNameFor,
     loadGroups,
     loadGroupDetail,

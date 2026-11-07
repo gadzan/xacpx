@@ -17,7 +17,6 @@ import { useGroupsStore } from "../stores/groups";
 import {
   supportsBotDedicatedWorkspaceCleanup,
   supportsConversationTimelineV1,
-  supportsRoundtableV1,
   useInstancesStore,
 } from "../stores/instances";
 import type {
@@ -37,6 +36,7 @@ import ConversationTimeline from "./ConversationTimeline.vue";
 import ConversationStatusBar from "./ConversationStatusBar.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
 import ConversationInteractionForm from "./ConversationInteractionForm.vue";
+import PlanPanel from "./PlanPanel.vue";
 import TraceOverlay from "./TraceOverlay.vue";
 import { traceEventsToParts } from "../lib/group-run-presentation";
 import { useConversationTimelineFeed } from "../lib/use-timeline-feed";
@@ -279,8 +279,6 @@ const timelineEnabled = computed(() => supportsConversationTimelineV1(instance.v
 
 /** Direct is the single-participant Room: same read model, same shell. */
 const roomView = computed<RoomView>(() => ({
-  kind: "direct",
-  instanceId: directBotsStore.instanceId ?? null,
   conversationId: directBotsStore.activeConversationId ?? null,
   topicId: directBotsStore.activeTopicId ?? null,
   participants: bot.value
@@ -294,11 +292,6 @@ const roomView = computed<RoomView>(() => ({
         ...(bot.value.retired ? { retired: true } : {}),
       }]
     : [],
-  run: directBotsStore.activeRun,
-  capability: {
-    timelineV1: timelineEnabled.value,
-    roundtableV1: supportsRoundtableV1(instance.value),
-  },
 }));
 
 /** The live bubble exists only while the MemberTurn is known: the overlay is
@@ -608,9 +601,18 @@ function handleStopAll(): void {
       />
     </div>
 
+    <!-- The plan is part of the run's visible surface, exactly as the legacy
+         transcript rendered it. The timeline path keeps it above the composer. -->
+    <div
+      v-if="timelineEnabled && directBotsStore.planEntries?.length"
+      data-test="direct-plan-panel"
+      class="mx-auto w-full max-w-3xl px-4 lg:px-0"
+    >
+      <PlanPanel :entries="directBotsStore.planEntries" class="w-full" />
+    </div>
+
     <ConversationStatusBar
       v-if="timelineEnabled"
-      :room="roomView"
       :run="directBotsStore.activeRun"
       :member-turns="directBotsStore.activeMemberTurn ? [directBotsStore.activeMemberTurn] : []"
       :active-speaker-name="timelineSpeakerName"
@@ -623,6 +625,7 @@ function handleStopAll(): void {
     <ConversationPromptInput
       :disabled="bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
       :deliver="directBotsStore.sendPrompt"
+      :hide-stop="timelineEnabled"
     />
     <!-- History failure: Retry reloads the topic (history + durable run
       discovery). Shown whenever the transcript failed to converge — the

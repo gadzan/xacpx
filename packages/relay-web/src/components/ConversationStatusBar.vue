@@ -7,12 +7,7 @@ import type {
   MemberTurnSummaryDto,
 } from "@ganglion/xacpx-relay-protocol";
 import RoundStrip from "./RoundStrip.vue";
-import {
-  activeSpeakerTurnId,
-  isRunActive,
-  showsRoundStrip,
-  type RoomView,
-} from "../lib/room-view";
+import { activeSpeakerTurnId, isRunActive, showsRoundStrip } from "../lib/room-view";
 
 /**
  * One line above the composer (design §8.2, §8.5): who is speaking, how much of
@@ -22,7 +17,6 @@ import {
  * Stop all lives here — not in the composer — because it is a Run-level action.
  */
 const props = defineProps<{
-  room: RoomView;
   run?: ConversationRunDto | null;
   memberTurns?: MemberTurnSummaryDto[];
   round?: ConversationRoundSummaryDto;
@@ -57,13 +51,7 @@ const detailTarget = computed(() => ({
   ...(speakerTurnId.value ? { memberTurnId: speakerTurnId.value } : {}),
 }));
 
-const statusText = computed<string>(() => {
-  if (props.activeSpeakerName) {
-    return props.activeSpeakerName;
-  }
-  if (props.run?.state === "queued") return "";
-  return "";
-});
+const statusText = computed<string>(() => props.activeSpeakerName ?? "");
 </script>
 
 <template>

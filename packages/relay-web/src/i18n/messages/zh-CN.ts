@@ -1157,12 +1157,6 @@ export default {
     },
     target: {
       lead: "负责人",
-      everyone: "全体成员",
-      selectMembers: "选择成员",
-      sendTo: "发给谁",
-      memberCount: "已选 {count} 人",
-      noEligible: "该群组暂无可用成员。",
-      automatic: "自动协作",
       noRuntime: "无运行环境",
     },
     confirmEveryone: {
@@ -1171,11 +1165,9 @@ export default {
       remaining: "还有 {count} 人",
     },
     mentionConfirm: {
-      title: "提及未解析，仍要发送？",
-      body: "部分提及未能解析。确认发送吗？",
-    },
-    router: {
-      noInstance: "此实例没有公布自动协作能力。",
+      title: "提及未解析",
+      body: "该提及与本群成员不匹配。请修正或删除后再发送。",
+      keepEditing: "继续编辑",
     },
     run: {
       memberCompleted: "已完成",
@@ -1304,7 +1296,6 @@ export default {
       perMemberHint: "该群组让每个成员在自己的 Bot 工作区中工作，因此话题不需要选择工作区。工作区不同的成员可并行执行；共用同一工作区的成员仍会串行。",
     },
     prompt: {
-      placeholder: "给所选成员发消息...（{'@'}名称、{'@'}everyone）",
       placeholderShort: "发消息给成员…（{'@'} 指定）",
       createTopicFirst: "先新建话题再发消息",
     },

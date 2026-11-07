@@ -160,6 +160,10 @@ interface Harness {
   timelineRequests: Array<Record<string, unknown>>;
   promptRequests: Array<Record<string, unknown>>;
   cancelRequests: Array<Record<string, unknown>>;
+  /** `control.workspaces.list` hits: the session list warms agents, but the
+   *  Group pane is what loads the workspaces a member's runnability needs, and
+   *  mention resolution waits on both. */
+  workspaceListRequests: number;
 }
 
 async function openTimeline(
@@ -185,6 +189,7 @@ async function openTimeline(
     timelineRequests: [],
     promptRequests: [],
     cancelRequests: [],
+    workspaceListRequests: 0,
   };
 
   await page.addInitScript(() => {
@@ -214,6 +219,15 @@ async function openTimeline(
     let result: unknown;
     switch (type) {
       case "control.bots.list": result = { bots }; break;
+      // The pane loads the catalog on open so `@Name` can prove a member
+      // runnable; the workspaces fetch is the one a fresh session lacks.
+      case "control.agents.list": result = { agents: [{ name: "codex", driver: "codex" }] }; break;
+      case "control.workspaces.list": {
+        harness.workspaceListRequests += 1;
+        result = { workspaces: [{ name: "repo", cwd: "/repo" }] };
+        break;
+      }
+      case "control.agents.catalog": result = { agents: [] }; break;
       case "control.groups.list": result = { groups: [group] }; break;
       case "control.groups.get": result = { group: { ...group, topics: [topic] } }; break;
       case "control.topics.list": result = { topics: [topic] }; break;
@@ -444,5 +458,44 @@ test("refresh keeps the timeline and scrolling loads earlier rows / jumps back t
   await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("timeline-handoff")).toBeVisible();
   await expect(page.getByTestId("group-send-prompt-button")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("fresh session: an @member send resolves and targets exactly that member", async ({ page, hub }) => {
+  const errors = watchConsoleErrors(page);
+  const harness = await openTimeline(page, hub, { olderPages: false });
+  const textarea = page.getByTestId("group-composer-textarea");
+
+  // A fresh login carries no workspace catalog: the pane fetches it when it
+  // opens (no dialog needed), and only a loaded catalog proves the member
+  // runnable. Wait for that fetch before typing the mention.
+  await expect.poll(() => harness.workspaceListRequests).toBeGreaterThan(0);
+  await textarea.fill("@Bob check the lock ");
+  await expect(page.getByTestId("group-prompt-error")).toHaveCount(0);
+
+  await page.getByTestId("group-send-prompt-button").click();
+  await expect.poll(() => harness.promptRequests.length).toBe(1);
+  expect(harness.promptRequests[0]?.target).toEqual({ mode: "members", botIds: ["reviewer"] });
+  expect(errors).toEqual([]);
+});
+
+test("an unknown @token blocks the send, names the token, and keeps the draft", async ({ page, hub }) => {
+  const errors = watchConsoleErrors(page);
+  const harness = await openTimeline(page, hub, { olderPages: false });
+  const textarea = page.getByTestId("group-composer-textarea");
+
+  await textarea.fill("@Nobody check the lock ");
+  await page.getByTestId("group-send-prompt-button").click();
+
+  // The blocking surface names the token — never the member roster.
+  await expect(page.getByTestId("group-unresolved-token")).toHaveText("@Nobody");
+  expect(await textarea.inputValue()).toBe("@Nobody check the lock ");
+  // No prompt crossed the wire.
+  expect(harness.promptRequests).toEqual([]);
+  // Dismissing keeps both the draft and the block.
+  await page.getByTestId("composer-confirm-cancel").click();
+  await page.getByTestId("group-send-prompt-button").click();
+  await expect(page.getByTestId("group-unresolved-token")).toHaveText("@Nobody");
+  expect(harness.promptRequests).toEqual([]);
   expect(errors).toEqual([]);
 });

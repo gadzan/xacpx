@@ -19,27 +19,19 @@ const CONVERSATION = "conversation_1";
 const TOPIC = "topic_1";
 
 const DIRECT_ROOM: RoomView = {
-  kind: "direct",
-  instanceId: "i1",
   conversationId: CONVERSATION,
   topicId: TOPIC,
-  participants: [{ botId: "bot_a", name: "Ada", role: "Lead", enabled: true, lead: true }],
-  leadBotId: "bot_a",
-  capability: { timelineV1: true, roundtableV1: true },
+  participants: [{ botId: "bot_a", name: "Ada", role: "Lead", enabled: true }],
 };
 
 const GROUP_ROOM: RoomView = {
-  kind: "group",
-  instanceId: "i1",
   conversationId: CONVERSATION,
   topicId: TOPIC,
   participants: [
-    { botId: "bot_a", name: "Ada", role: "Lead", enabled: true, lead: true },
+    { botId: "bot_a", name: "Ada", role: "Lead", enabled: true },
     { botId: "bot_b", name: "Bob", role: "Reviewer", enabled: true },
     { botId: "bot_c", name: "Cara", role: "Tester", enabled: true },
   ],
-  leadBotId: "bot_a",
-  capability: { timelineV1: true, roundtableV1: true },
 };
 
 function message(seq: number, patch: Partial<ConversationMessageDto> = {}): ConversationMessageDto {

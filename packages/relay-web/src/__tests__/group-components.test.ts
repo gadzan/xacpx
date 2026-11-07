@@ -388,10 +388,6 @@ describe("Group Components", () => {
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
       await textarea.setValue("deploy");
       await flushPromises();
-      // A resolvable target is what enables the send button.
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      await flushPromises();
-      expect(groups.targetResolvable).toBe(true);
       await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       await flushPromises();
       // The draft survives while the outcome is pending.
@@ -1089,6 +1085,68 @@ describe("Group Components", () => {
       await wrapper.find('[data-test="group-composer-textarea"]').setValue("@Nobody ");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
       expect(groups.promptError).toBe("mentionUnresolved");
+    });
+
+    it("sends an @member draft to exactly that member", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("@Tester check this ");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({ mode: "members", botIds: ["bot_b"] });
+    });
+
+    it("blocks an unresolvable @token: names it, keeps the draft, sends nothing", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("@Nobody check this ");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      await flushPromises();
+      // The dialog names the token, not the member roster; nothing is sent.
+      expect(document.body.querySelector('[data-test="group-unresolved-token"]')?.textContent).toBe("@Nobody");
+      expect(wrapper.emitted("send")).toBeUndefined();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("@Nobody check this ");
+      // Dismissing keeps the block and the draft.
+      (document.body.querySelector('[data-test="composer-confirm-cancel"]') as HTMLElement).click();
+      await flushPromises();
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.emitted("send")).toBeUndefined();
+    });
+
+    it("renders the mention chip without a second literal @", () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const chip = wrapper.find('[data-test="group-mention-chip"]');
+      // The icon carries the glyph; the literal text is screen-reader only.
+      expect(chip.text().replace("@", "")).toBe("");
+    });
+
+    it("keeps the in-card Stop and emits cancel on the legacy path", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const stop = wrapper.find('[data-test="group-stop-run-button"]');
+      expect(stop.exists()).toBe(true);
+      await stop.trigger("click");
+      expect(wrapper.emitted("cancel")).toHaveLength(1);
     });
   });
 
@@ -2574,6 +2632,120 @@ describe("Group Components", () => {
       // No Run is active: the status bar stays out of the way.
       expect(wrapper.find('[data-test="conversation-status-bar"]').exists()).toBe(false);
       rpc.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("marks a prompt queued behind the Topic owner on the timeline", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const owner = {
+        id: "run_owner", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "req_owner", mode: "explicit" as const, state: "running" as const,
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.activeRun = owner;
+      const queuedMessage = {
+        id: "m_queued", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+        runId: "run_queued", role: "human" as const, content: "next", createdAt: "now",
+      };
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g",
+            topicId: "topic_1",
+            entries: [{
+              kind: "message",
+              key: "message:m_queued",
+              anchorSeq: 2,
+              runId: "run_queued",
+              message: queuedMessage,
+            }],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.conversationPrompt) {
+          return {
+            reused: false,
+            conversationId: "conversation_g",
+            topicId: "topic_1",
+            requestId: "req_queued",
+            message: queuedMessage,
+            run: {
+              id: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
+              requestMessageId: "m_queued", requestId: "req_queued", mode: "explicit",
+              state: "queued", profileRevision: 1, createdAt: "now",
+            },
+            memberTurns: [],
+            activeRunId: "run_owner",
+          } as never;
+        }
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      await groups.sendPromptTo("next", null);
+      await flushPromises();
+      // The accepted Run is queued behind the standing owner: its prompt is
+      // durable but has not started, so the timeline marks it as waiting.
+      expect(wrapper.find('[data-test="queued-prompt"]').exists()).toBe(true);
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("keeps exactly one Stop: the status bar on timeline daemons", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+        conversationId: "conversation_g", topicId: "topic_1",
+        entries: [], hasMoreBefore: false, hasMoreAfter: false,
+      } as never);
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="conversation-stop-all"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(false);
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("wires the legacy in-composer Stop to stopCurrentAndQueued", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      const stop = vi.spyOn(groups, "stopCurrentAndQueued").mockResolvedValue();
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      // Legacy daemon: no status bar, so the card owns the only Stop.
+      expect(wrapper.find('[data-test="conversation-stop-all"]').exists()).toBe(false);
+      const stopButton = wrapper.find('[data-test="group-stop-run-button"]');
+      expect(stopButton.exists()).toBe(true);
+      await stopButton.trigger("click");
+      expect(stop).toHaveBeenCalledTimes(1);
+      stop.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("loads the agent and workspace catalogs a fresh session has not fetched", async () => {
+      seedGroupSelection();
+      const instances = useInstancesStore();
+      instances.instances = instances.instances.map((row) => ({
+        ...row,
+        agents: [],
+        workspaces: [],
+      }));
+      const loadFormOptions = vi.spyOn(instances, "loadFormOptions").mockResolvedValue();
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(loadFormOptions).toHaveBeenCalledWith("i1");
+      loadFormOptions.mockRestore();
       wrapper.unmount();
     });
   });

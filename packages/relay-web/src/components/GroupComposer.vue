@@ -45,6 +45,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** `target` is null for the implicit lead: the server resolves it. */
   send: [text: string, media: PromptAttachmentRef[], target: ConversationTargetDto | null];
+  cancel: [];
 }>();
 
 const { t } = useI18n();
@@ -70,7 +71,6 @@ interface EveryoneConfirmation {
   revision: number;
   recipientIds: string[];
   text: string;
-  unresolvedConfirmed: boolean;
 }
 const everyoneConfirm = ref<EveryoneConfirmation | null>(null);
 /** Revision of the draft text, bumped on every user edit. The everyone dialog
@@ -85,7 +85,12 @@ const mentionActiveIdx = ref(0);
 const mentionDismissed = ref(false);
 const mentionBindings = ref<MentionBinding[]>([]);
 const mentionOwned = ref(false);
-const unresolvedConfirm = ref<{ key: string; text: string; target: string } | null>(null);
+/** The token the last boundary commit could not resolve, for the blocking
+ *  dialog. Cleared whenever the draft stops carrying an unresolvable token. */
+const lastUnresolvedToken = ref<string | null>(null);
+/** Blocking surface for an unresolvable mention: names the token, sends
+ *  nothing, keeps the draft. */
+const unresolvedConfirm = ref<{ key: string; text: string; target: string; token: string; reason: string } | null>(null);
 const sendBusy = ref(false);
 const attachments = useComposerStore();
 /** Below lg the completion selector is a bottom sheet, not a popover. */
@@ -359,8 +364,10 @@ function applyMention(text: string, endOfTextTerminates: boolean): boolean {
     groupsStore.setTarget({ mode: "members", botIds: [] });
     groupsStore.promptError = mentionErrorCode(applied.reason);
     groupsStore.promptErrorDetail = null;
+    lastUnresolvedToken.value = applied.displayToken;
     return false;
   }
+  lastUnresolvedToken.value = null;
   groupsStore.setTarget(applied.target);
   if (groupsStore.promptError?.startsWith("mention")) {
     groupsStore.promptError = null;
@@ -541,7 +548,7 @@ function sendTarget(discuss: boolean): ConversationTargetDto | null {
   return null;
 }
 
-async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnresolved = false, discuss = false): Promise<void> {
+async function handleSend(confirmedEveryone?: EveryoneConfirmation, discuss = false): Promise<void> {
   if (sendBusy.value || !baseCanSend.value) return;
   if (discuss && !discussionReady.value) return;
   if (confirmedEveryone && (confirmedEveryone.key !== draftKey.value
@@ -552,17 +559,29 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
   if (!text && staged.media.length === 0) return;
   if (attachments.uploading) return;
   // The token under the caret is now final, so the structured target must
-  // reflect it before the target is derived.
+  // reflect it before the target is derived. A token that resolves to nothing
+  // blocks the send outright: falling back to the implicit lead would
+  // silently route an @-targeted message to a member the user never named.
+  // The draft is kept and no prompt is emitted; fixing or removing the token
+  // re-arms the send. `applyMention` already surfaced the reason as
+  // `mentionUnresolved` / `mentionAmbiguous` / `mentionDisabled` /
+  // `mentionRemoved`.
   const resolved = commitMentionAtBoundary();
-  confirmedUnresolved ||= confirmedEveryone?.unresolvedConfirmed === true;
-  if (!resolved && !confirmedUnresolved) {
-    unresolvedConfirm.value = { key: draftKey.value, text: promptText.value, target: JSON.stringify(selection.value) };
+  if (!resolved) {
+    const reason = groupsStore.promptError?.startsWith("mention") ? groupsStore.promptError : "mentionUnresolved";
+    unresolvedConfirm.value = {
+      key: draftKey.value,
+      text: promptText.value,
+      target: JSON.stringify(selection.value),
+      token: lastUnresolvedToken.value ?? "",
+      reason,
+    };
     return;
   }
   if (!discuss && isEveryone.value && !hasSlashCommand(text)) {
     const recipientIds = everyoneRecipients.value.map(member => member.id);
     if (!recipientIds.length) { groupsStore.promptError = "targetEmpty"; return; }
-    const snapshot = { key: draftKey.value, revision: draftRevision.value, recipientIds, text: promptText.value, unresolvedConfirmed: confirmedUnresolved };
+    const snapshot = { key: draftKey.value, revision: draftRevision.value, recipientIds, text: promptText.value };
     if (!confirmedEveryone || JSON.stringify(confirmedEveryone) !== JSON.stringify(snapshot)) {
       everyoneConfirm.value = snapshot;
       return;
@@ -609,7 +628,15 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, confirmedUnr
 
 /** 讨论: send the same draft as a one-round discussion. */
 function handleDiscuss(): void {
-  void handleSend(undefined, false, true);
+  void handleSend(undefined, true);
+}
+
+/** The legacy in-card Stop forwards to the pane, which owns the Run-level
+ *  `stopCurrentAndQueued` call (the status bar's Stop all uses the same path).
+ *  The card already owns the cancel fences: it shows Stop only while a Run is
+ *  active and disables it while a cancel is in flight. */
+function handleCancel(): void {
+  emit("cancel");
 }
 
 async function onPaste(e: ClipboardEvent): Promise<void> {
@@ -626,18 +653,16 @@ async function onDrop(e: DragEvent): Promise<void> {
   await attachments.addFiles(files, attachKey.value);
 }
 
-function confirmUnresolved(): void {
-  const pending = unresolvedConfirm.value;
+/** Dismiss the blocking unresolved-mention surface. The send stays blocked and
+ *  the draft stays: only fixing or removing the token re-arms the send. */
+function dismissUnresolved(): void {
   unresolvedConfirm.value = null;
-  if (!pending || pending.key !== draftKey.value || pending.text !== promptText.value
-    || pending.target !== JSON.stringify(selection.value)) return;
-  void handleSend(undefined, true);
 }
 
 watch(() => JSON.stringify(everyoneRecipients.value), () => {
   if (everyoneConfirm.value) everyoneConfirm.value = {
     key: draftKey.value, text: promptText.value, revision: draftRevision.value,
-    recipientIds: everyoneRecipients.value.map(member => member.id), unresolvedConfirmed: everyoneConfirm.value.unresolvedConfirmed,
+    recipientIds: everyoneRecipients.value.map(member => member.id),
   };
 });
 watch(() => JSON.stringify(selection.value), () => {
@@ -677,9 +702,12 @@ function handleRetry(): void {
       <p v-if="everyoneRecipients.length > 5" class="mt-2 text-xs text-fg-muted">{{ $t('group.confirmEveryone.remaining', { count: everyoneRecipients.length - 5 }) }}</p>
       <p v-if="everyoneRecipients.find(member => member.lead)" class="mt-2 text-xs text-fg-muted">{{ $t('group.target.lead') }}: {{ everyoneRecipients.find(member => member.lead)?.name }}</p>
     </ComposerConfirmDialog>
-    <ComposerConfirmDialog v-if="unresolvedConfirm" :title="$t('group.mentionConfirm.title')" :confirm-label="$t('group.confirmEveryone.send')" @cancel="unresolvedConfirm = null" @confirm="confirmUnresolved">
+    <ComposerConfirmDialog v-if="unresolvedConfirm" :title="$t('group.mentionConfirm.title')" :confirm-label="$t('group.mentionConfirm.keepEditing')" @cancel="dismissUnresolved" @confirm="dismissUnresolved">
       <p>{{ $t('group.mentionConfirm.body') }}</p>
-      <p class="mt-2 text-xs text-fg-muted">{{ everyoneRecipients.map(member => member.name).join(", ") }}</p>
+      <!-- Names the token that could not resolve (never the member roster):
+           fixing or removing exactly this token re-arms the send. -->
+      <p data-test="group-unresolved-token" class="mt-2 text-xs font-medium text-fg">{{ unresolvedConfirm.token }}</p>
+      <p class="mt-2 text-xs text-fg-muted">{{ $t(`bot.errors.${unresolvedConfirm.reason}`) }}</p>
     </ComposerConfirmDialog>
 
     <ConversationComposer
@@ -698,6 +726,7 @@ function handleRetry(): void {
       send-test-id="group-send-prompt-button"
       stop-test-id="group-stop-run-button"
       @send="handleSend()"
+      @cancel="handleCancel"
       @keydown="onKeydown"
       @input="onInput"
       @paste="onPaste"
@@ -720,12 +749,11 @@ function handleRetry(): void {
           class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50"
           @click="startMention"
         >
-          <AtSign :size="13" />
-          <span>@</span>
+          <AtSign :size="13" aria-hidden="true" />
         </button>
         <button
-          v-if="roundtableSupported"
           type="button"
+          v-if="roundtableSupported"
           data-test="group-discuss-chip"
           :title="discussionReady ? $t('conversation.composer.discussHint') : $t('conversation.composer.discussNeedsSpeakers')"
           :aria-label="$t('conversation.composer.discuss')"

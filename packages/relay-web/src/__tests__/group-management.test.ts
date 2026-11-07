@@ -678,6 +678,10 @@ describe("Group management", () => {
 
     it("offers a retry when the first Topic cannot load workspaces", async () => {
       seedSelectedGroup([]);
+      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
+      await flushPromises();
+      // Mount with a catalog so the pane's own bootstrap does not consume the
+      // seeded failure; then make the dialog's fetch the first one to fail.
       useInstancesStore().instances[0]!.workspaces = [];
       let attempts = 0;
       routes.set("control.workspaces.list", () => {
@@ -685,8 +689,7 @@ describe("Group management", () => {
         if (attempts === 1) throw transportError("relay_timeout");
         return { workspaces: [{ name: "repo", cwd: "/repo" }] };
       });
-      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
-      await flushPromises();
+
 
       await wrapper.find('[data-test="group-first-topic-button"]').trigger("click");
       await flushPromises();

@@ -1160,12 +1160,6 @@ export default {
     },
     target: {
       lead: "Lead",
-      everyone: "Everyone",
-      selectMembers: "Select members",
-      sendTo: "Send to",
-      memberCount: "{count} selected",
-      noEligible: "No enabled members in this group.",
-      automatic: "Automatic collaboration",
       noRuntime: "No runtime",
     },
     confirmEveryone: {
@@ -1174,11 +1168,9 @@ export default {
       remaining: "{count} more",
     },
     mentionConfirm: {
-      title: "Send with unresolved mention?",
-      body: "Some mentions could not be resolved. Send anyway?",
-    },
-    router: {
-      noInstance: "This instance has not advertised automatic collaboration.",
+      title: "Unresolved mention",
+      body: "This mention does not match a member of this group. Fix or remove it, then send again.",
+      keepEditing: "Keep editing",
     },
     run: {
       memberCompleted: "done",
@@ -1307,7 +1299,6 @@ export default {
       perMemberHint: "This Group runs every member in its own Bot workspace, so a Topic has no workspace to pick. Members in different workspaces run in parallel; members sharing one workspace are serialized.",
     },
     prompt: {
-      placeholder: "Message the selected members... ({'@'}name, {'@'}everyone)",
       /** Below 640px: the full placeholder wraps to two lines next to Stop/Send. */
       placeholderShort: "Message members… ({'@'} to mention)",
       createTopicFirst: "Create a topic to start chatting",

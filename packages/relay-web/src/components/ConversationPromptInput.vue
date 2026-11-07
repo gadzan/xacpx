@@ -34,6 +34,10 @@ const props = defineProps<{
     mentions: AgentMention[],
     media: PromptAttachmentRef[],
   ) => Promise<"accepted" | "rejected" | "uncertain" | "orphaned">;
+  /** The status bar above the composer owns Stop all, so the card only offers
+   *  Send. An old daemon keeps the legacy transcript (and no status bar), so
+   *  it keeps the in-card Stop. */
+  hideStop?: boolean;
 }>();
 const emit = defineEmits<{
   send: [text: string, mentions?: AgentMention[], media?: PromptAttachmentRef[]];
@@ -500,6 +504,7 @@ function onInput(): void {
       :attachments-send-disabled="attachments.uploading"
       :send-disabled="false"
       :placeholder="composerPlaceholder"
+      :hide-stop="hideStop"
       send-test-id="send-prompt-button"
       stop-test-id="stop-run-button"
       combobox

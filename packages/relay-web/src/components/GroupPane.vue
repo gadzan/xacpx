@@ -14,7 +14,6 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import {
   supportsConversationTimelineV1,
   supportsGroupTopicIsolation,
-  supportsRoundtableV1,
   useInstancesStore,
 } from "../stores/instances";
 import GroupTranscript from "./GroupTranscript.vue";
@@ -147,7 +146,17 @@ const bots = computed<BotSummaryDto[]>(() => {
 // a later refresh from anywhere re-arms the status, and a failed refresh clears
 // it, so stale rows can never read as every member disabled.
 watch(() => groupsStore.instanceId, (instId) => {
-  if (instId) void directBotsStore.loadBots(instId).catch(() => null);
+  if (!instId) return;
+  void directBotsStore.loadBots(instId).catch(() => null);
+  // Mention resolution needs each member's agent + workspace to prove it is
+  // runnable: an empty catalog would mark every member "No runtime" and turn a
+  // valid `@Name` into an unresolved mention. A fresh login has neither list
+  // (only the session list pulls agents), so load them here and reuse whatever
+  // the instance already carries. Failures degrade to the previous behaviour.
+  const instance = instancesStore.byId(instId);
+  if (!instance?.agents.length || !instance.workspaces.length) {
+    void instancesStore.loadFormOptions(instId).catch(() => null);
+  }
 }, { immediate: true });
 // Member order follows the group's own botIds: the collage falls back to that
 // order for members nobody has heard from yet.
@@ -206,6 +215,11 @@ function handleSend(
   void groupsStore.sendPromptTo(text, target, media);
 }
 
+/** Legacy path only: the status bar owns Stop all on the timeline path. */
+function handleCancel(): void {
+  void groupsStore.stopCurrentAndQueued();
+}
+
 function handleStopAll(): void {
   void groupsStore.stopCurrentAndQueued();
 }
@@ -220,11 +234,9 @@ const instance = computed(() =>
   groupsStore.instanceId ? instancesStore.byId(groupsStore.instanceId) : undefined);
 const timelineEnabled = computed(() => supportsConversationTimelineV1(instance.value));
 
-/** One Room for the timeline, status bar and (in P1c) the drawer. Direct is the
+/** One Room for the timeline (P1c adds the run-wide drawer). Direct is the
  *  single-participant case of the same shape. */
 const roomView = computed<RoomView>(() => ({
-  kind: "group",
-  instanceId: groupsStore.instanceId ?? null,
   conversationId: groupsStore.activeConversationId ?? null,
   topicId: groupsStore.activeTopicId ?? null,
   participants: memberBots.value.map((bot) => ({
@@ -235,14 +247,7 @@ const roomView = computed<RoomView>(() => ({
     ...(bot.avatar ? { avatar: bot.avatar } : {}),
     enabled: bot.enabled,
     ...(bot.retired ? { retired: true } : {}),
-    ...(group.value?.leadBotId === bot.id ? { lead: true } : {}),
   })),
-  ...(group.value?.leadBotId ? { leadBotId: group.value.leadBotId } : {}),
-  run: groupsStore.activeRun,
-  capability: {
-    timelineV1: timelineEnabled.value,
-    roundtableV1: supportsRoundtableV1(instance.value),
-  },
 }));
 
 /** Live text keyed by MemberTurn: coalesced streamed prose only. The durable
@@ -534,6 +539,7 @@ const worktreeRunId = computed(() => {
       :loading="timelineFeed.loading.value"
       :loading-older="timelineFeed.loadingOlder.value"
       :error="timelineFeed.error.value"
+      :is-run-queued="groupsStore.isRunQueued"
       :load-older="timelineFeed.loadOlder"
       @open-detail="openTimelineDetail"
     />
@@ -543,7 +549,6 @@ const worktreeRunId = computed(() => {
 
     <ConversationStatusBar
       v-if="timelineEnabled && !needsFirstTopic"
-      :room="roomView"
       :run="groupsStore.activeRun"
       :member-turns="groupsStore.memberTurns"
       :round="timelineFeed.activeRound.value"
@@ -560,6 +565,7 @@ const worktreeRunId = computed(() => {
       :send-outcome="sendPromptOutcome"
       :hide-stop="timelineEnabled"
       @send="handleSend"
+      @cancel="handleCancel"
     />
     <div v-if="groupsStore.historyError && groupsStore.activeTopicId"
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
