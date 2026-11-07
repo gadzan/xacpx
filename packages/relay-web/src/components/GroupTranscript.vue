@@ -39,6 +39,7 @@ import {
 import { pushToast } from "../lib/use-toasts";
 import { confirm } from "../lib/use-confirm";
 import {
+  mergeLiveTraceParts,
   projectGroupTranscript,
   traceEventsToParts,
   type GroupRunRecord,
@@ -637,11 +638,29 @@ const detailLive = computed(() => {
   if (live && live.attempt !== undefined && live.attempt !== selectedAttempt.value) return undefined;
   return live;
 });
-const detailParts = computed<TurnPartDto[] | undefined>(() => {
-  if (detailReplay.value?.parts.length || detailPage.value?.events.length) return detailReplay.value?.parts;
-  return detailLive.value?.parts
-    ?? (detailReplay.value?.parts !== undefined ? [] : undefined);
+/** Same terminal rule as `GroupRunDetailContent.terminalState`: a member's
+ *  completed/failed/cancelled state wins, otherwise the run's state decides.
+ *  `indeterminate` is SEALED, not finished — it may still produce evidence, so
+ *  it must not discard the live tail. */
+const detailTerminal = computed(() => {
+  const member = openDetail.value?.memberTurn?.state;
+  const state = member === "completed" || member === "failed" || member === "cancelled"
+    ? member
+    : openDetail.value?.run.state;
+  return state === "completed" || state === "failed" || state === "cancelled";
 });
+/** Durable replay plus the live hub tail: the drawer must show a new event
+ *  within 150ms, so live parts are merged in rather than dropped while the
+ *  durable page refetches (500ms) behind them. `mergeLiveTraceParts` upserts
+ *  tools by id and aligns prose block by block, so overlap never duplicates
+ *  rows; once a terminal member has committed events the durable page is
+ *  authoritative again. */
+const detailParts = computed<TurnPartDto[] | undefined>(() =>
+  mergeLiveTraceParts(
+    detailReplay.value?.parts,
+    detailLive.value?.parts,
+    detailTerminal.value ? { terminal: true } : undefined,
+  ));
 
 const detailRecordingState = computed<TraceReplayStatus | undefined>(() => {
   if (detailPage.value?.recordingState) return detailPage.value.recordingState;

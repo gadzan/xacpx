@@ -15,6 +15,7 @@ import GroupPane from "../components/GroupPane.vue";
 import GroupComposer from "../components/GroupComposer.vue";
 import GroupTranscript from "../components/GroupTranscript.vue";
 import InstanceTree from "../components/InstanceTree.vue";
+import GroupRunDetailContent from "../components/GroupRunDetailContent.vue";
 
 const BOTS: BotSummaryDto[] = [
   { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
@@ -1338,6 +1339,230 @@ describe("Group Components", () => {
       const anchor = wrapper.findComponent({ name: "TraceOverlay" }).props("anchorEl") as HTMLElement | null;
       expect(anchor?.isConnected).toBe(true);
       expect(anchor?.closest('[data-test="agent-turn-row"]')?.getAttribute("data-member-turn-id")).toBe("turn_a");
+      wrapper.unmount();
+    });
+
+    it("shows a hub event in the Live Stack without waiting for the durable refetch", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const toolStep = (id: string, title: string) => ({
+        toolCallId: id, toolName: "read", kind: "read" as const, title, status: "success" as const,
+      });
+      const step = (id: string, title: string): TurnPartDto => ({ type: "tool", step: toolStep(id, title) });
+      // The durable page lags the hub: it only holds the first tool.
+      groups.tracePages = {
+        "i1:conversation_g:topic_1:turn_a:1": {
+          events: [{ seq: 1, createdAt: "now", kind: "tool", payload: { step: toolStep("tc1", "Durable tool") } }],
+          nextSeq: 1, hasMore: false, recordingState: "recording", loading: false, error: null,
+        },
+      };
+      // The hub has already delivered a newer tool the page has not committed.
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [step("tc1", "Durable tool"), step("tc2", "Hub tool")],
+          status: "streaming", startedAt: 1, revision: 2,
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((bot) => GROUP.botIds.includes(bot.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+
+      // Selection is synchronous: the drawer already renders the hub tool with
+      // no trace RPC and no 500ms durable refetch (the page still has 1 event).
+      const content = wrapper.findComponent(GroupRunDetailContent);
+      const titles = (content.props("parts") as TurnPartDto[])
+        .map((part) => part.type === "tool" ? part.step.title : "");
+      expect(titles).toEqual(["Durable tool", "Hub tool"]);
+      expect(groups.tracePages["i1:conversation_g:topic_1:turn_a:1"]!.events).toHaveLength(1);
+      // The fixed stack paints it inside the coalescing window (120ms < 150ms).
+      // The drawer is teleported to <body>, so query the document.
+      await vi.waitFor(() => {
+        expect(document.body.querySelector('[data-test="trace-live-item"]')?.textContent)
+          .toContain("Hub tool");
+      });
+      wrapper.unmount();
+    });
+
+    it("renders overlapping prose-tool-prose through both channels as two paragraphs, not four", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const durableStep = { toolCallId: "tc1", toolName: "read", kind: "read", title: "Durable tool", status: "success" } as const;
+      groups.tracePages = {
+        "i1:conversation_g:topic_1:turn_a:1": {
+          events: [
+            { seq: 1, createdAt: "now", kind: "text", payload: { text: "Alpha narrative" } },
+            { seq: 2, createdAt: "now", kind: "tool", payload: { step: durableStep } },
+            { seq: 3, createdAt: "now", kind: "text", payload: { text: "Omega narrative" } },
+          ],
+          nextSeq: 3, hasMore: false, recordingState: "recording", loading: false, error: null,
+        },
+      };
+      // The hub carries the same turn: identical prose, so the merge must align
+      // block by block instead of appending a second copy of each paragraph.
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "Alpha narrative" },
+            { type: "tool", step: { ...durableStep, status: "running" } },
+            { type: "text", text: "Omega narrative" },
+          ],
+          status: "streaming", startedAt: 1, revision: 2,
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((bot) => GROUP.botIds.includes(bot.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const narratives = [...document.body.querySelectorAll('[data-test="group-trace-narrative"]')]
+        .map((node) => node.textContent);
+      expect(narratives).toEqual(["Alpha narrative", "Omega narrative"]);
+      expect(document.body.querySelectorAll('[data-test="group-trace-step"]')).toHaveLength(1);
+      wrapper.unmount();
+    });
+
+    it("drops a stale live tail for a terminal member with committed events", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "completed",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", createdAt: "now",
+        },
+      };
+      const durableStep = { toolCallId: "tc1", toolName: "read", kind: "read", title: "Durable tool", status: "success" } as const;
+      groups.tracePages = {
+        "i1:conversation_g:topic_1:turn_a:1": {
+          events: [
+            { seq: 1, createdAt: "now", kind: "text", payload: { text: "Committed output" } },
+            { seq: 2, createdAt: "now", kind: "tool", payload: { step: durableStep } },
+          ],
+          nextSeq: 2, hasMore: false, recordingState: "complete", loading: false, error: null,
+        },
+      };
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "Committed output" },
+            { type: "tool", step: durableStep },
+            { type: "text", text: "STALE TAIL" },
+          ],
+          status: "streaming", startedAt: 1, revision: 2,
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((bot) => GROUP.botIds.includes(bot.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const card = document.body.querySelector('[data-test="group-detail-card"]')!;
+      expect(card.querySelectorAll('[data-test="group-trace-narrative"]')).toHaveLength(1);
+      expect(card.querySelectorAll('[data-test="group-trace-step"]')).toHaveLength(1);
+      expect(card.textContent).toContain("Committed output");
+      expect(card.textContent).not.toContain("STALE TAIL");
+      wrapper.unmount();
+    });
+
+    it("keeps the live tail for an indeterminate member with a committed page", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      // Sealed, not finished: both surfaces agree indeterminate is non-terminal,
+      // so evidence that arrives after the committed page is not discarded.
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "indeterminate",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "indeterminate", createdAt: "now",
+        },
+      };
+      const durableStep = { toolCallId: "tc1", toolName: "read", kind: "read", title: "Durable tool", status: "success" } as const;
+      groups.tracePages = {
+        "i1:conversation_g:topic_1:turn_a:1": {
+          events: [
+            { seq: 1, createdAt: "now", kind: "text", payload: { text: "Committed output" } },
+            { seq: 2, createdAt: "now", kind: "tool", payload: { step: durableStep } },
+          ],
+          nextSeq: 2, hasMore: false, recordingState: "interrupted", loading: false, error: null,
+        },
+      };
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "Committed output" },
+            { type: "tool", step: durableStep },
+            { type: "text", text: "post-seal evidence" },
+          ],
+          status: "streaming", startedAt: 1, revision: 3,
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((bot) => GROUP.botIds.includes(bot.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const card = document.body.querySelector('[data-test="group-detail-card"]')!;
+      expect(card.querySelectorAll('[data-test="group-trace-narrative"]')).toHaveLength(2);
+      expect(card.textContent).toContain("Committed output");
+      expect(card.textContent).toContain("post-seal evidence");
+      // Non-terminal, so the fixed stack is still the running form.
+      expect(card.querySelector('[data-test="trace-live-summary"]')).toBeNull();
       wrapper.unmount();
     });
 

@@ -69,7 +69,30 @@ describe("trace drawer state", () => {
     expect(appendedTraceNodes(["a", "b"], ["z"])).toBe(0);
   });
 
-  it("keeps an expanded step across appends and resets it on an attempt switch", async () => {
+  it("restores a scope's expansion when the reader returns to it (1 -> 2 -> 1)", async () => {
+    const parts = [tool(0), tool(1)];
+    const wrapper = mountContent(parts);
+    await flushPromises();
+    await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
+    expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
+
+    // Attempt 2 starts empty: a retry never inherits attempt 1's expansion.
+    await wrapper.setProps({ attempt: 2, parts });
+    await flushPromises();
+    expect(wrapper.find('[data-test="tool-step-body"]').exists()).toBe(false);
+    await wrapper.findAll('[data-test="group-trace-step-head"]')[1]!.trigger("click");
+    expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 1");
+
+    // Back to attempt 1: its own expansion is restored, attempt 2's is not shown.
+    await wrapper.setProps({ attempt: 1, parts });
+    await flushPromises();
+    const bodies = wrapper.findAll('[data-test="tool-step-body"]');
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]!.text()).toContain("Recorded output 0");
+    wrapper.unmount();
+  });
+
+  it("keeps an expanded step across appends inside the same scope", async () => {
     const wrapper = mountContent([tool(0), tool(1)]);
     await flushPromises();
     await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
@@ -79,10 +102,6 @@ describe("trace drawer state", () => {
     await flushPromises();
     expect(wrapper.findAll('[data-test="group-trace-step"]')).toHaveLength(22);
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
-
-    await wrapper.setProps({ attempt: 2, parts: [tool(0), tool(1)] });
-    await flushPromises();
-    expect(wrapper.find('[data-test="tool-step-body"]').exists()).toBe(false);
     wrapper.unmount();
   });
 

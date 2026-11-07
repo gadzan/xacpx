@@ -1,4 +1,4 @@
-import type { ToolDetailDto } from "@ganglion/xacpx-relay-protocol";
+import type { ToolDetailDto, ToolStepKind } from "@ganglion/xacpx-relay-protocol";
 import type { TurnPresentationItem } from "./turn-presentation";
 import { resolveSubagentStatus } from "./subagent-status";
 import { subagentDetailOutput } from "./subagent-trace";
@@ -24,11 +24,73 @@ export interface TraceLiveItem {
   /** Current full-list node key, used to reveal + highlight the row. */
   targetKey: string;
   kind: TraceLiveKind;
+  /** Coarse tool kind, so a row can name the step type in text (not only icon). */
+  toolKind?: ToolStepKind;
   title: string;
   status?: "running" | "success" | "error";
   /** Last one or two lines of the event's output, never the full text. */
   preview?: string;
   duration?: string;
+}
+
+/** Coalescing window for Live Stack repaints. Kept under the 150ms freshness
+ *  contract: hub parts are merged synchronously, so this is the only delay. */
+export const TRACE_LIVE_THROTTLE_MS = 120;
+
+/** Live Stack rows render a visible type label, not just the aria-hidden icon. */
+export function traceLiveTypeLabelKey(item: Pick<TraceLiveItem, "kind" | "toolKind">): string {
+  switch (item.kind) {
+    case "reasoning": return "group.detail.live.reasoning";
+    case "markdown": return "group.detail.live.text";
+    case "agent-message": return "group.detail.live.message";
+    case "subagent": return "tools.subagent";
+    default:
+      if (item.toolKind === "delete" || item.toolKind === "move" || item.toolKind === "fetch") {
+        return "tools.kinds.other";
+      }
+      return `tools.kinds.${item.toolKind ?? "other"}`;
+  }
+}
+
+/**
+ * Explicit output-rate gate for animation suppression (design §4.5).
+ * `arrivals` holds epoch-ms stamps of NEW events (same-key streaming updates are
+ * not events). More than 10 in the trailing second means the reader is watching
+ * a burst: the stack updates content but stops animating.
+ */
+export const TRACE_LIVE_RATE_WINDOW_MS = 1_000;
+export const TRACE_LIVE_RATE_LIMIT = 10;
+
+export function traceLiveBurstActive(
+  arrivals: readonly number[],
+  now: number,
+  windowMs = TRACE_LIVE_RATE_WINDOW_MS,
+  limit = TRACE_LIVE_RATE_LIMIT,
+): boolean {
+  let count = 0;
+  for (let index = arrivals.length - 1; index >= 0; index--) {
+    if (now - arrivals[index]! > windowMs) break;
+    count += 1;
+  }
+  return count > limit;
+}
+
+/**
+ * How many genuinely NEW events the tail gained between two observations.
+ * Identities come from `traceNodeIdentity`, so a streaming markdown paragraph
+ * growing longer (same `markdown:<start>`) or a same-key status update counts
+ * as zero. Only a tail append counts; a head prepend (load-earlier page) and a
+ * wholesale replacement (attempt switch) both reset the baseline with zero.
+ */
+export function appendedTraceNodeCount(
+  previous: readonly string[],
+  next: readonly string[],
+): number {
+  if (next.length <= previous.length) return 0;
+  for (let index = 0; index < previous.length; index++) {
+    if (next[index] !== previous[index]) return 0;
+  }
+  return next.length - previous.length;
 }
 
 /** Rows the fixed stack can show; the full list keeps the same tail rendered. */
@@ -81,6 +143,7 @@ function itemOf(
       return {
         ...base,
         kind: "tool",
+        toolKind: node.step.kind,
         title: node.step.title,
         status: node.step.status,
         ...(preview ? { preview } : {}),
@@ -95,6 +158,7 @@ function itemOf(
         title: node.step.title,
         status: resolveSubagentStatus(node.step, node.children),
         ...(preview ? { preview } : {}),
+        ...(node.step.durationMs !== undefined ? { duration: formatStepDuration(node.step.durationMs) } : {}),
       };
     }
     case "reasoning": {
