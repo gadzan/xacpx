@@ -188,6 +188,28 @@ describe("trace live stack", () => {
     wrapper.unmount();
   });
 
+  it("clears an active burst on terminal so the next turn animates", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const nodes = [toolNode("t0")];
+    const wrapper = mount(TraceLiveStack, { props: { nodes: [...nodes], streaming: true } });
+    for (let index = 1; index <= 11; index++) {
+      nodes.push(toolNode(`t${index}`));
+      await wrapper.setProps({ nodes: [...nodes] });
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(wrapper.find(".relative").classes()).toContain("trace-live--static");
+
+    // The run settles while the burst is still active.
+    await wrapper.setProps({ terminal: "done" });
+    expect(wrapper.find('[data-test="trace-live-summary"]').exists()).toBe(true);
+
+    // The next turn starts running again without any new arrival in between.
+    await wrapper.setProps({ terminal: null, streaming: true });
+    expect(wrapper.find(".relative").classes()).not.toContain("trace-live--static");
+    wrapper.unmount();
+  });
+
   it("keeps the previous rows when a new event enters", async () => {
     const wrapper = mount(TraceLiveStack, {
       props: { nodes: [toolNode("a"), toolNode("b")], streaming: true },

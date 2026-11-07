@@ -120,6 +120,9 @@ function schedule(): void {
     pending = undefined;
     arrivals = [];
     lastNodeIds = null;
+    // A burst that was active when the run settled must not freeze the next
+    // turn's entrance animations.
+    burst.value = false;
     return;
   }
   const next = traceLiveItems(props.nodes, limit.value, labels.value, props.streaming);

@@ -1510,6 +1510,62 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("keeps the live tail for an indeterminate member with a committed page", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      // Sealed, not finished: both surfaces agree indeterminate is non-terminal,
+      // so evidence that arrives after the committed page is not discarded.
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "indeterminate",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "indeterminate", createdAt: "now",
+        },
+      };
+      const durableStep = { toolCallId: "tc1", toolName: "read", kind: "read", title: "Durable tool", status: "success" } as const;
+      groups.tracePages = {
+        "i1:conversation_g:topic_1:turn_a:1": {
+          events: [
+            { seq: 1, createdAt: "now", kind: "text", payload: { text: "Committed output" } },
+            { seq: 2, createdAt: "now", kind: "tool", payload: { step: durableStep } },
+          ],
+          nextSeq: 2, hasMore: false, recordingState: "interrupted", loading: false, error: null,
+        },
+      };
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [
+            { type: "text", text: "Committed output" },
+            { type: "tool", step: durableStep },
+            { type: "text", text: "post-seal evidence" },
+          ],
+          status: "streaming", startedAt: 1, revision: 3,
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((bot) => GROUP.botIds.includes(bot.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+      const card = document.body.querySelector('[data-test="group-detail-card"]')!;
+      expect(card.querySelectorAll('[data-test="group-trace-narrative"]')).toHaveLength(2);
+      expect(card.textContent).toContain("Committed output");
+      expect(card.textContent).toContain("post-seal evidence");
+      // Non-terminal, so the fixed stack is still the running form.
+      expect(card.querySelector('[data-test="trace-live-summary"]')).toBeNull();
+      wrapper.unmount();
+    });
+
     it("keeps a settled reply in one bubble with blank lines preserved", async () => {
       const groups = seedGroupSelection();
       groups.messages = [
