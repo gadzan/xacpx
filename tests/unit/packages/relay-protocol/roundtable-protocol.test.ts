@@ -48,9 +48,11 @@ test("legacy targets stay valid and mixed-shape members still work", () => {
   expect(promptWith({ mode: "everyone", rounds: 1 })).toBeNull();
 });
 
-test("roundtable capability is advertised without the P1 timeline capability", () => {
+test("roundtable and timeline capabilities share stable, additive wire names", () => {
   expect(RELAY_CAPABILITIES.roundtableV1).toBe("conversations.roundtable.v1");
-  expect(Object.values(RELAY_CAPABILITIES)).not.toContain("conversations.timeline.v1");
+  // P1a adds the timeline capability next to roundtable; neither renames the
+  // other, and an old hub/clients ignore the unknown string.
+  expect(RELAY_CAPABILITIES.conversationTimelineV1).toBe("conversations.timeline.v1");
 });
 
 const legacyRun = {
