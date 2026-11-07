@@ -687,6 +687,10 @@ export const useGroupsStore = defineStore("groups", () => {
     for (const turn of detail.memberTurns) members.set(turn.id, mergeMemberTurn(members.get(turn.id) ?? null, turn));
     const merged = { ...detail, ...mergeRun(previous ?? null, detail), memberTurns: [...members.values()] };
     runHistoryDetails.value = { ...runHistoryDetails.value, [key]: merged };
+    // Any drawer waiting on an uncached Run observes this revision, which is
+    // also what `clearRunHistory` bumps. Without it, an adopt lands silently
+    // and the pending open is never retried.
+    runHistoryDetailRevision.value += 1;
   }
 
   /** A durable trace page as the wire returns it; the local cache keeps the

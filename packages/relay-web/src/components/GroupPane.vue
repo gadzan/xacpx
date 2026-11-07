@@ -8,12 +8,14 @@ import type {
   ConversationTargetDto,
   MemberTurnSummaryDto,
   PromptAttachmentRef,
+  InteractionValueDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import {
   supportsConversationTimelineV1,
   supportsGroupTopicIsolation,
+  supportsRunsCancelMember,
   useInstancesStore,
 } from "../stores/instances";
 import GroupTranscript from "./GroupTranscript.vue";
@@ -42,6 +44,8 @@ import {
 } from "../lib/room-view";
 import { textBubblesOf } from "../lib/turn-presentation";
 import { mergeLiveTraceParts, traceEventsToParts } from "../lib/group-run-presentation";
+import { compareMemberTurns, runBudgetOf } from "../lib/run-detail";
+import { pushToast } from "../lib/use-toasts";
 
 const emit = defineEmits<{
   /** Mobile top bar's ←: back to the home list (DashboardView clears the selection). */
@@ -289,10 +293,13 @@ const activeSpeakerName = computed(() => {
   return turn ? memberBots.value.find((bot) => bot.id === turn.botId)?.name : undefined;
 });
 
-// --- Per-member detail drawer (P1c owns the run-wide drawer and the merge) ---
-const traceTarget = ref<{ run: ConversationRunDto; memberTurn: MemberTurnSummaryDto } | null>(null);
-const traceAttempt = ref<number | undefined>(undefined);
-const pendingDetail = ref<{ runId?: string; memberTurnId?: string } | null>(null);
+// --- One Run-wide detail drawer (design §8.4) ------------------------------
+interface TimelineDetailTarget { runId: string; memberTurnId?: string }
+
+const detailTarget = ref<TimelineDetailTarget | null>(null);
+const detailAttempt = ref<number | undefined>(undefined);
+const pendingDetail = ref<TimelineDetailTarget | null>(null);
+const stopPendingMember = ref<string | null>(null);
 
 function findRun(runId: string | undefined): ConversationRunDto | undefined {
   if (!runId) return groupsStore.activeRun ?? undefined;
@@ -300,41 +307,55 @@ function findRun(runId: string | undefined): ConversationRunDto | undefined {
   return Object.values(groupsStore.runHistoryDetails).find((detail) => detail.id === runId);
 }
 
-function findMember(runId: string | undefined, memberTurnId: string | undefined): MemberTurnSummaryDto | undefined {
-  if (memberTurnId) {
-    const active = groupsStore.memberTurns.find((turn) => turn.id === memberTurnId);
-    if (active) return active;
-  }
+/** Every durable member turn of one Run, active rows winning over a cached
+ *  history snapshot for the same id. */
+function membersOfRun(runId: string): MemberTurnSummaryDto[] {
+  const byId = new Map<string, MemberTurnSummaryDto>();
   for (const detail of Object.values(groupsStore.runHistoryDetails)) {
-    if (runId && detail.id !== runId) continue;
-    const hit = memberTurnId
-      ? detail.memberTurns.find((turn) => turn.id === memberTurnId)
-      : detail.memberTurns[detail.memberTurns.length - 1];
-    if (hit) return hit;
+    if (detail.id !== runId) continue;
+    for (const turn of detail.memberTurns) byId.set(turn.id, turn);
   }
-  if (!runId || groupsStore.activeRun?.id === runId) {
-    return memberTurnId
-      ? groupsStore.memberTurns.find((turn) => turn.id === memberTurnId)
-      : groupsStore.memberTurns[groupsStore.memberTurns.length - 1];
+  if (groupsStore.activeRun?.id === runId) {
+    for (const turn of groupsStore.memberTurns) {
+      if (turn.runId === runId) byId.set(turn.id, turn);
+    }
   }
-  return undefined;
+  return [...byId.values()].sort(compareMemberTurns);
 }
 
+const detailRun = computed(() => detailTarget.value ? findRun(detailTarget.value.runId) : undefined);
+const detailMembers = computed(() => detailTarget.value ? membersOfRun(detailTarget.value.runId) : []);
+const detailSelectedMember = computed(() => {
+  const target = detailTarget.value;
+  if (!target) return undefined;
+  return detailMembers.value.find((member) => member.id === target.memberTurnId)
+    ?? detailMembers.value.find((member) => member.state === "running" || member.state === "dispatched")
+    ?? detailMembers.value[detailMembers.value.length - 1];
+});
+const detailEffectiveAttempt = computed(() =>
+  detailAttempt.value ?? detailSelectedMember.value?.attempt);
+
+/** Reachable from bot meta, avatar, speaker label and the status bar: one key,
+ *  one drawer, one process. */
 function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }): void {
   const run = findRun(payload.runId);
-  const member = findMember(payload.runId, payload.memberTurnId);
-  if (run && member) {
-    traceTarget.value = { run, memberTurn: member };
-    traceAttempt.value = member.attempt;
-    groupsStore.ensureTracePage(member.id, member.attempt);
+  if (!run) {
+    // The Run's durable detail is not cached yet: fetch it and retry once the
+    // read model lands (the drawer needs a real Run, never a guess).
+    if (payload.runId) {
+      pendingDetail.value = { runId: payload.runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
+      groupsStore.ensureRunDetails([payload.runId]);
+    }
     return;
   }
-  // The Run's durable detail is not cached yet: fetch it and retry once the
-  // read model lands (the trace drawer needs a real Run, never a guess).
-  if (payload.runId) {
-    pendingDetail.value = payload;
-    groupsStore.ensureRunDetails([payload.runId]);
-  }
+  const members = membersOfRun(run.id);
+  const selected = members.find((member) => member.id === payload.memberTurnId)
+    ?? members.find((member) => member.state === "running" || member.state === "dispatched")
+    ?? members[members.length - 1];
+  detailTarget.value = { runId: run.id, ...(selected ? { memberTurnId: selected.id } : {}) };
+  detailAttempt.value = selected?.attempt;
+  groupsStore.ensureRunDetails([run.id]);
+  if (selected) groupsStore.ensureTracePage(selected.id, selected.attempt);
 }
 
 watch(() => groupsStore.runHistoryDetailRevision, () => {
@@ -344,28 +365,111 @@ watch(() => groupsStore.runHistoryDetailRevision, () => {
   openTimelineDetail(pending);
 });
 
-function closeTimelineDetail(): void {
-  traceTarget.value = null;
-  traceAttempt.value = undefined;
+// The read model can land after the drawer opened: retry the selected trace
+// once its Run detail (which owns the member lookup) is present.
+watch(
+  () => [
+    groupsStore.runHistoryDetailRevision,
+    detailTarget.value?.runId,
+    detailTarget.value?.memberTurnId,
+    detailEffectiveAttempt.value ?? "",
+  ].join(":"),
+  () => {
+    const selected = detailSelectedMember.value;
+    const attempt = detailEffectiveAttempt.value;
+    if (!selected || attempt === undefined) return;
+    groupsStore.ensureTracePage(selected.id, attempt);
+  },
+  { immediate: true },
+);
+
+function selectTimelineMember(memberTurnId: string): void {
+  const member = detailMembers.value.find((candidate) => candidate.id === memberTurnId);
+  if (!member || !detailTarget.value) return;
+  detailTarget.value = { ...detailTarget.value, memberTurnId };
+  detailAttempt.value = member.attempt;
 }
 
-const tracePage = computed(() => {
-  const target = traceTarget.value;
-  const attempt = traceAttempt.value;
-  if (!target || attempt === undefined) return null;
+function closeTimelineDetail(): void {
+  detailTarget.value = null;
+  detailAttempt.value = undefined;
+}
+
+const detailTracePage = computed(() => {
+  const selected = detailSelectedMember.value;
+  const attempt = detailEffectiveAttempt.value;
+  if (!selected || attempt === undefined) return null;
   const scope = [groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId].join(":");
-  return groupsStore.tracePages[`${scope}:${target.memberTurn.id}:${attempt}`] ?? null;
+  return groupsStore.tracePages[`${scope}:${selected.id}:${attempt}`] ?? null;
 });
 
-const traceParts = computed(() => {
-  const target = traceTarget.value;
-  if (!target) return undefined;
-  const replay = tracePage.value ? traceEventsToParts(tracePage.value.events).parts : undefined;
-  const live = traceAttempt.value === target.memberTurn.attempt
-    ? groupsStore.liveTurnForMember(target.memberTurn.id)?.parts
+const detailTraceParts = computed(() => {
+  const selected = detailSelectedMember.value;
+  if (!selected) return undefined;
+  const replay = detailTracePage.value ? traceEventsToParts(detailTracePage.value.events).parts : undefined;
+  const live = detailEffectiveAttempt.value === selected.attempt
+    ? groupsStore.liveTurnForMember(selected.id)?.parts
     : undefined;
   return mergeLiveTraceParts(replay, live);
 });
+
+/** Open approvals of this Run, reachable from the drawer regardless of which
+ *  member row is selected. */
+const detailInteractions = computed(() => {
+  const instId = groupsStore.instanceId;
+  if (!instId) return [];
+  return detailMembers.value
+    .map((member) => directBotsStore.interactionForMember(instId, member))
+    .filter((interaction): interaction is NonNullable<typeof interaction> => interaction !== null);
+});
+
+function detailInteraction(requestId: string) {
+  return detailInteractions.value.find((interaction) => interaction.request.requestId === requestId);
+}
+
+function handleDetailAnswer(requestId: string, key: string, value: InteractionValueDto): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) directBotsStore.setInteractionAnswer(key, value, interaction);
+}
+
+function handleDetailSubmit(requestId: string): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) void directBotsStore.submitInteraction("accept", interaction);
+}
+
+function handleDetailDecline(requestId: string): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) void directBotsStore.declineInteraction(interaction);
+}
+
+function handleDetailCancel(requestId: string): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) void directBotsStore.cancelInteraction(interaction);
+}
+
+function handleDetailDismiss(requestId: string): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) directBotsStore.dismissResolvedInteraction(interaction);
+}
+
+async function handleDetailStopMember(memberTurnId: string): Promise<void> {
+  const run = detailRun.value;
+  const instId = groupsStore.instanceId;
+  if (!run || !instId) return;
+  stopPendingMember.value = memberTurnId;
+  try {
+    await groupsStore.cancelMember(instId, run.id, memberTurnId);
+  } catch (err: unknown) {
+    pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
+  } finally {
+    if (stopPendingMember.value === memberTurnId) stopPendingMember.value = null;
+  }
+}
+
+const detailCapability = computed(() => ({
+  cancelMember: supportsRunsCancelMember(instance.value),
+}));
+const detailBudget = computed(() => detailRun.value ? runBudgetOf(detailRun.value) : undefined);
 
 
 /** Durable Run details for the Runs the timeline shows: the process drawer and
@@ -606,28 +710,44 @@ const worktreeRunId = computed(() => {
       </button>
     </MobileSheet>
 
-    <!-- Per-member process drawer: the same TraceOverlay the legacy transcript
-         mounts. P1c owns the run-wide drawer and the legacy deletion. -->
+    <!-- The one Run-wide detail drawer (design §8.4): every entry point
+         (bot meta, avatar, speaker label, status bar) opens this key, and the
+         legacy transcript keeps its own per-member overlay for old daemons. -->
     <TraceOverlay
-      v-if="traceTarget"
+      v-if="detailRun && detailTarget"
       id="group-timeline-trace-overlay"
-      :run="traceTarget.run"
-      :member-turn="traceTarget.memberTurn"
-      :member-name="memberBots.find((bot) => bot.id === traceTarget?.memberTurn.botId)?.name"
+      :run="detailRun"
+      :member-turn="detailSelectedMember"
+      :member-turns="detailMembers"
+      :selected-member-turn-id="detailSelectedMember?.id"
+      :participants="roomView.participants"
+      :budget="detailBudget"
+      :interactions="detailInteractions"
+      :capability="detailCapability"
+      :cancel-pending="!!stopPendingMember"
       :topic-title="groupsStore.currentTopic?.title"
-      :attempt="traceAttempt"
-      :parts="traceParts"
-      :recording-state="tracePage?.recordingState"
-      :plan="tracePage?.plan"
-      :trace-loading="tracePage?.loading"
-      :trace-error="tracePage?.error"
-      :trace-has-more="tracePage?.hasMore"
-      :trace-has-earlier="tracePage?.hasEarlier"
-      :trace-streaming="!tracePage?.events.length && !!groupsStore.liveTurnForMember(traceTarget.memberTurn.id)"
+      :attempt="detailEffectiveAttempt"
+      :attempts="detailTracePage?.attempts"
+      :parts="detailTraceParts"
+      :recording-state="detailTracePage?.recordingState"
+      :plan="detailTracePage?.plan"
+      :trace-loading="detailTracePage?.loading"
+      :trace-error="detailTracePage?.error"
+      :trace-has-more="detailTracePage?.hasMore"
+      :trace-has-earlier="detailTracePage?.hasEarlier"
+      :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && !!groupsStore.liveTurnForMember(detailSelectedMember.id)"
       @close="closeTimelineDetail"
-      @load-more="traceTarget && groupsStore.ensureTracePage(traceTarget.memberTurn.id, traceAttempt ?? traceTarget.memberTurn.attempt)"
-      @load-earlier="traceTarget && groupsStore.ensureTracePage(traceTarget.memberTurn.id, traceAttempt ?? traceTarget.memberTurn.attempt, 0)"
-      @retry-trace="traceTarget && groupsStore.ensureTracePage(traceTarget.memberTurn.id, traceAttempt ?? traceTarget.memberTurn.attempt)"
+      @attempt="detailAttempt = $event"
+      @select-member="selectTimelineMember"
+      @stop-member="handleDetailStopMember"
+      @interaction-answer="handleDetailAnswer"
+      @interaction-submit="handleDetailSubmit"
+      @interaction-decline="handleDetailDecline"
+      @interaction-cancel="handleDetailCancel"
+      @interaction-dismiss="handleDetailDismiss"
+      @load-more="detailSelectedMember && detailEffectiveAttempt !== undefined && groupsStore.ensureTracePage(detailSelectedMember.id, detailEffectiveAttempt)"
+      @load-earlier="detailSelectedMember && detailEffectiveAttempt !== undefined && groupsStore.ensureTracePage(detailSelectedMember.id, detailEffectiveAttempt, 0)"
+      @retry-trace="detailSelectedMember && detailEffectiveAttempt !== undefined && groupsStore.ensureTracePage(detailSelectedMember.id, detailEffectiveAttempt)"
     />
   </div>
 </template>

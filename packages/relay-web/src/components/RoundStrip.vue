@@ -15,6 +15,8 @@ const props = defineProps<{
   speakerName?: string;
 }>();
 
+const emit = defineEmits<{ openDetail: [] }>();
+
 const roundLabel = computed(() => {
   if (props.round.rounds > 1) {
     return {
@@ -68,9 +70,15 @@ const stateLabel = computed<string | null>(() => {
     </template>
     <template v-if="stateLabel">
       <span aria-hidden="true">·</span>
-      <span data-test="round-strip-speaker" class="min-w-0 truncate">
+      <button
+        type="button"
+        data-test="round-strip-speaker"
+        class="min-w-0 truncate text-left transition-colors hover:text-fg"
+        :title="$t('conversation.status.openDetail')"
+        @click="emit('openDetail')"
+      >
         {{ $t("conversation.status.speaking", { name: stateLabel }) }}
-      </span>
+      </button>
     </template>
   </div>
 </template>

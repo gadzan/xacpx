@@ -14,6 +14,8 @@ const props = defineProps<{
   speaker?: string;
   /** Role / description shown after the name. */
   speakerRole?: string;
+  /** Make the speaker name a button that opens the Run drawer. */
+  speakerClickable?: boolean;
   own?: boolean;
   hideLeadingAvatar?: boolean;
   /** Mobile (<lg) transcripts drop per-row identity: the avatar + speaker ride the
@@ -25,6 +27,8 @@ const props = defineProps<{
   enterClass?: string;
   enterStyle?: Record<string, string>;
 }>();
+
+const emit = defineEmits<{ speakerClick: [] }>();
 </script>
 
 <template>
@@ -53,7 +57,14 @@ const props = defineProps<{
         :class="own ? 'flex max-w-[80%] flex-col items-end' : 'flex-1 space-y-2.5'"
       >
         <div v-if="!own && speaker" class="flex items-center gap-2" :class="hideIdentityOnMobile ? 'hidden lg:flex' : ''">
-          <span class="text-xs font-semibold text-fg">{{ speaker }}</span>
+          <button
+            v-if="speakerClickable"
+            type="button"
+            data-test="transcript-speaker"
+            class="text-xs font-semibold text-fg transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            @click.stop="emit('speakerClick')"
+          >{{ speaker }}</button>
+          <span v-else class="text-xs font-semibold text-fg">{{ speaker }}</span>
           <span v-if="speakerRole" class="text-xs font-normal text-fg-muted">{{ speakerRole }}</span>
         </div>
 

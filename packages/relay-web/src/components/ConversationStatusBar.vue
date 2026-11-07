@@ -70,6 +70,7 @@ const statusText = computed<string>(() => props.activeSpeakerName ?? "");
       v-if="roundVisible && round"
       :round="round"
       :speaker-name="activeSpeakerName"
+      @open-detail="emit('openDetail', detailTarget)"
     />
 
     <template v-else>

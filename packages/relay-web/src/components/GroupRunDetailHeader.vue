@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { CircleStop, X } from "lucide-vue-next";
+import { CircleStop, Pause, Play, X } from "lucide-vue-next";
 import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
