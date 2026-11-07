@@ -17,6 +17,7 @@ import { useGroupsStore } from "../stores/groups";
 import {
   supportsBotDedicatedWorkspaceCleanup,
   supportsConversationTimelineV1,
+  supportsRunsCancelMember,
   useInstancesStore,
 } from "../stores/instances";
 import type {
@@ -35,10 +36,11 @@ import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationTimeline from "./ConversationTimeline.vue";
 import ConversationStatusBar from "./ConversationStatusBar.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
-import ConversationInteractionForm from "./ConversationInteractionForm.vue";
 import PlanPanel from "./PlanPanel.vue";
 import TraceOverlay from "./TraceOverlay.vue";
 import { traceEventsToParts } from "../lib/group-run-presentation";
+import { compareMemberTurns, runBudgetOf } from "../lib/run-detail";
+import { pushToast } from "../lib/use-toasts";
 import { useConversationTimelineFeed } from "../lib/use-timeline-feed";
 import { activeSpeakerTurnId, type RoomView, type TimelineLiveTurn } from "../lib/room-view";
 import { textBubblesOf } from "../lib/turn-presentation";
@@ -103,17 +105,52 @@ const observedCompletion = computed(() => !!directBotsStore.activeRun
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
-/** Execution-process drawer target: live turn or finished history run.
- *  The history path resolves run → member through runsGet. */
-const traceTarget = ref<{ run: ConversationRunDto; memberTurn: MemberTurnSummaryDto } | null>(null);
+interface DirectDetailTarget {
+  run: ConversationRunDto;
+  memberTurns: MemberTurnSummaryDto[];
+  memberTurnId?: string;
+  /** Timeline path: the same Run-wide drawer Group uses. Fallback keeps the
+   *  legacy per-member overlay it always had. */
+  runWide: boolean;
+}
+
+/** One open key for the drawer: bot meta, avatar, speaker label, status bar,
+ *  and the old-daemon transcript entry all land here. */
+const detailTarget = ref<DirectDetailTarget | null>(null);
+const detailAttempt = ref<number | undefined>(undefined);
+const stopPendingMember = ref<string | null>(null);
+
+function setDirectDetail(
+  run: ConversationRunDto,
+  memberTurns: MemberTurnSummaryDto[],
+  preferredMemberTurnId: string | undefined,
+  runWide: boolean,
+): void {
+  const sorted = [...memberTurns].sort(compareMemberTurns);
+  const selected = sorted.find((member) => member.id === preferredMemberTurnId)
+    ?? sorted.find((member) => member.state === "running" || member.state === "dispatched")
+    ?? sorted[sorted.length - 1];
+  detailTarget.value = {
+    run,
+    memberTurns: sorted,
+    ...(selected ? { memberTurnId: selected.id } : {}),
+    runWide,
+  };
+  detailAttempt.value = selected?.attempt;
+  if (selected) {
+    directBotsStore.ensureDirectTracePage(run.id, selected.id, selected.attempt);
+    directBotsStore.setDirectTraceFollow(run.id, selected.id, selected.attempt);
+  }
+}
+
+/** Legacy transcript entry (old daemon): one member's process, as before. */
 function openTraceOverlay(): void {
   const run = directBotsStore.activeRun;
   const member = directBotsStore.activeMemberTurn;
   if (!run || !member) return;
-  directBotsStore.ensureDirectTracePage(run.id, member.id, member.attempt);
-  directBotsStore.setDirectTraceFollow(run.id, member.id, member.attempt);
-  traceTarget.value = { run, memberTurn: member };
+  setDirectDetail(run, [member], member.id, false);
 }
+
 async function openTraceForHistoryRun(runId: string): Promise<void> {
   const iId = directBotsStore.instanceId;
   if (!iId) return;
@@ -123,35 +160,145 @@ async function openTraceForHistoryRun(runId: string): Promise<void> {
     const res = raw;
     const member = res.run.memberTurns[res.run.memberTurns.length - 1];
     if (!member) return;
-    directBotsStore.ensureDirectTracePage(res.run.id, member.id, member.attempt);
-    directBotsStore.setDirectTraceFollow(res.run.id, member.id, member.attempt);
-    traceTarget.value = { run: res.run, memberTurn: member };
+    setDirectDetail(res.run, [member], member.id, false);
   } catch {
     // History detail unavailable: no drawer, the finished bubble stays.
   }
 }
+
+/** Timeline entry (bot meta, avatar, speaker label, status bar): load the
+ *  Run's full member list, then show the Run-wide drawer. The live Run is
+ *  rendered immediately while the read model catches up. */
+async function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }): Promise<void> {
+  const iId = directBotsStore.instanceId;
+  if (!iId) return;
+  const runId = payload.runId ?? directBotsStore.activeRun?.id;
+  if (!runId) return;
+  const active = directBotsStore.activeRun;
+  if (active?.id === runId) {
+    const member = directBotsStore.activeMemberTurn;
+    setDirectDetail(active, member ? [member] : [], payload.memberTurnId ?? member?.id, true);
+  }
+  try {
+    const raw = await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId });
+    if (isErrorPayload(raw)) return;
+    const run = raw.run;
+    setDirectDetail(
+      run,
+      run.memberTurns,
+      payload.memberTurnId ?? detailTarget.value?.memberTurnId,
+      true,
+    );
+  } catch {
+    // The optimistic live target is enough; a retry happens on the next open.
+  }
+}
+
+function selectDirectMember(memberTurnId: string): void {
+  const target = detailTarget.value;
+  const member = target?.memberTurns.find((candidate) => candidate.id === memberTurnId);
+  if (!target || !member) return;
+  detailTarget.value = { ...target, memberTurnId };
+  detailAttempt.value = member.attempt;
+  directBotsStore.ensureDirectTracePage(target.run.id, member.id, member.attempt);
+  directBotsStore.setDirectTraceFollow(target.run.id, member.id, member.attempt);
+}
+
 function closeTraceOverlay(): void {
   directBotsStore.clearDirectTraceFollow();
-  traceTarget.value = null;
+  detailTarget.value = null;
+  detailAttempt.value = undefined;
 }
-const traceRun = computed(() => traceTarget.value?.run ?? null);
-const traceMemberTurn = computed(() => traceTarget.value?.memberTurn ?? null);
-const tracePage = computed(() => {
-  const run = traceRun.value;
-  const member = traceMemberTurn.value;
-  if (!run || !member) return null;
+
+const detailMembers = computed(() => detailTarget.value?.memberTurns ?? []);
+const detailSelectedMember = computed(() => {
+  const target = detailTarget.value;
+  if (!target) return undefined;
+  return target.memberTurns.find((member) => member.id === target.memberTurnId)
+    ?? target.memberTurns.find((member) => member.state === "running" || member.state === "dispatched")
+    ?? target.memberTurns[target.memberTurns.length - 1];
+});
+const detailEffectiveAttempt = computed(() => detailAttempt.value ?? detailSelectedMember.value?.attempt);
+
+const detailTracePage = computed(() => {
+  const run = detailTarget.value?.run;
+  const member = detailSelectedMember.value;
+  const attempt = detailEffectiveAttempt.value;
+  if (!run || !member || attempt === undefined) return null;
   const scope = directBotsStore.directTraceScopeKey();
   if (!scope) return null;
-  return directBotsStore.directTracePages[directBotsStore.directTracePageKey(scope, run.id, member.id, member.attempt)] ?? null;
+  return directBotsStore.directTracePages[directBotsStore.directTracePageKey(scope, run.id, member.id, attempt)] ?? null;
 });
-const traceDecoded = computed(() => traceEventsToParts(tracePage.value?.events ?? []));
-const traceParts = computed(() => {
-  const decoded = traceDecoded.value;
-  if (decoded.parts.length || (tracePage.value?.events.length ?? 0) > 0) return decoded.parts;
+
+const detailTraceParts = computed(() => {
+  const page = detailTracePage.value;
+  const selected = detailSelectedMember.value;
+  const decoded = traceEventsToParts(page?.events ?? []);
+  if (decoded.parts.length || (page?.events.length ?? 0) > 0) return decoded.parts;
   // While the drawer opens mid-stream the durable pages may still be empty:
-  // fall back to the live parts so the drawer is never blank.
-  return directBotsStore.liveTurn?.parts;
+  // fall back to the live parts of the selected member only.
+  const live = directBotsStore.liveTurn;
+  const activeMember = directBotsStore.activeMemberTurn;
+  return selected && activeMember?.id === selected.id && detailEffectiveAttempt.value === selected.attempt
+    ? live?.parts
+    : undefined;
 });
+
+const detailInteractions = computed(() => {
+  const instId = directBotsStore.instanceId;
+  if (!instId) return [];
+  return detailMembers.value
+    .map((member) => directBotsStore.interactionForMember(instId, member))
+    .filter((interaction): interaction is NonNullable<typeof interaction> => interaction !== null);
+});
+
+function detailInteraction(requestId: string) {
+  return detailInteractions.value.find((interaction) => interaction.request.requestId === requestId);
+}
+
+function handleDetailAnswer(requestId: string, key: string, value: InteractionValueDto): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) directBotsStore.setInteractionAnswer(key, value, interaction);
+}
+
+function handleDetailSubmit(requestId: string): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) void directBotsStore.submitInteraction("accept", interaction);
+}
+
+function handleDetailDecline(requestId: string): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) void directBotsStore.declineInteraction(interaction);
+}
+
+function handleDetailCancel(requestId: string): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) void directBotsStore.cancelInteraction(interaction);
+}
+
+function handleDetailDismiss(requestId: string): void {
+  const interaction = detailInteraction(requestId);
+  if (interaction) directBotsStore.dismissResolvedInteraction(interaction);
+}
+
+async function handleDetailStopMember(memberTurnId: string): Promise<void> {
+  const run = detailTarget.value?.run;
+  const instId = directBotsStore.instanceId;
+  if (!run || !instId) return;
+  stopPendingMember.value = memberTurnId;
+  try {
+    await api.rpc(instId, MSG.runsCancelMember, { runId: run.id, memberTurnId });
+  } catch (err: unknown) {
+    pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
+  } finally {
+    if (stopPendingMember.value === memberTurnId) stopPendingMember.value = null;
+  }
+}
+
+const detailCapability = computed(() => ({
+  cancelMember: supportsRunsCancelMember(instance.value),
+}));
+const detailBudget = computed(() => detailTarget.value ? runBudgetOf(detailTarget.value.run) : undefined);
 // Mobile (<lg) chrome: one 52px bar (avatar + name + topic switcher subtitle + ⋯) plus
 // the sheets its ⋯ entries open. The topic switcher is the group chat's TopicSwitcher
 // (popover on desktop, its own MobileSheet below lg).
@@ -331,14 +478,6 @@ const timelineSpeakerName = computed(() => {
   return id ? bot.value?.name : undefined;
 });
 
-/** A bot row opens the same per-member drawer the legacy transcript opens. */
-function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }): void {
-  if (payload.runId && payload.runId !== directBotsStore.activeRun?.id) {
-    void openTraceForHistoryRun(payload.runId);
-    return;
-  }
-  openTraceOverlay();
-}
 
 function handleStopAll(): void {
   void directBotsStore.stopCurrentAndQueued();
@@ -561,45 +700,42 @@ function handleStopAll(): void {
       @open-trace="openTraceOverlay"
       @open-trace-for-run="openTraceForHistoryRun"
     />
+    <!-- One Run-wide detail drawer on the timeline path; the old-daemon
+         transcript still opens the per-member overlay it always had. -->
     <TraceOverlay
-      v-if="traceTarget"
+      v-if="detailTarget"
       id="direct-trace-overlay"
-      :run="traceTarget.run"
-      :member-turn="traceMemberTurn ?? undefined"
+      :run="detailTarget.run"
+      :member-turn="detailSelectedMember"
+      :member-turns="detailTarget.runWide ? detailMembers : undefined"
+      :selected-member-turn-id="detailSelectedMember?.id"
+      :participants="roomView.participants"
+      :budget="detailTarget.runWide ? detailBudget : undefined"
+      :interactions="detailTarget.runWide ? detailInteractions : undefined"
+      :capability="detailCapability"
+      :cancel-pending="!!stopPendingMember"
       :member-name="bot?.name"
       :topic-title="directBotsStore.currentTopic?.title"
-      :attempt="traceMemberTurn?.attempt"
-      :parts="traceParts"
-      :recording-state="tracePage?.recordingState"
-      :trace-loading="tracePage?.loading"
-      :trace-error="tracePage?.error"
-      :trace-has-more="tracePage?.hasMore"
-      :trace-streaming="!tracePage?.events.length && !!directBotsStore.liveTurn"
+      :attempt="detailEffectiveAttempt"
+      :parts="detailTraceParts"
+      :recording-state="detailTracePage?.recordingState"
+      :trace-loading="detailTracePage?.loading"
+      :trace-error="detailTracePage?.error"
+      :trace-has-more="detailTracePage?.hasMore"
+      :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && directBotsStore.activeMemberTurn?.id === detailSelectedMember.id && !!directBotsStore.liveTurn"
       @close="closeTraceOverlay"
-      @load-more="traceRun && traceMemberTurn ? directBotsStore.ensureDirectTracePage(traceRun.id, traceMemberTurn.id, traceMemberTurn.attempt) : undefined"
-      @retry-trace="traceRun && traceMemberTurn ? directBotsStore.ensureDirectTracePage(traceRun.id, traceMemberTurn.id, traceMemberTurn.attempt) : undefined"
+      @attempt="detailAttempt = $event"
+      @select-member="selectDirectMember"
+      @stop-member="handleDetailStopMember"
+      @interaction-answer="handleDetailAnswer"
+      @interaction-submit="handleDetailSubmit"
+      @interaction-decline="handleDetailDecline"
+      @interaction-cancel="handleDetailCancel"
+      @interaction-dismiss="handleDetailDismiss"
+      @load-more="detailSelectedMember && detailEffectiveAttempt !== undefined && detailTarget && directBotsStore.ensureDirectTracePage(detailTarget.run.id, detailSelectedMember.id, detailEffectiveAttempt)"
+      @load-earlier="detailSelectedMember && detailEffectiveAttempt !== undefined && detailTarget && directBotsStore.ensureDirectTracePage(detailTarget.run.id, detailSelectedMember.id, detailEffectiveAttempt, 0)"
+      @retry-trace="detailSelectedMember && detailEffectiveAttempt !== undefined && detailTarget && directBotsStore.ensureDirectTracePage(detailTarget.run.id, detailSelectedMember.id, detailEffectiveAttempt)"
     />
-
-    <!-- A pending human-authority ask stays answerable on the timeline path:
-         the form belongs to the turn that asked, so it sits right above the
-         composer rather than inside a bubble this shell no longer draws. -->
-    <div
-      v-if="timelineEnabled && directBotsStore.pendingInteraction"
-      class="mx-auto w-full max-w-3xl px-4 lg:px-0"
-    >
-      <ConversationInteractionForm
-        :request="directBotsStore.pendingInteraction.request"
-        :answers="directBotsStore.pendingInteraction.answers"
-        :submitting="directBotsStore.pendingInteraction.submitting"
-        :error-code="directBotsStore.pendingInteraction.errorCode"
-        :outcome="directBotsStore.pendingInteraction.outcome"
-        @answer="(key: string, value: InteractionValueDto) => directBotsStore.setInteractionAnswer(key, value)"
-        @submit="directBotsStore.submitInteraction('accept')"
-        @decline="directBotsStore.declineInteraction()"
-        @cancel="directBotsStore.cancelInteraction()"
-        @dismiss="directBotsStore.dismissResolvedInteraction()"
-      />
-    </div>
 
     <!-- The plan is part of the run's visible surface, exactly as the legacy
          transcript rendered it. The timeline path keeps it above the composer. -->

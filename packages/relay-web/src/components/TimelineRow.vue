@@ -157,6 +157,8 @@ const noticeToneClass = computed(() => {
     hide-identity-on-mobile
     :speaker="author?.name"
     :speaker-role="author?.role"
+    speaker-clickable
+    @speaker-click="emit('openDetail', messageDetail)"
   >
     <template #avatar>
       <button
@@ -222,6 +224,8 @@ const noticeToneClass = computed(() => {
     :row-id="activity.turn.id"
     hide-identity-on-mobile
     :speaker="activity.author"
+    speaker-clickable
+    @speaker-click="emit('openDetail', messageDetail)"
   >
     <template #avatar>
       <button

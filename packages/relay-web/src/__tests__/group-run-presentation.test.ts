@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationMessageDto, ConversationRunDto, MemberTurnSummaryDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import {
-  computePopoverPlacement,
   mergeLiveTraceParts,
   projectGroupTranscript,
   resolveMemberOwner,
@@ -445,46 +444,6 @@ describe("traceEventsToParts", () => {
     ]);
     expect(result.plan).toEqual(second);
     expect(result.terminal).toEqual({ ok: true });
-  });
-});
-
-describe("computePopoverPlacement", () => {
-  const viewport = { width: 1000, height: 800 };
-  const popover = { width: 420, height: 300 };
-
-  it("places below a mid-screen anchor", () => {
-    const placement = computePopoverPlacement(
-      { top: 200, left: 300, width: 44, height: 44 },
-      viewport, popover,
-    );
-    expect(placement.placement).toBe("below");
-    expect(placement.top).toBe(200 + 44 + 8);
-  });
-
-  it("flips above when the anchor sits near the bottom edge", () => {
-    const placement = computePopoverPlacement(
-      { top: 700, left: 300, width: 44, height: 44 },
-      viewport, popover,
-    );
-    expect(placement.placement).toBe("above");
-    expect(placement.top).toBe(700 - 8 - 300);
-  });
-
-  it("shifts into the viewport near the right edge", () => {
-    const placement = computePopoverPlacement(
-      { top: 200, left: 900, width: 44, height: 44 },
-      viewport, popover,
-    );
-    expect(placement.left).toBe(1000 - 8 - 420);
-  });
-
-  it("clamps inside a narrow mobile viewport", () => {
-    const placement = computePopoverPlacement(
-      { top: 100, left: 4, width: 44, height: 44 },
-      { width: 360, height: 640 }, popover,
-    );
-    expect(placement.left).toBe(8);
-    expect(placement.left + 420 <= 360 - 8 + 1 || placement.left === 8).toBe(true);
   });
 });
 

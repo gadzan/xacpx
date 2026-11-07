@@ -3060,6 +3060,65 @@ describe("Direct Bot Components", () => {
       wrapper.unmount();
     });
 
+    it("opens the same Run-wide drawer from the Direct timeline", async () => {
+      seedBot();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const directBots = useDirectBotsStore();
+      const run = {
+        id: "r1", conversationId: "c1", topicId: "t1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit" as const,
+        shape: "single" as const, state: "running" as const, profileRevision: 1,
+        maxMemberTurns: 1, consumedMemberTurns: 1, createdAt: "now",
+      };
+      const member = {
+        id: "turn_1", runId: "r1", conversationId: "c1", topicId: "t1",
+        botId: "b1", batch: 1, memberIndex: 0, attempt: 1,
+        origin: "human-explicit" as const, state: "running" as const, createdAt: "now",
+      };
+      directBots.activeRun = run;
+      directBots.activeMemberTurn = member;
+      vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+        if (type === "control.conversation.timeline") {
+          return {
+            conversationId: "c1", topicId: "t1",
+            entries: [{
+              kind: "message", key: "message:m1", anchorSeq: 1,
+              runId: "r1", memberTurnId: "turn_1", ownership: "exact",
+              message: {
+                id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "bot",
+                senderBotId: "b1", memberTurnId: "turn_1", runId: "r1", content: "hello", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false, hasMoreAfter: false,
+          };
+        }
+        if (type === "control.runs.get") return { run: { ...run, memberTurns: [member] } };
+        if (type === "control.runs.trace.get") {
+          return {
+            memberTurnId: "turn_1", attempt: 1, recordingState: "complete",
+            events: [{ seq: 1, createdAt: "now", kind: "text", payload: { text: "Direct trace" } }],
+            nextSeq: 1, hasMore: false, attempts: [1], plan: [],
+          };
+        }
+        return {};
+      });
+      const wrapper = mount(DirectBotPane, {
+        attachTo: document.body,
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      const card = document.body.querySelector('[data-test="group-detail-card"]');
+      expect(card).not.toBeNull();
+      expect(card!.querySelector('[data-test="run-detail"]')).not.toBeNull();
+      expect(card!.querySelector('[data-test="run-member-row"]')).not.toBeNull();
+      // Direct/single Runs have no sibling to stop: only Stop all exists.
+      expect(card!.querySelector('[data-test="run-stop-member"]')).toBeNull();
+      expect(card!.textContent).toContain("Direct trace");
+      wrapper.unmount();
+    });
+
     it("keeps the legacy transcript and the in-card Stop on an old daemon", async () => {
       seedBot();
       const directBots = useDirectBotsStore();

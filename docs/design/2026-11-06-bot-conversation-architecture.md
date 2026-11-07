@@ -779,7 +779,7 @@ P0 结束时，旧 UI 仍能工作；API 可以创建圆桌，只是没有入口
 
 ### P1：一条时间线与一个 composer
 
-> 实施状态（2026-11-08）：P1a（`messages.member_turn_id`、纯投影、`conversation.timeline` RPC/capability）已合入 `1430534b`；P1b 已实现第 3–5、8 项：`ConversationTimeline`/`TimelineRow`、`ConversationStatusBar`/`RoundStrip`、composer 收口（默认 lead、`@`、`@everyone`、讨论 chip、无 target 下拉/勾选/automatic）、两个 pane 共用 `RoomView`、旧 daemon 回退与 Playwright 桌面/移动覆盖。第 6 项旧组件删除与第 7 项抽屉合并仍属 P1c；trace 抽屉子项已由 #544/#545 完成。
+> 实施状态（2026-11-08）：P1a（`messages.member_turn_id`、纯投影、`conversation.timeline` RPC/capability）已合入 `1430534b`；P1b 已实现第 3–5、8 项：`ConversationTimeline`/`TimelineRow`、`ConversationStatusBar`/`RoundStrip`、composer 收口（默认 lead、`@`、`@everyone`、讨论 chip、无 target 下拉/勾选/automatic）、两个 pane 共用 `RoomView`、旧 daemon 回退与 Playwright 桌面/移动覆盖；trace 抽屉子项已由 #544/#545 完成。P1c 已实现第 7 项：`TraceOverlay` 变为 Run-wide 抽屉（成员列表、Run 状态/completion reason、失败原因、预算、按成员审批、fanout scoped Stop；Stop all 只留状态条），bot meta/头像/发言者标签/状态条共用一个打开键，桌面抽屉与移动 sheet 共用内容。第 6 项的候选项仍被旧 daemon 回退引用（`GroupTranscript.vue` / `ConversationMessageList.vue` 在缺少 `conversations.timeline.v1` 时继续渲染），故本轮保留并列为有意保留，不做静默删除。
 
 1. `messages.member_turn_id` 列、索引、所有插入点、回填。
 2. `conversation-timeline.ts` 纯投影 + `conversation.timeline` RPC + capability。

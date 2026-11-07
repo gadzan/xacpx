@@ -2635,6 +2635,147 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("opens the same Run-wide drawer from meta, avatar, speaker label and the status bar", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [
+        RELAY_CAPABILITIES.conversationTimelineV1,
+        RELAY_CAPABILITIES.runsCancelMemberV1,
+      ];
+      const run = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m_req", requestId: "req_1", mode: "explicit" as const,
+        shape: "fanout" as const, state: "running" as const, profileRevision: 1,
+        maxMemberTurns: 4, consumedMemberTurns: 1, createdAt: "now",
+      };
+      groups.activeRun = run;
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g",
+            topicId: "topic_1",
+            entries: [
+              {
+                kind: "message", key: "message:m_req", anchorSeq: 1,
+                message: {
+                  id: "m_req", conversationId: "conversation_g", topicId: "topic_1",
+                  seq: 1, role: "human", content: "ship it", createdAt: "now",
+                },
+              },
+              {
+                kind: "message", key: "message:m_bot", anchorSeq: 2,
+                runId: "run_1", memberTurnId: "turn_a", ownership: "exact",
+                message: {
+                  id: "m_bot", conversationId: "conversation_g", topicId: "topic_1",
+                  seq: 2, role: "bot", senderBotId: "bot_a", memberTurnId: "turn_a",
+                  runId: "run_1", content: "done", createdAt: "now",
+                },
+              },
+            ],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.runsDetailsBatch) return { runs: [], missingRunIds: ["run_1"] } as never;
+        if (type === MSG.runsTraceGet) return { events: [], hasMore: false } as never;
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, {
+        attachTo: document.body,
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+
+      const openers = [
+        '[data-test="timeline-open-detail"]',
+        '[data-test="timeline-open-detail-avatar"]',
+        '[data-test="transcript-speaker"]',
+        '[data-test="conversation-status-speaker"]',
+      ];
+      for (const selector of openers) {
+        const trigger = wrapper.find(selector);
+        expect(trigger.exists(), selector).toBe(true);
+        await trigger.trigger("click");
+        await flushPromises();
+        const card = document.body.querySelector('[data-test="group-detail-card"]');
+        expect(card, selector).not.toBeNull();
+        expect(card!.querySelector('[data-test="run-detail"]'), selector).not.toBeNull();
+        expect(card!.querySelector('[data-test="run-member-list"]'), selector).not.toBeNull();
+        // Stop all stays in the status bar; the drawer exposes only the
+        // scoped Stop for the running fanout member.
+        expect(card!.querySelector('[data-test="group-stop-run-button"]'), selector).toBeNull();
+        expect(card!.querySelector('[data-test="run-stop-member"]'), selector).not.toBeNull();
+        (card!.querySelector('[data-test="group-detail-close"]') as HTMLElement).click();
+        await flushPromises();
+        expect(document.body.querySelector('[data-test="group-detail-card"]'), selector).toBeNull();
+      }
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("opens and closes the Run-wide drawer as a mobile sheet", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m_req", requestId: "req_1", mode: "explicit",
+        shape: "fanout", state: "running", profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g",
+            topicId: "topic_1",
+            entries: [
+              {
+                kind: "message", key: "message:m_bot", anchorSeq: 2,
+                runId: "run_1", memberTurnId: "turn_a", ownership: "exact",
+                message: {
+                  id: "m_bot", conversationId: "conversation_g", topicId: "topic_1",
+                  seq: 2, role: "bot", senderBotId: "bot_a", memberTurnId: "turn_a",
+                  runId: "run_1", content: "done", createdAt: "now",
+                },
+              },
+            ],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.runsDetailsBatch) return { runs: [], missingRunIds: ["run_1"] } as never;
+        if (type === MSG.runsTraceGet) return { events: [], hasMore: false } as never;
+        return {} as never;
+      });
+      window.innerWidth = 500;
+      const wrapper = mount(GroupPane, {
+        attachTo: document.body,
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      const sheet = document.body.querySelector('[data-test="group-detail-sheet"]');
+      expect(sheet).not.toBeNull();
+      expect(sheet!.querySelector('[data-test="run-detail"]')).not.toBeNull();
+      (sheet!.querySelector('[data-test="group-detail-close"]') as HTMLElement).click();
+      await flushPromises();
+      expect(document.body.querySelector('[data-test="group-detail-sheet"]')).toBeNull();
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
     it("marks a prompt queued behind the Topic owner on the timeline", async () => {
       const groups = seedGroupSelection();
       useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
