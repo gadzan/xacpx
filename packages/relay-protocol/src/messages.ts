@@ -40,6 +40,7 @@ import type {
   ConversationRunTraceDto,
   ConversationRunDto,
   ConversationSummaryDto,
+  ConversationTimelineDto,
   ConversationTurnCorrelationDto,
   ExecutionTargetDto,
   GroupDetailDto,
@@ -194,6 +195,13 @@ export const MSG = {
   conversationBindingsSet: "control.conversation.bindings.set",
   conversationBindingsDelete: "control.conversation.bindings.delete",
   conversationHistory: "control.conversation.history",
+  /**
+   * The single Conversation read model (design §9.3): one page of messages plus
+   * the runs and member turns needed to render ownership, activity and round
+   * status. Additive; old connectors answer `unknown-type`, so the Web gates it
+   * on `conversationTimelineV1`. `control.conversation.history` is unchanged.
+   */
+  conversationTimeline: "control.conversation.timeline",
   runsGet: "control.runs.get",
   runsDetailsBatch: "control.runs.details.batch",
   runsTraceGet: "control.runs.trace.get",
@@ -759,6 +767,21 @@ export interface ConversationHistoryPayload {
   direction?: "oldest-first" | "newest-first";
 }
 export type ConversationHistoryResult = ConversationHistoryResponseDto;
+/**
+ * Cursor shape matches `control.conversation.history`: `beforeSeq` / `afterSeq`
+ * select which side of the topic the page covers and `direction` is
+ * initial-page-only, so it is never combined with a cursor. Non-terminal Runs
+ * are returned regardless of the message window.
+ */
+export interface ConversationTimelinePayload {
+  conversationId: string;
+  topicId: string;
+  afterSeq?: number;
+  beforeSeq?: number;
+  limit?: number;
+  direction?: "oldest-first" | "newest-first";
+}
+export type ConversationTimelineResult = ConversationTimelineDto;
 export interface RunsGetPayload {
   runId: string;
 }
@@ -1457,6 +1480,11 @@ export const RELAY_CAPABILITIES = {
    *  the connector validator and the core both implement pre-generated
    *  sequential discussion. The Web hides the "discuss" entry when absent. */
   roundtableV1: "conversations.roundtable.v1",
+  /** `control.conversation.timeline` exists on both ends: the core projects the
+   *  single read model and the connector validator accepts the request. The Web
+   *  keeps the legacy transcript until an instance advertises this, so an old
+   *  daemon (or old connector) never receives a new RPC it cannot answer. */
+  conversationTimelineV1: "conversations.timeline.v1",
   /** `control.groups.create` accepts `workspaceMode` and `control.group.topics.create`
    *  accepts an omitted `target` for a `per-member` Group. Advertised only when
    *  the connector's validator and the core both accept it, so the web never

@@ -23,6 +23,7 @@ import {
   type LifecycleOperationsGetPayload,
   type CommandExecutePayload,
   type ConversationHistoryPayload,
+  type ConversationTimelinePayload,
   type ConversationPromptPayload,
   type ConversationPolicyPromptPayload,
   type ConversationsGetPayload,
@@ -835,6 +836,21 @@ const validateConversationHistory: Validator<ConversationHistoryPayload> = (p) =
     && directionOk
     ? (o as unknown as ConversationHistoryPayload) : null;
 };
+/** Same cursor rules as history: `direction` is initial-page-only and never
+ *  combines with a seq cursor. The response is not validated here (it is a
+ *  read model the Web consumes, not a caller-supplied payload). */
+const validateConversationTimeline: Validator<ConversationTimelinePayload> = (p) => {
+  const o = fields(p);
+  if (!o) return null;
+  const directionOk = o.direction === undefined || o.direction === "oldest-first" || o.direction === "newest-first";
+  const cursorAndDirection = directionOk && o.direction !== undefined
+    && (o.afterSeq !== undefined || o.beforeSeq !== undefined);
+  if (cursorAndDirection) return null;
+  return isStr(o.conversationId) && isStr(o.topicId)
+    && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit)
+    && directionOk
+    ? (o as unknown as ConversationTimelinePayload) : null;
+};
 const validateRunsGet: Validator<RunsGetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsGetPayload) : null;
@@ -1250,6 +1266,7 @@ export type ControlRpcType =
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsSetIsolation
   | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
   | typeof MSG.conversationPrompt | typeof MSG.conversationPromptWithPolicy | typeof MSG.conversationHistory
+  | typeof MSG.conversationTimeline
   | typeof MSG.conversationWorktree
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel | typeof MSG.runsCancelMember
@@ -1361,6 +1378,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationBindingsSet]: validateConversationBinding,
   [MSG.conversationBindingsDelete]: validateConversationBindingDelete,
   [MSG.conversationHistory]: validateConversationHistory,
+  [MSG.conversationTimeline]: validateConversationTimeline,
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsDetailsBatch]: validateRunsDetailsBatch,
   [MSG.runsTraceGet]: validateRunsTraceGet,

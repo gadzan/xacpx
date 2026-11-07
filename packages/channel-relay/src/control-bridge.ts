@@ -1351,6 +1351,21 @@ async function dispatchControlRequest(
         ...(input.direction !== undefined ? { direction: input.direction } : {}),
       });
     }
+    case MSG.conversationTimeline: {
+      const input = parseControlPayload(MSG.conversationTimeline, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationTimeline}: malformed payload`);
+      if (typeof control.conversationTimeline !== "function") {
+        return errorPayload("unsupported-rpc", "daemon does not support the Conversation timeline");
+      }
+      return control.conversationTimeline({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
+        ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.direction !== undefined ? { direction: input.direction } : {}),
+      });
+    }
     case MSG.runsGet: {
       const input = parseControlPayload(MSG.runsGet, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.runsGet}: malformed payload`);

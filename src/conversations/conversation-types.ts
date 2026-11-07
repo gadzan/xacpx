@@ -174,6 +174,10 @@ export interface ConversationMessage {
   groupSay?: GroupSayMarker;
   replyTo?: string;
   runId?: string;
+  /** Durable physical execution that produced this message (design §5.4).
+   *  Written at every bot/handoff insert point; absent on human requests and
+   *  legacy rows the backfill could not attribute. */
+  memberTurnId?: string;
   createdAt: string;
   sourceTurn?: {
     sessionAlias: string;

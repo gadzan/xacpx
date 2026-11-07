@@ -137,6 +137,7 @@ import {
   toMemberTurnSummary,
   toRunDetail,
   toLegacyRunHistoryDetail,
+  toConversationTimelineDto,
   toTopicSummary,
   type BotCreateRequestDto,
   type BotRemovalPreviewDto,
@@ -144,6 +145,7 @@ import {
   type LifecycleOperationDto,
   type RemoveBotRequestDto,
   type ConversationHistoryRequestDto,
+  type ConversationTimelineRequestDto,
   type ConversationPromptRequestDto,
   type ConversationPolicyPromptRequestDto,
   type ConversationPromptResponseDto,
@@ -2749,6 +2751,16 @@ export class ControlService {
     return true;
   }
 
+  /**
+   * Feature probe for connectors: `control.conversation.timeline` is projected
+   * here and the connector's validator accepts its payload. Advertised as
+   * `conversations.timeline.v1`; without it the Web keeps the legacy
+   * transcript, and `conversation.history` is unchanged either way.
+   */
+  supportsConversationTimelineV1(): true {
+    return true;
+  }
+
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
       const bot = input.workspace !== undefined
@@ -3322,6 +3334,30 @@ export class ControlService {
       ...(page.oldestSeq !== undefined ? { oldestSeq: page.oldestSeq } : {}),
       ...(page.newestSeq !== undefined ? { newestSeq: page.newestSeq } : {}),
     };
+  }
+
+  /**
+   * The single Conversation read model (design §9.3). `conversation.history`
+   * stays untouched for old clients; this endpoint additionally carries the
+   * page's Runs and member turns so ownership, activity and round state are
+   * decided server-side, and non-terminal Runs survive any page window.
+   */
+  conversationTimeline(input: ConversationTimelineRequestDto) {
+    // Same rule as history: direction is initial-page-only and has no defined
+    // interaction with seq cursors.
+    if (input.direction !== undefined && (input.afterSeq !== undefined || input.beforeSeq !== undefined)) {
+      throw new ConversationError("invalid-history-page", "direction cannot be combined with afterSeq/beforeSeq");
+    }
+    const limit = Math.min(200, Math.max(1, Math.floor(input.limit ?? 50)));
+    const timeline = this.requireConversations().runs.listTimeline({
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      limit,
+      ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
+      ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
+      ...(input.direction !== undefined ? { direction: input.direction } : {}),
+    });
+    return toConversationTimelineDto(timeline);
   }
 
   getRun(runId: string) {

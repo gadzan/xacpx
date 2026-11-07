@@ -220,6 +220,7 @@ var MSG = {
   conversationBindingsSet: "control.conversation.bindings.set",
   conversationBindingsDelete: "control.conversation.bindings.delete",
   conversationHistory: "control.conversation.history",
+  conversationTimeline: "control.conversation.timeline",
   runsGet: "control.runs.get",
   runsDetailsBatch: "control.runs.details.batch",
   runsTraceGet: "control.runs.trace.get",
@@ -275,6 +276,7 @@ var RELAY_CAPABILITIES = {
   runsPauseV1: "runs.pause.v1",
   groupTopicIsolationV1: "group.topics.isolation.v1",
   roundtableV1: "conversations.roundtable.v1",
+  conversationTimelineV1: "conversations.timeline.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
@@ -1979,6 +1981,16 @@ var validateConversationHistory = (p) => {
     return null;
   return isStr(o.conversationId) && isStr(o.topicId) && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit) && directionOk ? o : null;
 };
+var validateConversationTimeline = (p) => {
+  const o = fields(p);
+  if (!o)
+    return null;
+  const directionOk = o.direction === undefined || o.direction === "oldest-first" || o.direction === "newest-first";
+  const cursorAndDirection = directionOk && o.direction !== undefined && (o.afterSeq !== undefined || o.beforeSeq !== undefined);
+  if (cursorAndDirection)
+    return null;
+  return isStr(o.conversationId) && isStr(o.topicId) && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit) && directionOk ? o : null;
+};
 var validateRunsGet = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? o : null;
@@ -2371,6 +2383,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationBindingsSet]: validateConversationBinding,
   [MSG.conversationBindingsDelete]: validateConversationBindingDelete,
   [MSG.conversationHistory]: validateConversationHistory,
+  [MSG.conversationTimeline]: validateConversationTimeline,
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsDetailsBatch]: validateRunsDetailsBatch,
   [MSG.runsTraceGet]: validateRunsTraceGet,

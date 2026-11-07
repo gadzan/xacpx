@@ -171,6 +171,7 @@ interface MessageRow {
   content: string;
   run_id: string | null;
   source_turn_json: string | null;
+  member_turn_id?: string | null;
   created_at: string;
 }
 
@@ -345,6 +346,7 @@ CREATE TABLE IF NOT EXISTS messages (
   source_turn_json TEXT,
   created_at TEXT NOT NULL,
   group_say_json TEXT,
+  member_turn_id TEXT,
   UNIQUE (topic_id, seq)
 );
 
@@ -440,6 +442,8 @@ CREATE TABLE IF NOT EXISTS pending_dispatches (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_topic_seq ON messages (topic_id, seq);
+-- idx_messages_member_turn is created by ensureMessageMemberTurnColumn AFTER
+-- the column exists, so a pre-P1a database can open this schema unchanged.
 CREATE INDEX IF NOT EXISTS idx_runs_topic_state ON runs (topic_id, state, created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state);
@@ -528,6 +532,25 @@ const SEQUENTIAL_DEPENDENCY_FENCE = `
 
 function optionalString(value: string | null | undefined): string | undefined {
   return value == null || value === "" ? undefined : value;
+}
+
+/** SQLite's default bind limit is 999; 400 keeps every batched timeline read
+ *  far below it while still collapsing a page into a handful of queries. */
+const TIMELINE_ID_CHUNK = 400;
+
+function placeholders(count: number): string {
+  return new Array(count).fill("?").join(", ");
+}
+
+/** Split ids into bind-safe chunks, deduped so a Run named by several page
+ *  messages is read once. Empty input yields no chunks (and no query). */
+function chunkIds(ids: readonly string[]): string[][] {
+  const unique = [...new Set(ids)];
+  const chunks: string[][] = [];
+  for (let index = 0; index < unique.length; index += TIMELINE_ID_CHUNK) {
+    chunks.push(unique.slice(index, index + TIMELINE_ID_CHUNK));
+  }
+  return chunks;
 }
 
 function parseStoredHumanIngress(json: string | null | undefined): HumanIngressContext | undefined {
@@ -653,6 +676,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
     ...(row.handoff_json ? { handoff: JSON.parse(row.handoff_json) as ConversationMessage["handoff"] } : {}),
     ...(row.group_say_json ? { groupSay: JSON.parse(row.group_say_json) as ConversationMessage["groupSay"] } : {}),
     ...(optionalString(row.run_id) ? { runId: row.run_id as string } : {}),
+    ...(optionalString(row.member_turn_id) ? { memberTurnId: row.member_turn_id as string } : {}),
     createdAt: row.created_at,
     ...(sourceTurn ? { sourceTurn } : {}),
   };
@@ -924,6 +948,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
     this.ensureRoundtableColumns();
+    this.ensureMessageMemberTurnColumn();
     this.ensureExternalStopIngress();
     this.ensureLifecycleWorkspaceCleanupColumn();
     if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)").some(c => c.name === "input_metadata_json")) {
@@ -1342,9 +1367,9 @@ export class SqliteConversationStore implements ConversationStore {
       const seq = this.allocateSeq(run.conversationId, run.topicId);
       const content = `Public handoff: ${sender.botId} → ${args.to}\nRun: ${run.id}\nTask:\n${args.task}`
         + (args.expectedOutput === undefined ? "" : `\nExpected output:\n${args.expectedOutput}`);
-      this.sqlite.run(`INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, handoff_json)
-        VALUES (?, ?, ?, ?, 'system', ?, ?, ?, ?, ?)`,
-        [messageId, run.conversationId, run.topicId, seq, sender.botId, content, run.id, input.now, JSON.stringify(envelope)]);
+      this.sqlite.run(`INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, handoff_json, member_turn_id)
+        VALUES (?, ?, ?, ?, 'system', ?, ?, ?, ?, ?, ?)`,
+        [messageId, run.conversationId, run.topicId, seq, sender.botId, content, run.id, input.now, JSON.stringify(envelope), sender.id]);
       this.sqlite.run(`INSERT INTO member_turns (id, run_id, conversation_id, topic_id, bot_id, batch, member_index, attempt,
         origin, state, trigger_message_ids_json, profile_snapshot_json, created_at, assignment_id, task, expected_output,
         depends_on_json, effect, handoff_source_turn_id, handoff_invocation_id)
@@ -1386,10 +1411,10 @@ export class SqliteConversationStore implements ConversationStore {
       const seq = this.allocateSeq(run.conversationId, run.topicId);
       const messageId = this.ids.messageId();
       this.sqlite.run(
-        `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, group_say_json)
-         VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, group_say_json, member_turn_id)
+         VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?, ?)`,
         [messageId, run.conversationId, run.topicId, seq, sender.botId, input.text, run.id, input.now,
-          JSON.stringify({ memberTurnId: sender.id, invocationId: input.invocationId })]);
+          JSON.stringify({ memberTurnId: sender.id, invocationId: input.invocationId }), sender.id]);
       this.indexPublicMemory({
         messageId,
         conversationId: run.conversationId,
@@ -1446,8 +1471,8 @@ export class SqliteConversationStore implements ConversationStore {
     const seq = this.allocateSeq(input.run.conversationId, input.run.topicId);
     const messageId = this.ids.messageId();
     this.sqlite.run(
-      `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at)
-       VALUES (?, ?, ?, ?, 'system', NULL, ?, ?, ?)`,
+      `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, member_turn_id)
+       VALUES (?, ?, ?, ?, 'system', NULL, ?, ?, ?, ?)`,
       [
         messageId,
         input.run.conversationId,
@@ -1456,6 +1481,10 @@ export class SqliteConversationStore implements ConversationStore {
         `No public reply from ${input.member.profileSnapshot?.presentation.name ?? input.member.botId}.`,
         input.run.id,
         input.now,
+        // The status row IS this member's public row: attributing it keeps the
+        // timeline from also drawing an activity row for a turn that already
+        // has something to read.
+        input.member.id,
       ],
     );
     return this.getMessage(messageId);
@@ -1782,6 +1811,64 @@ export class SqliteConversationStore implements ConversationStore {
       "SELECT * FROM member_turns WHERE run_id = ? ORDER BY batch ASC, member_index ASC, id ASC",
       [runId],
     ).map(mapMemberTurn);
+  }
+
+  /**
+   * Batched timeline reads (design §9.3). The timeline must never call
+   * `listMemberTurns` per Run: one page can reference dozens of Runs, and a
+   * per-Run read would turn a page load into an N+1. These three reads are
+   * bounded by the page (and, for Runs, by the Topic's non-terminal work).
+   */
+  listMemberTurnsForRuns(runIds: readonly string[]): MemberTurnRecord[] {
+    const rows: MemberTurnRow[] = [];
+    for (const chunk of chunkIds(runIds)) {
+      rows.push(...this.sqlite.all<MemberTurnRow>(
+        `SELECT * FROM member_turns WHERE run_id IN (${placeholders(chunk.length)})
+         ORDER BY run_id ASC, batch ASC, member_index ASC, id ASC`,
+        chunk,
+      ));
+    }
+    return rows.map(mapMemberTurn);
+  }
+
+  listTimelineRuns(input: { conversationId: string; topicId: string; runIds: readonly string[] }): ConversationRun[] {
+    // Non-terminal Runs are always carried: a Run that is still executing can
+    // have its request message outside the page, and dropping its row would
+    // hide live work. Page Runs come second, deduped by id.
+    const runs = new Map<string, ConversationRun>();
+    for (const row of this.sqlite.all<RunRow>(
+      `SELECT * FROM runs WHERE conversation_id = ? AND topic_id = ?
+       AND state NOT IN ('completed', 'failed', 'cancelled', 'indeterminate')
+       ORDER BY created_at ASC, rowid ASC`,
+      [input.conversationId, input.topicId],
+    )) {
+      runs.set(row.id, mapRun(row));
+    }
+    const missing = [...new Set(input.runIds)].filter((id) => !runs.has(id));
+    for (const chunk of chunkIds(missing)) {
+      for (const row of this.sqlite.all<RunRow>(
+        `SELECT * FROM runs WHERE conversation_id = ? AND topic_id = ?
+         AND id IN (${placeholders(chunk.length)})
+         ORDER BY created_at ASC, rowid ASC`,
+        [input.conversationId, input.topicId, ...chunk],
+      )) {
+        runs.set(row.id, mapRun(row));
+      }
+    }
+    return [...runs.values()];
+  }
+
+  /** One batched id→seq read for anchors that point outside the message page. */
+  listMessageSeqs(messageIds: readonly string[]): Array<{ id: string; seq: number }> {
+    const ids = [...new Set(messageIds)];
+    const seqs: Array<{ id: string; seq: number }> = [];
+    for (const chunk of chunkIds(ids)) {
+      seqs.push(...this.sqlite.all<{ id: string; seq: number }>(
+        `SELECT id, seq FROM messages WHERE id IN (${placeholders(chunk.length)})`,
+        chunk,
+      ).map((row) => ({ id: row.id, seq: Number(row.seq) })));
+    }
+    return seqs;
   }
 
   listMemberAvailabilityFacts(conversationId: string): MemberAvailabilityFact[] {
@@ -2894,8 +2981,8 @@ export class SqliteConversationStore implements ConversationStore {
         const seq = this.allocateSeq(run.conversationId, run.topicId);
         this.sqlite.run(
           `INSERT INTO messages (
-             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at, member_turn_id
+           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?, ?)`,
           [
             messageId,
             run.conversationId,
@@ -2909,6 +2996,7 @@ export class SqliteConversationStore implements ConversationStore {
             run.id,
             JSON.stringify(input.sourceTurn),
             input.now,
+            member.id,
           ],
         );
         this.indexPublicMemory({
@@ -3018,8 +3106,8 @@ export class SqliteConversationStore implements ConversationStore {
         const seq = this.allocateSeq(run.conversationId, run.topicId);
         this.sqlite.run(
           `INSERT INTO messages (
-             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at, member_turn_id
+           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?, ?)`,
           [
             messageId,
             run.conversationId,
@@ -3030,6 +3118,7 @@ export class SqliteConversationStore implements ConversationStore {
             run.id,
             JSON.stringify(input.sourceTurn),
             input.now,
+            member.id,
           ],
         );
         this.indexPublicMemory({
@@ -3249,8 +3338,8 @@ export class SqliteConversationStore implements ConversationStore {
             const seq = this.allocateSeq(run.conversationId, run.topicId);
             this.sqlite.run(
               `INSERT INTO messages (
-                 id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-               ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+                 id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at, member_turn_id
+               ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?, ?)`,
               [
                 messageId,
                 run.conversationId,
@@ -3261,6 +3350,7 @@ export class SqliteConversationStore implements ConversationStore {
                 run.id,
                 JSON.stringify(entry.sourceTurn ?? { sessionAlias: member.sessionAlias ?? "" }),
                 input.now,
+                member.id,
               ],
             );
             this.indexPublicMemory({
@@ -4496,6 +4586,71 @@ export class SqliteConversationStore implements ConversationStore {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_member_roundtable_order
           ON member_turns (run_id, member_index)
           WHERE round_index IS NOT NULL;`);
+    });
+  }
+
+  /**
+   * `messages.member_turn_id` (design §5.4): the durable join from a public
+   * message to the physical execution that produced it. New databases get the
+   * column and index from SCHEMA; older ones are upgraded here.
+   *
+   * The backfill is a ONE-TIME migration keyed off the column's absence, and it
+   * only writes a leg it can prove: a `sourceTurn.turnId` that matches exactly
+   * one MemberTurn in the same Run, a handoff envelope's sender, or a
+   * `group_say` marker. An ambiguous or missing leg stays NULL — the timeline
+   * then reports `inferred`/`unresolved` instead of inventing an owner.
+   */
+  private ensureMessageMemberTurnColumn(): void {
+    this.sqlite.transaction(() => {
+      const present = this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)")
+        .some((column) => column.name === "member_turn_id");
+      if (!present) {
+        this.sqlite.exec("ALTER TABLE messages ADD COLUMN member_turn_id TEXT");
+      }
+      this.sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_messages_member_turn ON messages (member_turn_id)",
+      );
+      if (present) return;
+      // Source-turn join: count the candidates instead of trusting a single
+      // subquery result, so a turn id shared by two rows leaves the message
+      // unresolved rather than silently picking one.
+      this.sqlite.run(`UPDATE messages
+        SET member_turn_id = (
+          SELECT mt.id FROM member_turns mt
+          WHERE mt.run_id = messages.run_id
+            AND mt.source_turn_id = json_extract(messages.source_turn_json, '$.turnId')
+        )
+        WHERE member_turn_id IS NULL
+          AND run_id IS NOT NULL
+          AND json_valid(source_turn_json)
+          AND json_extract(source_turn_json, '$.turnId') IS NOT NULL
+          AND (SELECT COUNT(*) FROM member_turns mt
+               WHERE mt.run_id = messages.run_id
+                 AND mt.source_turn_id = json_extract(messages.source_turn_json, '$.turnId')) = 1`);
+      // Handoff messages name their sender in the envelope, not in sourceTurn.
+      // The same-Run EXISTS check keeps a corrupt envelope from attributing a
+      // message to a turn of another Run.
+      this.sqlite.run(`UPDATE messages
+        SET member_turn_id = json_extract(handoff_json, '$.senderMemberTurnId')
+        WHERE member_turn_id IS NULL
+          AND json_valid(handoff_json)
+          AND json_extract(handoff_json, '$.senderMemberTurnId') IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM member_turns mt
+            WHERE mt.id = json_extract(messages.handoff_json, '$.senderMemberTurnId')
+              AND mt.run_id = messages.run_id
+          )`);
+      // `group_say` rows have always carried their sender turn in the marker.
+      this.sqlite.run(`UPDATE messages
+        SET member_turn_id = json_extract(group_say_json, '$.memberTurnId')
+        WHERE member_turn_id IS NULL
+          AND json_valid(group_say_json)
+          AND json_extract(group_say_json, '$.memberTurnId') IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM member_turns mt
+            WHERE mt.id = json_extract(messages.group_say_json, '$.memberTurnId')
+              AND mt.run_id = messages.run_id
+          )`);
     });
   }
 
@@ -5856,8 +6011,8 @@ export class SqliteConversationStore implements ConversationStore {
             const seq = this.allocateSeq(run.conversationId, run.topicId);
             this.sqlite.run(
               `INSERT INTO messages (
-                 id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-               ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+                 id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at, member_turn_id
+               ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?, ?)`,
               [
                 messageId,
                 run.conversationId,
@@ -5868,6 +6023,7 @@ export class SqliteConversationStore implements ConversationStore {
                 run.id,
                 JSON.stringify(input.sourceTurn),
                 input.now,
+                member.id,
               ],
             );
             this.indexPublicMemory({

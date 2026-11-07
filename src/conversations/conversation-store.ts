@@ -577,6 +577,16 @@ export interface ConversationStore {
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
   /**
+   * Batched timeline reads (design §9.3): the page's Runs and member turns are
+   * loaded in bounded `IN` queries, never one `listMemberTurns` per Run.
+   */
+  listMemberTurnsForRuns(runIds: readonly string[]): MemberTurnRecord[];
+  /** Every Run the timeline page must carry: the page's Runs plus every
+   *  non-terminal Run of the Topic, deduped. */
+  listTimelineRuns(input: { conversationId: string; topicId: string; runIds: readonly string[] }): ConversationRun[];
+  /** `id` → `seq` for rows the anchors name but the page does not contain. */
+  listMessageSeqs(messageIds: readonly string[]): Array<{ id: string; seq: number }>;
+  /**
    * Per-member work facts for the Router's advice-only availability snapshot
    * (design §8.3). Reads only the Conversation's non-terminal Runs, oldest
    * first, so the read is bounded by current work rather than history. This

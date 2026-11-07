@@ -77,6 +77,11 @@ import type {
   WorkspaceIsolationPolicy,
 } from "./conversation-types";
 import { groupWorkspaceMode, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
+import {
+  projectConversationTimeline,
+  type ConversationLiveTurnsByMember,
+  type ConversationTimeline,
+} from "./conversation-timeline";
 
 export interface ConversationRunServiceOptions {
   worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
@@ -927,6 +932,75 @@ export class ConversationRunService {
       ...(oldestSeq !== undefined ? { oldestSeq } : {}),
       ...(newestSeq !== undefined ? { newestSeq } : {}),
     };
+  }
+
+  /**
+   * The single Conversation read model (design §9.3): one message page, one
+   * batched Run read and one batched MemberTurn read, projected by the pure
+   * `projectConversationTimeline`. Non-terminal Runs are always carried, so a
+   * page window can never hide live work; `conversation.history` stays exactly
+   * as it was for old clients.
+   */
+  listTimeline(
+    query: ListMessagesQuery,
+    options?: { liveTurnsByMember?: ConversationLiveTurnsByMember },
+  ): ConversationTimeline {
+    this.assertOpen();
+    this.requireConversation(query.conversationId);
+    const topic = this.listTopics(query.conversationId).find((item) => item.id === query.topicId);
+    if (!topic) {
+      throw new BotError("topic_not_found", `topic "${query.topicId}" does not belong to this conversation`);
+    }
+    const messages = this.store.listMessages(query);
+    const oldestSeq = messages[0]?.seq;
+    const newestSeq = messages[messages.length - 1]?.seq;
+    const hasMoreBefore = oldestSeq !== undefined
+      && this.store.listMessages({
+        conversationId: query.conversationId,
+        topicId: query.topicId,
+        beforeSeq: oldestSeq,
+        limit: 1,
+      }).length > 0;
+    const hasMoreAfter = newestSeq !== undefined
+      && this.store.listMessages({
+        conversationId: query.conversationId,
+        topicId: query.topicId,
+        afterSeq: newestSeq,
+        limit: 1,
+      }).length > 0;
+
+    const pageRunIds = [...new Set(messages.flatMap((message) => message.runId === undefined ? [] : [message.runId]))];
+    const runs = this.store.listTimelineRuns({
+      conversationId: query.conversationId,
+      topicId: query.topicId,
+      runIds: pageRunIds,
+    });
+    const memberTurns = this.store.listMemberTurnsForRuns(runs.map((run) => run.id));
+
+    // Anchors the page cannot answer itself: Run request messages and the
+    // trigger messages of member turns outside the window.
+    const pageIds = new Set(messages.map((message) => message.id));
+    const messageSeqById: Record<string, number> = {};
+    for (const message of messages) messageSeqById[message.id] = message.seq;
+    const anchorIds = [...new Set([
+      ...runs.map((run) => run.requestMessageId),
+      ...memberTurns.flatMap((turn) => turn.triggerMessageIds),
+    ])].filter((id) => !pageIds.has(id));
+    for (const row of this.store.listMessageSeqs(anchorIds)) messageSeqById[row.id] = row.seq;
+
+    return projectConversationTimeline({
+      conversationId: query.conversationId,
+      topicId: query.topicId,
+      messages,
+      runs,
+      memberTurns,
+      messageSeqById,
+      hasMoreBefore,
+      hasMoreAfter,
+      ...(options?.liveTurnsByMember !== undefined
+        ? { liveTurnsByMember: options.liveTurnsByMember }
+        : {}),
+    });
   }
 
   listTopicRuns(conversationId: string, topicId: string, options?: { limit?: number }): { runs: ConversationRun[]; activeRunId?: string; activeRun?: ConversationRun } {

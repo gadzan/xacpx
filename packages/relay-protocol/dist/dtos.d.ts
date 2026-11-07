@@ -495,6 +495,9 @@ export interface ConversationMessageDto {
     content: string;
     replyTo?: string;
     runId?: string;
+    /** Durable physical execution that produced this message. Absent on human
+     *  requests, system notices, and legacy rows whose backfill matched nothing. */
+    memberTurnId?: string;
     createdAt: string;
     promptRequestId?: string;
     /** Safe display metadata only; never carries daemon filePath. Omitted when the message has no attachments. */
@@ -767,6 +770,60 @@ export interface ConversationHistoryResponseDto {
     conversationId: string;
     topicId: string;
     messages: ConversationMessageDto[];
+    oldestSeq?: number;
+    newestSeq?: number;
+    hasMoreBefore: boolean;
+    hasMoreAfter: boolean;
+}
+/**
+ * How a message was joined onto its MemberTurn. `exact` is the durable
+ * `messages.member_turn_id`, a unique `sourceTurn.turnId` match, or the handoff
+ * envelope's sender; `inferred` is the only same-Run/same-Bot candidate;
+ * `unresolved` means the row is still shown but its owner cannot be proven.
+ */
+export type ConversationTimelineOwnership = "exact" | "inferred" | "unresolved";
+/** One row of the single Conversation timeline (design §9.2). */
+export type ConversationTimelineEntryDto = {
+    kind: "message";
+    key: string;
+    anchorSeq: number;
+    message: ConversationMessageDto;
+    memberTurnId?: string;
+    runId?: string;
+    ownership?: ConversationTimelineOwnership;
+} | {
+    kind: "activity";
+    key: string;
+    anchorSeq: number;
+    runId: string;
+    memberTurn: MemberTurnSummaryDto;
+    /** True when the client holds an unpersisted live overlay for this turn. */
+    live?: boolean;
+} | {
+    kind: "notice";
+    key: string;
+    anchorSeq: number;
+    tone: "queued" | "empty" | "failed";
+    runId?: string;
+    text: string;
+};
+/** RoundStrip summary for one `(runId, roundIndex)` projection. */
+export interface ConversationRoundSummaryDto {
+    runId: string;
+    roundIndex: number;
+    rounds: number;
+    speakerCount: number;
+    spoken: number;
+    passed: number;
+    activeMemberTurnId?: string;
+    state: "queued" | "running" | "completed" | "failed" | "cancelled";
+}
+/** The single read model both Direct and Group render. */
+export interface ConversationTimelineDto {
+    conversationId: string;
+    topicId: string;
+    entries: ConversationTimelineEntryDto[];
+    activeRound?: ConversationRoundSummaryDto;
     oldestSeq?: number;
     newestSeq?: number;
     hasMoreBefore: boolean;
