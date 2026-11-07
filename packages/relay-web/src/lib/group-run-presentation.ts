@@ -262,6 +262,68 @@ export function traceEventsToParts(events: ConversationRunTraceEventDto[]): {
   return { parts, plan, terminal };
 }
 
+/**
+ * Merge the durable replay parts of one member/attempt with the live hub's
+ * parts for the same turn (drawer freshness contract, 150ms).
+ *
+ * Durable pages are authoritative for history but lag the hub by a refetch
+ * window; the live channel has the freshest tail. Both channels describe the
+ * same event stream, so this is a selection, not a concatenation:
+ *
+ * - tools upsert by `toolCallId` and never produce a second row; a terminal
+ *   replay status never regresses to the live `running` snapshot;
+ * - prose (text/reasoning) is coalesced per channel, so the longer superset
+ *   wins; a live fragment already contained in the durable block is dropped
+ *   instead of being appended as a duplicate paragraph.
+ *
+ * Order follows the durable page, with live-only events appended at the tail.
+ */
+export function mergeLiveTraceParts(
+  replay: readonly TurnPartDto[] | undefined,
+  live: readonly TurnPartDto[] | undefined,
+): TurnPartDto[] | undefined {
+  if (!live || live.length === 0) return replay ? [...replay] : replay;
+  if (!replay || replay.length === 0) return [...live];
+  const merged = replay.map((part) => (part.type === "tool" ? { ...part, step: part.step } : { ...part }));
+  for (const part of live) {
+    if (part.type === "tool") {
+      const index = merged.findIndex((candidate) =>
+        candidate.type === "tool" && candidate.step.toolCallId === part.step.toolCallId);
+      if (index < 0) {
+        merged.push({ type: "tool", step: part.step });
+        continue;
+      }
+      const current = merged[index]!;
+      // A durable success/error is final; the live channel may still hold the
+      // pre-finish running snapshot.
+      if (current.type === "tool"
+        && !(part.step.status === "running" && current.step.status !== "running")) {
+        merged[index] = { type: "tool", step: part.step };
+      }
+      continue;
+    }
+    let target = -1;
+    for (let index = merged.length - 1; index >= 0; index--) {
+      if (merged[index]!.type === part.type) { target = index; break; }
+    }
+    if (target < 0) {
+      merged.push({ type: part.type, text: part.text });
+      continue;
+    }
+    const current = merged[target]!;
+    if (current.type !== part.type) continue;
+    const durableText = current.text;
+    if (part.text === durableText) continue;
+    if (part.text.includes(durableText)) {
+      merged[target] = { type: part.type, text: part.text };
+      continue;
+    }
+    // Durable already contains the live fragment (late subscription) — no dup.
+    if (!durableText.includes(part.text)) merged.push({ type: part.type, text: part.text });
+  }
+  return merged;
+}
+
 /** Viewport-safe popover placement for the anchored detail layer. Pure. */
 export interface PopoverRect {
   top: number;

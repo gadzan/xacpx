@@ -1,10 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import type { Page, TestInfo } from "@playwright/test";
+import type { Locator, Page, TestInfo } from "@playwright/test";
 import type {
   ConversationMessageDto,
   ConversationRunDetailDto,
   ConversationRunTraceEventDto,
   MemberTurnSummaryDto,
+  ToolStepDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { test, expect, loginAndShowInstances } from "./fixtures";
 import type { MockHub } from "./mock-hub";
@@ -40,14 +41,21 @@ function runOf(state: ConversationRunDetailDto["state"] = "running"): Conversati
   };
 }
 
+/** One long command output so expanding a row changes its height materially. */
+const LONG_OUTPUT = Array.from({ length: 80 }, (_, index) => `line ${index + 1}`).join("\n");
+
 function toolEvent(seq: number, index: number): ConversationRunTraceEventDto {
   return {
     seq, createdAt, kind: "tool",
     payload: { step: {
       toolCallId: `tool-${String(index).padStart(2, "0")}`,
-      toolName: "read_file", kind: "read", status: "success",
+      toolName: index === 20 ? "run_command" : "read_file",
+      kind: index === 20 ? "execute" : "read",
+      status: "success",
       title: `Tool ${String(index).padStart(2, "0")}`,
-      detail: { type: "text", text: `output ${index}`, output: `output ${index}` },
+      detail: index === 20
+        ? { type: "command", command: "pnpm test", output: LONG_OUTPUT }
+        : { type: "text", text: `output ${index}`, output: `output ${index}` },
       durationMs: 12,
     } },
   };
@@ -70,10 +78,20 @@ function correlation() {
   };
 }
 
-function triggerStep(index: number) {
+/** A hub update for an already-durable step: it triggers the open-trace
+ *  refetch without inventing a new live-only row. */
+function triggerStep() {
   return {
-    toolCallId: `live-trigger-${index}`, toolName: "read_file", kind: "read", status: "running",
-    title: `Trigger ${index}`, startedAt: Date.now(),
+    toolCallId: "tool-36", toolName: "read_file", kind: "read", status: "running",
+    title: "Tool 36", startedAt: Date.now(),
+  };
+}
+
+/** A brand-new live-only step, used to create real >10/s burst events. */
+function burstStep(index: number) {
+  return {
+    toolCallId: `burst-${index}`, toolName: "run_command", kind: "execute", status: "success",
+    title: `Burst ${index}`, startedAt: Date.now(),
   };
 }
 
@@ -138,17 +156,35 @@ async function openLiveFeed(page: Page, hub: MockHub) {
   await expect(liveRow(page)).toHaveCount(1);
   await liveRow(page).click();
   await expect(detail(page)).toBeVisible();
-  const triggerRefetch = (index: number) => hub.send({
+  const sendStep = (step: ToolStepDto) => hub.send({
     kind: "control-event", instanceId: "i1",
     event: {
       type: "tool-event", chatKey: "group-live-feed", sessionAlias: "test",
-      step: triggerStep(index), conversation: correlation(),
+      step, conversation: correlation(),
     },
   });
+  const triggerRefetch = () => sendStep(triggerStep());
+  /** Real new events for the >10/s animation gate. */
+  const sendBurst = (from: number, to: number) => {
+    for (let index = from; index <= to; index++) sendStep(burstStep(index));
+  };
   const appendEvents = (from: number, to: number) => {
     for (let index = from; index <= to; index++) events.push(toolEvent(index, index));
   };
-  return { events, triggerRefetch, appendEvents, finish: () => { current = runOf("completed"); } };
+  return {
+    events, triggerRefetch, sendBurst, appendEvents,
+    finish: (state: "completed" | "failed" | "cancelled" = "completed") => {
+      current = runOf(state);
+      const finished = { ...liveMember, state, finishedAt: createdAt };
+      hub.send({
+        kind: "control-event", instanceId: "i1",
+        event: {
+          type: "member-turn-finished", chatKey: "group-live-feed", sessionAlias: "test",
+          run: runOf(state), memberTurn: finished,
+        },
+      });
+    },
+  };
 }
 
 async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: boolean) {
@@ -183,7 +219,7 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   expect(await detailEl.locator('[data-trace-key="tool:tool-01"]').evaluate((el) => getComputedStyle(el).contentVisibility))
     .toBe("visible");
   fixture.appendEvents(37, 56);
-  fixture.triggerRefetch(1);
+  fixture.triggerRefetch();
   await expect(detailEl.getByTestId("group-trace-step")).toHaveCount(56);
   await expect(detailEl.getByTestId("tool-step-body").first()).toContainText("output 1");
   await expect(detailEl.locator('[data-trace-key="tool:tool-01"]')).toHaveAttribute("data-state", "success");
@@ -232,7 +268,7 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   });
   expect(anchor.key).not.toBe("");
   fixture.appendEvents(57, 76);
-  fixture.triggerRefetch(2);
+  fixture.triggerRefetch();
   await expect(detailEl.getByTestId("group-trace-step")).toHaveCount(76);
   const drift = async () => Math.abs(await detailEl.locator(`[data-trace-key="${anchor.key}"]`).evaluate((el) => {
     const owner = el.closest(".group-detail-scroll, .thin-scroll")!;
@@ -262,15 +298,146 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   }
 
   fixture.appendEvents(77, 77);
-  const finished = { ...liveMember, state: "completed" as const, finishedAt: createdAt };
-  fixture.finish();
-  hub.send({ kind: "control-event", instanceId: "i1", event: { type: "member-turn-finished", chatKey: "group-live-feed", sessionAlias: "test", run: runOf("completed"), memberTurn: finished } });
+  fixture.finish("completed");
   await expect(page.getByTestId("trace-live-summary")).toContainText("Run complete");
   await expect(page.getByTestId("trace-live-item")).toHaveCount(0);
   await expect(detail(page).getByTestId("group-trace-step")).toHaveCount(77);
   await expect(detail(page).getByTestId("tool-step-body").first()).toContainText("output 1");
   await screenshot(page, info, mobile ? "mobile-terminal-summary" : "desktop-terminal-summary");
 }
+
+/** Smooth scroll and `content-visibility` re-measures can keep moving the
+ *  offset for a few frames; wait for a plateau before capturing an anchor. */
+async function settleScroll(page: Page, scroll: Locator) {
+  let previous = -1;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const current = await scroll.evaluate((el) => el.scrollTop);
+    if (current === previous) return;
+    previous = current;
+    await page.waitForTimeout(100);
+  }
+}
+
+function offsetInScroller(row: Locator): Promise<number> {
+  return row.evaluate((el) => {
+    const owner = el.closest(".group-detail-scroll, .thin-scroll")!;
+    return el.getBoundingClientRect().top - owner.getBoundingClientRect().top;
+  });
+}
+
+async function expectResidualFeed(page: Page, hub: MockHub, info: TestInfo, mobile: boolean) {
+  const fixture = await openLiveFeed(page, hub);
+  const detailEl = detail(page);
+  const scroll = scroller(page, mobile);
+  const stackRows = page.locator('[data-test="trace-live-item"]');
+  const stack = page.getByTestId("trace-live-stack");
+  const rows = mobile ? 2 : 3;
+
+  // --- Fixed-height stack: 2 rows on mobile, 3 on desktop ----------------
+  const stackBox = await stack.boundingBox();
+  expect(stackBox).not.toBeNull();
+  expect(stackBox!.height).toBeGreaterThanOrEqual(rows * 34);
+  expect(stackBox!.height).toBeLessThanOrEqual(rows * 34 + 32);
+  if (mobile) {
+    // The sheet owns the scroll; the page body must not be pushed or occluded.
+    expect(await page.evaluate(() => document.scrollingElement!.scrollHeight <= window.innerHeight + 1)).toBe(true);
+    await expect(detailEl).toBeVisible();
+  }
+
+  // --- Long command output: expand, then append with <=1px drift ----------
+  const longRow = detailEl.locator('[data-trace-key="tool:tool-20"]');
+  await longRow.getByTestId("group-trace-step-head").click();
+  await expect(longRow.getByTestId("tool-step-body")).toContainText("line 80");
+  await longRow.evaluate((el) => el.scrollIntoView({ block: "center" }));
+  await settleScroll(page, scroll);
+  const anchorOffset = await offsetInScroller(longRow);
+  fixture.appendEvents(37, 56);
+  fixture.triggerRefetch();
+  await expect(detailEl.getByTestId("group-trace-step")).toHaveCount(56);
+  const drift = async () => Math.abs(await offsetInScroller(longRow) - anchorOffset);
+  await expect.poll(drift).toBeLessThanOrEqual(1);
+  console.log("EXPANDED_DRIFT", mobile ? "mobile" : "desktop", await drift());
+  await screenshot(page, info, mobile ? "mobile-long-output-append" : "desktop-long-output-append");
+
+  // --- >10 events/s: content updates, animations stop --------------------
+  fixture.sendBurst(1, 12);
+  await expect(page.locator(".trace-live--static")).toHaveCount(1, { timeout: 5_000 });
+  await expect(stackRows.first()).toContainText("Burst 12");
+  // The gate clears by rate once the window drains, with no further event.
+  await expect(page.locator(".trace-live--static")).toHaveCount(0, { timeout: 15_000 });
+
+  // --- Clicking a live row scrolls to and flashes the full-list row ------
+  await stackRows.first().click();
+  const burstRow = detailEl.locator('[data-trace-key="tool:burst-12"]');
+  await expect(burstRow).toHaveAttribute("data-highlight", "true");
+  await expect(burstRow).toHaveClass(/trace-row--flash/);
+  await screenshot(page, info, mobile ? "mobile-reveal-flash" : "desktop-reveal-flash");
+
+  // --- Reduced motion: the flash and the stack transitions go away -------
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await stackRows.nth(1).click();
+  await expect.poll(() => detailEl.locator('[data-trace-key="tool:burst-11"]')
+    .evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+  const reducedRules = await page.evaluate(() => {
+    const found: string[] = [];
+    for (const sheet of Array.from(document.styleSheets)) {
+      let rules: CSSRuleList;
+      try { rules = sheet.cssRules; } catch { continue; }
+      for (const rule of Array.from(rules)) {
+        if (rule instanceof CSSMediaRule && rule.conditionText.includes("prefers-reduced-motion")) {
+          found.push(rule.cssText);
+        }
+      }
+    }
+    return found.join("\n");
+  });
+  expect(reducedRules).toContain("trace-live-enter-active");
+  expect(reducedRules).toContain("transition: none");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+
+  // --- Find-in-page reaches a row `content-visibility` skipped -----------
+  // DOM.performSearch is Chromium's page-find index: it proves the offscreen
+  // row is still in the DOM (not unmounted by a virtual window).
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("DOM.enable");
+  const found = await cdp.send("DOM.performSearch", { query: "Tool 05" });
+  await cdp.detach();
+  expect(found.resultCount).toBeGreaterThan(0);
+
+  // Terminal summaries are covered by their own tests: a finished member can
+  // only settle once, so failed and cancelled each need a fresh run.
+}
+
+async function expectTerminal(page: Page, hub: MockHub, state: "failed" | "cancelled") {
+  const fixture = await openLiveFeed(page, hub);
+  await expect(detail(page).getByTestId("group-trace-step")).toHaveCount(36);
+  fixture.finish(state);
+  await expect(page.getByTestId("trace-live-summary"))
+    .toContainText(state === "failed" ? "Run failed" : "Run cancelled");
+  await expect(page.getByTestId("trace-live-item")).toHaveCount(0);
+  // The full process survives the terminal summary.
+  await expect(detail(page).getByTestId("group-trace-step")).toHaveCount(36);
+}
+
+test("desktop drawer: burst gate, reveal, reduced motion, find-in-page, long output", async ({ page, hub }, info) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expectResidualFeed(page, hub, info, false);
+});
+
+test("mobile sheet: burst gate, reveal, reduced motion, find-in-page, long output", async ({ page, hub }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expectResidualFeed(page, hub, info, true);
+});
+
+test("failed run collapses the live stack to a failed summary", async ({ page, hub }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expectTerminal(page, hub, "failed");
+});
+
+test("cancelled run collapses the live stack to a cancelled summary", async ({ page, hub }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expectTerminal(page, hub, "cancelled");
+});
 
 test("desktop drawer: full process, live stack, freeze and terminal summary", async ({ page, hub }, info) => {
   await page.setViewportSize({ width: 1280, height: 900 });

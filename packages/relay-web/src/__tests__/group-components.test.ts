@@ -15,6 +15,7 @@ import GroupPane from "../components/GroupPane.vue";
 import GroupComposer from "../components/GroupComposer.vue";
 import GroupTranscript from "../components/GroupTranscript.vue";
 import InstanceTree from "../components/InstanceTree.vue";
+import GroupRunDetailContent from "../components/GroupRunDetailContent.vue";
 
 const BOTS: BotSummaryDto[] = [
   { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
@@ -1338,6 +1339,66 @@ describe("Group Components", () => {
       const anchor = wrapper.findComponent({ name: "TraceOverlay" }).props("anchorEl") as HTMLElement | null;
       expect(anchor?.isConnected).toBe(true);
       expect(anchor?.closest('[data-test="agent-turn-row"]')?.getAttribute("data-member-turn-id")).toBe("turn_a");
+      wrapper.unmount();
+    });
+
+    it("shows a hub event in the Live Stack without waiting for the durable refetch", async () => {
+      const groups = seedGroupSelection();
+      groups.messages = [
+        { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "Ship it", createdAt: "now" },
+      ];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+      };
+      const toolStep = (id: string, title: string) => ({
+        toolCallId: id, toolName: "read", kind: "read" as const, title, status: "success" as const,
+      });
+      const step = (id: string, title: string): TurnPartDto => ({ type: "tool", step: toolStep(id, title) });
+      // The durable page lags the hub: it only holds the first tool.
+      groups.tracePages = {
+        "i1:conversation_g:topic_1:turn_a:1": {
+          events: [{ seq: 1, createdAt: "now", kind: "tool", payload: { step: toolStep("tc1", "Durable tool") } }],
+          nextSeq: 1, hasMore: false, recordingState: "recording", loading: false, error: null,
+        },
+      };
+      // The hub has already delivered a newer tool the page has not committed.
+      groups.liveTurnsByMember = {
+        turn_a: {
+          parts: [step("tc1", "Durable tool"), step("tc2", "Hub tool")],
+          status: "streaming", startedAt: 1, revision: 2,
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        attachTo: document.body,
+        props: { bots: BOTS.filter((bot) => GROUP.botIds.includes(bot.id)) },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="agent-thinking-bubble"]').trigger("click");
+      await flushPromises();
+
+      // Selection is synchronous: the drawer already renders the hub tool with
+      // no trace RPC and no 500ms durable refetch (the page still has 1 event).
+      const content = wrapper.findComponent(GroupRunDetailContent);
+      const titles = (content.props("parts") as TurnPartDto[])
+        .map((part) => part.type === "tool" ? part.step.title : "");
+      expect(titles).toEqual(["Durable tool", "Hub tool"]);
+      expect(groups.tracePages["i1:conversation_g:topic_1:turn_a:1"]!.events).toHaveLength(1);
+      // The fixed stack paints it inside the coalescing window (120ms < 150ms).
+      // The drawer is teleported to <body>, so query the document.
+      await vi.waitFor(() => {
+        expect(document.body.querySelector('[data-test="trace-live-item"]')?.textContent)
+          .toContain("Hub tool");
+      });
       wrapper.unmount();
     });
 

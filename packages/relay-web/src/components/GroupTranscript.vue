@@ -39,6 +39,7 @@ import {
 import { pushToast } from "../lib/use-toasts";
 import { confirm } from "../lib/use-confirm";
 import {
+  mergeLiveTraceParts,
   projectGroupTranscript,
   traceEventsToParts,
   type GroupRunRecord,
@@ -637,10 +638,20 @@ const detailLive = computed(() => {
   if (live && live.attempt !== undefined && live.attempt !== selectedAttempt.value) return undefined;
   return live;
 });
+/** Durable replay plus the live hub tail: the drawer must show a new event
+ *  within 150ms, so live parts are merged in rather than dropped while the
+ *  durable page refetches (500ms) behind them. `mergeLiveTraceParts` upserts
+ *  tools by id and coalesces prose, so overlap never duplicates rows. Once a
+ *  member is terminal AND a durable page has content, that page is authoritative
+ *  again; an empty page (not recorded yet / at all) keeps the live parts. */
 const detailParts = computed<TurnPartDto[] | undefined>(() => {
-  if (detailReplay.value?.parts.length || detailPage.value?.events.length) return detailReplay.value?.parts;
-  return detailLive.value?.parts
-    ?? (detailReplay.value?.parts !== undefined ? [] : undefined);
+  const replay = detailReplay.value?.parts;
+  const hasDurable = (replay?.length ?? 0) > 0 || (detailPage.value?.events.length ?? 0) > 0;
+  const member = openDetail.value?.memberTurn;
+  const live = isLiveMemberState(member?.state) || !hasDurable
+    ? detailLive.value?.parts
+    : undefined;
+  return mergeLiveTraceParts(replay, live);
 });
 
 const detailRecordingState = computed<TraceReplayStatus | undefined>(() => {

@@ -8,14 +8,20 @@ import { nextTick, onBeforeUnmount, onMounted, reactive, watch } from "vue";
  * It lives outside `GroupTraceTimeline` on purpose. The timeline is re-rendered
  * on every streamed part, and the desktop drawer / mobile sheet branches remount
  * their own scroller; component-local state would silently reset mid-read. The
- * store is keyed by `${memberTurnId}:${attempt}` and resets when that key
- * changes, so a retry never inherits the previous attempt's expansion.
+ * store is keyed by `${memberTurnId}:${attempt}`: expansion is kept per scope,
+ * so returning to an attempt restores what the reader had opened, while a
+ * retry's fresh attempt starts empty. Follow/unread always reset on a scope
+ * change because those describe the viewport, not the reading history.
  *
- * Session-scoped like `trace-expansion.ts`: entries are small strings, one
- * drawer is open at a time, and the state dies with the page.
+ * Session-scoped like `trace-expansion.ts`: the map holds at most the scopes
+ * the reader visited (one drawer open at a time, a handful of attempts), and
+ * the state dies with the page.
  */
 export interface TraceDrawerStore {
   scopeKey: string;
+  /** Expansion per scope (`memberTurnId:attempt`) — survives leaving and returning. */
+  expandedByScope: Map<string, Set<string>>;
+  /** Active scope's expansion set; a reference into `expandedByScope`. */
   expanded: Set<string>;
   following: boolean;
   unread: number;
@@ -24,6 +30,7 @@ export interface TraceDrawerStore {
 
 const store = reactive<TraceDrawerStore>({
   scopeKey: "",
+  expandedByScope: new Map<string, Set<string>>(),
   expanded: new Set<string>(),
   following: true,
   unread: 0,
@@ -43,7 +50,8 @@ let highlightTimer: ReturnType<typeof setTimeout> | undefined;
 /** Test hook: module state outlives one mount, so suites start clean. */
 export function resetTraceDrawerState(): void {
   store.scopeKey = "";
-  store.expanded.clear();
+  store.expandedByScope.clear();
+  store.expanded = new Set<string>();
   store.following = true;
   store.unread = 0;
   store.highlight = null;
@@ -103,7 +111,14 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
     previousIds = options.nodeIds();
     if (store.scopeKey === key) return;
     store.scopeKey = key;
-    store.expanded.clear();
+    // Restore this scope's expansion (create it on first visit); never inherit
+    // the set belonging to the scope we just left.
+    let expanded = store.expandedByScope.get(key);
+    if (!expanded) {
+      expanded = new Set<string>();
+      store.expandedByScope.set(key, expanded);
+    }
+    store.expanded = expanded;
     store.following = true;
     store.unread = 0;
     store.highlight = null;
@@ -287,6 +302,8 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
   function toggle(key: string): void {
     if (store.expanded.has(key)) store.expanded.delete(key);
     else store.expanded.add(key);
+    // Keep the scope's map entry pointing at the set that was just mutated.
+    store.expandedByScope.set(store.scopeKey, store.expanded);
   }
 
   function jumpToLatest(): void {

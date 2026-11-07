@@ -347,3 +347,8 @@ interface TraceLiveItem {
 - 跟随判定在每次追加时读取追加前的实际滚动位置，因此恢复历史位置后不会被新事件顶走；`loadEarlier` 的前置分页不计未读。
 - 抽屉内容根节点使用 `overflow-anchor: none`。实测（1280×900，56→76 行）在开启浏览器滚动锚定时会出现 22px 的自动重锚位移；内容只在尾部增长，锚定由 `useTraceDrawerState` 自己负责，关掉后视口保持不动。
 - `content-visibility` 例外：已展开行、当前 Live Stack 的最近 3 行、失败行；其余行使用 `content-visibility: auto` + `contain-intrinsic-size: auto 72px`。未引入窗口化，也未给列表加 `overflow: hidden`。
+- 150ms 新鲜度的实现位置是 `GroupTranscript.vue` 的 `detailParts`：不再在 durable `tracePages` 一到就丢弃 live parts，而是用 `mergeLiveTraceParts()` 合并两者。工具按 `toolCallId` upsert，prose 取更长且互为前缀/包含的超集（晚订阅的片段不会被追加成第二段）；durable 的终态状态不会被 live 的 `running` 快照回退。成员进入终态且 durable 页面已有内容后，durable 页面重新成为唯一来源；页面为空（尚未记录或不可用）时仍以 live parts 兜底。hub 事件到 Live Stack 因此没有额外 RPC 或 500ms 重取延迟，唯一延迟是 Live Stack 的 120ms 合并窗口（`TRACE_LIVE_THROTTLE_MS`）。
+- 展开状态改为 `Map<scopeKey, Set<nodeKey>>`（scope 仍为 `memberTurnId:attempt`）：`enterScope` 恢复目标 scope 的集合、首次访问时新建；跟随/未读仍在每次切换时重置。1 → 2 → 1 会恢复 attempt 1 的展开状态，attempt 2 不会继承 attempt 1 的状态。
+- Live Stack 行显示可见的类型文字：工具/子代理/消息行标题是命令或任务文本，因此单独显示 `trace-live-kind`（复用 `tools.kinds.*` / `tools.subagent` / `group.detail.live.message`）；推理和 markdown 行的标题本身即类型名，不重复第二个标签。工具和子代理在有 `durationMs` 时显示耗时；预览取该事件输出的最后 1–2 行，不再只限 markdown/reasoning。行高固定 34px，移动端 2 行、桌面 3 行。
+- 动画抑制改为显式速率门：统计「新事件」（新的 node 身份）在过去 1s 内的到达数，严格大于 10 才进入静态模式，并按最旧到达时间的精确过期时刻自动解除，不依赖后续事件或合并推断。静态模式同时关闭 enter、move、leave 三种 transition。
+- 浏览器验收（`e2e/trace-live-feed.spec.ts`）覆盖：>10/s 突发时 `.trace-live--static` 出现并按速率自行消失、点击 Live Stack 行后全量行高亮+闪烁、failed 与 cancelled 终态摘要、长命令输出展开后追加 20 条事件的漂移 ≤1px、`prefers-reduced-motion` 下动画与闪烁关闭、Chromium `DOM.performSearch` 能找到 `content-visibility` 跳过绘制的视窗外行、移动端 2 行固定高度且页面 body 不被抽屉顶高。

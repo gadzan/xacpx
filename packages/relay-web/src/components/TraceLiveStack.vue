@@ -12,7 +12,15 @@ import {
   Wrench,
 } from "lucide-vue-next";
 import type { TurnPresentationItem } from "../lib/turn-presentation";
-import { traceLiveItems, traceLiveLimit, type TraceLiveItem } from "../lib/trace-live";
+import {
+  TRACE_LIVE_RATE_WINDOW_MS,
+  TRACE_LIVE_THROTTLE_MS,
+  traceLiveBurstActive,
+  traceLiveItems,
+  traceLiveLimit,
+  traceLiveTypeLabelKey,
+  type TraceLiveItem,
+} from "../lib/trace-live";
 import { useIsMobile } from "../lib/use-dropdown";
 
 /**
@@ -22,8 +30,11 @@ import { useIsMobile } from "../lib/use-dropdown";
  * identity, so a status/text update rewrites its row in place and an entrance
  * animation plays once per event, never once per part. Updates are coalesced to
  * one visual step per 120ms — fast runs read as the latest snapshot instead of a
- * flicker. A terminal run collapses the stack to one summary line and stops all
- * animation; the full process below is untouched.
+ * flicker. Above 10 NEW events per second the animation classes are dropped
+ * entirely (enter, move and leave), so a burst cannot animate at all; the gate
+ * is a real arrival-rate counter, not an inference from coalescing. A terminal
+ * run collapses the stack to one summary line and stops all animation; the full
+ * process below is untouched.
  */
 const props = withDefaults(defineProps<{
   nodes: TurnPresentationItem[];
@@ -40,8 +51,7 @@ const { t } = useI18n();
 const isMobile = useIsMobile();
 const limit = computed(() => traceLiveLimit(isMobile.value));
 
-const THROTTLE_MS = 120;
-const BURST_MS = 600;
+const THROTTLE_MS = TRACE_LIVE_THROTTLE_MS;
 const ROW_HEIGHT = 34;
 
 const labels = computed(() => ({
@@ -51,13 +61,16 @@ const labels = computed(() => ({
 }));
 
 const snapshot = ref<TraceLiveItem[]>([]);
-/** Fast runs coalesce updates; those are exactly the ones that must not animate. */
+/** Explicit >10 events/s gate: bursts update content but never animate. */
 const burst = ref(false);
 
 let throttleTimer: ReturnType<typeof setTimeout> | undefined;
 let burstTimer: ReturnType<typeof setTimeout> | undefined;
 let pending: TraceLiveItem[] | undefined;
 let lastFlushAt = 0;
+/** Arrival stamps of new events only (same-key streaming updates are not events). */
+let arrivals: number[] = [];
+let lastEventSignature = "";
 
 const stackHeight = computed(() => `${limit.value * ROW_HEIGHT}px`);
 
@@ -69,27 +82,63 @@ function flush(): void {
   pending = undefined;
 }
 
-function markBurst(): void {
-  burst.value = true;
+/** Coarse signature: a new key (or a longer list) is an event; text growth is not. */
+function eventSignature(nodes: TraceLiveItem[] | readonly TurnPresentationItem[]): string {
+  if (nodes.length === 0) return "";
+  const last = nodes[nodes.length - 1]!;
+  return `${nodes.length}:${"key" in last ? last.key : ""}`;
+}
+
+/** Wake exactly when the oldest arrival leaves the window, so a burst clears
+ *  by rate even if no further event ever arrives. */
+function scheduleBurstClear(): void {
   clearTimeout(burstTimer);
-  burstTimer = setTimeout(() => { burst.value = false; }, BURST_MS);
+  burstTimer = undefined;
+  if (!burst.value) return;
+  const now = Date.now();
+  const oldest = arrivals[0];
+  if (oldest === undefined) return;
+  burstTimer = setTimeout(() => {
+    burstTimer = undefined;
+    const at = Date.now();
+    const cutoff = at - TRACE_LIVE_RATE_WINDOW_MS;
+    while (arrivals.length > 0 && arrivals[0]! < cutoff) arrivals.shift();
+    burst.value = traceLiveBurstActive(arrivals, at);
+    scheduleBurstClear();
+  }, Math.max(1, oldest + TRACE_LIVE_RATE_WINDOW_MS + 1 - now));
+}
+
+function noteArrival(now: number): void {
+  arrivals.push(now);
+  const cutoff = now - TRACE_LIVE_RATE_WINDOW_MS;
+  while (arrivals.length > 0 && arrivals[0]! < cutoff) arrivals.shift();
+  burst.value = traceLiveBurstActive(arrivals, now);
+  scheduleBurstClear();
 }
 
 function schedule(): void {
   if (props.terminal) {
     clearTimeout(throttleTimer);
+    clearTimeout(burstTimer);
     throttleTimer = undefined;
+    burstTimer = undefined;
     pending = undefined;
+    arrivals = [];
+    burst.value = false;
     return;
   }
   const next = traceLiveItems(props.nodes, limit.value, labels.value, props.streaming);
   const now = Date.now();
+  const signature = eventSignature(props.nodes);
+  if (signature !== lastEventSignature) {
+    lastEventSignature = signature;
+    noteArrival(now);
+  }
   if (throttleTimer === undefined && now - lastFlushAt >= THROTTLE_MS) {
     lastFlushAt = now;
     snapshot.value = next;
     return;
   }
-  if (throttleTimer !== undefined) markBurst();
   pending = next;
   if (throttleTimer !== undefined) return;
   throttleTimer = setTimeout(flush, THROTTLE_MS);
@@ -127,9 +176,6 @@ function rowIcon(item: TraceLiveItem) {
   }
 }
 
-function showsPreview(item: TraceLiveItem): boolean {
-  return (item.kind === "markdown" || item.kind === "reasoning") && !!item.preview;
-}
 </script>
 
 <template>
@@ -171,7 +217,7 @@ function showsPreview(item: TraceLiveItem): boolean {
             @click="emit('reveal', item.targetKey)"
           >
             <component :is="rowIcon(item)" :size="12" class="shrink-0 text-fg-muted" aria-hidden="true" />
-            <span class="min-w-0 flex-1">
+            <span class="flex min-w-0 flex-1 flex-col justify-center leading-tight">
               <span class="flex min-w-0 items-center gap-1.5">
                 <span class="truncate text-ui font-medium text-fg">{{ item.title }}</span>
                 <span
@@ -183,10 +229,12 @@ function showsPreview(item: TraceLiveItem): boolean {
                     : item.status === 'error' ? 'bg-danger' : 'bg-run'"
                   :aria-label="$t(`tools.${item.status === 'running' ? 'running' : item.status === 'error' ? 'failed' : 'finished'}`)"
                 />
-                <span v-if="item.duration" class="shrink-0 font-mono text-[11px] tabular-nums text-fg-muted/70">{{ item.duration }}</span>
+                <span v-if="item.duration" data-test="trace-live-duration" class="shrink-0 font-mono text-[11px] tabular-nums text-fg-muted/70">{{ item.duration }}</span>
               </span>
-              <span v-if="showsPreview(item)" data-test="trace-live-preview" class="block truncate text-[11px] leading-tight text-fg-muted/80">
-                {{ item.preview }}
+              <span class="flex min-w-0 items-center gap-1 text-[11px] text-fg-muted/80">
+                <span v-if="item.kind !== 'reasoning' && item.kind !== 'markdown'"
+                      data-test="trace-live-kind" class="shrink-0">{{ $t(traceLiveTypeLabelKey(item)) }}</span>
+                <span v-if="item.preview" data-test="trace-live-preview" class="truncate">{{ item.preview }}</span>
               </span>
             </span>
           </button>
@@ -219,6 +267,7 @@ function showsPreview(item: TraceLiveItem): boolean {
   transition: transform 160ms ease;
 }
 .trace-live--static .trace-live-enter-active,
+.trace-live--static .trace-live-leave-active,
 .trace-live--static .trace-live-move {
   transition: none;
 }
