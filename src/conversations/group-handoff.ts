@@ -198,6 +198,9 @@ export class GroupHandoffService {
     // not public assignments: never list or serve them, for any leader.
     const settled = this.options.store.listMemberTurns(sender.runId).filter((turn) => turn.assignmentId !== undefined
       && turn.followupSenderMemberTurnId === undefined
+      // A roundtable `(pass)` is a terminal turn with no public result; it is
+      // an abstention, never a completed assignment to list or page.
+      && turn.speechOutcome !== "pass"
       && turn.conversationId === sender.conversationId && turn.topicId === sender.topicId
       && ["completed", "failed", "cancelled", "indeterminate"].includes(turn.state));
     if (assignmentId === undefined) {

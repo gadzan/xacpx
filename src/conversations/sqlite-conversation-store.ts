@@ -72,6 +72,7 @@ import type {
   ConversationRun,
   ConversationRunState,
   ConversationRoutingState,
+  ConversationShape,
   HumanIngressContext,
   MemberTurnEffect,
   MemberTurnEffectProvenance,
@@ -84,6 +85,7 @@ import type {
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 import { MAX_GROUP_SAY_PER_TURN, parseGroupSend } from "./group-handoff";
+import { MAX_ROUNDTABLE_MEMBER_TURNS, MAX_ROUNDTABLE_ROUNDS, parseRoundtableSpeech } from "./conversation-roundtable";
 import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 import {
   buildWaitingGraph,
@@ -180,6 +182,9 @@ interface RunRow {
   request_message_id: string;
   request_id: string;
   mode: string;
+  shape: string;
+  rounds?: number | null;
+  lead_bot_id?: string | null;
   state: string;
   completion_reason: string | null;
   waiting_question?: string | null;
@@ -230,6 +235,9 @@ interface MemberTurnRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  round_index?: number | null;
+  speaker_index?: number | null;
+  speech_outcome?: string | null;
   failure_reason: string | null;
   // Absent on pre-effect databases (added by ensureMemberTurnAssignmentColumns).
   effect?: string | null;
@@ -360,6 +368,9 @@ CREATE TABLE IF NOT EXISTS runs (
   request_message_id TEXT NOT NULL,
   request_id TEXT NOT NULL,
   mode TEXT NOT NULL,
+  shape TEXT NOT NULL DEFAULT 'fanout',
+  rounds INTEGER,
+  lead_bot_id TEXT,
   state TEXT NOT NULL,
   completion_reason TEXT,
   generation INTEGER NOT NULL,
@@ -404,6 +415,9 @@ CREATE TABLE IF NOT EXISTS member_turns (
   started_at TEXT,
   finished_at TEXT,
   failure_reason TEXT,
+  round_index INTEGER,
+  speaker_index INTEGER,
+  speech_outcome TEXT,
   assignment_id TEXT,
   task TEXT,
   expected_output TEXT,
@@ -654,6 +668,9 @@ function mapRun(row: RunRow): ConversationRun {
     requestMessageId: row.request_message_id,
     requestId: row.request_id,
     mode,
+    shape: row.shape === "single" || row.shape === "roundtable" ? row.shape : "fanout",
+    ...(row.rounds !== null && row.rounds !== undefined ? { rounds: Number(row.rounds) } : {}),
+    ...(optionalString(row.lead_bot_id) ? { leadBotId: row.lead_bot_id as string } : {}),
     state: row.state as ConversationRunState,
     ...(optionalString(row.completion_reason) ? { completionReason: row.completion_reason as string } : {}),
     ...(mode === "automatic" && row.state === "waiting-human" && optionalString(row.waiting_question)
@@ -811,6 +828,9 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     memberIndex: Number(row.member_index ?? 0),
     attempt: Number(row.attempt),
     origin: row.origin === "human" ? "human-explicit" : (row.origin as MemberTurnRecord["origin"]),
+    ...(row.round_index !== null && row.round_index !== undefined ? { roundIndex: Number(row.round_index) } : {}),
+    ...(row.speaker_index !== null && row.speaker_index !== undefined ? { speakerIndex: Number(row.speaker_index) } : {}),
+    ...(row.speech_outcome === "message" || row.speech_outcome === "pass" ? { speechOutcome: row.speech_outcome } : {}),
     state: row.state as MemberTurnState,
     triggerMessageIds: parseTriggerMessageIds(row.trigger_message_ids_json),
     ...(snapshot ? { profileSnapshot: snapshot } : {}),
@@ -903,6 +923,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureRoutingReasonColumn();
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
+    this.ensureRoundtableColumns();
     this.ensureExternalStopIngress();
     this.ensureLifecycleWorkspaceCleanupColumn();
     if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)").some(c => c.name === "input_metadata_json")) {
@@ -1221,6 +1242,12 @@ export class SqliteConversationStore implements ConversationStore {
       if (prior) return prior;
       const sender = this.requireMemberTurn(input.senderMemberTurnId);
       const run = this.requireRun(sender.runId);
+      // Roundtables have no recursive work: refusing here (before any turn,
+      // message, or wake is written) is the server-side gate; the dispatcher
+      // prompt is only the first line of defence.
+      if (run.shape === "roundtable") {
+        throw new ConversationError("handoff_from_roundtable_refused", "a roundtable turn cannot dispatch work");
+      }
       // Extending this admitted Run creates no new queued Run. Keep delete
       // barriers, while its own durable work budget bounds new assignments.
       this.assertLifecycleAcceptable(run.conversationId, run.topicId);
@@ -2122,6 +2149,16 @@ export class SqliteConversationStore implements ConversationStore {
                AND same_bot.bot_id = m.bot_id AND same_bot.id <> m.id
                AND same_bot.state IN ('running', 'dispatched')
            )
+          AND (
+            m.round_index IS NULL
+            OR NOT EXISTS (
+              SELECT 1 FROM member_turns earlier
+              WHERE earlier.run_id = m.run_id
+                AND earlier.round_index IS NOT NULL
+                AND earlier.member_index < m.member_index
+                AND earlier.state IN ('queued', 'dispatched', 'running')
+            )
+          )
            AND NOT EXISTS (
              SELECT 1 FROM conversation_lifecycle c
              WHERE c.conversation_id = r.conversation_id AND c.state = 'deleting'
@@ -2809,6 +2846,46 @@ export class SqliteConversationStore implements ConversationStore {
         // no double progress count; the Run aggregate already observed it.
         return { run, memberTurn: member, resurrected: false };
       }
+      if (input.speechOutcome !== undefined && run.shape !== "roundtable") {
+        throw new ConversationError("invalid_speech_outcome", "speech outcomes are roundtable-only");
+      }
+      if (input.speechOutcome === "pass") {
+        // Explicit abstention: a terminal MemberTurn with no public message.
+        // It counts as consumed work (the turn really ran) but never as
+        // completion evidence (`sawCompletion` ignores pass).
+        if (member.roundIndex === undefined) {
+          throw new ConversationError("invalid_speech_outcome", "pass is roundtable-only");
+        }
+        const turnId = input.sourceTurn.turnId;
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'completed', speech_outcome = 'pass',
+             source_turn_id = COALESCE(?, source_turn_id), finished_at = ?
+           WHERE id = ?`,
+          [turnId ?? null, input.now, member.id],
+        );
+        this.sqlite.run(
+          `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+          [run.id],
+        );
+        this.finishDispatchForMemberTurn(member.id, input.now);
+        const aggregated = this.aggregateRunAfterMemberTerminal(
+          run.id,
+          member.id,
+          input.now,
+          input.completionReason,
+          input.forceRunTerminalOnSettle ?? false,
+        );
+        return {
+          run: aggregated,
+          memberTurn: this.requireMemberTurn(member.id),
+          resurrected: false,
+        };
+      }
+      if (run.shape === "roundtable" && input.content.trim().length === 0) {
+        // The dispatcher already turns silence into `empty-speech`; this is the
+        // store boundary, so no caller can persist an empty public message.
+        throw new ConversationError("empty-speech", "a roundtable message outcome requires non-empty text");
+      }
       const adopted = input.content.trim()
         ? this.promoteIdenticalLastSayToResult(member.id, input.content, input.sourceTurn)
         : undefined;
@@ -2846,8 +2923,9 @@ export class SqliteConversationStore implements ConversationStore {
       }
       const statusMessage = this.noteEmptyPublicReply({ run, member, content: input.content, now: input.now });
       this.sqlite.run(
-        `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
-        [input.now, member.id],
+        `UPDATE member_turns SET state = 'completed', finished_at = ?,
+           speech_outcome = COALESCE(?, speech_outcome) WHERE id = ?`,
+        [input.now, run.shape === "roundtable" ? "message" : null, member.id],
       );
       this.sqlite.run(
         `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
@@ -2897,6 +2975,40 @@ export class SqliteConversationStore implements ConversationStore {
     }
     let message: ConversationMessage | undefined;
     let statusMessage: ConversationMessage | undefined;
+    // A roundtable final text must never become a literal public message on a
+    // late/sealed path either. `(pass)` is an explicit abstention and empty
+    // text is a failure; both are recorded on the member row and the sealed
+    // Run keeps its existing unknown state (no aggregate resurrects it).
+    const sealedSpeech = run.shape === "roundtable" && input.outcome === "completed"
+      && input.content !== undefined
+      ? parseRoundtableSpeech(input.content)
+      : undefined;
+    if (sealedSpeech?.outcome === "pass" || sealedSpeech?.outcome === "empty") {
+      if (sealedSpeech.outcome === "pass") {
+        if (member.roundIndex === undefined) {
+          throw new ConversationError("invalid_speech_outcome", "pass is roundtable-only");
+        }
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'completed', failure_reason = NULL, speech_outcome = 'pass',
+             finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+          [input.now, member.id],
+        );
+      } else {
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'failed', failure_reason = 'empty-speech',
+             finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+          [input.now, member.id],
+        );
+        if (!run.failedBotIds.includes(member.botId)) {
+          this.sqlite.run(
+            `UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`,
+            [JSON.stringify([...run.failedBotIds, member.botId]), run.id],
+          );
+        }
+      }
+      this.finishDispatchForMemberTurn(member.id, input.now);
+      return { run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(member.id) };
+    }
     if (input.outcome === "completed") {
       const adopted = (input.content ?? "").trim()
         ? this.promoteIdenticalLastSayToResult(member.id, input.content!, input.sourceTurn)
@@ -2949,6 +3061,7 @@ export class SqliteConversationStore implements ConversationStore {
         );
       }
     }
+
     this.finishDispatchForMemberTurn(member.id, input.now);
     if (!this.followupRedispatch) {
       const members = this.listMemberTurns(run.id);
@@ -3107,6 +3220,27 @@ export class SqliteConversationStore implements ConversationStore {
               `source turn does not match member turn "${member.id}" execution identity`,
             );
           }
+          const speech = run.shape === "roundtable"
+            ? parseRoundtableSpeech(entry.content ?? "")
+            : undefined;
+          if (speech?.outcome === "pass" || speech?.outcome === "empty") {
+            // No public message on either path: a pass is an abstention, and
+            // empty text is a failure. Both are terminal member evidence.
+            const pass = speech.outcome === "pass";
+            this.sqlite.run(
+              `UPDATE member_turns SET state = ?, speech_outcome = ?, failure_reason = ?,
+                 finished_at = ? WHERE id = ?`,
+              [pass ? "completed" : "failed", pass ? "pass" : null,
+                pass ? null : "empty-speech", input.now, member.id],
+            );
+            this.sqlite.run(
+              `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+              [run.id],
+            );
+            this.finishDispatchForMemberTurn(member.id, input.now);
+            settled.push({ member: this.requireMemberTurn(member.id), outcome: pass ? "completed" : "failed" });
+            continue;
+          }
           const adopted = (entry.content ?? "").trim()
             ? this.promoteIdenticalLastSayToResult(member.id, entry.content!, entry.sourceTurn ?? { sessionAlias: member.sessionAlias ?? "" })
             : undefined;
@@ -3245,6 +3379,12 @@ export class SqliteConversationStore implements ConversationStore {
       const member = this.requireMemberTurn(memberTurnId);
       if (member.runId !== run.id) {
         throw new ConversationError("run_member_mismatch", `member turn "${memberTurnId}" does not belong to run "${runId}"`);
+      }
+      // Scoped stop has no meaning in a sequential discussion: stopping one
+      // speaker would let the floor advance without the Run-level intent the
+      // API requires. The UI offers Stop all instead.
+      if (run.shape === "roundtable") {
+        throw new ConversationError("roundtable_scoped_stop_unsupported", "a roundtable supports only Stop all");
       }
       if (TERMINAL_RUN_STATES.includes(run.state)) return member;
       // A wake that already exists for this leader is still pending work the
@@ -4329,6 +4469,36 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
+  /**
+   * Roundtable columns (design §5.3). New databases get them from SCHEMA;
+   * older databases are upgraded in place. Every new column is nullable or
+   * defaulted, so legacy rows stay readable: `runs.shape` defaults to
+   * `fanout`, and a member without `round_index` is an ordinary fanout turn.
+   */
+  private ensureRoundtableColumns(): void {
+    this.sqlite.transaction(() => {
+      const ensure = (table: string, name: string, sqlType: string): void => {
+        if (!this.sqlite.all<{ name: string }>(`PRAGMA table_info(${table})`).some((column) => column.name === name)) {
+          this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${sqlType}`);
+        }
+      };
+      ensure("runs", "shape", "TEXT NOT NULL DEFAULT 'fanout'");
+      ensure("runs", "rounds", "INTEGER");
+      ensure("runs", "lead_bot_id", "TEXT");
+      ensure("member_turns", "round_index", "INTEGER");
+      ensure("member_turns", "speaker_index", "INTEGER");
+      ensure("member_turns", "speech_outcome", "TEXT");
+      // One speaker per durable position. The partial predicate keeps every
+      // pre-roundtable row (both columns NULL) out of the constraint.
+      this.sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_member_roundtable_position
+        ON member_turns (run_id, round_index, speaker_index)
+        WHERE round_index IS NOT NULL AND speaker_index IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_member_roundtable_order
+          ON member_turns (run_id, member_index)
+          WHERE round_index IS NOT NULL;`);
+    });
+  }
+
   private ensureDispatchAuthorityEpochColumn(): void {
     const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(pending_dispatches)");
     if (cols.some((col) => col.name === "authority_epoch")) {
@@ -4756,6 +4926,7 @@ export class SqliteConversationStore implements ConversationStore {
     // carries the Run's own accepted execution identity (what the Run was
     // admitted against) and is never a dispatchable member.
     const mode = input.mode ?? "explicit";
+    const shape: ConversationShape = input.shape ?? "fanout";
     const members = input.mode === "automatic" && input.members?.length === 0
       ? []
       : [
@@ -4766,6 +4937,53 @@ export class SqliteConversationStore implements ConversationStore {
         },
         ...(input.members ?? []),
       ];
+    if (shape === "roundtable") {
+      if (mode !== "explicit") {
+        throw new ConversationError("invalid-roundtable", "a roundtable is an explicit Run");
+      }
+      const rounds = input.rounds ?? 0;
+      if (!Number.isInteger(rounds) || rounds < 1 || rounds > MAX_ROUNDTABLE_ROUNDS) {
+        throw new ConversationError("invalid-roundtable", `roundtable rounds must be 1–${MAX_ROUNDTABLE_ROUNDS}`);
+      }
+      // The lead is an opener snapshot, not a required participant: a
+      // selection may exclude the Group lead. When present it must describe
+      // the actual first speaker.
+      if (input.leadBotId !== undefined && input.leadBotId !== members[0]?.botId) {
+        throw new ConversationError("invalid-roundtable-lead", "the roundtable lead must be the first member");
+      }
+      const speakersPerRound = members.filter((member) => member.roundIndex === 1).length;
+      if (members.length < 2 || members.length > MAX_ROUNDTABLE_MEMBER_TURNS
+        || speakersPerRound < 2 || members.length !== rounds * speakersPerRound) {
+        throw new ConversationError("invalid-roundtable", "a roundtable must plan every speaker in every round within the bound");
+      }
+      if (input.maxMemberTurns !== undefined && input.maxMemberTurns !== members.length) {
+        throw new ConversationError("invalid-max-member-turns", "a roundtable budget must equal its planned member turns");
+      }
+      const positions = new Set<string>();
+      const roundSpeakers = new Set<string>();
+      const perRound = new Map<number, number>();
+      for (const member of members) {
+        const roundIndex = member.roundIndex;
+        const speakerIndex = member.speakerIndex;
+        if (!Number.isInteger(roundIndex) || roundIndex === undefined || roundIndex < 1 || roundIndex > rounds
+          || !Number.isInteger(speakerIndex) || speakerIndex === undefined || speakerIndex < 0) {
+          throw new ConversationError("invalid-roundtable", "roundtable members must carry valid round positions");
+        }
+        const position = `${roundIndex}:${speakerIndex}`;
+        const roundSpeaker = `${roundIndex}:${member.botId}`;
+        if (positions.has(position) || roundSpeakers.has(roundSpeaker)) {
+          throw new ConversationError("invalid-roundtable", "roundtable positions and per-round speakers must be unique");
+        }
+        positions.add(position);
+        roundSpeakers.add(roundSpeaker);
+        perRound.set(roundIndex, speakerIndex + 1);
+      }
+      if (perRound.size !== rounds || [...perRound.values()].some((count) => count !== speakersPerRound)) {
+        throw new ConversationError("invalid-roundtable", "every roundtable round must hold the same speakers");
+      }
+    } else if (input.rounds !== undefined || input.leadBotId !== undefined) {
+      throw new ConversationError("invalid-roundtable", "rounds and leadBotId are roundtable-only");
+    }
     // Automatic Runs default to the durable budget guardrail (§14.2): the
     // first batch settling must leave routing headroom, so the default is
     // the 24-turn cap rather than members.length. Explicit Runs stay bounded
@@ -4806,13 +5024,13 @@ export class SqliteConversationStore implements ConversationStore {
     });
     this.sqlite.run(
       `INSERT INTO runs (
-         id, conversation_id, topic_id, request_message_id, request_id, mode, state, completion_reason,
-         routing_state,
+         id, conversation_id, topic_id, request_message_id, request_id, mode, shape, rounds, lead_bot_id,
+         state, completion_reason, routing_state,
          generation, active_batch, max_member_turns, consumed_member_turns,
          failed_bot_ids_json, unavailable_bot_ids_json,
          profile_revision, profile_snapshot_json,
          created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, ?, 1, ?, ?, 0, '[]', '[]', ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, 1, ?, ?, 0, '[]', '[]', ?, ?, ?, NULL, NULL)`,
       [
         runId,
         input.conversationId,
@@ -4820,6 +5038,9 @@ export class SqliteConversationStore implements ConversationStore {
         messageId,
         input.requestId,
         mode,
+        shape,
+        shape === "roundtable" ? input.rounds ?? null : null,
+        shape === "roundtable" ? input.leadBotId ?? null : null,
         // Automatic Runs enter the routing state machine at `queued`; the
         // first routing decision is taken by the Router (no human chose
         // anyone). Explicit Runs never carry a routing state — routing on
@@ -4837,13 +5058,18 @@ export class SqliteConversationStore implements ConversationStore {
     const authorityEpoch = ingressJson ? (input.authorityEpoch ?? null) : null;
     const defaultOrigin: MemberTurnOrigin = ingressJson && authorityEpoch ? "human-explicit" : "followup";
     const seenBotIds = new Set<string>();
+    const seenRoundSpeakers = new Set<string>();
     const memberTurnIds: string[] = [];
     const dispatchIds: string[] = [];
     for (const [index, member] of members.entries()) {
-      if (seenBotIds.has(member.botId)) {
+      // Fanout/Direct accept each Bot once. A roundtable may invite the same
+      // Bot back in a later round, but never twice within one round.
+      const speakerKey = shape === "roundtable" ? `${member.roundIndex}:${member.botId}` : member.botId;
+      if (shape === "roundtable" ? seenRoundSpeakers.has(speakerKey) : seenBotIds.has(member.botId)) {
         throw new ConversationError("duplicate_member", `run accepts bot "${member.botId}" twice`);
       }
       seenBotIds.add(member.botId);
+      seenRoundSpeakers.add(speakerKey);
       const memberTurnId = this.ids.memberTurnId();
       const dispatchId = this.ids.dispatchId();
       this.sqlite.run(
@@ -4851,8 +5077,9 @@ export class SqliteConversationStore implements ConversationStore {
            id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
            queue_item_id, batch, member_index, attempt, origin, state, trigger_message_ids_json, profile_snapshot_json,
            created_at, started_at, finished_at,
-           effect, effect_provenance, assignment_id, task, expected_output, depends_on_json
-         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, ?, 1, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
+           effect, effect_provenance, assignment_id, task, expected_output, depends_on_json,
+           round_index, speaker_index
+         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, ?, 1, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           memberTurnId,
           runId,
@@ -4860,7 +5087,7 @@ export class SqliteConversationStore implements ConversationStore {
           input.topicId,
           member.botId,
           index,
-          member.provenance ?? defaultOrigin,
+          member.provenance ?? (shape === "roundtable" ? "roundtable" : defaultOrigin),
           JSON.stringify([messageId]),
           JSON.stringify(member.profileSnapshot),
           input.now,
@@ -4875,6 +5102,8 @@ export class SqliteConversationStore implements ConversationStore {
           member.task ?? null,
           member.expectedOutput ?? null,
           JSON.stringify(member.dependsOn ?? []),
+          shape === "roundtable" ? member.roundIndex ?? null : null,
+          shape === "roundtable" ? member.speakerIndex ?? null : null,
         ],
       );
       this.sqlite.run(
@@ -5088,6 +5317,13 @@ export class SqliteConversationStore implements ConversationStore {
       [input.runId],
     );
     this.finishDispatchForMemberTurn(input.memberTurnId, input.now);
+    if (state === "failed" && run.shape === "roundtable") {
+      // A failed speaker ends the discussion: every later planned turn is
+      // cancelled in the SAME transaction. They never ran, so they are not
+      // charged to `consumed_member_turns`; the Run still classifies as
+      // failed because the failure outranks the cancelled tail.
+      this.cancelRoundtableTail(run.id, member.memberIndex, input.now);
+    }
     if (state === "cancelled" && !member.cancellationReason) {
       // Provenance survives an indeterminate seal, whose completion_reason
       // must describe the unknown outcome instead of its cancellation source.
@@ -5118,6 +5354,18 @@ export class SqliteConversationStore implements ConversationStore {
     }
   }
 
+  /** Cancel unstarted roundtable turns positioned after a failed speaker.
+   *  Cancelled tail turns are durable terminal evidence but spend no budget. */
+  private cancelRoundtableTail(runId: string, failedMemberIndex: number, now: string): void {
+    for (const turn of this.listMemberTurns(runId)) {
+      if (turn.roundIndex === undefined || turn.memberIndex <= failedMemberIndex) continue;
+      if (turn.startedAt || TERMINAL_MEMBER_STATES.includes(turn.state)) continue;
+      if (turn.state !== "queued" && turn.state !== "dispatched") continue;
+      this.sqlite.run("UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?", [now, turn.id]);
+      this.finishDispatchForMemberTurn(turn.id, now);
+    }
+  }
+
   /**
    * Insert the ONE wake turn a leader member turn earns once every public
    * handoff it sent has settled.
@@ -5131,7 +5379,10 @@ export class SqliteConversationStore implements ConversationStore {
    * its assignments still settle, but the user asked for that work to stop.
    */
   private enqueueSettledHandoffFollowups(run: ConversationRun, now: string): void {
-    if (isRunCancelling(run)) return;
+    // Roundtables never dispatch handoffs (acceptPublicHandoff refuses), so
+    // they owe no returning wake. Skipping keeps a corrupt/legacy handoff row
+    // from inventing fanout work in a discussion Run.
+    if (isRunCancelling(run) || run.shape === "roundtable") return;
     const groups = this.sqlite.all<{ sender_id: string }>(`SELECT DISTINCT sender.id AS sender_id FROM member_turns sender
       JOIN member_turns child ON child.handoff_source_turn_id = sender.source_turn_id AND child.run_id = sender.run_id
       WHERE sender.run_id = ? AND sender.state = 'completed'
@@ -5258,7 +5509,7 @@ export class SqliteConversationStore implements ConversationStore {
     // says nothing about the Run's work. An automatic Run's next step belongs
     // to the Router (P0-A), whose own `complete` decision is graph-gated in
     // applyRoutingDecision, so this settlement keeps awaiting routing.
-    if (this.followupRedispatch && run.mode === "explicit") {
+    if ((this.followupRedispatch || run.shape === "roundtable") && run.mode === "explicit") {
       return this.aggregateRunOnWorkGraph(run, members, memberTurnId, now, memberReason);
     }
     const batchIndeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
@@ -5382,10 +5633,21 @@ export class SqliteConversationStore implements ConversationStore {
     verdict: RunTerminalVerdict,
     now: string,
   ): ConversationRun {
+    const run = this.requireRun(runId);
+    // All-pass roundtable: every planned speaker really ran and abstained, so
+    // the Run is completed with a dedicated reason. The state is NOT changed
+    // here and no message is written — only the reason is more precise.
+    const turns = run.shape === "roundtable" && verdict.state === "completed"
+      ? this.listMemberTurns(runId)
+      : undefined;
+    const reason = turns !== undefined && turns.length > 0
+      && turns.every((turn) => TERMINAL_MEMBER_STATES.includes(turn.state) && turn.speechOutcome === "pass")
+      ? "roundtable-no-speech"
+      : verdict.reason;
     this.sqlite.run(
       `UPDATE runs SET state = ?, completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?)
        WHERE id = ?`,
-      [verdict.state, verdict.reason, now, runId],
+      [verdict.state, reason, now, runId],
     );
     this.releaseFollowupReservations(runId, now);
     return this.requireRun(runId);
@@ -5556,6 +5818,36 @@ export class SqliteConversationStore implements ConversationStore {
         let pendingMessage: ConversationMessage | undefined;
         let pendingStatus: ConversationMessage | undefined;
         if (input.outcome === "completed") {
+          const speech = run.shape === "roundtable"
+            ? parseRoundtableSpeech(input.content ?? "")
+            : undefined;
+          if (speech?.outcome === "pass" || speech?.outcome === "empty") {
+            const pass = speech.outcome === "pass";
+            this.sqlite.run(
+              `UPDATE member_turns SET state = ?, failure_reason = ?, speech_outcome = ?,
+                 finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+              [pass ? "completed" : "failed", pass ? null : "empty-speech",
+                pass ? "pass" : null, input.now, member.id],
+            );
+            if (!pass && !run.failedBotIds.includes(member.botId)) {
+              this.sqlite.run(
+                `UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`,
+                [JSON.stringify([...run.failedBotIds, member.botId]), run.id],
+              );
+            }
+            if (!alreadyCounted) {
+              this.sqlite.run(
+                `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+                [run.id],
+              );
+            }
+            this.finishDispatchForMemberTurn(member.id, input.now);
+            return {
+              run: this.requireRun(input.runId),
+              memberTurn: this.requireMemberTurn(member.id),
+              reconciled: true,
+            };
+          }
           const adopted = (input.content ?? "").trim()
             ? this.promoteIdenticalLastSayToResult(member.id, input.content!, input.sourceTurn)
             : undefined;

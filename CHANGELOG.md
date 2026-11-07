@@ -1,4 +1,11 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- 群聊圆桌后端（P0）：`roundtable` target 在 accept 事务内预生成 `rounds × speakers` 个 MemberTurn（batch 1、连续 `memberIndex`、1-based `roundIndex`/0-based `speakerIndex`），由共享 claim 谓词的顺序 floor 严格串行，重启后只靠持久行恢复；`(pass)` 以 `speechOutcome:"pass"` 终态结束且不写公开消息，全 pass 的 Run 以 `roundtable-no-speech` 完成；空最终文本按 `empty-speech` 失败；失败会取消后续未开始的 turn 且不计预算；圆桌拒绝 `group_send` 与单成员 Stop。Run/MemberTurn DTO 与 `conversations.roundtable.v1` capability 已暴露，旧 Run 仍读作 `fanout`。
+
+
 ## [relay 0.14.12-beta.18] - 2026-11-06
 
 ### Added

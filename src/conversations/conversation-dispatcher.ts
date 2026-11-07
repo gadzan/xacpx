@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import { markCommandRevision, adapterFacingPrompt } from "./advertised-commands";
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
-import { GROUP_COLLABORATION_CONTRACT, type CollaborationEvidence, type CollaborationSnapshot } from "../bots/collaboration-prompt";
+import { GROUP_COLLABORATION_CONTRACT, GROUP_ROUNDTABLE_CONTRACT, type CollaborationEvidence, type CollaborationSnapshot } from "../bots/collaboration-prompt";
+import { parseRoundtableSpeech } from "./conversation-roundtable";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { sessionMatchesExecution } from "../bots/bot-types";
@@ -1739,7 +1740,7 @@ export class ConversationDispatcher {
       const sharedGroupContext = isGroup ? undefined : this.sharedGroupContext(work);
       const wrapped = isGroup
         ? composeBotTurnPromptFromSnapshot(snapshot, {
-          contract: GROUP_COLLABORATION_CONTRACT,
+          contract: work.run.shape === "roundtable" ? GROUP_ROUNDTABLE_CONTRACT : GROUP_COLLABORATION_CONTRACT,
           snapshot: this.collaborationSnapshot(work, snapshot.presentation.role,
             groupExecution ? this.handoffs!.memberContext(groupExecution.token) : undefined),
           evidence: groupPrompt!,
@@ -1893,14 +1894,29 @@ export class ConversationDispatcher {
     const now = this.now().toISOString();
     const forceRunTerminalOnSettle = latest !== undefined && isRunCancelling(latest);
     if (result.outcome === "completed") {
+      const text = result.text ?? "";
+      const speech = latest?.shape === "roundtable" ? parseRoundtableSpeech(text) : undefined;
+      if (speech?.outcome === "empty") {
+        const run = this.store.failExecution({
+          runId,
+          memberTurnId: member.id,
+          now,
+          reason: "empty-speech",
+          sourceTurnId: member.sourceTurnId,
+          forceRunTerminalOnSettle,
+        });
+        this.emitRunAndMember(run, member.id);
+        return;
+      }
       const completed = this.store.completeExecution({
         runId,
         memberTurnId: member.id,
         botId: member.botId,
-        content: result.text ?? "",
+        content: text,
         sourceTurn: { sessionAlias: member.sessionAlias ?? "", turnId: member.sourceTurnId },
         now,
         forceRunTerminalOnSettle,
+        ...(speech?.outcome === "pass" ? { speechOutcome: "pass" as const } : {}),
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage, completed.statusMessage);
       return;
@@ -1928,13 +1944,30 @@ export class ConversationDispatcher {
   ): void {
     const now = this.now().toISOString();
     if (result.status === "completed" && !result.unknown) {
+      const text = result.text ?? "";
+      const speech = work.run.shape === "roundtable" ? parseRoundtableSpeech(text) : undefined;
+      if (speech?.outcome === "empty") {
+        // Silence is not an abstention: a roundtable speaker that produced no
+        // text fails its turn instead of being recorded as a pass.
+        const run = this.store.failExecution({
+          runId: work.run.id,
+          memberTurnId: started.id,
+          now,
+          reason: "empty-speech",
+          sourceTurnId: started.sourceTurnId,
+        });
+        this.emitRunAndMember(run, started.id);
+        this.kickInBackground();
+        return;
+      }
       const completed = this.store.completeExecution({
         runId: work.run.id,
         memberTurnId: started.id,
         botId: work.memberTurn.botId,
-        content: result.text ?? "",
+        content: speech?.outcome === "message" ? speech.content : text,
         sourceTurn: { sessionAlias: started.sessionAlias ?? "", turnId: started.sourceTurnId },
         now,
+        ...(speech?.outcome === "pass" ? { speechOutcome: "pass" as const } : {}),
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage, completed.statusMessage);
       // PR8 automatic continuation: once every member of the active batch is

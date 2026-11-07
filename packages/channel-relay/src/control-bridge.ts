@@ -117,7 +117,8 @@ export interface ControlBridgeOptions {
       topicId: string;
       requestId: string;
       text: string;
-      target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" };
+      target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" }
+        | { mode: "automatic" } | { mode: "roundtable"; botIds: string[]; rounds?: number };
     },
     ingress: {
       chatKey: string;

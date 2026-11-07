@@ -27,6 +27,21 @@ export const GROUP_COLLABORATION_CONTRACT = [
   "`group_say` is a bounded public progress remark, not the turn's answer; keep the conclusion in your final reply.",
 ].join("\n");
 
+/**
+ * Layer A for a roundtable turn. Byte-identical for every speaker and kept
+ * separate from the fanout contract: a discussion turn may not assign work,
+ * and silence is only ever an explicit `(pass)`. Tool hiding is a later UI
+ * concern; the store refuses `group_send` from a roundtable Run regardless.
+ */
+export const GROUP_ROUNDTABLE_CONTRACT = [
+  "You are speaking once in a sequential Group discussion.",
+  "Read the public messages above. Build on earlier speakers; do not repeat them.",
+  "Add only new analysis, a concrete decision, or a named risk.",
+  "Do not call group_send or group_read_result. Do not assign work.",
+  "Reply with exactly one public message.",
+  "If you have nothing material to add, reply exactly: (pass)",
+].join("\n");
+
 /** Layer B: fresh facts the caller already holds for THIS turn. */
 export interface CollaborationSnapshot {
   runId: string;
