@@ -188,6 +188,22 @@ describe("ConversationRunDetailContent.vue", () => {
     expect(wrapper.find('[data-test="run-detail-budget"]').exists()).toBe(false);
     wrapper.unmount();
   });
+
+  it("never invents consumption: max-only names the cap, a real zero renders as 0", () => {
+    const maxOnly = mountContent({ budget: { max: 6 } });
+    const maxText = maxOnly.find('[data-test="run-detail-budget"]').text();
+    expect(maxText).toContain("6");
+    expect(maxText).not.toContain("0");
+    expect(maxText).not.toContain("undefined");
+    maxOnly.unmount();
+
+    const realZero = mountContent({
+      run: run({ consumedMemberTurns: 0, maxMemberTurns: 6 }),
+      budget: { consumed: 0, max: 6 },
+    });
+    expect(realZero.find('[data-test="run-detail-budget"]').text()).toContain("0/6 member turns");
+    realZero.unmount();
+  });
 });
 
 describe("TraceOverlay.vue run-wide mode", () => {

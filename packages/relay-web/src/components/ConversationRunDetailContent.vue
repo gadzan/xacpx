@@ -104,11 +104,20 @@ const stopAvailable = computed(() => canStopMemberInDrawer({
 }));
 const budgetLabel = computed(() => {
   const budget = props.budget;
-  if (!budget || (budget.consumed === undefined && budget.max === undefined)) return undefined;
+  if (!budget) return undefined;
   if (budget.consumed !== undefined && budget.max !== undefined) {
     return { key: "conversation.runDetail.budget", params: { consumed: budget.consumed, max: budget.max } };
   }
-  return { key: "conversation.runDetail.budgetConsumed", params: { consumed: budget.consumed ?? 0 } };
+  // Never invent a zero count: a missing consumed stays missing. A max-only
+  // Run (older wire shape without consumption) names only its cap; a real
+  // zero still renders as 0 because it is present, not assumed.
+  if (budget.consumed !== undefined) {
+    return { key: "conversation.runDetail.budgetConsumed", params: { consumed: budget.consumed } };
+  }
+  if (budget.max !== undefined) {
+    return { key: "conversation.runDetail.budgetMax", params: { max: budget.max } };
+  }
+  return undefined;
 });
 const budgetMeta = computed(() => {
   const parts: string[] = [];

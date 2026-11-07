@@ -2776,6 +2776,61 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("opens the drawer when the Run detail arrives after an uncached click", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      // No active Run and no cached history: the click must stash the target
+      // and open once the batch read lands.
+      const detail = {
+        id: "run_uncached", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m_req", requestId: "req_1", mode: "explicit",
+        shape: "fanout", state: "running", profileRevision: 1, createdAt: "now",
+        memberTurns: [{
+          id: "turn_u", runId: "run_uncached", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        }],
+      };
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g",
+            topicId: "topic_1",
+            entries: [{
+              kind: "message", key: "message:m_bot", anchorSeq: 2,
+              runId: "run_uncached", memberTurnId: "turn_u", ownership: "exact",
+              message: {
+                id: "m_bot", conversationId: "conversation_g", topicId: "topic_1",
+                seq: 2, role: "bot", senderBotId: "bot_a", memberTurnId: "turn_u",
+                runId: "run_uncached", content: "done", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.runsDetailsBatch) return { runs: [detail], missingRunIds: [] } as never;
+        if (type === MSG.runsTraceGet) return { events: [], hasMore: false } as never;
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, {
+        attachTo: document.body,
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      // The detail batch lands asynchronously: flush until the store adopts it,
+      // and the drawer must be open by then rather than silently dropped.
+      await flushPromises();
+      await flushPromises();
+      const card = document.body.querySelector('[data-test="group-detail-card"]');
+      expect(card).not.toBeNull();
+      expect(card!.querySelector('[data-test="run-detail"]')).not.toBeNull();
+      expect(card!.querySelector('[data-test="run-member-name"]')?.textContent).toContain("Reviewer");
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
     it("marks a prompt queued behind the Topic owner on the timeline", async () => {
       const groups = seedGroupSelection();
       useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];

@@ -77,6 +77,7 @@ export default {
       unknownFailure: "Failed (no reason recorded)",
       budget: "{consumed}/{max} member turns",
       budgetConsumed: "{consumed} member turns used",
+      budgetMax: "{max} member turns",
       budgetEpoch: "Budget epoch {epoch}",
       activeBatch: "Batch {batch}",
       selectedMember: "Process · {name}",

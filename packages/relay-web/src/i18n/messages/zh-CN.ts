@@ -73,6 +73,7 @@ export default {
       unknownFailure: "失败（未记录原因）",
       budget: "{consumed}/{max} 个成员回合",
       budgetConsumed: "已用 {consumed} 个成员回合",
+      budgetMax: "上限 {max} 个成员回合",
       budgetEpoch: "预算纪元 {epoch}",
       activeBatch: "第 {batch} 批",
       selectedMember: "过程 · {name}",
