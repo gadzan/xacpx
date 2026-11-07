@@ -1,7 +1,7 @@
 # Trace 抽屉实时展示：固定 Live Stack + 稳定全量过程
 
 - 日期：2026-11-06
-- 状态：提案，未实现
+- 状态：已实现（P1a–P1c，2026-11-07）
 - 范围：relay-web 的执行过程抽屉（桌面右侧抽屉、移动 bottom sheet）
 - 前置：`docs/design/2026-11-06-bot-conversation-architecture.md`
 - 不在范围：trace 采集、存储、RPC、ConversationTimeline、普通会话 `MessageList`
@@ -336,3 +336,14 @@ interface TraceLiveItem {
 - 不改变 ConversationTimeline、Roundtable、Run/MemberTurn 的任何数据或调度。
 - 实现顺序建议：先完成 P1a 稳定全量过程，再接 P1b Live Stack；两者可以独立回退。
 - 如果总架构的详情抽屉组件在 P1 中被合并/重命名，本方案跟随新的外壳，不另起一套抽屉。
+
+---
+
+## 10. 实现说明（2026-11-07）
+
+- 展开状态、跟随与未读计数在 `packages/relay-web/src/lib/trace-drawer-state.ts`，按 `memberTurnId:attempt` 持有；`GroupTraceTimeline` 只接收受控 `expandedKeys` 并发出 `toggle`，不再有 `FOLD_THRESHOLD` / `tailSize` / `folded`。
+- 抽屉内容只推导一次 `deriveTurnPresentation(parts).nodes`：固定 Live Stack（`TraceLiveStack.vue`）与全量过程共用，投影在 `lib/trace-live.ts`。Markdown 的 `node.key` 含流式长度，Live Stack 用 `markdown:<start>` 作为稳定身份，`targetKey` 仍指向当前行以便 reveal。
+- 抽屉滚动容器结构未改：Live Stack 以 `position: sticky` 固定在现有 scroller 顶部，`useDetailScrollMemory` 的位置记忆继续生效。
+- 跟随判定在每次追加时读取追加前的实际滚动位置，因此恢复历史位置后不会被新事件顶走；`loadEarlier` 的前置分页不计未读。
+- 抽屉内容根节点使用 `overflow-anchor: none`。实测（1280×900，56→76 行）在开启浏览器滚动锚定时会出现 22px 的自动重锚位移；内容只在尾部增长，锚定由 `useTraceDrawerState` 自己负责，关掉后视口保持不动。
+- `content-visibility` 例外：已展开行、当前 Live Stack 的最近 3 行、失败行；其余行使用 `content-visibility: auto` + `contain-intrinsic-size: auto 72px`。未引入窗口化，也未给列表加 `overflow: hidden`。

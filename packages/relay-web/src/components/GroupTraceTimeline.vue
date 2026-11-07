@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   AlertTriangle,
@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Bot,
 } from "lucide-vue-next";
-import type { PeerMessageHistoryEntry, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import ToolStepDetail from "./ToolStepDetail.vue";
@@ -17,56 +16,33 @@ import AgentMessageCard from "./AgentMessageCard.vue";
 import { KIND_ICON } from "../lib/tool-summary";
 import { formatStepDuration } from "../lib/use-live-elapsed";
 import { resolveSubagentStatus } from "../lib/subagent-status";
-import {
-  deriveTurnPresentation,
-  tallyTrace,
-  type TurnPresentationItem,
-  type TurnPresentationPlan,
-} from "../lib/turn-presentation";
+import { tallyTrace, type TurnPresentationItem } from "../lib/turn-presentation";
 
+/**
+ * The full, chronological process. Every presentation node is rendered — there
+ * is no fold window, because a moving window unloads the row the reader just
+ * opened. Expansion is controlled by the drawer layer (`expandedKeys` +
+ * `toggle`), so appending events, re-rendering and the drawer's own scroll
+ * handling never reset it.
+ *
+ * Rows opt into `content-visibility: auto` (skipped layout/paint offscreen)
+ * unless the reader expanded them, they are in the live stack, or they failed.
+ * Windowing is absent: stable scroll height and find-in-page are worth more than
+ * unmounting rows.
+ */
 const props = defineProps<{
-  parts: TurnPartDto[];
+  nodes: TurnPresentationItem[];
   streaming?: boolean;
-  /** Steps kept visible when the trace is long enough to fold. */
-  visibleTail?: number;
-  sentAgentMessages?: Map<string, PeerMessageHistoryEntry>;
+  expandedKeys: ReadonlySet<string>;
+  /** Keys currently presented by the fixed Live Stack. */
+  liveKeys?: ReadonlySet<string>;
+  /** Key highlighted after a Live Stack row was clicked. */
+  highlightKey?: string | null;
 }>();
 
+const emit = defineEmits<{ toggle: [key: string] }>();
+
 const { t } = useI18n();
-
-/** Fold only when hiding actually saves the reader work. */
-const FOLD_THRESHOLD = 6;
-const tailSize = computed(() => props.visibleTail ?? 3);
-
-const presentation = computed<TurnPresentationPlan>(() => deriveTurnPresentation(props.parts, {
-  streaming: props.streaming === true,
-  ...(props.sentAgentMessages ? { sentAgentMessageById: props.sentAgentMessages } : {}),
-}));
-
-/** Steps are the activities; markdown nodes stay in flow between them. */
-const stepCount = computed(() =>
-  presentation.value.nodes.filter((node) => node.type === "tool" || node.type === "subagent").length,
-);
-const foldable = computed(() => stepCount.value > FOLD_THRESHOLD);
-const folded = ref(true);
-
-const hiddenStepCount = computed(() =>
-  foldable.value ? Math.max(0, stepCount.value - tailSize.value) : 0,
-);
-
-/** Index (in the node list) of the first step that stays visible when folded. */
-const firstVisibleStepIndex = computed(() => {
-  if (!foldable.value || !folded.value) return -1;
-  let seen = 0;
-  const keepFrom = stepCount.value - tailSize.value;
-  for (let i = 0; i < presentation.value.nodes.length; i++) {
-    const node = presentation.value.nodes[i]!;
-    if (node.type !== "tool" && node.type !== "subagent") continue;
-    if (seen === keepFrom) return i;
-    seen += 1;
-  }
-  return -1;
-});
 
 interface RenderedNode {
   node: TurnPresentationItem;
@@ -75,26 +51,15 @@ interface RenderedNode {
   key: string;
 }
 
-const nodes = computed<RenderedNode[]>(() => {
-  const boundary = firstVisibleStepIndex.value;
-  const out: RenderedNode[] = [];
-  presentation.value.nodes.forEach((node, index) => {
-    // Prose before the fold point folds with the steps it explains.
-    if (boundary >= 0 && index < boundary) return;
-    out.push({ node, isStep: node.type === "tool" || node.type === "subagent", key: node.key });
-  });
-  return out;
-});
+const rendered = computed<RenderedNode[]>(() =>
+  props.nodes.map((node) => ({
+    node,
+    isStep: node.type === "tool" || node.type === "subagent",
+    key: node.key,
+  })),
+);
 
-const tally = computed(() => tallyTrace(presentation.value.nodes));
-
-const openKeys = ref<Set<string>>(new Set());
-function toggle(key: string): void {
-  const next = new Set(openKeys.value);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  openKeys.value = next;
-}
+const tally = computed(() => tallyTrace(props.nodes));
 
 function stepState(node: TurnPresentationItem): "success" | "running" | "error" | "pending" {
   if (node.type === "subagent") return resolveSubagentStatus(node.step, node.children);
@@ -105,11 +70,9 @@ function stepState(node: TurnPresentationItem): "success" | "running" | "error" 
   return "pending";
 }
 
-
 function stepDuration(node: TurnPresentationItem): string | undefined {
   if (node.type !== "tool" && node.type !== "subagent") return undefined;
-  const ms = node.step.durationMs;
-  return formatStepDuration(ms);
+  return formatStepDuration(node.step.durationMs);
 }
 
 function kindLabel(node: TurnPresentationItem): string {
@@ -126,29 +89,30 @@ function kindLabel(node: TurnPresentationItem): string {
   }
   return "";
 }
+
+function alwaysRendered(entry: RenderedNode): boolean {
+  return props.expandedKeys.has(entry.key)
+    || props.liveKeys?.has(entry.key) === true
+    || stepState(entry.node) === "error";
+}
 </script>
 
 <template>
   <div data-test="group-trace-timeline" class="min-w-0">
-    <button
-      v-if="foldable"
-      type="button"
-      data-test="group-trace-fold"
-      class="rounded-sm text-ui font-medium text-accent transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-      :aria-expanded="!folded"
-      @click="folded = !folded"
-    >{{ folded
-      ? $t("group.detail.showEarlierSteps", { count: hiddenStepCount })
-      : $t("group.detail.hideEarlierSteps") }}</button>
-
     <ol class="mt-1 space-y-0">
       <li
-        v-for="(entry, index) in nodes"
+        v-for="(entry, index) in rendered"
         :key="entry.key"
         :data-test="entry.isStep ? 'group-trace-step' : undefined"
         :data-state="entry.isStep ? stepState(entry.node) : undefined"
-        class="relative flex gap-3"
-        :class="{ 'trace-connected': entry.isStep && nodes[index + 1]?.isStep }"
+        :data-trace-key="entry.key"
+        :data-highlight="highlightKey === entry.key ? 'true' : undefined"
+        class="trace-row relative flex gap-3"
+        :class="{
+          'trace-connected': entry.isStep && rendered[index + 1]?.isStep,
+          'trace-row--always': alwaysRendered(entry),
+          'trace-row--flash': highlightKey === entry.key,
+        }"
       >
         <!-- Marker column: the dot belongs to a step, so prose never gets one. -->
         <span
@@ -175,8 +139,8 @@ function kindLabel(node: TurnPresentationItem): string {
               type="button"
               data-test="group-trace-step-head"
               class="group flex min-h-11 w-full items-start gap-2 rounded-sm text-left"
-              :aria-expanded="openKeys.has(entry.key)"
-              @click="toggle(entry.key)"
+              :aria-expanded="expandedKeys.has(entry.key)"
+              @click="emit('toggle', entry.key)"
             >
               <span class="min-w-0 flex-1">
                 <span class="block break-words [overflow-wrap:anywhere] text-sm font-medium leading-snug text-fg">
@@ -194,11 +158,11 @@ function kindLabel(node: TurnPresentationItem): string {
               <ChevronRight
                 :size="16"
                 class="mt-0.5 shrink-0 text-fg-muted transition-transform"
-                :class="openKeys.has(entry.key) ? 'rotate-90' : ''"
+                :class="expandedKeys.has(entry.key) ? 'rotate-90' : ''"
                 aria-hidden="true"
               />
             </button>
-            <div v-if="openKeys.has(entry.key)" class="mt-2 rounded-lg bg-surface px-3 py-2 text-xs text-fg-muted">
+            <div v-if="expandedKeys.has(entry.key)" class="mt-2 rounded-lg bg-surface px-3 py-2 text-xs text-fg-muted">
               <ToolStepDetail :step="entry.node.step" />
             </div>
           </template>
@@ -208,8 +172,8 @@ function kindLabel(node: TurnPresentationItem): string {
               type="button"
               data-test="group-trace-step-head"
               class="group flex min-h-11 w-full items-start gap-2 rounded-sm text-left"
-              :aria-expanded="openKeys.has(entry.key)"
-              @click="toggle(entry.key)"
+              :aria-expanded="expandedKeys.has(entry.key)"
+              @click="emit('toggle', entry.key)"
             >
               <span class="min-w-0 flex-1">
                 <span class="block break-words [overflow-wrap:anywhere] text-sm font-medium leading-snug text-fg">
@@ -223,11 +187,11 @@ function kindLabel(node: TurnPresentationItem): string {
               <ChevronRight
                 :size="16"
                 class="mt-0.5 shrink-0 text-fg-muted transition-transform"
-                :class="openKeys.has(entry.key) ? 'rotate-90' : ''"
+                :class="expandedKeys.has(entry.key) ? 'rotate-90' : ''"
                 aria-hidden="true"
               />
             </button>
-            <div v-if="openKeys.has(entry.key)" class="mt-2">
+            <div v-if="expandedKeys.has(entry.key)" class="mt-2">
               <SubagentStepCard :step="entry.node.step" :children="entry.node.children" />
             </div>
           </template>
@@ -244,7 +208,8 @@ function kindLabel(node: TurnPresentationItem): string {
             v-else-if="entry.node.type === 'reasoning'"
             :reasoning="entry.node.text"
             :streaming="streaming === true && entry.node.isLatest"
-            :default-open="false"
+            :expanded="expandedKeys.has(entry.key)"
+            @toggle="emit('toggle', entry.key)"
           />
           <div v-else-if="entry.node.type === 'agent-message'" data-test="group-trace-agent-message">
             <AgentMessageCard :message="entry.node.message" anchored />
@@ -253,8 +218,6 @@ function kindLabel(node: TurnPresentationItem): string {
       </li>
     </ol>
 
-    <!-- What the trace did, in one line: the folded reader still learns the shape
-         of the work without opening every step. -->
     <p v-if="tally.byVerb.length || tally.failed > 0" data-test="group-trace-tally"
        class="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-fg-muted">
       <template v-for="(entry, index) in tally.byVerb" :key="entry.verb">
@@ -276,5 +239,30 @@ function kindLabel(node: TurnPresentationItem): string {
   top: 28px;
   bottom: -4px;
   border-left: 1px dashed rgb(var(--c-fg) / 0.22);
+}
+
+/* Skip layout and paint for rows far outside the viewport. The DOM stays, so
+ * scroll height and find-in-page keep working; the intrinsic size keeps the
+ * scrollbar stable before a row has ever been measured. */
+.trace-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
+}
+.trace-row--always {
+  content-visibility: visible;
+}
+
+.trace-row--flash {
+  animation: trace-row-flash 1.2s ease-out;
+}
+@keyframes trace-row-flash {
+  from { background-color: rgb(var(--c-accent) / 0.18); }
+  to { background-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trace-row--flash {
+    animation: none;
+    outline: 2px solid rgb(var(--c-accent) / 0.55);
+  }
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
@@ -8,10 +8,15 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 import { useI18n } from "vue-i18n";
 import GroupTraceTimeline from "./GroupTraceTimeline.vue";
+import TraceLiveStack from "./TraceLiveStack.vue";
 import { isMachineFailureReason } from "../lib/failure-reason";
 import { useLiveDuration } from "../lib/run-duration";
+import { useIsMobile } from "../lib/use-dropdown";
 import PlanPanel from "./PlanPanel.vue";
 import type { TraceReplayStatus } from "../lib/group-run-presentation";
+import { deriveTurnPresentation } from "../lib/turn-presentation";
+import { traceLiveLimit, traceNodeIdentity } from "../lib/trace-live";
+import { traceDrawerScopeKey, useTraceDrawerState } from "../lib/trace-drawer-state";
 
 const props = defineProps<{
   run: ConversationRunDto;
@@ -64,10 +69,52 @@ const duration = useLiveDuration(() => props.memberTurn
   ? undefined
   : { startedAt: props.run.startedAt, finishedAt: props.run.finishedAt, active: props.run.state === "running" });
 
+const nodes = computed(() => deriveTurnPresentation(recordedParts.value, {
+  streaming: props.traceStreaming === true,
+}).nodes);
+
+const contentEl = ref<HTMLElement | null>(null);
+const scopeKey = computed(() => traceDrawerScopeKey(props.memberTurn?.id, selectedAttempt.value));
+const traceDrawer = useTraceDrawerState({
+  scopeKey: () => scopeKey.value,
+  scroller: () => contentEl.value?.closest<HTMLElement>(".group-detail-scroll, .thin-scroll") ?? null,
+  root: () => contentEl.value,
+  nodeIds: () => nodes.value.map(traceNodeIdentity),
+});
+
+const isMobile = useIsMobile();
+const liveKeys = computed(() => new Set(
+  nodes.value.slice(-traceLiveLimit(isMobile.value)).map((node) => node.key),
+));
+
+/** Terminal runs collapse the live stack to one summary line. A terminal run
+ *  state wins over a member snapshot that has not caught up yet. */
+const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
+  const member = props.memberTurn?.state;
+  const state = member === "completed" || member === "failed" || member === "cancelled"
+    ? member
+    : props.run.state;
+  if (state === "completed") return "done";
+  if (state === "failed") return "failed";
+  if (state === "cancelled") return "cancelled";
+  return null;
+});
+
 </script>
 
 <template>
-  <div class="flex flex-col gap-3 text-sm" data-test="group-run-detail">
+  <!-- `overflow-anchor: none`: this content grows at the tail while output
+       streams. The browser otherwise re-anchors by a few pixels when a
+       viewport-skipped row re-estimates its height, nudging a reader who is
+       above the tail. Follow/freeze is owned by useTraceDrawerState instead. -->
+  <div ref="contentEl" class="flex flex-col gap-3 text-sm [overflow-anchor:none]" data-test="group-run-detail">
+    <TraceLiveStack
+      v-if="nodes.length"
+      :nodes="nodes"
+      :streaming="traceStreaming === true && !terminalState"
+      :terminal="terminalState"
+      @reveal="traceDrawer.reveal"
+    />
     <div v-if="memberTurn" class="min-w-0">
       <details v-if="hasBrief" data-test="group-member-brief" class="mt-2 text-xs text-fg-muted">
         <summary class="cursor-pointer rounded-md py-1 font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent">
@@ -115,8 +162,16 @@ const duration = useLiveDuration(() => props.memberTurn
     </p>
 
     <!-- Recorded member trace -->
-    <div v-if="recordedParts.length" class="min-w-0">
-      <GroupTraceTimeline :key="`${memberTurn?.id}:${selectedAttempt}`" :parts="recordedParts" :streaming="traceStreaming === true" />
+    <div v-if="nodes.length" class="min-w-0">
+      <GroupTraceTimeline
+        :key="`${memberTurn?.id}:${selectedAttempt}`"
+        :nodes="nodes"
+        :streaming="traceStreaming === true"
+        :expanded-keys="traceDrawer.state.expanded"
+        :live-keys="liveKeys"
+        :highlight-key="traceDrawer.state.highlight"
+        @toggle="traceDrawer.toggle"
+      />
     </div>
 
     <!-- Trace completeness/pagination/failure status: always audible, even
@@ -154,7 +209,12 @@ const duration = useLiveDuration(() => props.memberTurn
     <!-- Plan: the run's own plan, kept near the process it explains. -->
     <PlanPanel v-if="plan && plan.length" :entries="plan" class="w-full" />
 
-
-
+    <button
+      v-if="traceDrawer.state.unread > 0 && !traceDrawer.state.following && !terminalState"
+      type="button"
+      data-test="group-trace-new-events"
+      class="sticky bottom-2 z-20 mx-auto rounded-full bg-accent px-3 py-1 text-xs font-medium text-bg shadow-md"
+      @click="traceDrawer.jumpToLatest()"
+    >{{ $t("group.detail.newEvents", traceDrawer.state.unread) }}</button>
   </div>
 </template>
