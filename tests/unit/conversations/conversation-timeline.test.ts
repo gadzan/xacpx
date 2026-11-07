@@ -345,3 +345,94 @@ test("two calls over the same rows are byte-identical, regardless of input order
   }));
   expect(second).toBe(first);
 });
+
+test("a later roundtable speaker's activity sorts after the earlier speaker's message", () => {
+  const live = run("run_order", { shape: "roundtable", rounds: 1 });
+  const human = message(1, { role: "human", runId: live.id, content: "go" });
+  const spoke = turn(live.id, "turn_first", {
+    botId: "bot_a",
+    memberIndex: 0,
+    state: "completed",
+    speechOutcome: "message",
+    roundIndex: 1,
+    speakerIndex: 0,
+    // Every roundtable turn is triggered by the same human request.
+    triggerMessageIds: [human.id],
+  });
+  const speaking = turn(live.id, "turn_second", {
+    botId: "bot_b",
+    memberIndex: 1,
+    state: "running",
+    roundIndex: 1,
+    speakerIndex: 1,
+    triggerMessageIds: [human.id],
+  });
+  const timeline = project({
+    messages: [human, message(2, { runId: live.id, memberTurnId: spoke.id, senderBotId: "bot_a" })],
+    runs: [live],
+    memberTurns: [spoke, speaking],
+    messageSeqById: { [human.id]: 1 },
+  });
+
+  expect(timeline.entries.map((entry) => entry.key)).toEqual([
+    `message:${human.id}`,
+    "message:m2",
+    `activity:${speaking.id}`,
+  ]);
+  // Anchored at the earlier speech (seq 2), not at the shared request (seq 1).
+  expect(timeline.entries[2]).toMatchObject({ kind: "activity", anchorSeq: 2 });
+});
+
+test("a pass turn with no message contributes no anchor", () => {
+  const live = run("run_pass_anchor", { shape: "roundtable", rounds: 1 });
+  const human = message(1, { role: "human", runId: live.id, content: "go" });
+  const skipped = turn(live.id, "turn_pass", {
+    botId: "bot_a",
+    memberIndex: 0,
+    state: "completed",
+    speechOutcome: "pass",
+    roundIndex: 1,
+    speakerIndex: 0,
+    triggerMessageIds: [human.id],
+  });
+  const speaking = turn(live.id, "turn_next", {
+    botId: "bot_b",
+    memberIndex: 1,
+    state: "running",
+    roundIndex: 1,
+    speakerIndex: 1,
+    triggerMessageIds: [human.id],
+  });
+  const timeline = project({
+    messages: [human],
+    runs: [live],
+    memberTurns: [skipped, speaking],
+    messageSeqById: { [human.id]: 1 },
+  });
+
+  // A pass writes no public message, so the next speaker keeps the request
+  // anchor and the stale sequence is never invented.
+  const activity = timeline.entries.find((entry) => entry.kind === "activity");
+  expect(activity).toMatchObject({ anchorSeq: 1 });
+  expect(timeline.entries.filter((entry) => entry.kind === "activity")).toHaveLength(1);
+});
+
+test("an activity with no earlier message falls back to the request seq", () => {
+  const live = run("run_first_speaker", { shape: "roundtable", rounds: 1 });
+  const human = message(1, { role: "human", runId: live.id, content: "go" });
+  const first = turn(live.id, "turn_first_speaker", {
+    botId: "bot_a",
+    memberIndex: 0,
+    state: "running",
+    roundIndex: 1,
+    speakerIndex: 0,
+    triggerMessageIds: [human.id],
+  });
+  const timeline = project({
+    messages: [human],
+    runs: [live],
+    memberTurns: [first],
+    messageSeqById: { [human.id]: 1 },
+  });
+  expect(timeline.entries.find((entry) => entry.kind === "activity")).toMatchObject({ anchorSeq: 1 });
+});

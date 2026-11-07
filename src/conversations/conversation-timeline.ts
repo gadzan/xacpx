@@ -146,12 +146,10 @@ export function projectConversationTimeline(
   input: ProjectConversationTimelineInput,
 ): ConversationTimeline {
   const runs = new Map(input.runs.map((run) => [run.id, run]));
-  const turnsById = new Map<string, MemberTurnRecord>();
   const turnsByRun = new Map<string, MemberTurnRecord[]>();
   for (const turn of input.memberTurns) {
     // A turn of a Run outside the page can never anchor an entry here.
     if (!runs.has(turn.runId)) continue;
-    turnsById.set(turn.id, turn);
     const list = turnsByRun.get(turn.runId);
     if (list) list.push(turn);
     else turnsByRun.set(turn.runId, [turn]);
@@ -165,6 +163,9 @@ export function projectConversationTimeline(
 
   const entries: ConversationTimelineEntry[] = [];
   const claimed = new Set<string>();
+  /** Newest public message seq each MemberTurn owns, so a later speaker's
+   *  activity can never sort before an earlier speaker's speech. */
+  const publicSeqByTurn = new Map<string, number>();
   const seenMessageIds = new Set<string>();
   const seenSeqs = new Set<number>();
   let oldestSeq: number | undefined;
@@ -225,7 +226,11 @@ export function projectConversationTimeline(
     }
     // An exact/inferred owner makes this turn's speech public; an unresolved
     // row proves nothing and must not silence the activity row.
-    if (memberTurnId !== undefined && ownership !== "unresolved") claimed.add(memberTurnId);
+    if (memberTurnId !== undefined && ownership !== "unresolved") {
+      claimed.add(memberTurnId);
+      const prior = publicSeqByTurn.get(memberTurnId);
+      if (prior === undefined || message.seq > prior) publicSeqByTurn.set(memberTurnId, message.seq);
+    }
 
     entries.push({
       kind: "message",
@@ -249,12 +254,22 @@ export function projectConversationTimeline(
       // `queued` non-roundtable turns are waiting; silent terminal turns are
       // the ones that ended without saying anything public.
       if (!SILENT_ACTIVITY_STATE[turn.state] && turn.state !== "queued") continue;
-      // Rule 7: anchor at the newest trigger message that produced the turn.
+      // Rule 7: anchor at the newest durable position this turn follows — its
+      // own trigger messages (every roundtable turn is triggered by the human
+      // request, so triggers alone would sort a later speaker BEFORE the
+      // earlier speaker's reply) AND any public message an earlier
+      // `memberIndex` turn already wrote. With neither, fall back to the
+      // request seq.
+      const earlierSeqs = runTurns
+        .filter((earlier) => earlier.memberIndex < turn.memberIndex)
+        .map((earlier) => publicSeqByTurn.get(earlier.id))
+        .filter((seq): seq is number => seq !== undefined);
       const triggerSeqs = turn.triggerMessageIds
         .map((id) => seqOf(id))
         .filter((seq): seq is number => seq !== undefined);
-      const anchorSeq = triggerSeqs.length > 0
-        ? Math.max(...triggerSeqs)
+      const anchorCandidates = [...triggerSeqs, ...earlierSeqs];
+      const anchorSeq = anchorCandidates.length > 0
+        ? Math.max(...anchorCandidates)
         : requestAnchor;
       entries.push({
         kind: "activity",
