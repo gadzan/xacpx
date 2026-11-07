@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type { ToolStepStatus } from "@ganglion/xacpx-relay-protocol";
@@ -36,6 +36,10 @@ describe("trace live stack", () => {
     window.innerWidth = 1280;
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("shows the newest three events, newest first", () => {
     const wrapper = mount(TraceLiveStack, {
       props: { nodes: [toolNode("a"), toolNode("b"), toolNode("c"), toolNode("d")], streaming: true },
@@ -69,6 +73,40 @@ describe("trace live stack", () => {
     expect(rows(wrapper)).toHaveLength(2);
     expect(wrapper.findAll('[data-test="trace-live-item"]')[0]!.element).toBe(firstRow);
     expect(wrapper.find('[data-test="trace-live-status"]').attributes("data-status")).toBe("success");
+    wrapper.unmount();
+  });
+
+  it("coalesces three updates under 120ms into one trailing render without re-entering the key", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const wrapper = mount(TraceLiveStack, {
+      props: { nodes: [toolNode("a"), toolNode("b", "Step b v1")], streaming: true },
+    });
+    expect(rows(wrapper)).toHaveLength(2);
+    expect(wrapper.text()).toContain("Step b v1");
+    const firstRow = wrapper.findAll('[data-test="trace-live-item"]')[0]!.element;
+
+    await wrapper.setProps({ nodes: [toolNode("a"), toolNode("b", "Step b v2")] });
+    await vi.advanceTimersByTimeAsync(40);
+    await wrapper.setProps({ nodes: [toolNode("a"), toolNode("b", "Step b v3")] });
+    await vi.advanceTimersByTimeAsync(40);
+    await wrapper.setProps({ nodes: [toolNode("a"), toolNode("b", "Step b v4")] });
+
+    // No intermediate frame: the 120ms window has not elapsed yet.
+    expect(wrapper.text()).toContain("Step b v1");
+    expect(wrapper.text()).not.toContain("Step b v2");
+    expect(wrapper.text()).not.toContain("Step b v3");
+    expect(wrapper.text()).not.toContain("Step b v4");
+    expect(wrapper.find(".relative").classes()).toContain("trace-live--static");
+
+    await vi.advanceTimersByTimeAsync(40);
+    expect(wrapper.text()).toContain("Step b v4");
+    expect(rows(wrapper)).toHaveLength(2);
+    expect(wrapper.findAll('[data-test="trace-live-item"]')[0]!.element).toBe(firstRow);
+
+    // The burst flag clears once the run pauses.
+    await vi.advanceTimersByTimeAsync(600);
+    expect(wrapper.find(".relative").classes()).not.toContain("trace-live--static");
     wrapper.unmount();
   });
 
