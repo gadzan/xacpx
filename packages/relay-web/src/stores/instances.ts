@@ -201,6 +201,14 @@ export function supportsRoundtableV1(instance: { capabilities?: string[] | null 
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.roundtableV1);
 }
 
+/** True when the instance projects `control.conversation.timeline`.
+ *
+ *  It gates the single timeline shell: without it the panes keep the legacy
+ *  transcript and old behaviour is unchanged. */
+export function supportsConversationTimelineV1(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.conversationTimelineV1);
+}
+
 /** True when the instance is online and advertises the Phase A desktop capability. */
 export function supportsDesktop(instance: {
   online: boolean;

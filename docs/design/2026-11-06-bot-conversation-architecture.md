@@ -1,7 +1,7 @@
 # xacpx Bot 会话与群聊协作：目标架构与技术方案
 
 - 日期：2026-11-06
-- 状态：提案；P0 后端圆桌已实现（2026-11-07，#546，main `8d660cf7`）；P1「一条时间线」未实现；trace 抽屉 P1a–P1c 已实现（#544/#545）；P2 公共记忆已实现（#541–#543）。
+- 状态：提案；P0 后端圆桌已实现（2026-11-07，#546，main `8d660cf7`）；P1a 时间线读模型与 P1b 一条时间线 UI 已实现（P1b 合入前分支 `feat/one-timeline-ui`，基于 `1430534b`），旧组件回退与抽屉合并留给 P1c；trace 抽屉 #544/#545；P2 公共记忆 #541–#543。
 - 范围：Direct Bot 会话、Group 群聊、Run / MemberTurn 调度、Web 交互
 - 目标：一个简约的会话界面，一组可证明的协作语义；Direct 与 Group 不再是两套产品
 - 前置阅读：`docs/research/2026-11-06-bot-group-collaboration-benchmark.md`
@@ -779,7 +779,7 @@ P0 结束时，旧 UI 仍能工作；API 可以创建圆桌，只是没有入口
 
 ### P1：一条时间线与一个 composer
 
-> 实施状态（2026-11-07）：未开始。trace 抽屉子项已由 #544/#545 完成，但不含 `ConversationTimeline` 迁移、`member_turn_id` 或 composer/status bar 收口。
+> 实施状态（2026-11-08）：P1a（`messages.member_turn_id`、纯投影、`conversation.timeline` RPC/capability）已合入 `1430534b`；P1b 已实现第 3–5、8 项：`ConversationTimeline`/`TimelineRow`、`ConversationStatusBar`/`RoundStrip`、composer 收口（默认 lead、`@`、`@everyone`、讨论 chip、无 target 下拉/勾选/automatic）、两个 pane 共用 `RoomView`、旧 daemon 回退与 Playwright 桌面/移动覆盖。第 6 项旧组件删除与第 7 项抽屉合并仍属 P1c；trace 抽屉子项已由 #544/#545 完成。
 
 1. `messages.member_turn_id` 列、索引、所有插入点、回填。
 2. `conversation-timeline.ts` 纯投影 + `conversation.timeline` RPC + capability。

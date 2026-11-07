@@ -26,6 +26,51 @@ export default {
     online: "已连接",
     reconnecting: "重新连接中…",
   },
+  // 统一的会话外壳（设计 §8）：时间线、状态条、轮次条和输入框 chip。
+  conversation: {
+    timeline: {
+      openDetail: "查看 {name} 的过程",
+      unresolved: "这条回复无法归属到唯一成员回合，因此没有过程可看。",
+      empty: "还没有消息，先发一条吧。",
+    },
+    handoff: {
+      open: "查看 {name} 的过程",
+    },
+    activity: {
+      working: "正在处理…",
+      speaking: "正在说…",
+      failed: "失败",
+      cancelled: "已停止",
+    },
+    notice: {
+      queued: "排队中",
+      empty: "本轮无人补充。",
+      failed: "运行失败",
+    },
+    round: {
+      label: "第 {index} 轮",
+      labelOf: "第 {index}/{rounds} 轮",
+      spoken: "{spoken}/{total} 已发言",
+      passed: "{count} 跳过",
+    },
+    status: {
+      speaking: "{name} 正在说",
+      queued: "排队中",
+      working: "运行中",
+      waiting: "需要你",
+      active: "{count} 位进行中",
+      stopAll: "全部停止",
+      openDetail: "查看本次运行的过程",
+    },
+    composer: {
+      mention: "提及成员",
+      discuss: "讨论",
+      discussHint: "让成员依次发言",
+      discussNeedsSpeakers: "讨论至少需要 2 位已启用成员",
+      placeholder: "发消息给 {name}",
+      placeholderLead: "发消息给负责人",
+    },
+  },
   nav: {
     toLight: "切换到浅色",
     toDark: "切换到深色",
@@ -1112,12 +1157,6 @@ export default {
     },
     target: {
       lead: "负责人",
-      everyone: "全体成员",
-      selectMembers: "选择成员",
-      sendTo: "发给谁",
-      memberCount: "已选 {count} 人",
-      noEligible: "该群组暂无可用成员。",
-      automatic: "自动协作",
       noRuntime: "无运行环境",
     },
     confirmEveryone: {
@@ -1126,11 +1165,9 @@ export default {
       remaining: "还有 {count} 人",
     },
     mentionConfirm: {
-      title: "提及未解析，仍要发送？",
-      body: "部分提及未能解析。确认发送吗？",
-    },
-    router: {
-      noInstance: "此实例没有公布自动协作能力。",
+      title: "提及未解析",
+      body: "该提及与本群成员不匹配。请修正或删除后再发送。",
+      keepEditing: "继续编辑",
     },
     run: {
       memberCompleted: "已完成",
@@ -1259,7 +1296,6 @@ export default {
       perMemberHint: "该群组让每个成员在自己的 Bot 工作区中工作，因此话题不需要选择工作区。工作区不同的成员可并行执行；共用同一工作区的成员仍会串行。",
     },
     prompt: {
-      placeholder: "给所选成员发消息...（{'@'}名称、{'@'}everyone）",
       placeholderShort: "发消息给成员…（{'@'} 指定）",
       createTopicFirst: "先新建话题再发消息",
     },

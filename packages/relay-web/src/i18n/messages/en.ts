@@ -28,6 +28,52 @@ export default {
     online: "Connected",
     reconnecting: "Reconnecting…",
   },
+  // The one conversation shell (design §8): timeline, status bar, round strip,
+  // and the composer chips. Shared by Direct Bot and Group.
+  conversation: {
+    timeline: {
+      openDetail: "Process for {name}",
+      unresolved: "This reply could not be linked to one member turn, so it has no process.",
+      empty: "No messages yet. Say something to start.",
+    },
+    handoff: {
+      open: "Open the process for {name}",
+    },
+    activity: {
+      working: "Working…",
+      speaking: "Speaking…",
+      failed: "Failed",
+      cancelled: "Stopped",
+    },
+    notice: {
+      queued: "Queued",
+      empty: "No member added to this discussion.",
+      failed: "Run failed",
+    },
+    round: {
+      label: "Round {index}",
+      labelOf: "Round {index}/{rounds}",
+      spoken: "{spoken}/{total} spoken",
+      passed: "{count} passed",
+    },
+    status: {
+      speaking: "{name} is speaking",
+      queued: "Queued",
+      working: "Running",
+      waiting: "Needs you",
+      active: "{count} active",
+      stopAll: "Stop all",
+      openDetail: "Open the process for this run",
+    },
+    composer: {
+      mention: "Mention a member",
+      discuss: "Discuss",
+      discussHint: "Let the members speak one after another",
+      discussNeedsSpeakers: "Discussion needs at least 2 enabled members",
+      placeholder: "Message {name}",
+      placeholderLead: "Message the lead",
+    },
+  },
   nav: {
     toLight: "Switch to light",
     toDark: "Switch to dark",
@@ -1114,12 +1160,6 @@ export default {
     },
     target: {
       lead: "Lead",
-      everyone: "Everyone",
-      selectMembers: "Select members",
-      sendTo: "Send to",
-      memberCount: "{count} selected",
-      noEligible: "No enabled members in this group.",
-      automatic: "Automatic collaboration",
       noRuntime: "No runtime",
     },
     confirmEveryone: {
@@ -1128,11 +1168,9 @@ export default {
       remaining: "{count} more",
     },
     mentionConfirm: {
-      title: "Send with unresolved mention?",
-      body: "Some mentions could not be resolved. Send anyway?",
-    },
-    router: {
-      noInstance: "This instance has not advertised automatic collaboration.",
+      title: "Unresolved mention",
+      body: "This mention does not match a member of this group. Fix or remove it, then send again.",
+      keepEditing: "Keep editing",
     },
     run: {
       memberCompleted: "done",
@@ -1261,7 +1299,6 @@ export default {
       perMemberHint: "This Group runs every member in its own Bot workspace, so a Topic has no workspace to pick. Members in different workspaces run in parallel; members sharing one workspace are serialized.",
     },
     prompt: {
-      placeholder: "Message the selected members... ({'@'}name, {'@'}everyone)",
       /** Below 640px: the full placeholder wraps to two lines next to Stop/Send. */
       placeholderShort: "Message members… ({'@'} to mention)",
       createTopicFirst: "Create a topic to start chatting",

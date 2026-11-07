@@ -985,7 +985,9 @@ export const useGroupsStore = defineStore("groups", () => {
   interface UncertainPrompt {
     requestId: string;
     text: string;
-    target: ConversationTargetDto;
+    /** Null means "no explicit target": the server resolves the Group lead.
+     *  The frozen tuple replays that exact request shape. */
+    target: ConversationTargetDto | null;
     media: PromptAttachmentRef[];
   }
   const uncertainPrompt = ref<UncertainPrompt | null>(null);
@@ -1096,20 +1098,6 @@ export const useGroupsStore = defineStore("groups", () => {
     return { target: { mode: "members", botIds: deduped } };
   }
 
-  /** True when the current selection can be resolved into a wire target. Lets the
-   *  composer disable Send (and keep the draft) instead of throwing the typed
-   *  message away after the store rejects it. */
-  const targetResolvable = computed<boolean>(() => !("error" in resolveTarget()));
-
-  /** Surface the reason a prompt was refused without touching the draft. */
-  function reportTargetProblem(): void {
-    const resolved = resolveTarget();
-    if ("error" in resolved) {
-      promptError.value = resolved.error === "targetRequired" ? "targetRequired" : "targetEmpty";
-      promptErrorDetail.value = null;
-    }
-  }
-
   function setTarget(selection: GroupTargetSelection): void {
     if (selection.mode === "members") {
       targetSelection.value = { mode: "members", botIds: [...new Set(selection.botIds)] };
@@ -1118,45 +1106,6 @@ export const useGroupsStore = defineStore("groups", () => {
     } else {
       targetSelection.value = { mode: "everyone" };
     }
-  }
-
-  function toggleTargetMember(botId: string): void {
-    const current = targetSelection.value;
-    // Automatic and everyone both mean "no member list yet": picking a member
-    // from either is an explicit human selection and replaces it.
-    if (!current || current.mode === "everyone" || current.mode === "automatic") {
-      targetSelection.value = { mode: "members", botIds: [botId] };
-      return;
-    }
-    const next = current.botIds.includes(botId)
-      ? current.botIds.filter((id) => id !== botId)
-      : [...current.botIds, botId];
-    targetSelection.value = { mode: "members", botIds: [...new Set(next)] };
-  }
-
-  function mentionBot(botId: string): void {
-    const group = currentGroup.value;
-    if (!group) return;
-    if (!group.botIds.includes(botId)) return;
-    const current = targetSelection.value;
-    if (!current) {
-      targetSelection.value = { mode: "members", botIds: [botId] };
-      return;
-    }
-    if (current.mode === "everyone" || current.mode === "automatic") {
-      // Explicit mention narrows the target back to members: staying in
-      // everyone (or letting the Router decide) would ignore every later
-      // `@Name`.
-      targetSelection.value = { mode: "members", botIds: [botId] };
-      return;
-    }
-    if (!current.botIds.includes(botId)) {
-      targetSelection.value = { mode: "members", botIds: [...current.botIds, botId] };
-    }
-  }
-
-  function mentionEveryone(): void {
-    targetSelection.value = { mode: "everyone" };
   }
 
   /** Per-instance groups-list failures. Empty state must only render for a
@@ -2443,7 +2392,7 @@ export const useGroupsStore = defineStore("groups", () => {
   /** requestId for a fresh send. An existing uncertain tuple keeps its identity
    *  only when the text AND target still match it; any divergence means this is
    *  a genuinely new request and must get a new durable identity. */
-  function preparePromptRequestId(text: string, target: ConversationTargetDto, media: PromptAttachmentRef[] = []): string {
+  function preparePromptRequestId(text: string, target: ConversationTargetDto | null, media: PromptAttachmentRef[] = []): string {
     const prior = uncertainPrompt.value;
     if (prior && prior.text === text && JSON.stringify(prior.target) === JSON.stringify(target)
       && JSON.stringify(prior.media) === JSON.stringify(media)) {
@@ -2463,7 +2412,7 @@ export const useGroupsStore = defineStore("groups", () => {
   async function retryUncertainPrompt(): Promise<void> {
     const prior = uncertainPrompt.value;
     if (!prior) return;
-    await sendPrompt(prior.text, prior.target, prior.media);
+    await sendPromptTo(prior.text, prior.target, prior.media);
   }
 
   /** Resolve an uncertain prompt against a canonically observed Run. Durable
@@ -2530,6 +2479,57 @@ export const useGroupsStore = defineStore("groups", () => {
     return await outcome;
   }
 
+  /** Send with an explicit wire target, or `null` for the implicit lead.
+   *
+   *  The one Composer uses this: a plain Group message carries NO target (the
+   *  server resolves the Group's live lead inside its accept gates), an `@`
+   *  selection carries the selected members, and 讨论 carries a roundtable
+   *  target. Unlike `sendPrompt` it never reads the stored target selection, so
+   *  the UI can stop maintaining a default selection at all.
+   *
+   *  The frozen-tuple path ranks above the live guards for the same reason as
+   *  the replay branch in `sendPrompt`: a request that may already be durable
+   *  must remain reachable after reconnection. */
+  async function sendPromptTo(
+    text: string,
+    target: ConversationTargetDto | null,
+    media: PromptAttachmentRef[] = [],
+  ): Promise<GroupSendOutcome> {
+    if (promptInFlight.value) return "rejected";
+    const trimmed = text.trim();
+    if ((!trimmed && media.length === 0) || !instanceId.value || !selectedGroupId.value
+      || !activeConversationId.value || !activeTopicId.value) {
+      return "rejected";
+    }
+    // A frozen-tuple replay carries the exact requestId/text/target the server
+    // may already have durably accepted, so it stays reachable through these
+    // guards exactly like the forced-target branch of `sendPromptInner`: the
+    // retry is the sole escape hatch, never a fresh send.
+    const pending = uncertainPrompt.value;
+    const isReplay = !!pending && pending.text === trimmed
+      && JSON.stringify(pending.target) === JSON.stringify(target)
+      && JSON.stringify(pending.media) === JSON.stringify(media);
+    if (!isReplay) {
+      if (!topicReady.value) {
+        promptError.value = "topicRecovering";
+        promptErrorDetail.value = null;
+        return "uncertain";
+      }
+      // A Run already executing is not a barrier, but an unknown prompt
+      // outcome is: minting a fresh requestId while the tuple is pending
+      // would double-execute (see `sendPromptInner`).
+      if (pending) {
+        promptError.value = "promptPendingConfirmation";
+        promptErrorDetail.value = null;
+        return "uncertain";
+      }
+    }
+    const reqId = preparePromptRequestId(trimmed, target, media);
+    const outcome = runPromptSend(trimmed, target, reqId, media);
+    inFlightSend.value = outcome;
+    return await outcome;
+  }
+
   async function sendPromptInner(text: string, forcedTarget?: ConversationTargetDto, media: PromptAttachmentRef[] = []): Promise<GroupSendOutcome> {
     const trimmed = text.trim();
     if ((!trimmed && media.length === 0) || !instanceId.value || !selectedGroupId.value || !activeConversationId.value || !activeTopicId.value) {
@@ -2580,7 +2580,7 @@ export const useGroupsStore = defineStore("groups", () => {
    *  separate so a frozen-tuple retry shares exactly one code path. */
   async function runPromptSend(
     runText: string,
-    target: ConversationTargetDto,
+    target: ConversationTargetDto | null,
     reqId: string,
     media: PromptAttachmentRef[] = [],
   ): Promise<GroupSendOutcome> {
@@ -2613,7 +2613,7 @@ export const useGroupsStore = defineStore("groups", () => {
           topicId: targetTopicId,
           requestId: reqId,
           text: runText,
-          target,
+          ...(target ? { target } : {}),
           ...(frozenMedia.length ? { media: frozenMedia } : {}),
         }),
       );
@@ -3749,12 +3749,7 @@ export const useGroupsStore = defineStore("groups", () => {
     currentTopic,
     isRunActive,
     resolveTarget,
-    targetResolvable,
-    reportTargetProblem,
     setTarget,
-    toggleTargetMember,
-    mentionBot,
-    mentionEveryone,
     senderNameFor,
     loadGroups,
     loadGroupDetail,
@@ -3782,6 +3777,7 @@ export const useGroupsStore = defineStore("groups", () => {
     clearSelection,
     preparePromptRequestId,
     sendPrompt,
+    sendPromptTo,
     retryUncertainPrompt,
     cancelCurrentRun,
     stopCurrentAndQueued,

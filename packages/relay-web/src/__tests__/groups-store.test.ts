@@ -540,23 +540,6 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.id).toBe("run_9");
   });
 
-  it("mentionBot only adds eligible members and mentionEveryone selects all", async () => {
-    const store = useGroupsStore();
-    store.instanceId = "inst_1";
-    store.selectedGroupId = "conversation_g";
-    store.groupsByInstance["inst_1"] = [GROUP];
-    store.groupDetails["inst_1:conversation_g"] = { ...GROUP, topics: [] };
-    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
-    store.mentionBot("bot_b");
-    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a", "bot_b"] });
-    store.mentionBot("bot_ghost");
-    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a", "bot_b"] });
-    store.mentionEveryone();
-    expect(store.targetSelection).toEqual({ mode: "everyone" });
-    store.mentionBot("bot_a");
-    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-  });
-
   it("display-name collision does not affect routing identity", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
@@ -2691,7 +2674,6 @@ describe("useGroupsStore", () => {
     store.topicReady = true;
     store.setTarget({ mode: "automatic" });
     expect(store.targetSelection).toEqual({ mode: "automatic" });
-    expect(store.targetResolvable).toBe(true);
 
     const promptResponse: ConversationPromptResponseDto = {
       reused: false,
@@ -2720,23 +2702,6 @@ describe("useGroupsStore", () => {
     // The automatic Run's routing substate is projected verbatim.
     expect(store.activeRun?.routingState).toBe("dispatching");
     expect(store.memberTurns).toEqual([]);
-  });
-
-  it("PR8: picking a member replaces an automatic selection", async () => {
-    const store = useGroupsStore();
-    store.instanceId = "inst_1";
-    store.selectedGroupId = "conversation_g";
-    store.groupsByInstance["inst_1"] = [GROUP];
-    store.groupDetails["inst_1:conversation_g"] = { ...GROUP, topics: [] };
-    store.setTarget({ mode: "automatic" });
-    expect(store.targetSelection).toEqual({ mode: "automatic" });
-    store.toggleTargetMember("bot_a");
-    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-    // An explicit mention also narrows back: the Router may not keep deciding
-    // after a human names somebody.
-    store.setTarget({ mode: "automatic" });
-    store.mentionBot("bot_b");
-    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
   });
 
   it("PR8: mergeRun keeps a stored routingState when a thinner snapshot omits it", async () => {
@@ -3560,5 +3525,97 @@ describe("zero-Topic Groups never auto-create a Topic (Bot-only first-send behav
     expect(types.filter((t) => t.includes("topics.create"))).toEqual([]);
     expect(types).not.toContain("control.conversation.prompt");
     expect(store.activeTopicId).toBeNull();
+  });
+});
+
+describe("useGroupsStore sendPromptTo fences", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockRpc.mockReset();
+    localStorage.clear();
+  });
+
+  function seedSendable(): void {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.groupDetails["inst_1:conversation_g"] = { ...GROUP, topics: [] };
+  }
+
+  function acceptedPrompt(): ConversationPromptResponseDto {
+    return {
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_sent",
+      message: {
+        id: "msg_sent", conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+        role: "human", content: "hello", createdAt: "now",
+      },
+      run: {
+        id: "run_sent", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_sent", requestId: "req_sent", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      },
+      memberTurns: [],
+      activeRunId: "run_sent",
+    };
+  }
+
+  it("refuses while the Topic is recovering, without an RPC", async () => {
+    seedSendable();
+    const store = useGroupsStore();
+    store.topicReady = false;
+    expect(await store.sendPromptTo("hello", null)).toBe("uncertain");
+    expect(store.promptError).toBe("topicRecovering");
+    expect(mockRpc).not.toHaveBeenCalledWith("inst_1", "control.conversation.prompt", expect.anything());
+  });
+
+  it("refuses a fresh send while an uncertain prompt is pending, without an RPC", async () => {
+    seedSendable();
+    const store = useGroupsStore();
+    store.uncertainPrompt = {
+      requestId: "req_pending",
+      text: "lost response",
+      target: null,
+      media: [],
+    };
+    expect(await store.sendPromptTo("hello", null)).toBe("uncertain");
+    expect(store.promptError).toBe("promptPendingConfirmation");
+    expect(mockRpc).not.toHaveBeenCalledWith("inst_1", "control.conversation.prompt", expect.anything());
+  });
+
+  it("replays the frozen tuple even while it is pending, with its original requestId", async () => {
+    seedSendable();
+    const store = useGroupsStore();
+    store.uncertainPrompt = {
+      requestId: "req_pending",
+      text: "lost response",
+      target: { mode: "members", botIds: ["bot_b"] },
+      media: [],
+    };
+    mockRpc.mockResolvedValueOnce(acceptedPrompt());
+    expect(await store.sendPromptTo("lost response", { mode: "members", botIds: ["bot_b"] })).toBe("accepted");
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.conversation.prompt", expect.objectContaining({
+      requestId: "req_pending",
+      text: "lost response",
+      target: { mode: "members", botIds: ["bot_b"] },
+    }));
+  });
+
+  it("sends normally with a ready Topic and no pending tuple", async () => {
+    seedSendable();
+    const store = useGroupsStore();
+    mockRpc.mockResolvedValueOnce(acceptedPrompt());
+    expect(await store.sendPromptTo("hello", null)).toBe("accepted");
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.conversation.prompt", expect.objectContaining({
+      text: "hello",
+    }));
+    const promptCall = mockRpc.mock.calls.find((call) => call[1] === "control.conversation.prompt");
+    expect(promptCall?.[2]).not.toHaveProperty("target");
   });
 });

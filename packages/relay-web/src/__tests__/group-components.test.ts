@@ -4,6 +4,8 @@ import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import type { BotSummaryDto, GroupSummaryDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
+import { api } from "../api/client";
+import { MSG } from "@ganglion/xacpx-relay-protocol";
 import { groupDraftKey, loadDraft } from "../lib/composer-drafts";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
@@ -69,6 +71,9 @@ function seedGroupSelection() {
 describe("Group Components", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    // Drafts persist in sessionStorage: without a reset a previous test's text
+    // would be restored into the next composer and shift the mention caret.
+    sessionStorage.clear();
     seedInstance();
     vi.spyOn(useInstancesStore(), "loadRouterAvailability").mockResolvedValue(undefined);
     vi.spyOn(useInstancesStore(), "loadJevSettings").mockResolvedValue(undefined);
@@ -120,19 +125,19 @@ describe("Group Components", () => {
       }
     });
 
-    it("renders the composer placeholder in both locales", async () => {
-      const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    it("renders the lead-named composer placeholder in both locales", async () => {
+      seedGroupSelection();
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
       const warns = vi.spyOn(console, "warn").mockImplementation(() => {});
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
-      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("Message the selected members... (@name, @everyone)");
+      // A plain Group message targets the lead implicitly; the placeholder names it.
+      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("Message Reviewer");
       i18n.global.locale.value = "zh-CN";
       await wrapper.vm.$nextTick();
-      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("给所选成员发消息...（@名称、@everyone）");
+      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("发消息给 Reviewer");
       i18n.global.locale.value = "en";
       const compileErrors = [...errors.mock.calls, ...warns.mock.calls]
         .filter((args) => String(args[0]).includes("compilation error"));
@@ -141,73 +146,46 @@ describe("Group Components", () => {
       warns.mockRestore();
     });
 
-    it("defaults the target button to the lead Bot", async () => {
-      const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    it("sends a plain message with no wire target so the server resolves the lead", async () => {
+      seedGroupSelection();
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
       await flushPromises();
-      expect(wrapper.find('[data-test="group-target-button"]').text()).toContain("Reviewer");
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("please review this");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      // `null` is the implicit lead: no target picker, no client-side lead choice.
+      expect(wrapper.emitted("send")?.[0]).toEqual(["please review this", [], null]);
     });
 
-    it("keeps the typed draft when the target is empty", async () => {
-      const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    it("keeps the typed draft when the text is empty", async () => {
+      seedGroupSelection();
       const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
       await flushPromises();
-      // Deselect the only member: the target becomes empty.
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-member-bot_a"]').trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      await textarea.setValue("please review this");
-      // Send must be disabled and must not clear the typed text.
+      // No target is required any more, so only an empty draft blocks Send.
       expect(wrapper.find('[data-test="group-send-prompt-button"]').attributes("disabled")).toBeDefined();
-      expect(wrapper.find('[data-test="group-retry-prompt-button"]').exists()).toBe(false);
       await textarea.trigger("keydown", { key: "Enter" });
-      expect((textarea.element as HTMLTextAreaElement).value).toBe("please review this");
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("");
     });
 
-    it("Lead shortcut stays on the lead Bot when the catalog is unconfirmed", async () => {
+    it("names the disabled lead in the placeholder and lets the server refuse", async () => {
       const groups = seedGroupSelection();
       const direct = useDirectBotsStore();
-      // An unconfirmed catalog is the Direct store's own state.
-      direct.botsLoaded["i1"] = false;
-      direct.botsByInstance["i1"] = [];
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      const wrapper = mount(GroupComposer, {
-        // The composer sees no Bot rows at all, exactly like a failed
-        // bots.list with no cache.
-        props: { bots: [] },
-        global: { plugins: [i18n] },
-      });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      // A button labelled Lead must never widen the target to the whole Group.
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-      // And the label must not disguise the real selection as empty.
-      expect(wrapper.find('[data-test="group-target-button"]').text()).not.toContain("Select members");
-    });
-
-    it("Lead still names the lead after a background refresh disabled it and lets the server refuse", async () => {
-      const groups = seedGroupSelection();
-      const direct = useDirectBotsStore();
-      // Catalog is confirmed but the lead Bot has since been disabled. The
-      // selector names the lead and the backend refuses with bot_disabled.
       direct.botsLoaded["i1"] = true;
       direct.botsByInstance["i1"] = BOTS;
       groups.groupsByInstance["i1"] = [{ ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"] }];
       groups.groupDetails["i1:conversation_g"] = { ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"], topics: [] } as never;
-      groups.targetSelection = { mode: "members", botIds: ["bot_off"] };
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS },
         global: { plugins: [i18n] },
       });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_off"] });
+      // No substitution in the UI: the backend owns the refusal with bot_disabled.
+      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("placeholder")).toBe("Message Sleeper");
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("hello");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]?.[2]).toBeNull();
     });
 
     it("renders the queue-full refusal as translated text, not the raw code", async () => {
@@ -226,80 +204,42 @@ describe("Group Components", () => {
       expect(wrapper.text()).not.toContain("topicQueueFull");
     });
 
-    it("keeps Stop mounted while a cancel is in flight even after the user types", async () => {
+    it("never renders its own Stop: Stop all belongs to the status bar", async () => {
       const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       groups.activeRun = {
         id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
         profileRevision: 1, createdAt: "now",
       };
-      groups.cancellingRunId = "run_1";
-
       const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)), hideStop: true },
         global: { plugins: [i18n] },
       });
       await flushPromises();
-
-      // The textarea stays editable while the cancel resolves. Stop owns the
-      // cancelling spinner and must outrank the draft rule: Send must not
-      // replace it (and it would be dead anyway — canSend refuses mid-cancel).
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
       await textarea.setValue("steer this");
-
-      const stop = wrapper.find('[data-test="group-stop-run-button"]');
-      expect(stop.exists()).toBe(true);
-      expect((stop.element as HTMLButtonElement).disabled).toBe(true);
-      expect(stop.find("svg.animate-spin").exists()).toBe(true);
-      expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(false);
+      // One Stop control exists, above the composer. A second one inside the
+      // card would compete for the same Run.
+      expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(true);
     });
 
-    it("shows Stop instead of a dead Send when the target is unresolvable during a run", async () => {
+    it("keeps sending allowed while a Run is active (the prompt queues)", async () => {
       const groups = seedGroupSelection();
-      // An empty member selection resolves to targetEmpty, so Send is blocked.
-      groups.targetSelection = { mode: "members", botIds: [] };
       groups.activeRun = {
         id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
         requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
         profileRevision: 1, createdAt: "now",
       };
-
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
       await flushPromises();
-
-      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
-      await textarea.setValue("please review");
-
-      // Send cannot fire with an unresolvable target; the running card must
-      // still expose the one action that works — Stop.
-      expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(false);
-      const stop = wrapper.find('[data-test="group-stop-run-button"]');
-      expect(stop.exists()).toBe(true);
-      expect((stop.element as HTMLButtonElement).disabled).toBe(false);
-    });
-
-    it("keeps a disabled Send when idle even though the target is unresolvable", async () => {
-      const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: [] };
-
-      const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
-        global: { plugins: [i18n] },
-      });
-      await flushPromises();
-      await wrapper.find('[data-test="group-composer-textarea"]').setValue("please review");
-
-      // Stop requires a run: idle keeps the guarded Send, disabled.
-      expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(false);
-      const send = wrapper.find('[data-test="group-send-prompt-button"]');
-      expect(send.exists()).toBe(true);
-      expect((send.element as HTMLButtonElement).disabled).toBe(true);
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("queue this");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]).toEqual(["queue this", [], null]);
     });
 
     describe("drafts are kept per Group + Topic", () => {
@@ -448,10 +388,6 @@ describe("Group Components", () => {
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
       await textarea.setValue("deploy");
       await flushPromises();
-      // A resolvable target is what enables the send button.
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      await flushPromises();
-      expect(groups.targetResolvable).toBe(true);
       await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       await flushPromises();
       // The draft survives while the outcome is pending.
@@ -535,53 +471,44 @@ describe("Group Components", () => {
     });
 
 
-    it("Lead shortcut names the disabled lead and lets the server refuse", async () => {
-      const groups = seedGroupSelection();
-      const direct = useDirectBotsStore();
-      direct.botsLoaded["i1"] = true;
-      direct.botsByInstance["i1"] = BOTS;
-      groups.groupsByInstance["i1"] = [{ ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"] }];
-      groups.groupDetails["i1:conversation_g"] = { ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"], topics: [] } as never;
-      const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS },
-        global: { plugins: [i18n] },
-      });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
-      // No substitution in the UI: the backend owns the refusal with bot_disabled.
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_off"] });
-    });
-
-    it("toggles members and switches to everyone", async () => {
-      const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    it("the @ chip opens the member menu and sends the members it selects in parallel", async () => {
+      seedGroupSelection();
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
         global: { plugins: [i18n] },
       });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-member-bot_b"]').trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a", "bot_b"] });
-      await wrapper.find('[data-test="group-target-everyone"]').trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "everyone" });
-      expect(wrapper.find('[data-test="group-target-button"]').text()).toContain("Everyone");
+      await wrapper.find('[data-test="group-mention-chip"]').trigger("click");
+      const row = wrapper.find('[data-test="group-mention-item"][data-bot-id="bot_b"]');
+      expect(row.exists()).toBe(true);
+      await row.trigger("click");
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("@Tester please review");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      // A member mention is an explicit parallel target.
+      expect(wrapper.emitted("send")?.[0]).toEqual([
+        "@Tester please review",
+        [],
+        { mode: "members", botIds: ["bot_b"] },
+      ]);
     });
 
-    it("disables rows for disabled members", async () => {
+    it("marks a disabled member unavailable in the mention menu", async () => {
       seedGroupSelection();
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS },
         global: { plugins: [i18n] },
       });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      const off = wrapper.find('[data-test="group-target-member-bot_off"]');
+      await wrapper.find('[data-test="group-mention-chip"]').trigger("click");
+      const off = wrapper.find('[data-test="group-mention-item"][data-bot-id="bot_off"]');
       expect(off.exists()).toBe(true);
       expect(off.attributes("aria-disabled")).toBe("true");
     });
 
-    it("treats a member's own dedicated workspace as runnable even though pickers hide it", async () => {
+    it("treats a member's own dedicated workspace as runnable in the mention menu", async () => {
       const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      groups.groupsByInstance["i1"] = [{ ...GROUP, botIds: ["bot_a", "bot_b", "bot_isolated"] }];
+      groups.groupDetails["i1:conversation_g"] = {
+        ...GROUP, botIds: ["bot_a", "bot_b", "bot_isolated"], topics: [],
+      } as never;
       const isolated: BotSummaryDto = {
         id: "bot_isolated",
         name: "Isolated",
@@ -597,17 +524,22 @@ describe("Group Components", () => {
         props: { bots: [...BOTS, isolated] },
         global: { plugins: [i18n] },
       });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      const row = wrapper.find('[data-test="group-target-member-bot_isolated"]');
+      await wrapper.find('[data-test="group-mention-chip"]').trigger("click");
+      const row = wrapper.find('[data-test="group-mention-item"][data-bot-id="bot_isolated"]');
       expect(row.attributes("aria-disabled")).toBe("false");
       expect(row.text()).not.toContain(i18n.global.t("group.target.noRuntime"));
       await row.trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a", "bot_isolated"] });
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("@Isolated please review");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({ mode: "members", botIds: ["bot_isolated"] });
     });
 
-    it("still reports No runtime for a workspace that is neither registered nor the Bot's own", async () => {
+    it("reports No runtime for a workspace that is neither registered nor the Bot's own", async () => {
       const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      groups.groupsByInstance["i1"] = [{ ...GROUP, botIds: ["bot_a", "bot_b", "bot_stray"] }];
+      groups.groupDetails["i1:conversation_g"] = {
+        ...GROUP, botIds: ["bot_a", "bot_b", "bot_stray"], topics: [],
+      } as never;
       const stray: BotSummaryDto = {
         id: "bot_stray",
         name: "Stray",
@@ -620,12 +552,10 @@ describe("Group Components", () => {
         props: { bots: [...BOTS, stray] },
         global: { plugins: [i18n] },
       });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      const row = wrapper.find('[data-test="group-target-member-bot_stray"]');
+      await wrapper.find('[data-test="group-mention-chip"]').trigger("click");
+      const row = wrapper.find('[data-test="group-mention-item"][data-bot-id="bot_stray"]');
       expect(row.attributes("aria-disabled")).toBe("true");
       expect(row.text()).toContain(i18n.global.t("group.target.noRuntime"));
-      await row.trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
     });
 
     it("typing @Ann into @Anna never selects Ann first", async () => {
@@ -804,7 +734,7 @@ describe("Group Components", () => {
       // carries the typed text for the resolved target.
       (document.body.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
       await flushPromises();
-      expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review", []]);
+      expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review", [], { mode: "everyone" }]);
       wrapper.unmount();
     });
 
@@ -835,40 +765,30 @@ describe("Group Components", () => {
       await flushPromises();
       expect(wrapper.emitted("send")?.[0]).toEqual(["", [
         expect.objectContaining({ id: "u1", filePath: "/uploads/u1/shot.png", kind: "image" }),
-      ]]);
+      ], null]);
       expect(composer.pending).toHaveLength(0);
       wrapper.unmount();
     });
 
-    it("shows the translated target error on Enter with an empty selection, without clearing the draft or sending", async () => {
-      const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: [] };
+    it("ignores a second send while the first outcome is pending", async () => {
+      seedGroupSelection();
+      const gate = Promise.withResolvers<GroupSendOutcome>();
       const wrapper = mount(GroupComposer, {
-        props: {
-          bots: BOTS,
-          sendOutcome: () => Promise.resolve("rejected" as const),
-        },
+        props: { bots: BOTS, sendOutcome: () => gate.promise },
         global: { plugins: [i18n] },
       });
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("please review this");
+      const send = wrapper.find('[data-test="group-send-prompt-button"]');
+      await send.trigger("click");
+      await send.trigger("click");
+      // The first send owns the draft; a second click never mints a second request.
+      expect(wrapper.emitted("send")).toHaveLength(1);
+      gate.resolve("accepted");
       await flushPromises();
-      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      // No mention in the text: the boundary commit cannot rescue the target.
-      await textarea.setValue("please review this");
-      await textarea.trigger("keydown", { key: "Enter" });
-      await flushPromises();
-      // The banner renders a real sentence — never the raw key path.
-      const banner = wrapper.find('[data-test="group-prompt-error"]');
-      expect(banner.exists()).toBe(true);
-      expect(banner.text()).toBe("Select at least one member before sending.");
-      expect(banner.text()).not.toContain("bot.errors.targetEmpty");
-      // Nothing was sent and the draft survives.
-      expect(wrapper.emitted("send")).toBeUndefined();
-      expect((textarea.element as HTMLTextAreaElement).value).toBe("please review this");
     });
 
-    it("locks the target selector and Send while a prompt awaits confirmation", async () => {
+    it("blocks Send and offers Retry while a prompt awaits confirmation", async () => {
       const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       groups.topicReady = true;
       const wrapper = mount(GroupComposer, {
         props: { bots: BOTS },
@@ -888,26 +808,22 @@ describe("Group Components", () => {
       groups.promptError = "Network timeout";
       await flushPromises();
       expect(wrapper.find('[data-test="group-send-prompt-button"]').attributes("disabled")).toBeDefined();
-      expect(wrapper.find('[data-test="group-target-button"]').attributes("disabled")).toBeDefined();
       expect(wrapper.find('[data-test="group-retry-prompt-button"]').exists()).toBe(true);
     });
 
-    it("lets an EOF mention make this very send valid from an empty target", async () => {
-      const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: [] };
-      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
-      await flushPromises();
+    it("commits an unterminated mention at send time", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      // Typing stops at EOF, so the mention is still uncommitted — which is why
-      // Send looks disabled. It must not stay that way after the send attempt.
-      await textarea.setValue("@Tester");
-      expect(wrapper.find('[data-test="group-send-prompt-button"]').attributes("disabled")).toBeDefined();
-      // Enter: the boundary commit must run BEFORE the target is judged.
-      await textarea.trigger("keydown", { key: "Enter" });
-      await flushPromises();
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
-      await textarea.trigger("keydown", { key: "Enter" });
-      await flushPromises();
+      // Typing stops at EOF, so the mention is still uncommitted when Send runs.
+      await textarea.setValue("@Tester please review");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      // The boundary commit runs before the target is derived; the per-message
+      // payload is the authoritative target (the store resets afterwards).
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({ mode: "members", botIds: ["bot_b"] });
     });
 
     it("commits the pending token when the text is sent", async () => {
@@ -1022,9 +938,8 @@ describe("Group Components", () => {
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
     });
 
-    it("refreshes slash commands when the selected member changes and keeps a rejected draft", async () => {
-      const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    it("offers the lead's slash commands by default and keeps a rejected draft", async () => {
+      seedGroupSelection();
       const commands = useConversationCommandsStore();
       commands.remember({
         instanceId: "i1", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a",
@@ -1038,21 +953,12 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // No mention: the Group lead is the implicit slash target.
       await textarea.setValue("/co");
       expect(wrapper.find('[data-test="group-cmd-item"]').text()).toContain("/compact");
       await textarea.trigger("keydown", { key: "Enter" });
       expect(wrapper.emitted("send")).toBeUndefined();
       expect((textarea.element as HTMLTextAreaElement).value).toBe("/compact ");
-      groups.targetSelection = { mode: "members", botIds: ["bot_b"] };
-      await textarea.setValue("/d");
-      await wrapper.vm.$nextTick();
-      expect(wrapper.find('[data-test="group-cmd-item"]').text()).toContain("/diff");
-      groups.targetSelection = { mode: "everyone" };
-      await textarea.setValue("/compact");
-      expect(wrapper.find('[data-test="group-slash-hint"]').exists()).toBe(true);
-      await textarea.trigger("keydown", { key: "Enter" });
-      expect(wrapper.emitted("send")).toBeUndefined();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       await textarea.setValue("keep me");
       await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       gate.resolve("rejected");
@@ -1060,92 +966,113 @@ describe("Group Components", () => {
       expect((textarea.element as HTMLTextAreaElement).value).toBe("keep me");
     });
 
-    it("hides the automatic option entirely when automatic collaboration is off", async () => {
-      const groups = seedGroupSelection();
-      const instances = useInstancesStore();
-      instances.routerAvailabilityById = {
-        i1: {
-          status: "disabled-by-config",
-          configPath: "conversations.router",
-          reason: { code: "disabled", message: "Automatic collaboration is off." },
-        },
-      };
-      seedJev("editable", true);
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    it("resolves a slash command's target from the leading mention", async () => {
+      seedGroupSelection();
+      const commands = useConversationCommandsStore();
+      commands.remember({
+        instanceId: "i1", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a",
+      }, [{ name: "compact", description: "Compact" }]);
+      commands.remember({
+        instanceId: "i1", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_b",
+      }, [{ name: "diff", description: "Diff" }]);
       const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS, instanceId: "i1" },
+        props: { bots: BOTS.filter((b) => b.enabled) },
         global: { plugins: [i18n] },
       });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      // No disabled item with a reason: the option is not offered at all.
-      expect(wrapper.find('[data-test="group-target-automatic"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="group-router-note"]').exists()).toBe(false);
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-    });
-
-    it("hides the automatic option when the router is ready but no Jev key is configured", async () => {
-      const groups = seedGroupSelection();
-      const instances = useInstancesStore();
-      instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
-      seedJev("editable", false);
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS, instanceId: "i1" },
-        global: { plugins: [i18n] },
-      });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      expect(wrapper.find('[data-test="group-target-automatic"]').exists()).toBe(false);
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-    });
-
-    it("hides the automatic option on an instance that cannot report Jev settings", async () => {
-      const groups = seedGroupSelection();
-      const instances = useInstancesStore();
-      instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
-      seedJev("read-only", true);
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS, instanceId: "i1" },
-        global: { plugins: [i18n] },
-      });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      expect(wrapper.find('[data-test="group-target-automatic"]').exists()).toBe(false);
-    });
-
-    it("selects automatic collaboration when the router is ready and a Jev key is configured", async () => {
-      const groups = seedGroupSelection();
-      const instances = useInstancesStore();
-      instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
-      seedJev("editable", true);
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS, instanceId: "i1" },
-        global: { plugins: [i18n] },
-      });
-      await wrapper.find('[data-test="group-target-button"]').trigger("click");
-      await wrapper.find('[data-test="group-target-automatic"]').trigger("click");
-      expect(groups.targetSelection).toEqual({ mode: "automatic" });
-      expect(wrapper.find('[data-test="group-target-button"]').text()).toContain("Automatic collaboration");
-    });
-
-    it("drops an in-progress automatic selection when the Jev key is cleared", async () => {
-      const groups = seedGroupSelection();
-      const instances = useInstancesStore();
-      instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
-      seedJev("editable", true);
-      groups.targetSelection = { mode: "automatic" };
-      const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS, instanceId: "i1" },
-        global: { plugins: [i18n] },
-      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // The mention selects Tester's catalog; the command follows it.
+      await textarea.setValue("@Tester /d");
       await flushPromises();
-      expect(groups.targetSelection).toEqual({ mode: "automatic" });
-      // Another tab clears the key: the option disappears and the draft target
-      // falls back to the Group's eligible selection instead of stranding it.
-      seedJev("editable", false);
+      expect(wrapper.find('[data-test="group-cmd-item"]').text()).toContain("/diff");
+      await textarea.trigger("keydown", { key: "Enter" });
+      expect(wrapper.emitted("send")).toBeUndefined();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("@Tester /diff ");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({ mode: "members", botIds: ["bot_b"] });
+    });
+
+    it("never broadcasts a slash command: @everyone still sends it to one Bot", async () => {
+      seedGroupSelection();
+      const commands = useConversationCommandsStore();
+      commands.remember({
+        instanceId: "i1", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a",
+      }, [{ name: "compact", description: "Compact" }]);
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS.filter((b) => b.enabled) },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("@everyone /compact");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      // The command is per-Bot: the lead is the only target, no confirm dialog.
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
+
+    it("has no target picker and no per-send automatic switch", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      // Automatic routing is a Group setting (P2), never a composer mode.
+      expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-target-automatic"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-mention-chip"]').exists()).toBe(true);
+    });
+
+    it("hides the discussion chip when the instance lacks roundtable v1", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      expect(wrapper.find('[data-test="group-discuss-chip"]').exists()).toBe(false);
+    });
+
+    it("offers the discussion chip once roundtable v1 is advertised", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      expect(wrapper.find('[data-test="group-discuss-chip"]').exists()).toBe(true);
+    });
+
+    it("sends a one-round roundtable over all enabled members when discussing", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare the options");
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      // Lead first, then the remaining enabled member; one round.
+      expect(wrapper.emitted("send")?.[0]).toEqual([
+        "compare the options",
+        [],
+        { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 1 },
+      ]);
+    });
+
+    it("sends @everyone as a parallel everyone target, never a roundtable", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("@everyone please review");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      // Everyone confirms through the dialog; the target is parallel members.
+      (document.body.querySelector('[data-test="composer-confirm-send"]') as HTMLElement).click();
       await flushPromises();
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-      wrapper.unmount();
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({ mode: "everyone" });
+      // The selection is per message: the send clears it, so the next plain
+      // message goes back to the implicit lead instead of everyone.
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("plain follow-up");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")?.[1]?.[2]).toBeNull();
     });
 
     it("shows feedback for an unresolved mention and drops the previous target", async () => {
@@ -1158,6 +1085,68 @@ describe("Group Components", () => {
       await wrapper.find('[data-test="group-composer-textarea"]').setValue("@Nobody ");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
       expect(groups.promptError).toBe("mentionUnresolved");
+    });
+
+    it("sends an @member draft to exactly that member", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("@Tester check this ");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({ mode: "members", botIds: ["bot_b"] });
+    });
+
+    it("blocks an unresolvable @token: names it, keeps the draft, sends nothing", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("@Nobody check this ");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      await flushPromises();
+      // The dialog names the token, not the member roster; nothing is sent.
+      expect(document.body.querySelector('[data-test="group-unresolved-token"]')?.textContent).toBe("@Nobody");
+      expect(wrapper.emitted("send")).toBeUndefined();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("@Nobody check this ");
+      // Dismissing keeps the block and the draft.
+      (document.body.querySelector('[data-test="composer-confirm-cancel"]') as HTMLElement).click();
+      await flushPromises();
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.emitted("send")).toBeUndefined();
+    });
+
+    it("renders the mention chip without a second literal @", () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const chip = wrapper.find('[data-test="group-mention-chip"]');
+      // The icon carries the glyph; the literal text is screen-reader only.
+      expect(chip.text().replace("@", "")).toBe("");
+    });
+
+    it("keeps the in-card Stop and emits cancel on the legacy path", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const stop = wrapper.find('[data-test="group-stop-run-button"]');
+      expect(stop.exists()).toBe(true);
+      await stop.trigger("click");
+      expect(wrapper.emitted("cancel")).toHaveLength(1);
     });
   });
 
@@ -2544,7 +2533,7 @@ describe("Group Components", () => {
       }
     });
 
-    it("zero Topics: composer disabled with a create-topic placeholder, no member selector or hint", async () => {
+    it("zero Topics: composer disabled with a create-topic placeholder, no target picker", async () => {
       const groups = seedGroupSelection();
       groups.activeTopicId = null;
       groups.topicsByConversation["i1:conversation_g"] = [];
@@ -2567,14 +2556,15 @@ describe("Group Components", () => {
       }
     });
 
-    it("with a Topic the member selector and the normal placeholder come back", async () => {
+    it("with a Topic the lead-named placeholder and the chips come back", async () => {
       seedGroupSelection();
       window.innerWidth = 1280;
       const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
       await flushPromises();
       const textarea = wrapper.find('[data-test="group-composer-textarea"]').element as HTMLTextAreaElement;
-      expect(textarea.placeholder).toBe(i18n.global.t("group.prompt.placeholder"));
-      expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(true);
+      expect(textarea.placeholder).toBe("Message Reviewer");
+      expect(wrapper.find('[data-test="group-target-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-mention-chip"]').exists()).toBe(true);
       // Enabled appearance is unchanged: no dimming on the card.
       const surface = wrapper.find('[data-test="composer-surface"]');
       expect(surface.classes()).not.toContain("opacity-60");
@@ -2602,6 +2592,161 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-dialog-title"]').exists()).toBe(true);
       await wrapper.find('[data-test="mobile-back"]').trigger("click");
       expect(wrapper.emitted("back")).toHaveLength(1);
+    });
+
+    it("keeps the legacy GroupTranscript when the instance lacks conversations.timeline.v1", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.findComponent(GroupTranscript).exists()).toBe(true);
+      expect(wrapper.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="conversation-status-bar"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("renders the one ConversationTimeline and status bar when the timeline capability exists", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
+        if (type !== MSG.conversationTimeline) throw new Error(`unexpected ${String(type)}`);
+        return {
+          conversationId: "conversation_g",
+          topicId: "topic_1",
+          entries: [{
+            kind: "message",
+            key: "message:m1",
+            anchorSeq: 1,
+            message: {
+              id: "m1", conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+              role: "human", content: "ship it", createdAt: "now",
+            },
+          }],
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+        } as never;
+      });
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(true);
+      expect(wrapper.findComponent(GroupTranscript).exists()).toBe(false);
+      // No Run is active: the status bar stays out of the way.
+      expect(wrapper.find('[data-test="conversation-status-bar"]').exists()).toBe(false);
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("marks a prompt queued behind the Topic owner on the timeline", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const owner = {
+        id: "run_owner", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "req_owner", mode: "explicit" as const, state: "running" as const,
+        profileRevision: 1, createdAt: "now",
+      };
+      groups.activeRun = owner;
+      const queuedMessage = {
+        id: "m_queued", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+        runId: "run_queued", role: "human" as const, content: "next", createdAt: "now",
+      };
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g",
+            topicId: "topic_1",
+            entries: [{
+              kind: "message",
+              key: "message:m_queued",
+              anchorSeq: 2,
+              runId: "run_queued",
+              message: queuedMessage,
+            }],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.conversationPrompt) {
+          return {
+            reused: false,
+            conversationId: "conversation_g",
+            topicId: "topic_1",
+            requestId: "req_queued",
+            message: queuedMessage,
+            run: {
+              id: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
+              requestMessageId: "m_queued", requestId: "req_queued", mode: "explicit",
+              state: "queued", profileRevision: 1, createdAt: "now",
+            },
+            memberTurns: [],
+            activeRunId: "run_owner",
+          } as never;
+        }
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      await groups.sendPromptTo("next", null);
+      await flushPromises();
+      // The accepted Run is queued behind the standing owner: its prompt is
+      // durable but has not started, so the timeline marks it as waiting.
+      expect(wrapper.find('[data-test="queued-prompt"]').exists()).toBe(true);
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("keeps exactly one Stop: the status bar on timeline daemons", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+        conversationId: "conversation_g", topicId: "topic_1",
+        entries: [], hasMoreBefore: false, hasMoreAfter: false,
+      } as never);
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="conversation-stop-all"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(false);
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("wires the legacy in-composer Stop to stopCurrentAndQueued", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      const stop = vi.spyOn(groups, "stopCurrentAndQueued").mockResolvedValue();
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      // Legacy daemon: no status bar, so the card owns the only Stop.
+      expect(wrapper.find('[data-test="conversation-stop-all"]').exists()).toBe(false);
+      const stopButton = wrapper.find('[data-test="group-stop-run-button"]');
+      expect(stopButton.exists()).toBe(true);
+      await stopButton.trigger("click");
+      expect(stop).toHaveBeenCalledTimes(1);
+      stop.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("loads the agent and workspace catalogs a fresh session has not fetched", async () => {
+      seedGroupSelection();
+      const instances = useInstancesStore();
+      instances.instances = instances.instances.map((row) => ({
+        ...row,
+        agents: [],
+        workspaces: [],
+      }));
+      const loadFormOptions = vi.spyOn(instances, "loadFormOptions").mockResolvedValue();
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(loadFormOptions).toHaveBeenCalledWith("i1");
+      loadFormOptions.mockRestore();
+      wrapper.unmount();
     });
   });
 

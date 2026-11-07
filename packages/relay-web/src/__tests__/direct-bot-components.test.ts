@@ -3027,6 +3027,87 @@ describe("Direct Bot Components", () => {
       expect(document.activeElement).toBe(trigger.element);
       wrapper.unmount();
     });
+
+    it("renders the one timeline and hides the in-card Stop on a timeline daemon", async () => {
+      seedBot();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const directBots = useDirectBotsStore();
+      directBots.activeRun = {
+        id: "r1", conversationId: "c1", topicId: "t1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+        if (type === "control.conversation.timeline") {
+          return {
+            conversationId: "c1", topicId: "t1",
+            entries: [{
+              kind: "message", key: "message:m1", anchorSeq: 1,
+              message: { id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "human", content: "hello", createdAt: "now" },
+            }],
+            hasMoreBefore: false, hasMoreAfter: false,
+          };
+        }
+        return {};
+      });
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(true);
+      expect(wrapper.findComponent(ConversationMessageList).exists()).toBe(false);
+      // Exactly one Stop: the status bar owns it while the card only offers Send.
+      expect(wrapper.find('[data-test="conversation-stop-all"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("keeps the legacy transcript and the in-card Stop on an old daemon", async () => {
+      seedBot();
+      const directBots = useDirectBotsStore();
+      directBots.activeRun = {
+        id: "r1", conversationId: "c1", topicId: "t1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      };
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.findComponent(ConversationMessageList).exists()).toBe(true);
+      expect(wrapper.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="conversation-status-bar"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("keeps the Run's plan visible on the timeline surface", async () => {
+      seedBot();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const directBots = useDirectBotsStore();
+      const run = {
+        id: "r1", conversationId: "c1", topicId: "t1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit" as const, state: "running" as const,
+        profileRevision: 1, createdAt: "now",
+      };
+      directBots.activeRun = run;
+      vi.spyOn(api, "rpc").mockResolvedValue({
+        conversationId: "c1", topicId: "t1", entries: [], hasMoreBefore: false, hasMoreAfter: false,
+      } as never);
+      directBots.applyEvent({
+        kind: "control-event",
+        instanceId: "i1",
+        event: {
+          type: "plan",
+          chatKey: "rk",
+          sessionAlias: "b1",
+          entries: [{ content: "Check the lock", priority: "high", status: "in_progress" }],
+          conversation: { conversationId: "c1", topicId: "t1", botId: "b1", runId: "r1", memberTurnId: "mt1" },
+        } as never,
+      });
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const plan = wrapper.find('[data-test="direct-plan-panel"]');
+      expect(plan.exists()).toBe(true);
+      expect(plan.text()).toContain("Check the lock");
+      wrapper.unmount();
+    });
   });
 
   describe("InstanceTree.vue with Bots navigation", () => {
