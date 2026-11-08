@@ -969,7 +969,6 @@ export default {
       retry: "Retry cleanup",
       confirm: "Remove bot",
       removed: "Removed bot",
-      removedName: "{name} (removed bot)",
       removedBanner: "This bot was removed. Group history stays.",
       loading: "Checking what removal will change…",
       close: "Close",
@@ -1045,12 +1044,10 @@ export default {
       memberCompleted: "done",
       cancelled: "Run cancelled",
       indeterminate: "Indeterminate",
-      indeterminateHint: "The run outcome is uncertain due to cancellation/timeout. State will reconcile when available.",
       queued: "Queued",
       running: "Running",
       waitingHuman: "Waiting for human",
       paused: "Paused",
-      viewProcess: "View process",
     },
     interaction: {
       waiting: "Agent is waiting for an answer",
@@ -1280,9 +1277,6 @@ export default {
       /** Below 640px: the full placeholder wraps to two lines next to Stop/Send. */
       placeholderShort: "Message members… ({'@'} to mention)",
       createTopicFirst: "Create a topic to start chatting",
-    },
-    chat: {
-      emptyHint: "Pick members below, then send a message to start a collaboration run.",
     },
   },
   capability: {

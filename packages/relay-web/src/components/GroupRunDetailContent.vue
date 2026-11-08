@@ -31,7 +31,6 @@ const props = defineProps<{
   traceError?: string | null;
   traceHasMore?: boolean;
   /** Terminal trace event failure (tool/terminal failure surface). */
-  traceFailure?: string | null;
   traceHasEarlier?: boolean;
   traceStreaming?: boolean;
   /** Exact-current active run ownership: Stop is shown only when all agree. */
@@ -177,7 +176,7 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
     <!-- Trace completeness/pagination/failure status: always audible, even
          when a partial window is all that exists. -->
     <div
-      v-if="memberTurn && (recordingNotice || traceHasMore || traceHasEarlier || traceLoading || traceError || traceFailure)"
+      v-if="memberTurn && (recordingNotice || traceHasMore || traceHasEarlier || traceLoading || traceError)"
       data-test="group-trace-status"
       class="space-y-1 text-xs text-fg-muted"
       aria-live="polite"
@@ -189,7 +188,6 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
       </p>
       <p v-if="traceLoading">{{ $t("group.detail.loading") }}</p>
       <p v-if="traceError" role="alert" class="break-words text-danger">{{ traceError }}</p>
-      <p v-if="traceFailure" role="alert" class="break-words text-danger">{{ traceFailure }}</p>
       <div class="flex flex-wrap gap-2">
         <button v-if="traceHasEarlier" type="button" data-test="group-trace-load-earlier"
                 class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('loadEarlier')">
@@ -199,7 +197,7 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
                 class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('loadMore')">
           {{ $t("group.detail.loadMore") }}
         </button>
-        <button v-if="traceError || traceFailure" type="button" data-test="group-trace-retry"
+        <button v-if="traceError" type="button" data-test="group-trace-retry"
                 class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('retryTrace')">
           {{ $t("group.detail.retryTrace") }}
         </button>

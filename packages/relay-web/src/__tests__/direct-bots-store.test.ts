@@ -4636,7 +4636,7 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn?.parts).toHaveLength(2);
       expect(store.liveTurn?.parts[0]).toEqual({ type: "reasoning", text: "Early thought" });
       expect(store.liveTurn?.parts[1]).toEqual({ type: "text", text: "Early text" });
-      expect(store.runParts["run_stream"]).toHaveLength(2);
+      expect(store.liveTurn?.parts).toHaveLength(2);
     });
     it("does not regress running or completed Run state when delayed fresh queued RPC response arrives", async () => {
       const store = useDirectBotsStore();
@@ -5767,7 +5767,7 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn?.parts).toHaveLength(3);
       expect(store.liveTurn?.revision ?? 0).toBeGreaterThan(revAfterToolInsert);
 
-      // Finish event retains parts under runParts[runId]
+      // Finish event keeps the streamed parts on the live turn
       store.applyEvent({
         kind: "control-event",
         instanceId: "inst_1",
@@ -5784,7 +5784,7 @@ describe("useDirectBotsStore", () => {
           },
         },
       } as never);
-      expect(store.runParts["run_1"]).toHaveLength(3);
+      expect(store.liveTurn?.parts).toHaveLength(3);
 
       // Event for a different conversation/topic must NOT update liveTurn
       store.applyEvent({

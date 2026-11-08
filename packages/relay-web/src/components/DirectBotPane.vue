@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ChevronDown,
@@ -116,8 +116,8 @@ interface DirectDetailTarget {
 const detailTarget = ref<DirectDetailTarget | null>(null);
 const detailAttempt = ref<number | undefined>(undefined);
 /** `runs.get` proved this Run absent for the current Topic. Retry re-runs the
- *  same read; nothing else refetches it. */
-const unavailableRunId = ref<string | null>(null);
+ *  same read on the member that was clicked; nothing else refetches it. */
+const unavailable = ref<{ runId: string; memberTurnId?: string } | null>(null);
 const stopPendingMember = ref<string | null>(null);
 
 function setDirectDetail(
@@ -149,7 +149,8 @@ async function openTimelineDetail(payload: { runId?: string; memberTurnId?: stri
   if (!iId) return;
   const runId = payload.runId ?? directBotsStore.activeRun?.id;
   if (!runId) return;
-  unavailableRunId.value = null;
+  // Any successful open retires the previous Run's banner.
+  unavailable.value = null;
   const active = directBotsStore.activeRun;
   if (active?.id === runId) {
     const member = directBotsStore.activeMemberTurn;
@@ -158,7 +159,9 @@ async function openTimelineDetail(payload: { runId?: string; memberTurnId?: stri
   try {
     const raw = await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId });
     if (isErrorPayload(raw)) {
-      if (detailTarget.value?.run.id !== runId) unavailableRunId.value = runId;
+      if (detailTarget.value?.run.id !== runId) {
+        unavailable.value = { runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
+      }
       return;
     }
     const run = raw.run;
@@ -170,16 +173,39 @@ async function openTimelineDetail(payload: { runId?: string; memberTurnId?: stri
   } catch {
     // The optimistic live target is enough while it exists; otherwise the
     // inline Retry is the only path back to a drawer.
-    if (detailTarget.value?.run.id !== runId) unavailableRunId.value = runId;
+    if (detailTarget.value?.run.id !== runId) {
+      unavailable.value = { runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
+    }
   }
 }
 
 function retryTimelineDetail(): void {
-  const runId = unavailableRunId.value;
-  if (!runId) return;
-  unavailableRunId.value = null;
-  void openTimelineDetail({ runId });
+  const target = unavailable.value;
+  if (!target) return;
+  unavailable.value = null;
+  void openTimelineDetail({ runId: target.runId, ...(target.memberTurnId ? { memberTurnId: target.memberTurnId } : {}) });
 }
+
+/** The attempt selector inside the drawer: the follow cursor moves with it, or
+ *  every frame of the new attempt is rejected as a mismatch. */
+function handleDirectAttempt(attempt: number): void {
+  detailAttempt.value = attempt;
+  const target = detailTarget.value;
+  const member = detailSelectedMember.value;
+  if (!target || !member) return;
+  directBotsStore.ensureDirectTracePage(target.run.id, member.id, attempt);
+  directBotsStore.setDirectTraceFollow(target.run.id, member.id, attempt);
+}
+
+// A Topic or instance switch leaves the previous scope entirely: neither the
+// banner nor the follow of an old drawer may survive it.
+watch(
+  () => [directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId].join(":"),
+  () => {
+    unavailable.value = null;
+    directBotsStore.clearDirectTraceFollow();
+  },
+);
 
 
 function selectDirectMember(memberTurnId: string): void {
@@ -681,6 +707,7 @@ function handleStopAll(): void {
       :cancel-pending="!!stopPendingMember"
       :topic-title="directBotsStore.currentTopic?.title"
       :attempt="detailEffectiveAttempt"
+      :attempts="detailTracePage?.attempts"
       :parts="detailTraceParts"
       :recording-state="detailTracePage?.recordingState"
       :trace-loading="detailTracePage?.loading"
@@ -688,7 +715,7 @@ function handleStopAll(): void {
       :trace-has-more="detailTracePage?.hasMore"
       :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && directBotsStore.activeMemberTurn?.id === detailSelectedMember.id && !!directBotsStore.liveTurn"
       @close="closeTraceOverlay"
-      @attempt="detailAttempt = $event"
+      @attempt="handleDirectAttempt"
       @select-member="selectDirectMember"
       @stop-member="handleDetailStopMember"
       @interaction-answer="handleDetailAnswer"
@@ -727,7 +754,7 @@ function handleStopAll(): void {
       :deliver="directBotsStore.sendPrompt"
       hide-stop
     />
-    <div v-if="unavailableRunId" data-test="run-detail-unavailable"
+    <div v-if="unavailable" data-test="run-detail-unavailable"
          class="flex items-center justify-between bg-warn/10 px-3 lg:px-5 py-2 text-xs text-fg">
       <span>{{ $t("conversation.runDetail.unavailable") }}</span>
       <button type="button" data-test="run-detail-retry"

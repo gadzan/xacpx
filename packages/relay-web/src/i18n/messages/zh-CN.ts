@@ -965,7 +965,6 @@ export default {
       retry: "重试清理",
       confirm: "移除 Bot",
       removed: "已移除 Bot",
-      removedName: "{name}（已移除 Bot）",
       removedBanner: "该 Bot 已移除。群组历史会保留。",
       loading: "正在检查移除会影响什么…",
       close: "关闭",
@@ -1041,12 +1040,10 @@ export default {
       memberCompleted: "已完成",
       cancelled: "运行已取消",
       indeterminate: "状态不确定",
-      indeterminateHint: "因取消或超时，运行结果未确认。服务端就绪时将自动对齐状态。",
       queued: "排队中",
       running: "运行中",
       waitingHuman: "等待人工确认",
       paused: "已暂停",
-      viewProcess: "查看过程",
     },
     interaction: {
       waiting: "Agent 正在等待你的回答",
@@ -1275,9 +1272,6 @@ export default {
     prompt: {
       placeholderShort: "发消息给成员…（{'@'} 指定）",
       createTopicFirst: "先新建话题再发消息",
-    },
-    chat: {
-      emptyHint: "在下方选择成员，然后发送消息开始一次协作。",
     },
   },
   capability: {

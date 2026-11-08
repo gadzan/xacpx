@@ -78,7 +78,12 @@ function run(id: string, state: ConversationRunDto["state"]): ConversationRunDto
   };
 }
 
-function seedInstance(capabilities: string[] = [RELAY_CAPABILITIES.groupWorkspaceModeV1]): void {
+function seedInstance(capabilities: string[] = [
+  RELAY_CAPABILITIES.groupWorkspaceModeV1,
+  // A current daemon: the timeline is the only conversation surface, so the
+  // first-Topic CTA and composer are only reachable with it.
+  RELAY_CAPABILITIES.conversationTimelineV1,
+]): void {
   const instances = useInstancesStore();
   instances.instances = [
     {

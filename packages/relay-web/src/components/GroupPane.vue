@@ -284,9 +284,10 @@ interface TimelineDetailTarget { runId: string; memberTurnId?: string }
 const detailTarget = ref<TimelineDetailTarget | null>(null);
 const detailAttempt = ref<number | undefined>(undefined);
 const pendingDetail = ref<TimelineDetailTarget | null>(null);
-/** The batch read proved this Run absent: the drawer cannot open, and only an
- *  explicit Retry clears the store's negative cache for it. */
-const unavailableRunId = ref<string | null>(null);
+/** A Run the read model proved absent for this scope: the drawer cannot open,
+ *  and only an explicit Retry clears the store's negative cache for it. The
+ *  clicked member rides along so Retry reopens the same trace. */
+const unavailable = ref<{ runId: string; memberTurnId?: string } | null>(null);
 const stopPendingMember = ref<string | null>(null);
 
 function findRun(runId: string | undefined): ConversationRunDto | undefined {
@@ -326,6 +327,9 @@ const detailEffectiveAttempt = computed(() =>
 /** Reachable from bot meta, avatar, speaker label and the status bar: one key,
  *  one drawer, one process. */
 function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }): void {
+  // Any successful open retires the previous Run's banner: the notice must not
+  // outlive the failure that raised it.
+  unavailable.value = null;
   const run = findRun(payload.runId);
   if (!run) {
     // The Run's durable detail is not cached yet: fetch it and retry once the
@@ -334,10 +338,9 @@ function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }):
     if (payload.runId) {
       if (groupsStore.isRunDetailMissing(payload.runId)) {
         pendingDetail.value = null;
-        unavailableRunId.value = payload.runId;
+        unavailable.value = { runId: payload.runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
         return;
       }
-      unavailableRunId.value = null;
       pendingDetail.value = { runId: payload.runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
       groupsStore.ensureRunDetails([payload.runId]);
     }
@@ -352,7 +355,7 @@ function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }):
   groupsStore.ensureRunDetails([run.id]);
   if (selected) {
     groupsStore.ensureTracePage(selected.id, selected.attempt);
-    groupsStore.setTraceFollow(selected.id, selected.attempt);
+    armTraceFollow(selected.id, selected.attempt);
   }
 }
 
@@ -361,21 +364,44 @@ watch(() => groupsStore.runHistoryDetailRevision, () => {
   if (!pending) return;
   if (groupsStore.isRunDetailMissing(pending.runId)) {
     pendingDetail.value = null;
-    unavailableRunId.value = pending.runId;
+    unavailable.value = { runId: pending.runId, ...(pending.memberTurnId ? { memberTurnId: pending.memberTurnId } : {}) };
     return;
   }
   pendingDetail.value = null;
   openTimelineDetail(pending);
 });
 
-/** Retry clears exactly this Run's negative entry and re-arms the open: the
- *  batch read either lands (drawer opens) or reports it missing again. */
+/** Retry clears exactly this Run's negative entry and re-arms the open on the
+ *  member that was clicked: the batch read either lands (drawer opens) or
+ *  reports it missing again. */
 function retryTimelineDetail(): void {
-  const runId = unavailableRunId.value;
-  if (!runId) return;
-  unavailableRunId.value = null;
-  groupsStore.retryRunDetail(runId);
-  pendingDetail.value = { runId };
+  const target = unavailable.value;
+  if (!target) return;
+  unavailable.value = null;
+  groupsStore.retryRunDetail(target.runId);
+  pendingDetail.value = { runId: target.runId, ...(target.memberTurnId ? { memberTurnId: target.memberTurnId } : {}) };
+}
+
+// --- Drawer trace follow ------------------------------------------------------
+/** The member/attempt the store follows right now, so a revision bump within
+ *  the same pair never re-arms (and re-reads) the open trace. */
+let followedTrace: { memberTurnId: string; attempt: number } | null = null;
+
+function armTraceFollow(memberTurnId: string, attempt: number | undefined): void {
+  if (attempt === undefined) return;
+  if (followedTrace?.memberTurnId === memberTurnId && followedTrace.attempt === attempt) return;
+  followedTrace = { memberTurnId, attempt };
+  groupsStore.setTraceFollow(memberTurnId, attempt);
+}
+
+/** The attempt selector inside the drawer: the followed cursor must move with
+ *  it, or every frame of the new attempt is rejected as a mismatch. */
+function handleTimelineAttempt(attempt: number): void {
+  detailAttempt.value = attempt;
+  const selected = detailSelectedMember.value;
+  if (!selected) return;
+  groupsStore.ensureTracePage(selected.id, attempt);
+  armTraceFollow(selected.id, attempt);
 }
 
 // The read model can land after the drawer opened: retry the selected trace
@@ -392,8 +418,19 @@ watch(
     const attempt = detailEffectiveAttempt.value;
     if (!selected || attempt === undefined) return;
     groupsStore.ensureTracePage(selected.id, attempt);
+    armTraceFollow(selected.id, attempt);
   },
   { immediate: true },
+);
+
+// A Topic or instance switch leaves the previous scope entirely: neither the
+// pending open nor the "Run unavailable" banner may survive it.
+watch(
+  () => [groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId].join(":"),
+  () => {
+    unavailable.value = null;
+    pendingDetail.value = null;
+  },
 );
 
 function selectTimelineMember(memberTurnId: string): void {
@@ -401,10 +438,11 @@ function selectTimelineMember(memberTurnId: string): void {
   if (!member || !detailTarget.value) return;
   detailTarget.value = { ...detailTarget.value, memberTurnId };
   detailAttempt.value = member.attempt;
-  groupsStore.setTraceFollow(member.id, member.attempt);
+  armTraceFollow(member.id, member.attempt);
 }
 
 function closeTimelineDetail(): void {
+  followedTrace = null;
   groupsStore.clearTraceFollow();
   detailTarget.value = null;
   detailAttempt.value = undefined;
@@ -535,7 +573,7 @@ const worktreeRunId = computed(() => {
       <div class="flex min-w-0 flex-1 flex-col">
         <div class="flex min-w-0 items-center gap-2"><span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span></div>
         <TopicSwitcher
-          v-if="isMobile && !needsFirstTopic"
+          v-if="timelineSupported && isMobile && !needsFirstTopic"
           :topics="groupsStore.currentTopics"
           :active-topic-id="groupsStore.activeTopicId"
           :preview-topic="previewTopic"
@@ -573,7 +611,7 @@ const worktreeRunId = computed(() => {
         <div class="flex min-w-0 items-center gap-2"><h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2></div>
         <div class="flex min-w-0 items-center gap-1.5 text-xs text-fg-muted">
           <TopicSwitcher
-            v-if="!isMobile && !needsFirstTopic"
+            v-if="timelineSupported && !isMobile && !needsFirstTopic"
             :topics="groupsStore.currentTopics"
             :active-topic-id="groupsStore.activeTopicId"
             :preview-topic="previewTopic"
@@ -628,7 +666,17 @@ const worktreeRunId = computed(() => {
       </template>
     </div>
 
-    <div v-if="needsFirstTopic"
+    <!-- A daemon without the timeline cannot be served at all: the upgrade
+         notice alone occupies the pane, and every create/write entry point
+         below it is either hidden or disabled, whatever the Topic state is. -->
+    <div
+      v-if="!timelineSupported"
+      data-test="timeline-upgrade-required"
+      class="flex min-h-0 flex-1 items-center justify-center px-6 text-center"
+    >
+      <p class="max-w-sm text-xs text-fg-muted">{{ $t("conversation.timeline.upgradeRequired") }}</p>
+    </div>
+    <div v-else-if="needsFirstTopic"
          data-test="group-first-topic"
          class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
       <MessageSquare :size="22" class="text-fg-muted" />
@@ -644,11 +692,10 @@ const worktreeRunId = computed(() => {
         <span>{{ $t("group.firstTopic.action") }}</span>
       </button>
     </div>
-    <!-- One timeline for Group and Direct. A daemon that does not advertise
-         `conversations.timeline.v1` cannot be served: say so once, and keep
-         every write control disabled. -->
+    <!-- One timeline for Group and Direct: the timeline state the upgrade gate
+         above did not already claim. -->
     <ConversationTimeline
-      v-if="timelineSupported && !needsFirstTopic"
+      v-else
       :room="roomView"
       :timeline="timelineFeed.timeline.value"
       :live-overlay="liveOverlay"
@@ -659,14 +706,7 @@ const worktreeRunId = computed(() => {
       :load-older="timelineFeed.loadOlder"
       @open-detail="openTimelineDetail"
     />
-    <div
-      v-else-if="!timelineSupported && !needsFirstTopic"
-      data-test="timeline-upgrade-required"
-      class="flex min-h-0 flex-1 items-center justify-center px-6 text-center"
-    >
-      <p class="max-w-sm text-xs text-fg-muted">{{ $t("conversation.timeline.upgradeRequired") }}</p>
-    </div>
-    <ConversationWorktreePanel v-if="groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
+    <ConversationWorktreePanel v-if="timelineSupported && groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
       :instance-id="groupsStore.instanceId" :run-id="worktreeRunId" />
 
     <ConversationStatusBar
@@ -687,7 +727,7 @@ const worktreeRunId = computed(() => {
       :send-outcome="sendPromptOutcome"
       @send="handleSend"
     />
-    <div v-if="unavailableRunId" data-test="run-detail-unavailable"
+    <div v-if="unavailable" data-test="run-detail-unavailable"
          class="flex items-center justify-between bg-warn/10 px-3 lg:px-5 py-2 text-xs text-fg">
       <span>{{ $t("conversation.runDetail.unavailable") }}</span>
       <button type="button" data-test="run-detail-retry"
@@ -760,7 +800,7 @@ const worktreeRunId = computed(() => {
       :trace-has-earlier="detailTracePage?.hasEarlier"
       :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && !!groupsStore.liveTurnForMember(detailSelectedMember.id)"
       @close="closeTimelineDetail"
-      @attempt="detailAttempt = $event"
+      @attempt="handleTimelineAttempt"
       @select-member="selectTimelineMember"
       @stop-member="handleDetailStopMember"
       @interaction-answer="handleDetailAnswer"

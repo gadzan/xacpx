@@ -48,7 +48,6 @@ const props = defineProps<{
   traceHasMore?: boolean;
   traceHasEarlier?: boolean;
   traceStreaming?: boolean;
-  traceFailure?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -283,7 +282,6 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
         :parts="parts"
         :recording-state="recordingState"
         :plan="plan"
-        :trace-failure="traceFailure ?? undefined"
         :trace-loading="traceLoading"
         :trace-error="traceError"
         :trace-has-more="traceHasMore"

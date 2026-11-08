@@ -1230,7 +1230,10 @@ describe("Group Components", () => {
 
       // An older core answers `unknown-type` for the RPC, which a user cannot act
       // on, so the entry only appears once the instance advertises the capability.
-      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.groupTopicIsolationV1];
+      useInstancesStore().instances[0]!.capabilities = [
+        RELAY_CAPABILITIES.conversationTimelineV1,
+        RELAY_CAPABILITIES.groupTopicIsolationV1,
+      ];
       const withCap = mount(GroupPane, { global: { plugins: [i18n] } });
       await flushPromises();
       await withCap.find('[data-test="group-topic-pill"]').trigger("click");
@@ -1694,6 +1697,235 @@ describe("Group Components", () => {
       rpc.mockRestore();
       wrapper.unmount();
     });
+
+    it("shows one upgrade notice with zero Topics and offers no create or send path", async () => {
+      const groups = seedGroupSelection();
+      groups.activeTopicId = null;
+      groups.topicsByConversation["i1:conversation_g"] = [];
+      useInstancesStore().instances[0]!.capabilities = [];
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      // Topic state never masks the minimum-version break: exactly one notice.
+      expect(wrapper.findAll('[data-test="timeline-upgrade-required"]')).toHaveLength(1);
+      expect(wrapper.find('[data-test="timeline-upgrade-required"]').text()).toContain("This daemon is too old");
+      // No create-first-Topic CTA, no Topic entry point, no timeline.
+      expect(wrapper.find('[data-test="group-first-topic"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-first-topic-button"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-topic-pill"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(false);
+      // Writes are present but inert, never a control that looks usable.
+      const send = wrapper.find('[data-test="group-send-prompt-button"]');
+      expect(send.exists()).toBe(true);
+      expect(send.attributes("disabled")).toBeDefined();
+      wrapper.unmount();
+    });
+
+    it("retires the unavailable banner when another Run opens or the Topic switches", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const entry = (runId: string, turnId: string, seq: number) => ({
+        kind: "message" as const,
+        key: `message:m_${runId}`,
+        anchorSeq: seq,
+        runId,
+        memberTurnId: turnId,
+        ownership: "exact" as const,
+        message: {
+          id: `m_${runId}`, conversationId: "conversation_g", topicId: "topic_1",
+          seq, role: "bot" as const, senderBotId: "bot_a", memberTurnId: turnId,
+          runId, content: `done ${runId}`, createdAt: "now",
+        },
+      });
+      const detail = (runId: string, turnId: string) => ({
+        id: runId, conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m_req", requestId: `req_${runId}`, mode: "explicit",
+        shape: "fanout", state: "completed", profileRevision: 1, createdAt: "now",
+        memberTurns: [{
+          id: turnId, runId, conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", createdAt: "now",
+        }],
+      });
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type, payload) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g", topicId: "topic_1",
+            entries: [entry("run_missing", "turn_m", 2), entry("run_ok", "turn_ok", 3)],
+            hasMoreBefore: false, hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.runsDetailsBatch) {
+          const ids = (payload as { runIds: string[] }).runIds;
+          const runs = ids.includes("run_ok") ? [detail("run_ok", "turn_ok")] : [];
+          return { runs, missingRunIds: ids.includes("run_missing") ? ["run_missing"] : [] } as never;
+        }
+        if (type === MSG.runsTraceGet) return { events: [], hasMore: false } as never;
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      const triggers = wrapper.findAll('[data-test="timeline-open-detail"]');
+      expect(triggers).toHaveLength(2);
+      await triggers[0]!.trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(true);
+
+      // Opening a different, valid Run retires the stale notice with it.
+      await triggers[1]!.trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(false);
+      expect(document.body.querySelector('[data-test="group-detail-card"] [data-test="run-detail"]')).not.toBeNull();
+      (document.body.querySelector('[data-test="group-detail-close"]') as HTMLElement).click();
+      await flushPromises();
+
+      // Raise it again, then leave the scope: a Topic switch clears it too.
+      await triggers[0]!.trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(true);
+      groups.topicsByConversation["i1:conversation_g"]!.push({
+        id: "topic_2", conversationId: "conversation_g", title: "Release", status: "active", createdAt: "now", updatedAt: "now",
+      });
+      groups.activeTopicId = "topic_2";
+      await flushPromises();
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(false);
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
+    it("reopens the clicked member after Retry", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const members = [
+        {
+          id: "turn_running", runId: "run_click", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "running", createdAt: "now",
+        },
+        {
+          id: "turn_clicked", runId: "run_click", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "handoff",
+          state: "completed", createdAt: "now",
+        },
+      ];
+      let missing = true;
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g", topicId: "topic_1",
+            entries: [{
+              kind: "message", key: "message:m_click", anchorSeq: 2,
+              runId: "run_click", memberTurnId: "turn_clicked", ownership: "exact",
+              message: {
+                id: "m_click", conversationId: "conversation_g", topicId: "topic_1",
+                seq: 2, role: "bot", senderBotId: "bot_b", memberTurnId: "turn_clicked",
+                runId: "run_click", content: "done", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false, hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.runsDetailsBatch) {
+          return missing
+            ? { runs: [], missingRunIds: ["run_click"] } as never
+            : {
+                runs: [{
+                  id: "run_click", conversationId: "conversation_g", topicId: "topic_1",
+                  requestMessageId: "m_req", requestId: "req_click", mode: "explicit",
+                  shape: "fanout", state: "running", profileRevision: 1, createdAt: "now",
+                  memberTurns: members,
+                }],
+                missingRunIds: [],
+              } as never;
+        }
+        if (type === MSG.runsTraceGet) return { events: [], hasMore: false } as never;
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(true);
+
+      missing = false;
+      await wrapper.find('[data-test="run-detail-retry"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      const selected = document.body.querySelector('[data-test="run-selected-member"]');
+      // The clicked member wins over the running one the drawer would otherwise pick.
+      expect(selected?.getAttribute("data-member-turn-id")).toBe("turn_clicked");
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+    it("moves the followed trace when the drawer switches attempt", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const turn = {
+        id: "turn_retry", runId: "run_retry", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+        state: "completed", createdAt: "now",
+      };
+      const traceAttempts: number[] = [];
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type, payload) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g", topicId: "topic_1",
+            entries: [{
+              kind: "message", key: "message:m_retry", anchorSeq: 2,
+              runId: "run_retry", memberTurnId: "turn_retry", ownership: "exact",
+              message: {
+                id: "m_retry", conversationId: "conversation_g", topicId: "topic_1",
+                seq: 2, role: "bot", senderBotId: "bot_a", memberTurnId: "turn_retry",
+                runId: "run_retry", content: "done", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false, hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.runsDetailsBatch) {
+          return {
+            runs: [{
+              id: "run_retry", conversationId: "conversation_g", topicId: "topic_1",
+              requestMessageId: "m_req", requestId: "req_retry", mode: "explicit",
+              shape: "fanout", state: "completed", profileRevision: 1, createdAt: "now",
+              memberTurns: [turn],
+            }],
+            missingRunIds: [],
+          } as never;
+        }
+        if (type === MSG.runsTraceGet) {
+          const attempt = (payload as { attempt?: number }).attempt ?? 1;
+          traceAttempts.push(attempt);
+          return {
+            memberTurnId: "turn_retry", attempt, recordingState: "complete",
+            events: [{ seq: 1, createdAt: "now", kind: "text", payload: { text: `Attempt ${attempt} trace` } }],
+            nextSeq: 1, hasMore: false, attempts: [1, 2], plan: [],
+          } as never;
+        }
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      const card = () => document.body.querySelector('[data-test="group-detail-card"]')!;
+      expect(card().textContent).toContain("Attempt 1 trace");
+      expect(traceAttempts).toContain(1);
+
+      // Selecting the retried attempt must follow it: the cursor moves, the
+      // trace re-reads, and the render switches with it.
+      const select = card().querySelector('[data-test="group-detail-attempt"]') as HTMLSelectElement;
+      expect(select).not.toBeNull();
+      select.value = "2";
+      select.dispatchEvent(new Event("change"));
+      await flushPromises();
+      await flushPromises();
+      expect(traceAttempts.at(-1)).toBe(2);
+      expect(card().textContent).toContain("Attempt 2 trace");
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
     it("marks a prompt queued behind the Topic owner on the timeline", async () => {
       const groups = seedGroupSelection();
       useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];

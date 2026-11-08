@@ -1652,7 +1652,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", [], []]);
     });
 
-    it("shows one action while a run is active: Stop when empty, Send once typed", async () => {
+    it("keeps Send as the composer's only action while a run is active", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
       directBots.activeRun = {
@@ -1677,113 +1677,25 @@ describe("Direct Bot Components", () => {
       // composes into it.
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
-
-      // Busy + empty draft: Stop only. Stop dispatches the store's
-      // queue-clearing stop, which cancels the queued accepts and the owner.
-      const stopSpy = vi.spyOn(directBots, "stopCurrentAndQueued").mockResolvedValue(undefined);
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-      await wrapper.find('[data-test="stop-run-button"]').trigger("click");
-      await flushPromises();
-      expect(stopSpy).toHaveBeenCalledTimes(1);
-
-      // Typed text flips Stop to Send. Enter sends: the backend queues the
-      // prompt behind the running turn, so the user is never stuck unable to
-      // send what they just typed.
-      await textarea.setValue("steer this");
+      // Stop all lives in the status bar, so the card never renders a second
+      // stop control, whatever the draft or cancel state is.
       expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
-      const send = wrapper.find('[data-test="send-prompt-button"]');
-      expect(send.exists()).toBe(true);
-      expect((send.element as HTMLButtonElement).disabled).toBe(false);
+      const send = () => wrapper.find('[data-test="send-prompt-button"]');
+      expect(send().exists()).toBe(true);
+      expect((send().element as HTMLButtonElement).disabled).toBe(true);
+
+      // Typed text makes the queued send usable: the backend accepts a prompt
+      // mid-run, so the user is never stuck unable to send what they just typed.
+      await textarea.setValue("steer this");
+      expect((send().element as HTMLButtonElement).disabled).toBe(false);
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
       expect(wrapper.emitted("send")).toBeTruthy();
 
-      // Clearing the draft reveals Stop again, and Stop never sends on its own.
-      const sendsBefore = wrapper.emitted("send")?.length ?? 0;
-      await textarea.setValue("");
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-      await wrapper.find('[data-test="stop-run-button"]').trigger("click");
-      await flushPromises();
-      expect(wrapper.emitted("send")?.length ?? 0).toBe(sendsBefore);
-      expect(stopSpy).toHaveBeenCalledTimes(2);
-    });
-    it("keeps Stop mounted while a cancel is in flight even after the user types", async () => {
-      const directBots = useDirectBotsStore();
-      directBots.instanceId = "i1";
-      directBots.activeRun = {
-        id: "run_1",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "running",
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      };
+      // A cancel in flight keeps Send (never a card-level Stop) and only dims it.
       directBots.cancellingRunId = "run_1";
-
-      const wrapper = mount(ConversationPromptInput, {
-        global: {
-          plugins: [i18n],
-        },
-      });
-
-      // The textarea stays editable while the cancel resolves, so the draft
-      // becomes sendable. The cancelling presentation outranks the draft rule:
-      // Stop (disabled, spinner) stays mounted and Send must not replace it
-      // mid-cancel — dispatching a prompt while the cancel is unresolved is
-      // exactly the race this guards against.
-      const textarea = wrapper.find("textarea");
-      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
-      await textarea.setValue("steer this");
-
-      const stop = wrapper.find('[data-test="stop-run-button"]');
-      expect(stop.exists()).toBe(true);
-      expect((stop.element as HTMLButtonElement).disabled).toBe(true);
-      expect(stop.find("svg.animate-spin").exists()).toBe(true);
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-    });
-
-    it("shows Stop instead of a dead Send while an attachment uploads during a run", async () => {
-      const directBots = useDirectBotsStore();
-      directBots.instanceId = "i1";
-      directBots.selectedBotId = "b1";
-      directBots.activeConversationId = "c1";
-      directBots.activeTopicId = "t1";
-      directBots.activeRun = {
-        id: "run_1",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "running",
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      };
-      const composer = useComposerStore();
-      composer.bindInstance("i1", JSON.stringify(["direct", "i1", "c1", "t1", "b1"]));
-      composer.pending.push({
-        id: "local-1",
-        uploadId: "u1",
-        filename: "shot.png",
-        mimeType: "image/png",
-        size: 3,
-        kind: "image",
-        filePath: "/uploads/u1/shot.png",
-        status: "uploading",
-      });
-      const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
       await flushPromises();
-      const textarea = wrapper.find("textarea");
-      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
-      await textarea.setValue("also this");
-      // An upload in flight blocks Send; while a run is active the card must
-      // still offer the one usable action — Stop — not a disabled Send.
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      expect(send().exists()).toBe(true);
     });
 
     it("keeps Send enabled during a run when every send guard is clear", async () => {
@@ -2581,6 +2493,70 @@ describe("Direct Bot Components", () => {
       wrapper.unmount();
     });
 
+    it("moves the followed trace when the Direct drawer switches attempt", async () => {
+      seedBot();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const directBots = useDirectBotsStore();
+      const run = {
+        id: "r_retry", conversationId: "c1", topicId: "t1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit" as const,
+        shape: "single" as const, state: "completed" as const, profileRevision: 1,
+        maxMemberTurns: 1, consumedMemberTurns: 1, createdAt: "now",
+      };
+      const member = {
+        id: "turn_retry", runId: "r_retry", conversationId: "c1", topicId: "t1",
+        botId: "b1", batch: 1, memberIndex: 0, attempt: 1,
+        origin: "human-explicit" as const, state: "completed" as const, createdAt: "now",
+      };
+      directBots.activeRun = run;
+      directBots.activeMemberTurn = member;
+      const traceAttempts: number[] = [];
+      vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.timeline") {
+          return {
+            conversationId: "c1", topicId: "t1",
+            entries: [{
+              kind: "message", key: "message:m1", anchorSeq: 1,
+              runId: "r_retry", memberTurnId: "turn_retry", ownership: "exact",
+              message: {
+                id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "bot",
+                senderBotId: "b1", memberTurnId: "turn_retry", runId: "r_retry", content: "hello", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false, hasMoreAfter: false,
+          };
+        }
+        if (type === "control.runs.get") return { run: { ...run, memberTurns: [member] } };
+        if (type === "control.runs.trace.get") {
+          const attempt = (payload as { attempt?: number })?.attempt ?? 1;
+          traceAttempts.push(attempt);
+          return {
+            memberTurnId: "turn_retry", attempt, recordingState: "complete",
+            events: [{ seq: 1, createdAt: "now", kind: "text", payload: { text: `Attempt ${attempt} trace` } }],
+            nextSeq: 1, hasMore: false, attempts: [1, 2], plan: [],
+          };
+        }
+        return {};
+      });
+      const wrapper = mount(DirectBotPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      const card = () => document.body.querySelector('[data-test="group-detail-card"]')!;
+      expect(card().textContent).toContain("Attempt 1 trace");
+
+      const select = card().querySelector('[data-test="group-detail-attempt"]') as HTMLSelectElement;
+      expect(select).not.toBeNull();
+      select.value = "2";
+      select.dispatchEvent(new Event("change"));
+      await flushPromises();
+      await flushPromises();
+      expect(traceAttempts.at(-1)).toBe(2);
+      expect(card().textContent).toContain("Attempt 2 trace");
+      wrapper.unmount();
+    });
+
     it("shows one upgrade notice and disables the composer on an old daemon", async () => {
       seedBot();
       useInstancesStore().instances[0]!.capabilities = [];
@@ -2592,6 +2568,72 @@ describe("Direct Bot Components", () => {
       expect(wrapper.find('[data-test="conversation-status-bar"]').exists()).toBe(false);
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("shows the unavailable Run, then reopens it on Retry without a stale notice", async () => {
+      seedBot();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const directBots = useDirectBotsStore();
+      const run = {
+        id: "r_missing", conversationId: "c1", topicId: "t1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit" as const,
+        shape: "single" as const, state: "running" as const, profileRevision: 1,
+        maxMemberTurns: 1, consumedMemberTurns: 1, createdAt: "now",
+      };
+      const member = {
+        id: "turn_missing", runId: "r_missing", conversationId: "c1", topicId: "t1",
+        botId: "b1", batch: 1, memberIndex: 0, attempt: 1,
+        origin: "human-explicit" as const, state: "running" as const, createdAt: "now",
+      };
+      // No optimistic target: the drawer needs the real Run, so a failed
+      // `runs.get` is the inline error rather than a half-open drawer.
+      directBots.activeRun = null;
+      directBots.activeMemberTurn = null;
+      let runsGets = 0;
+      vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+        if (type === "control.conversation.timeline") {
+          return {
+            conversationId: "c1", topicId: "t1",
+            entries: [{
+              kind: "message", key: "message:m1", anchorSeq: 1,
+              runId: "r_missing", memberTurnId: "turn_missing", ownership: "exact",
+              message: {
+                id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "bot",
+                senderBotId: "b1", memberTurnId: "turn_missing", runId: "r_missing", content: "hello", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false, hasMoreAfter: false,
+          };
+        }
+        if (type === "control.runs.get") {
+          runsGets += 1;
+          // The first read proves the Run absent; Retry is the one path that
+          // re-reads it, and then it resolves.
+          return runsGets === 1
+            ? { error: { code: "run_not_found", message: "no such run" } }
+            : { run: { ...run, memberTurns: [member] } };
+        }
+        if (type === "control.runs.trace.get") {
+          return { memberTurnId: "turn_missing", attempt: 1, recordingState: "complete", events: [], nextSeq: 0, hasMore: false, attempts: [1], plan: [] };
+        }
+        return {};
+      });
+      const wrapper = mount(DirectBotPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(true);
+      expect(document.body.querySelector('[data-test="group-detail-card"]')).toBeNull();
+
+      await wrapper.find('[data-test="run-detail-retry"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      expect(runsGets).toBe(2);
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(false);
+      const card = document.body.querySelector('[data-test="group-detail-card"]');
+      expect(card).not.toBeNull();
+      expect(card!.querySelector('[data-test="run-selected-member"]')?.getAttribute("data-member-turn-id")).toBe("turn_missing");
       wrapper.unmount();
     });
 

@@ -648,8 +648,9 @@ export const useGroupsStore = defineStore("groups", () => {
     ensureTracePage(traceFollow.memberTurnId, traceFollow.attempt);
   }
 
-  /** Open (or swap) the followed member. An unresolved Run cannot be followed:
-   *  the durable read model owns the member turn, not the transcript cursor. */
+  /** Open (or swap) the member/attempt an open drawer follows. Each call arms
+   *  one immediate read so a newly opened process is not blank until the next
+   *  committed frame; frames for any other pair are ignored. */
   function setTraceFollow(memberTurnId: string | null, attempt?: number): void {
     clearTraceFollow();
     if (!memberTurnId || !Number.isSafeInteger(attempt) || (attempt ?? 0) < 1) return;
@@ -794,7 +795,9 @@ export const useGroupsStore = defineStore("groups", () => {
     for (const id of runIds) if (typeof id === "string" && id) requestedRunIds.add(id);
     const missing = [...new Set(runIds)].filter(
       (id) => typeof id === "string" && id
-        && !missingRunDetails.value[runHistoryKey(scope, id)]
+        // An explicit refresh is the recovery path for a negatively cached Run:
+        // a reconnect must be able to prove it present again.
+        && (refresh || !missingRunDetails.value[runHistoryKey(scope, id)])
         && (refresh || !runHistoryDetails.value[runHistoryKey(scope, id)]),
     );
     if (missing.length === 0) return;
@@ -3664,6 +3667,7 @@ export const useGroupsStore = defineStore("groups", () => {
     mirrorAcceptedRun,
     ensureTracePage,
     setTraceFollow,
+    followTraceFrame,
     clearTraceFollow,
     uncertainPrompt,
     sendPromptOutcomePromise,
