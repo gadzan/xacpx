@@ -1374,6 +1374,22 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("leaves no legacy transcript module behind to import", async () => {
+      // Old daemons are unsupported, so the fallback modules are deleted
+      // outright: nothing in the tree may resolve them again.
+      for (const specifier of [
+        "../components/GroupTranscript.vue",
+        "../components/ConversationMessageList.vue",
+        "../components/GroupDispatchRow.vue",
+        "../components/GroupAgentTurnRow.vue",
+        "../components/GroupWorkingRow.vue",
+        "../components/GroupDispatchLeaderStop.vue",
+        "../components/AgentThinkingBubble.vue",
+      ]) {
+        await expect(import(/* @vite-ignore */ specifier)).rejects.toThrow();
+      }
+    });
+
     it("renders the one ConversationTimeline and status bar when the timeline capability exists", async () => {
       seedGroupSelection();
       useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];

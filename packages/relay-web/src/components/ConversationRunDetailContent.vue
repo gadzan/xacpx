@@ -27,7 +27,7 @@ import GroupRunDetailContent from "./GroupRunDetailContent.vue";
  * The one Run-wide detail body (design §8.4). The Run's members, state,
  * outcome, budget and open approvals live here; the selected member's trace is
  * rendered by the existing trace content, so there is exactly one process
- * renderer on both the timeline path and the old-daemon fallback.
+ * renderer in the timeline shell.
  */
 const props = defineProps<{
   run: ConversationRunDto;

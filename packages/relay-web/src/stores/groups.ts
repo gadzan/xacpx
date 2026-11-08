@@ -629,6 +629,54 @@ export const useGroupsStore = defineStore("groups", () => {
   function tracePageKey(scope: string, memberTurnId: string, attempt: number): string {
     return `${scope}:${memberTurnId}:${attempt}`;
   }
+  /** The member whose process the open Run-wide drawer is showing, and the
+   *  throttled follow that keeps pulling newly committed trace events into it
+   *  (the drawer's contract: the process keeps updating while it runs). */
+  let traceFollow: {
+    memberTurnId: string;
+    attempt: number;
+    timer: ReturnType<typeof setTimeout> | undefined;
+  } | null = null;
+
+  function clearTraceFollow(): void {
+    clearTimeout(traceFollow?.timer);
+    traceFollow = null;
+  }
+
+  function flushTraceFollow(): void {
+    if (!traceFollow) return;
+    ensureTracePage(traceFollow.memberTurnId, traceFollow.attempt);
+  }
+
+  /** Open (or swap) the followed member. An unresolved Run cannot be followed:
+   *  the durable read model owns the member turn, not the transcript cursor. */
+  function setTraceFollow(memberTurnId: string | null, attempt?: number): void {
+    clearTraceFollow();
+    if (!memberTurnId || !Number.isSafeInteger(attempt) || (attempt ?? 0) < 1) return;
+    traceFollow = { memberTurnId, attempt: attempt!, timer: undefined };
+    flushTraceFollow();
+  }
+
+  /** One frame for the followed member: a terminal frame flushes at once (its
+   *  sealed tail must land without lag), anything else is throttled past the
+   *  core's commit batching. Sibling members never trigger a read. */
+  function followTraceFrame(memberTurnId: string, attempt: number | undefined, terminal = false): void {
+    const follow = traceFollow;
+    if (!follow || follow.memberTurnId !== memberTurnId) return;
+    if (attempt !== undefined && attempt !== follow.attempt) return;
+    if (terminal) {
+      clearTimeout(follow.timer);
+      follow.timer = undefined;
+      flushTraceFollow();
+      return;
+    }
+    if (follow.timer !== undefined) return;
+    follow.timer = setTimeout(() => {
+      if (traceFollow !== follow) return;
+      follow.timer = undefined;
+      flushTraceFollow();
+    }, 500);
+  }
 
   /** Drop every historical cache entry for the current scope. Called on
    *  selection/Topic/instance change; never touches activeRun. */
@@ -639,6 +687,7 @@ export const useGroupsStore = defineStore("groups", () => {
     tracePages.value = {};
     requestedRunIds.clear();
     traceCacheOrder.length = 0;
+    clearTraceFollow();
     for (const key of Object.keys(runDetailRequests)) delete runDetailRequests[key];
     for (const key of Object.keys(traceRequests)) delete traceRequests[key];
     runHistoryDetailRevision.value += 1;
@@ -730,11 +779,11 @@ export const useGroupsStore = defineStore("groups", () => {
 
   /**
    * Non-blocking visible batch read. Collects uncached run ids from the
-   * current transcript, fetches in id-bounded coalesced batches, decodes
-   * strictly (unsupported-RPC → silent no-op so legacy connectors keep the
-   * live path), and drops stale generations. Never mutates activeRun,
-   * memberTurnsById, cancellingRunId, uncertainPrompt, planByRunId or
-   * transcript cursors.
+   * current timeline page, fetches in id-bounded coalesced batches, decodes
+   * strictly (an undecodable answer is a silent no-op, never a guess), records
+   * `missingRunIds` in the negative cache, and drops stale generations. Never
+   * mutates activeRun, memberTurnsById, cancellingRunId, uncertainPrompt,
+   * planByRunId or transcript cursors.
    */
   function ensureRunDetails(runIds: string[], refresh = false): void {
     const scope = historyScopeKey();
@@ -814,6 +863,7 @@ export const useGroupsStore = defineStore("groups", () => {
     for (const page of Object.values(tracePages.value)) page.loading = false;
     const ids = [...new Set([...requestedRunIds, ...Object.values(runHistoryDetails.value).map((detail) => detail.id)])];
     ensureRunDetails(ids, true);
+    flushTraceFollow();
   }
 
   /** True when the last batch read proved this Run absent in the current scope. */
@@ -3458,6 +3508,7 @@ export const useGroupsStore = defineStore("groups", () => {
       const priorMember = memberTurnsById.value[memberTurn.id];
       if (priorMember && memberAttemptOrder(priorMember, memberTurn) < 0) return;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        followTraceFrame(memberTurn.id, memberTurn.attempt, true);
         if (activeRun.value && activeRun.value.id !== run.id) {
           return;
         }
@@ -3558,6 +3609,7 @@ export const useGroupsStore = defineStore("groups", () => {
           liveTurnsByMember.value = { ...liveTurnsByMember.value, [key]: { ...current, status: "working" } };
         }
       }
+      followTraceFrame(key, corr.attempt ?? memberTurnsById.value[key]?.attempt, e.type === "turn-finished");
     }
   }
 
@@ -3611,6 +3663,8 @@ export const useGroupsStore = defineStore("groups", () => {
     refreshRunDetails,
     mirrorAcceptedRun,
     ensureTracePage,
+    setTraceFollow,
+    clearTraceFollow,
     uncertainPrompt,
     sendPromptOutcomePromise,
     uncertainPromptText,

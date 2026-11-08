@@ -45,6 +45,7 @@ const run: ConversationRunDetailDto = {
   requestMessageId: "msg_leader",
   requestId: "req",
   mode: "explicit",
+  shape: "fanout",
   state: "running",
   profileRevision: 1,
   memberTurns: [

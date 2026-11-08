@@ -34,9 +34,8 @@ const props = defineProps<{
     mentions: AgentMention[],
     media: PromptAttachmentRef[],
   ) => Promise<"accepted" | "rejected" | "uncertain" | "orphaned">;
-  /** The status bar above the composer owns Stop all, so the card only offers
-   *  Send. An old daemon keeps the legacy transcript (and no status bar), so
-   *  it keeps the in-card Stop. */
+  /** The status bar above the composer owns Stop all, so both panes pass
+   *  `hide-stop` and the card only ever offers Send. */
   hideStop?: boolean;
 }>();
 const emit = defineEmits<{

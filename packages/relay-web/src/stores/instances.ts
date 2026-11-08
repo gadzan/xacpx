@@ -203,8 +203,8 @@ export function supportsRoundtableV1(instance: { capabilities?: string[] | null 
 
 /** True when the instance projects `control.conversation.timeline`.
  *
- *  It gates the single timeline shell: without it the panes keep the legacy
- *  transcript and old behaviour is unchanged. */
+ *  The timeline shell is the only conversation surface: without this capability
+ *  a pane shows one upgrade notice and disables its write controls. */
 export function supportsConversationTimelineV1(instance: { capabilities?: string[] | null } | null | undefined): boolean {
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.conversationTimelineV1);
 }

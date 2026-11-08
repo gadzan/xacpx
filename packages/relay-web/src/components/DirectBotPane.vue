@@ -277,7 +277,7 @@ async function handleDetailStopMember(memberTurnId: string): Promise<void> {
   try {
     await api.rpc(instId, MSG.runsCancelMember, { runId: run.id, memberTurnId });
   } catch (err: unknown) {
-    pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
+    pushToast("error", "group.run.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
   } finally {
     if (stopPendingMember.value === memberTurnId) stopPendingMember.value = null;
   }
@@ -410,8 +410,8 @@ function openRemoval(): void {
 }
 
 // --- One timeline, one status bar (design §8) -------------------------------
-/** The timeline is the only conversation surface; a daemon without it is told
- *  to upgrade instead of being served a second, legacy transcript. */
+/** The timeline is the only conversation surface; a daemon without it sees one
+ *  upgrade notice and no write controls. */
 const timelineSupported = computed(() => supportsConversationTimelineV1(instance.value));
 
 /** Direct is the single-participant Room: same read model, same shell. */
@@ -477,16 +477,16 @@ function handleStopAll(): void {
 <template>
   <div class="relative flex h-full flex-col bg-bg text-fg">
     <!-- Mobile floating identity (<lg), modeled on the reference mock: the
-         transcript runs full-height and the identity floats OVER it — back and ⋯ as
+         timeline runs full-height and the identity floats OVER it — back and ⋯ as
          glass discs at the edges, a centered glass pill (name only) with a large
          avatar disc overlapping its top edge; that disc is glass too (glass-disc),
-         so avatars without art still read against the scrolling transcript. Content
-         scrolls beneath. Zero layout height, so the transcript keeps the whole
+         so avatars without art still read against the scrolling timeline. Content
+         scrolls beneath. Zero layout height, so the timeline keeps the whole
          screen. The topic lives in the ⋯ sheet (TopicSwitcher renders its own
-         MobileSheet). The transcript never repeats the avatar in front of bubbles
+         MobileSheet). The timeline never repeats the avatar in front of bubbles
          (TranscriptRow hideIdentityOnMobile). pointer-events-none on the layer,
          auto on the two buttons, so scrolling over the pill still scrolls the
-         transcript. Desktop keeps the opaque header below (a backdrop-filtered
+         timeline. Desktop keeps the opaque header below (a backdrop-filtered
          ANCESTOR would trap TopicSwitcher's popover — see that header's comment). -->
     <div class="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
@@ -645,7 +645,7 @@ function handleStopAll(): void {
          scrolls beneath its glass. -->
     <!-- One timeline for Direct and Group. A daemon that does not advertise
          `conversations.timeline.v1` cannot be served: say so once, and keep
-         every write control disabled instead of rendering a second transcript. -->
+         every write control disabled. -->
     <ConversationTimeline
       v-if="timelineSupported"
       :room="roomView"
@@ -701,8 +701,8 @@ function handleStopAll(): void {
       @retry-trace="detailSelectedMember && detailEffectiveAttempt !== undefined && detailTarget && directBotsStore.ensureDirectTracePage(detailTarget.run.id, detailSelectedMember.id, detailEffectiveAttempt)"
     />
 
-    <!-- The plan is part of the run's visible surface, exactly as the legacy
-         transcript rendered it. The timeline path keeps it above the composer. -->
+    <!-- The plan is part of the run's visible surface. The timeline path keeps
+         it above the composer. -->
     <div
       v-if="timelineSupported && directBotsStore.planEntries?.length"
       data-test="direct-plan-panel"
@@ -737,7 +737,7 @@ function handleStopAll(): void {
       </button>
     </div>
     <!-- History failure: Retry reloads the topic (history + durable run
-      discovery). Shown whenever the transcript failed to converge — the
+      discovery). Shown whenever the timeline failed to converge — the
       composer may still be enabled, but the newest window is stale/holed. -->
     <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId"
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">

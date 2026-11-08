@@ -201,10 +201,10 @@ function onInput(event: Event): void {
 </script>
 
 <template>
-  <!-- mx-auto max-w-3xl: the transcript column is max-w-3xl centered
-       (ConversationMessageList), so the composer sits in the same column instead
-       of stretching edge to edge on wide screens. The pane owns bottom spacing
-       and stack layers above this card baseline (no pb / border-t here).
+  <!-- mx-auto max-w-3xl: the timeline column is max-w-3xl centered, so the
+       composer sits in the same column instead of stretching edge to edge on
+       wide screens. The pane owns bottom spacing and stack layers above this
+       card baseline (no pb / border-t here).
        rounded-3xl reads as a pill on the one-line resting card (42px) and stays
        soft on the expanded card. -->
   <!-- The card is glass-strong: a translucent surface with a hairline and the

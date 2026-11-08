@@ -9,8 +9,9 @@ import { test, expect, loginAndShowInstances } from "./fixtures";
 
 /**
  * Parallel members on the one timeline (design §8.1): each member owns one
- * activity row, whose single live bubble shows only its newest streamed text.
- * Settled replies replace the activity row with the member's durable bubble.
+ * activity row and one live bubble, which accumulates that member's streamed
+ * prose. Settled replies replace the activity row with the member's durable
+ * bubble.
  */
 
 const createdAt = "2026-11-05T12:00:00.000Z";
@@ -104,7 +105,7 @@ async function openParallelRun(page: Page) {
 
 const liveBubbles = (page: Page) => page.locator('[data-test="timeline-live-bubble"]');
 
-test("parallel members keep one live bubble each, showing newest text", async ({ page, hub }, info) => {
+test("parallel members keep one accumulating live bubble each", async ({ page, hub }, info) => {
   const fixture = await openParallelRun(page);
   const send = (memberTurn: MemberTurnSummaryDto, event: Record<string, unknown>) => hub.send({
     kind: "control-event", instanceId: "i1",
@@ -115,23 +116,32 @@ test("parallel members keep one live bubble each, showing newest text", async ({
   send(fixture.first, { type: "turn-output", chunk: "ALPHA ONE" });
   send(fixture.second, { type: "turn-output", chunk: "BRAVO ONE" });
   await expect(liveBubbles(page)).toHaveCount(2);
-  // A thought no longer opens a new bubble: the member's single live bubble
-  // keeps showing its newest text segment.
+  // A thought never opens a bubble of its own: the member's single live bubble
+  // keeps accumulating its prose, newest last.
   send(fixture.first, { type: "turn-thought", chunk: "checking the diff" });
   send(fixture.second, { type: "turn-thought", chunk: "running the suite" });
   send(fixture.first, { type: "turn-output", chunk: "ALPHA TWO" });
   send(fixture.second, { type: "turn-output", chunk: "BRAVO TWO" });
 
   await expect(liveBubbles(page)).toHaveCount(2);
-  await expect.poll(() => liveBubbles(page).evaluateAll((nodes) => nodes.map((node) => node.textContent?.trim()))).toEqual([
-    "ALPHA TWO", "BRAVO TWO",
-  ]);
+  const alpha = liveBubbles(page).nth(0);
+  const bravo = liveBubbles(page).nth(1);
+  await expect(alpha).toContainText("ALPHA ONE");
+  await expect(alpha).toContainText("ALPHA TWO");
+  await expect(bravo).toContainText("BRAVO ONE");
+  await expect(bravo).toContainText("BRAVO TWO");
+  // Thoughts stay in the process drawer, never in the speech bubble.
+  await expect(alpha).not.toContainText("checking the diff");
+  await expect(bravo).not.toContainText("running the suite");
+  expect(await alpha.evaluate((el) => el.textContent?.indexOf("ALPHA ONE") ?? -1))
+    .toBeLessThan(await alpha.evaluate((el) => el.textContent?.indexOf("ALPHA TWO") ?? -1));
   for (const member of [fixture.first, fixture.second]) {
     await expect(page.locator(`[data-test="timeline-activity"][data-row-id="${member.id}"]`)).toHaveCount(1);
   }
   send(fixture.first, { type: "turn-output", chunk: " (more)" });
   await expect(liveBubbles(page)).toHaveCount(2);
-  await expect(liveBubbles(page).nth(0)).toHaveText("ALPHA TWO (more)");
+  await expect(liveBubbles(page).nth(0)).toContainText("ALPHA TWO (more)");
+  await expect(liveBubbles(page).nth(1)).not.toContainText("(more)");
   await info.attach("parallel-interleave", { body: await page.screenshot(), contentType: "image/png" });
 });
 
@@ -155,7 +165,8 @@ test("settled canonical replies replace each member's activity row", async ({ pa
     hub.send({ kind: "control-event", instanceId: "i1", event: { type: "conversation-message", message: reply } });
   }
   const bubbles = page.locator('[data-test="timeline-bot-message"]');
-  await expect(bubbles).toHaveCount(3);
+  // One durable bubble per member: the whole reply, blank line and all.
+  await expect(bubbles).toHaveCount(2);
   const texts = await bubbles.evaluateAll((nodes) => nodes.map((node) => node.textContent?.trim() ?? ""));
   expect(texts.some((text) => text.includes("Alpha ①") && text.includes("Alpha ②"))).toBe(true);
   expect(texts.some((text) => text.includes("Bravo ①") && text.includes("Bravo ②"))).toBe(true);

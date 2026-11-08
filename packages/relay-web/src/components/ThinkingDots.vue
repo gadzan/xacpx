@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The "thinking" bubble: a plain gray pill with three pulsing dots — the only
-// liveness signal while an agent turn has produced nothing visible yet, in the
-// session transcript and the Direct Bot transcript alike. It carries no label,
+// liveness signal while an agent turn has produced nothing visible yet. It
+// carries no label,
 // elapsed clock, or stop action: streamed content replaces it, and Stop lives
 // in the composer.
 </script>

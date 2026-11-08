@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { config, flushPromises, mount, type DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import { RELAY_CAPABILITIES, type BotDetailDto, type BotSummaryDto, type GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
 type Handler = (payload: Record<string, unknown>) => unknown;
 const routes = new Map<string, Handler>();
@@ -330,8 +330,12 @@ describe("Disabled Bots", () => {
 
   describe("GroupPane member status", () => {
     it("names disabled members and keeps them in the Group", async () => {
+      seedInstance();
       seedBots([REVIEWER, TESTER, SLEEPER]);
       seedGroup(GROUP);
+      // A Group pane only writes on a daemon that advertises the timeline: an
+      // older one shows the upgrade notice and the mention chip stays inert.
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
       useGroupsStore().targetSelection = { mode: "members", botIds: ["bot_a"] };
       const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
       await flushPromises();

@@ -219,8 +219,8 @@ function driverForBot(bot: BotSummaryDto): string | undefined {
 const instance = computed(() =>
   groupsStore.instanceId ? instancesStore.byId(groupsStore.instanceId) : undefined);
 /** The timeline is the only conversation surface. A daemon that does not
- *  advertise it cannot be served by this client at all: the pane says so
- *  once instead of rendering a second, legacy transcript. */
+ *  advertise it cannot be served by this client at all: the pane says so once
+ *  and disables its write controls. */
 const timelineSupported = computed(() => supportsConversationTimelineV1(instance.value));
 
 /** One Room for the timeline (P1c adds the run-wide drawer). Direct is the
@@ -350,7 +350,10 @@ function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }):
   detailTarget.value = { runId: run.id, ...(selected ? { memberTurnId: selected.id } : {}) };
   detailAttempt.value = selected?.attempt;
   groupsStore.ensureRunDetails([run.id]);
-  if (selected) groupsStore.ensureTracePage(selected.id, selected.attempt);
+  if (selected) {
+    groupsStore.ensureTracePage(selected.id, selected.attempt);
+    groupsStore.setTraceFollow(selected.id, selected.attempt);
+  }
 }
 
 watch(() => groupsStore.runHistoryDetailRevision, () => {
@@ -398,9 +401,11 @@ function selectTimelineMember(memberTurnId: string): void {
   if (!member || !detailTarget.value) return;
   detailTarget.value = { ...detailTarget.value, memberTurnId };
   detailAttempt.value = member.attempt;
+  groupsStore.setTraceFollow(member.id, member.attempt);
 }
 
 function closeTimelineDetail(): void {
+  groupsStore.clearTraceFollow();
   detailTarget.value = null;
   detailAttempt.value = undefined;
 }
@@ -470,7 +475,7 @@ async function handleDetailStopMember(memberTurnId: string): Promise<void> {
   try {
     await groupsStore.cancelMember(instId, run.id, memberTurnId);
   } catch (err: unknown) {
-    pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
+    pushToast("error", "group.run.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
   } finally {
     if (stopPendingMember.value === memberTurnId) stopPendingMember.value = null;
   }
@@ -483,8 +488,7 @@ const detailBudget = computed(() => detailRun.value ? runBudgetOf(detailRun.valu
 
 
 /** Durable Run details for the Runs the timeline shows: the process drawer and
- *  member names need them, and the legacy transcript loaded them the same way.
- *  Bounded by the loaded page, so history stays one batch. */
+ *  member names need them. Bounded by the loaded page, so history stays one batch. */
 const timelineRunIds = computed<string[]>(() => {
   const ids = new Set<string>();
   for (const entry of timelineFeed.entries.value) {
@@ -496,7 +500,7 @@ const timelineRunIds = computed<string[]>(() => {
 watch(timelineRunIds, (ids) => {
   if (ids.length > 0) groupsStore.ensureRunDetails(ids);
 }, { immediate: true });
-// An archived Topic stays browsable (its transcript is durable history), but it
+// An archived Topic stays browsable (its timeline is durable history), but it
 // cannot accept new Runs — sending there is a guaranteed `topic_not_active`.
 const isActiveTopic = computed(() => groupsStore.currentTopic?.status === "active");
 const worktreeRunId = computed(() => {
@@ -642,7 +646,7 @@ const worktreeRunId = computed(() => {
     </div>
     <!-- One timeline for Group and Direct. A daemon that does not advertise
          `conversations.timeline.v1` cannot be served: say so once, and keep
-         every write control disabled instead of rendering a second transcript. -->
+         every write control disabled. -->
     <ConversationTimeline
       v-if="timelineSupported && !needsFirstTopic"
       :room="roomView"
@@ -732,8 +736,7 @@ const worktreeRunId = computed(() => {
     </MobileSheet>
 
     <!-- The one Run-wide detail drawer (design §8.4): every entry point
-         (bot meta, avatar, speaker label, status bar) opens this key, and the
-         legacy transcript keeps its own per-member overlay for old daemons. -->
+         (bot meta, avatar, speaker label, status bar) opens this key. -->
     <TraceOverlay
       v-if="detailRun && detailTarget"
       id="group-timeline-trace-overlay"
