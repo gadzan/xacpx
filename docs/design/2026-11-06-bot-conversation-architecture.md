@@ -1,7 +1,7 @@
 # xacpx Bot 会话与群聊协作：目标架构与技术方案
 
 - 日期：2026-11-06
-- 状态：提案；P0 后端圆桌已实现（2026-11-07，#546，`8d660cf7`）；P1 一条时间线已实现（P1a #548 `1430534b`、P1b #549 `196ca23c`、P1c #550 `8e095e32`；旧 daemon 回退所需的旧组件仍保留，见 §11 P1 第 6 项）；trace 抽屉 #544/#545；P2 公共记忆 #541–#543。
+- 状态：提案；P0 后端圆桌已实现（#546，`8d660cf7`）；P1 一条时间线已实现（P1a #548 `1430534b`、P1b #549 `196ca23c`、P1c #550 `8e095e32`、P1d 旧 UI 删除 #552 `f08b0a28`；旧 daemon 不再支持，只显示升级提示）；trace 抽屉 #544/#545；P2 公共记忆 #541–#543、圆桌工具面收敛 #553。
 - 范围：Direct Bot 会话、Group 群聊、Run / MemberTurn 调度、Web 交互
 - 目标：一个简约的会话界面，一组可证明的协作语义；Direct 与 Group 不再是两套产品
 - 前置阅读：`docs/research/2026-11-06-bot-group-collaboration-benchmark.md`
@@ -460,7 +460,7 @@ export const GROUP_ROUNDTABLE_CONTRACT = [
   "You are speaking once in a sequential Group discussion.",
   "Read the public messages above. Build on earlier speakers; do not repeat them.",
   "Add only new analysis, a concrete decision, or a named risk.",
-  "Do not call group_send or group_read_result. Do not assign work.",
+  "group_send and group_read_result are unavailable in a discussion. Do not assign work.",
   "Reply with exactly one public message.",
   "If you have nothing material to add, reply exactly: (pass)",
 ].join("\n");
@@ -471,8 +471,8 @@ Lead fanout 继续使用 `GROUP_COLLABORATION_CONTRACT`，不改它的规则。
 ### 7.2 `group_send` 的边界
 
 - `SqliteConversationStore.acceptPublicHandoff` 载入 Run 后检查 `run.shape === "roundtable"`，直接抛 `handoff_from_roundtable_refused`。
-- `conversation-dispatcher.ts` 在构造圆桌 prompt 时使用 roundtable contract，并优先不暴露 group 工具；服务端拒绝是第二道门。
-- `GroupHandoffService.readResult` 过滤 pass，避免把讨论 skip 当成已完成 assignment。
+- `conversation-dispatcher.ts` 在圆桌执行时 mint `group-execution:roundtable:<uuid>`；MCP registry 只暴露 `group_say`，不暴露 `group_send` / `group_read_result`。
+- 服务端第二道门：`acceptPublicHandoff` 抛 `handoff_from_roundtable_refused`；`GroupHandoffService.readResult` 抛 `group_read_result_from_roundtable_refused`，并继续过滤 pass。
 - 这保证圆桌没有子工作项、没有 wake、没有环；完成条件保持简单。
 
 ### 7.3 上下文
@@ -779,17 +779,17 @@ P0 结束时，旧 UI 仍能工作；API 可以创建圆桌，只是没有入口
 
 ### P1：一条时间线与一个 composer
 
-> 实施状态（2026-11-08）：P1a（`messages.member_turn_id`、纯投影、`conversation.timeline` RPC/capability）已合入 `1430534b`；P1b 已实现第 3–5、8 项：`ConversationTimeline`/`TimelineRow`、`ConversationStatusBar`/`RoundStrip`、composer 收口（默认 lead、`@`、`@everyone`、讨论 chip、无 target 下拉/勾选/automatic）、两个 pane 共用 `RoomView`、旧 daemon 回退与 Playwright 桌面/移动覆盖；trace 抽屉子项已由 #544/#545 完成。P1c 已实现第 7 项：`TraceOverlay` 变为 Run-wide 抽屉（成员列表、Run 状态/completion reason、失败原因、预算、按成员审批、fanout scoped Stop；Stop all 只留状态条），bot meta/头像/发言者标签/状态条共用一个打开键，桌面抽屉与移动 sheet 共用内容。第 6 项的候选项仍被旧 daemon 回退引用（`GroupTranscript.vue` / `ConversationMessageList.vue` 在缺少 `conversations.timeline.v1` 时继续渲染），故本轮保留并列为有意保留，不做静默删除。
+> 实施状态（2026-11-09）：P1a 已合入 `1430534b`；P1b #549 `196ca23c` 实现第 3–5、8 项；P1c #550 `8e095e32` 实现第 7 项 Run-wide 抽屉；P1d #552 `f08b0a28` 完成第 6 项，删除旧 transcript/dispatch/trace 气泡/双流归并，旧 daemon 只显示升级提示。trace 抽屉子项由 #544/#545 完成。
 
 1. `messages.member_turn_id` 列、索引、所有插入点、回填。
 2. `conversation-timeline.ts` 纯投影 + `conversation.timeline` RPC + capability。
 3. `ConversationTimeline.vue`、`TimelineRow.vue`、`ConversationStatusBar.vue`。
 4. `ConversationComposer.vue` 收口：Direct/Group 共用布局、mention、发送状态；Group 删除 target 下拉、automatic 开关；加“讨论”chip。
 5. `DirectBotPane.vue` / `GroupPane.vue` 传 `RoomView`，不再各自投影。
-6. 删除 `GroupTranscript.vue`、`ConversationMessageList.vue`、`GroupDispatchRow.vue`、`GroupAgentTurnRow.vue`、`GroupWorkingRow.vue`、`group-run-presentation.ts` 的投影部分、`group-live-stream.ts` 的双流归并。**（P1c 暂缓：这些组件仍是缺少 `conversations.timeline.v1` 的旧 daemon 回退路径；在提升最低 daemon 版本前保留。）**
+6. 删除 `GroupTranscript.vue`、`ConversationMessageList.vue`、`GroupDispatchRow.vue`、`GroupAgentTurnRow.vue`、`GroupWorkingRow.vue`、`group-run-presentation.ts` 的投影部分、`group-live-stream.ts` 的双流归并。**（#552 已完成；旧 daemon 不再支持，缺少 `conversations.timeline.v1` 时只显示升级提示并禁用写入。）**
 7. 详情抽屉合并 `GroupRunDetailContent.vue` / trace 入口。
    - trace 抽屉按 `2026-11-06-trace-drawer-live-feed.md` 实现：无自动折叠、固定 Live Stack、跟随可暂停、视窗外 `content-visibility`。
-8. 测试：同组件渲染 Direct/Group、分页、live 覆盖、handoff 行、移动端、旧 daemon 回退。
+8. 测试：同组件渲染 Direct/Group、分页、live 覆盖、handoff 行、移动端、旧 daemon 升级提示。
 
 ### P2：可选增强
 
