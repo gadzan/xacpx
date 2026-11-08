@@ -27,7 +27,7 @@ import { resolveDefaultOrchestrationEndpoint } from "./resolve-endpoint";
 import { canConnectToEndpoint } from "../orchestration/endpoint-probe";
 import { buildXacpxMcpToolRegistry } from "./xacpx-mcp-tools";
 import { createOrchestrationTransport, type XacpxMcpTransport } from "./xacpx-mcp-transport";
-import { GROUP_EXECUTION_PREFIX } from "../conversations/group-handoff";
+import { GROUP_EXECUTION_PREFIX, isRoundtableExecutionToken } from "../conversations/group-handoff";
 
 const TASK_OPTIONS_CACHE_LIMIT = 1_000;
 const TASKS_LIST_PAGE_SIZE = 100;
@@ -100,9 +100,11 @@ export function createXacpxMcpServer(options: XacpxMcpServerOptions): Server {
           requests: { tools: { call: {} } },
         },
       },
-      instructions: options.sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)
-        ? "Use group_say to publish a short progress remark in this Group Topic, group_send to publicly assign a concrete downstream task to another current Group Bot, and group_read_result to read this Run's settled public results. Sender, Run and permission provenance are bound by the runtime; no tool argument can name them."
-        : XACPX_MCP_SERVER_INSTRUCTIONS,
+      instructions: !options.sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)
+        ? XACPX_MCP_SERVER_INSTRUCTIONS
+        : isRoundtableExecutionToken(options.sourceHandle)
+          ? "Use group_say to publish a short remark in this Group Topic. This discussion turn does not expose group_send or group_read_result: work assignment and assignment results are unavailable here. Sender, Run and permission provenance are bound by the runtime; no tool argument can name them."
+          : "Use group_say to publish a short progress remark in this Group Topic, group_send to publicly assign a concrete downstream task to another current Group Bot, and group_read_result to read this Run's settled public results. Sender, Run and permission provenance are bound by the runtime; no tool argument can name them.",
       taskStore: createXacpxTaskStore(async () => await getToolState(), taskOptionsById, watchTasksById),
     },
   );

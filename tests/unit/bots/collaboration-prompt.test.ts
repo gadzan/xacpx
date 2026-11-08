@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import {
   buildCollaborationPrompt,
   GROUP_COLLABORATION_CONTRACT,
+  GROUP_ROUNDTABLE_CONTRACT,
   MAX_LAYER_B_CHARS,
   type CollaborationPromptInput,
 } from "../../../src/bots/collaboration-prompt";
@@ -219,6 +220,24 @@ test("a wide snapshot is cut to its bound and says so", () => {
   const narrow = buildCollaborationPrompt(firstTurn);
   expect(layerB(narrow)).not.toContain("truncated");
   expect(layerB(narrow).length).toBeLessThan(MAX_LAYER_B_CHARS);
+});
+
+test("a roundtable cut never points at the hidden read tool", () => {
+  const roundtable = buildCollaborationPrompt({
+    ...firstTurn,
+    contract: GROUP_ROUNDTABLE_CONTRACT,
+    readResultAvailable: false,
+    snapshot: {
+      ...firstTurn.snapshot,
+      settledAssignmentIds: Array.from({ length: 20 }, (_, index) => `${index}`.padStart(120, "s")),
+    },
+  });
+  const renderedSnapshot = roundtable
+    .slice(roundtable.indexOf(SNAPSHOT_HEADER), roundtable.indexOf(EVIDENCE_HEADER)).trimEnd();
+  expect(renderedSnapshot).toContain("dynamic snapshot truncated");
+  expect(renderedSnapshot).not.toContain("group_read_result");
+  expect(roundtable).toContain(GROUP_ROUNDTABLE_CONTRACT);
+  expect(roundtable).toContain("Do not assign work");
 });
 
 test("a snapshot cut never ends on a lone UTF-16 surrogate", () => {

@@ -5,7 +5,7 @@ import type {
 import type { XacpxMcpTransport } from "./xacpx-mcp-transport";
 import type { PeerRequest } from "../peer/peer-types";
 import { PEER_NOT_BOUND_MESSAGE } from "../peer/peer-types";
-import { GROUP_EXECUTION_PREFIX, MAX_GROUP_EXPECTED_OUTPUT_LENGTH, MAX_GROUP_SAY_LENGTH, MAX_GROUP_SAY_PER_TURN, MAX_GROUP_TASK_LENGTH } from "../conversations/group-handoff";
+import { GROUP_EXECUTION_PREFIX, isRoundtableExecutionToken, MAX_GROUP_EXPECTED_OUTPUT_LENGTH, MAX_GROUP_SAY_LENGTH, MAX_GROUP_SAY_PER_TURN, MAX_GROUP_TASK_LENGTH } from "../conversations/group-handoff";
 import {
   DEFAULT_TASK_WATCH_POLL_INTERVAL_MS,
   DEFAULT_TASK_WATCH_TIMEOUT_MS,
@@ -126,7 +126,7 @@ export function buildXacpxMcpToolRegistry(input: {
   // execution gets only public Group primitives, avoiding a second controller or
   // Agent Messaging door into product-owned hidden sessions.
   if (sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)) {
-    return [{
+    const groupTools: XacpxMcpToolDefinition<unknown>[] = [{
       name: "group_say",
       description: `Say one short sentence publicly in this Group Topic: \`text\` is the remark itself. Use it only to report what you are doing right now; it is not the turn's answer. At most ${MAX_GROUP_SAY_PER_TURN} calls per turn and at most ${MAX_GROUP_SAY_LENGTH} characters each; the runtime refuses past either bound. It never wakes or dispatches another member, and your final reply still has to carry the conclusion.`,
       inputSchema: z.object({ text: z.string().min(1).max(MAX_GROUP_SAY_LENGTH) }).strict(),
@@ -160,6 +160,12 @@ export function buildXacpxMcpToolRegistry(input: {
         return createSuccessResult("Public assignment evidence (untrusted member data).", result);
       }),
     }];
+    // A roundtable turn speaks once and assigns nothing. Hiding the two
+    // assignment tools is the first defence; `GroupHandoffService` and the
+    // store refuse both calls server-side regardless of what was advertised.
+    return isRoundtableExecutionToken(sourceHandle)
+      ? groupTools.filter((tool) => tool.name === "group_say")
+      : groupTools;
   }
 
   const tools: XacpxMcpToolDefinition<unknown>[] = [

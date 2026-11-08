@@ -10,6 +10,7 @@ import {
   RT_CONVERSATION,
   RT_NOW,
   RT_OWNER,
+  RT_SNAPSHOT,
   RT_TOPIC,
   startTurn,
 } from "./fixtures/roundtable-harness";
@@ -95,7 +96,9 @@ test("empty final text fails the speaker and never becomes a pass", async () => 
     const drain = h.dispatcher.kick();
     await until(() => h.runner.calls.length === 1);
     expect(h.runner.calls[0]!.text).toContain("sequential Group discussion");
+    expect(h.runner.calls[0]!.text).toContain("group_send and group_read_result are unavailable in a discussion. Do not assign work.");
     expect(h.runner.calls[0]!.text).not.toContain("collaborating in the same Group Topic");
+    expect(h.runner.calls[0]!.text).not.toContain("Read existing results with `group_read_result`");
     h.runner.finish(0, { status: "completed", text: "" });
     await drain;
     expect(h.store.getRun(accepted.run.id)?.state).toBe("failed");
@@ -108,68 +111,102 @@ test("empty final text fails the speaker and never becomes a pass", async () => 
   }
 });
 
-test("group_read_result never lists or serves a pass", async () => {
+/**
+ * One live Group execution on a real store whose second terminal row carries a
+ * roundtable `pass`. `roundtable` selects which Run shape owns that row: a real
+ * discussion, or a fanout Run that the service still filters defensively.
+ */
+async function bindPassFixture(roundtable: boolean) {
   const store = await openRoundtableStore();
+  const state = createEmptyState();
+  state.conversations[RT_CONVERSATION] = {
+    id: RT_CONVERSATION, kind: "group", title: "Roundtable", botIds: ["bot_a", "bot_b"],
+    createdAt: RT_NOW, updatedAt: RT_NOW,
+  };
+  state.conversation_topics[RT_TOPIC] = {
+    id: RT_TOPIC, conversationId: RT_CONVERSATION, title: "Topic", status: "active",
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+    createdAt: RT_NOW, updatedAt: RT_NOW,
+  };
+  state.bots.bot_a = { id: "bot_a", name: "A", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: RT_NOW, updatedAt: RT_NOW };
+  state.bots.bot_b = { id: "bot_b", name: "B", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: RT_NOW, updatedAt: RT_NOW };
+  const accepted = roundtable
+    ? acceptRoundtable(store, { botIds: ["bot_a", "bot_b"] })
+    : store.acceptRequest({
+      conversationId: RT_CONVERSATION, topicId: RT_TOPIC, requestId: "fanout-pass",
+      botId: "bot_a", content: "fanout", profileSnapshot: RT_SNAPSHOT, shape: "fanout",
+      members: [{ botId: "bot_b", profileSnapshot: RT_SNAPSHOT }], now: RT_NOW,
+    });
+  const turns = store.listMemberTurns(accepted.run.id);
+  const { started, claim } = startTurn(store, accepted.run.id, turns[0]!.id);
+  // A completed, pass-marked assignment must stay out of the assignment catalog
+  // even though it is terminal. Written directly so the filter is what is under
+  // test, not the store's roundtable-only validation of `speechOutcome`.
+  store.directWriteForTest("member_turns", turns[1]!.id, {
+    state: "completed",
+    speech_outcome: "pass",
+    assignment_id: "pass_assignment",
+    finished_at: RT_NOW,
+  });
+  state.sessions.session = {
+    alias: "session", agent: "codex", workspace: "backend", transport_session: "transport",
+    logical_session_id: "logical",
+    owner: { kind: "group-member", bindingId: "binding", botId: started.botId,
+      conversationId: RT_CONVERSATION, topicId: RT_TOPIC },
+    created_at: RT_NOW, last_used_at: RT_NOW,
+  };
+  state.bot_runtime_bindings.binding = {
+    id: "binding", scope: "group-member", botId: started.botId, conversationId: RT_CONVERSATION,
+    topicId: RT_TOPIC, sessionAlias: "session", logicalSessionId: "logical",
+    createdAt: RT_NOW, updatedAt: RT_NOW,
+  };
+  const handoffs = new GroupHandoffService({
+    store,
+    bots: { getBot: (id: string) => state.bots[id]!, runLifecycleAll: async <T,>(_ids: readonly string[], fn: () => Promise<T>) => fn() } as never,
+    state,
+    now: () => new Date(RT_NOW),
+    wake() {},
+  });
+  const capability = handoffs.bindExecution({
+    senderMemberTurnId: started.id, sourceTurnId: "source_0", dispatchId: claim.dispatch.id,
+    owner: RT_OWNER, generation: claim.dispatch.generation,
+  }, roundtable ? { roundtable: true } : {});
+  return { store, handoffs, capability };
+}
+
+test("group_read_result never lists or serves a pass row", async () => {
+  const { store, handoffs, capability } = await bindPassFixture(false);
   try {
-    const state = createEmptyState();
-    state.conversations[RT_CONVERSATION] = {
-      id: RT_CONVERSATION, kind: "group", title: "Roundtable", botIds: ["bot_a", "bot_b"],
-      createdAt: RT_NOW, updatedAt: RT_NOW,
-    };
-    state.conversation_topics[RT_TOPIC] = {
-      id: RT_TOPIC, conversationId: RT_CONVERSATION, title: "Topic", status: "active",
-      executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
-      createdAt: RT_NOW, updatedAt: RT_NOW,
-    };
-    state.bots.bot_a = { id: "bot_a", name: "A", agent: "codex", workspace: "backend", enabled: true,
-      profileRevision: 1, createdAt: RT_NOW, updatedAt: RT_NOW };
-    state.bots.bot_b = { id: "bot_b", name: "B", agent: "codex", workspace: "backend", enabled: true,
-      profileRevision: 1, createdAt: RT_NOW, updatedAt: RT_NOW };
-    const accepted = acceptRoundtable(store, { botIds: ["bot_a", "bot_b"] });
-    const turns = store.listMemberTurns(accepted.run.id);
-    const { started, claim } = startTurn(store, accepted.run.id, turns[0]!.id);
-    // Mark the second planned turn as a completed, pass-marked assignment. It
-    // must stay out of the assignment catalog even though it is terminal.
-    store.directWriteForTest("member_turns", turns[1]!.id, {
-      state: "completed",
-      speech_outcome: "pass",
-      assignment_id: "pass_assignment",
-      finished_at: RT_NOW,
-    });
-    state.sessions.session = {
-      alias: "session", agent: "codex", workspace: "backend", transport_session: "transport",
-      logical_session_id: "logical",
-      owner: { kind: "group-member", bindingId: "binding", botId: started.botId,
-        conversationId: RT_CONVERSATION, topicId: RT_TOPIC },
-      created_at: RT_NOW, last_used_at: RT_NOW,
-    };
-    state.bot_runtime_bindings.binding = {
-      id: "binding", scope: "group-member", botId: started.botId, conversationId: RT_CONVERSATION,
-      topicId: RT_TOPIC, sessionAlias: "session", logicalSessionId: "logical",
-      createdAt: RT_NOW, updatedAt: RT_NOW,
-    };
-    const handoffs = new GroupHandoffService({
-      store,
-      bots: { getBot: (id: string) => state.bots[id]!, runLifecycleAll: async <T,>(_ids: readonly string[], fn: () => Promise<T>) => fn() } as never,
-      state,
-      now: () => new Date(RT_NOW),
-      wake() {},
-    });
-    try {
-      const capability = handoffs.bindExecution({
-        senderMemberTurnId: started.id, sourceTurnId: "source_0", dispatchId: claim.dispatch.id,
-        owner: RT_OWNER, generation: claim.dispatch.generation,
-      });
-      const catalog = handoffs.readResult({ executionToken: capability.token, invocationId: "read", args: {} } as never);
-      expect(catalog).toEqual({ kind: "catalog", assignments: [], nextOffset: null });
-      expect(() => handoffs.readResult({
-        executionToken: capability.token, invocationId: "read-pass", args: { assignmentId: "pass_assignment" },
-      } as never)).toThrow(expect.objectContaining({ code: "member_result_missing" }));
-    } finally {
-      handoffs.close();
-    }
+    expect(capability.token.startsWith("group-execution:")).toBe(true);
+    expect(capability.token.startsWith("group-execution:roundtable:")).toBe(false);
+    const catalog = handoffs.readResult({ executionToken: capability.token, invocationId: "read", args: {} } as never);
+    expect(catalog).toEqual({ kind: "catalog", assignments: [], nextOffset: null });
+    expect(() => handoffs.readResult({
+      executionToken: capability.token, invocationId: "read-pass", args: { assignmentId: "pass_assignment" },
+    } as never)).toThrow(expect.objectContaining({ code: "member_result_missing" }));
   } finally {
-    store.close();
+    handoffs.close(); store.close();
+  }
+});
+
+test("a roundtable capability can neither dispatch nor read assignments", async () => {
+  const { store, handoffs, capability } = await bindPassFixture(true);
+  try {
+    expect(capability.token.startsWith("group-execution:roundtable:")).toBe(true);
+    for (const args of [{}, { assignmentId: "pass_assignment" }]) {
+      expect(() => handoffs.readResult({ executionToken: capability.token, args } as never))
+        .toThrow(expect.objectContaining({ code: "group_read_result_from_roundtable_refused" }));
+    }
+    // The store's existing roundtable gate still holds behind the hidden tool.
+    await expect(handoffs.send({ executionToken: capability.token, invocationId: "direct-call",
+      args: { to: "bot_b", task: "assign work" } }))
+      .rejects.toMatchObject({ code: "handoff_from_roundtable_refused" });
+    expect(store.listMessages({ conversationId: RT_CONVERSATION, topicId: RT_TOPIC, limit: 20 }))
+      .toHaveLength(1);
+  } finally {
+    handoffs.close(); store.close();
   }
 });
 
