@@ -39,16 +39,16 @@ for (const [name, selector, viewportWidth] of [
     it("keeps the saved offset while the loading shell clamps it, then restores only once", async () => {
       const anchor = document.createElement("button");
       document.body.append(anchor);
-      const memory = new Map([["member:1", 240], ["member:2", 180]]);
+      const memory = new Map([["run:member:1", 240], ["run:member:2", 180]]);
       const wrapper = mount(TraceOverlay, { attachTo: document.body, props: {
-        id: "detail", anchorEl: anchor, run, memberTurn, attempt: 1,
+        id: "detail", anchorEl: anchor, run, memberTurns: [memberTurn], attempt: 1,
         parts: [], traceLoading: true, scrollMemory: memory,
       } });
       await flushPromises();
       const scroll = document.querySelector<HTMLElement>(selector)!;
       expect(scroll.scrollTop).toBe(0);
       scroll.dispatchEvent(new Event("scroll"));
-      expect(memory.get("member:1")).toBe(240);
+      expect(memory.get("run:member:1")).toBe(240);
       maxScroll = 800;
       await wrapper.setProps({ parts, traceLoading: false });
       await vi.waitFor(() => expect(scroll.scrollTop).toBe(240));
@@ -70,9 +70,9 @@ for (const [name, selector, viewportWidth] of [
     it("abandons a pending restore when the reader scrolls before the trace arrives", async () => {
       const anchor = document.createElement("button");
       document.body.append(anchor);
-      const memory = new Map([["member:1", 240]]);
+      const memory = new Map([["run:member:1", 240]]);
       const wrapper = mount(TraceOverlay, { attachTo: document.body, props: {
-        id: "detail", anchorEl: anchor, run, memberTurn, attempt: 1,
+        id: "detail", anchorEl: anchor, run, memberTurns: [memberTurn], attempt: 1,
         parts: [], traceLoading: true, scrollMemory: memory,
       } });
       await flushPromises();
@@ -84,7 +84,7 @@ for (const [name, selector, viewportWidth] of [
       await wrapper.setProps({ parts, traceLoading: false });
       await flushPromises();
       expect(scroll.scrollTop).toBe(40);
-      expect(memory.get("member:1")).toBe(40);
+      expect(memory.get("run:member:1")).toBe(40);
       wrapper.unmount();
     });
   });

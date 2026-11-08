@@ -16,9 +16,9 @@ function contains(node: Node, tag: string): boolean {
   return (node.children ?? []).some((c) => c.tag === tag || contains(c, tag));
 }
 
-describe.each(["GroupTranscript.vue", "ConversationMessageList.vue"])("%s jump-latest anchoring", (file) => {
+describe("ConversationTimeline.vue jump-latest anchoring", () => {
   it("renders TranscriptJumpLatest outside the scroll container, inside a relative wrapper", () => {
-    const src = readFileSync(resolve(__dirname, "../components", file), "utf8");
+    const src = readFileSync(resolve(__dirname, "../components", "ConversationTimeline.vue"), "utf8");
     const root = parse(src).descriptor.template!.ast!.children.find((c) => c.type === 1) as unknown as Node;
     const scroller = root.children!.find((c) => c.type === 1 && attr(c, "ref") === "scroller");
     expect(scroller, "scroller must be a direct child of the wrapper").toBeDefined();

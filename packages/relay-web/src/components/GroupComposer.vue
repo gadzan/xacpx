@@ -37,15 +37,11 @@ const props = defineProps<{
    *  primary action, so the member target picker and its hint are not mounted
    *  and the (disabled) composer says why. */
   needsFirstTopic?: boolean;
-  /** The status bar above the composer owns Stop all. An old daemon keeps the
-   *  legacy transcript (and no status bar), so it keeps the in-card Stop. */
-  hideStop?: boolean;
 }>();
 
 const emit = defineEmits<{
   /** `target` is null for the implicit lead: the server resolves it. */
   send: [text: string, media: PromptAttachmentRef[], target: ConversationTargetDto | null];
-  cancel: [];
 }>();
 
 const { t } = useI18n();
@@ -631,14 +627,6 @@ function handleDiscuss(): void {
   void handleSend(undefined, true);
 }
 
-/** The legacy in-card Stop forwards to the pane, which owns the Run-level
- *  `stopCurrentAndQueued` call (the status bar's Stop all uses the same path).
- *  The card already owns the cancel fences: it shows Stop only while a Run is
- *  active and disables it while a cancel is in flight. */
-function handleCancel(): void {
-  emit("cancel");
-}
-
 async function onPaste(e: ClipboardEvent): Promise<void> {
   const files = Array.from(e.clipboardData?.files ?? []);
   if (files.length === 0 || props.disabled || !groupsStore.topicReady || groupsStore.promptInFlight) return;
@@ -721,12 +709,10 @@ function handleRetry(): void {
       :has-attachments="readyMedia"
       :attachments-send-disabled="attachments.uploading"
       :placeholder="composerPlaceholder"
-      :hide-stop="hideStop"
+      hide-stop
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
-      stop-test-id="group-stop-run-button"
       @send="handleSend()"
-      @cancel="handleCancel"
       @keydown="onKeydown"
       @input="onInput"
       @paste="onPaste"

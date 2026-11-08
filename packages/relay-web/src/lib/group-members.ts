@@ -1,4 +1,4 @@
-import type { BotAvatarConfig, BotSummaryDto, MemberTurnSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { BotAvatarConfig, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
 /**
  * The Group's membership, projected for display.
@@ -71,39 +71,3 @@ export function countDisabledGroupMembers(rows: GroupMemberRow[]): number {
   return rows.filter((row) => row.state === "disabled").length;
 }
 
-export interface GroupWorkingMember {
-  botId: string;
-  name: string;
-}
-
-/**
- * The members that currently hold a turn.
- *
- * Two facts decide it, and both come from the store's live turn state:
- *   · the durable member-turn state — a running turn is executing;
- *   · the live turn map — a member whose live turn is streaming (or whose
- *     live entry survived a reconnect) is still working even when the
- *     durable row has not caught up yet.
- *
- * A queued or dispatched turn has not started executing yet, so it is not
- * "working"; a turn that completed, failed, was cancelled or ended
- * indeterminate is over, and a member with no turn at all is idle.
- */
-export function presentGroupWorkingMembers(input: {
-  memberTurns: MemberTurnSummaryDto[];
-  /** Member-turn ids that currently carry a live turn. */
-  liveTurnIds: string[];
-  bots: BotSummaryDto[];
-}): GroupWorkingMember[] {
-  const byId = new Map(input.bots.map((bot) => [bot.id, bot]));
-  const live = new Set(input.liveTurnIds);
-  const seen = new Set<string>();
-  const working: GroupWorkingMember[] = [];
-  for (const turn of input.memberTurns) {
-    if (turn.state !== "running" && !live.has(turn.id)) continue;
-    if (seen.has(turn.botId)) continue;
-    seen.add(turn.botId);
-    working.push({ botId: turn.botId, name: byId.get(turn.botId)?.name ?? turn.botId });
-  }
-  return working;
-}

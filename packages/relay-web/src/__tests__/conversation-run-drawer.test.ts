@@ -236,20 +236,4 @@ describe("TraceOverlay.vue run-wide mode", () => {
     expect(body.querySelector('[data-test="run-stop-member"]')).not.toBeNull();
     wrapper.unmount();
   });
-
-  it("keeps the legacy per-member content when memberTurns is absent", () => {
-    const wrapper = mount(TraceOverlay, {
-      attachTo: document.body,
-      props: {
-        id: "member-drawer-test",
-        run: run(),
-        memberTurn: members[0]!,
-        memberName: "Ada",
-      },
-      global: { plugins: [i18n] },
-    });
-    expect(document.body.querySelector('[data-test="group-run-detail"]')).not.toBeNull();
-    expect(document.body.querySelector('[data-test="run-detail"]')).toBeNull();
-    wrapper.unmount();
-  });
 });

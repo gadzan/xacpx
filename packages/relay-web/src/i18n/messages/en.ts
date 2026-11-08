@@ -35,6 +35,7 @@ export default {
       openDetail: "Process for {name}",
       unresolved: "This reply could not be linked to one member turn, so it has no process.",
       empty: "No messages yet. Say something to start.",
+      upgradeRequired: "This daemon is too old; upgrade to use the timeline.",
     },
     handoff: {
       open: "Open the process for {name}",
@@ -70,6 +71,7 @@ export default {
     // rendered by the existing trace content.
     runDetail: {
       title: "Run details",
+      unavailable: "Run detail unavailable",
       members: "Members",
       noMembers: "No member turns recorded.",
       noMember: "Select a member to see their process.",

@@ -11,7 +11,6 @@ import type {
   MemberTurnSummaryDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
-import GroupTranscript from "../components/GroupTranscript.vue";
 
 const mockRpc = vi.fn();
 vi.mock("../api/client", () => ({
@@ -54,7 +53,7 @@ function historyWith(messages: ConversationHistoryResponseDto["messages"]): Conv
 }
 
 describe("useGroupsStore", () => {
-  it("authorizes only a live member completion and clears it on recovery", () => {
+  it("applies only the live member completion to the matching turn", () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
     store.activeConversationId = "conversation_g";
@@ -73,12 +72,10 @@ describe("useGroupsStore", () => {
       kind: "control-event", instanceId: "inst_1",
       event: { type: "member-turn-finished", run, memberTurn: { ...member, state: "completed" } },
     } as never);
-    expect(store.liveCompletedMemberTurns).toEqual({ runId: run.id, ids: { turn_a: true } });
+    expect(store.memberTurnsById.turn_a?.state).toBe("completed");
     expect(store.memberTurnsById.turn_b?.state).toBe("queued");
     mockRpc.mockResolvedValue({ error: { code: "unavailable", message: "offline" } });
     store.applyEvent({ kind: "state-snapshot", instanceId: "inst_1", sessions: [], turns: [] } as never);
-    expect(store.liveCompletedMemberTurns).toBeNull();
-    expect(store.memberTurnsById.turn_a?.state).toBe("completed");
   });
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -728,15 +725,12 @@ describe("useGroupsStore", () => {
         conversation: { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
           memberTurnId: member.id, botId: member.botId },
       } } as never);
-      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Retired attempt output" }]);
 
       const incoming = { ...member, attempt: 2, origin: "recovery" as const, state: "queued" as const };
       delete incoming.promptRequestId;
       delete incoming.startedAt;
       await load(incoming);
       expect(store.liveTurnForMember(member.id)).toBeNull();
-      expect(store.runParts[member.id]).toBeUndefined();
-      expect(store.completeRunParts[member.id]).toBeUndefined();
     });
     it("retires the live text when a higher attempt starts", async () => {
       const { store, run, member, load } = setup();
@@ -782,7 +776,6 @@ describe("useGroupsStore", () => {
       store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
         type: "member-turn-started", run, memberTurn: incoming,
       } } as never);
-      expect(store.completeRunParts[member.id]).toBeUndefined();
       expect(store.liveTurnForMember(member.id)?.parts).toEqual([]);
 
       store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
@@ -792,7 +785,7 @@ describe("useGroupsStore", () => {
       store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
         type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
       } } as never);
-      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "New attempt output" }]);
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([{ type: "text", text: "New attempt output" }]);
     });
 
     it("keeps a completed trace through same-attempt detail and accepts late same-attempt output", async () => {
@@ -808,10 +801,10 @@ describe("useGroupsStore", () => {
       output("Same attempt output");
       finish();
       await load({ ...member });
-      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Same attempt output" }]);
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([{ type: "text", text: "Same attempt output" }]);
       output(" plus final evidence");
       finish();
-      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Same attempt output plus final evidence" }]);
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([{ type: "text", text: "Same attempt output plus final evidence" }]);
     });
 
     it("new attempt completion does not inherit a retired truncated snapshot flag", async () => {
@@ -838,7 +831,7 @@ describe("useGroupsStore", () => {
       store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
         type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
       } } as never);
-      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "New complete output" }]);
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([{ type: "text", text: "New complete output" }]);
     });
 
     for (const state of ["queued", "dispatched", "running", "completed", "failed", "cancelled", "indeterminate"] as const) {
@@ -1193,162 +1186,6 @@ describe("useGroupsStore", () => {
     expect(store.senderNameFor(undefined, BOTS)).toBe("Bot");
   });
 
-  it("keeps per-member TurnParts isolated inside one multi-member Run", async () => {
-    const store = useGroupsStore();
-    store.instanceId = "inst_1";
-    store.selectedGroupId = "conversation_g";
-    store.activeConversationId = "conversation_g";
-    store.activeTopicId = "topic_1";
-    const run: ConversationRunDto = {
-      id: "run_multi", conversationId: "conversation_g", topicId: "topic_1",
-      requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
-      profileRevision: 1, createdAt: "now",
-    };
-    store.activeRun = run;
-    for (const [turnId, botId, promptRequestId] of [
-      ["turn_a", "bot_a", "src_a"],
-      ["turn_b", "bot_b", "src_b"],
-    ] as const) {
-      store.applyEvent({
-        kind: "control-event",
-        instanceId: "inst_1",
-        event: {
-          type: "member-turn-started",
-          run,
-          memberTurn: {
-            id: turnId, runId: "run_multi", conversationId: "conversation_g", topicId: "topic_1",
-            botId, batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
-            state: "running", createdAt: "now", startedAt: "now",
-          },
-        },
-      } as never);
-    }
-    const corr = (memberTurnId: string, botId: string) => ({
-      conversationId: "conversation_g", topicId: "topic_1", botId, runId: "run_multi", memberTurnId,
-    });
-    store.applyEvent({
-      kind: "control-event",
-      instanceId: "inst_1",
-      event: {
-        type: "turn-output",
-        chatKey: "bot:conversation_g:topic_1",
-        sessionAlias: "s_a",
-        chunk: "review output",
-        conversation: corr("turn_a", "bot_a"),
-      },
-    } as never);
-    store.applyEvent({
-      kind: "control-event",
-      instanceId: "inst_1",
-      event: {
-        type: "tool-event",
-        chatKey: "bot:conversation_g:topic_1",
-        sessionAlias: "s_a",
-        step: { toolCallId: "tc_a", toolName: "read", kind: "read", status: "completed", title: "a.ts" },
-        conversation: corr("turn_a", "bot_a"),
-      },
-    } as never);
-    store.applyEvent({
-      kind: "control-event",
-      instanceId: "inst_1",
-      event: {
-        type: "turn-output",
-        chatKey: "bot:conversation_g:topic_1",
-        sessionAlias: "s_b",
-        chunk: "test output",
-        conversation: corr("turn_b", "bot_b"),
-      },
-    } as never);
-    store.applyEvent({
-      kind: "control-event",
-      instanceId: "inst_1",
-      event: {
-        type: "tool-event",
-        chatKey: "bot:conversation_g:topic_1",
-        sessionAlias: "s_b",
-        step: { toolCallId: "tc_b", toolName: "bash", kind: "execute", status: "completed", title: "run tests" },
-        conversation: corr("turn_b", "bot_b"),
-      },
-    } as never);
-    store.applyEvent({
-      kind: "control-event",
-      instanceId: "inst_1",
-      event: {
-        type: "turn-finished",
-        chatKey: "bot:conversation_g:topic_1",
-        sessionAlias: "s_a",
-        ok: true,
-        conversation: corr("turn_a", "bot_a"),
-      },
-    } as never);
-    store.applyEvent({
-      kind: "control-event",
-      instanceId: "inst_1",
-      event: {
-        type: "turn-finished",
-        chatKey: "bot:conversation_g:topic_1",
-        sessionAlias: "s_b",
-        ok: true,
-        conversation: corr("turn_b", "bot_b"),
-      },
-    } as never);
-
-    // One complete entry per member, both still present after the second finish.
-    expect(Object.keys(store.completeRunParts).sort()).toEqual(["turn_a", "turn_b"]);
-    expect(store.completeRunParts["turn_a"].map((p) => p.type)).toEqual(["text", "tool"]);
-    expect(store.completeRunParts["turn_b"].map((p) => p.type)).toEqual(["text", "tool"]);
-    const partA = store.completeRunParts["turn_a"][1];
-    const partB = store.completeRunParts["turn_b"][1];
-    expect(partA).toMatchObject({ type: "tool", step: { toolCallId: "tc_a" } });
-    expect(partB).toMatchObject({ type: "tool", step: { toolCallId: "tc_b" } });
-
-    // Durable bot rows resolve to their own member trace, not the newest one.
-    store.memberTurnsById = {
-      turn_a: {
-        id: "turn_a", runId: "run_multi", conversationId: "conversation_g", topicId: "topic_1",
-        botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
-        state: "completed", createdAt: "now", promptRequestId: "src_a",
-      },
-      turn_b: {
-        id: "turn_b", runId: "run_multi", conversationId: "conversation_g", topicId: "topic_1",
-        botId: "bot_b", batch: 1, memberIndex: 1, attempt: 1, origin: "human-explicit",
-        state: "completed", createdAt: "now", promptRequestId: "src_b",
-      },
-    };
-    mockRpc.mockImplementation(async (_instance: string, type: string, payload: { memberTurnId?: string; attempt?: number }) => {
-      if (type === "control.runs.details.batch") return { runs: [{ ...run, memberTurns: Object.values(store.memberTurnsById) }] };
-      if (type === "control.runs.trace.get") return { memberTurnId: payload.memberTurnId, attempt: payload.attempt,
-        recordingState: "unavailable", events: [], hasMore: false };
-      throw new Error(`unexpected ${type}`);
-    });
-    const wrapper = mount(GroupTranscript, {
-      props: { bots: BOTS },
-      attachTo: document.body,
-      global: { plugins: [i18n] },
-    });
-    // One Agent row per MemberTurn, each with its own bubble trigger; no
-    // aggregate run card remains.
-    const rows = wrapper.findAll('[data-test="agent-turn-row"]');
-    expect(rows).toHaveLength(2);
-    expect(rows[0]!.attributes("data-member-turn-id")).toBe("turn_a");
-    expect(rows[1]!.attributes("data-member-turn-id")).toBe("turn_b");
-    expect(wrapper.find('[data-test="group-run-card"]').exists()).toBe(false);
-    const bubbles = wrapper.findAll('[data-test="agent-thinking-bubble"]');
-    expect(bubbles).toHaveLength(2);
-    await bubbles[0]!.trigger("click");
-    await flushPromises();
-    const detail = document.querySelector('[data-test="group-detail-card"]');
-    expect(detail?.textContent).toContain("review output");
-    expect(detail?.textContent).not.toContain("test output");
-    await bubbles[1]!.trigger("click");
-    // Single-open policy: the last opened detail wins and shows that member's
-    // recorded trace only.
-    expect(wrapper.findComponent({ name: "TraceOverlay" }).exists()).toBe(true);
-    await flushPromises();
-    expect(document.querySelector('[data-test="group-detail-card"]')?.textContent).toContain("test output");
-    expect(document.querySelector('[data-test="group-detail-card"]')?.textContent).not.toContain("review output");
-    wrapper.unmount();
-  });
 
   it("keeps live member traces separate on reconnect state snapshots", async () => {
     const store = useGroupsStore();
@@ -1379,9 +1216,6 @@ describe("useGroupsStore", () => {
         },
       ],
     } as never);
-    expect(Object.keys(store.runParts).sort()).toEqual(["turn_a", "turn_b"]);
-    expect(store.runParts["turn_a"]).toEqual([{ type: "text", text: "alpha work" }]);
-    expect(store.runParts["turn_b"]).toEqual([{ type: "text", text: "beta work" }]);
     const liveA = store.liveTurnsByMember["turn_a"];
     const liveB = store.liveTurnsByMember["turn_b"];
     expect(liveA?.parts).toEqual([{ type: "text", text: "alpha work" }]);
@@ -1421,119 +1255,6 @@ describe("useGroupsStore", () => {
     expect(store.liveTurnsByMember["turn_b"]!.parts).toEqual([
       { type: "text", text: "B1" }, { type: "reasoning", text: "thinking" }, { type: "text", text: "B2" },
     ]);
-  });
-
-  describe("PR9 repeated Bot assignment trace joins", () => {
-    async function setup(includeSecondMember: boolean, promptRequestId?: string) {
-      const store = useGroupsStore();
-      store.instanceId = "inst_1";
-      store.selectedGroupId = store.activeConversationId = "conversation_g";
-      store.activeTopicId = "topic_1";
-      const run: ConversationRunDto = { id: "run_repeat", conversationId: "conversation_g", topicId: "topic_1",
-        requestMessageId: "msg_1", requestId: "req_repeat", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
-      store.activeRun = run;
-      const seedTrace = (id: string, source: string, text: string) => {
-        const member: MemberTurnSummaryDto = { id, runId: run.id, conversationId: run.conversationId,
-          topicId: run.topicId, botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff", state: "running",
-          promptRequestId: source, createdAt: "now", startedAt: "2026-10-05T00:00:00.000Z" };
-        const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
-          memberTurnId: id, botId: member.botId };
-        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
-          type: "member-turn-started", run, memberTurn: member,
-        } } as never);
-        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
-          type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, chunk: text,
-        } } as never);
-        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
-          type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
-        } } as never);
-        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
-          type: "member-turn-finished", run, memberTurn: { ...member, state: "completed" },
-        } } as never);
-      };
-      seedTrace("first_a", "source_first", "First assignment trace");
-      if (includeSecondMember) seedTrace("second_a", "source_second", "Second assignment trace");
-      mockRpc.mockImplementation(async (_instance: string, type: string, payload: { memberTurnId?: string; attempt?: number }) => {
-        if (type === "control.conversation.history") return historyWith([{ id: "msg_second", conversationId: run.conversationId,
-          topicId: run.topicId, runId: run.id, seq: 1, role: "bot", senderBotId: "bot_a", content: "Canonical second answer",
-          ...(promptRequestId ? { promptRequestId } : {}), createdAt: "2026-10-05T00:00:00.000Z" }]);
-        if (type === "control.runs.list") return { runs: [run], activeRunId: run.id };
-        if (type === "control.runs.get") return { run: { ...run, memberTurns: Object.values(store.memberTurnsById) } };
-        if (type === "control.runs.details.batch") return { runs: [{ ...run, memberTurns: Object.values(store.memberTurnsById) }] };
-        if (type === "control.runs.trace.get") {
-          const text = payload.memberTurnId === "second_a" ? "Second assignment trace" : "First assignment trace";
-          return { memberTurnId: payload.memberTurnId, attempt: payload.attempt, recordingState: "complete",
-            events: [{ seq: 1, kind: "text", payload: { text }, createdAt: "2026-10-05T00:00:01.000Z" }],
-            nextSeq: 1, hasMore: false };
-        }
-        throw new Error(`unexpected ${type}`);
-      });
-      await store.loadHistory("inst_1", run.conversationId, run.topicId);
-      const wrapper = mount(GroupTranscript, { attachTo: document.body, props: { bots: BOTS }, global: { plugins: [i18n] } });
-      await flushPromises();
-      return { wrapper };
-    }
-
-    it("uses canonical history text when an exact source has no matching local MemberTurn", async () => {
-      const { wrapper } = await setup(false, "source_second");
-      const canonical = wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer");
-      expect(canonical).toHaveLength(1);
-      expect(wrapper.find('[data-message-id="msg_second"] [data-test="trace-link"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="group-unresolved-activity"]').exists()).toBe(true);
-      await wrapper.get('[data-member-turn-id="first_a"] [data-test="agent-thinking-bubble"]').trigger("click");
-      await flushPromises();
-      const detail = document.querySelector('[data-test="group-detail-card"]');
-      // Exact-source mismatch is a contradiction: the reply stays canonical and
-      // the unresolved activity row explains the missing join, with no trace.
-      expect(detail?.textContent).toContain("does not match the recorded member turns");
-      expect(detail?.textContent).not.toContain("First assignment trace");
-      expect(detail?.textContent).not.toContain("Canonical second answer");
-      wrapper.unmount();
-    });
-
-    it("does not guess a legacy source among multiple assignments of the same Bot", async () => {
-      const { wrapper } = await setup(true);
-      expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
-      expect(wrapper.find('[data-message-id="msg_second"] [data-test="trace-link"]').exists()).toBe(false);
-      expect(wrapper.findAll('[data-test="group-unresolved-activity"]')).toHaveLength(2);
-      await wrapper.get('[data-member-turn-id="first_a"] [data-test="agent-thinking-bubble"]').trigger("click");
-      await flushPromises();
-      const ambiguous = document.querySelector('[data-test="group-detail-card"]')?.textContent ?? "";
-      // Two same-Bot assignments cannot prove which one owns the legacy reply,
-      // so the candidate carries the ambiguity and no trace is attached.
-      expect(ambiguous).toContain("could not be linked to exactly one member turn");
-      expect(ambiguous).not.toContain("Second assignment trace");
-      expect(ambiguous).not.toContain("First assignment trace");
-      wrapper.unmount();
-    });
-
-    it("joins a repeated Bot's exact source to its own completed trace", async () => {
-      const { wrapper } = await setup(true, "source_second");
-      const row = wrapper.get('[data-member-turn-id="second_a"]');
-      expect(row.findAllComponents({ name: "StreamMarkdown" }).map((part: { props: (name: string) => unknown }) => part.props("text") as string)).toEqual(["Canonical second answer"]);
-      expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
-      await row.get('[data-test="trace-link"]').trigger("click");
-      await flushPromises();
-      const detail = document.querySelector('[data-test="group-detail-card"]');
-      expect(detail?.textContent).toContain("Second assignment trace");
-      expect(detail?.textContent).not.toContain("First assignment trace");
-      expect(detail?.textContent).not.toContain("Canonical second answer");
-      wrapper.unmount();
-    });
-
-    it("keeps unambiguous legacy history trace joins compatible", async () => {
-      const { wrapper } = await setup(false);
-      const row = wrapper.get('[data-member-turn-id="first_a"]');
-      expect(row.findAllComponents({ name: "StreamMarkdown" }).map((part: { props: (name: string) => unknown }) => part.props("text") as string)).toEqual(["Canonical second answer"]);
-      expect(wrapper.findAllComponents({ name: "StreamMarkdown" }).filter((part) => part.props("text") === "Canonical second answer")).toHaveLength(1);
-      await row.get('[data-test="trace-link"]').trigger("click");
-      await flushPromises();
-      const detail = document.querySelector('[data-test="group-detail-card"]');
-      expect(detail?.getAttribute("data-member-turn-id")).toBe("first_a");
-      expect(detail?.textContent).toContain("First assignment trace");
-      expect(detail?.textContent).not.toContain("Canonical second answer");
-      wrapper.unmount();
-    });
   });
 
   it("retries an uncertain prompt with the frozen target, not the current one", async () => {
@@ -3284,11 +3005,11 @@ describe("useGroupsStore durable trace cache", () => {
     expect(page?.hasEarlier).toBe(true);
   });
 
-  it("reconnect refreshes requested details and only the open attempt trace", async () => {
+  it("reconnect refreshes every requested Run detail once", async () => {
     const store = await ready();
     mockRpc.mockResolvedValue({ runs: [{ ...run, memberTurns: [member] }] });
     store.ensureRunDetails([run.id]);
-    store.setOpenTrace(member.id, 2);
+    store.ensureTracePage(member.id, 2);
     await flushPromises();
     expect(store.tracePages[key]).toBeDefined();
     mockRpc.mockClear();
@@ -3305,12 +3026,7 @@ describe("useGroupsStore durable trace cache", () => {
     store.refreshRunDetails();
     await flushPromises();
     expect(mockRpc.mock.calls.filter((call) => call[1] === "control.runs.details.batch")).toHaveLength(1);
-    expect(traceCalls).toEqual([{ memberTurnId: member.id, attempt: 2, afterSeq: undefined }]);
-    store.setOpenTrace(null);
-    mockRpc.mockClear();
-    store.refreshRunDetails();
-    await flushPromises();
-    expect(mockRpc.mock.calls.filter((call) => call[1] === "control.runs.trace.get")).toHaveLength(0);
+    expect(traceCalls).toEqual([]);
   });
 
   it("drops live frames whose explicit attempt or source contradicts the durable MemberTurn", () => {
@@ -3329,7 +3045,6 @@ describe("useGroupsStore durable trace cache", () => {
     output("wrong source", { attempt: 2, sourceTurnId: "source_other" });
     expect(store.liveTurnForMember(member.id)).toBeNull();
     output("current attempt", { attempt: 2, sourceTurnId: "source_a" });
-    expect(store.completeRunPartsForMember(member.id, 2)).toBeUndefined();
     expect(store.liveTurnForMember(member.id)).toMatchObject({ attempt: 2, parts: [{ type: "text", text: "current attempt" }] });
   });
 
@@ -3342,164 +3057,6 @@ describe("useGroupsStore durable trace cache", () => {
     store.activeTopicId = "topic_2";
     expect(store.tracePages).toEqual({});
     expect(store.runHistoryDetails).toEqual({});
-  });
-
-  it.each([false, true])("queues terminal catch-up behind an initial read with reopen=%s", async (reopen) => {
-    const store = await ready();
-    vi.useFakeTimers();
-    try {
-      const first = Promise.withResolvers<unknown>();
-      const requests: Array<Record<string, unknown>> = [];
-      mockRpc.mockImplementation((_instance: string, type: string, payload: Record<string, unknown>) => {
-        if (type === "control.runs.trace.get") {
-          requests.push(payload);
-          if (requests.length === 1) return first.promise;
-          return Promise.resolve({ memberTurnId: member.id, attempt: 2, recordingState: "complete",
-            events: [{ seq: 3, kind: "text", payload: { text: "durable tail" }, createdAt: "t3" }],
-            nextSeq: 3, hasMore: false });
-        }
-        throw new Error(`unexpected ${type}`);
-      });
-
-      store.setOpenTrace(member.id, 2);
-      expect(requests).toEqual([{ conversationId: "conversation_g", topicId: "topic_1", runId: run.id,
-        memberTurnId: member.id, attempt: 2, limit: 100 }]);
-      expect(store.tracePages[key]).toMatchObject({ loading: true, events: [] });
-      if (reopen) {
-        store.setOpenTrace(null);
-        store.setOpenTrace(member.id, 2);
-      }
-
-      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
-        type: "member-turn-finished", run: { ...run, state: "completed" },
-        memberTurn: { ...member, state: "completed" },
-      } } as never);
-      expect(requests).toHaveLength(1);
-
-      first.resolve({ memberTurnId: member.id, attempt: 2, recordingState: "recording",
-        events: [
-          { seq: 1, kind: "reasoning", payload: { text: "scanning" }, createdAt: "t1" },
-          { seq: 2, kind: "text", payload: { text: "partial answer" }, createdAt: "t2" },
-        ], nextSeq: 2, hasMore: true });
-      await flushPromises();
-
-      expect(requests.map((request) => request.afterSeq)).toEqual([undefined, 2]);
-      expect(store.tracePages[key]).toEqual({
-        events: [
-          { seq: 1, kind: "reasoning", payload: { text: "scanning" }, createdAt: "t1" },
-          { seq: 2, kind: "text", payload: { text: "partial answer" }, createdAt: "t2" },
-          { seq: 3, kind: "text", payload: { text: "durable tail" }, createdAt: "t3" },
-        ],
-        nextSeq: 3,
-        hasMore: false,
-        hasEarlier: false,
-        firstSeq: 1,
-        recordingState: "complete",
-        loading: false,
-        error: null,
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("coalesces streamed frames into one 500ms cursor read that commits the text tail", async () => {
-    const store = await ready();
-    const requests: Array<Record<string, unknown>> = [];
-    const firstPage = { memberTurnId: member.id, attempt: 2, recordingState: "recording",
-      events: Array.from({ length: 100 }, (_, index) => ({ seq: index + 1, kind: "reasoning" as const,
-        payload: { text: `step ${index + 1}` }, createdAt: `t${index + 1}` })),
-      nextSeq: 100, hasMore: true };
-    mockRpc.mockImplementation((_instance: string, type: string, payload: Record<string, unknown>) => {
-      if (type === "control.runs.trace.get") {
-        requests.push(payload);
-        if (requests.length === 1) return Promise.resolve(firstPage);
-        return Promise.resolve({ memberTurnId: member.id, attempt: 2, recordingState: "recording",
-          events: [{ seq: 101, kind: "text", payload: { text: "hello world" }, createdAt: "t101" }],
-          nextSeq: 101, hasMore: false });
-      }
-      throw new Error(`unexpected ${type}`);
-    });
-    const stream = (chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
-      type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "s_a", chunk,
-      conversation: { conversationId: "conversation_g", topicId: "topic_1", runId: run.id,
-        memberTurnId: member.id, botId: "bot_a", attempt: 2, sourceTurnId: "source_a" },
-    } } as never);
-
-    store.setOpenTrace(member.id, 2);
-    await flushPromises();
-    expect(requests).toHaveLength(1);
-    expect(store.tracePages[key]?.events).toHaveLength(100);
-
-    vi.useFakeTimers();
-    try {
-      stream("hello");
-      vi.advanceTimersByTime(400);
-      stream(" world");
-      expect(store.liveTurnForMember(member.id)?.parts).toEqual([{ type: "text", text: "hello world" }]);
-
-      await vi.advanceTimersByTimeAsync(99);
-      expect(requests).toHaveLength(1);
-      await vi.advanceTimersByTimeAsync(1);
-      await flushPromises();
-
-      expect(requests.map((request) => request.afterSeq)).toEqual([undefined, 100]);
-      const page = store.tracePages[key]!;
-      expect(page.events.map((event) => event.seq)).toEqual([
-        ...Array.from({ length: 100 }, (_, index) => index + 1), 101,
-      ]);
-      expect(page.events[100]).toEqual({ seq: 101, kind: "text", payload: { text: "hello world" }, createdAt: "t101" });
-      expect(page).toMatchObject({ nextSeq: 101, hasMore: false, recordingState: "recording", loading: false, error: null });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("drops the scheduled catch-up when the trace closes or its scope leaves", async () => {
-    const store = await ready();
-    const requests: Array<Record<string, unknown>> = [];
-    const opened = { memberTurnId: member.id, attempt: 2, recordingState: "recording",
-      events: [{ seq: 1, kind: "text", payload: { text: "opened" }, createdAt: "t1" }], nextSeq: 1, hasMore: true };
-    mockRpc.mockImplementation((_instance: string, type: string, payload: Record<string, unknown>) => {
-      if (type === "control.runs.trace.get") { requests.push(payload); return Promise.resolve(opened); }
-      throw new Error(`unexpected ${type}`);
-    });
-    const stream = (chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
-      type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "s_a", chunk,
-      conversation: { conversationId: "conversation_g", topicId: "topic_1", runId: run.id,
-        memberTurnId: member.id, botId: "bot_a", attempt: 2, sourceTurnId: "source_a" },
-    } } as never);
-
-    store.setOpenTrace(member.id, 2);
-    await flushPromises();
-    expect(requests).toHaveLength(1);
-
-    vi.useFakeTimers();
-    try {
-      stream("late");
-      store.setOpenTrace(null);
-      await vi.advanceTimersByTimeAsync(500);
-      await flushPromises();
-      expect(requests).toHaveLength(1);
-
-      stream("after close");
-      await vi.advanceTimersByTimeAsync(500);
-      await flushPromises();
-      expect(requests).toHaveLength(1);
-      expect(store.tracePages[key]?.events).toEqual(opened.events);
-
-      store.setOpenTrace(member.id, 2);
-      await flushPromises();
-      expect(requests).toHaveLength(2);
-      stream("during");
-      store.activeTopicId = "topic_2";
-      await vi.advanceTimersByTimeAsync(500);
-      await flushPromises();
-      expect(requests).toHaveLength(2);
-      expect(store.tracePages).toEqual({});
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });
 

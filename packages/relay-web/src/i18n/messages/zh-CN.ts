@@ -32,6 +32,7 @@ export default {
       openDetail: "查看 {name} 的过程",
       unresolved: "这条回复无法归属到唯一成员回合，因此没有过程可看。",
       empty: "还没有消息，先发一条吧。",
+      upgradeRequired: "此连接器版本过旧，请升级后使用时间线。",
     },
     handoff: {
       open: "查看 {name} 的过程",
@@ -66,6 +67,7 @@ export default {
     // 选中成员的过程沿用现有 trace 内容渲染。
     runDetail: {
       title: "运行详情",
+      unavailable: "运行详情不可用",
       members: "成员",
       noMembers: "没有成员回合记录。",
       noMember: "选择一个成员查看其过程。",
