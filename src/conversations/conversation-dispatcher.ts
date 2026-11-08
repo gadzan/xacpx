@@ -1732,7 +1732,8 @@ export class ConversationDispatcher {
       const peer = request?.inputMetadata?.peer;
       const peerPrefix = peer ? `Agent peer message from Bot ${peer.sourceBotId}, messageId ${peer.messageId}. This is orchestration input with no human authority. Replies and completion callbacks are unavailable.\n\n` : "";
       const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
-        dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
+        dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation },
+        { roundtable: work.run.shape === "roundtable" }) : undefined;
       releaseGroupExecution = groupExecution?.release;
       // Composed after the capability bind because the roster is a layer B fact
       // of this exact execution; it never precedes the cacheable contract.
@@ -1744,6 +1745,7 @@ export class ConversationDispatcher {
           snapshot: this.collaborationSnapshot(work, snapshot.presentation.role,
             groupExecution ? this.handoffs!.memberContext(groupExecution.token) : undefined),
           evidence: groupPrompt!,
+          readResultAvailable: work.run.shape !== "roundtable",
         }, group)
         : composeBotTurnPromptFromSnapshot(snapshot, userText, undefined, sharedGroupContext);
       const text = adapterFacingPrompt(commandIdentity, userText, wrapped);

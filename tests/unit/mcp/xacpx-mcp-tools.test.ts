@@ -1399,6 +1399,18 @@ test("Direct launch exposes only truthful one-way messaging tools and preserves 
   expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_say", "group_send", "group_read_result"]);
 });
 
+test("a roundtable launch exposes group_say only, while fanout keeps both assignment tools", async () => {
+  const transport = createMemoryTransport(async () => ({ taskId: "unused", status: "running" }));
+  const roundtable = buildXacpxMcpToolRegistry({ transport,
+    coordinatorSession: "group-execution:roundtable:live", sourceHandle: "group-execution:roundtable:live" });
+  expect(roundtable.map((tool) => tool.name)).toEqual(["group_say"]);
+  // The fanout shape is unchanged: the hidden tools come back for it.
+  for (const token of ["group-execution:live", "group-execution:roundtable"]) {
+    const fanout = buildXacpxMcpToolRegistry({ transport, coordinatorSession: token, sourceHandle: token });
+    expect(fanout.map((tool) => tool.name)).toEqual(["group_say", "group_send", "group_read_result"]);
+  }
+});
+
 test("Group handoff tools describe their own surface instead of restating the contract", async () => {
   const calls: unknown[] = [];
   const receipt = { runId: "run", assignmentId: "assignment", memberTurnId: "member", messageId: "message" };

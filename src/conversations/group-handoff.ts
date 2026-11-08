@@ -9,6 +9,17 @@ import type { AcceptPublicHandoffInput, ConversationStore, GroupSayReceipt, Grou
 import { isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
 
 export const GROUP_EXECUTION_PREFIX = "group-execution:";
+/**
+ * A roundtable speaker's launch token. The Run shape rides on the capability
+ * itself because the MCP server subprocess only ever sees this launch identity,
+ * never the Run row: it must decide the tool surface from the token alone.
+ * Still matches `GROUP_EXECUTION_PREFIX`, so every existing group-launch gate
+ * (identity resolution, session ownership, worker rotation) is unchanged.
+ */
+export const GROUP_ROUNDTABLE_EXECUTION_PREFIX = `${GROUP_EXECUTION_PREFIX}roundtable:`;
+export function isRoundtableExecutionToken(token: string | undefined): boolean {
+  return token?.startsWith(GROUP_ROUNDTABLE_EXECUTION_PREFIX) === true;
+}
 export const MAX_GROUP_TASK_LENGTH = 16_000;
 export const MAX_GROUP_EXPECTED_OUTPUT_LENGTH = 8_000;
 export const MAX_GROUP_SAY_LENGTH = 1_000;
@@ -105,9 +116,9 @@ export class GroupHandoffService {
     beforeCommitGates?: () => Promise<void>;
   }) {}
 
-  bindExecution(binding: ExecutionBinding): { token: string; release: () => void } {
+  bindExecution(binding: ExecutionBinding, options: { roundtable?: boolean } = {}): { token: string; release: () => void } {
     if (this.closed) throw new ConversationError("runtime_closed", "Group handoff runtime is closed");
-    const token = `${GROUP_EXECUTION_PREFIX}${randomUUID()}`;
+    const token = `${options.roundtable ? GROUP_ROUNDTABLE_EXECUTION_PREFIX : GROUP_EXECUTION_PREFIX}${randomUUID()}`;
     this.executions.set(token, Object.freeze({ ...binding }));
     return { token, release: () => { this.executions.delete(token); } };
   }
@@ -171,6 +182,14 @@ export class GroupHandoffService {
     }
     if (!requestSnapshotMatches(this.options.store.getMessage(run.requestMessageId), run)) {
       throw new ConversationError("request_snapshot_mismatch", "Group result read lost its request snapshot");
+    }
+    // Second gate, mirroring `acceptPublicHandoff`'s roundtable refusal: a
+    // discussion Run has no assignments of its own, and its pre-generated turns
+    // must never be readable as if they were settled public work. The hidden
+    // tool surface is the first line; this holds even for a direct call.
+    if (run.shape === "roundtable") {
+      throw new ConversationError("group_read_result_from_roundtable_refused",
+        "a roundtable turn cannot read assignment results");
     }
     const args = input.args as Record<string, unknown>;
     if (!args || typeof args !== "object" || Array.isArray(args)

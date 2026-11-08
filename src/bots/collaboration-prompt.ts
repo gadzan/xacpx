@@ -30,14 +30,15 @@ export const GROUP_COLLABORATION_CONTRACT = [
 /**
  * Layer A for a roundtable turn. Byte-identical for every speaker and kept
  * separate from the fanout contract: a discussion turn may not assign work,
- * and silence is only ever an explicit `(pass)`. Tool hiding is a later UI
- * concern; the store refuses `group_send` from a roundtable Run regardless.
+ * and silence is only ever an explicit `(pass)`. The launch does not expose
+ * `group_send` or `group_read_result` at all, and both the handoff service and
+ * the store still refuse them for a roundtable Run.
  */
 export const GROUP_ROUNDTABLE_CONTRACT = [
   "You are speaking once in a sequential Group discussion.",
   "Read the public messages above. Build on earlier speakers; do not repeat them.",
   "Add only new analysis, a concrete decision, or a named risk.",
-  "Do not call group_send or group_read_result. Do not assign work.",
+  "group_send and group_read_result are unavailable in a discussion. Do not assign work.",
   "Reply with exactly one public message.",
   "If you have nothing material to add, reply exactly: (pass)",
 ].join("\n");
@@ -70,6 +71,10 @@ export interface CollaborationPromptInput {
   contract: string;
   snapshot: CollaborationSnapshot;
   evidence: CollaborationEvidence;
+  /** False for a roundtable turn, whose launch does not expose
+   *  `group_read_result`; the truncation marker must not point at a tool the
+   *  turn cannot call. Defaults to available. */
+  readResultAvailable?: boolean;
 }
 
 // Layer B is labelled server-generated, so a model-supplied value must never be
@@ -83,6 +88,7 @@ const LAYER_B_CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g;
 // contract + snapshot + evidence within the 26000-char turn budget.
 export const MAX_LAYER_B_CHARS = 1_100;
 const LAYER_B_TRUNCATION_MARKER = "\n[…dynamic snapshot truncated to keep the turn prompt within its length bound; read full state with group_read_result]";
+const LAYER_B_TRUNCATION_MARKER_WITHOUT_READS = "\n[…dynamic snapshot truncated to keep the turn prompt within its length bound]";
 
 // Evidence is bounded as a whole. Layer C renders the assignment first and the
 // public context second, and that context ENDS with the human request, so the
@@ -189,9 +195,10 @@ export function buildCollaborationPrompt(input: CollaborationPromptInput): strin
     layerBLine("Budget or authorization blockers", snapshot.budgetOrAuthorizationBlockers),
     layerBLine("Progress version", snapshot.progressVersion),
   ].join("\n");
+  const truncationMarker = input.readResultAvailable === false ? LAYER_B_TRUNCATION_MARKER_WITHOUT_READS : LAYER_B_TRUNCATION_MARKER;
   const layerB = rendered.length <= MAX_LAYER_B_CHARS
     ? rendered
-    : `${prefix(rendered, MAX_LAYER_B_CHARS - LAYER_B_TRUNCATION_MARKER.length)}${LAYER_B_TRUNCATION_MARKER}`;
+    : `${prefix(rendered, MAX_LAYER_B_CHARS - truncationMarker.length)}${truncationMarker}`;
 
   return [
     "Collaboration contract (stable across every turn of this Group Topic):",

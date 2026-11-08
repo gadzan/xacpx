@@ -78,6 +78,29 @@ test("Group MCP server instructions name the tools and the runtime-bound provena
   } finally { await client.close(); await server.close(); }
 });
 
+test("a roundtable launch lists only group_say and refuses direct assignment calls", async () => {
+  const calls: unknown[] = [];
+  const token = "group-execution:roundtable:trusted-launch";
+  const transport = createMemoryTransport(async () => { throw new Error("Roundtable cannot delegate"); });
+  transport.groupSend = async (input) => { calls.push(input); return { runId: "run", assignmentId: "a", memberTurnId: "m", messageId: "x" }; };
+  transport.groupReadResult = async (input) => { calls.push(input); return { kind: "catalog", assignments: [], nextOffset: null }; };
+  const server = createXacpxMcpServer({ transport, coordinatorSession: token, sourceHandle: token });
+  const client = new Client({ name: "roundtable-test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(b); await client.connect(a);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["group_say"]);
+    // Hiding is the first gate; the server itself no longer knows either tool,
+    // so a caller that guessed the name is refused before any transport call.
+    await expect(client.callTool({ name: "group_send", arguments: { to: "bot_b", task: "assign" } })).rejects.toBeDefined();
+    await expect(client.callTool({ name: "group_read_result", arguments: {} })).rejects.toBeDefined();
+    expect(calls).toEqual([]);
+    const instructions = client.getInstructions() ?? "";
+    expect(instructions).toContain("group_say");
+    expect(instructions).toContain("does not expose group_send or group_read_result");
+  } finally { await client.close(); await server.close(); }
+});
+
 test("lists 20 MCP tools and hides coordinator/source identity from input schemas", async () => {
   const transport = createMemoryTransport(
     async () => ({ taskId: "task-1", status: "needs_confirmation" }),
