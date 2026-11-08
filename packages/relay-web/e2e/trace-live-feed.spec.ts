@@ -62,8 +62,19 @@ function toolEvent(seq: number, index: number): ConversationRunTraceEventDto {
 }
 
 const detail = (page: Page) => page.locator('[data-test="group-detail-card"], [data-test="group-detail-sheet"]');
-const liveRow = (page: Page) => page.locator('[data-test="agent-turn-row"][data-member-turn-id="turn_live"]')
-  .locator('[data-test="agent-thinking-bubble"], [data-test="trace-link"]');
+/** The live member has no durable message, so it surfaces as one timeline
+ *  activity row. Above lg its avatar opens the Run-wide drawer; below lg the
+ *  row's identity is hidden on purpose, so the status bar speaker is the same
+ *  key for the same Run and member. */
+async function openLiveDrawer(page: Page): Promise<void> {
+  const narrow = (page.viewportSize()?.width ?? 1280) < 1024;
+  const trigger = narrow
+    ? page.getByTestId("conversation-status-speaker")
+    : page.getByTestId("timeline-activity-avatar");
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await expect(detail(page)).toBeVisible();
+}
 
 function scroller(page: Page, mobile: boolean) {
   return mobile
@@ -127,6 +138,14 @@ async function openLiveFeed(page: Page, hub: MockHub) {
       case "control.runs.details.batch": result = {
         runs: [current].filter((run) => payload.runIds.includes(run.id)), missingRunIds: [],
       }; break;
+      case "control.conversation.timeline": result = {
+        ...scope,
+        entries: [
+          { kind: "message", key: `message:${request.id}`, anchorSeq: request.seq, message: request },
+          { kind: "activity", key: `activity:${liveMember.id}`, anchorSeq: 2, runId: liveMember.runId, memberTurn: liveMember },
+        ],
+        oldestSeq: 1, newestSeq: 2, hasMoreBefore: false, hasMoreAfter: false,
+      }; break;
       case "control.runs.trace.get": {
         const remaining = events.filter((event) => event.seq > (payload.afterSeq ?? 0));
         const pageEvents = remaining.slice(0, payload.limit ?? 100);
@@ -152,10 +171,9 @@ async function openLiveFeed(page: Page, hub: MockHub) {
   await loginAndShowInstances(page);
   await page.getByTestId("instance-nav-groups").click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
-  await expect(page.getByTestId("group-transcript-scroller")).toBeVisible();
-  await expect(liveRow(page)).toHaveCount(1);
-  await liveRow(page).click();
-  await expect(detail(page)).toBeVisible();
+  await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
+  await expect(page.getByTestId("timeline-activity")).toHaveCount(1);
+  await openLiveDrawer(page);
   const sendStep = (step: ToolStepDto) => hub.send({
     kind: "control-event", instanceId: "i1",
     event: {
@@ -196,7 +214,7 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   await expect(detailEl).toContainText("Tool 01");
   await expect(detailEl).toContainText("Tool 36");
   await expect(detailEl.getByTestId("group-trace-step")).toHaveCount(36);
-  await expect(page.getByTestId("group-trace-fold")).toHaveCount(0);
+  await expect(detailEl.getByTestId("run-detail")).toBeVisible();
 
   await expect(stackRows).toHaveCount(mobile ? 2 : 3);
   await expect(stackRows.first()).toContainText("Tool 36");
@@ -292,8 +310,7 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   if (mobile) {
     await page.keyboard.press("Escape");
     await expect(detail(page)).toHaveCount(0);
-    await liveRow(page).click();
-    await expect(detail(page)).toBeVisible();
+    await openLiveDrawer(page);
     await expect(detail(page).getByTestId("tool-step-body").first()).toContainText("output 1");
   }
 

@@ -24,7 +24,6 @@ import { useChatStore } from "../stores/chat";
 import { useComposerStore } from "../stores/composer";
 import BotDialog from "../components/BotDialog.vue";
 import ConversationPromptInput from "../components/ConversationPromptInput.vue";
-import ConversationMessageList from "../components/ConversationMessageList.vue";
 import DirectBotPane from "../components/DirectBotPane.vue";
 import InstanceTree from "../components/InstanceTree.vue";
 
@@ -42,6 +41,7 @@ function seedLocalInstance(): void {
       agents: [{ name: "codex", driver: "codex" }],
       workspaces: [{ name: "repo", cwd: "/repo" }],
       agentCatalog: [],
+      capabilities: [RELAY_CAPABILITIES.conversationTimelineV1],
     } as never,
   ];
 }
@@ -1652,7 +1652,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", [], []]);
     });
 
-    it("shows one action while a run is active: Stop when empty, Send once typed", async () => {
+    it("keeps Send as the composer's only action while a run is active", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
       directBots.activeRun = {
@@ -1677,113 +1677,25 @@ describe("Direct Bot Components", () => {
       // composes into it.
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
-
-      // Busy + empty draft: Stop only. Stop dispatches the store's
-      // queue-clearing stop, which cancels the queued accepts and the owner.
-      const stopSpy = vi.spyOn(directBots, "stopCurrentAndQueued").mockResolvedValue(undefined);
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-      await wrapper.find('[data-test="stop-run-button"]').trigger("click");
-      await flushPromises();
-      expect(stopSpy).toHaveBeenCalledTimes(1);
-
-      // Typed text flips Stop to Send. Enter sends: the backend queues the
-      // prompt behind the running turn, so the user is never stuck unable to
-      // send what they just typed.
-      await textarea.setValue("steer this");
+      // Stop all lives in the status bar, so the card never renders a second
+      // stop control, whatever the draft or cancel state is.
       expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
-      const send = wrapper.find('[data-test="send-prompt-button"]');
-      expect(send.exists()).toBe(true);
-      expect((send.element as HTMLButtonElement).disabled).toBe(false);
+      const send = () => wrapper.find('[data-test="send-prompt-button"]');
+      expect(send().exists()).toBe(true);
+      expect((send().element as HTMLButtonElement).disabled).toBe(true);
+
+      // Typed text makes the queued send usable: the backend accepts a prompt
+      // mid-run, so the user is never stuck unable to send what they just typed.
+      await textarea.setValue("steer this");
+      expect((send().element as HTMLButtonElement).disabled).toBe(false);
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
       expect(wrapper.emitted("send")).toBeTruthy();
 
-      // Clearing the draft reveals Stop again, and Stop never sends on its own.
-      const sendsBefore = wrapper.emitted("send")?.length ?? 0;
-      await textarea.setValue("");
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-      await wrapper.find('[data-test="stop-run-button"]').trigger("click");
-      await flushPromises();
-      expect(wrapper.emitted("send")?.length ?? 0).toBe(sendsBefore);
-      expect(stopSpy).toHaveBeenCalledTimes(2);
-    });
-    it("keeps Stop mounted while a cancel is in flight even after the user types", async () => {
-      const directBots = useDirectBotsStore();
-      directBots.instanceId = "i1";
-      directBots.activeRun = {
-        id: "run_1",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "running",
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      };
+      // A cancel in flight keeps Send (never a card-level Stop) and only dims it.
       directBots.cancellingRunId = "run_1";
-
-      const wrapper = mount(ConversationPromptInput, {
-        global: {
-          plugins: [i18n],
-        },
-      });
-
-      // The textarea stays editable while the cancel resolves, so the draft
-      // becomes sendable. The cancelling presentation outranks the draft rule:
-      // Stop (disabled, spinner) stays mounted and Send must not replace it
-      // mid-cancel — dispatching a prompt while the cancel is unresolved is
-      // exactly the race this guards against.
-      const textarea = wrapper.find("textarea");
-      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
-      await textarea.setValue("steer this");
-
-      const stop = wrapper.find('[data-test="stop-run-button"]');
-      expect(stop.exists()).toBe(true);
-      expect((stop.element as HTMLButtonElement).disabled).toBe(true);
-      expect(stop.find("svg.animate-spin").exists()).toBe(true);
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-    });
-
-    it("shows Stop instead of a dead Send while an attachment uploads during a run", async () => {
-      const directBots = useDirectBotsStore();
-      directBots.instanceId = "i1";
-      directBots.selectedBotId = "b1";
-      directBots.activeConversationId = "c1";
-      directBots.activeTopicId = "t1";
-      directBots.activeRun = {
-        id: "run_1",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "running",
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      };
-      const composer = useComposerStore();
-      composer.bindInstance("i1", JSON.stringify(["direct", "i1", "c1", "t1", "b1"]));
-      composer.pending.push({
-        id: "local-1",
-        uploadId: "u1",
-        filename: "shot.png",
-        mimeType: "image/png",
-        size: 3,
-        kind: "image",
-        filePath: "/uploads/u1/shot.png",
-        status: "uploading",
-      });
-      const wrapper = mount(ConversationPromptInput, { global: { plugins: [i18n] } });
       await flushPromises();
-      const textarea = wrapper.find("textarea");
-      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(false);
-      await textarea.setValue("also this");
-      // An upload in flight blocks Send; while a run is active the card must
-      // still offer the one usable action — Stop — not a disabled Send.
-      expect(wrapper.find('[data-test="send-prompt-button"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      expect(send().exists()).toBe(true);
     });
 
     it("keeps Send enabled during a run when every send guard is clear", async () => {
@@ -1956,7 +1868,7 @@ describe("Direct Bot Components", () => {
         expect(el.disabled).toBe(false);
         expect(el.placeholder).toBe(i18n.global.t("bot.prompt.placeholder"));
         // Intro and composer tell the same story.
-        expect(wrapper.find('[data-test="bot-empty-hint"]').text()).toBe(i18n.global.t("bot.chat.emptyHint"));
+        expect(wrapper.find('[data-test="timeline-empty-hint"]').text()).toBe(i18n.global.t("bot.chat.emptyHint"));
         wrapper.unmount();
       });
 
@@ -1968,7 +1880,7 @@ describe("Direct Bot Components", () => {
         const el = wrapper.findComponent(ConversationPromptInput).find("textarea").element as HTMLTextAreaElement;
         expect(el.disabled).toBe(true);
         expect(el.placeholder).toBe(i18n.global.t("bot.prompt.botDisabledPlaceholder"));
-        expect(wrapper.find('[data-test="bot-empty-hint"]').text()).toBe(i18n.global.t("bot.chat.emptyHintDisabled"));
+        expect(wrapper.find('[data-test="timeline-empty-hint"]').text()).toBe(i18n.global.t("bot.chat.emptyHintDisabled"));
         wrapper.unmount();
       });
 
@@ -2095,545 +2007,6 @@ describe("Direct Bot Components", () => {
     });
   });
 
-  describe("finished-row trace completeness", () => {
-    it("renders the durable final answer when the cached trace never finished", async () => {
-      // Partial live parts (stream cut by disconnect, no turn-finished) must
-      // not shadow the durable final row recovered on reconnect.
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [
-            {
-              id: "msg_final",
-              conversationId: "c1",
-              topicId: "t1",
-              seq: 2,
-              role: "bot",
-              runId: "run_A",
-              content: "complete durable answer",
-              createdAt: "2026-09-18T00:02:00.000Z",
-            },
-          ],
-          liveTurn: null,
-          activeRun: null,
-          activeMemberTurn: null,
-          // Stale partial: only completeRunParts (filtered) reaches the
-          // component, so this entry must be absent.
-          runParts: {},
-          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-      await flushPromises();
-      expect(wrapper.text()).toContain("complete durable answer");
-    });
-
-    it("keeps rich trace cards only for turn-finished runs", async () => {
-      const directBots = useDirectBotsStore();
-      directBots.instanceId = "inst_1";
-      directBots.selectedBotId = "bot_1";
-      directBots.activeConversationId = "conv_1";
-      directBots.activeTopicId = "top_1";
-      // Partial snapshot without turn-finished: excluded from completeRunParts.
-      directBots.runParts["run_partial"] = [{ type: "text", text: "partial..." } as never];
-      expect(directBots.completeRunParts["run_partial"]).toBeUndefined();
-      // turn-finished proves completeness: included.
-      directBots.applyEvent({
-        kind: "control-event",
-        instanceId: "inst_1",
-        event: {
-          type: "turn-output",
-          chatKey: "rk",
-          sessionAlias: "brt_1",
-          chunk: "full text",
-          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_full", memberTurnId: "m1" },
-        } as never,
-      });
-      directBots.applyEvent({
-        kind: "control-event",
-        instanceId: "inst_1",
-        event: {
-          type: "turn-finished",
-          chatKey: "rk",
-          sessionAlias: "brt_1",
-          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_full", memberTurnId: "m1" },
-        } as never,
-      });
-      expect(directBots.completeRunParts["run_full"]).toHaveLength(1);
-      // Durable final row for the partial run prunes the stale cache.
-      directBots.applyEvent({
-        kind: "control-event",
-        instanceId: "inst_1",
-        event: {
-          type: "conversation-message",
-          message: { id: "msg_f", conversationId: "conv_1", topicId: "top_1", seq: 9, role: "bot", runId: "run_partial", content: "complete durable answer", createdAt: "now" },
-        } as never,
-      });
-      expect(directBots.runParts["run_partial"]).toBeUndefined();
-    });
-  });
-  describe("ConversationMessageList.vue", () => {
-    it("renders human and bot messages", async () => {
-      const messages: ConversationMessageDto[] = [
-        {
-          id: "msg_1",
-          conversationId: "c1",
-          topicId: "t1",
-          seq: 1,
-          role: "human",
-          content: "Can you review this?",
-          createdAt: "2026-09-18T00:01:00.000Z",
-        },
-        {
-          id: "msg_2",
-          conversationId: "c1",
-          topicId: "t1",
-          seq: 2,
-          role: "bot",
-          content: "Looks good to me!",
-          createdAt: "2026-09-18T00:02:00.000Z",
-        },
-      ];
-
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages,
-          liveTurn: null,
-          activeRun: null,
-          activeMemberTurn: null,
-          runParts: {},
-          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-
-      expect(wrapper.text()).toContain("Can you review this?");
-      expect(wrapper.text()).toContain("Looks good to me!");
-    });
-
-    it("keeps one settled bubble for an empty bot message so the status row survives", async () => {
-      const messages: ConversationMessageDto[] = [
-        { id: "msg_empty", conversationId: "c1", topicId: "t1", seq: 1, role: "bot", content: "", createdAt: "2026-09-18T00:02:00.000Z" },
-      ];
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages,
-          liveTurn: null,
-          activeRun: null,
-          activeMemberTurn: null,
-          runParts: {},
-          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        },
-        global: { plugins: [i18n] },
-      });
-      await flushPromises();
-      expect(wrapper.findAll('[data-test="direct-finished-text-bubble"]')).toHaveLength(1);
-    });
-
-    it("renders a streaming live turn without a status capsule or stop button", async () => {
-      const activeRun: ConversationRunDto = {
-        id: "run_1",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "running",
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      };
-
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [],
-          liveTurn: {
-            parts: [{ type: "text", text: "Analyzing code..." }],
-            status: "streaming",
-            startedAt: Date.now(),
-            revision: 1,
-          },
-          activeRun,
-          activeMemberTurn: null,
-          runParts: {},
-          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-
-      expect(wrapper.find('[data-test="live-turn-container"]').exists()).toBe(true);
-      expect(wrapper.text()).toContain("Analyzing code...");
-      // The status capsule is gone: no lifecycle label, no stop action. Stop is
-      // the composer's. The dots stay under the latest text bubble as the entry
-      // into the execution-process overlay.
-      expect(wrapper.find('[data-test="run-status"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
-      const dots = wrapper.find('[data-test="run-empty-slot"]');
-      expect(dots.exists()).toBe(true);
-      expect(dots.element.tagName).toBe("BUTTON");
-      expect(wrapper.findAll('[data-test="direct-live-text-bubble"]')).toHaveLength(1);
-      // The agent text bubble carries the accepted demo's visual: raised
-      // surface, hairline edge, sharp corner at the top-left. jsdom does not
-      // compute class-based CSS, so assert on the class contract instead.
-      expect(wrapper.find('[data-test="direct-live-text-bubble"]').classes()).toContain("agent-bubble");
-    });
-
-    it("shows the thinking bubble until the run produces output", () => {
-      const activeRun: ConversationRunDto = {
-        id: "run_think",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "running",
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      };
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [],
-          liveTurn: null,
-          activeRun,
-          activeMemberTurn: null,
-          runParts: {},
-          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        },
-        global: { plugins: [i18n] },
-      });
-      const dots = wrapper.find('[data-test="run-empty-slot"]');
-      expect(dots.exists()).toBe(true);
-      expect(dots.element.tagName).toBe("BUTTON");
-      expect(dots.attributes("aria-haspopup")).toBe("dialog");
-      expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
-    });
-
-    // The dot, not a colour tint on the label, is what separates the lifecycle states:
-    // "waiting for a human" must stop breathing so it cannot be mistaken for work.
-    it("switches the status chip from a breathing run dot to a still warn dot when waiting for a human", () => {
-      const waitingRun: ConversationRunDto = {
-        id: "run_wait",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "waiting-human",
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      };
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [],
-          liveTurn: null,
-          activeRun: waitingRun,
-          activeMemberTurn: null,
-          runParts: {},
-          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        },
-        global: { plugins: [i18n] },
-      });
-      const chip = wrapper.find('[data-test="run-status"]');
-      expect(chip.attributes("data-status-state")).toBe("waiting");
-      const dot = chip.find('[data-test="hud-dot"]');
-      expect(dot.classes()).not.toContain("pulse-dot");
-      expect(dot.classes()).toContain("bg-warn");
-      expect(chip.find('[data-test="hud-quip"]').text()).toBe("Waiting for human");
-      // Blocked on the user the dots stay but still: the entry keeps its place
-      // under the chip instead of vanishing.
-      expect(wrapper.find('[data-test="run-empty-slot"]').exists()).toBe(true);
-    });
-
-    it("hides the HUD stop button for terminal runs so no second cancel fires", async () => {
-      const terminalRun: ConversationRunDto = {
-        id: "run_done",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "cancelled",
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      };
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [],
-          liveTurn: null,
-          activeRun: terminalRun,
-          activeMemberTurn: null,
-          runParts: {},
-          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-      expect(wrapper.find('[data-test="live-turn-container"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="run-stop-button"]').exists()).toBe(false);
-      expect(wrapper.text()).toContain("Run cancelled");
-    });
-
-    it("renders a failed run banner with the provider message but not a bare code", () => {
-      const failedRun = (completionReason: string): ConversationRunDto => ({
-        id: "run_failed",
-        conversationId: "c1",
-        topicId: "t1",
-        requestMessageId: "m1",
-        requestId: "r1",
-        mode: "explicit",
-        state: "failed",
-        completionReason,
-        profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z",
-      });
-      const mountRun = (completionReason: string) => mount(ConversationMessageList, {
-        props: {
-          messages: [],
-          liveTurn: null,
-          activeRun: failedRun(completionReason),
-          activeMemberTurn: null,
-          runParts: {},
-          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-      const coded = mountRun("execution-failed");
-      expect(coded.text()).toContain("Run failed");
-      expect(coded.text()).not.toContain("execution-failed");
-      const provider = mountRun("model overloaded, retry later");
-      expect(provider.text()).toContain("model overloaded, retry later");
-    });
-
-    it("renders load older messages button and emits event", async () => {
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [{ id: "m1", conversationId: "c1", topicId: "t1", seq: 5, role: "human", content: "Hi", createdAt: "now" }],
-          liveTurn: null,
-          activeRun: null,
-          activeMemberTurn: null,
-          runParts: {},
-          hasMoreOlder: true,
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-
-      const loadOlderBtn = wrapper.find('[data-test="load-older-button"]');
-      expect(loadOlderBtn.exists()).toBe(true);
-
-      await loadOlderBtn.trigger("click");
-      expect(wrapper.emitted("loadOlder")).toBeTruthy();
-    });
-
-    it("enables the Load Older button after a topic switch retires a deferred page", async () => {
-      // Store-level UI contract: navigation releases loadingOlder so the
-      // button is clickable on the new Topic while the old page still hangs.
-      const directBots = useDirectBotsStore();
-      directBots.instanceId = "inst_1";
-      directBots.selectedBotId = "bot_1";
-      directBots.activeConversationId = "conv_1";
-      directBots.activeTopicId = "top_A";
-      const { api } = await import("../api/client");
-      const { promise: pageAGate } = Promise.withResolvers<unknown>();
-      const olderCalls: string[] = [];
-      const apiSpy = vi.spyOn(api, "rpc").mockImplementation(async (iid: string, type: string, payload?: unknown) => {
-        if (type === "control.conversation.history") {
-          const pl = payload as { beforeSeq?: number; topicId: string; limit?: number; direction?: string } | undefined;
-          if (pl?.beforeSeq !== undefined) {
-            olderCalls.push(pl.topicId);
-            if (pl.topicId === "top_A") return pageAGate as never;
-            return {
-              conversationId: "conv_1", topicId: "top_B", messages: [],
-              hasMoreBefore: false, hasMoreAfter: true,
-            } as never;
-          }
-          const topicId = pl?.topicId ?? "top_A";
-          return {
-            conversationId: "conv_1", topicId,
-            messages: Array.from({ length: 5 }, (_, i) => ({
-              id: `msg_${topicId}_${i}`, conversationId: "conv_1", topicId,
-              seq: 100 + i, role: "human", content: "m", createdAt: "now",
-            })),
-            oldestSeq: 100, newestSeq: 104, hasMoreBefore: true, hasMoreAfter: false,
-          } as never;
-        }
-        if (type === "control.runs.list") {
-          return { conversationId: "conv_1", topicId: (payload as { topicId: string }).topicId, runs: [] } as never;
-        }
-        return {} as never;
-      });
-      const msgA = (seq: number) => ({
-        id: `msg_top_A_${seq}`, conversationId: "conv_1", topicId: "top_A",
-        seq, role: "human", content: "m", createdAt: "now",
-      });
-      directBots.messages = Array.from({ length: 5 }, (_, i) => msgA(100 + i)) as never;
-      directBots.oldestSeq = 100;
-      directBots.hasMoreBefore = true;
-      void directBots.loadOlder();
-      await flushPromises();
-      expect(directBots.loadingOlder).toBe(true);
-      await directBots.switchTopic("top_B");
-      for (let i = 0; i < 10; i += 1) {
-        await flushPromises();
-      }
-      // Spinner released by navigation: the button binds this prop.
-      expect(directBots.loadingOlder).toBe(false);
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [],
-          liveTurn: null,
-          activeRun: null,
-          activeMemberTurn: null,
-          runParts: {},
-          hasMoreOlder: true,
-          loadingOlder: directBots.loadingOlder,
-          loadOlder: () => directBots.loadOlder(),
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-      const btn = wrapper.find('[data-test="load-older-button"]');
-      expect(btn.exists()).toBe(true);
-      expect((btn.element as HTMLButtonElement).disabled).toBe(false);
-      await btn.trigger("click");
-      await flushPromises();
-      expect(olderCalls).toContain("top_B");
-      apiSpy.mockRestore();
-    });
-    it("awaits async loadOlder prop and preserves scroll distance from bottom", async () => {
-      const messages: ConversationMessageDto[] = [
-        { id: "m2", conversationId: "c1", topicId: "t1", seq: 2, role: "human", content: "Second", createdAt: "now" },
-      ];
-
-      const loadOlderFn = vi.fn().mockImplementation(async () => {
-        messages.unshift({
-          id: "m1",
-          conversationId: "c1",
-          topicId: "t1",
-          seq: 1,
-          role: "human",
-          content: "First",
-          createdAt: "now",
-        });
-      });
-
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages,
-          liveTurn: null,
-          activeRun: null,
-          activeMemberTurn: null,
-          runParts: {},
-          hasMoreOlder: true,
-          loadOlder: loadOlderFn,
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-
-      const scrollerEl = wrapper.find("[data-test=conversation-scroller]").element as HTMLElement;
-      // Simulate initial scroll position before loading older:
-      // e.g. scrollHeight = 500, scrollTop = 100 -> distance from bottom anchor = 400
-      Object.defineProperty(scrollerEl, "scrollHeight", {
-        configurable: true,
-        get: () => (messages.length === 2 ? 800 : 500),
-      });
-      scrollerEl.scrollTop = 100;
-
-      const loadOlderBtn = wrapper.find('[data-test="load-older-button"]');
-      await loadOlderBtn.trigger("click");
-      await flushPromises();
-
-      expect(loadOlderFn).toHaveBeenCalledTimes(1);
-      // Anchor was 500 - 100 = 400.
-      // After prepending, scrollHeight is 800, so new scrollTop = 800 - 400 = 400.
-      expect(scrollerEl.scrollTop).toBe(400);
-    });
-    it("follows in-place text growth inside one part while at bottom", async () => {
-      const textPart = { type: "text", text: "Hello" } as { type: "text"; text: string };
-      const liveTurn: { parts: { type: "text"; text: string }[]; status: "streaming"; startedAt: number; revision: number } = {
-        parts: [textPart],
-        status: "streaming",
-        startedAt: Date.now(),
-        revision: 1,
-      };
-      const activeRun = {
-        id: "run_1", conversationId: "c1", topicId: "t1", requestMessageId: "m1",
-        requestId: "r1", mode: "explicit", state: "running", profileRevision: 1,
-        createdAt: "now",
-      } as never;
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [],
-          liveTurn,
-          activeRun,
-          activeMemberTurn: null,
-          runParts: {},
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-      const scrollerEl = wrapper.find("[data-test=conversation-scroller]").element as HTMLElement;
-      let scrollCalls = 0;
-      const recordScroll: typeof scrollerEl.scrollTo = () => { scrollCalls += 1; };
-      scrollerEl.scrollTo = recordScroll;
-      // In-place growth: same part object extended (store appendText mutates
-      // last.text), so parts.length stays 1 while the transcript grows; the
-      // store bumps revision, which is what the follower watches.
-      textPart.text = "Hello world, streaming more tokens";
-      await wrapper.setProps({ liveTurn: { parts: [textPart], status: "streaming", startedAt: liveTurn.startedAt, revision: 2 } });
-      await flushPromises();
-      expect(scrollCalls).toBeGreaterThan(0);
-    });
-    it("follows in-place tool updates with an unchanged toolCallId while at bottom", async () => {
-      const toolStep = { toolCallId: "call_1", toolName: "bash", kind: "command", status: "running", title: "ls" } as unknown as ToolStepDto;
-      const toolPart = { type: "tool", step: toolStep } as TurnPartDto;
-      const liveTurn: { parts: TurnPartDto[]; status: "streaming"; startedAt: number; revision: number } = {
-        parts: [toolPart],
-        status: "streaming",
-        startedAt: Date.now(),
-        revision: 1,
-      };
-      const activeRun = {
-        id: "run_1", conversationId: "c1", topicId: "t1", requestMessageId: "m1",
-        requestId: "r1", mode: "explicit", state: "running", profileRevision: 1,
-        createdAt: "now",
-      } as never;
-      const wrapper = mount(ConversationMessageList, {
-        props: {
-          messages: [],
-          liveTurn,
-          activeRun,
-          activeMemberTurn: null,
-          runParts: {},
-        },
-        global: {
-          plugins: [i18n],
-        },
-      });
-      const scrollerEl = wrapper.find("[data-test=conversation-scroller]").element as HTMLElement;
-      let scrollCalls = 0;
-      const recordScroll: typeof scrollerEl.scrollTo = () => { scrollCalls += 1; };
-      scrollerEl.scrollTo = recordScroll;
-      // Same toolCallId, new status (store upsertTool replaces the row):
-      // the old toolCallId.length heuristic never fired; revision does.
-      toolStep.status = "success";
-      await wrapper.setProps({ liveTurn: { parts: [toolPart], status: "streaming", startedAt: liveTurn.startedAt, revision: 2 } });
-      await flushPromises();
-      expect(scrollCalls).toBeGreaterThan(0);
-    });
-  });
 
   describe("DirectBotPane.vue", () => {
     it("desktop header: a role-less (or blank-role) Bot shows exactly one separator between topic and workspace", async () => {
@@ -2667,6 +2040,7 @@ describe("Direct Bot Components", () => {
           sessions: [],
           agents: [{ name: "codex", driver: "codex" }],
           workspaces: [{ name: "repo", cwd: "/repo" }],
+          capabilities: [RELAY_CAPABILITIES.conversationTimelineV1],
         } as never,
       ];
 
@@ -2713,6 +2087,7 @@ describe("Direct Bot Components", () => {
           sessions: [],
           agents: [{ name: "codex", driver: "codex" }],
           workspaces: [{ name: "repo", cwd: "/repo" }],
+          capabilities: [RELAY_CAPABILITIES.conversationTimelineV1],
         } as never,
       ];
       const directBots = useDirectBotsStore();
@@ -2979,6 +2354,7 @@ describe("Direct Bot Components", () => {
           sessions: [],
           agents: [{ name: "codex", driver: "codex" }],
           workspaces: [{ name: "repo", cwd: "/repo" }],
+          capabilities: [RELAY_CAPABILITIES.conversationTimelineV1],
         } as never,
       ];
       const directBots = useDirectBotsStore();
@@ -3053,7 +2429,7 @@ describe("Direct Bot Components", () => {
       const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
       await flushPromises();
       expect(wrapper.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(true);
-      expect(wrapper.findComponent(ConversationMessageList).exists()).toBe(false);
+      expect(wrapper.find('[data-test="timeline-upgrade-required"]').exists()).toBe(false);
       // Exactly one Stop: the status bar owns it while the card only offers Send.
       expect(wrapper.find('[data-test="conversation-stop-all"]').exists()).toBe(true);
       expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(false);
@@ -3119,20 +2495,197 @@ describe("Direct Bot Components", () => {
       wrapper.unmount();
     });
 
-    it("keeps the legacy transcript and the in-card Stop on an old daemon", async () => {
+    it("moves the followed trace when the Direct drawer switches attempt", async () => {
       seedBot();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
       const directBots = useDirectBotsStore();
-      directBots.activeRun = {
-        id: "r1", conversationId: "c1", topicId: "t1",
-        requestMessageId: "m1", requestId: "req_1", mode: "explicit", state: "running",
-        profileRevision: 1, createdAt: "now",
+      const run = {
+        id: "r_retry", conversationId: "c1", topicId: "t1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit" as const,
+        shape: "single" as const, state: "completed" as const, profileRevision: 1,
+        maxMemberTurns: 1, consumedMemberTurns: 1, createdAt: "now",
       };
+      const member = {
+        id: "turn_retry", runId: "r_retry", conversationId: "c1", topicId: "t1",
+        botId: "b1", batch: 1, memberIndex: 0, attempt: 1,
+        origin: "human-explicit" as const, state: "completed" as const, createdAt: "now",
+      };
+      directBots.activeRun = run;
+      directBots.activeMemberTurn = member;
+      const traceAttempts: number[] = [];
+      vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.timeline") {
+          return {
+            conversationId: "c1", topicId: "t1",
+            entries: [{
+              kind: "message", key: "message:m1", anchorSeq: 1,
+              runId: "r_retry", memberTurnId: "turn_retry", ownership: "exact",
+              message: {
+                id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "bot",
+                senderBotId: "b1", memberTurnId: "turn_retry", runId: "r_retry", content: "hello", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false, hasMoreAfter: false,
+          };
+        }
+        if (type === "control.runs.get") return { run: { ...run, memberTurns: [member] } };
+        if (type === "control.runs.trace.get") {
+          const attempt = (payload as { attempt?: number })?.attempt ?? 1;
+          traceAttempts.push(attempt);
+          return {
+            memberTurnId: "turn_retry", attempt, recordingState: "complete",
+            events: [{ seq: 1, createdAt: "now", kind: "text", payload: { text: `Attempt ${attempt} trace` } }],
+            nextSeq: 1, hasMore: false, attempts: [1, 2], plan: [],
+          };
+        }
+        return {};
+      });
+      const wrapper = mount(DirectBotPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      const card = () => document.body.querySelector('[data-test="group-detail-card"]')!;
+      expect(card().textContent).toContain("Attempt 1 trace");
+
+      const select = card().querySelector('[data-test="group-detail-attempt"]') as HTMLSelectElement;
+      expect(select).not.toBeNull();
+      select.value = "2";
+      select.dispatchEvent(new Event("change"));
+      await flushPromises();
+      await flushPromises();
+      expect(traceAttempts.at(-1)).toBe(2);
+      expect(card().textContent).toContain("Attempt 2 trace");
+      wrapper.unmount();
+    });
+
+    it("shows one upgrade notice and disables the composer on an old daemon", async () => {
+      seedBot();
+      useInstancesStore().instances[0]!.capabilities = [];
       const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
       await flushPromises();
-      expect(wrapper.findComponent(ConversationMessageList).exists()).toBe(true);
+      expect(wrapper.find('[data-test="timeline-upgrade-required"]').text())
+        .toContain("This daemon is too old");
       expect(wrapper.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(false);
       expect(wrapper.find('[data-test="conversation-status-bar"]').exists()).toBe(false);
-      expect(wrapper.find('[data-test="stop-run-button"]').exists()).toBe(true);
+      const textarea = wrapper.find("textarea");
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("offers no Topic entry point on an old daemon, even with existing Topics", async () => {
+      seedBot();
+      // Topics exist, so an ungated switcher would render both entry points.
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="topic-menu"]').exists()).toBe(true);
+      wrapper.unmount();
+
+      useInstancesStore().instances[0]!.capabilities = [];
+      const legacy = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(legacy.findAll('[data-test="timeline-upgrade-required"]')).toHaveLength(1);
+      // No Topic switcher and no new-Topic button: the pane cannot be served,
+      // so the only message is the upgrade notice.
+      expect(legacy.find('[data-test="topic-menu"]').exists()).toBe(false);
+      expect(legacy.find('[data-test="new-topic-button"]').exists()).toBe(false);
+      expect(legacy.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(false);
+      // The composer stays present but inert, with no second Stop.
+      const textarea = legacy.find("textarea");
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
+      const send = legacy.find('[data-test="send-prompt-button"]');
+      expect(send.exists()).toBe(true);
+      expect(send.attributes("disabled")).toBeDefined();
+      expect(legacy.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      legacy.unmount();
+
+      // The mobile ⋯ sheet is the third Topic entry point: on an old daemon it
+      // must not offer a Topics row (or a click that opens nothing).
+      const prevWidth = window.innerWidth;
+      window.innerWidth = 500;
+      try {
+        const mobileLegacy = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        await mobileLegacy.find('[data-test="mobile-bot-more"]').trigger("click");
+        expect(mobileLegacy.find('[data-test="mobile-bot-more-sheet"]').exists()).toBe(true);
+        expect(mobileLegacy.find('[data-test="sheet-bot-topic"]').exists()).toBe(false);
+        expect(mobileLegacy.find('[data-test="topic-menu"]').exists()).toBe(false);
+        expect(mobileLegacy.find('[data-test="new-topic-button"]').exists()).toBe(false);
+        mobileLegacy.unmount();
+
+        // Control: the same sheet does carry the row on a capable daemon.
+        useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+        const mobileCurrent = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        await mobileCurrent.find('[data-test="mobile-bot-more"]').trigger("click");
+        expect(mobileCurrent.find('[data-test="sheet-bot-topic"]').exists()).toBe(true);
+        mobileCurrent.unmount();
+      } finally {
+        window.innerWidth = prevWidth;
+      }
+    });
+
+    it("shows the unavailable Run, then reopens it on Retry without a stale notice", async () => {
+      seedBot();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const directBots = useDirectBotsStore();
+      const run = {
+        id: "r_missing", conversationId: "c1", topicId: "t1",
+        requestMessageId: "m1", requestId: "req_1", mode: "explicit" as const,
+        shape: "single" as const, state: "running" as const, profileRevision: 1,
+        maxMemberTurns: 1, consumedMemberTurns: 1, createdAt: "now",
+      };
+      const member = {
+        id: "turn_missing", runId: "r_missing", conversationId: "c1", topicId: "t1",
+        botId: "b1", batch: 1, memberIndex: 0, attempt: 1,
+        origin: "human-explicit" as const, state: "running" as const, createdAt: "now",
+      };
+      // No optimistic target: the drawer needs the real Run, so a failed
+      // `runs.get` is the inline error rather than a half-open drawer.
+      directBots.activeRun = null;
+      directBots.activeMemberTurn = null;
+      let runsGets = 0;
+      vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+        if (type === "control.conversation.timeline") {
+          return {
+            conversationId: "c1", topicId: "t1",
+            entries: [{
+              kind: "message", key: "message:m1", anchorSeq: 1,
+              runId: "r_missing", memberTurnId: "turn_missing", ownership: "exact",
+              message: {
+                id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "bot",
+                senderBotId: "b1", memberTurnId: "turn_missing", runId: "r_missing", content: "hello", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false, hasMoreAfter: false,
+          };
+        }
+        if (type === "control.runs.get") {
+          runsGets += 1;
+          // The first read proves the Run absent; Retry is the one path that
+          // re-reads it, and then it resolves.
+          return runsGets === 1
+            ? { error: { code: "run_not_found", message: "no such run" } }
+            : { run: { ...run, memberTurns: [member] } };
+        }
+        if (type === "control.runs.trace.get") {
+          return { memberTurnId: "turn_missing", attempt: 1, recordingState: "complete", events: [], nextSeq: 0, hasMore: false, attempts: [1], plan: [] };
+        }
+        return {};
+      });
+      const wrapper = mount(DirectBotPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(true);
+      expect(document.body.querySelector('[data-test="group-detail-card"]')).toBeNull();
+
+      await wrapper.find('[data-test="run-detail-retry"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      expect(runsGets).toBe(2);
+      expect(wrapper.find('[data-test="run-detail-unavailable"]').exists()).toBe(false);
+      const card = document.body.querySelector('[data-test="group-detail-card"]');
+      expect(card).not.toBeNull();
+      expect(card!.querySelector('[data-test="run-selected-member"]')?.getAttribute("data-member-turn-id")).toBe("turn_missing");
       wrapper.unmount();
     });
 

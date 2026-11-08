@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ChevronDown,
@@ -32,7 +32,6 @@ import BotAvatar from "./BotAvatar.vue";
 import MobileSheet from "./MobileSheet.vue";
 import MobileConnStrip from "./MobileConnStrip.vue";
 import { avatarHasOpenInteraction, botAvatarState } from "../lib/bot-avatar-state";
-import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationTimeline from "./ConversationTimeline.vue";
 import ConversationStatusBar from "./ConversationStatusBar.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
@@ -105,26 +104,26 @@ const observedCompletion = computed(() => !!directBotsStore.activeRun
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
+
 interface DirectDetailTarget {
   run: ConversationRunDto;
   memberTurns: MemberTurnSummaryDto[];
   memberTurnId?: string;
-  /** Timeline path: the same Run-wide drawer Group uses. Fallback keeps the
-   *  legacy per-member overlay it always had. */
-  runWide: boolean;
 }
 
-/** One open key for the drawer: bot meta, avatar, speaker label, status bar,
- *  and the old-daemon transcript entry all land here. */
+/** The one open key for the drawer: bot meta, avatar, speaker label and the
+ *  status bar all land here. */
 const detailTarget = ref<DirectDetailTarget | null>(null);
 const detailAttempt = ref<number | undefined>(undefined);
+/** `runs.get` proved this Run absent for the current Topic. Retry re-runs the
+ *  same read on the member that was clicked; nothing else refetches it. */
+const unavailable = ref<{ runId: string; memberTurnId?: string } | null>(null);
 const stopPendingMember = ref<string | null>(null);
 
 function setDirectDetail(
   run: ConversationRunDto,
   memberTurns: MemberTurnSummaryDto[],
   preferredMemberTurnId: string | undefined,
-  runWide: boolean,
 ): void {
   const sorted = [...memberTurns].sort(compareMemberTurns);
   const selected = sorted.find((member) => member.id === preferredMemberTurnId)
@@ -134,35 +133,11 @@ function setDirectDetail(
     run,
     memberTurns: sorted,
     ...(selected ? { memberTurnId: selected.id } : {}),
-    runWide,
   };
   detailAttempt.value = selected?.attempt;
   if (selected) {
     directBotsStore.ensureDirectTracePage(run.id, selected.id, selected.attempt);
     directBotsStore.setDirectTraceFollow(run.id, selected.id, selected.attempt);
-  }
-}
-
-/** Legacy transcript entry (old daemon): one member's process, as before. */
-function openTraceOverlay(): void {
-  const run = directBotsStore.activeRun;
-  const member = directBotsStore.activeMemberTurn;
-  if (!run || !member) return;
-  setDirectDetail(run, [member], member.id, false);
-}
-
-async function openTraceForHistoryRun(runId: string): Promise<void> {
-  const iId = directBotsStore.instanceId;
-  if (!iId) return;
-  try {
-    const raw = await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId });
-    if (isErrorPayload(raw)) return;
-    const res = raw;
-    const member = res.run.memberTurns[res.run.memberTurns.length - 1];
-    if (!member) return;
-    setDirectDetail(res.run, [member], member.id, false);
-  } catch {
-    // History detail unavailable: no drawer, the finished bubble stays.
   }
 }
 
@@ -174,25 +149,64 @@ async function openTimelineDetail(payload: { runId?: string; memberTurnId?: stri
   if (!iId) return;
   const runId = payload.runId ?? directBotsStore.activeRun?.id;
   if (!runId) return;
+  // Any successful open retires the previous Run's banner.
+  unavailable.value = null;
   const active = directBotsStore.activeRun;
   if (active?.id === runId) {
     const member = directBotsStore.activeMemberTurn;
-    setDirectDetail(active, member ? [member] : [], payload.memberTurnId ?? member?.id, true);
+    setDirectDetail(active, member ? [member] : [], payload.memberTurnId ?? member?.id);
   }
   try {
     const raw = await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId });
-    if (isErrorPayload(raw)) return;
+    if (isErrorPayload(raw)) {
+      if (detailTarget.value?.run.id !== runId) {
+        unavailable.value = { runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
+      }
+      return;
+    }
     const run = raw.run;
     setDirectDetail(
       run,
       run.memberTurns,
       payload.memberTurnId ?? detailTarget.value?.memberTurnId,
-      true,
     );
   } catch {
-    // The optimistic live target is enough; a retry happens on the next open.
+    // The optimistic live target is enough while it exists; otherwise the
+    // inline Retry is the only path back to a drawer.
+    if (detailTarget.value?.run.id !== runId) {
+      unavailable.value = { runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
+    }
   }
 }
+
+function retryTimelineDetail(): void {
+  const target = unavailable.value;
+  if (!target) return;
+  unavailable.value = null;
+  void openTimelineDetail({ runId: target.runId, ...(target.memberTurnId ? { memberTurnId: target.memberTurnId } : {}) });
+}
+
+/** The attempt selector inside the drawer: the follow cursor moves with it, or
+ *  every frame of the new attempt is rejected as a mismatch. */
+function handleDirectAttempt(attempt: number): void {
+  detailAttempt.value = attempt;
+  const target = detailTarget.value;
+  const member = detailSelectedMember.value;
+  if (!target || !member) return;
+  directBotsStore.ensureDirectTracePage(target.run.id, member.id, attempt);
+  directBotsStore.setDirectTraceFollow(target.run.id, member.id, attempt);
+}
+
+// A Topic or instance switch leaves the previous scope entirely: neither the
+// banner nor the follow of an old drawer may survive it.
+watch(
+  () => [directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId].join(":"),
+  () => {
+    unavailable.value = null;
+    directBotsStore.clearDirectTraceFollow();
+  },
+);
+
 
 function selectDirectMember(memberTurnId: string): void {
   const target = detailTarget.value;
@@ -289,7 +303,7 @@ async function handleDetailStopMember(memberTurnId: string): Promise<void> {
   try {
     await api.rpc(instId, MSG.runsCancelMember, { runId: run.id, memberTurnId });
   } catch (err: unknown) {
-    pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
+    pushToast("error", "group.run.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
   } finally {
     if (stopPendingMember.value === memberTurnId) stopPendingMember.value = null;
   }
@@ -422,7 +436,9 @@ function openRemoval(): void {
 }
 
 // --- One timeline, one status bar (design §8) -------------------------------
-const timelineEnabled = computed(() => supportsConversationTimelineV1(instance.value));
+/** The timeline is the only conversation surface; a daemon without it sees one
+ *  upgrade notice and no write controls. */
+const timelineSupported = computed(() => supportsConversationTimelineV1(instance.value));
 
 /** Direct is the single-participant Room: same read model, same shell. */
 const roomView = computed<RoomView>(() => ({
@@ -469,7 +485,7 @@ const timelineFeed = useConversationTimelineFeed({
   instanceId: computed(() => directBotsStore.instanceId),
   conversationId: computed(() => directBotsStore.activeConversationId),
   topicId: computed(() => directBotsStore.activeTopicId),
-  enabled: timelineEnabled,
+  enabled: timelineSupported,
   reloadKey: timelineReloadKey,
 });
 
@@ -487,16 +503,16 @@ function handleStopAll(): void {
 <template>
   <div class="relative flex h-full flex-col bg-bg text-fg">
     <!-- Mobile floating identity (<lg), modeled on the reference mock: the
-         transcript runs full-height and the identity floats OVER it — back and ⋯ as
+         timeline runs full-height and the identity floats OVER it — back and ⋯ as
          glass discs at the edges, a centered glass pill (name only) with a large
          avatar disc overlapping its top edge; that disc is glass too (glass-disc),
-         so avatars without art still read against the scrolling transcript. Content
-         scrolls beneath. Zero layout height, so the transcript keeps the whole
+         so avatars without art still read against the scrolling timeline. Content
+         scrolls beneath. Zero layout height, so the timeline keeps the whole
          screen. The topic lives in the ⋯ sheet (TopicSwitcher renders its own
-         MobileSheet). The transcript never repeats the avatar in front of bubbles
+         MobileSheet). The timeline never repeats the avatar in front of bubbles
          (TranscriptRow hideIdentityOnMobile). pointer-events-none on the layer,
          auto on the two buttons, so scrolling over the pill still scrolls the
-         transcript. Desktop keeps the opaque header below (a backdrop-filtered
+         timeline. Desktop keeps the opaque header below (a backdrop-filtered
          ANCESTOR would trap TopicSwitcher's popover — see that header's comment). -->
     <div class="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
@@ -517,7 +533,9 @@ function handleStopAll(): void {
     <!-- Parked topic trigger (<lg): see openMobileTopics. Only the TRIGGER moves
          offscreen — its sheet is a sibling, so it must not inherit clip, opacity or
          transform from this host (each of those would hide or re-anchor the sheet). -->
-    <div v-if="isMobile" ref="mobileTopicHost" class="parked-topic">
+    <!-- The upgrade notice owns the pane: no Topic entry point may mount while
+         the daemon cannot serve the timeline. -->
+    <div v-if="timelineSupported && isMobile" ref="mobileTopicHost" class="parked-topic">
       <TopicSwitcher
         variant="direct"
         :topics="directBotsStore.currentTopics"
@@ -559,7 +577,7 @@ function handleStopAll(): void {
             </span>
           </div>
 
-          <div data-test="bot-header-meta" class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
+          <div v-if="timelineSupported" data-test="bot-header-meta" class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
             <TopicSwitcher
               v-if="!isMobile"
               variant="direct"
@@ -650,14 +668,14 @@ function handleStopAll(): void {
     </div>
 
     <!-- Message Area -->
-    <!-- The floating identity chip costs no layout height, so the transcript
+    <!-- The floating identity chip costs no layout height, so the timeline
          reserves scroll padding instead: content starts below the chip, then
          scrolls beneath its glass. -->
-    <!-- One timeline for Direct and Group. Without `conversations.timeline.v1`
-         the legacy transcript is untouched, so an old daemon behaves exactly as
-         before. -->
+    <!-- One timeline for Direct and Group. A daemon that does not advertise
+         `conversations.timeline.v1` cannot be served: say so once, and keep
+         every write control disabled. -->
     <ConversationTimeline
-      v-if="timelineEnabled"
+      v-if="timelineSupported"
       :room="roomView"
       :timeline="timelineFeed.timeline.value"
       :live-overlay="liveOverlay"
@@ -670,53 +688,28 @@ function handleStopAll(): void {
       top-inset-class="pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5"
       @open-detail="openTimelineDetail"
     />
-    <ConversationMessageList
+    <div
       v-else
-      :messages="directBotsStore.messages"
-      top-inset-class="pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5"
-      :empty-hint="emptyHint"
-      :live-turn="directBotsStore.liveTurn"
-      :active-run="directBotsStore.activeRun"
-      :active-member-turn="directBotsStore.activeMemberTurn"
-      :is-run-queued="directBotsStore.isRunQueued"
-      :run-parts="directBotsStore.completeRunParts"
-      :plan-entries="directBotsStore.planEntries"
-      :has-more-older="directBotsStore.hasMoreBefore"
-      :loading-older="directBotsStore.loadingOlder"
-      :loading-history="directBotsStore.loadingHistory"
-      :bot="bot"
-      :instance-id="directBotsStore.instanceId"
-      :avatar-state="avatarState"
-      :avatar-activity-key="avatarActivityKey"
-      :observed-avatar-completion="observedCompletion"
-      :load-older="directBotsStore.loadOlder"
-      @load-older="directBotsStore.loadOlder"
-      :pending-interaction="directBotsStore.pendingInteraction"
-      @answer="(key: string, value: InteractionValueDto) => directBotsStore.setInteractionAnswer(key, value)"
-      @submit-interaction="directBotsStore.submitInteraction('accept')"
-      @decline-interaction="directBotsStore.declineInteraction()"
-      @cancel-interaction="directBotsStore.cancelInteraction()"
-      @dismiss-interaction="directBotsStore.dismissResolvedInteraction()"
-      @open-trace="openTraceOverlay"
-      @open-trace-for-run="openTraceForHistoryRun"
-    />
-    <!-- One Run-wide detail drawer on the timeline path; the old-daemon
-         transcript still opens the per-member overlay it always had. -->
+      data-test="timeline-upgrade-required"
+      class="flex min-h-0 flex-1 items-center justify-center px-6 text-center"
+    >
+      <p class="max-w-sm text-xs text-fg-muted">{{ $t("conversation.timeline.upgradeRequired") }}</p>
+    </div>
+    <!-- One Run-wide detail drawer (design §8.4). -->
     <TraceOverlay
       v-if="detailTarget"
       id="direct-trace-overlay"
       :run="detailTarget.run"
-      :member-turn="detailSelectedMember"
-      :member-turns="detailTarget.runWide ? detailMembers : undefined"
+      :member-turns="detailMembers"
       :selected-member-turn-id="detailSelectedMember?.id"
       :participants="roomView.participants"
-      :budget="detailTarget.runWide ? detailBudget : undefined"
-      :interactions="detailTarget.runWide ? detailInteractions : undefined"
+      :budget="detailBudget"
+      :interactions="detailInteractions"
       :capability="detailCapability"
       :cancel-pending="!!stopPendingMember"
-      :member-name="bot?.name"
       :topic-title="directBotsStore.currentTopic?.title"
       :attempt="detailEffectiveAttempt"
+      :attempts="detailTracePage?.attempts"
       :parts="detailTraceParts"
       :recording-state="detailTracePage?.recordingState"
       :trace-loading="detailTracePage?.loading"
@@ -724,7 +717,7 @@ function handleStopAll(): void {
       :trace-has-more="detailTracePage?.hasMore"
       :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && directBotsStore.activeMemberTurn?.id === detailSelectedMember.id && !!directBotsStore.liveTurn"
       @close="closeTraceOverlay"
-      @attempt="detailAttempt = $event"
+      @attempt="handleDirectAttempt"
       @select-member="selectDirectMember"
       @stop-member="handleDetailStopMember"
       @interaction-answer="handleDetailAnswer"
@@ -737,10 +730,10 @@ function handleStopAll(): void {
       @retry-trace="detailSelectedMember && detailEffectiveAttempt !== undefined && detailTarget && directBotsStore.ensureDirectTracePage(detailTarget.run.id, detailSelectedMember.id, detailEffectiveAttempt)"
     />
 
-    <!-- The plan is part of the run's visible surface, exactly as the legacy
-         transcript rendered it. The timeline path keeps it above the composer. -->
+    <!-- The plan is part of the run's visible surface. The timeline path keeps
+         it above the composer. -->
     <div
-      v-if="timelineEnabled && directBotsStore.planEntries?.length"
+      v-if="timelineSupported && directBotsStore.planEntries?.length"
       data-test="direct-plan-panel"
       class="mx-auto w-full max-w-3xl px-4 lg:px-0"
     >
@@ -748,7 +741,7 @@ function handleStopAll(): void {
     </div>
 
     <ConversationStatusBar
-      v-if="timelineEnabled"
+      v-if="timelineSupported"
       :run="directBotsStore.activeRun"
       :member-turns="directBotsStore.activeMemberTurn ? [directBotsStore.activeMemberTurn] : []"
       :active-speaker-name="timelineSpeakerName"
@@ -759,12 +752,20 @@ function handleStopAll(): void {
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
-      :disabled="bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
+      :disabled="!timelineSupported || bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
       :deliver="directBotsStore.sendPrompt"
-      :hide-stop="timelineEnabled"
     />
+    <div v-if="unavailable" data-test="run-detail-unavailable"
+         class="flex items-center justify-between bg-warn/10 px-3 lg:px-5 py-2 text-xs text-fg">
+      <span>{{ $t("conversation.runDetail.unavailable") }}</span>
+      <button type="button" data-test="run-detail-retry"
+              class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
+              @click="retryTimelineDetail">
+        {{ $t("bot.prompt.retry") }}
+      </button>
+    </div>
     <!-- History failure: Retry reloads the topic (history + durable run
-      discovery). Shown whenever the transcript failed to converge — the
+      discovery). Shown whenever the timeline failed to converge — the
       composer may still be enabled, but the newest window is stale/holed. -->
     <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId"
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
@@ -805,7 +806,7 @@ function handleStopAll(): void {
     <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="mobile-bot-more-sheet" @close="closeSheet">
       <!-- Topics live here on mobile (the floating header has no subtitle row). The
            row hands off to the parked trigger, so the topic sheet outlives this one. -->
-      <button type="button" data-test="sheet-bot-topic"
+      <button v-if="timelineSupported" type="button" data-test="sheet-bot-topic"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
               @click="openMobileTopics">
         <Hash :size="18" class="shrink-0 text-fg-muted" />

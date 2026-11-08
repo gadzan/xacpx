@@ -17,8 +17,8 @@ import {
  * merges the client's live overlay and drops the empty settlement evidence
  * bubble (the read model keeps that row).
  *
- * Scroll behaviour mirrors the legacy transcripts: bottom-pinned while the
- * reader is there, a prepend anchor when older history is loaded, and an
+ * Scroll behaviour: bottom-pinned while the reader is there, a prepend anchor
+ * when older history is loaded, and an
  * explicit "jump to latest" once they scroll up.
  */
 const props = defineProps<{

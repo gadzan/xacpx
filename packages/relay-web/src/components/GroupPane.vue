@@ -18,7 +18,6 @@ import {
   supportsRunsCancelMember,
   useInstancesStore,
 } from "../stores/instances";
-import GroupTranscript from "./GroupTranscript.vue";
 import ConversationTimeline from "./ConversationTimeline.vue";
 import ConversationStatusBar from "./ConversationStatusBar.vue";
 import TraceOverlay from "./TraceOverlay.vue";
@@ -30,11 +29,9 @@ import TopicSwitcher from "./TopicSwitcher.vue";
 import MobileConnStrip from "./MobileConnStrip.vue";
 import GroupAvatarStack from "./GroupAvatarStack.vue";
 import GroupMemberPanel from "./GroupMemberPanel.vue";
-import GroupWorkingRow from "./GroupWorkingRow.vue";
 import MobileSheet from "./MobileSheet.vue";
 import { useIsMobile } from "../lib/use-dropdown";
 import { backInFlight } from "../lib/mobile-back";
-import { presentGroupWorkingMembers } from "../lib/group-members";
 import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
 import { useConversationTimelineFeed } from "../lib/use-timeline-feed";
 import {
@@ -173,16 +170,6 @@ const memberBots = computed<BotSummaryDto[]>(() => {
 });
 const disabledMemberCount = computed(() => memberBots.value.filter((b) => !b.enabled || b.retired).length);
 const activityBotIds = useGroupAvatarActivity();
-
-// The members that currently hold a turn. Both inputs are the store's live
-// turn state: the active Run's durable member turns, and the live turn map
-// that survives a reconnect. Empty when the Group is idle.
-const workingMembers = computed(() => presentGroupWorkingMembers({
-  memberTurns: groupsStore.memberTurns,
-  liveTurnIds: Object.keys(groupsStore.liveTurnsByMember),
-  bots: memberBots.value,
-}));
-
 type MemberStatus =
   | { kind: "none-enabled" }
   | { kind: "some-disabled"; names: string; lead?: string; fallback?: string };
@@ -219,11 +206,6 @@ function handleSend(
   void groupsStore.sendPromptTo(text, target, media);
 }
 
-/** Legacy path only: the status bar owns Stop all on the timeline path. */
-function handleCancel(): void {
-  void groupsStore.stopCurrentAndQueued();
-}
-
 function handleStopAll(): void {
   void groupsStore.stopCurrentAndQueued();
 }
@@ -236,7 +218,10 @@ function driverForBot(bot: BotSummaryDto): string | undefined {
 
 const instance = computed(() =>
   groupsStore.instanceId ? instancesStore.byId(groupsStore.instanceId) : undefined);
-const timelineEnabled = computed(() => supportsConversationTimelineV1(instance.value));
+/** The timeline is the only conversation surface. A daemon that does not
+ *  advertise it cannot be served by this client at all: the pane says so once
+ *  and disables its write controls. */
+const timelineSupported = computed(() => supportsConversationTimelineV1(instance.value));
 
 /** One Room for the timeline (P1c adds the run-wide drawer). Direct is the
  *  single-participant case of the same shape. */
@@ -283,7 +268,7 @@ const timelineFeed = useConversationTimelineFeed({
   instanceId: computed(() => groupsStore.instanceId),
   conversationId: computed(() => groupsStore.activeConversationId),
   topicId: computed(() => groupsStore.activeTopicId),
-  enabled: timelineEnabled,
+  enabled: timelineSupported,
   reloadKey: timelineReloadKey,
 });
 
@@ -299,6 +284,10 @@ interface TimelineDetailTarget { runId: string; memberTurnId?: string }
 const detailTarget = ref<TimelineDetailTarget | null>(null);
 const detailAttempt = ref<number | undefined>(undefined);
 const pendingDetail = ref<TimelineDetailTarget | null>(null);
+/** A Run the read model proved absent for this scope: the drawer cannot open,
+ *  and only an explicit Retry clears the store's negative cache for it. The
+ *  clicked member rides along so Retry reopens the same trace. */
+const unavailable = ref<{ runId: string; memberTurnId?: string } | null>(null);
 const stopPendingMember = ref<string | null>(null);
 
 function findRun(runId: string | undefined): ConversationRunDto | undefined {
@@ -338,11 +327,20 @@ const detailEffectiveAttempt = computed(() =>
 /** Reachable from bot meta, avatar, speaker label and the status bar: one key,
  *  one drawer, one process. */
 function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }): void {
+  // Any successful open retires the previous Run's banner: the notice must not
+  // outlive the failure that raised it.
+  unavailable.value = null;
   const run = findRun(payload.runId);
   if (!run) {
     // The Run's durable detail is not cached yet: fetch it and retry once the
-    // read model lands (the drawer needs a real Run, never a guess).
+    // read model lands (the drawer needs a real Run, never a guess). A Run the
+    // batch already reported missing shows the inline error instead.
     if (payload.runId) {
+      if (groupsStore.isRunDetailMissing(payload.runId)) {
+        pendingDetail.value = null;
+        unavailable.value = { runId: payload.runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
+        return;
+      }
       pendingDetail.value = { runId: payload.runId, ...(payload.memberTurnId ? { memberTurnId: payload.memberTurnId } : {}) };
       groupsStore.ensureRunDetails([payload.runId]);
     }
@@ -355,15 +353,56 @@ function openTimelineDetail(payload: { runId?: string; memberTurnId?: string }):
   detailTarget.value = { runId: run.id, ...(selected ? { memberTurnId: selected.id } : {}) };
   detailAttempt.value = selected?.attempt;
   groupsStore.ensureRunDetails([run.id]);
-  if (selected) groupsStore.ensureTracePage(selected.id, selected.attempt);
+  if (selected) {
+    groupsStore.ensureTracePage(selected.id, selected.attempt);
+    armTraceFollow(selected.id, selected.attempt);
+  }
 }
 
 watch(() => groupsStore.runHistoryDetailRevision, () => {
   const pending = pendingDetail.value;
   if (!pending) return;
+  if (groupsStore.isRunDetailMissing(pending.runId)) {
+    pendingDetail.value = null;
+    unavailable.value = { runId: pending.runId, ...(pending.memberTurnId ? { memberTurnId: pending.memberTurnId } : {}) };
+    return;
+  }
   pendingDetail.value = null;
   openTimelineDetail(pending);
 });
+
+/** Retry clears exactly this Run's negative entry and re-arms the open on the
+ *  member that was clicked: the batch read either lands (drawer opens) or
+ *  reports it missing again. */
+function retryTimelineDetail(): void {
+  const target = unavailable.value;
+  if (!target) return;
+  unavailable.value = null;
+  groupsStore.retryRunDetail(target.runId);
+  pendingDetail.value = { runId: target.runId, ...(target.memberTurnId ? { memberTurnId: target.memberTurnId } : {}) };
+}
+
+// --- Drawer trace follow ------------------------------------------------------
+/** The member/attempt the store follows right now, so a revision bump within
+ *  the same pair never re-arms (and re-reads) the open trace. */
+let followedTrace: { memberTurnId: string; attempt: number } | null = null;
+
+function armTraceFollow(memberTurnId: string, attempt: number | undefined): void {
+  if (attempt === undefined) return;
+  if (followedTrace?.memberTurnId === memberTurnId && followedTrace.attempt === attempt) return;
+  followedTrace = { memberTurnId, attempt };
+  groupsStore.setTraceFollow(memberTurnId, attempt);
+}
+
+/** The attempt selector inside the drawer: the followed cursor must move with
+ *  it, or every frame of the new attempt is rejected as a mismatch. */
+function handleTimelineAttempt(attempt: number): void {
+  detailAttempt.value = attempt;
+  const selected = detailSelectedMember.value;
+  if (!selected) return;
+  groupsStore.ensureTracePage(selected.id, attempt);
+  armTraceFollow(selected.id, attempt);
+}
 
 // The read model can land after the drawer opened: retry the selected trace
 // once its Run detail (which owns the member lookup) is present.
@@ -379,8 +418,22 @@ watch(
     const attempt = detailEffectiveAttempt.value;
     if (!selected || attempt === undefined) return;
     groupsStore.ensureTracePage(selected.id, attempt);
+    armTraceFollow(selected.id, attempt);
   },
   { immediate: true },
+);
+
+// A Topic or instance switch leaves the previous scope entirely: neither the
+// pending open nor the "Run unavailable" banner may survive it, and the store
+// drops the drawer follow with the old scope — so the local cursor must too,
+// or a reopened drawer after switching away and back can never re-arm it.
+watch(
+  () => [groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId].join(":"),
+  () => {
+    unavailable.value = null;
+    pendingDetail.value = null;
+    followedTrace = null;
+  },
 );
 
 function selectTimelineMember(memberTurnId: string): void {
@@ -388,9 +441,12 @@ function selectTimelineMember(memberTurnId: string): void {
   if (!member || !detailTarget.value) return;
   detailTarget.value = { ...detailTarget.value, memberTurnId };
   detailAttempt.value = member.attempt;
+  armTraceFollow(member.id, member.attempt);
 }
 
 function closeTimelineDetail(): void {
+  followedTrace = null;
+  groupsStore.clearTraceFollow();
   detailTarget.value = null;
   detailAttempt.value = undefined;
 }
@@ -460,7 +516,7 @@ async function handleDetailStopMember(memberTurnId: string): Promise<void> {
   try {
     await groupsStore.cancelMember(instId, run.id, memberTurnId);
   } catch (err: unknown) {
-    pushToast("error", "group.dispatch.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
+    pushToast("error", "group.run.stopMemberFailed", { msg: err instanceof Error ? err.message : String(err) });
   } finally {
     if (stopPendingMember.value === memberTurnId) stopPendingMember.value = null;
   }
@@ -473,8 +529,7 @@ const detailBudget = computed(() => detailRun.value ? runBudgetOf(detailRun.valu
 
 
 /** Durable Run details for the Runs the timeline shows: the process drawer and
- *  member names need them, and the legacy transcript loaded them the same way.
- *  Bounded by the loaded page, so history stays one batch. */
+ *  member names need them. Bounded by the loaded page, so history stays one batch. */
 const timelineRunIds = computed<string[]>(() => {
   const ids = new Set<string>();
   for (const entry of timelineFeed.entries.value) {
@@ -486,7 +541,7 @@ const timelineRunIds = computed<string[]>(() => {
 watch(timelineRunIds, (ids) => {
   if (ids.length > 0) groupsStore.ensureRunDetails(ids);
 }, { immediate: true });
-// An archived Topic stays browsable (its transcript is durable history), but it
+// An archived Topic stays browsable (its timeline is durable history), but it
 // cannot accept new Runs — sending there is a guaranteed `topic_not_active`.
 const isActiveTopic = computed(() => groupsStore.currentTopic?.status === "active");
 const worktreeRunId = computed(() => {
@@ -521,7 +576,7 @@ const worktreeRunId = computed(() => {
       <div class="flex min-w-0 flex-1 flex-col">
         <div class="flex min-w-0 items-center gap-2"><span class="truncate text-sm font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span></div>
         <TopicSwitcher
-          v-if="isMobile && !needsFirstTopic"
+          v-if="timelineSupported && isMobile && !needsFirstTopic"
           :topics="groupsStore.currentTopics"
           :active-topic-id="groupsStore.activeTopicId"
           :preview-topic="previewTopic"
@@ -559,7 +614,7 @@ const worktreeRunId = computed(() => {
         <div class="flex min-w-0 items-center gap-2"><h2 class="truncate text-sm font-semibold tracking-tight text-fg">{{ group?.title ?? $t("group.nav.title") }}</h2></div>
         <div class="flex min-w-0 items-center gap-1.5 text-xs text-fg-muted">
           <TopicSwitcher
-            v-if="!isMobile && !needsFirstTopic"
+            v-if="timelineSupported && !isMobile && !needsFirstTopic"
             :topics="groupsStore.currentTopics"
             :active-topic-id="groupsStore.activeTopicId"
             :preview-topic="previewTopic"
@@ -595,9 +650,6 @@ const worktreeRunId = computed(() => {
       </button>
     </header>
 
-    <!-- "Who is working" is the legacy surface: the timeline path shows the same
-         fact in the status bar and per-row activity instead. -->
-    <GroupWorkingRow v-if="!timelineEnabled" :members="workingMembers" />
 
     <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>
@@ -617,7 +669,17 @@ const worktreeRunId = computed(() => {
       </template>
     </div>
 
-    <div v-if="needsFirstTopic"
+    <!-- A daemon without the timeline cannot be served at all: the upgrade
+         notice alone occupies the pane, and every create/write entry point
+         below it is either hidden or disabled, whatever the Topic state is. -->
+    <div
+      v-if="!timelineSupported"
+      data-test="timeline-upgrade-required"
+      class="flex min-h-0 flex-1 items-center justify-center px-6 text-center"
+    >
+      <p class="max-w-sm text-xs text-fg-muted">{{ $t("conversation.timeline.upgradeRequired") }}</p>
+    </div>
+    <div v-else-if="needsFirstTopic"
          data-test="group-first-topic"
          class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
       <MessageSquare :size="22" class="text-fg-muted" />
@@ -633,10 +695,10 @@ const worktreeRunId = computed(() => {
         <span>{{ $t("group.firstTopic.action") }}</span>
       </button>
     </div>
-    <!-- One timeline for Group and Direct. An old daemon without
-         `conversations.timeline.v1` keeps the legacy transcript untouched. -->
+    <!-- One timeline for Group and Direct: the timeline state the upgrade gate
+         above did not already claim. -->
     <ConversationTimeline
-      v-if="timelineEnabled && !needsFirstTopic"
+      v-else
       :room="roomView"
       :timeline="timelineFeed.timeline.value"
       :live-overlay="liveOverlay"
@@ -647,12 +709,11 @@ const worktreeRunId = computed(() => {
       :load-older="timelineFeed.loadOlder"
       @open-detail="openTimelineDetail"
     />
-    <GroupTranscript v-else-if="!timelineEnabled" :bots="memberBots" :lead-bot-id="group?.leadBotId" :activity-bot-ids="activityBotIds" />
-    <ConversationWorktreePanel v-if="groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
+    <ConversationWorktreePanel v-if="timelineSupported && groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
       :instance-id="groupsStore.instanceId" :run-id="worktreeRunId" />
 
     <ConversationStatusBar
-      v-if="timelineEnabled && !needsFirstTopic"
+      v-if="timelineSupported && !needsFirstTopic"
       :run="groupsStore.activeRun"
       :member-turns="groupsStore.memberTurns"
       :round="timelineFeed.activeRound.value"
@@ -663,14 +724,21 @@ const worktreeRunId = computed(() => {
     />
     <GroupComposer
       :bots="memberBots"
-      :disabled="!groupsStore.activeTopicId || !groupsStore.topicReady || !isActiveTopic"
+      :disabled="!timelineSupported || !groupsStore.activeTopicId || !groupsStore.topicReady || !isActiveTopic"
       :needs-first-topic="needsFirstTopic"
       :instance-id="groupsStore.instanceId"
       :send-outcome="sendPromptOutcome"
-      :hide-stop="timelineEnabled"
       @send="handleSend"
-      @cancel="handleCancel"
     />
+    <div v-if="unavailable" data-test="run-detail-unavailable"
+         class="flex items-center justify-between bg-warn/10 px-3 lg:px-5 py-2 text-xs text-fg">
+      <span>{{ $t("conversation.runDetail.unavailable") }}</span>
+      <button type="button" data-test="run-detail-retry"
+              class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
+              @click="retryTimelineDetail">
+        {{ $t("bot.prompt.retry") }}
+      </button>
+    </div>
     <div v-if="groupsStore.historyError && groupsStore.activeTopicId"
          class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ groupsStore.historyErrorDetail ?? groupsStore.historyError }}</span>
@@ -711,13 +779,11 @@ const worktreeRunId = computed(() => {
     </MobileSheet>
 
     <!-- The one Run-wide detail drawer (design §8.4): every entry point
-         (bot meta, avatar, speaker label, status bar) opens this key, and the
-         legacy transcript keeps its own per-member overlay for old daemons. -->
+         (bot meta, avatar, speaker label, status bar) opens this key. -->
     <TraceOverlay
       v-if="detailRun && detailTarget"
       id="group-timeline-trace-overlay"
       :run="detailRun"
-      :member-turn="detailSelectedMember"
       :member-turns="detailMembers"
       :selected-member-turn-id="detailSelectedMember?.id"
       :participants="roomView.participants"
@@ -737,7 +803,7 @@ const worktreeRunId = computed(() => {
       :trace-has-earlier="detailTracePage?.hasEarlier"
       :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && !!groupsStore.liveTurnForMember(detailSelectedMember.id)"
       @close="closeTimelineDetail"
-      @attempt="detailAttempt = $event"
+      @attempt="handleTimelineAttempt"
       @select-member="selectTimelineMember"
       @stop-member="handleDetailStopMember"
       @interaction-answer="handleDetailAnswer"

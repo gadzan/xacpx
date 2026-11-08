@@ -13,7 +13,6 @@ import type { PendingInteractionState } from "../stores/direct-bots";
 import type { RoomParticipant } from "../lib/room-view";
 import type { RunBudgetView } from "../lib/run-detail";
 import GroupRunDetailHeader from "./GroupRunDetailHeader.vue";
-import GroupRunDetailContent from "./GroupRunDetailContent.vue";
 import ConversationRunDetailContent from "./ConversationRunDetailContent.vue";
 
 /**
@@ -25,31 +24,21 @@ import ConversationRunDetailContent from "./ConversationRunDetailContent.vue";
 const props = defineProps<{
   id: string;
   run: ConversationRunDto;
-  memberTurn?: MemberTurnSummaryDto;
-  memberName?: string;
   topicTitle?: string;
   attempt?: number;
   attempts?: number[];
   parts?: TurnPartDto[];
   recordingState?: "complete" | "recording" | "interrupted" | "unavailable";
-  explanation?: string;
   plan?: PlanEntryDto[];
   traceLoading?: boolean;
   traceError?: string | null;
   traceHasMore?: boolean;
   traceHasEarlier?: boolean;
   traceStreaming?: boolean;
-  stopAvailable?: boolean;
-  stopPending?: boolean;
-  pauseAvailable?: boolean;
-  pausePending?: boolean;
-  traceFailure?: string;
   scrollMemory?: Map<string, number>;
   /** The trigger that opened the overlay; focused on close. */
   anchorEl?: HTMLElement | null;
-  /** Run-wide mode: render one Run's members before the selected process. */
-  runWide?: boolean;
-  memberTurns?: MemberTurnSummaryDto[];
+  memberTurns: MemberTurnSummaryDto[];
   selectedMemberTurnId?: string;
   participants?: RoomParticipant[];
   budget?: RunBudgetView;
@@ -60,8 +49,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: [];
-  stop: [];
-  pause: [];
   attempt: [attempt: number];
   loadMore: [];
   loadEarlier: [];
@@ -75,12 +62,10 @@ const emit = defineEmits<{
   interactionDismiss: [requestId: string];
 }>();
 
-const selectedMember = computed(() => {
-  if (!props.runWide) return props.memberTurn;
-  return props.memberTurns?.find((member) => member.id === props.selectedMemberTurnId)
-    ?? props.memberTurns?.find((member) => member.state === "running" || member.state === "dispatched")
-    ?? props.memberTurns?.[props.memberTurns.length - 1];
-});
+const selectedMember = computed(() =>
+  props.memberTurns.find((member) => member.id === props.selectedMemberTurnId)
+  ?? props.memberTurns.find((member) => member.state === "running" || member.state === "dispatched")
+  ?? props.memberTurns[props.memberTurns.length - 1]);
 
 const drawerEl = ref<HTMLElement | null>(null);
 const drawerScroll = ref<HTMLElement | null>(null);
@@ -96,7 +81,7 @@ const drawerScroll = ref<HTMLElement | null>(null);
 function resolveFocusFallback(): HTMLElement | null {
   const anchor = props.anchorEl;
   if (anchor?.isConnected) return anchor;
-  const memberTurnId = props.memberTurn?.id;
+  const memberTurnId = selectedMember.value?.id;
   const row = anchor?.closest<HTMLElement>("[data-row-id]")
     ?? (memberTurnId
       ? Array.from(document.querySelectorAll<HTMLElement>("[data-row-id]"))
@@ -129,11 +114,9 @@ useModalA11y(drawerEl, () => close(), {
 
 const { remember: memoizeScroll } = useDetailScrollMemory(
   () => drawerScroll.value,
-  () => props.runWide
-    ? `${props.run.id}:${selectedMember.value?.id ?? ""}:${props.attempt ?? ""}`
-    : `${props.memberTurn?.id ?? ""}:${props.attempt ?? ""}`,
+  () => `${props.run.id}:${selectedMember.value?.id ?? ""}:${props.attempt ?? ""}`,
   () => props.scrollMemory,
-  () => props.runWide ? !props.traceLoading : !props.traceLoading && (props.parts?.length ?? 0) > 0,
+  () => !props.traceLoading,
 );
 
 function onOutsidePointer(event: PointerEvent): void {
@@ -193,29 +176,23 @@ watch(rowEl, observeAnchor, { flush: "post" });
       :id="id"
       ref="drawerEl" tabindex="-1" role="dialog" aria-modal="true"
       data-test="group-detail-card"
-      :aria-label="runWide
-        ? $t('conversation.runDetail.title')
-        : memberName ? `${memberName} · ${$t('group.detail.title')}` : $t('group.detail.title')"
+      :aria-label="$t('conversation.runDetail.title')"
       :data-run-id="run.id" :data-member-turn-id="selectedMember?.id" :data-attempt="attempt"
       class="flex h-full w-full max-w-md flex-col overflow-hidden bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
     >
       <GroupRunDetailHeader
         variant="popover"
-        :run="run" :member-turn="runWide ? undefined : memberTurn"
-        :member-name="runWide ? undefined : memberName" :topic-title="topicTitle"
+        :run="run" :topic-title="topicTitle"
         :attempt="attempt" :attempts="attempts"
-        :stop-available="runWide ? false : stopAvailable" :stop-pending="stopPending"
-        :pause-available="runWide ? false : pauseAvailable" :pause-pending="pausePending"
-        @close="close" @stop="emit('stop')" @pause="emit('pause')" @attempt="emit('attempt', $event)"
+        @close="close" @attempt="emit('attempt', $event)"
       />
       <div ref="drawerScroll" class="group-detail-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-4" @scroll.passive="memoizeScroll()">
         <ConversationRunDetailContent
-          v-if="runWide"
-          :run="run" :member-turns="memberTurns ?? []" :selected-member-turn-id="selectedMember?.id"
+          :run="run" :member-turns="memberTurns" :selected-member-turn-id="selectedMember?.id"
           :participants="participants" :budget="budget" :interactions="interactions"
           :capability="capability" :cancel-pending="cancelPending"
           :attempt="attempt" :attempts="attempts" :parts="parts"
-          :recording-state="recordingState" :plan="plan" :trace-failure="traceFailure"
+          :recording-state="recordingState" :plan="plan"
           :trace-loading="traceLoading" :trace-error="traceError"
           :trace-has-more="traceHasMore" :trace-has-earlier="traceHasEarlier" :trace-streaming="traceStreaming"
           @select-member="emit('selectMember', $event)" @stop-member="emit('stopMember', $event)"
@@ -225,16 +202,6 @@ watch(rowEl, observeAnchor, { flush: "post" });
           @interaction-decline="emit('interactionDecline', $event)"
           @interaction-cancel="emit('interactionCancel', $event)"
           @interaction-dismiss="emit('interactionDismiss', $event)"
-        />
-        <GroupRunDetailContent
-          v-else
-          :run="run" :member-turn="memberTurn" :member-name="memberName"
-          :attempt="attempt" :attempts="attempts" :parts="parts"
-          :recording-state="recordingState" :explanation="explanation"
-          :plan="plan" :trace-failure="traceFailure" :trace-loading="traceLoading" :trace-error="traceError"
-          :trace-has-more="traceHasMore" :trace-has-earlier="traceHasEarlier" :trace-streaming="traceStreaming"
-          :stop-available="stopAvailable" :stop-pending="stopPending"
-          @load-more="emit('loadMore')" @load-earlier="emit('loadEarlier')" @retry-trace="emit('retryTrace')"
         />
       </div>
     </aside>

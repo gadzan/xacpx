@@ -4636,7 +4636,68 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn?.parts).toHaveLength(2);
       expect(store.liveTurn?.parts[0]).toEqual({ type: "reasoning", text: "Early thought" });
       expect(store.liveTurn?.parts[1]).toEqual({ type: "text", text: "Early text" });
-      expect(store.runParts["run_stream"]).toHaveLength(2);
+    });
+
+    it("restores recovered live text when an accept arrives after the live turn retired", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const run = { id: "run_stream", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_h", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
+      const memberTurn = { id: "m1", runId: "run_stream", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "running", createdAt: "now" };
+      store.activeRun = run as never;
+      store.activeMemberTurn = memberTurn as never;
+      mockRpc.mockImplementation((_instId: string, type: string) =>
+        Promise.resolve(type === "control.runs.get" ? { run: { ...run, memberTurns: [memberTurn] } } : {}),
+      );
+
+      // A reconnect recovers the in-flight turn's streamed text.
+      store.applyEvent({
+        kind: "state-snapshot",
+        instanceId: "inst_1",
+        turns: [{
+          instanceId: "inst_1",
+          sessionAlias: "brt_1",
+          parts: [{ type: "text", text: "Early text" }],
+          status: "streaming",
+          startedAt: 1000,
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_stream", memberTurnId: "m1" },
+        }],
+        usage: [],
+        commands: [],
+      } as never);
+      expect(store.liveTurn?.parts).toEqual([{ type: "text", text: "Early text" }]);
+
+      // The durable tail then converges and retires the live projection before
+      // the accept response for the same Run lands.
+      store.liveTurn = null;
+
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((_instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return promptPromise;
+        return Promise.resolve({});
+      });
+      const sendCall = store.sendPrompt("Explain code");
+      resolvePrompt({
+        reused: false,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestId: store.currentDraftRequestId!,
+        message: { id: "msg_h", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Explain code", createdAt: "now" },
+        run,
+        memberTurn,
+      });
+      await sendCall;
+      await flushPromises();
+
+      // The accept path restores this Run's own snapshot: the recovered text is
+      // visible immediately, before any committed trace frame is read.
+      const restored = (store as unknown as { liveTurn: { parts: unknown } | null }).liveTurn;
+      expect(restored?.parts).toEqual([{ type: "text", text: "Early text" }]);
     });
     it("does not regress running or completed Run state when delayed fresh queued RPC response arrives", async () => {
       const store = useDirectBotsStore();
@@ -5278,82 +5339,6 @@ describe("useDirectBotsStore", () => {
       expect(store.promptError).toBe("connectorOutdated");
       expect(store.promptErrorDetail).toBeNull();
     });
-    it("never certifies a hub-truncated snapshot trace, even after turn-finished", async () => {
-      const store = useDirectBotsStore();
-      store.instanceId = "inst_1";
-      store.selectedBotId = "bot_1";
-      store.activeConversationId = "conv_1";
-      store.activeTopicId = "top_1";
-      mockRpc.mockImplementation((instId: string, type: string) => {
-        if (type === "control.runs.get") {
-          return Promise.resolve({ run: { id: "run_A", conversationId: "conv_1", topicId: "top_1", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now", memberTurns: [] } });
-        }
-        return Promise.resolve({});
-      });
-      // Hub-capped snapshot: the trace is gappy, flagged truncated.
-      store.applyEvent({
-        kind: "state-snapshot",
-        instanceId: "inst_1",
-        turns: [
-          {
-            instanceId: "inst_1",
-            sessionAlias: "brt_hidden",
-            parts: [{ type: "text", text: "capped prefix" }],
-            status: "streaming",
-            startedAt: 1234,
-            truncated: true,
-            conversation: {
-              conversationId: "conv_1",
-              topicId: "top_1",
-              botId: "bot_1",
-              runId: "run_A",
-              memberTurnId: "m_A",
-            },
-          },
-        ],
-        usage: [],
-        commands: [],
-      } as never);
-      expect(store.runParts["run_A"]).toHaveLength(1);
-      expect(store.completeRunParts["run_A"]).toBeUndefined();
-      // Live deltas append post-cap content onto the capped base...
-      store.applyEvent({
-        kind: "control-event",
-        instanceId: "inst_1",
-        event: {
-          type: "turn-output",
-          chatKey: "rk",
-          sessionAlias: "brt_hidden",
-          chunk: " tail",
-          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_A", memberTurnId: "m_A" },
-        } as never,
-      });
-      // ...and the stream's turn-finished arrives. The merged trace still
-      // must not certify the durable final answer.
-      store.applyEvent({
-        kind: "control-event",
-        instanceId: "inst_1",
-        event: {
-          type: "turn-finished",
-          chatKey: "rk",
-          sessionAlias: "brt_hidden",
-          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_A", memberTurnId: "m_A" },
-        } as never,
-      });
-      expect(store.completeRunParts["run_A"]).toBeUndefined();
-      // The durable canonical row arrives: FULL ANSWER must render, not the
-      // capped trace.
-      store.applyEvent({
-        kind: "control-event",
-        instanceId: "inst_1",
-        event: {
-          type: "conversation-message",
-          message: { id: "msg_full", conversationId: "conv_1", topicId: "top_1", seq: 9, role: "bot", runId: "run_A", content: "FULL ANSWER", createdAt: "now" },
-        } as never,
-      });
-      expect(store.messages.some((m) => m.content === "FULL ANSWER")).toBe(true);
-      expect(store.completeRunParts["run_A"]).toBeUndefined();
-    });
     it("recovers the topic gate when reconnect catalog refresh rejects", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -5843,7 +5828,7 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn?.parts).toHaveLength(3);
       expect(store.liveTurn?.revision ?? 0).toBeGreaterThan(revAfterToolInsert);
 
-      // Finish event retains parts under runParts[runId]
+      // Finish event keeps the streamed parts on the live turn
       store.applyEvent({
         kind: "control-event",
         instanceId: "inst_1",
@@ -5860,7 +5845,7 @@ describe("useDirectBotsStore", () => {
           },
         },
       } as never);
-      expect(store.runParts["run_1"]).toHaveLength(3);
+      expect(store.liveTurn?.parts).toHaveLength(3);
 
       // Event for a different conversation/topic must NOT update liveTurn
       store.applyEvent({

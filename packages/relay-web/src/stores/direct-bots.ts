@@ -529,6 +529,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const liveCompletedRunId = ref<string | null>(null);
   const activeMemberTurn = ref<MemberTurnSummaryDto | null>(null);
   const liveTurn = ref<DirectBotLiveTurn | null>(null);
+  /** The last streamed parts and the Run they belong to. A reconnect can
+   *  retire `liveTurn` between a stream and its accept response; the accept
+   *  path restores exactly that Run's snapshot, so already-streamed text stays
+   *  visible before the first committed trace frame. One slot only: prose never
+   *  crosses Runs, and a scope reset drops it. */
+  let lastLiveParts: { runId: string; parts: TurnPartDto[] } | null = null;
   const planByRunId = ref<Record<string, PlanEntryDto[]>>({});
   const latestPlanRunId = ref<string | null>(null);
   const planEntries = computed<PlanEntryDto[]>(() => {
@@ -719,6 +725,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     nextSeq?: number;
     hasMore: boolean;
     recordingState: ConversationRunTraceDto["recordingState"];
+    /** Every attempt the core recorded for this member turn: the drawer's
+     *  attempt selector and the follow cursor both read it. */
+    attempts?: number[];
     loading: boolean;
     error: string | null;
   }>>({});
@@ -741,6 +750,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   function clearDirectTracePages(): void {
     directTraceGeneration += 1;
     directTracePages.value = {};
+    lastLiveParts = null;
     for (const key of Object.keys(directTraceRequests)) delete directTraceRequests[key];
   }
 
@@ -840,6 +850,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
               nextSeq: decoded.nextSeq ?? previous.nextSeq,
               hasMore: decoded.hasMore,
               recordingState: decoded.recordingState,
+              ...(decoded.attempts ? { attempts: decoded.attempts } : {}),
               loading: false,
               error: null,
             },
@@ -878,26 +889,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       });
     directTraceRequests[requestKey] = pending;
   }
-  const runParts = ref<Record<string, TurnPartDto[]>>({});
-  // Completeness evidence: only a runId that actually received its stream's
-  // turn-finished may keep its cached parts. A partial snapshot (stream cut
-  // by disconnect) must never shadow the durable final row recovered later.
-  const runPartsComplete = ref<Record<string, true>>({});
-  // Truncation evidence: a state-sync snapshot the hub capped at
-  // STATE_SYNC_TEXT_CAP stays gappy even after its stream's turn-finished —
-  // later live deltas append post-cap content to the capped base, so the
-  // merged trace must never certify the durable final answer.
-  const runPartsTruncated = ref<Record<string, true>>({});
-  // Finished-row rendering must only use traces proven complete AND untruncated
-  // by their own stream. DirectBotPane binds this (never raw runParts).
-  const completeRunParts = computed<Record<string, TurnPartDto[]>>(() => {
-    const out: Record<string, TurnPartDto[]> = {};
-    for (const [id, parts] of Object.entries(runParts.value)) {
-      if (parts.length && runPartsComplete.value[id] && !runPartsTruncated.value[id]) out[id] = parts;
-    }
-    return out;
-  });
-
   // Prompt / Idempotency state
   const currentDraftRequestId = ref<string | null>(null);
   const lastPromptText = ref<string>("");
@@ -1710,22 +1701,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // owner handoff below re-runs discovery instead of trusting a background
   // transcript refresh, so a queued next Run can never hide behind an open
   // gate. Transcript paging stays seq-cursor driven.
-  // A durable bot row proves the final answer: an unproven (never
-  // turn-finished) cached trace for the same Run is a stale partial that
-  // must not shadow it — drop it so the canonical content renders.
-  function pruneIncompleteTraces(): void {
-    const completeFlags = runPartsComplete.value;
-    const truncatedFlags = runPartsTruncated.value;
-    let prunedParts: Record<string, TurnPartDto[]> | null = null;
-    for (const m of messages.value) {
-      // Unproven OR hub-truncated: neither may shadow the durable final row.
-      if (m.runId && runParts.value[m.runId]?.length && (!completeFlags[m.runId] || truncatedFlags[m.runId])) {
-        if (!prunedParts) prunedParts = { ...runParts.value };
-        delete prunedParts[m.runId];
-      }
-    }
-    if (prunedParts) runParts.value = prunedParts;
-  }
 
   // Merge one newest-bounded page into the loaded window, preserving the
   // already-loaded left edge and newest cursor. Loaded rows win on id
@@ -1742,7 +1717,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
     messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
     transcriptRevision += 1;
-    pruneIncompleteTraces();
     const prevOldest = oldestSeq.value;
     if (res.oldestSeq !== undefined && (prevOldest === undefined || res.oldestSeq < prevOldest)) {
       oldestSeq.value = res.oldestSeq;
@@ -2899,8 +2873,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const isFreshRun = adoptedRun.id === res.run.id && adoptedRun.id !== priorRunId;
         const existingParts = isFreshRun || (adoptedRun.id === priorRunId && liveTurn.value?.parts.length)
           ? (liveTurn.value?.parts.length ? liveTurn.value.parts : [])
-          : runParts.value[res.run.id]?.length
-            ? runParts.value[res.run.id]
+          : lastLiveParts?.runId === res.run.id
+            ? [...lastLiveParts.parts]
             : [];
         liveTurn.value = {
           parts: existingParts,
@@ -2910,11 +2884,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             : (liveTurn.value?.startedAt ?? Date.now()),
           revision: (liveTurn.value?.revision ?? 0) + 1,
         };
-        if (existingParts.length && !runParts.value[res.run.id]) {
-          runParts.value = {
-            ...runParts.value,
-            [res.run.id]: [...existingParts],
-          };
+        if (existingParts.length) {
+          lastLiveParts = { runId: res.run.id, parts: [...existingParts] };
         }
       }
       // latestPlanRunId follows the tracked owner only: when the accept did
@@ -3760,23 +3731,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
                 startedAt: new Date(matchingTurn.startedAt).toISOString(),
               };
             }
-            runParts.value = {
-              ...runParts.value,
-              [matchingRunId]: [...matchingTurn.parts],
-            };
-            // A fresh live snapshot restarts the stream: prior completeness
-            // evidence no longer applies to the new turn.
-            if (runPartsComplete.value[matchingRunId]) {
-              const { [matchingRunId]: _dropped, ...rest } = runPartsComplete.value;
-              runPartsComplete.value = rest;
-            }
-            // A hub-capped snapshot stays gappy: later deltas append onto the
-            // capped base, so the merged trace can never become complete.
-            if (matchingTurn.truncated) {
-              runPartsTruncated.value = { ...runPartsTruncated.value, [matchingRunId]: true };
-            } else if (runPartsTruncated.value[matchingRunId]) {
-              const { [matchingRunId]: _dropped, ...rest } = runPartsTruncated.value;
-              runPartsTruncated.value = rest;
+            if (matchingTurn.parts.length) {
+              lastLiveParts = { runId: matchingRunId, parts: [...matchingTurn.parts] };
             }
 
             const targetInstId = event.instanceId;
@@ -4092,9 +4048,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           newestSeq.value = Math.max(newestSeq.value ?? 0, msg.seq);
           // Same chained rule as the HTTP accept path (see helper).
           advanceContiguousForSeq(msg.seq);
-          // Same durable-final rule as mergeHistoryPage: a live bot row for
-          // a Run whose trace never finished proves the partial stale.
-          pruneIncompleteTraces();
         }
         // If this message belongs to the active run and is from the bot, converge liveTurn
         if (msg.role === "bot" && activeRun.value && msg.runId === activeRun.value.id) {
@@ -4377,15 +4330,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
       } else if (e.type === "turn-finished") {
         liveTurn.value.status = "working";
-        // Retain parts under runId — and only this event proves the snapshot
-        // complete, so a reconnect that later recovers the durable final row
-        // can trust it over the message content fallback.
-        if (corr.runId) {
-          runParts.value = {
-            ...runParts.value,
-            [corr.runId]: [...parts],
-          };
-          runPartsComplete.value = { ...runPartsComplete.value, [corr.runId]: true };
+        if (corr.runId && parts.length) {
+          lastLiveParts = { runId: corr.runId, parts: [...parts] };
         }
       }
 
@@ -4430,8 +4376,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     ensureDirectTracePage,
     setDirectTraceFollow,
     clearDirectTraceFollow,
-    runParts,
-    completeRunParts,
     currentDraftRequestId,
     lastPromptText,
     promptInFlight,

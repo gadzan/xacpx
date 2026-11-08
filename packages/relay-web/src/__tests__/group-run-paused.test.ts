@@ -123,7 +123,7 @@ describe("paused Run presentation", () => {
   it("keeps Send as the composer's only action while the Run is paused", async () => {
     const groups = seedGroupSelection(RUN);
     const wrapper = mount(GroupComposer, {
-      props: { bots: BOTS, hideStop: true },
+      props: { bots: BOTS },
       global: { plugins: [i18n] },
     });
     await flushPromises();

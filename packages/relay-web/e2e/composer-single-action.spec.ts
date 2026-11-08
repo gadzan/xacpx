@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import type { ConversationRunDetailDto } from "@ganglion/xacpx-relay-protocol";
+import type { ConversationRunDetailDto, ConversationTimelineDto } from "@ganglion/xacpx-relay-protocol";
 import { test, expect, loginAndShowInstances } from "./fixtures";
 
 const createdAt = "2026-10-14T00:00:00Z";
@@ -23,6 +23,23 @@ const run: ConversationRunDetailDto = {
   ],
 };
 
+/** The run has no public message yet, so the timeline carries one activity row. */
+const timeline = {
+  conversationId: scope.conversationId,
+  topicId: scope.topicId,
+  entries: [{
+    kind: "activity",
+    key: "activity:turn_single_action",
+    anchorSeq: 1,
+    runId: run.id,
+    memberTurn: run.memberTurns[0],
+  }],
+  oldestSeq: 0,
+  newestSeq: 1,
+  hasMoreBefore: false,
+  hasMoreAfter: false,
+} as unknown as ConversationTimelineDto;
+
 async function openLiveGroup(page: Page): Promise<void> {
   await page.route("**/api/instances/i1/rpc", async (route) => {
     const { type } = route.request().postDataJSON() as { type: string };
@@ -38,7 +55,9 @@ async function openLiveGroup(page: Page): Promise<void> {
       }
       case "control.runs.list": result = { runs: [run], activeRunId: run.id, activeRun: run }; break;
       case "control.runs.get": result = { run }; break;
-      case "control.runs.details.batch": result = { runs: [run] }; break;
+      case "control.runs.details.batch": result = { runs: [run], missingRunIds: [] }; break;
+      case "control.conversation.timeline": result = timeline; break;
+      case "control.runs.trace.get": result = { memberTurnId: "turn_single_action", attempt: 1, recordingState: "recording", events: [], nextSeq: 0, hasMore: false, attempts: [1], plan: [] }; break;
       default: return route.fallback();
     }
     await route.fulfill({ json: { result } });
@@ -46,27 +65,24 @@ async function openLiveGroup(page: Page): Promise<void> {
   await loginAndShowInstances(page);
   await page.getByTestId("instance-nav-groups").click();
   await page.getByTestId("group-row").first().getByRole("button").first().click();
-  await expect(page.getByTestId("group-transcript-scroller")).toBeVisible();
+  await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
 }
 
-test("the composer offers exactly one action while a run is active", async ({ page }) => {
+test("a running Group has exactly one Stop, and it is the status bar's", async ({ page }) => {
   await openLiveGroup(page);
 
-  // Scope to the composer: the run detail header reuses the same stop test id.
+  // Stop all is the single stop control; the composer only ever offers Send.
+  await expect(page.getByTestId("conversation-stop-all")).toBeVisible();
   const composer = page.getByTestId("group-composer-textarea").locator("xpath=ancestor::form[1]");
-  const stop = composer.getByTestId("group-stop-run-button");
-  const send = composer.getByTestId("group-send-prompt-button");
+  await expect(composer.getByTestId("group-stop-run-button")).toHaveCount(0);
+  await expect(composer.getByTestId("group-send-prompt-button")).toBeVisible();
+
+  // Typing a draft flips Send to Send (never a second Stop) and clears back.
   const textarea = page.getByTestId("group-composer-textarea");
-
-  await expect(stop).toBeVisible();
-  await expect(send).toHaveCount(0);
-
   await textarea.fill("next step");
-  await expect(send).toBeVisible();
-  await expect(send).toBeEnabled();
-  await expect(stop).toHaveCount(0);
-
+  await expect(page.getByTestId("group-send-prompt-button")).toBeEnabled();
+  await expect(page.getByTestId("group-stop-run-button")).toHaveCount(0);
   await textarea.fill("");
-  await expect(stop).toBeVisible();
-  await expect(send).toHaveCount(0);
+  await expect(page.getByTestId("conversation-stop-all")).toBeVisible();
+  await expect(page.getByTestId("group-stop-run-button")).toHaveCount(0);
 });

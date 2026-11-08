@@ -130,40 +130,6 @@ describe("Group member panel", () => {
     });
   });
 
-  describe("the who-is-working row", () => {
-    it("names the member that is executing a turn, and disappears when nobody runs", async () => {
-      seedGroupSelection();
-      const groups = useGroupsStore();
-      groups.activeRun = {
-        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
-        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
-        profileRevision: 1, createdAt: "now",
-      };
-      groups.memberTurnsById = { turn_a: runningTurn("bot_a") };
-
-      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
-      await flushPromises();
-
-      const row = wrapper.find('[data-test="group-working-row"]');
-      expect(row.exists()).toBe(true);
-      expect(row.find('[data-test="group-working-text"]').text()).toContain("Reviewer");
-
-      // The turn ends: the row is gone, because an idle Group shows no status.
-      groups.memberTurnsById = { turn_a: { ...runningTurn("bot_a"), state: "completed" } };
-      await flushPromises();
-      expect(wrapper.find('[data-test="group-working-row"]').exists()).toBe(false);
-      wrapper.unmount();
-    });
-
-    it("shows nothing while the Group has no run at all", async () => {
-      seedGroupSelection();
-      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
-      await flushPromises();
-      expect(wrapper.find('[data-test="group-working-row"]').exists()).toBe(false);
-      wrapper.unmount();
-    });
-  });
-
   describe("the entry points", () => {
     it("opens the panel from the top bar's ⋯ menu", async () => {
       seedGroupSelection();
