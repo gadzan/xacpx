@@ -82,7 +82,6 @@ const isRunActive = computed(() => directBotsStore.isRunActive),
   // A topicless Bot's first send is in flight from the click, while its
   // Default Topic is still being created.
   isPromptInFlight = computed(() => directBotsStore.promptInFlight || directBotsStore.firstSendPending),
-  isCancelling = computed(() => !!directBotsStore.cancellingRunId),
   bot = computed(() => directBotsStore.currentBot),
   isBotDisabled = computed(() => (bot.value ? !bot.value.enabled : false));
 const blocked = computed(
@@ -430,11 +429,6 @@ async function onDrop(e: DragEvent): Promise<void> {
   e.preventDefault();
   await attachments.addFiles(files, attachKey.value);
 }
-async function handleCancel(): Promise<void> {
-  const run = directBotsStore.activeRun;
-  if (!run || isCancelling.value) return;
-  await directBotsStore.stopCurrentAndQueued();
-}
 function handleRetry(): void {
   void handleSend();
 }
@@ -495,20 +489,16 @@ function onInput(): void {
       :busy="isRunActive"
       :disabled="blocked"
       :sending="isPromptInFlight"
-      :cancelling="isCancelling"
       :has-attachments="readyMedia"
       :attachments-send-disabled="attachments.uploading"
       :send-disabled="false"
       :placeholder="composerPlaceholder"
-      hide-stop
       send-test-id="send-prompt-button"
-      stop-test-id="stop-run-button"
       combobox
       combobox-list-id="direct-completion-menu"
       :combobox-expanded="menuOpen"
       :combobox-active-id="menuOpen && rows.length ? 'direct-completion-' + cmdActiveIdx : undefined"
       @send="handleSend"
-      @cancel="handleCancel"
       @keydown="onKeydown"
       @input="onInput"
       @paste="onPaste"

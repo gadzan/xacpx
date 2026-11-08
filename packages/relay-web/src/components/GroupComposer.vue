@@ -704,12 +704,10 @@ function handleRetry(): void {
       :busy="groupsStore.isRunActive"
       :disabled="disabled || groupsStore.promptInFlight || !groupsStore.topicReady"
       :sending="groupsStore.promptInFlight"
-      :cancelling="!!groupsStore.cancellingRunId"
       :send-disabled="!canSend"
       :has-attachments="readyMedia"
       :attachments-send-disabled="attachments.uploading"
       :placeholder="composerPlaceholder"
-      hide-stop
       textarea-test-id="group-composer-textarea"
       send-test-id="group-send-prompt-button"
       @send="handleSend()"

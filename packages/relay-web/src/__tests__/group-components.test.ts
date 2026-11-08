@@ -1926,6 +1926,97 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("re-arms the drawer follow after a Topic round-trip", async () => {
+      const groups = seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+      const turn = {
+        id: "turn_follow", runId: "run_follow", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+        state: "running", createdAt: "now",
+      };
+      groups.activeRun = {
+        id: "run_follow", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m_req", requestId: "req_follow", mode: "explicit",
+        shape: "fanout", state: "running", profileRevision: 1, createdAt: "now",
+      } as never;
+      groups.memberTurnsById = { turn_follow: turn as never };
+      const tracePayloads: Array<{ memberTurnId?: string; attempt?: number; afterSeq?: number }> = [];
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type, payload) => {
+        if (type === MSG.conversationTimeline) {
+          const topicId = (payload as { topicId?: string }).topicId ?? "topic_1";
+          // The other Topic is empty: switching away offers nothing to open.
+          const entries = topicId === "topic_1"
+            ? [{
+                kind: "activity", key: "activity:turn_follow", anchorSeq: 2,
+                runId: "run_follow", memberTurn: turn,
+              }]
+            : [];
+          return { conversationId: "conversation_g", topicId, entries, hasMoreBefore: false, hasMoreAfter: false } as never;
+        }
+        if (type === MSG.runsDetailsBatch) {
+          return {
+            runs: [{
+              id: "run_follow", conversationId: "conversation_g", topicId: "topic_1",
+              requestMessageId: "m_req", requestId: "req_follow", mode: "explicit",
+              shape: "fanout", state: "running", profileRevision: 1, createdAt: "now",
+              memberTurns: [turn],
+            }],
+            missingRunIds: [],
+          } as never;
+        }
+        if (type === MSG.runsTraceGet) {
+          tracePayloads.push(payload as { memberTurnId?: string; attempt?: number; afterSeq?: number });
+          return {
+            memberTurnId: "turn_follow", attempt: 1, recordingState: "recording",
+            events: [{ seq: 1, createdAt: "now", kind: "text", payload: { text: "First frame" } }],
+            nextSeq: 1, hasMore: false, attempts: [1], plan: [],
+          } as never;
+        }
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-activity"] [data-test="transcript-speaker"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+
+      // Leave the scope and come back: the store drops the follow, and the
+      // pane's own cursor must drop with it or the reopened drawer is inert.
+      groups.topicsByConversation["i1:conversation_g"]!.push({
+        id: "topic_2", conversationId: "conversation_g", title: "Other", status: "active", createdAt: "now", updatedAt: "now",
+      });
+      groups.activeTopicId = "topic_2";
+      await flushPromises();
+      groups.activeTopicId = "topic_1";
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-activity"] [data-test="transcript-speaker"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      const before = tracePayloads.length;
+
+      // A committed frame for the followed member now pulls the trace page.
+      groups.applyEvent({
+        kind: "control-event",
+        instanceId: "i1",
+        event: {
+          type: "tool-event",
+          chatKey: "c",
+          sessionAlias: "s",
+          conversation: {
+            conversationId: "conversation_g", topicId: "topic_1",
+            runId: "run_follow", memberTurnId: "turn_follow", botId: "bot_a", attempt: 1,
+          },
+          step: { toolCallId: "tool_1", toolName: "read_file", kind: "read", status: "success", title: "Read", startedAt: Date.now() },
+        },
+      } as never);
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      await flushPromises();
+      expect(tracePayloads.length).toBeGreaterThan(before);
+      expect(tracePayloads.at(-1)!.afterSeq).toBe(1);
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
     it("marks a prompt queued behind the Topic owner on the timeline", async () => {
       const groups = seedGroupSelection();
       useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];

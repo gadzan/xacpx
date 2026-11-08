@@ -424,12 +424,15 @@ watch(
 );
 
 // A Topic or instance switch leaves the previous scope entirely: neither the
-// pending open nor the "Run unavailable" banner may survive it.
+// pending open nor the "Run unavailable" banner may survive it, and the store
+// drops the drawer follow with the old scope — so the local cursor must too,
+// or a reopened drawer after switching away and back can never re-arm it.
 watch(
   () => [groupsStore.instanceId, groupsStore.activeConversationId, groupsStore.activeTopicId].join(":"),
   () => {
     unavailable.value = null;
     pendingDetail.value = null;
+    followedTrace = null;
   },
 );
 

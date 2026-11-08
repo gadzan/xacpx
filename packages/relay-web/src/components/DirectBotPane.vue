@@ -533,7 +533,9 @@ function handleStopAll(): void {
     <!-- Parked topic trigger (<lg): see openMobileTopics. Only the TRIGGER moves
          offscreen — its sheet is a sibling, so it must not inherit clip, opacity or
          transform from this host (each of those would hide or re-anchor the sheet). -->
-    <div v-if="isMobile" ref="mobileTopicHost" class="parked-topic">
+    <!-- The upgrade notice owns the pane: no Topic entry point may mount while
+         the daemon cannot serve the timeline. -->
+    <div v-if="timelineSupported && isMobile" ref="mobileTopicHost" class="parked-topic">
       <TopicSwitcher
         variant="direct"
         :topics="directBotsStore.currentTopics"
@@ -575,7 +577,7 @@ function handleStopAll(): void {
             </span>
           </div>
 
-          <div data-test="bot-header-meta" class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
+          <div v-if="timelineSupported" data-test="bot-header-meta" class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
             <TopicSwitcher
               v-if="!isMobile"
               variant="direct"
@@ -752,7 +754,6 @@ function handleStopAll(): void {
     <ConversationPromptInput
       :disabled="!timelineSupported || bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
       :deliver="directBotsStore.sendPrompt"
-      hide-stop
     />
     <div v-if="unavailable" data-test="run-detail-unavailable"
          class="flex items-center justify-between bg-warn/10 px-3 lg:px-5 py-2 text-xs text-fg">

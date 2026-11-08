@@ -529,6 +529,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const liveCompletedRunId = ref<string | null>(null);
   const activeMemberTurn = ref<MemberTurnSummaryDto | null>(null);
   const liveTurn = ref<DirectBotLiveTurn | null>(null);
+  /** The last streamed parts and the Run they belong to. A reconnect can
+   *  retire `liveTurn` between a stream and its accept response; the accept
+   *  path restores exactly that Run's snapshot, so already-streamed text stays
+   *  visible before the first committed trace frame. One slot only: prose never
+   *  crosses Runs, and a scope reset drops it. */
+  let lastLiveParts: { runId: string; parts: TurnPartDto[] } | null = null;
   const planByRunId = ref<Record<string, PlanEntryDto[]>>({});
   const latestPlanRunId = ref<string | null>(null);
   const planEntries = computed<PlanEntryDto[]>(() => {
@@ -744,6 +750,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   function clearDirectTracePages(): void {
     directTraceGeneration += 1;
     directTracePages.value = {};
+    lastLiveParts = null;
     for (const key of Object.keys(directTraceRequests)) delete directTraceRequests[key];
   }
 
@@ -2866,7 +2873,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const isFreshRun = adoptedRun.id === res.run.id && adoptedRun.id !== priorRunId;
         const existingParts = isFreshRun || (adoptedRun.id === priorRunId && liveTurn.value?.parts.length)
           ? (liveTurn.value?.parts.length ? liveTurn.value.parts : [])
-          : [];
+          : lastLiveParts?.runId === res.run.id
+            ? [...lastLiveParts.parts]
+            : [];
         liveTurn.value = {
           parts: existingParts,
           status: liveTurn.value?.status ?? "working",
@@ -2875,6 +2884,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             : (liveTurn.value?.startedAt ?? Date.now()),
           revision: (liveTurn.value?.revision ?? 0) + 1,
         };
+        if (existingParts.length) {
+          lastLiveParts = { runId: res.run.id, parts: [...existingParts] };
+        }
       }
       // latestPlanRunId follows the tracked owner only: when the accept did
       // not overwrite (a different-id nonterminal owner stayed), keep the
@@ -3719,6 +3731,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
                 startedAt: new Date(matchingTurn.startedAt).toISOString(),
               };
             }
+            if (matchingTurn.parts.length) {
+              lastLiveParts = { runId: matchingRunId, parts: [...matchingTurn.parts] };
+            }
+
             const targetInstId = event.instanceId;
             const targetConvId = activeConversationId.value ?? undefined;
             const targetTopicId = activeTopicId.value ?? undefined;
@@ -4314,6 +4330,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
       } else if (e.type === "turn-finished") {
         liveTurn.value.status = "working";
+        if (corr.runId && parts.length) {
+          lastLiveParts = { runId: corr.runId, parts: [...parts] };
+        }
       }
 
     }

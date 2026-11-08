@@ -2040,6 +2040,7 @@ describe("Direct Bot Components", () => {
           sessions: [],
           agents: [{ name: "codex", driver: "codex" }],
           workspaces: [{ name: "repo", cwd: "/repo" }],
+          capabilities: [RELAY_CAPABILITIES.conversationTimelineV1],
         } as never,
       ];
 
@@ -2353,6 +2354,7 @@ describe("Direct Bot Components", () => {
           sessions: [],
           agents: [{ name: "codex", driver: "codex" }],
           workspaces: [{ name: "repo", cwd: "/repo" }],
+          capabilities: [RELAY_CAPABILITIES.conversationTimelineV1],
         } as never,
       ];
       const directBots = useDirectBotsStore();
@@ -2569,6 +2571,33 @@ describe("Direct Bot Components", () => {
       const textarea = wrapper.find("textarea");
       expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
       wrapper.unmount();
+    });
+
+    it("offers no Topic entry point on an old daemon, even with existing Topics", async () => {
+      seedBot();
+      // Topics exist, so an ungated switcher would render both entry points.
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="topic-menu"]').exists()).toBe(true);
+      wrapper.unmount();
+
+      useInstancesStore().instances[0]!.capabilities = [];
+      const legacy = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(legacy.findAll('[data-test="timeline-upgrade-required"]')).toHaveLength(1);
+      // No Topic switcher and no new-Topic button: the pane cannot be served,
+      // so the only message is the upgrade notice.
+      expect(legacy.find('[data-test="topic-menu"]').exists()).toBe(false);
+      expect(legacy.find('[data-test="new-topic-button"]').exists()).toBe(false);
+      expect(legacy.find('[data-test="conversation-timeline-scroller"]').exists()).toBe(false);
+      // The composer stays present but inert, with no second Stop.
+      const textarea = legacy.find("textarea");
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
+      const send = legacy.find('[data-test="send-prompt-button"]');
+      expect(send.exists()).toBe(true);
+      expect(send.attributes("disabled")).toBeDefined();
+      expect(legacy.find('[data-test="stop-run-button"]').exists()).toBe(false);
+      legacy.unmount();
     });
 
     it("shows the unavailable Run, then reopens it on Retry without a stale notice", async () => {

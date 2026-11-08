@@ -798,6 +798,7 @@ function onKeydown(e: KeyboardEvent) {
       :height="isDesktop ? composerHeight : undefined"
       send-test-id="composer-send"
       stop-test-id="cancel-turn"
+      allow-stop
       @send="submit"
       @cancel="emit('cancel')"
       @keydown="onKeydown"

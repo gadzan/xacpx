@@ -18,15 +18,18 @@ const props = withDefaults(
     disabled?: boolean;
     /** A send is in flight: the button shows a spinner and ignores clicks. */
     sending?: boolean;
-    /** Cancelling: the stop button shows a spinner and ignores clicks. */
-    cancelling?: boolean;
     placeholder?: string;
     /** Fixed textarea height in px. Omit to let the textarea grow with content. */
     height?: number;
     /** Test hook for the send button, so each pane keeps its own selector. */
     sendTestId?: string;
-    /** Test hook for the stop button. */
+    /** Test hook for the stop button (chat's cancel-turn). */
     stopTestId?: string;
+    /** Chat owns a card-level Stop; a Bot conversation keeps its Stop in the
+     *  status bar, so those panes leave this off and only offer Send. */
+    allowStop?: boolean;
+    /** Cancelling: the stop button shows a spinner and ignores clicks. */
+    cancelling?: boolean;
     /** Test hook for the textarea. */
     textareaTestId?: string;
     /** Pane-specific extra guard on Send (e.g. a resolvable target is required). */
@@ -46,11 +49,8 @@ const props = withDefaults(
     /** A layer the card owns (dropdown, sheet, popover) is open: the fold must
      *  never hide it, including when a pane opens it from outside the card. */
     pinExpanded?: boolean;
-    /** The pane renders Stop elsewhere (the status bar's Stop all), so the card
-     *  only offers Send and never a second, competing stop control. */
-    hideStop?: boolean;
   }>(),
-  { busy: false, disabled: false, sending: false, cancelling: false, pinExpanded: false, hideStop: false },
+  { busy: false, disabled: false, sending: false, cancelling: false, pinExpanded: false, allowStop: false },
 );
 
 const emit = defineEmits<{
@@ -79,22 +79,17 @@ const hasSendable = computed(() => props.modelValue.trim().length > 0 || props.h
  *  show not-allowed. A running turn (Stop must stay prominent) or an in-flight
  *  send (spinner) keeps the card at full strength and only dims the textarea. */
 const surfaceDisabled = computed(() => props.disabled && !props.busy && !props.sending);
-/** Send is not the usable action: the card itself is disabled, or a pane guard
- *  (no resolvable target, an upload still in flight) would render a dead Send. */
+/** Send is the card's primary action: a disabled card or a pane guard (an
+ *  unresolvable target, an upload still in flight) renders a dead Send; the card
+ *  still shows it, so the reason stays visible. */
 const sendBlocked = computed(
   () => props.disabled || props.sendDisabled === true || props.attachmentsSendDisabled === true,
 );
-/** While a turn runs the card shows exactly one action: Stop whenever Send is
- *  not the usable action — the draft is empty (nothing staged), a cancel is in
- *  flight (Stop owns the cancelling spinner, so the cancel presentation
- *  outranks the draft rule: typing cannot unmount Stop mid-cancel), or a pane
- *  guard would leave Send dead. Otherwise Send, because the backend accepts a
- *  prompt sent mid-run and queues it; typing or staging an attachment flips
- *  Stop to Send, and clearing the draft flips back. An in-flight send keeps the
- *  Send spinner, so `sending` is deliberately not a Stop condition. The card
- *  stays expanded for the whole run so the button has somewhere to sit. */
+/** Only the chat card owns Stop. A Bot conversation keeps its Stop in the
+ *  status bar (Stop all), so those panes pass no `allowStop` and the card never
+ *  renders a second, competing control. */
 const showStop = computed(
-  () => !props.hideStop && props.busy && !props.sending
+  () => props.allowStop && props.busy && !props.sending
     && (props.cancelling || !hasSendable.value || sendBlocked.value),
 );
 
@@ -279,9 +274,8 @@ function onInput(event: Event): void {
         />
 
         <div class="absolute flex items-center gap-1.5" :class="expanded ? 'bottom-2 right-2' : 'right-2 top-1/2 -translate-y-1/2'">
-          <!-- Exactly one action while a turn runs: Stop whenever Send is not
-               the usable action (empty draft, a cancel in flight, or a pane
-               guard that would leave Send dead), otherwise Send. -->
+          <!-- Exactly one action: Stop when the pane allows it and Send is not
+               usable, otherwise Send. -->
           <button
             v-if="showStop"
             type="button"
@@ -292,8 +286,6 @@ function onInput(event: Event): void {
             class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center transition-all disabled:opacity-50"
             @click="emit('cancel')"
           >
-            <!-- 44px touch target on mobile (redesign PR4 §5.3); the visible disc
-                 stays 28px so it keeps fitting the 38px resting pill. -->
             <span class="grid h-7 w-7 place-items-center rounded-full bg-danger/15 text-danger transition-colors hover:bg-danger/25">
               <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
               <Square v-else :size="10" fill="currentColor" />
