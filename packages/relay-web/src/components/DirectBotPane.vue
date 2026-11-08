@@ -806,7 +806,7 @@ function handleStopAll(): void {
     <MobileSheet v-if="activeSheet === 'more'" :title='$t("common.more")' test-id="mobile-bot-more-sheet" @close="closeSheet">
       <!-- Topics live here on mobile (the floating header has no subtitle row). The
            row hands off to the parked trigger, so the topic sheet outlives this one. -->
-      <button type="button" data-test="sheet-bot-topic"
+      <button v-if="timelineSupported" type="button" data-test="sheet-bot-topic"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
               @click="openMobileTopics">
         <Hash :size="18" class="shrink-0 text-fg-muted" />

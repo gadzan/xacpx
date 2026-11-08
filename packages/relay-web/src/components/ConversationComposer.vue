@@ -28,8 +28,6 @@ const props = withDefaults(
     /** Chat owns a card-level Stop; a Bot conversation keeps its Stop in the
      *  status bar, so those panes leave this off and only offer Send. */
     allowStop?: boolean;
-    /** Cancelling: the stop button shows a spinner and ignores clicks. */
-    cancelling?: boolean;
     /** Test hook for the textarea. */
     textareaTestId?: string;
     /** Pane-specific extra guard on Send (e.g. a resolvable target is required). */
@@ -50,7 +48,7 @@ const props = withDefaults(
      *  never hide it, including when a pane opens it from outside the card. */
     pinExpanded?: boolean;
   }>(),
-  { busy: false, disabled: false, sending: false, cancelling: false, pinExpanded: false, allowStop: false },
+  { busy: false, disabled: false, sending: false, pinExpanded: false, allowStop: false },
 );
 
 const emit = defineEmits<{
@@ -90,7 +88,7 @@ const sendBlocked = computed(
  *  renders a second, competing control. */
 const showStop = computed(
   () => props.allowStop && props.busy && !props.sending
-    && (props.cancelling || !hasSendable.value || sendBlocked.value),
+    && (!hasSendable.value || sendBlocked.value),
 );
 
 function reportCaret(): void {
@@ -282,13 +280,13 @@ function onInput(event: Event): void {
             :data-test="stopTestId"
             :aria-label="$t('common.cancel')"
             :title="$t('common.cancel')"
-            :disabled="cancelling"
-            class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center transition-all disabled:opacity-50"
+            class="grid h-11 w-11 lg:h-7 lg:w-7 shrink-0 place-items-center transition-all"
             @click="emit('cancel')"
           >
+            <!-- 44px touch target on mobile (redesign PR4 §5.3); the visible disc
+                 stays 28px so it keeps fitting the 38px resting pill. -->
             <span class="grid h-7 w-7 place-items-center rounded-full bg-danger/15 text-danger transition-colors hover:bg-danger/25">
-              <Loader2 v-if="cancelling" :size="12" class="animate-spin" />
-              <Square v-else :size="10" fill="currentColor" />
+              <Square :size="10" fill="currentColor" />
             </span>
           </button>
           <button

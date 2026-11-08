@@ -2598,6 +2598,29 @@ describe("Direct Bot Components", () => {
       expect(send.attributes("disabled")).toBeDefined();
       expect(legacy.find('[data-test="stop-run-button"]').exists()).toBe(false);
       legacy.unmount();
+
+      // The mobile ⋯ sheet is the third Topic entry point: on an old daemon it
+      // must not offer a Topics row (or a click that opens nothing).
+      const prevWidth = window.innerWidth;
+      window.innerWidth = 500;
+      try {
+        const mobileLegacy = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        await mobileLegacy.find('[data-test="mobile-bot-more"]').trigger("click");
+        expect(mobileLegacy.find('[data-test="mobile-bot-more-sheet"]').exists()).toBe(true);
+        expect(mobileLegacy.find('[data-test="sheet-bot-topic"]').exists()).toBe(false);
+        expect(mobileLegacy.find('[data-test="topic-menu"]').exists()).toBe(false);
+        expect(mobileLegacy.find('[data-test="new-topic-button"]').exists()).toBe(false);
+        mobileLegacy.unmount();
+
+        // Control: the same sheet does carry the row on a capable daemon.
+        useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.conversationTimelineV1];
+        const mobileCurrent = mount(DirectBotPane, { global: { plugins: [i18n] } });
+        await mobileCurrent.find('[data-test="mobile-bot-more"]').trigger("click");
+        expect(mobileCurrent.find('[data-test="sheet-bot-topic"]').exists()).toBe(true);
+        mobileCurrent.unmount();
+      } finally {
+        window.innerWidth = prevWidth;
+      }
     });
 
     it("shows the unavailable Run, then reopens it on Retry without a stale notice", async () => {
