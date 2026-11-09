@@ -569,7 +569,7 @@ export interface ConversationStore {
   listMessages(query: ListMessagesQuery): ConversationMessage[];
   /** Recent public Group messages this Bot may see in its private prompt.
    *  Rows are member-scoped projections, never a second transcript. */
-  listPublicMemory(input: { botId: string; limit?: number }): PublicMemoryEntry[];
+  listPublicMemory(input: { botId: string; limit?: number; excludeConversationIds?: readonly string[] }): PublicMemoryEntry[];
   /** Drop one member's projection when it leaves a Group. */
   deletePublicMemoryForGroupMember(conversationId: string, botId: string): void;
   /** Drop every projection for a Bot that is being removed. */

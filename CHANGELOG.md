@@ -11,6 +11,7 @@
 - 一条时间线成为唯一会话界面（P1d）：Direct 与 Group 永远渲染 `ConversationTimeline` + 状态条 + Run-wide 抽屉；缺少 `conversations.timeline.v1` 的 daemon（旧 daemon 不再支持）只显示一次升级提示并禁用发送/Stop，不再渲染第二套转录。删除旧转录组件 `GroupTranscript`、`ConversationMessageList`、`GroupDispatchRow`、`GroupAgentTurnRow`、`GroupWorkingRow`、`GroupDispatchLeaderStop`、`AgentThinkingBubble`、`RunStatusChip`、`ThinkingDotsTrigger`、`TraceLink`，`group-run-presentation` 的归属猜测与派发聚合，`group-live-stream` 的 settled/live 双流归并，以及随之失效的 i18n key 与 store API。`runs.details.batch` 返回 `missingRunIds` 时不再挂起待打开的详情，改为负缓存：无关的详情 revision 不重取，抽屉内显示 `Run detail unavailable` 与 Retry，Retry 只清除该条并重取一次。
 - 群组公共记忆开关：每个 Group 新增 `publicMemoryProjection`（`on` 默认 / `off`），带 state-load 校验、create/update 载荷、解析后的 DTO 与 `groups.public-memory-switch.v1` capability，Group 设置里提供开关（旧 Group 与旧 core 都按 `on` 读取）。`off` 时该群新消息不再写入 `bot_public_memory`，已存行也不再注入成员的 Direct prompt；开关只拦投影、不删数据，重新开启后既有行恢复可见。群内自身的对话与普通发送目标不受影响；bot 级开关与双向记忆仍不在范围内。
 - 公共记忆的 Direct prompt 块补上时间戳与 `(you)` 标记，消息正文压成单行后按 800 字截断；整块新增 4,000 字总预算，超出时从最旧消息丢弃并标注 `[…older messages omitted]`，不再出现最多 20 × 800 字的无上限窗口。
+- 公共记忆读窗口在应用 20 条上限前先排除投影为 `off` 的 Group，避免一个关闭投影的群用新版消息占满窗口、把其他仍开启群的旧消息挤出成员的 Direct prompt。
 
 
 ## [relay 0.14.12-beta.18] - 2026-11-06

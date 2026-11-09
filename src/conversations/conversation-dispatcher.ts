@@ -2132,14 +2132,16 @@ export class ConversationDispatcher {
    *
    *  A Group whose projection switch is off is skipped here even though its
    *  stored rows survive: the switch gates reads as well as writes, so turning
-   *  it back on restores the rows written while it was on. The filter runs
-   *  after the bounded read on purpose — a window the switch empties yields no
-   *  context rather than reaching past it for older rows from other Groups. */
+   *  it back on restores the rows written while it was on. The exclusion runs
+   *  inside the bounded read, so one off Group cannot fill the window and
+   *  crowd older visible rows out of the prompt. */
   private sharedGroupContext(work: ClaimedWork): string | undefined {
+    const excluded = this.runtime.publicMemoryProjectionOffGroupIds();
     const entries = this.store.listPublicMemory({
       botId: work.memberTurn.botId,
       limit: PUBLIC_MEMORY_MESSAGES,
-    }).filter((entry) => this.runtime.publicMemoryProjectionFor(entry.conversationId) !== "off");
+      ...(excluded.length > 0 ? { excludeConversationIds: excluded } : {}),
+    });
     if (entries.length === 0) return undefined;
     const lines: string[] = [];
     // Reserve the marker so a truncated window still fits the char budget.

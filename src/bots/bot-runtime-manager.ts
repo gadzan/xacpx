@@ -2,7 +2,6 @@ import { BotError } from "./bot-error";
 import { CLAUDE_READ_ONLY_POLICY, type EnforcedExecutionPolicy, type RequestedFilesystemPolicy } from "../adapters/conversation-effect-policy";
 import {
   groupPublicMemoryProjection,
-  type GroupPublicMemoryProjection,
   type MemberTurnRecord,
 } from "../conversations/conversation-types";
 import { memberConcurrencyLimit } from "../conversations/conversation-scheduling-policy";
@@ -130,14 +129,13 @@ export class BotRuntimeManager {
     return { ...(title ? { title } : {}), ...(description ? { description } : {}) };
   }
 
-  /** Live public-memory projection for a Group, read from AppState each call so
-   *  a settings change takes effect on the next prompt. `undefined` means "not
-   *  a Group" (Direct conversations own no projection), which the dispatcher
-   *  must not confuse with a Group that switched projection off. */
-  publicMemoryProjectionFor(conversationId: string): GroupPublicMemoryProjection | undefined {
-    const conversation = this.state.conversations[conversationId];
-    if (!conversation || conversation.kind !== "group") return undefined;
-    return groupPublicMemoryProjection(conversation);
+  /** Every Group whose projection is off, read from AppState each call. The
+   *  memory read excludes these ids before applying its limit, so an off
+   *  Group cannot crowd older visible rows out of a Bot's window. */
+  publicMemoryProjectionOffGroupIds(): string[] {
+    return Object.values(this.state.conversations)
+      .filter((conversation) => conversation.kind === "group" && groupPublicMemoryProjection(conversation) === "off")
+      .map((conversation) => conversation.id);
   }
 
   /** Durable Topic scheduling metadata; no live execution counter. */
