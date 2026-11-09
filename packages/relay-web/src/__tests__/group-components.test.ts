@@ -72,7 +72,9 @@ describe("Group Components", () => {
     setActivePinia(createPinia());
     // Drafts persist in sessionStorage: without a reset a previous test's text
     // would be restored into the next composer and shift the mention caret.
+    // Discussion rounds persist per Group in localStorage: same reset.
     sessionStorage.clear();
+    localStorage.clear();
     seedInstance();
     vi.spyOn(useInstancesStore(), "loadRouterAvailability").mockResolvedValue(undefined);
     vi.spyOn(useInstancesStore(), "loadJevSettings").mockResolvedValue(undefined);
@@ -1052,6 +1054,120 @@ describe("Group Components", () => {
         [],
         { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 1 },
       ]);
+    });
+
+    it("defaults the rounds selector to 1 and sends it on the wire target", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      expect(wrapper.find('[data-test="group-discuss-rounds"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="group-discuss-rounds-1"]').attributes("aria-pressed")).toBe("true");
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare the options");
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual(
+        { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 1 },
+      );
+    });
+
+    it("sends the chosen 2 rounds with the same speaker list", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-discuss-rounds-2"]').trigger("click");
+      expect(wrapper.find('[data-test="group-discuss-rounds-2"]').attributes("aria-pressed")).toBe("true");
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare the options");
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]).toEqual([
+        "compare the options",
+        [],
+        { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 2 },
+      ]);
+    });
+
+    it("sends the chosen 3 rounds with the same speaker list", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-discuss-rounds-3"]').trigger("click");
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare the options");
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual(
+        { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 3 },
+      );
+    });
+
+    it("remembers the last rounds choice for the Group", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
+      const first = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await first.find('[data-test="group-discuss-rounds-2"]').trigger("click");
+      first.unmount();
+      const second = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      expect(second.find('[data-test="group-discuss-rounds-2"]').attributes("aria-pressed")).toBe("true");
+      await second.find('[data-test="group-composer-textarea"]').setValue("compare again");
+      await second.find('[data-test="group-discuss-chip"]').trigger("click");
+      expect(second.emitted("send")?.[0]?.[2]).toEqual(
+        { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 2 },
+      );
+    });
+
+    it("blocks an over-limit speakers × rounds plan client-side", async () => {
+      // 9 enabled members × 3 rounds = 27 > 24: the chip must not emit.
+      const manyBots: BotSummaryDto[] = Array.from({ length: 9 }, (_, index) => ({
+        id: `bot_${index}`, name: `Bot ${index}`, agent: "codex", workspace: "repo", enabled: true, updatedAt: "now",
+      }));
+      const groups = seedGroupSelection();
+      const bigGroup = {
+        ...GROUP,
+        botIds: manyBots.map((bot) => bot.id),
+        leadBotId: "bot_0",
+      };
+      groups.groupsByInstance["i1"] = [bigGroup];
+      groups.groupDetails["i1:conversation_g"] = { ...bigGroup, topics: [] };
+      useDirectBotsStore().botsByInstance["i1"] = manyBots;
+      useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
+      const wrapper = mount(GroupComposer, {
+        props: { bots: manyBots, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-discuss-rounds-3"]').trigger("click");
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare everything");
+      expect(wrapper.find('[data-test="group-discuss-chip"]').attributes("disabled")).toBeDefined();
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      expect(wrapper.emitted("send")).toBeUndefined();
+      // Dropping back to 2 rounds (18 ≤ 24) re-arms the same chip.
+      await wrapper.find('[data-test="group-discuss-rounds-2"]').trigger("click");
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({
+        mode: "roundtable",
+        botIds: ["bot_0", "bot_1", "bot_2", "bot_3", "bot_4", "bot_5", "bot_6", "bot_7", "bot_8"],
+        rounds: 2,
+      });
+    });
+
+    it("hides the rounds selector with the chip when roundtable v1 is absent", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      expect(wrapper.find('[data-test="group-discuss-chip"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-discuss-rounds"]').exists()).toBe(false);
     });
 
     it("sends @everyone as a parallel everyone target, never a roundtable", async () => {

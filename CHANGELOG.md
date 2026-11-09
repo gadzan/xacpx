@@ -16,6 +16,7 @@
 - 公共记忆读窗口在应用 20 条上限前先排除投影为 `off` 的 Group，避免一个关闭投影的群用新版消息占满窗口、把其他仍开启群的旧消息挤出成员的 Direct prompt。
 - 公共记忆的 Direct prompt 块补上时间戳与 `(you)` 标记，消息正文压成单行后按 800 字截断；整块新增 4,000 字总预算，超出时从最旧消息丢弃并标注 `[…older messages omitted]`，不再出现最多 20 × 800 字的无上限窗口。
 - 群组默认发送设置：普通消息的路由不再由 composer 决定，改为每个 Group 的 `defaultRouting`（`lead` 默认 / `automatic`），只在 Group 设置里修改；`@成员`、`@everyone`、讨论与斜杠命令仍发送各自显式 target，语义不变。`lead` 保持旧的“无 target、服务端在 accept gates 内重算 live lead”形状；`automatic` 显式发送自动 Run，缺少可用 Router 时以 `automatic_unsupported` 明确失败（外站点名消息仍走 lead，effect policy 仍要求显式成员）。迁移只依据持久证据：升级前有过 automatic Run 的 Group 在 Router 可用时继续 automatic，其余（以及 Router 关闭时的前者）保持 lead，因此旧 Group 的普通消息不会悄悄改变含义或开始被拒绝；Group DTO 暴露解析后的值，`groups.default-routing.v1` capability 让旧 core 不显示该设置。
+- 群聊讨论轮数选择：Group composer 的 `讨论` chip 旁新增 1/2/3 轮选择（默认 1，按 Group 记忆在 localStorage），发送时把所选轮数写进 `{mode:"roundtable",botIds,rounds}` 的 wire target；按钮 hint 显示「N 位成员 × R 轮」，`botIds.length × rounds > 24` 的超限计划在客户端就禁用讨论 chip、不发出请求（后端校验保持第二道门）；缺少 `conversations.roundtable.v1` 时 chip 与轮数选择一并隐藏。
 
 
 ## [relay 0.14.12-beta.18] - 2026-11-06
