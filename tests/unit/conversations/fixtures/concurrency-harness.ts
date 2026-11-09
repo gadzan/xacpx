@@ -163,13 +163,13 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
   // `memberIds` defaults to the harness bots but MUST be the group's own
   // membership when the Topic is bound to a different workspace: a Bot's
   // workspace has to match the Topic's for session binding to succeed.
-  function accept(conversationId: string, topicId: string, count = 3, proof = true, requestId = "request", extra?: Partial<AcceptMemberInput>, memberIds?: string[]) {
+  function accept(conversationId: string, topicId: string, count = 3, proof = true, requestId = "request", extra?: Partial<AcceptMemberInput>, memberIds?: string[], content = "one frozen request") {
     const pool = memberIds ?? ids;
     const member = (botId: string): AcceptMemberInput => ({ botId, profileSnapshot: snapshotBotProfile(bots.getBot(botId), NOW),
       ...(proof ? { effect: "read-only", effectProvenance: "declared-enforced" } : {}), ...extra });
     const first = member(pool[0]!);
     return store.acceptRequest({ conversationId, topicId, requestId, botId: first.botId, profileSnapshot: first.profileSnapshot,
-      primaryMember: first, members: pool.slice(1, count).map(member), content: "one frozen request", now: NOW,
+      primaryMember: first, members: pool.slice(1, count).map(member), content, now: NOW,
       maxMemberTurns: 24, authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN });
   }
   return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; }, claimAttempts: () => claimCounter.attempts, claimScans: () => claimCounter.attempts + claimCounter.peeks };
