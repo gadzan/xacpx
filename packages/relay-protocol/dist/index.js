@@ -279,7 +279,8 @@ var RELAY_CAPABILITIES = {
   conversationTimelineV1: "conversations.timeline.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1",
   handoffMemorySummaryV1: "groups.handoff-memory-summary.v1",
-  groupPublicMemorySwitchV1: "groups.public-memory-switch.v1"
+  groupPublicMemorySwitchV1: "groups.public-memory-switch.v1",
+  groupDefaultRoutingV1: "groups.default-routing.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [
@@ -1840,7 +1841,7 @@ var isGroupWorkspaceMode = (v) => v === undefined || v === "shared" || v === "pe
 var isHandoffMemory = (v) => v === undefined || v === "off" || v === "summary";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
-  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) && isGroupWorkspaceMode(o.workspaceMode) && isHandoffMemory(o.handoffMemory) && (o.publicMemoryProjection === undefined || o.publicMemoryProjection === "on" || o.publicMemoryProjection === "off") ? o : null;
+  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) && (o.defaultRouting === undefined || o.defaultRouting === "lead" || o.defaultRouting === "automatic") && isGroupWorkspaceMode(o.workspaceMode) && isHandoffMemory(o.handoffMemory) && (o.publicMemoryProjection === undefined || o.publicMemoryProjection === "on" || o.publicMemoryProjection === "off") ? o : null;
 };
 var validateGroupsUpdate = (p) => {
   const o = fields(p);
@@ -1855,6 +1856,8 @@ var validateGroupsUpdate = (p) => {
   if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId))
     return null;
   if (o.publicMemoryProjection !== undefined && o.publicMemoryProjection !== "on" && o.publicMemoryProjection !== "off")
+    return null;
+  if (o.defaultRouting !== undefined && o.defaultRouting !== "lead" && o.defaultRouting !== "automatic")
     return null;
   if (o.workspaceMode !== undefined)
     return null;

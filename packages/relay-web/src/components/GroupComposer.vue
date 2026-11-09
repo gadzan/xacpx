@@ -137,6 +137,9 @@ const leadName = computed(() => {
 const composerPlaceholder = computed(() => {
   if (props.needsFirstTopic) return t("group.prompt.createTopicFirst");
   if (isNarrow.value) return t("group.prompt.placeholderShort");
+  if (groupsStore.currentDefaultRouting === "automatic") {
+    return t("conversation.composer.placeholderAutomatic");
+  }
   return leadName.value
     ? t("conversation.composer.placeholder", { name: leadName.value })
     : t("conversation.composer.placeholderLead");

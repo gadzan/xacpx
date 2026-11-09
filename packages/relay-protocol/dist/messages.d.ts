@@ -597,6 +597,8 @@ export interface GroupsCreatePayload {
     leadBotId?: string;
     /** Public-memory projection. Omitted means `on`. */
     publicMemoryProjection?: "on" | "off";
+    /** Default send behavior for plain messages. Omitted means `lead`. */
+    defaultRouting?: "lead" | "automatic";
     /** Fixed at creation; omitted means `shared`. */
     workspaceMode?: "shared" | "per-member";
     /** Handoff task-text projection; omitted means `off`. */
@@ -615,6 +617,9 @@ export interface GroupsUpdatePayload {
     handoffMemory?: "off" | "summary";
     /** Public-memory projection. Never null: `on` is an explicit choice. */
     publicMemoryProjection?: "on" | "off";
+    /** Default send behavior for plain messages. Never null: `lead` is an
+     *  explicit choice, not the absence of one. */
+    defaultRouting?: "lead" | "automatic";
 }
 export interface GroupsUpdateResult {
     group: GroupSummaryDto;
@@ -1389,6 +1394,11 @@ export declare const RELAY_CAPABILITIES: {
      *  store it, so the Web never shows a Group settings switch an older core
      *  would silently drop. */
     readonly groupPublicMemorySwitchV1: "groups.public-memory-switch.v1";
+    /** `control.groups.create` / `control.groups.update` accept `defaultRouting`
+     *  and every Group summary carries the resolved value. Advertised only when
+     *  the connector's validator and the core both store it, so the Web never
+     *  shows a Group settings choice an older core would silently drop. */
+    readonly groupDefaultRoutingV1: "groups.default-routing.v1";
 };
 /**
  * Grace an interaction RPC gets beyond its own `expiresAt`.

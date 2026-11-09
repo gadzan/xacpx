@@ -439,6 +439,66 @@ describe("Group management", () => {
     });
   });
 
+  describe("GroupDialog.vue default send", () => {
+    it("hides the setting on a core that cannot store it", async () => {
+      seedBots([REVIEWER, TESTER]);
+      const wrapper = track(mount(GroupDialog, {
+        props: { instanceId: "i1", group: { ...GROUP, botIds: ["bot_a", "bot_b"] } },
+        global: { plugins: [i18n] },
+      }));
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-dialog-default-routing"]').exists()).toBe(false);
+    });
+
+    it("defaults new Groups to the Lead and stores an explicit automatic choice", async () => {
+      seedInstance([RELAY_CAPABILITIES.groupDefaultRoutingV1, RELAY_CAPABILITIES.conversationTimelineV1]);
+      seedBots([REVIEWER, TESTER]);
+      const created = { ...GROUP, id: "conversation_new", botIds: ["bot_a", "bot_b"], leadBotId: "bot_a", defaultRouting: "automatic" as const };
+      routes.set("control.groups.create", () => ({ group: created }));
+      routes.set("control.groups.list", () => ({ groups: [created] }));
+      const wrapper = track(mount(GroupDialog, { props: { instanceId: "i1" }, global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      const leadInput = wrapper.find('[data-test="group-dialog-default-routing-lead"] input');
+      expect((leadInput.element as HTMLInputElement).checked).toBe(true);
+
+      await wrapper.find('[data-test="group-dialog-title"]').setValue("Launch");
+      await selectMembers(wrapper, ["bot_a", "bot_b"]);
+      await wrapper.find('[data-test="group-dialog-default-routing-automatic"] input').setValue(true);
+      await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+
+      expect(rpcCalls("control.groups.create")[0]?.payload).toMatchObject({
+        title: "Launch",
+        defaultRouting: "automatic",
+      });
+    });
+
+    it("sends only the setting when an existing Group switches back to the Lead", async () => {
+      seedInstance([RELAY_CAPABILITIES.groupDefaultRoutingV1, RELAY_CAPABILITIES.conversationTimelineV1]);
+      seedBots([REVIEWER, TESTER]);
+      const base = { ...GROUP, botIds: ["bot_a", "bot_b"], defaultRouting: "automatic" as const };
+      const updated = { ...base, defaultRouting: "lead" as const };
+      routes.set("control.groups.update", () => ({ group: updated }));
+      routes.set("control.groups.list", () => ({ groups: [updated] }));
+      const wrapper = track(mount(GroupDialog, { props: { instanceId: "i1", group: base }, global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      const automaticInput = wrapper.find('[data-test="group-dialog-default-routing-automatic"] input');
+      expect((automaticInput.element as HTMLInputElement).checked).toBe(true);
+
+      await wrapper.find('[data-test="group-dialog-default-routing-lead"] input').setValue(true);
+      await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+
+      expect(rpcCalls("control.groups.update")).toHaveLength(1);
+      expect(rpcCalls("control.groups.update")[0]?.payload).toEqual({
+        id: "conversation_g",
+        defaultRouting: "lead",
+      });
+    });
+  });
+
   describe("GroupDialog.vue edit", () => {
     it("offers the public-memory switch, reads a legacy Group as on, and sends only a changed value", async () => {
       seedInstance([

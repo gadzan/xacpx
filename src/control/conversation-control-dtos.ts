@@ -13,6 +13,7 @@ import {
   type ConversationRecord,
   type ConversationRun,
   type ConversationTopic,
+  type GroupDefaultRouting,
   type GroupPublicMemoryProjection,
   type MemberTurnRecord,
 } from "../conversations/conversation-types";
@@ -230,8 +231,9 @@ export interface GroupSummaryDto {
   updatedAt: string;
   /** Resolved public-memory projection: an explicit stored choice, else `on`. */
   publicMemoryProjection: GroupPublicMemoryProjection;
+  /** Resolved default send behavior: an explicit stored choice, else `lead` or the migration derivation. */
+  defaultRouting: GroupDefaultRouting;
 }
-
 export interface GroupDetailDto extends GroupSummaryDto {
   topics: TopicSummaryDto[];
 }
@@ -548,7 +550,8 @@ export function toTopicSummary(
 
 export function toGroupSummary(
   conversation: ConversationRecord,
-  defaultTopicId?: string,
+  defaultTopicId: string | undefined,
+  defaultRouting: GroupDefaultRouting,
 ): GroupSummaryDto {
   if (conversation.kind !== "group") {
     throw new Error("conversation is not a Group conversation");
@@ -561,6 +564,7 @@ export function toGroupSummary(
     botIds: [...conversation.botIds],
     ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
     publicMemoryProjection: groupPublicMemoryProjection(conversation),
+    defaultRouting,
     ...(conversation.workspaceMode ? { workspaceMode: conversation.workspaceMode } : {}),
     ...(conversation.handoffMemory === "summary" ? { handoffMemory: conversation.handoffMemory } : {}),
     createdAt: conversation.createdAt,

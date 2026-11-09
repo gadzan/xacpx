@@ -125,12 +125,15 @@ import type { TopicSchedulingOptions } from "../conversations/conversation-sched
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
 import type {
+  ConversationRecord,
   ConversationRun,
+  GroupDefaultRouting,
   GroupHandoffMemory,
   GroupPublicMemoryProjection,
   GroupWorkspaceMode,
   HumanIngressContext,
 } from "../conversations/conversation-types";
+import { resolveGroupDefaultRouting } from "../conversations/conversation-types";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import { isHiddenProductSessionOwner } from "../state/types";
 import {
@@ -2770,6 +2773,16 @@ export class ControlService {
   }
 
   /**
+   * Feature probe for connectors: `createGroup`/`updateGroup` accept
+   * `defaultRouting` and Group summaries carry the resolved value. Connectors
+   * advertise `RELAY_CAPABILITIES.groupDefaultRoutingV1` only when this
+   * exists, so the Web never shows a setting an older core would drop.
+   */
+  supportsGroupDefaultRouting(): true {
+    return true;
+  }
+
+  /**
    * Feature probe for connectors: the explicit Group target accepts
    * `mode:"roundtable"` and history batches accept `roundtableV1`. Connectors
    * advertise `RELAY_CAPABILITIES.roundtableV1` only when this exists, so the
@@ -3091,24 +3104,35 @@ export class ControlService {
     return toLifecycleOperationDto(this.requireConversations().removals.getOperation(id));
   }
 
-  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string; workspaceMode?: GroupWorkspaceMode; handoffMemory?: GroupHandoffMemory; publicMemoryProjection?: GroupPublicMemoryProjection }) {
+  private groupSummary(
+    runtime: ConversationRuntime,
+    group: ConversationRecord,
+    defaultTopicId?: string,
+  ): GroupSummaryDto {
+    return toGroupSummary(group, defaultTopicId, resolveGroupDefaultRouting(group, {
+      routerAvailable: runtime.routerAvailability.status === "ready",
+      hasAutomaticRuns: runtime.store.conversationHasAutomaticRuns(group.id),
+    }));
+  }
+
+  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string; workspaceMode?: GroupWorkspaceMode; handoffMemory?: GroupHandoffMemory; publicMemoryProjection?: GroupPublicMemoryProjection; defaultRouting?: GroupDefaultRouting }) {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.createGroup(input);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return toGroupSummary(group);
+      return this.groupSummary(runtime, group);
     });
   }
 
   async updateGroup(
     id: string,
-    patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: GroupHandoffMemory; publicMemoryProjection?: GroupPublicMemoryProjection },
+    patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: GroupHandoffMemory; publicMemoryProjection?: GroupPublicMemoryProjection; defaultRouting?: GroupDefaultRouting },
   ): Promise<GroupSummaryDto> {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.updateGroup(id, patch);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return toGroupSummary(group);
+      return this.groupSummary(runtime, group);
     });
   }
 
@@ -3125,12 +3149,12 @@ export class ControlService {
     const runtime = this.requireConversations();
     const group = runtime.bots.getGroup(id);
     const topics = runtime.runs.listTopics(id).map((topic) => this.topicSummary(topic));
-    return { ...toGroupSummary(group), topics };
+    return { ...this.groupSummary(runtime, group), topics };
   }
 
   listGroups(): GroupSummaryDto[] {
     const runtime = this.requireConversations();
-    return runtime.runs.listGroups().map((group) => toGroupSummary(group));
+    return runtime.runs.listGroups().map((group) => this.groupSummary(runtime, group));
   }
   async createGroupTopic(
     conversationId: string,

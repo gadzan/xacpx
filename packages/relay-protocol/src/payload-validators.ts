@@ -673,6 +673,7 @@ const validateGroupsCreate: Validator<GroupsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description))
     && (o.leadBotId === undefined || isStr(o.leadBotId))
+    && (o.defaultRouting === undefined || o.defaultRouting === "lead" || o.defaultRouting === "automatic")
     && isGroupWorkspaceMode(o.workspaceMode)
     && isHandoffMemory(o.handoffMemory)
     && (o.publicMemoryProjection === undefined || o.publicMemoryProjection === "on" || o.publicMemoryProjection === "off")
@@ -686,6 +687,7 @@ const validateGroupsUpdate: Validator<GroupsUpdatePayload> = (p) => {
   if (o.botIds !== undefined && !isStrArr(o.botIds)) return null;
   if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId)) return null;
   if (o.publicMemoryProjection !== undefined && o.publicMemoryProjection !== "on" && o.publicMemoryProjection !== "off") return null;
+  if (o.defaultRouting !== undefined && o.defaultRouting !== "lead" && o.defaultRouting !== "automatic") return null;
   // Creation-time only: a patch would silently re-target accepted work.
   if (o.workspaceMode !== undefined) return null;
   if (!isHandoffMemory(o.handoffMemory)) return null;

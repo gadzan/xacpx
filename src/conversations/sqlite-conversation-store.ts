@@ -1796,6 +1796,13 @@ export class SqliteConversationStore implements ConversationStore {
     return rows.map(mapRun);
   }
 
+  conversationHasAutomaticRuns(conversationId: string): boolean {
+    return this.sqlite.get<{ present: number }>(
+      "SELECT 1 AS present FROM runs WHERE conversation_id = ? AND mode = 'automatic' LIMIT 1",
+      [conversationId],
+    ) !== undefined;
+  }
+
   getMessage(messageId: string): ConversationMessage | undefined {
     const row = this.sqlite.get<MessageRow>("SELECT * FROM messages WHERE id = ?", [messageId]);
     return row ? mapMessage(row) : undefined;

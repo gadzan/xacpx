@@ -2826,6 +2826,80 @@ describe("useGroupsStore", () => {
     expect(store.memberTurns).toEqual([]);
   });
 
+  it("a plain send follows the Group's automatic default and ignores the stored mention selection", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.groupsByInstance = { inst_1: [{ ...GROUP, defaultRouting: "automatic" }] };
+    expect(store.currentDefaultRouting).toBe("automatic");
+    // A leftover Lead selection is NOT the plain-send target: the setting is.
+    store.setTarget({ mode: "members", botIds: ["bot_a"] });
+
+    mockRpc.mockResolvedValueOnce({
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_plain_auto",
+      message: {
+        id: "msg_plain", conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+        role: "human", content: "ship it", createdAt: "now",
+      },
+      run: {
+        id: "run_plain", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_plain", requestId: "req_plain_auto", mode: "automatic", state: "running",
+        profileRevision: 1, createdAt: "now",
+      },
+      memberTurns: [],
+      activeRunId: "run_plain",
+    } satisfies ConversationPromptResponseDto);
+    await store.sendPromptTo("ship it", null);
+    expect(mockRpc).toHaveBeenLastCalledWith("inst_1", "control.conversation.prompt", expect.objectContaining({
+      target: { mode: "automatic" },
+    }));
+  });
+
+  it("a plain send on a Lead Group carries no target, and explicit targets are untouched", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.groupsByInstance = { inst_1: [{ ...GROUP, defaultRouting: "lead" }] };
+
+    const response = (requestId: string): ConversationPromptResponseDto => ({
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId,
+      message: {
+        id: `msg_${requestId}`, conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+        role: "human", content: "ship it", createdAt: "now",
+      },
+      run: {
+        id: `run_${requestId}`, conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: `msg_${requestId}`, requestId, mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now",
+      },
+      memberTurns: [],
+      activeRunId: `run_${requestId}`,
+    });
+
+    mockRpc.mockResolvedValueOnce(response("req_plain_lead"));
+    await store.sendPromptTo("ship it", null);
+    const plainPayload = mockRpc.mock.lastCall?.[2] as { target?: unknown };
+    expect(plainPayload.target).toBeUndefined();
+
+    mockRpc.mockResolvedValueOnce(response("req_explicit"));
+    await store.sendPromptTo("review this", { mode: "members", botIds: ["bot_b"] });
+    expect(mockRpc).toHaveBeenLastCalledWith("inst_1", "control.conversation.prompt", expect.objectContaining({
+      target: { mode: "members", botIds: ["bot_b"] },
+    }));
+  });
+
   it("PR8: mergeRun keeps a stored routingState when a thinner snapshot omits it", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";

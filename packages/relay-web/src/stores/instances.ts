@@ -168,6 +168,15 @@ export function supportsGroupPublicMemorySwitch(instance: { capabilities?: strin
 }
 
 /**
+ * True when the instance's core stores and resolves a Group's default send
+ * behavior (`lead` | `automatic`). An older core drops the field, so the
+ * Group settings dialog must not offer the choice there.
+ */
+export function supportsGroupDefaultRouting(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupDefaultRoutingV1);
+}
+
+/**
  * True when the instance's core deletes a Bot's dedicated workspace
  * directory when the user asks for it on removal. An older core ignores the
  * flag, so the web must not offer the option there.
