@@ -2126,11 +2126,19 @@ export class ConversationDispatcher {
   }
 
   /** Newest public Group messages this Bot can access, as untrusted context
-   *  for a Direct turn. Group turns already receive the frozen transcript. */
+   *  for a Direct turn. Group turns already receive the frozen transcript.
+   *
+   *  A Group whose projection switch is off is skipped here even though its
+   *  stored rows survive: the switch gates reads as well as writes, so turning
+   *  it back on restores the rows written while it was on. The exclusion runs
+   *  inside the bounded read, so one off Group cannot fill the window and
+   *  crowd older visible rows out of the prompt. */
   private sharedGroupContext(work: ClaimedWork): string | undefined {
+    const excluded = this.runtime.publicMemoryProjectionOffGroupIds();
     const entries = this.store.listPublicMemory({
       botId: work.memberTurn.botId,
       limit: PUBLIC_MEMORY_MESSAGES,
+      ...(excluded.length > 0 ? { excludeConversationIds: excluded } : {}),
     });
     if (entries.length === 0) return undefined;
     const lines = entries.map((entry) => {

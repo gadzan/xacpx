@@ -1826,8 +1826,12 @@ export class SqliteConversationStore implements ConversationStore {
     return orderDescending ? messages.reverse() : messages;
   }
 
-  listPublicMemory(input: { botId: string; limit?: number }): PublicMemoryEntry[] {
+  listPublicMemory(input: { botId: string; limit?: number; excludeConversationIds?: readonly string[] }): PublicMemoryEntry[] {
     const limit = Math.max(1, Math.min(input.limit ?? 20, 50));
+    const excluded = input.excludeConversationIds ?? [];
+    const exclusion = excluded.length > 0
+      ? ` AND memory.conversation_id NOT IN (${placeholders(excluded.length)})`
+      : "";
     const rows = this.sqlite.all<{
       message_id: string;
       conversation_id: string;
@@ -1841,10 +1845,10 @@ export class SqliteConversationStore implements ConversationStore {
               message.role, message.sender_bot_id, message.content, message.created_at
        FROM bot_public_memory memory
        JOIN messages message ON message.id = memory.message_id
-       WHERE memory.bot_id = ?
+       WHERE memory.bot_id = ?${exclusion}
        ORDER BY message.created_at DESC, message.rowid DESC
        LIMIT ?`,
-      [input.botId, limit],
+      [input.botId, ...excluded, limit],
     ).reverse();
     return rows.flatMap((row) => {
       if (row.role !== "human" && row.role !== "bot") return [];

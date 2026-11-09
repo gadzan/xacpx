@@ -253,6 +253,23 @@ export function supportsGroupWorkspaceMode(control: unknown): boolean {
   }) === null) return false;
   return parseControlPayload(MSG.groupTopicsCreate, { conversationId: "probe", title: "probe" }) !== null;
 }
+/**
+ * True when this instance stores a Group's public-memory projection: the core
+ * exposes the probe AND this connector's validators accept both wire halves
+ * (`groups.create` with the field, `groups.update` patching it). An older core
+ * drops the field, so the Web must not offer the switch there.
+ */
+export function supportsGroupPublicMemorySwitch(control: unknown): boolean {
+  const probe = (control as { supportsGroupPublicMemorySwitch?: unknown } | null)?.supportsGroupPublicMemorySwitch;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parseControlPayload(MSG.groupsCreate, {
+    title: "probe",
+    botIds: ["probe_a", "probe_b"],
+    publicMemoryProjection: "off",
+  }) !== null
+    && parseControlPayload(MSG.groupsUpdate, { id: "probe", publicMemoryProjection: "on" }) !== null;
+}
 
 /**
  * True when this instance accepts a Group handoff-memory opt-in: the core
@@ -465,6 +482,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsRoundtableV1(control)) {
       capabilities.push(RELAY_CAPABILITIES.roundtableV1);
+    }
+    if (supportsGroupPublicMemorySwitch(control)) {
+      capabilities.push(RELAY_CAPABILITIES.groupPublicMemorySwitchV1);
     }
     if (supportsConversationTimeline(control)) {
       capabilities.push(RELAY_CAPABILITIES.conversationTimelineV1);

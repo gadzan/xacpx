@@ -7,12 +7,14 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 import type { DedicatedWorkspaceCleanupOutcome } from "../bots/dedicated-workspace-cleanup";
 import type { BotProfile, BotProfileSnapshot } from "../bots/bot-types";
-import type {
-  ConversationMessage,
-  ConversationRecord,
-  ConversationRun,
-  ConversationTopic,
-  MemberTurnRecord,
+import {
+  groupPublicMemoryProjection,
+  type ConversationMessage,
+  type ConversationRecord,
+  type ConversationRun,
+  type ConversationTopic,
+  type GroupPublicMemoryProjection,
+  type MemberTurnRecord,
 } from "../conversations/conversation-types";
 import type { ConversationTimeline } from "../conversations/conversation-timeline";
 
@@ -226,6 +228,8 @@ export interface GroupSummaryDto {
   lifecycle?: ConversationRecord["lifecycle"];
   createdAt: string;
   updatedAt: string;
+  /** Resolved public-memory projection: an explicit stored choice, else `on`. */
+  publicMemoryProjection: GroupPublicMemoryProjection;
 }
 
 export interface GroupDetailDto extends GroupSummaryDto {
@@ -556,6 +560,7 @@ export function toGroupSummary(
     ...(conversation.description ? { description: conversation.description } : {}),
     botIds: [...conversation.botIds],
     ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
+    publicMemoryProjection: groupPublicMemoryProjection(conversation),
     ...(conversation.workspaceMode ? { workspaceMode: conversation.workspaceMode } : {}),
     ...(conversation.handoffMemory === "summary" ? { handoffMemory: conversation.handoffMemory } : {}),
     createdAt: conversation.createdAt,

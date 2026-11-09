@@ -5,7 +5,7 @@ import { AlertCircle, Loader2, Plus, Trash2, X } from "lucide-vue-next";
 import type { BotSummaryDto, ConversationRunStateDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
-import { supportsGroupWorkspaceMode, supportsHandoffMemorySummary, useInstancesStore } from "../stores/instances";
+import { supportsGroupPublicMemorySwitch, supportsGroupWorkspaceMode, supportsHandoffMemorySummary, useInstancesStore } from "../stores/instances";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
 import { pushToast } from "../lib/use-toasts";
@@ -37,6 +37,9 @@ const supportsWorkspaceMode = computed(() => supportsGroupWorkspaceMode(instance
 // Handoff task-text projection (`off` | `summary`); unlike the workspace
 // mode this stays patchable after creation and only affects future handoffs.
 const supportsHandoffMemory = computed(() => supportsHandoffMemorySummary(instancesStore.byId(props.instanceId)));
+// An older core drops the field and keeps projecting, so the switch is hidden
+// rather than silently stored nowhere.
+const supportsPublicMemorySwitch = computed(() => supportsGroupPublicMemorySwitch(instancesStore.byId(props.instanceId)));
 
 const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
@@ -61,6 +64,8 @@ const leadBotId = ref(opened?.leadBotId ?? "");
 // Fixed at creation; the daemon rejects patching it.
 const workspaceMode = ref<"shared" | "per-member">(opened ? (opened.workspaceMode ?? "shared") : "per-member");
 const handoffMemory = ref<"off" | "summary">(opened?.handoffMemory ?? "off");
+// Absent on legacy Groups and older cores means projection is on.
+const publicMemoryProjection = ref<"on" | "off">(opened ? (opened.publicMemoryProjection ?? "on") : "on");
 // Create mode keeps suggesting the first enabled member until the user picks a
 // Lead. Edit mode starts from the saved Lead, which may legitimately be none.
 const leadTouched = ref(isEditing);
@@ -273,13 +278,16 @@ async function submit(): Promise<void> {
   try {
     let saved: GroupSummaryDto;
     if (opened) {
-      const patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: "off" | "summary" } = {};
+      const patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: "off" | "summary"; publicMemoryProjection?: "on" | "off" } = {};
       if (trimmedTitle !== opened.title) patch.title = trimmedTitle;
       if (trimmedDescription !== (opened.description ?? "")) patch.description = trimmedDescription || null;
       if (!sameMembers(memberIds.value, opened.botIds)) patch.botIds = [...memberIds.value];
       if ((leadBotId.value || undefined) !== opened.leadBotId) patch.leadBotId = leadBotId.value || null;
       if ((handoffMemory.value === "summary" ? "summary" : undefined) !== opened.handoffMemory) {
         patch.handoffMemory = handoffMemory.value;
+      }
+      if (supportsPublicMemorySwitch.value && publicMemoryProjection.value !== (opened.publicMemoryProjection ?? "on")) {
+        patch.publicMemoryProjection = publicMemoryProjection.value;
       }
       if (Object.keys(patch).length === 0) {
         emit("close");
@@ -294,6 +302,7 @@ async function submit(): Promise<void> {
         ...(leadBotId.value ? { leadBotId: leadBotId.value } : {}),
         ...(supportsWorkspaceMode.value ? { workspaceMode: workspaceMode.value } : {}),
         ...(supportsHandoffMemory.value && handoffMemory.value === "summary" ? { handoffMemory: "summary" as const } : {}),
+        ...(supportsPublicMemorySwitch.value ? { publicMemoryProjection: publicMemoryProjection.value } : {}),
       });
     }
     emit("saved", saved);
@@ -496,6 +505,30 @@ async function confirmDelete(): Promise<void> {
                 <span class="min-w-0">
                   <span class="block font-medium text-fg">{{ $t("group.manage.workspaceModePerMember") }}</span>
                   <span class="block text-fg-muted">{{ $t("group.manage.workspaceModePerMemberHint") }}</span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div v-if="supportsPublicMemorySwitch" data-test="group-dialog-public-memory">
+            <span class="mb-1.5 block text-xs font-medium text-fg-muted">
+              {{ $t("group.manage.publicMemory") }}
+            </span>
+            <div class="grid gap-1.5">
+              <label data-test="group-dialog-public-memory-on"
+                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                <input v-model="publicMemoryProjection" type="radio" value="on" class="mt-0.5" />
+                <span class="min-w-0">
+                  <span class="block font-medium text-fg">{{ $t("group.manage.publicMemoryOn") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.publicMemoryOnHint") }}</span>
+                </span>
+              </label>
+              <label data-test="group-dialog-public-memory-off"
+                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                <input v-model="publicMemoryProjection" type="radio" value="off" class="mt-0.5" />
+                <span class="min-w-0">
+                  <span class="block font-medium text-fg">{{ $t("group.manage.publicMemoryOff") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.publicMemoryOffHint") }}</span>
                 </span>
               </label>
             </div>

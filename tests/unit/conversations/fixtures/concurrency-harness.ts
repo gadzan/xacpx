@@ -61,9 +61,11 @@ export class ControlledRunner implements ConversationTurnRunner {
     return { outcome: "cancelled" as const };
   }
 }
-export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata; workspaceCwd?: string; altWorkspaceCwd?: string; worktreeRoot?: string; worktreeHooks?: WorktreeManagerHooks; maxConcurrentRunExecutions?: number } = {}) {
+export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata; workspaceCwd?: string; altWorkspaceCwd?: string; worktreeRoot?: string; worktreeHooks?: WorktreeManagerHooks; maxConcurrentRunExecutions?: number; publicMemoryMembers?: (conversationId: string, topicId: string) => readonly string[] | undefined } = {}) {
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-concurrency-")), "conversations.sqlite");
-  const store = await SqliteConversationStore.open(path);
+  const store = await SqliteConversationStore.open(path, options.publicMemoryMembers
+    ? { publicMemoryMembers: options.publicMemoryMembers }
+    : undefined);
   const state = options.state ?? createEmptyState();
   const stateStore = { async save(_s: AppState) {}, async saveNow(_s: AppState) {} };
   // The config key is an alias: synthetic reader fixtures now materialize the

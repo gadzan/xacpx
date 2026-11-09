@@ -12,6 +12,8 @@
 - 公开记忆安全补丁（不改变默认行为）：handoff 的公开记忆投影保留单一扩展点 `recordHandoffPublicMemory`，默认不注入、不记录任何 handoff 任务文本；启动时校验 `bot_public_memory` 是否指向缺失的 `messages` 行，非零时只报告（`onPublicMemoryOrphans` 或 `console.warn`），从不自动删除。现有 Topic/Conversation 清理事务已同步删除引用行；仓库内不存在单条消息删除路径，因此 per-message 同步清理仍未覆盖。
 - Handoff 记忆 opt-in（默认 off）：Group 新增可选 `handoffMemory: "off" | "summary"`（缺省/off 不改变任何行为），`summary` 的 Group 在每次新 handoff 的同一事务里多写一条截断到 500 字的任务摘要 bot 消息并按当前成员投影进公共记忆（`INSERT OR IGNORE`、重放不写、移出成员不再写）；完整子 trace 从不进入投影。`groups.create`/`update` 透传该字段并经 `groups.handoff-memory-summary.v1` capability 设门，Group 设置里多一个 off/summary 选择器（中英双语）；state load 校验非法值直接丢弃该 Group 行。Handoff 本就是公开群消息，任务文本也早就在 handoff 行里公开，因此该开关只拓宽公共记忆、不拓宽可见性。
 - 话题执行态徽标：Group 页的话题 pill 与话题面板行在该话题确实有活跃 Run 时显示旋转徽标（`bot.topic.executing`，`aria-label` 同步，尊重 `prefers-reduced-motion`），其余话题不显示；执行态由 `selectGroup` 与重连对齐的 `runs.list` 探测播种，`conversation-run-changed` 按 topic 增量维护（同 topic 的竞争 Run 不覆盖已知 owner），owner 终态后重读 `runs.list` 重新选举后继（排队 Run 已被提升而它自己的事件尚在途时不漏标），面板打开时整表重探 `refreshExecutingTopics`。徽标只覆盖当前话题列表内的话题；Direct 页不传该 prop，因而不显示。
+- 群组公共记忆开关：每个 Group 新增 `publicMemoryProjection`（`on` 默认 / `off`），带 state-load 校验、create/update 载荷、解析后的 DTO 与 `groups.public-memory-switch.v1` capability，Group 设置里提供开关（旧 Group 与旧 core 都按 `on` 读取）。`off` 时该群新消息不再写入 `bot_public_memory`，已存行也不再注入成员的 Direct prompt；开关只拦投影、不删数据，重新开启后既有行恢复可见。群内自身的对话与普通发送目标不受影响；bot 级开关与双向记忆仍不在范围内。
+- 公共记忆读窗口在应用 20 条上限前先排除投影为 `off` 的 Group，避免一个关闭投影的群用新版消息占满窗口、把其他仍开启群的旧消息挤出成员的 Direct prompt。
 
 
 ## [relay 0.14.12-beta.18] - 2026-11-06

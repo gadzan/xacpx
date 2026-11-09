@@ -39,6 +39,48 @@ export type GroupHandoffMemory = "off" | "summary";
 export function groupWorkspaceMode(conversation: Pick<ConversationRecord, "kind" | "workspaceMode">): GroupWorkspaceMode {
   return conversation.kind === "group" && conversation.workspaceMode === "per-member" ? "per-member" : "shared";
 }
+
+/**
+ * Whether a Group's public messages are projected into member memory.
+ *
+ * - `on` (default): a public human message or Bot reply is recorded for every
+ *   current member, and Direct prompts may see it as shared context.
+ * - `off`: the Group's messages write no memory going forward and stored rows
+ *   for it are not injected into Direct prompts. Nothing is deleted: the
+ *   switch is a projection gate, so turning it back on restores visibility for
+ *   rows written while it was on.
+ *
+ * This never changes what a Group turn itself sees (its own transcript), and
+ * it never deletes rows. Absent means `on`, so every pre-setting Group keeps
+ * the behavior it had.
+ */
+export type GroupPublicMemoryProjection = "on" | "off";
+
+/** Effective projection switch of a Group. Direct conversations have none and
+ *  read as `on`; only an explicit stored `off` turns projection off. */
+export function groupPublicMemoryProjection(
+  conversation: Pick<ConversationRecord, "kind" | "publicMemoryProjection">,
+): GroupPublicMemoryProjection {
+  return conversation.kind === "group" && conversation.publicMemoryProjection === "off" ? "off" : "on";
+}
+
+/** Membership a public Group Topic projects its messages to, or `undefined`
+ *  when the Topic is not a public Group Topic (Direct, peer, or a Topic that
+ *  belongs to another Conversation).
+ *
+ *  A projection-off Group returns an EMPTY membership rather than `undefined`:
+ *  the Topic is still a public Group Topic for every other read (it just
+ *  writes no memory), so callers that ask "is this a public Group Topic?"
+ *  keep their answer. */
+export function publicMemoryMembersFor(
+  conversation: Pick<ConversationRecord, "id" | "kind" | "botIds" | "publicMemoryProjection"> | undefined,
+  topic: Pick<ConversationTopic, "conversationId" | "peerScope"> | undefined,
+): readonly string[] | undefined {
+  if (conversation?.kind !== "group") return undefined;
+  if (!topic || topic.conversationId !== conversation.id || topic.peerScope) return undefined;
+  return groupPublicMemoryProjection(conversation) === "off" ? [] : conversation.botIds;
+}
+
 /** PR7 structured explicit Group target. IDs are authority; display names
  *  never route. `automatic` is a durable-mode reservation (PR8) rejected by
  *  the PR7 explicit accept path. */
@@ -127,6 +169,10 @@ export interface ConversationRecord {
   /** Handoff task-text projection into public memory. Absent means `off`;
    *  only ever set on Group conversations. */
   handoffMemory?: GroupHandoffMemory;
+  /** Public-memory projection switch stored by the operator. Absent means
+   *  `on` (every pre-setting Group keeps projecting); never present on Direct
+   *  records. */
+  publicMemoryProjection?: GroupPublicMemoryProjection;
   lifecycle?: ConversationLifecycle;
   createdAt: string;
   updatedAt: string;

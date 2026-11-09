@@ -1,6 +1,9 @@
 import { BotError } from "./bot-error";
 import { CLAUDE_READ_ONLY_POLICY, type EnforcedExecutionPolicy, type RequestedFilesystemPolicy } from "../adapters/conversation-effect-policy";
-import type { MemberTurnRecord } from "../conversations/conversation-types";
+import {
+  groupPublicMemoryProjection,
+  type MemberTurnRecord,
+} from "../conversations/conversation-types";
 import { memberConcurrencyLimit } from "../conversations/conversation-scheduling-policy";
 import {
   classifyDirectBotBindingSessionLink,
@@ -124,6 +127,15 @@ export class BotRuntimeManager {
     const title = conversation.title.trim();
     const description = conversation.description?.trim();
     return { ...(title ? { title } : {}), ...(description ? { description } : {}) };
+  }
+
+  /** Every Group whose projection is off, read from AppState each call. The
+   *  memory read excludes these ids before applying its limit, so an off
+   *  Group cannot crowd older visible rows out of a Bot's window. */
+  publicMemoryProjectionOffGroupIds(): string[] {
+    return Object.values(this.state.conversations)
+      .filter((conversation) => conversation.kind === "group" && groupPublicMemoryProjection(conversation) === "off")
+      .map((conversation) => conversation.id);
   }
 
   /** Durable Topic scheduling metadata; no live execution counter. */

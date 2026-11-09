@@ -3285,6 +3285,25 @@ describe("useGroupsStore Group management", () => {
     expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
   });
 
+  it("sends a Group's public-memory projection through an update and merges the resolved row", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.groupsByInstance["inst_1"] = [{ ...GROUP, publicMemoryProjection: "on" }];
+    const updated = { ...GROUP, publicMemoryProjection: "off" as const };
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.groups.update") return { group: updated };
+      if (type === "control.groups.list") return { groups: [updated] };
+      throw new Error(`unexpected ${type}`);
+    });
+
+    await store.updateGroup("inst_1", "conversation_g", { publicMemoryProjection: "off" });
+
+    const call = mockRpc.mock.calls.find(([instance, type]) => instance === "inst_1" && type === "control.groups.update");
+    expect(call?.[2]).toEqual({ id: "conversation_g", publicMemoryProjection: "off" });
+    expect(store.currentGroup?.publicMemoryProjection).toBe("off");
+  });
+
   it("rethrows a failed delete while the Group is still listed and keeps its deleting row", async () => {
     const store = useGroupsStore();
     store.groupsByInstance["inst_1"] = [GROUP];
