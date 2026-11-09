@@ -597,6 +597,8 @@ export interface GroupsCreatePayload {
     leadBotId?: string;
     /** Fixed at creation; omitted means `shared`. */
     workspaceMode?: "shared" | "per-member";
+    /** Handoff task-text projection; omitted means `off`. */
+    handoffMemory?: "off" | "summary";
 }
 export interface GroupsCreateResult {
     group: GroupSummaryDto;
@@ -607,6 +609,8 @@ export interface GroupsUpdatePayload {
     description?: string | null;
     botIds?: string[];
     leadBotId?: string | null;
+    /** `off` clears back to the default. */
+    handoffMemory?: "off" | "summary";
 }
 export interface GroupsUpdateResult {
     group: GroupSummaryDto;
@@ -1370,6 +1374,11 @@ export declare const RELAY_CAPABILITIES: {
      *  the connector's validator and the core both accept it, so the web never
      *  offers a mode an instance would silently downgrade to `shared`. */
     readonly groupWorkspaceModeV1: "groups.workspace-mode.v1";
+    /** `control.groups.create` / `control.groups.update` accept `handoffMemory`
+     *  (`off` | `summary`). Advertised only when the connector's validator and
+     *  the core both accept it, so the web never offers an opt-in an instance
+     *  would silently ignore. */
+    readonly handoffMemorySummaryV1: "groups.handoff-memory-summary.v1";
 };
 /**
  * Grace an interaction RPC gets beyond its own `expiresAt`.

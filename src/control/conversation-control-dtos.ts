@@ -220,6 +220,8 @@ export interface GroupSummaryDto {
   description?: string;
   botIds: string[];
   leadBotId?: string;
+  /** Handoff task-text projection; absent means `off`. */
+  handoffMemory?: "summary";
   defaultTopicId?: string;
   lifecycle?: ConversationRecord["lifecycle"];
   createdAt: string;
@@ -555,6 +557,7 @@ export function toGroupSummary(
     botIds: [...conversation.botIds],
     ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
     ...(conversation.workspaceMode ? { workspaceMode: conversation.workspaceMode } : {}),
+    ...(conversation.handoffMemory === "summary" ? { handoffMemory: conversation.handoffMemory } : {}),
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
     ...(defaultTopicId ? { defaultTopicId } : {}),

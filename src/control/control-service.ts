@@ -124,7 +124,7 @@ import { lifecycleOperationId, transitionLifecycleOperation, type LifecycleOpera
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
-import type { ConversationRun, GroupWorkspaceMode, HumanIngressContext } from "../conversations/conversation-types";
+import type { ConversationRun, GroupHandoffMemory, GroupWorkspaceMode, HumanIngressContext } from "../conversations/conversation-types";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import { isHiddenProductSessionOwner } from "../state/types";
 import {
@@ -2742,6 +2742,17 @@ export class ControlService {
   }
 
   /**
+   * Feature probe for connectors: `createGroup`/`updateGroup` accept
+   * `handoffMemory` (`off` | `summary`) and a `summary` Group projects one
+   * truncated handoff task-text summary into public memory. Connectors
+   * advertise `RELAY_CAPABILITIES.handoffMemorySummaryV1` only when this
+   * exists, so the web never offers an opt-in an older core would ignore.
+   */
+  supportsHandoffMemorySummary(): true {
+    return true;
+  }
+
+  /**
    * Feature probe for connectors: the explicit Group target accepts
    * `mode:"roundtable"` and history batches accept `roundtableV1`. Connectors
    * advertise `RELAY_CAPABILITIES.roundtableV1` only when this exists, so the
@@ -3063,7 +3074,7 @@ export class ControlService {
     return toLifecycleOperationDto(this.requireConversations().removals.getOperation(id));
   }
 
-  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string; workspaceMode?: GroupWorkspaceMode }) {
+  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string; workspaceMode?: GroupWorkspaceMode; handoffMemory?: GroupHandoffMemory }) {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.createGroup(input);
       this.deps.events.emit({ type: "bots-changed" });
@@ -3074,7 +3085,7 @@ export class ControlService {
 
   async updateGroup(
     id: string,
-    patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null },
+    patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: GroupHandoffMemory },
   ): Promise<GroupSummaryDto> {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.updateGroup(id, patch);

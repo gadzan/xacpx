@@ -277,7 +277,8 @@ var RELAY_CAPABILITIES = {
   groupTopicIsolationV1: "group.topics.isolation.v1",
   roundtableV1: "conversations.roundtable.v1",
   conversationTimelineV1: "conversations.timeline.v1",
-  groupWorkspaceModeV1: "groups.workspace-mode.v1"
+  groupWorkspaceModeV1: "groups.workspace-mode.v1",
+  handoffMemorySummaryV1: "groups.handoff-memory-summary.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [
@@ -1835,9 +1836,10 @@ var validateTopicsPreview = (p) => {
 var validMemberConcurrency = (v) => v === undefined || typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64;
 var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
 var isGroupWorkspaceMode = (v) => v === undefined || v === "shared" || v === "per-member";
+var isHandoffMemory = (v) => v === undefined || v === "off" || v === "summary";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
-  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) && isGroupWorkspaceMode(o.workspaceMode) ? o : null;
+  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) && isGroupWorkspaceMode(o.workspaceMode) && isHandoffMemory(o.handoffMemory) ? o : null;
 };
 var validateGroupsUpdate = (p) => {
   const o = fields(p);
@@ -1852,6 +1854,8 @@ var validateGroupsUpdate = (p) => {
   if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId))
     return null;
   if (o.workspaceMode !== undefined)
+    return null;
+  if (!isHandoffMemory(o.handoffMemory))
     return null;
   return o;
 };

@@ -5,7 +5,7 @@ import { AlertCircle, Loader2, Plus, Trash2, X } from "lucide-vue-next";
 import type { BotSummaryDto, ConversationRunStateDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
-import { supportsGroupWorkspaceMode, useInstancesStore } from "../stores/instances";
+import { supportsGroupWorkspaceMode, supportsHandoffMemorySummary, useInstancesStore } from "../stores/instances";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
 import { pushToast } from "../lib/use-toasts";
@@ -34,6 +34,9 @@ const instancesStore = useInstancesStore();
 // An older core drops the field and builds a `shared` Group, so the choice is
 // hidden rather than silently downgraded.
 const supportsWorkspaceMode = computed(() => supportsGroupWorkspaceMode(instancesStore.byId(props.instanceId)));
+// Handoff task-text projection (`off` | `summary`); unlike the workspace
+// mode this stays patchable after creation and only affects future handoffs.
+const supportsHandoffMemory = computed(() => supportsHandoffMemorySummary(instancesStore.byId(props.instanceId)));
 
 const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
@@ -57,6 +60,7 @@ const memberIds = ref<string[]>([...(opened?.botIds ?? [])]);
 const leadBotId = ref(opened?.leadBotId ?? "");
 // Fixed at creation; the daemon rejects patching it.
 const workspaceMode = ref<"shared" | "per-member">(opened ? (opened.workspaceMode ?? "shared") : "per-member");
+const handoffMemory = ref<"off" | "summary">(opened?.handoffMemory ?? "off");
 // Create mode keeps suggesting the first enabled member until the user picks a
 // Lead. Edit mode starts from the saved Lead, which may legitimately be none.
 const leadTouched = ref(isEditing);
@@ -269,11 +273,14 @@ async function submit(): Promise<void> {
   try {
     let saved: GroupSummaryDto;
     if (opened) {
-      const patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null } = {};
+      const patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: "off" | "summary" } = {};
       if (trimmedTitle !== opened.title) patch.title = trimmedTitle;
       if (trimmedDescription !== (opened.description ?? "")) patch.description = trimmedDescription || null;
       if (!sameMembers(memberIds.value, opened.botIds)) patch.botIds = [...memberIds.value];
       if ((leadBotId.value || undefined) !== opened.leadBotId) patch.leadBotId = leadBotId.value || null;
+      if ((handoffMemory.value === "summary" ? "summary" : undefined) !== opened.handoffMemory) {
+        patch.handoffMemory = handoffMemory.value;
+      }
       if (Object.keys(patch).length === 0) {
         emit("close");
         return;
@@ -286,6 +293,7 @@ async function submit(): Promise<void> {
         botIds: [...memberIds.value],
         ...(leadBotId.value ? { leadBotId: leadBotId.value } : {}),
         ...(supportsWorkspaceMode.value ? { workspaceMode: workspaceMode.value } : {}),
+        ...(supportsHandoffMemory.value && handoffMemory.value === "summary" ? { handoffMemory: "summary" as const } : {}),
       });
     }
     emit("saved", saved);
@@ -580,6 +588,31 @@ async function confirmDelete(): Promise<void> {
                 : $t("group.manage.leadCleared", { previous: botLabel(leadReassigned.previous) }) }}
             </p>
             <p class="mt-1 text-xs text-fg-muted">{{ $t("group.manage.leadHint") }}</p>
+          </div>
+
+          <div v-if="supportsHandoffMemory">
+            <span class="mb-1.5 block text-xs font-medium text-fg-muted">
+              {{ $t("group.manage.handoffMemory") }}
+            </span>
+            <div class="grid gap-1.5">
+              <label data-test="group-dialog-handoff-memory-off"
+                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                <input v-model="handoffMemory" type="radio" value="off" class="mt-0.5" />
+                <span class="min-w-0">
+                  <span class="block font-medium text-fg">{{ $t("group.manage.handoffMemoryOff") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.handoffMemoryOffHint") }}</span>
+                </span>
+              </label>
+              <label data-test="group-dialog-handoff-memory-summary"
+                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                <input v-model="handoffMemory" type="radio" value="summary" class="mt-0.5" />
+                <span class="min-w-0">
+                  <span class="block font-medium text-fg">{{ $t("group.manage.handoffMemorySummary") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.handoffMemorySummaryHint") }}</span>
+                </span>
+              </label>
+            </div>
+            <p class="mt-1 text-xs text-fg-muted">{{ $t("group.manage.handoffMemoryLocked") }}</p>
           </div>
         </fieldset>
 

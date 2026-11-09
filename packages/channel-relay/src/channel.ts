@@ -255,6 +255,29 @@ export function supportsGroupWorkspaceMode(control: unknown): boolean {
 }
 
 /**
+ * True when this instance accepts a Group handoff-memory opt-in: the core
+ * must say so (older cores ignore the field and always project nothing for
+ * handoffs) AND the relay-protocol validator this connector resolved must
+ * accept it on both `groups.create` and `groups.update`. Either half missing
+ * keeps the capability off, so the web never offers an opt-in the first
+ * `groups.update` would then reject.
+ */
+export function supportsHandoffMemorySummary(control: unknown): boolean {
+  const probe = (control as { supportsHandoffMemorySummary?: unknown } | null)?.supportsHandoffMemorySummary;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  if (parseControlPayload(MSG.groupsCreate, {
+    title: "probe",
+    botIds: ["probe_a", "probe_b"],
+    handoffMemory: "summary",
+  }) === null) return false;
+  return parseControlPayload(MSG.groupsUpdate, {
+    id: "probe",
+    handoffMemory: "summary",
+  }) !== null;
+}
+
+/**
  * True when this instance can rewrite a Group Topic's isolation in place. The
  * core must implement the RPC AND the connector's validator must accept the
  * payload, so the web never offers a switch the other end would reject.
@@ -436,6 +459,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsGroupWorkspaceMode(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);
+    }
+    if (supportsHandoffMemorySummary(control)) {
+      capabilities.push(RELAY_CAPABILITIES.handoffMemorySummaryV1);
     }
     if (supportsRoundtableV1(control)) {
       capabilities.push(RELAY_CAPABILITIES.roundtableV1);

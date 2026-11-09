@@ -454,6 +454,8 @@ export interface GroupSummaryDto {
   description?: string;
   botIds: string[];
   leadBotId?: string;
+  /** Handoff task-text projection; absent means `off`. */
+  handoffMemory?: "summary";
   /** Group execution mode, fixed at creation. Absent means `shared`. */
   workspaceMode?: "shared" | "per-member";
   defaultTopicId?: string;

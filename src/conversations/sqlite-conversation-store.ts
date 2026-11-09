@@ -73,6 +73,7 @@ import {
 import type {
   ConversationMessage,
   ConversationRun,
+  GroupHandoffMemory,
   ConversationRunState,
   ConversationRoutingState,
   ConversationShape,
@@ -88,6 +89,7 @@ import type {
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 import { MAX_GROUP_SAY_PER_TURN, parseGroupSend } from "./group-handoff";
+import { truncateText } from "../util/text";
 import { MAX_ROUNDTABLE_MEMBER_TURNS, MAX_ROUNDTABLE_ROUNDS, parseRoundtableSpeech } from "./conversation-roundtable";
 import { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 import {
@@ -142,6 +144,13 @@ export interface SqliteConversationStoreOptions {
    * the full task text never enters the projection.
    */
   recordHandoffPublicMemory?: (record: HandoffPublicMemoryRecord) => void;
+  /**
+   * Live per-Group handoff projection switch. Returning `"summary"` records
+   * one truncated task-text summary for a fresh handoff in the same
+   * transaction (never the full sub-trace); anything else keeps #557
+   * behavior: the handoff message is projected nowhere.
+   */
+  handoffMemoryMode?: (conversationId: string) => GroupHandoffMemory | undefined;
   /** Receives the startup orphan report. When absent, a non-empty report is
    *  logged with `console.warn`. Reporting never deletes anything. */
   onPublicMemoryOrphans?: (report: PublicMemoryOrphanReport) => void;
@@ -553,6 +562,12 @@ function optionalString(value: string | null | undefined): string | undefined {
  *  far below it while still collapsing a page into a handful of queries. */
 const TIMELINE_ID_CHUNK = 400;
 
+/** A `summary`-mode Group projects exactly one task-text summary message per
+ *  fresh handoff, truncated to this many characters. The full task text is
+ *  already public in the handoff row itself, so the summary only widens
+ *  public memory — never the sub-trace, which is never read here. */
+const HANDOFF_SUMMARY_MAX_CHARS = 500;
+
 function placeholders(count: number): string {
   return new Array(count).fill("?").join(", ");
 }
@@ -935,6 +950,7 @@ export class SqliteConversationStore implements ConversationStore {
   private readonly followupRedispatch: boolean;
   private readonly publicMemoryMembers?: (conversationId: string, topicId: string) => readonly string[] | undefined;
   private readonly recordHandoffPublicMemory?: (record: HandoffPublicMemoryRecord) => void;
+  private readonly handoffMemoryMode?: (conversationId: string) => GroupHandoffMemory | undefined;
   private readonly onPublicMemoryOrphans?: (report: PublicMemoryOrphanReport) => void;
 
   private closed = false;
@@ -950,6 +966,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.followupRedispatch = options?.followupRedispatch === true;
     this.publicMemoryMembers = options?.publicMemoryMembers;
     this.recordHandoffPublicMemory = options?.recordHandoffPublicMemory;
+    this.handoffMemoryMode = options?.handoffMemoryMode;
     this.onPublicMemoryOrphans = options?.onPublicMemoryOrphans;
     this.sqlite.exec(SCHEMA);
     this.worktrees = new ConversationWorktreeStore(this.sqlite);
@@ -1415,6 +1432,20 @@ export class SqliteConversationStore implements ConversationStore {
         targetBotId: args.to,
         createdAt: input.now,
       };
+      // Opt-in task-text summary: one truncated message in this same
+      // transaction when the Group selected `summary`. Off (default) writes
+      // nothing and keeps #557 behavior byte for byte.
+      if (this.handoffMemoryMode?.(run.conversationId) === "summary") {
+        this.insertHandoffSummary({
+          conversationId: run.conversationId,
+          topicId: run.topicId,
+          runId: run.id,
+          senderBotId: sender.botId,
+          senderMemberTurnId: sender.id,
+          task: args.task,
+          now: input.now,
+        });
+      }
       return { reused: false, run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(memberTurnId), message: this.requireMessage(messageId) };
     });
     if ("refusal" in outcome) throw outcome.refusal;
@@ -1898,6 +1929,45 @@ export class SqliteConversationStore implements ConversationStore {
     );
   }
 
+  /**
+   * One truncated task-text summary for a fresh handoff, written ONLY when the
+   * Group opted into `summary` (checked by the caller). Same transaction as
+   * the handoff row; projected per current member exactly like any other
+   * public bot message. Never reads the sub-trace — `task` is the handoff's
+   * own public text, truncated to HANDOFF_SUMMARY_MAX_CHARS. Replay never
+   * reaches here: `getPublicHandoff` short-circuits before the hook.
+   */
+  private insertHandoffSummary(input: {
+    conversationId: string;
+    topicId: string;
+    runId: string;
+    senderBotId: string;
+    /** The dispatching MemberTurn. Attributed like every other bot insert
+     *  point, and deliberately WITHOUT `source_turn_json`, so the summary is
+     *  never mistaken for that turn's settled result. */
+    senderMemberTurnId: string;
+    task: string;
+    now: string;
+  }): void {
+    const summary = truncateText(input.task.trim(), HANDOFF_SUMMARY_MAX_CHARS);
+    if (!summary) return;
+    const seq = this.allocateSeq(input.conversationId, input.topicId);
+    const messageId = this.ids.messageId();
+    this.sqlite.run(
+      `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, member_turn_id)
+       VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+      [messageId, input.conversationId, input.topicId, seq, input.senderBotId, summary, input.runId, input.now, input.senderMemberTurnId],
+    );
+    this.indexPublicMemory({
+      messageId,
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      role: "bot",
+      senderBotId: input.senderBotId,
+      content: summary,
+      createdAt: input.now,
+    });
+  }
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined {
     const row = this.sqlite.get<MemberTurnRow>("SELECT * FROM member_turns WHERE id = ?", [memberTurnId]);
     return row ? mapMemberTurn(row) : undefined;

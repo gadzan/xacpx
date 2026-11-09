@@ -4,7 +4,8 @@
 - 范围：Group 公开发言边界、Bot 公共记忆、Direct prompt 注入
 
 - 已实现：`bot_public_memory` 建表与索引、人类消息与 Bot 最终回复写入（同事务、`INSERT OR IGNORE`、非空过滤）、Topic/Conversation/Bot 删除清理、移出群清理、Direct prompt `Shared group context`（20 条/800 字、untrusted 标记）、群临时气泡每成员只看最新文本、`group_say`（`group_say_json` 标记 + `invocationId` 幂等、每回合 3 条上限由 runtime 与存储在同一事务内计数、与最终回复同一条公开写入路径并进公共记忆、与最终回复同文去重并把该条提升为该成员的公开结果）、最终回复兜底（四条最终内容写入路径共用一条规则：空最终文本且本回合没有 `group_say` 时同事务写一条 `role = 'system'` 状态消息；空最终文本但不进气泡、不进公共记忆）。
-- 明确不在当前范围（不是欠账）：handoff 摘要内容、双向记忆开关、历史回填、单条消息删除同步清理。当前清理只覆盖 Topic/Conversation/Bot 与移出群；仓库内没有单条消息删除路径，因此 per-message delete sync 仍未覆盖。
+- 明确不在当前范围（不是欠账）：双向记忆开关、历史回填、单条消息删除同步清理。当前清理只覆盖 Topic/Conversation/Bot 与移出群；仓库内没有单条消息删除路径，因此 per-message delete sync 仍未覆盖。
+- Handoff 任务摘要（2026-11-09，opt-in）：Group 可设 `handoffMemory: "off" | "summary"`（缺省 off）。`summary` 时每次新 handoff 在同一事务里多写一条截断到 500 字的摘要 bot 消息并按当前成员投影进公共记忆；`off` 保持安全补丁行为（零行）。完整子 trace 从不进入投影，重放不写，移出成员不再写。
 - 安全补丁（2026-11-09）：handoff 的公开记忆投影只有一个扩展点 `recordHandoffPublicMemory`，默认未注入、不记录任何任务文本；启动时校验孤儿引用，非零只报告（`onPublicMemoryOrphans` 或 `console.warn`），从不自动删除。
 ---
 
@@ -85,7 +86,7 @@ flowchart LR
 - Group 里的 `role = human` 消息。
 - Group 里的 `role = bot` 最终回复。
 - 启用 `group_say` 后，它产生的公开 Bot 消息。
-- 可选：handoff 的公开任务摘要，不记录完整子 trace。
+- 可选（Group 设 `handoffMemory: "summary"`）：handoff 的公开任务摘要，单条、截断到 500 字，不记录完整子 trace。
 
 不记录：
 
@@ -140,7 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_bot_public_memory_topic
 
 - `role = human`：写所有当前成员。
 - `role = bot` 且没有 `handoff`：写所有当前成员。
-- `role = bot` 且带 `handoff`：默认不写；如果产品需要任务摘要，只写一条摘要，不写完整任务文本。
+- `role = bot` 且带 `handoff`：默认不写；Group 选择 `summary` 时只写一条截断到 500 字的摘要消息（`INSERT OR IGNORE` 投影给当前成员），不写完整任务文本。
 - `role = system`：不写。
 - `group_say` 消息：写所有当前成员。
 
