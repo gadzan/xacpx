@@ -255,4 +255,109 @@ describe("TopicSwitcher (Bot topics)", () => {
     const menu = await rowMenu(wrapper, 1);
     expect(menu.find("[data-test='menu-isolation']").exists()).toBe(false);
   });
+
+  it("badges executing topics with a labelled spinner and skips the rest", async () => {
+    const wrapper = mount(TopicSwitcher, {
+      props: {
+        topics,
+        activeTopicId: "t-default",
+        previewTopic: vi.fn(async () => impact()),
+        renameTopic: vi.fn(async () => {}),
+        archiveTopic: vi.fn(async () => {}),
+        restoreTopic: vi.fn(async () => {}),
+        teardownTopic: vi.fn(async () => {}),
+        clearTopic: vi.fn(async () => {}),
+        setTopicIsolation: vi.fn(async () => {}),
+        executingTopicIds: ["t-extra"],
+      },
+      global: { plugins: [i18n] },
+    });
+    await wrapper.find("[data-test='group-topic-pill']").trigger("click");
+    const rows = wrapper.findAll("[data-test='topic-row']");
+    expect(rows).toHaveLength(3);
+    const badges = wrapper.findAll("[data-test='topic-executing']");
+    expect(badges).toHaveLength(1);
+    expect(badges[0]!.attributes("aria-label")).toBe("Running");
+    expect(rows[1]!.find("[data-test='topic-executing']").exists()).toBe(true);
+    expect(rows[0]!.find("[data-test='topic-executing']").exists()).toBe(false);
+    expect(rows[2]!.find("[data-test='topic-executing']").exists()).toBe(false);
+
+    const bare = mount(TopicSwitcher, {
+      props: {
+        topics,
+        activeTopicId: "t-default",
+        previewTopic: vi.fn(async () => impact()),
+        renameTopic: vi.fn(async () => {}),
+        archiveTopic: vi.fn(async () => {}),
+        restoreTopic: vi.fn(async () => {}),
+        teardownTopic: vi.fn(async () => {}),
+        clearTopic: vi.fn(async () => {}),
+        setTopicIsolation: vi.fn(async () => {}),
+      },
+      global: { plugins: [i18n] },
+    });
+    await bare.find("[data-test='group-topic-pill']").trigger("click");
+    expect(bare.findAll("[data-test='topic-executing']")).toHaveLength(0);
+  });
+
+  it("mirrors the badge on the pill only for the executing active topic", async () => {
+    const wrapper = mount(TopicSwitcher, {
+      props: {
+        topics,
+        activeTopicId: "t-extra",
+        previewTopic: vi.fn(async () => impact()),
+        renameTopic: vi.fn(async () => {}),
+        archiveTopic: vi.fn(async () => {}),
+        restoreTopic: vi.fn(async () => {}),
+        teardownTopic: vi.fn(async () => {}),
+        clearTopic: vi.fn(async () => {}),
+        setTopicIsolation: vi.fn(async () => {}),
+        executingTopicIds: ["t-extra"],
+      },
+      global: { plugins: [i18n] },
+    });
+    const pillBadge = wrapper.find("[data-test='topic-pill-executing']");
+    expect(pillBadge.exists()).toBe(true);
+    expect(pillBadge.attributes("aria-label")).toBe("Running");
+
+    const other = mount(TopicSwitcher, {
+      props: {
+        topics,
+        activeTopicId: "t-default",
+        previewTopic: vi.fn(async () => impact()),
+        renameTopic: vi.fn(async () => {}),
+        archiveTopic: vi.fn(async () => {}),
+        restoreTopic: vi.fn(async () => {}),
+        teardownTopic: vi.fn(async () => {}),
+        clearTopic: vi.fn(async () => {}),
+        setTopicIsolation: vi.fn(async () => {}),
+        executingTopicIds: ["t-extra"],
+      },
+      global: { plugins: [i18n] },
+    });
+    expect(other.find("[data-test='topic-pill-executing']").exists()).toBe(false);
+  });
+
+  it("re-probes executing topics when the panel opens", async () => {
+    const refreshExecutingTopics = vi.fn(async () => {});
+    const wrapper = mount(TopicSwitcher, {
+      props: {
+        topics,
+        activeTopicId: "t-default",
+        previewTopic: vi.fn(async () => impact()),
+        renameTopic: vi.fn(async () => {}),
+        archiveTopic: vi.fn(async () => {}),
+        restoreTopic: vi.fn(async () => {}),
+        teardownTopic: vi.fn(async () => {}),
+        clearTopic: vi.fn(async () => {}),
+        setTopicIsolation: vi.fn(async () => {}),
+        refreshExecutingTopics,
+      },
+      global: { plugins: [i18n] },
+    });
+    expect(refreshExecutingTopics).toHaveBeenCalledTimes(0);
+    await wrapper.find("[data-test='group-topic-pill']").trigger("click");
+    await flushPromises();
+    expect(refreshExecutingTopics).toHaveBeenCalledTimes(1);
+  });
 });

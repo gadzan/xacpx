@@ -29,6 +29,12 @@ export interface TopicRunsAuthority {
   activeRunId?: string;
   activeRun?: ConversationRunDto;
 }
+export function activeRunOfTopic(topicId: string, listed: TopicRunsAuthority): TopicActiveRun | null {
+  if (!listed.activeRunId) return null;
+  const row = listed.activeRun ?? listed.runs?.find((run) => run.id === listed.activeRunId);
+  if (row?.state !== undefined && !isActiveRunState(row.state)) return null;
+  return { topicId, runId: listed.activeRunId, ...(row?.state !== undefined ? { state: row.state } : {}) };
+}
 
 export type TopicActiveRunProbeResult =
   | { status: "complete"; activeByTopicId: Record<string, TopicActiveRun> }
@@ -47,13 +53,9 @@ export async function probeExecutingTopics(
   const timedOut = deadline.promise;
   try {
     const settled = await Promise.race([
-      Promise.all(topics.map(async (topic) => {
-        const listed = await listTopicRuns(topic.id);
-        if (!listed.activeRunId) return [topic.id, null] as const;
-        const row = listed.activeRun ?? listed.runs?.find((run) => run.id === listed.activeRunId);
-        if (row?.state !== undefined && !isActiveRunState(row.state)) return [topic.id, null] as const;
-        return [topic.id, { topicId: topic.id, runId: listed.activeRunId, ...(row?.state !== undefined ? { state: row.state } : {}) }] as const;
-      })),
+      Promise.all(topics.map(async (topic) =>
+        [topic.id, activeRunOfTopic(topic.id, await listTopicRuns(topic.id))] as const,
+      )),
       timedOut,
     ]);
     if (settled === true) return { status: "timeout" };
