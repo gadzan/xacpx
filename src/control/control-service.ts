@@ -124,7 +124,13 @@ import { lifecycleOperationId, transitionLifecycleOperation, type LifecycleOpera
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
-import type { ConversationRun, GroupHandoffMemory, GroupWorkspaceMode, HumanIngressContext } from "../conversations/conversation-types";
+import type {
+  ConversationRun,
+  GroupHandoffMemory,
+  GroupPublicMemoryProjection,
+  GroupWorkspaceMode,
+  HumanIngressContext,
+} from "../conversations/conversation-types";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import { isHiddenProductSessionOwner } from "../state/types";
 import {
@@ -2753,6 +2759,17 @@ export class ControlService {
   }
 
   /**
+   * Feature probe for connectors: `createGroup`/`updateGroup` accept
+   * `publicMemoryProjection` and every Group summary carries the resolved
+   * value. Connectors advertise
+   * `RELAY_CAPABILITIES.groupPublicMemorySwitchV1` only when this exists, so
+   * the Web never shows a switch an older core would drop.
+   */
+  supportsGroupPublicMemorySwitch(): true {
+    return true;
+  }
+
+  /**
    * Feature probe for connectors: the explicit Group target accepts
    * `mode:"roundtable"` and history batches accept `roundtableV1`. Connectors
    * advertise `RELAY_CAPABILITIES.roundtableV1` only when this exists, so the
@@ -3074,7 +3091,7 @@ export class ControlService {
     return toLifecycleOperationDto(this.requireConversations().removals.getOperation(id));
   }
 
-  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string; workspaceMode?: GroupWorkspaceMode; handoffMemory?: GroupHandoffMemory }) {
+  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string; workspaceMode?: GroupWorkspaceMode; handoffMemory?: GroupHandoffMemory; publicMemoryProjection?: GroupPublicMemoryProjection }) {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.createGroup(input);
       this.deps.events.emit({ type: "bots-changed" });
@@ -3085,7 +3102,7 @@ export class ControlService {
 
   async updateGroup(
     id: string,
-    patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: GroupHandoffMemory },
+    patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: GroupHandoffMemory; publicMemoryProjection?: GroupPublicMemoryProjection },
   ): Promise<GroupSummaryDto> {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.updateGroup(id, patch);

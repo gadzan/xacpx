@@ -289,6 +289,37 @@ describe("Group management", () => {
       expect(rpcCalls("control.groups.create")[0]?.payload).not.toHaveProperty("workspaceMode");
     });
 
+
+    it("opens an off Group on the off choice and hides the switch on a core that predates it", async () => {
+      seedInstance([
+        RELAY_CAPABILITIES.groupWorkspaceModeV1,
+        RELAY_CAPABILITIES.conversationTimelineV1,
+        RELAY_CAPABILITIES.groupPublicMemorySwitchV1,
+      ]);
+      seedBots([REVIEWER, TESTER]);
+      const editor = track(mount(GroupDialog, {
+        props: { instanceId: "i1", group: { ...GROUP, publicMemoryProjection: "off" } },
+        global: { plugins: [i18n] },
+      }));
+      await flushPromises();
+      expect((editor.find('[data-test="group-dialog-public-memory-off"] input').element as HTMLInputElement).checked)
+        .toBe(true);
+
+      seedInstance([]);
+      seedBots([REVIEWER, TESTER]);
+      routes.set("control.groups.create", () => ({ group: { ...GROUP, id: "conversation_new" } }));
+      routes.set("control.groups.list", () => ({ groups: [] }));
+      const create = track(mount(GroupDialog, { props: { instanceId: "i1" }, global: { plugins: [i18n] } }));
+      await flushPromises();
+      expect(create.find('[data-test="group-dialog-public-memory"]').exists()).toBe(false);
+
+      await create.find('[data-test="group-dialog-title"]').setValue("Legacy");
+      await selectMembers(create, ["bot_a", "bot_b"]);
+      await create.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+      expect(rpcCalls("control.groups.create")[0]?.payload).not.toHaveProperty("publicMemoryProjection");
+    });
+
     it("keeps Save disabled until there is a name and two distinct members", async () => {
       seedBots([REVIEWER, TESTER]);
       const wrapper = track(mount(GroupDialog, { props: { instanceId: "i1" }, global: { plugins: [i18n] } }));
@@ -409,6 +440,35 @@ describe("Group management", () => {
   });
 
   describe("GroupDialog.vue edit", () => {
+    it("offers the public-memory switch, reads a legacy Group as on, and sends only a changed value", async () => {
+      seedInstance([
+        RELAY_CAPABILITIES.groupWorkspaceModeV1,
+        RELAY_CAPABILITIES.conversationTimelineV1,
+        RELAY_CAPABILITIES.groupPublicMemorySwitchV1,
+      ]);
+      seedBots([REVIEWER, TESTER]);
+      const off = { ...GROUP, publicMemoryProjection: "off" as const };
+      routes.set("control.groups.update", () => ({ group: off }));
+      routes.set("control.groups.list", () => ({ groups: [off] }));
+      const wrapper = track(mount(GroupDialog, { props: { instanceId: "i1", group: GROUP }, global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      expect(wrapper.find('[data-test="group-dialog-public-memory"]').exists()).toBe(true);
+      const onRadio = wrapper.find('[data-test="group-dialog-public-memory-on"] input');
+      const offRadio = wrapper.find('[data-test="group-dialog-public-memory-off"] input');
+      expect((onRadio.element as HTMLInputElement).checked).toBe(true);
+      expect((offRadio.element as HTMLInputElement).checked).toBe(false);
+
+      await offRadio.setValue(true);
+      await wrapper.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+
+      expect(rpcCalls("control.groups.update")[0]?.payload).toEqual({
+        id: "conversation_g",
+        publicMemoryProjection: "off",
+      });
+    });
+
     it("moves the Lead to the next enabled member when the Lead is removed and sends only changed fields", async () => {
       seedBots([REVIEWER, TESTER, SLEEPER]);
       const groups = useGroupsStore();

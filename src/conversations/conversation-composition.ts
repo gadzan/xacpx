@@ -33,6 +33,7 @@ import { GroupHandoffService } from "./group-handoff";
 import { ConversationBindingService } from "./conversation-bindings";
 import { ConversationWorktreeManager } from "./conversation-worktree-manager";
 import { WorktreeIntegrationService } from "./worktree-integration-service";
+import { publicMemoryMembersFor } from "./conversation-types";
 
 function settleRouter(router: unknown, declared: RouterAvailability | undefined): {
   router?: ReturnType<typeof bindRouter>;
@@ -146,14 +147,9 @@ export async function createConversationRuntime(
     // an operator rollback to the pre-P0-B1 batch semantics, not an opt-in.
     followupRedispatch: input.config.conversations?.followupRedispatch !== false,
     // Membership is read live, so an ex-member gains no future rows; peer
-    // Topics are excluded.
-    publicMemoryMembers: (conversationId, topicId) => {
-      const group = input.state.conversations[conversationId];
-      if (group?.kind !== "group") return undefined;
-      const topic = input.state.conversation_topics[topicId];
-      if (!topic || topic.conversationId !== conversationId || topic.peerScope) return undefined;
-      return group.botIds;
-    },
+    // Topics are excluded, and a Group whose projection is off writes nothing.
+    publicMemoryMembers: (conversationId, topicId) =>
+      publicMemoryMembersFor(input.state.conversations[conversationId], input.state.conversation_topics[topicId]),
     // Opt-in handoff task-text summary, read live from the Group record.
     // Anything but an explicit `summary` keeps #557 behavior: zero rows.
     handoffMemoryMode: (conversationId) => {
