@@ -81,6 +81,38 @@ export function publicMemoryMembersFor(
   return groupPublicMemoryProjection(conversation) === "off" ? [] : conversation.botIds;
 }
 
+ * What a plain (un-targeted) Group message does.
+ * - `lead`: the Run goes to the Group's Lead, exactly as every Group did
+ *   before the setting existed.
+ * - `automatic`: the Run is accepted with zero member turns and the
+ *   capability-restricted Router decides each step.
+ *
+ * `@member`, `@everyone`, discuss and slash-command sends carry an explicit
+ * target and never consult this value.
+ */
+export type GroupDefaultRouting = "lead" | "automatic";
+
+/**
+ * Effective default send behavior of a Group. An explicit stored value always
+ * wins, including `automatic` on an instance whose Router is currently off:
+ * that choice is the user's, so the accept path refuses loudly with
+ * `automatic_unsupported` instead of quietly rerouting to the Lead.
+ *
+ * When the setting is absent (every Group created before it existed) the
+ * migration derives the old behavior from durable evidence: a Group that has
+ * an automatic Run keeps automatic, but only while the Router can actually
+ * route — otherwise it stays `lead`, so no old Group starts refusing plain
+ * sends it used to deliver. Everything else stays `lead`, which is exactly
+ * what an absent target resolved to before.
+ */
+export function resolveGroupDefaultRouting(
+  conversation: Pick<ConversationRecord, "kind" | "defaultRouting">,
+  evidence: { routerAvailable: boolean; hasAutomaticRuns: boolean },
+): GroupDefaultRouting {
+  if (conversation.kind !== "group") return "lead";
+  if (conversation.defaultRouting) return conversation.defaultRouting;
+  return evidence.hasAutomaticRuns && evidence.routerAvailable ? "automatic" : "lead";
+}
 /** PR7 structured explicit Group target. IDs are authority; display names
  *  never route. `automatic` is a durable-mode reservation (PR8) rejected by
  *  the PR7 explicit accept path. */
@@ -173,6 +205,10 @@ export interface ConversationRecord {
    *  `on` (every pre-setting Group keeps projecting); never present on Direct
    *  records. */
   publicMemoryProjection?: GroupPublicMemoryProjection;
+  /** Default send behavior stored by the operator. Absent means "not chosen":
+   *  reads resolve through `resolveGroupDefaultRouting` so pre-setting Groups
+   *  keep the behavior durable rows prove. Never present on Direct records. */
+  defaultRouting?: GroupDefaultRouting;
   lifecycle?: ConversationLifecycle;
   createdAt: string;
   updatedAt: string;

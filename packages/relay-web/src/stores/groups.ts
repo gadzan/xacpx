@@ -1096,6 +1096,12 @@ export const useGroupsStore = defineStore("groups", () => {
       .sort((a, b) => (a.memberIndex ?? 0) - (b.memberIndex ?? 0) || a.id.localeCompare(b.id));
   });
   const liveTurns = computed<Record<string, GroupLiveTurn>>(() => liveTurnsByMember.value);
+  /** The open Group's resolved default send behavior. The core resolves the
+   *  migration (old Groups with automatic history stay automatic); an older
+   *  core sends no field, which reads as the pre-setting `lead`. */
+  const currentDefaultRouting = computed<"lead" | "automatic">(
+    () => (currentGroup.value?.defaultRouting === "automatic" ? "automatic" : "lead"),
+  );
 
   /** Default target for a freshly opened Group.
    *
@@ -2548,17 +2554,20 @@ export const useGroupsStore = defineStore("groups", () => {
     return await outcome;
   }
 
-  /** Send with an explicit wire target, or `null` for the implicit lead.
+  /** Send with an explicit wire target, or `null` for a plain message.
    *
-   *  The one Composer uses this: a plain Group message carries NO target (the
-   *  server resolves the Group's live lead inside its accept gates), an `@`
-   *  selection carries the selected members, and 讨论 carries a roundtable
-   *  target. Unlike `sendPrompt` it never reads the stored target selection, so
-   *  the UI can stop maintaining a default selection at all.
+   *  The one Composer uses this: a plain Group message follows the Group's
+   *  default send setting (`lead` keeps the historical no-target shape so the
+   *  server re-derives the live Lead inside its accept gates; `automatic`
+   *  carries the automatic target), an `@` selection carries the selected
+   *  members, and 讨论 carries a roundtable target. Unlike `sendPrompt` it
+   *  never reads the stored target selection.
    *
    *  The frozen-tuple path ranks above the live guards for the same reason as
    *  the replay branch in `sendPrompt`: a request that may already be durable
-   *  must remain reachable after reconnection. */
+   *  must remain reachable after reconnection. A replay keeps the tuple's
+   *  target even when the Group default changed since — the durable accept is
+   *  keyed on the original shape, so re-deriving would desync Retry. */
   async function sendPromptTo(
     text: string,
     target: ConversationTargetDto | null,
@@ -2575,9 +2584,14 @@ export const useGroupsStore = defineStore("groups", () => {
     // guards exactly like the forced-target branch of `sendPromptInner`: the
     // retry is the sole escape hatch, never a fresh send.
     const pending = uncertainPrompt.value;
-    const isReplay = !!pending && pending.text === trimmed
-      && JSON.stringify(pending.target) === JSON.stringify(target)
+    const pendingMatchesDraft = !!pending && pending.text === trimmed
       && JSON.stringify(pending.media) === JSON.stringify(media);
+    const effectiveTarget = pendingMatchesDraft
+      && (target === null || JSON.stringify(pending.target) === JSON.stringify(target))
+      ? pending.target
+      : target ?? (currentDefaultRouting.value === "automatic" ? { mode: "automatic" as const } : null);
+    const isReplay = !!pending && pendingMatchesDraft
+      && JSON.stringify(pending.target) === JSON.stringify(effectiveTarget);
     if (!isReplay) {
       if (!topicReady.value) {
         promptError.value = "topicRecovering";
@@ -2593,8 +2607,8 @@ export const useGroupsStore = defineStore("groups", () => {
         return "uncertain";
       }
     }
-    const reqId = preparePromptRequestId(trimmed, target, media);
-    const outcome = runPromptSend(trimmed, target, reqId, media);
+    const reqId = preparePromptRequestId(trimmed, effectiveTarget, media);
+    const outcome = runPromptSend(trimmed, effectiveTarget, reqId, media);
     inFlightSend.value = outcome;
     return await outcome;
   }
@@ -3789,6 +3803,7 @@ export const useGroupsStore = defineStore("groups", () => {
     isGroupSelected,
     currentGroups,
     currentGroup,
+    currentDefaultRouting,
     currentTopics,
     currentTopic,
     isRunActive,

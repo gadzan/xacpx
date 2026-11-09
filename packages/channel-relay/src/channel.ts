@@ -263,35 +263,45 @@ export function supportsGroupPublicMemorySwitch(control: unknown): boolean {
   const probe = (control as { supportsGroupPublicMemorySwitch?: unknown } | null)?.supportsGroupPublicMemorySwitch;
   if (typeof probe !== "function") return false;
   if ((probe as () => unknown).call(control) !== true) return false;
-  return parseControlPayload(MSG.groupsCreate, {
+  if (parseControlPayload(MSG.groupsCreate, {
     title: "probe",
     botIds: ["probe_a", "probe_b"],
     publicMemoryProjection: "off",
-  }) !== null
-    && parseControlPayload(MSG.groupsUpdate, { id: "probe", publicMemoryProjection: "on" }) !== null;
+  }) === null) return false;
+  return parseControlPayload(MSG.groupsUpdate, {
+    id: "probe",
+    publicMemoryProjection: "on",
+  }) !== null;
 }
 
 /**
- * True when this instance accepts a Group handoff-memory opt-in: the core
- * must say so (older cores ignore the field and always project nothing for
- * handoffs) AND the relay-protocol validator this connector resolved must
- * accept it on both `groups.create` and `groups.update`. Either half missing
- * keeps the capability off, so the web never offers an opt-in the first
- * `groups.update` would then reject.
+ * True when this instance stores a Group's default send behavior: the core
+ * exposes the probe AND this connector's validators accept both wire halves
+ * (`groups.create` with the field, `groups.update` patching it). An older core
+ * drops the field, so the Web must not offer the setting there.
  */
-export function supportsHandoffMemorySummary(control: unknown): boolean {
-  const probe = (control as { supportsHandoffMemorySummary?: unknown } | null)?.supportsHandoffMemorySummary;
+export function supportsGroupDefaultRouting(control: unknown): boolean {
+  const probe = (control as { supportsGroupDefaultRouting?: unknown } | null)?.supportsGroupDefaultRouting;
   if (typeof probe !== "function") return false;
   if ((probe as () => unknown).call(control) !== true) return false;
   if (parseControlPayload(MSG.groupsCreate, {
     title: "probe",
     botIds: ["probe_a", "probe_b"],
-    handoffMemory: "summary",
+    defaultRouting: "automatic",
   }) === null) return false;
   return parseControlPayload(MSG.groupsUpdate, {
     id: "probe",
-    handoffMemory: "summary",
+    defaultRouting: "lead",
   }) !== null;
+}
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parseControlPayload(MSG.groupsCreate, {
+    title: "probe",
+    botIds: ["probe_a", "probe_b"],
+    defaultRouting: "automatic",
+  }) !== null
+    && parseControlPayload(MSG.groupsUpdate, { id: "probe", defaultRouting: "lead" }) !== null;
 }
 
 /**
@@ -477,8 +487,14 @@ export class RelayChannel implements MessageChannelRuntime {
     if (supportsGroupWorkspaceMode(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);
     }
+    if (supportsGroupPublicMemorySwitch(control)) {
+      capabilities.push(RELAY_CAPABILITIES.groupPublicMemorySwitchV1);
+    }
     if (supportsHandoffMemorySummary(control)) {
       capabilities.push(RELAY_CAPABILITIES.handoffMemorySummaryV1);
+    }
+    if (supportsGroupDefaultRouting(control)) {
+      capabilities.push(RELAY_CAPABILITIES.groupDefaultRoutingV1);
     }
     if (supportsRoundtableV1(control)) {
       capabilities.push(RELAY_CAPABILITIES.roundtableV1);

@@ -1050,6 +1050,11 @@ function isConversationRecord(value: unknown): value is ConversationRecord {
     && value.publicMemoryProjection !== "on" && value.publicMemoryProjection !== "off") {
     return false;
   }
+  // Malformed rather than defaulted: a typo must not silently turn a Group's
+  // automatic default into the lead (or the reverse) on the next load.
+  if (value.defaultRouting !== undefined && value.defaultRouting !== "lead" && value.defaultRouting !== "automatic") {
+    return false;
+  }
   if (value.leadBotId !== undefined && !value.botIds.includes(value.leadBotId)) {
     return false;
   }

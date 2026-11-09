@@ -5,7 +5,7 @@ import { AlertCircle, Loader2, Plus, Trash2, X } from "lucide-vue-next";
 import type { BotSummaryDto, ConversationRunStateDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
-import { supportsGroupPublicMemorySwitch, supportsGroupWorkspaceMode, supportsHandoffMemorySummary, useInstancesStore } from "../stores/instances";
+import { supportsGroupDefaultRouting, supportsGroupPublicMemorySwitch, supportsGroupWorkspaceMode, supportsHandoffMemorySummary, useInstancesStore } from "../stores/instances";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
 import { pushToast } from "../lib/use-toasts";
@@ -40,6 +40,9 @@ const supportsHandoffMemory = computed(() => supportsHandoffMemorySummary(instan
 // An older core drops the field and keeps projecting, so the switch is hidden
 // rather than silently stored nowhere.
 const supportsPublicMemorySwitch = computed(() => supportsGroupPublicMemorySwitch(instancesStore.byId(props.instanceId)));
+// An older core drops `defaultRouting` from the payload and never sends it
+// back, so the setting is hidden rather than silently discarded.
+const supportsDefaultRouting = computed(() => supportsGroupDefaultRouting(instancesStore.byId(props.instanceId)));
 
 const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
@@ -69,7 +72,18 @@ const publicMemoryProjection = ref<"on" | "off">(opened ? (opened.publicMemoryPr
 // Create mode keeps suggesting the first enabled member until the user picks a
 // Lead. Edit mode starts from the saved Lead, which may legitimately be none.
 const leadTouched = ref(isEditing);
+
 const leadReassigned = ref<{ previous: string; next: string } | null>(null);
+// The resolved value the core reported: a migrated Group may already be
+// `automatic` (durable automatic Runs) even though nobody chose it here.
+const defaultRouting = ref<"lead" | "automatic">(opened?.defaultRouting === "automatic" ? "automatic" : "lead");
+const routerAvailability = computed(() => instancesStore.routerAvailabilityFor(props.instanceId));
+// Automatic is storable without a Router, but every plain send would be
+// refused with `automatic_unsupported`; warn while the user is still here
+// instead of letting them discover it from a failed message.
+const routerOff = computed(() => defaultRouting.value === "automatic"
+  && routerAvailability.value.status !== "ready"
+  && routerAvailability.value.status !== "loading");
 
 const submitting = ref(false);
 const errorMessage = ref<string | null>(null);
@@ -178,6 +192,11 @@ async function loadCatalog(): Promise<void> {
 
 onMounted(() => {
   if (directBotsStore.botsLoaded[props.instanceId] !== true) void loadCatalog();
+  // Only the setting that can be harmed by an unready Router reads it.
+  if (supportsDefaultRouting.value
+    && instancesStore.routerAvailabilityFor(props.instanceId).status === "loading") {
+    void instancesStore.loadRouterAvailability(props.instanceId).catch(() => {});
+  }
 });
 
 function errorCode(err: unknown): string {
@@ -278,7 +297,7 @@ async function submit(): Promise<void> {
   try {
     let saved: GroupSummaryDto;
     if (opened) {
-      const patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: "off" | "summary"; publicMemoryProjection?: "on" | "off" } = {};
+      const patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null; handoffMemory?: "off" | "summary"; publicMemoryProjection?: "on" | "off"; defaultRouting?: "lead" | "automatic" } = {};
       if (trimmedTitle !== opened.title) patch.title = trimmedTitle;
       if (trimmedDescription !== (opened.description ?? "")) patch.description = trimmedDescription || null;
       if (!sameMembers(memberIds.value, opened.botIds)) patch.botIds = [...memberIds.value];
@@ -288,6 +307,11 @@ async function submit(): Promise<void> {
       }
       if (supportsPublicMemorySwitch.value && publicMemoryProjection.value !== (opened.publicMemoryProjection ?? "on")) {
         patch.publicMemoryProjection = publicMemoryProjection.value;
+      }
+      // An untouched setting sends nothing: a migrated Group keeps its resolved
+      // behavior instead of being pinned by an unrelated save.
+      if (supportsDefaultRouting.value && defaultRouting.value !== (opened.defaultRouting ?? "lead")) {
+        patch.defaultRouting = defaultRouting.value;
       }
       if (Object.keys(patch).length === 0) {
         emit("close");
@@ -303,6 +327,7 @@ async function submit(): Promise<void> {
         ...(supportsWorkspaceMode.value ? { workspaceMode: workspaceMode.value } : {}),
         ...(supportsHandoffMemory.value && handoffMemory.value === "summary" ? { handoffMemory: "summary" as const } : {}),
         ...(supportsPublicMemorySwitch.value ? { publicMemoryProjection: publicMemoryProjection.value } : {}),
+        ...(supportsDefaultRouting.value ? { defaultRouting: defaultRouting.value } : {}),
       });
     }
     emit("saved", saved);
@@ -623,29 +648,35 @@ async function confirmDelete(): Promise<void> {
             <p class="mt-1 text-xs text-fg-muted">{{ $t("group.manage.leadHint") }}</p>
           </div>
 
-          <div v-if="supportsHandoffMemory">
+            <p class="mt-1 text-xs text-fg-muted">{{ $t("group.manage.handoffMemoryLocked") }}</p>
+          </div>
+
+          <div v-if="supportsDefaultRouting" data-test="group-dialog-default-routing">
             <span class="mb-1.5 block text-xs font-medium text-fg-muted">
-              {{ $t("group.manage.handoffMemory") }}
+              {{ $t("group.manage.defaultRouting") }}
             </span>
             <div class="grid gap-1.5">
-              <label data-test="group-dialog-handoff-memory-off"
+              <label data-test="group-dialog-default-routing-lead"
                      class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
-                <input v-model="handoffMemory" type="radio" value="off" class="mt-0.5" />
+                <input v-model="defaultRouting" type="radio" value="lead" class="mt-0.5" />
                 <span class="min-w-0">
-                  <span class="block font-medium text-fg">{{ $t("group.manage.handoffMemoryOff") }}</span>
-                  <span class="block text-fg-muted">{{ $t("group.manage.handoffMemoryOffHint") }}</span>
+                  <span class="block font-medium text-fg">{{ $t("group.manage.defaultRoutingLead") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.defaultRoutingLeadHint") }}</span>
                 </span>
               </label>
-              <label data-test="group-dialog-handoff-memory-summary"
+              <label data-test="group-dialog-default-routing-automatic"
                      class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
-                <input v-model="handoffMemory" type="radio" value="summary" class="mt-0.5" />
+                <input v-model="defaultRouting" type="radio" value="automatic" class="mt-0.5" />
                 <span class="min-w-0">
-                  <span class="block font-medium text-fg">{{ $t("group.manage.handoffMemorySummary") }}</span>
-                  <span class="block text-fg-muted">{{ $t("group.manage.handoffMemorySummaryHint") }}</span>
+                  <span class="block font-medium text-fg">{{ $t("group.manage.defaultRoutingAutomatic") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.defaultRoutingAutomaticHint") }}</span>
                 </span>
               </label>
             </div>
-            <p class="mt-1 text-xs text-fg-muted">{{ $t("group.manage.handoffMemoryLocked") }}</p>
+            <p v-if="routerOff" data-test="group-dialog-default-routing-router-off"
+               class="mt-1 text-xs text-warn-overlay">
+              {{ $t("group.manage.defaultRoutingRouterOff") }}
+            </p>
           </div>
         </fieldset>
 

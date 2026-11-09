@@ -453,12 +453,21 @@ export interface GroupSummaryDto {
     description?: string;
     botIds: string[];
     leadBotId?: string;
+<<<<<<< HEAD
     /** Handoff task-text projection; absent means `off`. */
     handoffMemory?: "summary";
     /** Whether this Group's public messages are projected into member memory,
      *  resolved by the core: `on` (default) or `off`. Absent on cores that
      *  predate the switch; the Web must read it as `on`. */
     publicMemoryProjection?: "on" | "off";
+=======
+    /** What a plain message in this Group does, resolved by the core: `lead`
+     *  sends to the Lead, `automatic` starts an automatic Run the Router routes.
+     *  Absent on cores that predate the Group default send setting; the Web must
+     *  read it as `lead`. Explicit `@member` / `@everyone` / discuss targets are
+     *  never affected. */
+    defaultRouting?: "lead" | "automatic";
+>>>>>>> bfbe34d4 (feat(conversations): make plain Group sends follow a Group setting)
     /** Group execution mode, fixed at creation. Absent means `shared`. */
     workspaceMode?: "shared" | "per-member";
     defaultTopicId?: string;

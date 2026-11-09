@@ -25,6 +25,7 @@ import { isDedicatedWorkspaceMarker } from "./bot-types";
 import type { BotProfile, BotRuntimeBinding, DedicatedWorkspaceMarker } from "./bot-types";
 import type {
   ConversationRecord,
+  GroupDefaultRouting,
   GroupHandoffMemory,
   GroupPublicMemoryProjection,
   GroupWorkspaceMode,
@@ -86,6 +87,8 @@ export interface CreateGroupInput {
   description?: string;
   botIds: string[];
   leadBotId?: string;
+  /** Default send behavior for plain messages. Omitted means `lead`. */
+  defaultRouting?: GroupDefaultRouting;
   /** Fixed at creation; absent means `shared`. */
   workspaceMode?: GroupWorkspaceMode;
   /** Handoff task-text projection; absent means `off`. */
@@ -104,6 +107,8 @@ export interface UpdateGroupInput {
   /** Public-memory projection. Never null: `on` is an explicit choice, not the
    *  absence of one. */
   publicMemoryProjection?: GroupPublicMemoryProjection;
+  /** Explicit `lead` overrides a migrated automatic default; never null. */
+  defaultRouting?: GroupDefaultRouting;
 }
 
 export type BotLifecycleMutation = "update" | "delete";
@@ -641,6 +646,7 @@ export class BotService {
       const workspaceMode = this.requireGroupWorkspaceMode(input.workspaceMode);
       const handoffMemory = this.requireGroupHandoffMemory(input.handoffMemory);
       const publicMemoryProjection = this.requireGroupPublicMemoryProjection(input.publicMemoryProjection);
+      const defaultRouting = this.requireGroupDefaultRouting(input.defaultRouting);
       const timestamp = this.now().toISOString();
       const id = createConversationId();
       const record: ConversationRecord = {
@@ -649,6 +655,7 @@ export class BotService {
         title,
         ...(description ? { description } : {}),
         botIds: membership,
+        ...(defaultRouting ? { defaultRouting } : {}),
         ...(leadBotId ? { leadBotId } : {}),
         ...(workspaceMode ? { workspaceMode } : {}),
         ...(handoffMemory ? { handoffMemory } : {}),
@@ -798,12 +805,19 @@ export class BotService {
       const publicMemoryProjection = patch.publicMemoryProjection !== undefined
         ? this.requireGroupPublicMemoryProjection(patch.publicMemoryProjection)
         : existing.publicMemoryProjection;
+      // An explicit patch value (including `lead`) is the operator's choice and
+      // overrides whatever the migration derived; an untouched patch keeps the
+      // stored tri-state exactly as it was.
+      const defaultRouting = patch.defaultRouting !== undefined
+        ? this.requireGroupDefaultRouting(patch.defaultRouting)
+        : existing.defaultRouting;
       const next: ConversationRecord = {
         ...existing,
         title,
         ...(description ? { description } : {}),
         botIds: membership,
         ...(leadBotId ? { leadBotId } : {}),
+        ...(defaultRouting ? { defaultRouting } : {}),
         ...(publicMemoryProjection ? { publicMemoryProjection } : {}),
         updatedAt: this.now().toISOString(),
       };
@@ -955,6 +969,16 @@ export class BotService {
     }
     if (mode !== "summary") {
       throw new BotError("invalid_handoff_memory", "group handoff memory must be 'off' or 'summary'");
+    }
+    return mode;
+  }
+
+  private requireGroupDefaultRouting(mode: unknown): GroupDefaultRouting | undefined {
+    if (mode === undefined) {
+      return undefined;
+    }
+    if (mode !== "lead" && mode !== "automatic") {
+      throw new BotError("invalid_default_routing", "group default routing must be 'lead' or 'automatic'");
     }
     return mode;
   }

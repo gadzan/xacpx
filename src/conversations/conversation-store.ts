@@ -595,6 +595,10 @@ export interface ConversationStore {
   getRunByRequestId(conversationId: string, topicId: string, requestId: string): ConversationRun | undefined;
   getAcceptedRequest(conversationId: string, topicId: string, requestId: string): AcceptRequestResult | undefined;
   listRuns(conversationId: string, topicId?: string): ConversationRun[];
+  /** Durable evidence for the Group default send migration: this conversation
+   *  has at least one automatic Run. Never a heuristic over UI state — the row
+   *  is the proof that the Group was used in automatic mode. */
+  conversationHasAutomaticRuns(conversationId: string): boolean;
   getMessage(messageId: string): ConversationMessage | undefined;
   listMessages(query: ListMessagesQuery): ConversationMessage[];
   /** Recent public Group messages this Bot may see in its private prompt.

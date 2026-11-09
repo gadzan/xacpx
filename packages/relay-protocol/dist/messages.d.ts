@@ -595,8 +595,13 @@ export interface GroupsCreatePayload {
     description?: string;
     botIds: string[];
     leadBotId?: string;
+<<<<<<< HEAD
     /** Public-memory projection. Omitted means `on`. */
     publicMemoryProjection?: "on" | "off";
+=======
+    /** Default send behavior for plain messages. Omitted means `lead`. */
+    defaultRouting?: "lead" | "automatic";
+>>>>>>> bfbe34d4 (feat(conversations): make plain Group sends follow a Group setting)
     /** Fixed at creation; omitted means `shared`. */
     workspaceMode?: "shared" | "per-member";
     /** Handoff task-text projection; omitted means `off`. */
@@ -611,10 +616,16 @@ export interface GroupsUpdatePayload {
     description?: string | null;
     botIds?: string[];
     leadBotId?: string | null;
+<<<<<<< HEAD
     /** `off` clears back to the default. */
     handoffMemory?: "off" | "summary";
     /** Public-memory projection. Never null: `on` is an explicit choice. */
     publicMemoryProjection?: "on" | "off";
+=======
+    /** Default send behavior for plain messages. Never null: `lead` is an
+     *  explicit choice, not the absence of one. */
+    defaultRouting?: "lead" | "automatic";
+>>>>>>> bfbe34d4 (feat(conversations): make plain Group sends follow a Group setting)
 }
 export interface GroupsUpdateResult {
     group: GroupSummaryDto;
@@ -1378,6 +1389,7 @@ export declare const RELAY_CAPABILITIES: {
      *  the connector's validator and the core both accept it, so the web never
      *  offers a mode an instance would silently downgrade to `shared`. */
     readonly groupWorkspaceModeV1: "groups.workspace-mode.v1";
+<<<<<<< HEAD
     /** `control.groups.create` / `control.groups.update` accept `handoffMemory`
      *  (`off` | `summary`). Advertised only when the connector's validator and
      *  the core both accept it, so the web never offers an opt-in an instance
@@ -1389,6 +1401,13 @@ export declare const RELAY_CAPABILITIES: {
      *  store it, so the Web never shows a Group settings switch an older core
      *  would silently drop. */
     readonly groupPublicMemorySwitchV1: "groups.public-memory-switch.v1";
+=======
+    /** `control.groups.create` / `control.groups.update` accept `defaultRouting`
+     *  and every Group summary carries the resolved value. Advertised only when
+     *  the connector's validator and the core both store it, so the Web never
+     *  shows a Group settings choice an older core would silently drop. */
+    readonly groupDefaultRoutingV1: "groups.default-routing.v1";
+>>>>>>> bfbe34d4 (feat(conversations): make plain Group sends follow a Group setting)
 };
 /**
  * Grace an interaction RPC gets beyond its own `expiresAt`.

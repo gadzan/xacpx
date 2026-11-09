@@ -15,6 +15,7 @@
 - 群组公共记忆开关：每个 Group 新增 `publicMemoryProjection`（`on` 默认 / `off`），带 state-load 校验、create/update 载荷、解析后的 DTO 与 `groups.public-memory-switch.v1` capability，Group 设置里提供开关（旧 Group 与旧 core 都按 `on` 读取）。`off` 时该群新消息不再写入 `bot_public_memory`，已存行也不再注入成员的 Direct prompt；开关只拦投影、不删数据，重新开启后既有行恢复可见。群内自身的对话与普通发送目标不受影响；bot 级开关与双向记忆仍不在范围内。
 - 公共记忆读窗口在应用 20 条上限前先排除投影为 `off` 的 Group，避免一个关闭投影的群用新版消息占满窗口、把其他仍开启群的旧消息挤出成员的 Direct prompt。
 - 公共记忆的 Direct prompt 块补上时间戳与 `(you)` 标记，消息正文压成单行后按 800 字截断；整块新增 4,000 字总预算，超出时从最旧消息丢弃并标注 `[…older messages omitted]`，不再出现最多 20 × 800 字的无上限窗口。
+- 群组默认发送设置：普通消息的路由不再由 composer 决定，改为每个 Group 的 `defaultRouting`（`lead` 默认 / `automatic`），只在 Group 设置里修改；`@成员`、`@everyone`、讨论与斜杠命令仍发送各自显式 target，语义不变。`lead` 保持旧的“无 target、服务端在 accept gates 内重算 live lead”形状；`automatic` 显式发送自动 Run，缺少可用 Router 时以 `automatic_unsupported` 明确失败（外站点名消息仍走 lead，effect policy 仍要求显式成员）。迁移只依据持久证据：升级前有过 automatic Run 的 Group 在 Router 可用时继续 automatic，其余（以及 Router 关闭时的前者）保持 lead，因此旧 Group 的普通消息不会悄悄改变含义或开始被拒绝；Group DTO 暴露解析后的值，`groups.default-routing.v1` capability 让旧 core 不显示该设置。
 
 
 ## [relay 0.14.12-beta.18] - 2026-11-06
