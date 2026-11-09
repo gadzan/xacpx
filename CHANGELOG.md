@@ -4,6 +4,7 @@
 ### Fixed
 
 - Resume after a pause that drained the Run's last attempt now re-derives the deferred settlement: an explicit Run whose waiting graph (or legacy batch) is already closed completes instead of staying `running` with nothing to claim and permanently owning the Topic. Automatic Runs stay running so the Router can continue. Covers human pause mid-turn and resource-shortfall pauses that refused work without creating a replacement task.
+- Topic teardown, Direct teardown, Group ghost-run settle, and bot-removal `cancelDirectExecution` now treat `paused` as unsettled, matching `isUnsettledRun` / `cancelTopicRuns`. A paused Run is cancelled before sessions are released or rows are deleted, so deleting a Topic or removing a Bot cannot skip pause-owned work and get stuck on its still-open dispatch.
 
 ### Added
 

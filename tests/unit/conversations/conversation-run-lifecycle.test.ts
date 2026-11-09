@@ -2047,6 +2047,64 @@ test("group topic teardown releases member bindings and rows, retryable on relea
   expect(first.state.conversations[group.id]?.kind).toBe("group");
 });
 
+test("direct teardown cancels a paused Run instead of deleting it while it still owns the Topic", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-paused-direct-teardown",
+    content: "hello",
+  });
+  const paused = first.service.pauseRun({
+    runId: accepted.run.id,
+    requestId: "pause-direct-teardown",
+    controlRevision: accepted.run.controlRevision,
+  });
+  expect(paused.run.state).toBe("paused");
+  const cancelled: string[] = [];
+  const original = first.store.cancelRun.bind(first.store);
+  first.store.cancelRun = ((runId: string, now: string, reason?: string) => {
+    cancelled.push(runId);
+    return original(runId, now, reason);
+  }) as typeof first.store.cancelRun;
+  await first.service.teardownDirectConversation(BOT_ID);
+  expect(cancelled).toContain(accepted.run.id);
+  expect(first.store.listRuns(createDirectConversationId(BOT_ID))).toEqual([]);
+  expect(first.state.conversations).toEqual({});
+  first.store.close();
+});
+
+test("group topic teardown cancels a paused Run instead of skipping it", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const reviewer = Object.values(first.state.bots)[0]!;
+  const group = await first.bots.createGroup({ title: "Paused Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint Pause", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id, topicId: topic.id, requestId: "paused-topic", text: "review",
+    target: { mode: "members", botIds: [reviewer.id] },
+  });
+  const paused = first.service.pauseRun({
+    runId: accepted.run.id,
+    requestId: "pause-topic-teardown",
+    controlRevision: accepted.run.controlRevision,
+  });
+  expect(paused.run.state).toBe("paused");
+  const cancelled: string[] = [];
+  const original = first.store.cancelRun.bind(first.store);
+  first.store.cancelRun = ((runId: string, now: string, reason?: string) => {
+    cancelled.push(runId);
+    return original(runId, now, reason);
+  }) as typeof first.store.cancelRun;
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(cancelled).toContain(accepted.run.id);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.store.listRuns(group.id, topic.id)).toEqual([]);
+  first.store.close();
+});
+
 test("sealed unknown work blocks group topic teardown until a human abandons it", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
