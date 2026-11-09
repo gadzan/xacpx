@@ -453,6 +453,8 @@ export interface GroupSummaryDto {
     description?: string;
     botIds: string[];
     leadBotId?: string;
+    /** Handoff task-text projection; absent means `off`. */
+    handoffMemory?: "summary";
     /** Whether this Group's public messages are projected into member memory,
      *  resolved by the core: `on` (default) or `off`. Absent on cores that
      *  predate the switch; the Web must read it as `on`. */

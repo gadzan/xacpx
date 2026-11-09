@@ -222,3 +222,33 @@ test("the switch rejects an unknown value at the write boundary", async () => {
     h.store.close();
   }
 });
+
+test("an off Group cannot crowd visible rows out of the bounded memory window", async () => {
+  const { h, members, publicGroupMessage, directPromptText } = await memoryHarness();
+  try {
+    await publicGroupMessage("visible");
+
+    // Build an off Group with enough stored rows to fill the 20-row window.
+    const off = await h.bots.createGroup({ title: "Off team", botIds: members });
+    const offTopic = await h.service.createGroupTopic(off.id, "Off topic", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    for (let index = 0; index < 10; index += 1) {
+      const accepted = h.accept(off.id, offTopic.id, 1, true, `off-${index}`, undefined, members);
+      const drain = h.dispatcher.kick();
+      await until(() => h.runner.calls.some((call) => call.runId === accepted.run.id));
+      const callIndex = h.runner.calls.findIndex((call) => call.runId === accepted.run.id);
+      h.runner.finish(callIndex, { status: "completed", text: `hidden reply ${index}` });
+      await drain;
+    }
+    await h.bots.updateGroup(off.id, { publicMemoryProjection: "off" });
+
+    const prompt = await directPromptText(members[0]!, "starvation");
+    expect(prompt).toContain("one frozen request");
+    expect(prompt).toContain("Memory team");
+    expect(prompt).not.toContain("Off team");
+  } finally {
+    h.store.close();
+  }
+});

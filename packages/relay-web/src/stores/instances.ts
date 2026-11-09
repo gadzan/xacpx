@@ -156,6 +156,9 @@ export function supportsGroupWorkspaceMode(instance: { capabilities?: string[] |
  */
 export function supportsHandoffMemorySummary(instance: { capabilities?: string[] | null } | null | undefined): boolean {
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.handoffMemorySummaryV1);
+}
+
+/**
  * True when the instance's core stores and resolves a Group's public-memory
  * projection (`on` | `off`). An older core drops the field, so the Group
  * settings dialog must not offer the switch there.
