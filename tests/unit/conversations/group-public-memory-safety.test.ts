@@ -210,3 +210,42 @@ test("existing topic-clear and conversation-delete paths drop references in the 
     store.close();
   }
 });
+
+test("a throwing handoff hook does not roll back admitted work", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-memory-hook-throws-")), "conversations.sqlite");
+  const { store, receipt } = await handoffHarness(path, {
+    recordHandoffPublicMemory: () => { throw new Error("projection unavailable"); },
+  });
+  try {
+    expect(store.getMemberTurn(receipt.memberTurn.id)).toBeDefined();
+    expect(store.getMessage(receipt.message.id)).toBeDefined();
+    expect(await countMemoryRows(path, receipt.message.id)).toBe(0);
+  } finally {
+    store.close();
+  }
+});
+
+test("a throwing orphan reporter does not fail startup", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-memory-orphans-throws-")), "conversations.sqlite");
+  const first = await handoffHarness(path);
+  const requested = first.accepted.message.id;
+  first.store.close();
+  const db = await createSqlDriver(path);
+  try {
+    db.run("DELETE FROM messages WHERE id = ?", [requested]);
+  } finally {
+    db.close();
+  }
+  const before = await countMemoryRows(path);
+
+  const reopened = await SqliteConversationStore.open(path, {
+    publicMemoryMembers,
+    onPublicMemoryOrphans: () => { throw new Error("diagnostics unavailable"); },
+  });
+  try {
+    expect(reopened.listPublicMemory({ botId: "bot_a" })).toEqual([]);
+    expect(await countMemoryRows(path)).toBe(before);
+  } finally {
+    reopened.close();
+  }
+});

@@ -1282,6 +1282,7 @@ export class SqliteConversationStore implements ConversationStore {
     // A refusal is durable intent (a pause request, a legacy budget marker) and
     // must COMMIT, so it is returned from the transaction and thrown after it,
     // never thrown inside it.
+    let handoffMemoryRecord: HandoffPublicMemoryRecord | undefined;
     const outcome = this.sqlite.transaction((): PublicHandoffReceipt | HandoffRefusal => {
       const prior = this.getPublicHandoff(input.sourceTurnId, input.invocationId, args);
       if (prior) return prior;
@@ -1403,9 +1404,9 @@ export class SqliteConversationStore implements ConversationStore {
       // Same transaction as the work: the slot charged above becomes this
       // sender's durable one-and-only returning wake (§6.2).
       if (reserveWake) this.reserveFollowupWake(run.id, sender.id, input.now);
-      // Optional public-memory extension point. Off unless a resolver is
-      // supplied; the handoff message itself is never projected by default.
-      this.noteHandoffPublicMemory({
+      // Capture identity inside the transaction; the actual resolver runs
+      // after commit so a reporting failure cannot roll back admitted work.
+      handoffMemoryRecord = {
         messageId,
         conversationId: run.conversationId,
         topicId: run.topicId,
@@ -1413,10 +1414,17 @@ export class SqliteConversationStore implements ConversationStore {
         senderBotId: sender.botId,
         targetBotId: args.to,
         createdAt: input.now,
-      });
+      };
       return { reused: false, run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(memberTurnId), message: this.requireMessage(messageId) };
     });
     if ("refusal" in outcome) throw outcome.refusal;
+    if (handoffMemoryRecord) {
+      try {
+        this.recordHandoffPublicMemory?.(handoffMemoryRecord);
+      } catch (error) {
+        console.warn(`[conversations] recordHandoffPublicMemory failed: ${String(error)}`);
+      }
+    }
     return outcome;
   }
 
@@ -1875,21 +1883,19 @@ export class SqliteConversationStore implements ConversationStore {
     const report = this.listPublicMemoryOrphans();
     if (report.total === 0) return;
     if (this.onPublicMemoryOrphans) {
-      this.onPublicMemoryOrphans(report);
+      try {
+        this.onPublicMemoryOrphans(report);
+      } catch (error) {
+        console.warn(
+          `[conversations] onPublicMemoryOrphans failed; ${report.total} reference(s) left untouched: ${String(error)}`,
+        );
+      }
       return;
     }
     console.warn(
       `[conversations] ${report.total} bot_public_memory reference(s) point at missing messages; `
       + "left untouched (startup verification is report-only)",
     );
-  }
-
-  /** The single public-memory extension point for a fresh public handoff.
-   *  Default OFF: with no `recordHandoffPublicMemory` resolver nothing is
-   *  recorded, which is the shipped behavior. Task text is not passed —
-   *  `record` carries identity only. */
-  private noteHandoffPublicMemory(record: HandoffPublicMemoryRecord): void {
-    this.recordHandoffPublicMemory?.(record);
   }
 
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined {
