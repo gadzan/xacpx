@@ -110,8 +110,12 @@ export default {
     composer: {
       mention: "Mention a member",
       discuss: "Discuss",
-      discussHint: "Let the members speak one after another",
+      discussHintOne: "Discuss over {count} members, 1 round",
+      discussHintMany: "Discuss over {count} members, {rounds} rounds",
       discussNeedsSpeakers: "Discussion needs at least 2 enabled members",
+      discussOverLimit: "Too large: {speakers} members × {rounds} rounds exceeds the {max} turn budget",
+      discussRoundsLabel: "Discussion rounds",
+      discussRoundsHint: "Rounds: {count}",
       placeholder: "Message {name}",
       placeholderLead: "Message the lead",
       placeholderAutomatic: "Message the group (automatic)",

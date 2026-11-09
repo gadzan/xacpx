@@ -383,6 +383,23 @@ test("composer sends to the lead by default and discusses with a roundtable targ
   expect(errors).toEqual([]);
 });
 
+test("discussion sends the chosen rounds on the wire target", async ({ page, hub }) => {
+  const errors = watchConsoleErrors(page);
+  const harness = await openTimeline(page, hub, { olderPages: false });
+
+  const textarea = page.getByTestId("group-composer-textarea");
+  await textarea.fill("Compare the risks");
+  await page.getByTestId("group-discuss-rounds-2").click();
+  await page.getByTestId("group-discuss-chip").click();
+  await expect.poll(() => harness.promptRequests.length).toBe(1);
+  expect(harness.promptRequests[0]?.target).toEqual({
+    mode: "roundtable",
+    botIds: ["lead", "reviewer", "tester"],
+    rounds: 2,
+  });
+  expect(errors).toEqual([]);
+});
+
 test("streams the current speaker and replaces the live bubble with the durable message", async ({ page, hub }) => {
   const errors = watchConsoleErrors(page);
   // The timeline mock owns the durable rows, so a message the core persists

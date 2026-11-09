@@ -106,8 +106,12 @@ export default {
     composer: {
       mention: "提及成员",
       discuss: "讨论",
-      discussHint: "让成员依次发言",
+      discussHintOne: "{count} 位成员讨论 1 轮",
+      discussHintMany: "{count} 位成员讨论 {rounds} 轮",
       discussNeedsSpeakers: "讨论至少需要 2 位已启用成员",
+      discussOverLimit: "超出上限：{speakers} 位成员 × {rounds} 轮超过 {max} 回合预算",
+      discussRoundsLabel: "讨论轮数",
+      discussRoundsHint: "轮数：{count}",
       placeholder: "发消息给 {name}",
       placeholderLead: "发消息给负责人",
       placeholderAutomatic: "发消息给群组（自动）",

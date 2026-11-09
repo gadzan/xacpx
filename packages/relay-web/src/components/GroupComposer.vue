@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n";
 import { AtSign, MessagesSquare } from "lucide-vue-next";
 import type { BotSummaryDto, ConversationTargetDto, PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import { MAX_ROUNDTABLE_MEMBER_TURNS, MAX_ROUNDTABLE_ROUNDS } from "@ganglion/xacpx-relay-protocol";
 import { completionKey, replaceRange, slashQuery } from "../lib/composer-completion";
 import {
   filterMentionMembers,
@@ -157,6 +158,59 @@ const discussionSpeakers = computed<string[]>(() => {
     left === leadId ? -1 : right === leadId ? 1 : 0);
 });
 const discussionReady = computed(() => roundtableSupported.value && discussionSpeakers.value.length >= 2);
+/** 讨论 rounds: 1/2/3 next to the chip, default 1. Persisted per Group in
+ *  localStorage (cheap, survives reload); falls back to the session default
+ *  when storage is unavailable or the Group changes. */
+const DISCUSSION_ROUNDS_CHOICES = [1, 2, 3] as const;
+function discussionRoundsKey(): string {
+  const id = props.instanceId ?? groupsStore.instanceId;
+  const groupId = groupsStore.currentGroup?.id ?? groupsStore.activeConversationId;
+  return id && groupId ? `group-discussion-rounds:${id}:${groupId}` : "";
+}
+function loadDiscussionRounds(): number {
+  try {
+    const key = discussionRoundsKey();
+    const parsed = key ? Number.parseInt(localStorage.getItem(key) ?? "", 10) : NaN;
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_ROUNDTABLE_ROUNDS) return parsed;
+  } catch {
+    /* storage unavailable — session default below */
+  }
+  return 1;
+}
+const discussionRounds = ref<number>(loadDiscussionRounds());
+watch(() => discussionRoundsKey(), () => { discussionRounds.value = loadDiscussionRounds(); });
+function setDiscussionRounds(rounds: number): void {
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > MAX_ROUNDTABLE_ROUNDS) return;
+  discussionRounds.value = rounds;
+  try {
+    const key = discussionRoundsKey();
+    if (key) localStorage.setItem(key, String(rounds));
+  } catch {
+    /* best-effort persistence */
+  }
+}
+/** Product bound: speakers × rounds never exceeds one run's member turns.
+ *  The backend rejects over-limit plans; the chip blocks them first. */
+const discussionOverLimit = computed(() =>
+  discussionSpeakers.value.length * discussionRounds.value > MAX_ROUNDTABLE_MEMBER_TURNS);
+/** Button hint names the chosen rounds so the wire target is visible before
+ *  the send; over-limit plans name the bound instead. */
+const discussionHint = computed(() => {
+  if (!discussionReady.value) return t("conversation.composer.discussNeedsSpeakers");
+  if (discussionOverLimit.value) {
+    return t("conversation.composer.discussOverLimit", {
+      speakers: discussionSpeakers.value.length,
+      rounds: discussionRounds.value,
+      max: MAX_ROUNDTABLE_MEMBER_TURNS,
+    });
+  }
+  return t(discussionRounds.value === 1
+    ? "conversation.composer.discussHintOne"
+    : "conversation.composer.discussHintMany", {
+    count: discussionSpeakers.value.length,
+    rounds: discussionRounds.value,
+  });
+});
 
 /** Drop everything tied to a draft that is no longer editable: the text, the
  *  derived-mention suppression, the autogrow height and the picker menu.
@@ -512,8 +566,9 @@ const canSend = computed(() => baseCanSend.value
   && !sendBusy.value
   && (promptText.value.trim().length > 0 || readyMedia.value));
 
-/** 讨论 is a send variant, so it needs the same draft and the speaker floor. */
-const canDiscuss = computed(() => canSend.value && discussionReady.value);
+/** 讨论 is a send variant, so it needs the same draft, the speaker floor, and
+ *  the product bound. Over-limit plans never reach the backend. */
+const canDiscuss = computed(() => canSend.value && discussionReady.value && !discussionOverLimit.value);
 
 /** True when the draft carries a slash command after any leading mentions.
  *  Commands are per-Bot, so such a send must never broadcast: it goes to the
@@ -530,10 +585,11 @@ function hasSlashCommand(text: string): boolean {
  *    accept gates (design §8.3);
  *  - `@Name` mentions: exactly those members, in parallel;
  *  - `@everyone`: everyone, still parallel (never silently a roundtable);
- *  - 讨论: a one-round roundtable over the selected members or all enabled. */
+ *  - 讨论: a roundtable over the selected members or all enabled, with the
+ *    chosen 1/2/3 rounds. */
 function sendTarget(discuss: boolean): ConversationTargetDto | null {
   if (discuss) {
-    return { mode: "roundtable", botIds: discussionSpeakers.value, rounds: 1 };
+    return { mode: "roundtable", botIds: discussionSpeakers.value, rounds: discussionRounds.value };
   }
   // A slash command is per-Bot: never broadcast it. It targets the mentioned
   // member, else the lead, exactly like the completion catalog above.
@@ -549,7 +605,7 @@ function sendTarget(discuss: boolean): ConversationTargetDto | null {
 
 async function handleSend(confirmedEveryone?: EveryoneConfirmation, discuss = false): Promise<void> {
   if (sendBusy.value || !baseCanSend.value) return;
-  if (discuss && !discussionReady.value) return;
+  if (discuss && (!discussionReady.value || discussionOverLimit.value)) return;
   if (confirmedEveryone && (confirmedEveryone.key !== draftKey.value
     || confirmedEveryone.text !== promptText.value || confirmedEveryone.revision !== draftRevision.value
     || !isEveryone.value)) { everyoneConfirm.value = null; return; }
@@ -625,7 +681,7 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, discuss = fa
   clearSentDraft();
 }
 
-/** 讨论: send the same draft as a one-round discussion. */
+/** 讨论: send the same draft as a discussion with the chosen rounds. */
 function handleDiscuss(): void {
   void handleSend(undefined, true);
 }
@@ -724,8 +780,9 @@ function handleRetry(): void {
       @blur="onComposerBlur"
     >
       <!-- One-line chips: @ selects members for this send (parallel), 讨论 turns
-           the same draft into a sequential one-round discussion. The chip is
-           absent when the daemon does not advertise roundtable v1. -->
+           the same draft into a sequential discussion with the chosen rounds.
+           The chip and its 1/2/3 selector are absent when the daemon does not
+           advertise roundtable v1. -->
       <template #chips>
         <button
           type="button"
@@ -742,7 +799,7 @@ function handleRetry(): void {
           type="button"
           v-if="roundtableSupported"
           data-test="group-discuss-chip"
-          :title="discussionReady ? $t('conversation.composer.discussHint') : $t('conversation.composer.discussNeedsSpeakers')"
+          :title="discussionHint"
           :aria-label="$t('conversation.composer.discuss')"
           :disabled="!canDiscuss"
           class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors"
@@ -752,6 +809,27 @@ function handleRetry(): void {
           <MessagesSquare :size="13" />
           <span>{{ $t("conversation.composer.discuss") }}</span>
         </button>
+        <div
+          v-if="roundtableSupported"
+          data-test="group-discuss-rounds"
+          role="group"
+          :aria-label="$t('conversation.composer.discussRoundsLabel')"
+          class="flex items-center gap-0.5 rounded-full px-1 py-0.5 text-xs font-medium"
+        >
+          <button
+            v-for="rounds in DISCUSSION_ROUNDS_CHOICES"
+            :key="rounds"
+            type="button"
+            :data-test="`group-discuss-rounds-${rounds}`"
+            :aria-pressed="discussionRounds === rounds"
+            :aria-label="$t('conversation.composer.discussRoundsHint', { count: rounds })"
+            :title="$t('conversation.composer.discussRoundsHint', { count: rounds })"
+            :disabled="disabled || groupsStore.hasUncertainPrompt"
+            class="rounded-full px-1.5 py-0.5 transition-colors"
+            :class="discussionRounds === rounds ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            @click="setDiscussionRounds(rounds)"
+          >{{ rounds }}</button>
+        </div>
       </template>
       <template #attachments>
         <ComposerAttachments
