@@ -79,6 +79,36 @@ export interface PublicMemoryEntry {
   createdAt: string;
 }
 
+/** One orphaned `bot_public_memory` reference: the message row it points at is
+ *  gone. Diagnostics only — verification never mutates the projection. */
+export interface PublicMemoryOrphan {
+  botId: string;
+  messageId: string;
+  conversationId: string;
+  topicId: string;
+}
+
+export interface PublicMemoryOrphanReport {
+  /** Total orphan references found, independent of the returned sample size. */
+  total: number;
+  /** Bounded sample in stable (conversation, topic, message, bot) order. */
+  orphans: PublicMemoryOrphan[];
+}
+
+/** Identity of one freshly accepted public handoff, handed to the optional
+ *  public-memory extension point. Deliberately carries NO task text: the
+ *  optional summary line is not implemented, so nothing can be recorded from
+ *  it today. */
+export interface HandoffPublicMemoryRecord {
+  messageId: string;
+  conversationId: string;
+  topicId: string;
+  runId: string;
+  senderBotId: string;
+  targetBotId: string;
+  createdAt: string;
+}
+
 export interface AcceptMemberInput {
   botId: string;
   profileSnapshot: BotProfileSnapshot;
@@ -574,6 +604,9 @@ export interface ConversationStore {
   deletePublicMemoryForGroupMember(conversationId: string, botId: string): void;
   /** Drop every projection for a Bot that is being removed. */
   deletePublicMemoryForBot(botId: string): void;
+  /** Orphaned references whose message row no longer exists. Startup calls
+   *  this to report; nothing is deleted, ever. */
+  listPublicMemoryOrphans(input?: { limit?: number }): PublicMemoryOrphanReport;
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
   /**
