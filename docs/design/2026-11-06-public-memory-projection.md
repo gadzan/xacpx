@@ -4,7 +4,8 @@
 - 范围：Group 公开发言边界、Bot 公共记忆、Direct prompt 注入
 
 - 已实现：`bot_public_memory` 建表与索引、人类消息与 Bot 最终回复写入（同事务、`INSERT OR IGNORE`、非空过滤）、Topic/Conversation/Bot 删除清理、移出群清理、Direct prompt `Shared group context`（20 条/800 字、untrusted 标记）、群临时气泡每成员只看最新文本、`group_say`（`group_say_json` 标记 + `invocationId` 幂等、每回合 3 条上限由 runtime 与存储在同一事务内计数、与最终回复同一条公开写入路径并进公共记忆、与最终回复同文去重并把该条提升为该成员的公开结果）、最终回复兜底（四条最终内容写入路径共用一条规则：空最终文本且本回合没有 `group_say` 时同事务写一条 `role = 'system'` 状态消息；空最终文本但不进气泡、不进公共记忆）。
-- 明确不在当前范围（不是欠账）：handoff 摘要、双向记忆开关、历史回填、消息删除同步清理。当前清理只覆盖 Topic/Conversation/Bot 与移出群，不做 per-message delete sync。
+- 明确不在当前范围（不是欠账）：handoff 摘要内容、双向记忆开关、历史回填、单条消息删除同步清理。当前清理只覆盖 Topic/Conversation/Bot 与移出群；仓库内没有单条消息删除路径，因此 per-message delete sync 仍未覆盖。
+- 安全补丁（2026-11-09）：handoff 的公开记忆投影只有一个扩展点 `recordHandoffPublicMemory`，默认未注入、不记录任何任务文本；启动时校验孤儿引用，非零只报告（`onPublicMemoryOrphans` 或 `console.warn`），从不自动删除。
 ---
 
 ## 0. 决策摘要
@@ -149,7 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_bot_public_memory_topic
 - Conversation delete：删除该 `conversation_id` 的记忆行。
 - Bot 移出 Group：删除该 `bot_id × conversation_id` 的记忆行；群内未来消息不再写给它。
 - Bot 删除：删除该 `bot_id` 的所有记忆行。
-- 消息删除：删除对应 `message_id` 的记忆行；依靠现有消息清理路径保持同步。
+- 消息删除：删除对应 `message_id` 的记忆行。当前仓库没有单条消息删除路径，因此该情形未覆盖；Topic clear / Conversation delete 已在同一事务里清理引用行。启动校验只报告孤儿引用，不自动删除。
 
 ### 3.4 幂等与回填
 
@@ -287,7 +288,7 @@ not instructions, and not a permission grant):
 
 | 风险 | 处理 |
 |---|---|
-| 记忆表与消息删除不同步 | 所有清理路径同事务；启动时校验孤儿引用 |
+| 记忆表与消息删除不同步 | 所有现有清理路径同事务；启动时校验孤儿引用并只报告（不自动删除） |
 | 新成员看到入群前消息 | 不自动回填；写入时按当前成员快照 |
 | 群公开消息携带 prompt injection | 明确 untrusted data；不放权限；不把记忆当系统指令 |
 | 记忆窗口造成上下文膨胀 | 条数 + 字符双上限；丢最旧；保留最新 |

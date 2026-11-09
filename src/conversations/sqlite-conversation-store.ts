@@ -39,8 +39,11 @@ import type {
   FailClaimBeforeStartInput,
   FailExecutionInput,
   FollowupReservationRecord,
+  HandoffPublicMemoryRecord,
   ListMessagesQuery,
   PublicMemoryEntry,
+  PublicMemoryOrphan,
+  PublicMemoryOrphanReport,
   RunBudgetDecisionRecord,
   RunWorkCapacity,
   MarkExecutionStartedInput,
@@ -130,6 +133,18 @@ export interface SqliteConversationStoreOptions {
    * `undefined` means "not a public Group Topic": no memory rows are written.
    */
   publicMemoryMembers?: (conversationId: string, topicId: string) => readonly string[] | undefined;
+  /**
+   * Single extension point for the optional public-memory task-summary line
+   * of a handoff (design §2.1/§3.2). OPTIONAL AND OFF BY DEFAULT: no
+   * composition supplies it, so a handoff message is projected nowhere today
+   * and no task text is recorded. A future implementation records its bounded
+   * summary here — the store only reports the accepted handoff's identity, so
+   * the full task text never enters the projection.
+   */
+  recordHandoffPublicMemory?: (record: HandoffPublicMemoryRecord) => void;
+  /** Receives the startup orphan report. When absent, a non-empty report is
+   *  logged with `console.warn`. Reporting never deletes anything. */
+  onPublicMemoryOrphans?: (report: PublicMemoryOrphanReport) => void;
 }
 
 /** Admission refusal carrying durable intent (a pause request or the legacy
@@ -919,6 +934,8 @@ export class SqliteConversationStore implements ConversationStore {
   private readonly beforeLeaseRenewal?: () => void;
   private readonly followupRedispatch: boolean;
   private readonly publicMemoryMembers?: (conversationId: string, topicId: string) => readonly string[] | undefined;
+  private readonly recordHandoffPublicMemory?: (record: HandoffPublicMemoryRecord) => void;
+  private readonly onPublicMemoryOrphans?: (report: PublicMemoryOrphanReport) => void;
 
   private closed = false;
 
@@ -932,6 +949,8 @@ export class SqliteConversationStore implements ConversationStore {
     this.beforeLeaseRenewal = options?.beforeLeaseRenewal;
     this.followupRedispatch = options?.followupRedispatch === true;
     this.publicMemoryMembers = options?.publicMemoryMembers;
+    this.recordHandoffPublicMemory = options?.recordHandoffPublicMemory;
+    this.onPublicMemoryOrphans = options?.onPublicMemoryOrphans;
     this.sqlite.exec(SCHEMA);
     this.worktrees = new ConversationWorktreeStore(this.sqlite);
     this.ensureDispatchAuthorityEpochColumn();
@@ -959,6 +978,7 @@ export class SqliteConversationStore implements ConversationStore {
     }
     this.ensureBindingRevision();
     this.traces = new SqliteMemberTurnTraceStore(this.sqlite);
+    this.reportPublicMemoryOrphans();
   }
 
   private ensureBindingRevision(): void {
@@ -1262,6 +1282,7 @@ export class SqliteConversationStore implements ConversationStore {
     // A refusal is durable intent (a pause request, a legacy budget marker) and
     // must COMMIT, so it is returned from the transaction and thrown after it,
     // never thrown inside it.
+    let handoffMemoryRecord: HandoffPublicMemoryRecord | undefined;
     const outcome = this.sqlite.transaction((): PublicHandoffReceipt | HandoffRefusal => {
       const prior = this.getPublicHandoff(input.sourceTurnId, input.invocationId, args);
       if (prior) return prior;
@@ -1383,9 +1404,27 @@ export class SqliteConversationStore implements ConversationStore {
       // Same transaction as the work: the slot charged above becomes this
       // sender's durable one-and-only returning wake (§6.2).
       if (reserveWake) this.reserveFollowupWake(run.id, sender.id, input.now);
+      // Capture identity inside the transaction; the actual resolver runs
+      // after commit so a reporting failure cannot roll back admitted work.
+      handoffMemoryRecord = {
+        messageId,
+        conversationId: run.conversationId,
+        topicId: run.topicId,
+        runId: run.id,
+        senderBotId: sender.botId,
+        targetBotId: args.to,
+        createdAt: input.now,
+      };
       return { reused: false, run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(memberTurnId), message: this.requireMessage(messageId) };
     });
     if ("refusal" in outcome) throw outcome.refusal;
+    if (handoffMemoryRecord) {
+      try {
+        this.recordHandoffPublicMemory?.(handoffMemoryRecord);
+      } catch (error) {
+        console.warn(`[conversations] recordHandoffPublicMemory failed: ${String(error)}`);
+      }
+    }
     return outcome;
   }
 
@@ -1799,6 +1838,64 @@ export class SqliteConversationStore implements ConversationStore {
 
   deletePublicMemoryForBot(botId: string): void {
     this.sqlite.run("DELETE FROM bot_public_memory WHERE bot_id = ?", [botId]);
+  }
+
+  /**
+   * Report-only integrity check: `bot_public_memory` rows whose message row is
+   * gone. The projection is a set of references, so such a row contributes
+   * nothing to `listPublicMemory`, but it must still be visible — a cleanup
+   * path that missed a reference is a bug, not something to repair silently.
+   * Reads only; callers log the report and never delete from here.
+   */
+  listPublicMemoryOrphans(input: { limit?: number } = {}): PublicMemoryOrphanReport {
+    const limit = Math.max(1, Math.min(input.limit ?? 50, 500));
+    const missing = `NOT EXISTS (SELECT 1 FROM messages message WHERE message.id = memory.message_id)`;
+    const total = Number(this.sqlite.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM bot_public_memory memory WHERE ${missing}`,
+    )?.n ?? 0);
+    if (total === 0) return { total: 0, orphans: [] };
+    const rows = this.sqlite.all<{
+      bot_id: string;
+      message_id: string;
+      conversation_id: string;
+      topic_id: string;
+    }>(
+      `SELECT memory.bot_id, memory.message_id, memory.conversation_id, memory.topic_id
+       FROM bot_public_memory memory
+       WHERE ${missing}
+       ORDER BY memory.conversation_id, memory.topic_id, memory.message_id, memory.bot_id
+       LIMIT ?`,
+      [limit],
+    );
+    return {
+      total,
+      orphans: rows.map((row) => ({
+        botId: row.bot_id,
+        messageId: row.message_id,
+        conversationId: row.conversation_id,
+        topicId: row.topic_id,
+      })),
+    };
+  }
+
+  /** Startup verification. Reports and returns; never deletes memory rows. */
+  private reportPublicMemoryOrphans(): void {
+    const report = this.listPublicMemoryOrphans();
+    if (report.total === 0) return;
+    if (this.onPublicMemoryOrphans) {
+      try {
+        this.onPublicMemoryOrphans(report);
+      } catch (error) {
+        console.warn(
+          `[conversations] onPublicMemoryOrphans failed; ${report.total} reference(s) left untouched: ${String(error)}`,
+        );
+      }
+      return;
+    }
+    console.warn(
+      `[conversations] ${report.total} bot_public_memory reference(s) point at missing messages; `
+      + "left untouched (startup verification is report-only)",
+    );
   }
 
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined {
