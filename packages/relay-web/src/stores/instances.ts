@@ -149,6 +149,15 @@ export function supportsGroupWorkspaceMode(instance: { capabilities?: string[] |
 }
 
 /**
+ * True when the instance's core stores and resolves a Group's public-memory
+ * projection (`on` | `off`). An older core drops the field, so the Group
+ * settings dialog must not offer the switch there.
+ */
+export function supportsGroupPublicMemorySwitch(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupPublicMemorySwitchV1);
+}
+
+/**
  * True when the instance's core deletes a Bot's dedicated workspace
  * directory when the user asks for it on removal. An older core ignores the
  * flag, so the web must not offer the option there.

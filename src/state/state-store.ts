@@ -1041,6 +1041,12 @@ function isConversationRecord(value: unknown): value is ConversationRecord {
   if (value.workspaceMode !== undefined && value.workspaceMode !== "shared" && value.workspaceMode !== "per-member") {
     return false;
   }
+  // Malformed rather than defaulted: a typo must not silently turn projection
+  // back on for a Group the operator switched off (or off for one they did not).
+  if (value.publicMemoryProjection !== undefined
+    && value.publicMemoryProjection !== "on" && value.publicMemoryProjection !== "off") {
+    return false;
+  }
   if (value.leadBotId !== undefined && !value.botIds.includes(value.leadBotId)) {
     return false;
   }

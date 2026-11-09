@@ -1,6 +1,10 @@
 import { BotError } from "./bot-error";
 import { CLAUDE_READ_ONLY_POLICY, type EnforcedExecutionPolicy, type RequestedFilesystemPolicy } from "../adapters/conversation-effect-policy";
-import type { MemberTurnRecord } from "../conversations/conversation-types";
+import {
+  groupPublicMemoryProjection,
+  type GroupPublicMemoryProjection,
+  type MemberTurnRecord,
+} from "../conversations/conversation-types";
 import { memberConcurrencyLimit } from "../conversations/conversation-scheduling-policy";
 import {
   classifyDirectBotBindingSessionLink,
@@ -124,6 +128,16 @@ export class BotRuntimeManager {
     const title = conversation.title.trim();
     const description = conversation.description?.trim();
     return { ...(title ? { title } : {}), ...(description ? { description } : {}) };
+  }
+
+  /** Live public-memory projection for a Group, read from AppState each call so
+   *  a settings change takes effect on the next prompt. `undefined` means "not
+   *  a Group" (Direct conversations own no projection), which the dispatcher
+   *  must not confuse with a Group that switched projection off. */
+  publicMemoryProjectionFor(conversationId: string): GroupPublicMemoryProjection | undefined {
+    const conversation = this.state.conversations[conversationId];
+    if (!conversation || conversation.kind !== "group") return undefined;
+    return groupPublicMemoryProjection(conversation);
   }
 
   /** Durable Topic scheduling metadata; no live execution counter. */

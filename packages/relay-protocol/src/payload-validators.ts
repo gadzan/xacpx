@@ -673,6 +673,7 @@ const validateGroupsCreate: Validator<GroupsCreatePayload> = (p) => {
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description))
     && (o.leadBotId === undefined || isStr(o.leadBotId))
     && isGroupWorkspaceMode(o.workspaceMode)
+    && (o.publicMemoryProjection === undefined || o.publicMemoryProjection === "on" || o.publicMemoryProjection === "off")
     ? (o as unknown as GroupsCreatePayload) : null;
 };
 const validateGroupsUpdate: Validator<GroupsUpdatePayload> = (p) => {
@@ -682,6 +683,7 @@ const validateGroupsUpdate: Validator<GroupsUpdatePayload> = (p) => {
   if (o.description !== undefined && o.description !== null && !isStr(o.description)) return null;
   if (o.botIds !== undefined && !isStrArr(o.botIds)) return null;
   if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId)) return null;
+  if (o.publicMemoryProjection !== undefined && o.publicMemoryProjection !== "on" && o.publicMemoryProjection !== "off") return null;
   // Creation-time only: a patch would silently re-target accepted work.
   if (o.workspaceMode !== undefined) return null;
   return o as unknown as GroupsUpdatePayload;

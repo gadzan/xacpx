@@ -277,7 +277,8 @@ var RELAY_CAPABILITIES = {
   groupTopicIsolationV1: "group.topics.isolation.v1",
   roundtableV1: "conversations.roundtable.v1",
   conversationTimelineV1: "conversations.timeline.v1",
-  groupWorkspaceModeV1: "groups.workspace-mode.v1"
+  groupWorkspaceModeV1: "groups.workspace-mode.v1",
+  groupPublicMemorySwitchV1: "groups.public-memory-switch.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [
@@ -1837,7 +1838,7 @@ var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer" ||
 var isGroupWorkspaceMode = (v) => v === undefined || v === "shared" || v === "per-member";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
-  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) && isGroupWorkspaceMode(o.workspaceMode) ? o : null;
+  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) && isGroupWorkspaceMode(o.workspaceMode) && (o.publicMemoryProjection === undefined || o.publicMemoryProjection === "on" || o.publicMemoryProjection === "off") ? o : null;
 };
 var validateGroupsUpdate = (p) => {
   const o = fields(p);
@@ -1850,6 +1851,8 @@ var validateGroupsUpdate = (p) => {
   if (o.botIds !== undefined && !isStrArr(o.botIds))
     return null;
   if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId))
+    return null;
+  if (o.publicMemoryProjection !== undefined && o.publicMemoryProjection !== "on" && o.publicMemoryProjection !== "off")
     return null;
   if (o.workspaceMode !== undefined)
     return null;

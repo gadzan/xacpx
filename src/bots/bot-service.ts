@@ -23,7 +23,11 @@ import {
 } from "./dedicated-workspace-cleanup";
 import { isDedicatedWorkspaceMarker } from "./bot-types";
 import type { BotProfile, BotRuntimeBinding, DedicatedWorkspaceMarker } from "./bot-types";
-import type { ConversationRecord, GroupWorkspaceMode } from "../conversations/conversation-types";
+import type {
+  ConversationRecord,
+  GroupPublicMemoryProjection,
+  GroupWorkspaceMode,
+} from "../conversations/conversation-types";
 
 const NAME_MAX = 80;
 const TEXT_MAX = 16_384;
@@ -83,6 +87,8 @@ export interface CreateGroupInput {
   leadBotId?: string;
   /** Fixed at creation; absent means `shared`. */
   workspaceMode?: GroupWorkspaceMode;
+  /** Public-memory projection. Omitted means `on`. */
+  publicMemoryProjection?: GroupPublicMemoryProjection;
 }
 
 export interface UpdateGroupInput {
@@ -90,6 +96,9 @@ export interface UpdateGroupInput {
   description?: string | null;
   botIds?: string[];
   leadBotId?: string | null;
+  /** Public-memory projection. Never null: `on` is an explicit choice, not the
+   *  absence of one. */
+  publicMemoryProjection?: GroupPublicMemoryProjection;
 }
 
 export type BotLifecycleMutation = "update" | "delete";
@@ -625,6 +634,7 @@ export class BotService {
       const title = this.requireGroupTitle(input.title);
       const description = this.optionalGroupDescription(input.description);
       const workspaceMode = this.requireGroupWorkspaceMode(input.workspaceMode);
+      const publicMemoryProjection = this.requireGroupPublicMemoryProjection(input.publicMemoryProjection);
       const timestamp = this.now().toISOString();
       const id = createConversationId();
       const record: ConversationRecord = {
@@ -635,6 +645,7 @@ export class BotService {
         botIds: membership,
         ...(leadBotId ? { leadBotId } : {}),
         ...(workspaceMode ? { workspaceMode } : {}),
+        ...(publicMemoryProjection ? { publicMemoryProjection } : {}),
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -771,12 +782,19 @@ export class BotService {
       const description = patch.description !== undefined
         ? this.optionalGroupDescription(patch.description)
         : existing.description;
+      // An explicit patch value (including `on`) is the operator's choice; an
+      // untouched patch keeps the stored value, so an unrelated edit never
+      // silently re-enables projection.
+      const publicMemoryProjection = patch.publicMemoryProjection !== undefined
+        ? this.requireGroupPublicMemoryProjection(patch.publicMemoryProjection)
+        : existing.publicMemoryProjection;
       const next: ConversationRecord = {
         ...existing,
         title,
         ...(description ? { description } : {}),
         botIds: membership,
         ...(leadBotId ? { leadBotId } : {}),
+        ...(publicMemoryProjection ? { publicMemoryProjection } : {}),
         updatedAt: this.now().toISOString(),
       };
       if (!leadBotId) {
@@ -911,6 +929,16 @@ export class BotService {
       throw new BotError("invalid_workspace_mode", "group workspace mode must be 'shared' or 'per-member'");
     }
     return mode;
+  }
+
+  private requireGroupPublicMemoryProjection(value: unknown): GroupPublicMemoryProjection | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (value !== "on" && value !== "off") {
+      throw new BotError("invalid_public_memory_projection", "group public memory projection must be 'on' or 'off'");
+    }
+    return value;
   }
 
   private optionalGroupDescription(description: string | null | undefined): string | undefined {
