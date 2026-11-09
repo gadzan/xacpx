@@ -14,6 +14,7 @@
 - 话题执行态徽标：Group 页的话题 pill 与话题面板行在该话题确实有活跃 Run 时显示旋转徽标（`bot.topic.executing`，`aria-label` 同步，尊重 `prefers-reduced-motion`），其余话题不显示；执行态由 `selectGroup` 与重连对齐的 `runs.list` 探测播种，`conversation-run-changed` 按 topic 增量维护（同 topic 的竞争 Run 不覆盖已知 owner），owner 终态后重读 `runs.list` 重新选举后继（排队 Run 已被提升而它自己的事件尚在途时不漏标），面板打开时整表重探 `refreshExecutingTopics`。徽标只覆盖当前话题列表内的话题；Direct 页不传该 prop，因而不显示。
 - 群组公共记忆开关：每个 Group 新增 `publicMemoryProjection`（`on` 默认 / `off`），带 state-load 校验、create/update 载荷、解析后的 DTO 与 `groups.public-memory-switch.v1` capability，Group 设置里提供开关（旧 Group 与旧 core 都按 `on` 读取）。`off` 时该群新消息不再写入 `bot_public_memory`，已存行也不再注入成员的 Direct prompt；开关只拦投影、不删数据，重新开启后既有行恢复可见。群内自身的对话与普通发送目标不受影响；bot 级开关与双向记忆仍不在范围内。
 - 公共记忆读窗口在应用 20 条上限前先排除投影为 `off` 的 Group，避免一个关闭投影的群用新版消息占满窗口、把其他仍开启群的旧消息挤出成员的 Direct prompt。
+- 公共记忆的 Direct prompt 块补上时间戳与 `(you)` 标记，消息正文压成单行后按 800 字截断；整块新增 4,000 字总预算，超出时从最旧消息丢弃并标注 `[…older messages omitted]`，不再出现最多 20 × 800 字的无上限窗口。
 
 
 ## [relay 0.14.12-beta.18] - 2026-11-06
