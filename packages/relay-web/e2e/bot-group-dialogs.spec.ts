@@ -191,7 +191,7 @@ for (const kind of ["bot", "group"] as const) {
       await expectViewportLayout(dialog);
       expect(await dialog.getByRole("button", { name: "Create", exact: true }).boundingBox()).toEqual(actionsBefore);
       if (kind === "bot") await expect(dialog.getByRole("checkbox", { name: "Enabled", exact: true })).toBeInViewport();
-      else await expect(dialog.getByTestId("group-dialog-lead")).toBeInViewport();
+      else await expect(dialog.getByTestId("group-dialog-default-routing")).toBeInViewport();
     }
     if (kind === "bot") {
       await dialog.getByTestId("bot-avatar-edit").click();

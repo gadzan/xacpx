@@ -648,6 +648,28 @@ async function confirmDelete(): Promise<void> {
             <p class="mt-1 text-xs text-fg-muted">{{ $t("group.manage.leadHint") }}</p>
           </div>
 
+          <div v-if="supportsHandoffMemory">
+            <span class="mb-1.5 block text-xs font-medium text-fg-muted">
+              {{ $t("group.manage.handoffMemory") }}
+            </span>
+            <div class="grid gap-1.5">
+              <label data-test="group-dialog-handoff-memory-off"
+                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                <input v-model="handoffMemory" type="radio" value="off" class="mt-0.5" />
+                <span class="min-w-0">
+                  <span class="block font-medium text-fg">{{ $t("group.manage.handoffMemoryOff") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.handoffMemoryOffHint") }}</span>
+                </span>
+              </label>
+              <label data-test="group-dialog-handoff-memory-summary"
+                     class="flex cursor-pointer items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+                <input v-model="handoffMemory" type="radio" value="summary" class="mt-0.5" />
+                <span class="min-w-0">
+                  <span class="block font-medium text-fg">{{ $t("group.manage.handoffMemorySummary") }}</span>
+                  <span class="block text-fg-muted">{{ $t("group.manage.handoffMemorySummaryHint") }}</span>
+                </span>
+              </label>
+            </div>
             <p class="mt-1 text-xs text-fg-muted">{{ $t("group.manage.handoffMemoryLocked") }}</p>
           </div>
 

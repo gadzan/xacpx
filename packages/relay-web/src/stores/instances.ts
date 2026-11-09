@@ -165,6 +165,7 @@ export function supportsHandoffMemorySummary(instance: { capabilities?: string[]
  */
 export function supportsGroupPublicMemorySwitch(instance: { capabilities?: string[] | null } | null | undefined): boolean {
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupPublicMemorySwitchV1);
+}
 
 /**
  * True when the instance's core stores and resolves a Group's default send

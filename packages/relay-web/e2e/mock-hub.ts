@@ -27,7 +27,7 @@ export const TERMINAL_ID = "term-e2e";
 export const GENERATION = "gen-e2e";
 export const ATTACHMENT_ID = "att-e2e";
 
-const CAPS = ["terminal.rmux.recovery.v1", "terminal.multi-view.v1", "desktop.rfb.v1", "bots.dedicated-workspace.v1", "runs.cancel-member.v1", "conversations.timeline.v1", "groups.public-memory-switch.v1", "groups.handoff-memory-summary.v1", "groups.default-routing.v1"];
+const CAPS = ["terminal.rmux.recovery.v1", "terminal.multi-view.v1", "desktop.rfb.v1", "bots.dedicated-workspace.v1", "runs.cancel-member.v1", "conversations.timeline.v1", "groups.public-memory-switch.v1", "groups.default-routing.v1"];
 
 export interface MockHub {
   port: number;

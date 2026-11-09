@@ -394,7 +394,6 @@ describe("Group management", () => {
     });
   });
 
-<<<<<<< HEAD
   describe("GroupDialog.vue handoff memory", () => {
     it("hides the opt-in when the instance does not advertise it", async () => {
       seedBots([REVIEWER, TESTER]);
@@ -436,7 +435,10 @@ describe("Group management", () => {
       expect(rpcCalls("control.groups.update")[0]?.payload).toEqual({
         id: "conversation_new",
         handoffMemory: "off",
-=======
+      });
+    });
+  });
+
   describe("GroupDialog.vue default send", () => {
     it("hides the setting on a core that cannot store it", async () => {
       seedBots([REVIEWER, TESTER]);
@@ -493,7 +495,6 @@ describe("Group management", () => {
       expect(rpcCalls("control.groups.update")[0]?.payload).toEqual({
         id: "conversation_g",
         defaultRouting: "lead",
->>>>>>> bfbe34d4 (feat(conversations): make plain Group sends follow a Group setting)
       });
     });
   });
