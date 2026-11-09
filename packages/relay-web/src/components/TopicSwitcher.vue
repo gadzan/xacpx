@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, Check, ChevronDown, MoreHorizontal, Plus, RotateCcw } from "lucide-vue-next";
+import { Archive, Check, ChevronDown, Loader2, MoreHorizontal, Plus, RotateCcw } from "lucide-vue-next";
 import type { TopicImpactDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu.vue";
 import DropdownPanel from "./DropdownPanel.vue";
@@ -9,7 +9,7 @@ import { useDropdown } from "../lib/use-dropdown";
 import { useTopicActions, type TopicIsolation } from "../lib/use-topic-actions";
 import { navigateBack, pushModal } from "../lib/mobile-back";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   topics: TopicSummaryDto[];
   activeTopicId: string | null;
   previewTopic: (topicId: string) => Promise<TopicImpactDto>;
@@ -20,12 +20,16 @@ const props = defineProps<{
   clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
   /** Which page hosts the switcher: only changes the test hooks (group chat vs Bot page). */
   variant?: "group" | "direct";
+  /** Ids of topics with an executing Run; shown as a spinner badge. Absent on Direct. */
+  executingTopicIds?: string[];
+  /** Re-probe executing topics when the panel opens. Absent on Direct. */
+  refreshExecutingTopics?: () => Promise<void>;
   /** Absent on surfaces whose topics have no execution target (Direct). */
   setTopicIsolation?: (topicId: string, isolation: TopicIsolation) => Promise<void>;
   /** Let the user give up on sealed unknown Runs so a teardown that failed
    *  closed can finish. Absent when the connector cannot serve `runs.abandon`. */
   abandonUnknownRuns?: (runIds: string[]) => Promise<void>;
-}>();
+}>(), { executingTopicIds: () => [] });
 const emit = defineEmits<{ select: [topicId: string]; create: [] }>();
 
 const { editingId, draftTitle, actionError, confirmKind, confirmImpact, releaseBindings, confirming, confirmBlocked,
@@ -45,6 +49,7 @@ const query = ref("");
 const rowMenu = ref<{ x: number; y: number; topic: TopicSummaryDto } | null>(null);
 
 const active = computed(() => props.topics.find((topic) => topic.id === props.activeTopicId) ?? null);
+const executingIds = computed(() => new Set(props.executingTopicIds));
 
 // The delete/clear confirm stacks on the still-open topic sheet, so it owns its own
 // history entry: one back closes the confirm, the next closes the sheet.
@@ -58,6 +63,7 @@ watch(isolationTopic, (topic) => {
   unregisterIsolation?.();
   unregisterIsolation = topic ? pushModal({ id: "topic-isolation", close: closeIsolation }) : null;
 });
+watch(() => dd.open, (open) => { if (open) void props.refreshExecutingTopics?.(); });
 const direct = computed(() => props.variant === "direct");
 const visible = computed(() => {
   const needle = query.value.trim().toLowerCase();
@@ -150,6 +156,7 @@ async function abandonRowUnknown(): Promise<void> {
       @click="dd.toggle()"
     >
       <span class="truncate">{{ active?.title || $t("bot.topic.default") }}</span>
+      <Loader2 v-if="active && executingIds.has(active.id)" :size="12" data-test="topic-pill-executing" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" :aria-label="$t('bot.topic.executing')" :title="$t('bot.topic.executing')" />
       <span v-if="active && statusLabel(active)" data-test="topic-pill-status" class="shrink-0 text-fg-muted">{{ statusLabel(active) }}</span>
       <ChevronDown :size="12" class="shrink-0 transition-transform" :class="dd.open ? 'rotate-180' : ''" />
     </button>
@@ -176,6 +183,7 @@ async function abandonRowUnknown(): Promise<void> {
             <button type="button" class="min-w-0 flex-1 truncate text-left" @click="selectTopic(topic)">
               {{ topic.title || $t("bot.topic.default") }}
             </button>
+            <Loader2 v-if="executingIds.has(topic.id)" :size="12" data-test="topic-executing" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" :aria-label="$t('bot.topic.executing')" :title="$t('bot.topic.executing')" />
             <Archive v-if="topic.status === 'archived'" :size="12" class="shrink-0 text-fg-muted-overlay" />
             <RotateCcw v-if="topic.status === 'deleting'" :size="12" class="shrink-0 text-fg-muted-overlay" />
             <Check v-if="topic.id === activeTopicId" :size="14" class="ml-auto shrink-0 text-accent-text" />

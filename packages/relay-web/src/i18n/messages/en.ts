@@ -988,6 +988,7 @@ export default {
       delete: "Delete",
       clear: "Clear default topic",
       archived: "Archived",
+      executing: "Running",
       deleting: "Deleting",
       empty: "No matching topics",
       confirmDeleteTitle: "Delete this topic?",

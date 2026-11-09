@@ -984,6 +984,7 @@ export default {
       delete: "删除",
       clear: "清空默认话题",
       archived: "已收起",
+      executing: "执行中",
       deleting: "删除中",
       empty: "没有匹配的话题",
       confirmDeleteTitle: "删除这个话题？",

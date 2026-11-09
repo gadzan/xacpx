@@ -299,6 +299,407 @@ describe("useGroupsStore", () => {
     expect(store.activeTopicId).toBe("topic_old");
   });
 
+  it("seeds executingTopicIds from the probe and still lands on the executing Topic", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_old", conversationId: "conversation_g", title: "Old", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_new", conversationId: "conversation_g", title: "New", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") return { bots: BOTS };
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        const p = payload as { topicId: string };
+        return p.topicId === "topic_old"
+          ? { runs: [], activeRunId: "run_1", activeRun: { id: "run_1", conversationId: "conversation_g", topicId: "topic_old", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+          : { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.executingTopicIds).toContain("topic_old");
+    expect(store.executingTopicIds).not.toContain("topic_new");
+    expect(store.activeTopicId).toBe("topic_old");
+    store.executingRunsByTopic = { ...store.executingRunsByTopic, topic_gone: { topicId: "topic_gone", runId: "run_x" } };
+    expect(store.executingTopicIds).not.toContain("topic_gone");
+  });
+
+  it("tracks run-changed execution per topic and clears on terminal", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+      { id: "topic_2", conversationId: "conversation_g", title: "Side", status: "active", createdAt: "now", updatedAt: "now" },
+    ];
+    const runOnOther: ConversationRunDto = {
+      id: "run_other", conversationId: "conversation_g", topicId: "topic_2",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: runOnOther,
+    } } as never);
+    expect(store.executingTopicIds).toContain("topic_2");
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...runOnOther, id: "run_rival" },
+    } } as never);
+    expect(store.executingRunsByTopic["topic_2"]?.runId).toBe("run_other");
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...runOnOther, state: "completed" },
+    } } as never);
+    expect(store.executingTopicIds).not.toContain("topic_2");
+    const foreign: ConversationRunDto = {
+      id: "run_f", conversationId: "conversation_other", topicId: "topic_9",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: foreign,
+    } } as never);
+    expect(store.executingRunsByTopic["topic_9"]).toBeUndefined();
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: runOnOther,
+    } } as never);
+    expect(store.executingTopicIds).toContain("topic_2");
+    store.clearSelection();
+    expect(store.executingTopicIds).toEqual([]);
+  });
+
+  it("reseeds executingTopicIds on reconnect", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+          { id: "topic_2", conversationId: "conversation_g", title: "Side", status: "active", createdAt: "now", updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        const p = payload as { topicId: string };
+        return p.topicId === "topic_2"
+          ? { runs: [], activeRunId: "run_2", activeRun: { id: "run_2", conversationId: "conversation_g", topicId: "topic_2", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } }
+          : { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    expect(store.executingTopicIds).toContain("topic_2");
+    expect(store.activeTopicId).toBe("topic_1");
+  });
+
+  it("re-elects a queued successor after the owner terminates", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+    ];
+    const ownerA: ConversationRunDto = {
+      id: "run_a", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: ownerA,
+    } } as never);
+    expect(store.executingRunsByTopic["topic_1"]?.runId).toBe("run_a");
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.runs.list") {
+        return { runs: [], activeRunId: "run_b", activeRun: { id: "run_b", conversationId: "conversation_g", topicId: "topic_1", requestMessageId: "m", requestId: "r2", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" } };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...ownerA, state: "completed" },
+    } } as never);
+    await flushPromises();
+    expect(store.executingTopicIds).toContain("topic_1");
+    expect(store.executingRunsByTopic["topic_1"]?.runId).toBe("run_b");
+  });
+
+  it("keeps a queued successor when a stale terminal probe resolves late", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+    ];
+    const ownerA: ConversationRunDto = {
+      id: "run_a", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: ownerA,
+    } } as never);
+    const probeGate = Promise.withResolvers<unknown>();
+    const resolveProbe = probeGate.resolve;
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.runs.list") return probeGate.promise;
+      throw new Error(`unexpected ${type}`);
+    });
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...ownerA, state: "completed" },
+    } } as never);
+    const successorB: ConversationRunDto = {
+      id: "run_b", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "m", requestId: "r2", mode: "explicit", state: "queued",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: successorB,
+    } } as never);
+    resolveProbe({ runs: [] });
+    await flushPromises();
+    expect(store.executingRunsByTopic["topic_1"]?.runId).toBe("run_b");
+    expect(store.executingTopicIds).toContain("topic_1");
+  });
+
+  it("keeps an event-recorded owner when the selectGroup probe resolves late", async () => {
+    const store = useGroupsStore();
+    const probeGate = Promise.withResolvers<unknown>();
+    let runsListCalls = 0;
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_2", conversationId: "conversation_g", title: "Side", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") return { bots: BOTS };
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        runsListCalls += 1;
+        if (runsListCalls <= 2) return probeGate.promise;
+        return { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    const selecting = store.selectGroup("inst_1", "conversation_g");
+    await flushPromises();
+    expect(store.activeConversationId).toBe("conversation_g");
+    const live: ConversationRunDto = {
+      id: "run_live", conversationId: "conversation_g", topicId: "topic_2",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: live,
+    } } as never);
+    expect(store.executingTopicIds).toContain("topic_2");
+    probeGate.resolve({ runs: [] });
+    await selecting;
+    expect(store.executingTopicIds).toContain("topic_2");
+  });
+
+  it("keeps an event-recorded owner when the probe fails after the event", async () => {
+    const store = useGroupsStore();
+    const probeGate = Promise.withResolvers<unknown>();
+    let runsListCalls = 0;
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_2", conversationId: "conversation_g", title: "Side", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") return { bots: BOTS };
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        runsListCalls += 1;
+        if (runsListCalls <= 2) return probeGate.promise;
+        return { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    const selecting = store.selectGroup("inst_1", "conversation_g");
+    await flushPromises();
+    expect(store.activeConversationId).toBe("conversation_g");
+    const live: ConversationRunDto = {
+      id: "run_live", conversationId: "conversation_g", topicId: "topic_2",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: live,
+    } } as never);
+    expect(store.executingTopicIds).toContain("topic_2");
+    probeGate.reject(new Error("authority down"));
+    await selecting;
+    expect(store.executingTopicIds).toContain("topic_2");
+  });
+
+  it("drops a stale terminal probe that resolves after a newer owner finished", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_2";
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+      { id: "topic_2", conversationId: "conversation_g", title: "Side", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+    ];
+    let runsListCalls = 0;
+    const firstProbe = Promise.withResolvers<unknown>();
+    const resolveFirst = firstProbe.resolve;
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.runs.list") {
+        runsListCalls += 1;
+        if (runsListCalls === 1) return firstProbe.promise;
+        return { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    const ownerA: ConversationRunDto = {
+      id: "run_a", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: ownerA,
+    } } as never);
+    expect(store.executingRunsByTopic["topic_1"]?.runId).toBe("run_a");
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...ownerA, state: "completed" },
+    } } as never);
+    const successorB: ConversationRunDto = {
+      id: "run_b", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "m", requestId: "r2", mode: "explicit", state: "queued",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: successorB,
+    } } as never);
+    expect(store.executingRunsByTopic["topic_1"]?.runId).toBe("run_b");
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...successorB, state: "completed" },
+    } } as never);
+    await flushPromises();
+    expect(store.executingRunsByTopic["topic_1"]).toBeUndefined();
+    resolveFirst({ runs: [], activeRunId: "run_b", activeRun: { ...successorB, state: "running" } });
+    await flushPromises();
+    expect(store.executingRunsByTopic["topic_1"]).toBeUndefined();
+  });
+
+  it("drops the badge when the successor probe finds no active run", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+    ];
+    const ownerA: ConversationRunDto = {
+      id: "run_a", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: ownerA,
+    } } as never);
+    mockRpc.mockImplementation(async () => ({ runs: [] }));
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...ownerA, state: "completed" },
+    } } as never);
+    await flushPromises();
+    expect(store.executingTopicIds).not.toContain("topic_1");
+  });
+
+  it("drops a terminal re-read that spans a leave and rejoin", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+    ];
+    const firstProbe = Promise.withResolvers<unknown>();
+    let runsListCalls = 0;
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.bots.list") return { bots: BOTS };
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        runsListCalls += 1;
+        if (runsListCalls === 1) return firstProbe.promise;
+        return { runs: [] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    const ownerA: ConversationRunDto = {
+      id: "run_a", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "m", requestId: "r", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: ownerA,
+    } } as never);
+    expect(store.executingRunsByTopic["topic_1"]?.runId).toBe("run_a");
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...ownerA, state: "completed" },
+    } } as never);
+    const successorB: ConversationRunDto = {
+      id: "run_b", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "m", requestId: "r2", mode: "explicit", state: "queued",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: successorB,
+    } } as never);
+    await store.selectGroup("inst_1", "conversation_g");
+    firstProbe.resolve({ runs: [], activeRunId: "run_b", activeRun: { ...successorB, state: "running" } });
+    await flushPromises();
+    expect(store.executingTopicIds).not.toContain("topic_1");
+  });
+
+  it("refreshExecutingTopics re-probes after a timed-out selectGroup probe", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockImplementation(async (_inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [
+          { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.bots.list") return { bots: BOTS };
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") throw new Error("authority down");
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.executingTopicIds).toEqual([]);
+    mockRpc.mockImplementation(async (_inst: string, type: string) => {
+      if (type === "control.runs.list") {
+        return { runs: [], activeRunId: "run_9", activeRun: { id: "run_9", conversationId: "conversation_g", topicId: "topic_1", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" } };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.refreshExecutingTopics();
+    expect(store.executingTopicIds).toContain("topic_1");
+    expect(store.executingRunsByTopic["topic_1"]?.runId).toBe("run_9");
+  });
+
   it("falls back to the plain default Topic when the runs.list probe fails", async () => {
     const store = useGroupsStore();
     mockRpc.mockImplementation(async (_inst: string, type: string) => {

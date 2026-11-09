@@ -31,7 +31,14 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
-import { isActiveRunState, probeExecutingTopics, sortTopicsNewestFirst } from "../lib/topic-order";
+import {
+  activeRunOfTopic,
+  isActiveRunState,
+  probeExecutingTopics,
+  sortTopicsNewestFirst,
+  type TopicActiveRun,
+  type TopicRunsAuthority,
+} from "../lib/topic-order";
 import { useConversationCommandsStore } from "./conversation-commands";
 import { supportsRoundtableV1, useInstancesStore } from "./instances";
 import { useDirectBotsStore } from "./direct-bots";
@@ -553,6 +560,12 @@ export const useGroupsStore = defineStore("groups", () => {
   const topicReady = ref<boolean>(true);
 
   const activeRun = ref<ConversationRunDto | null>(null);
+  const executingRunsByTopic = ref<Record<string, TopicActiveRun>>({});
+  /** Monotonic per-topic sequence for terminal-event re-reads: a second
+   *  `refreshTopicExecuting` for the same Topic supersedes the first, so a
+   *  stale answer resolving late must not reinstall an already-finished Run.
+   *  Not reactive state — only consulted inside the probe itself. */
+  const executingProbeSeq: Record<string, number> = {};
   /** Runs this tab accepted that the backend queued behind the Topic owner.
    *  A mid-run send is accepted as `state: "queued"` while `activeRun` keeps
    *  the running owner, so the accepted Run is durable but owns nothing yet.
@@ -1070,6 +1083,10 @@ export const useGroupsStore = defineStore("groups", () => {
   const isRunActive = computed(() => {
     const s = activeRun.value?.state;
     return isActiveRunState(s);
+  });
+  const executingTopicIds = computed(() => {
+    const known = new Set(currentTopics.value.map((topic) => topic.id));
+    return Object.keys(executingRunsByTopic.value).filter((topicId) => known.has(topicId));
   });
   const memberTurns = computed<MemberTurnSummaryDto[]>(() => {
     const runId = activeRun.value?.id;
@@ -2193,22 +2210,79 @@ export const useGroupsStore = defineStore("groups", () => {
     targetInstanceId: string,
     conversationId: string,
     ordered: TopicSummaryDto[],
+    shouldApply: () => boolean = () => true,
   ): Promise<string | undefined> {
+    // Snapshot BEFORE the RPC: a live event may rewrite an entry while the
+    // probe is in flight, and the answer must only touch entries it did not.
+    const before = executingRunsByTopic.value;
+    const applyAnswer = (answered: Record<string, TopicActiveRun>): void => {
+      const next = { ...executingRunsByTopic.value };
+      for (const topicId of new Set([...Object.keys(next), ...Object.keys(answered)])) {
+        if (next[topicId] !== before[topicId]) continue;
+        const active = answered[topicId];
+        if (active) next[topicId] = active;
+        else delete next[topicId];
+      }
+      executingRunsByTopic.value = next;
+    };
     try {
       const probe = await probeExecutingTopics(ordered, async (topicId) =>
-        unwrapRpc(
-          await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(
-            targetInstanceId,
-            MSG.runsList,
-            { conversationId, topicId },
-          ),
-        ),
+        unwrapRpc(await api.rpc<TopicRunsAuthority>(targetInstanceId, MSG.runsList, { conversationId, topicId })),
       );
+      if (!shouldApply()) return undefined;
+      applyAnswer(probe.status === "complete" ? probe.activeByTopicId : {});
       if (probe.status !== "complete") return undefined;
       return ordered.find((topic) => topic.status === "active" && probe.activeByTopicId[topic.id])?.id;
     } catch {
+      if (!shouldApply()) return undefined;
+      applyAnswer({});
       return undefined;
     }
+  }
+
+  /** Re-reads one topic's authority after an owner's terminal event; a stale answer must never overwrite an entry changed while the probe was in flight. */
+  async function refreshTopicExecuting(targetInstanceId: string, conversationId: string, topicId: string): Promise<void> {
+    const known = executingRunsByTopic.value[topicId];
+    const generation = currentSelectionGeneration;
+    // The caller deletes the entry before calling, so `known` is often
+    // undefined and cannot order overlapping probes: a newer probe for this
+    // Topic supersedes an older one still in flight.
+    const seq = executingProbeSeq[topicId] = (executingProbeSeq[topicId] ?? 0) + 1;
+    try {
+      const listed = unwrapRpc(
+        await api.rpc<TopicRunsAuthority>(targetInstanceId, MSG.runsList, { conversationId, topicId }),
+      );
+      if (generation !== currentSelectionGeneration) return;
+      if (instanceId.value !== targetInstanceId || activeConversationId.value !== conversationId) return;
+      if (executingProbeSeq[topicId] !== seq) return;
+      if (executingRunsByTopic.value[topicId] !== known) return;
+      const active = activeRunOfTopic(topicId, listed);
+      if (active) {
+        executingRunsByTopic.value = { ...executingRunsByTopic.value, [topicId]: active };
+      } else if (executingRunsByTopic.value[topicId]) {
+        const next = { ...executingRunsByTopic.value };
+        delete next[topicId];
+        executingRunsByTopic.value = next;
+      }
+    } catch {
+      return;
+    }
+  }
+
+  async function refreshExecutingTopics(): Promise<void> {
+    const targetInstanceId = instanceId.value;
+    const conversationId = activeConversationId.value;
+    if (!targetInstanceId || !conversationId) return;
+    const generation = currentSelectionGeneration;
+    await findExecutingTopicId(
+      targetInstanceId,
+      conversationId,
+      sortTopicsNewestFirst(currentTopics.value),
+      () =>
+        generation === currentSelectionGeneration &&
+        instanceId.value === targetInstanceId &&
+        activeConversationId.value === conversationId,
+    );
   }
 
   async function selectGroup(targetInstanceId: string, groupId: string): Promise<void> {
@@ -2222,6 +2296,7 @@ export const useGroupsStore = defineStore("groups", () => {
     instanceId.value = targetInstanceId;
     selectedGroupId.value = groupId;
     persistGroupSelection(targetInstanceId, groupId);
+    executingRunsByTopic.value = {};
 
     activeConversationId.value = null;
     activeTopicId.value = null;
@@ -2274,7 +2349,8 @@ export const useGroupsStore = defineStore("groups", () => {
       }
       // Prefer an ACTIVE Topic: the server refuses sends into an archived one.
       const ordered = sortTopicsNewestFirst(topics);
-      const executingTopicId = await findExecutingTopicId(targetInstanceId, group.id, ordered);
+      const executingTopicId = await findExecutingTopicId(targetInstanceId, group.id, ordered,
+        () => generation === currentSelectionGeneration && instanceId.value === targetInstanceId && activeConversationId.value === group.id);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }
@@ -2345,6 +2421,7 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   function clearSelection(): void {
+    executingRunsByTopic.value = {};
     clearRunHistory();
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -3089,6 +3166,9 @@ export const useGroupsStore = defineStore("groups", () => {
         if (cId) {
           await loadTopics(iId, cId).catch(() => {});
           if (generation !== currentSelectionGeneration || activeConversationId.value !== cId) return;
+          await findExecutingTopicId(iId, cId, sortTopicsNewestFirst(topicsByConversation.value[`${iId}:${cId}`] ?? []),
+            () => generation === currentSelectionGeneration && instanceId.value === iId && activeConversationId.value === cId);
+          if (generation !== currentSelectionGeneration || activeConversationId.value !== cId) return;
           if (tId) {
             await loadHistory(iId, cId, tId);
             if (generation !== currentSelectionGeneration || activeTopicId.value !== tId) return;
@@ -3370,6 +3450,22 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (e.type === "conversation-run-changed") {
       const run = e.run;
+      if (event.instanceId === instanceId.value && run.conversationId === activeConversationId.value) {
+        const existing = executingRunsByTopic.value[run.topicId];
+        if (isActiveRunState(run.state)) {
+          if (!existing || existing.runId === run.id) {
+            executingRunsByTopic.value = {
+              ...executingRunsByTopic.value,
+              [run.topicId]: { topicId: run.topicId, runId: run.id, state: run.state },
+            };
+          }
+        } else if (existing && existing.runId === run.id) {
+          const next = { ...executingRunsByTopic.value };
+          delete next[run.topicId];
+          executingRunsByTopic.value = next;
+          void refreshTopicExecuting(event.instanceId, run.conversationId, run.topicId);
+        }
+      }
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         // One of our own queued accepts: the standing owner still runs, so the
         // accepted Run is durable but owns nothing. Track it instead of letting
@@ -3645,6 +3741,9 @@ export const useGroupsStore = defineStore("groups", () => {
     historyErrorDetail,
     topicReady,
     activeRun,
+    executingRunsByTopic,
+    executingTopicIds,
+    refreshExecutingTopics,
     queuedRuns,
     isRunQueued,
     memberTurns,
