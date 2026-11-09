@@ -294,14 +294,28 @@ export function supportsGroupDefaultRouting(control: unknown): boolean {
     defaultRouting: "lead",
   }) !== null;
 }
+
+/**
+ * True when this instance accepts a Group handoff-memory opt-in: the core
+ * must say so (older cores ignore the field and always project nothing for
+ * handoffs) AND the relay-protocol validator this connector resolved must
+ * accept it on both `groups.create` and `groups.update`. Either half missing
+ * keeps the capability off, so the web never offers an opt-in the first
+ * `groups.update` would then reject.
+ */
+export function supportsHandoffMemorySummary(control: unknown): boolean {
+  const probe = (control as { supportsHandoffMemorySummary?: unknown } | null)?.supportsHandoffMemorySummary;
   if (typeof probe !== "function") return false;
   if ((probe as () => unknown).call(control) !== true) return false;
-  return parseControlPayload(MSG.groupsCreate, {
+  if (parseControlPayload(MSG.groupsCreate, {
     title: "probe",
     botIds: ["probe_a", "probe_b"],
-    defaultRouting: "automatic",
-  }) !== null
-    && parseControlPayload(MSG.groupsUpdate, { id: "probe", defaultRouting: "lead" }) !== null;
+    handoffMemory: "summary",
+  }) === null) return false;
+  return parseControlPayload(MSG.groupsUpdate, {
+    id: "probe",
+    handoffMemory: "summary",
+  }) !== null;
 }
 
 /**
