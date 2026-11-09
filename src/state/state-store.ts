@@ -1041,6 +1041,9 @@ function isConversationRecord(value: unknown): value is ConversationRecord {
   if (value.workspaceMode !== undefined && value.workspaceMode !== "shared" && value.workspaceMode !== "per-member") {
     return false;
   }
+  if (value.handoffMemory !== undefined && value.handoffMemory !== "off" && value.handoffMemory !== "summary") {
+    return false;
+  }
   if (value.leadBotId !== undefined && !value.botIds.includes(value.leadBotId)) {
     return false;
   }

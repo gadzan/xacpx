@@ -149,6 +149,16 @@ export function supportsGroupWorkspaceMode(instance: { capabilities?: string[] |
 }
 
 /**
+ * True when the instance's core accepts a Group handoff-memory opt-in
+ * (`summary` projects one truncated handoff task summary into public memory;
+ * default `off` projects nothing). An older core ignores the field, so the
+ * web must not offer the choice there.
+ */
+export function supportsHandoffMemorySummary(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.handoffMemorySummaryV1);
+}
+
+/**
  * True when the instance's core deletes a Bot's dedicated workspace
  * directory when the user asks for it on removal. An older core ignores the
  * flag, so the web must not offer the option there.

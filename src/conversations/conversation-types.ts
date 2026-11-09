@@ -30,7 +30,11 @@ export type WorkspaceIsolationPolicy = "shared" | "shared-single-writer" | "work
  * Absent means `shared` (pre-Group rows and every older writer).
  */
 export type GroupWorkspaceMode = "shared" | "per-member";
-
+/** Handoff task-text projection into public memory. Absent means `off`:
+ *  fresh handoffs project nothing and only report handoff identity to the
+ *  optional hook. `summary` writes one truncated task-text summary message
+ *  (never the full sub-trace) projected for current members. Group-only. */
+export type GroupHandoffMemory = "off" | "summary";
 /** Effective workspace mode of a Group. Direct conversations have none. */
 export function groupWorkspaceMode(conversation: Pick<ConversationRecord, "kind" | "workspaceMode">): GroupWorkspaceMode {
   return conversation.kind === "group" && conversation.workspaceMode === "per-member" ? "per-member" : "shared";
@@ -120,6 +124,9 @@ export interface ConversationRecord {
   /** Group execution mode, fixed at creation. Absent means `shared`; never
    *  present on Direct conversations. */
   workspaceMode?: GroupWorkspaceMode;
+  /** Handoff task-text projection into public memory. Absent means `off`;
+   *  only ever set on Group conversations. */
+  handoffMemory?: GroupHandoffMemory;
   lifecycle?: ConversationLifecycle;
   createdAt: string;
   updatedAt: string;

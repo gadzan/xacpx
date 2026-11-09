@@ -154,6 +154,12 @@ export async function createConversationRuntime(
       if (!topic || topic.conversationId !== conversationId || topic.peerScope) return undefined;
       return group.botIds;
     },
+    // Opt-in handoff task-text summary, read live from the Group record.
+    // Anything but an explicit `summary` keeps #557 behavior: zero rows.
+    handoffMemoryMode: (conversationId) => {
+      const group = input.state.conversations[conversationId];
+      return group?.kind === "group" && group.handoffMemory === "summary" ? "summary" : "off";
+    },
   });
   const traceRecorder = input.controlEvents ? new MemberTurnTraceRecorder({
     store, state: input.state, events: input.controlEvents,

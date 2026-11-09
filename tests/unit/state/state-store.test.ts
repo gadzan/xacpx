@@ -220,6 +220,42 @@ test("load quarantines worker bindings with present-but-invalid logicalSessionId
   }
 });
 
+test("load keeps a Group handoff-memory opt-in and drops an invalid one", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const state = createEmptyState();
+  const group = (id: string, handoffMemory?: unknown) => ({
+    id,
+    kind: "group" as const,
+    title: id,
+    botIds: ["bot_a", "bot_b"],
+    ...(handoffMemory === undefined ? {} : { handoffMemory }),
+    createdAt: "2026-11-09T00:00:00.000Z",
+    updatedAt: "2026-11-09T00:00:00.000Z",
+  });
+  state.conversations.summary = group("summary", "summary");
+  state.conversations.off = group("off", "off");
+  state.conversations.legacy = group("legacy");
+  state.conversations.bad = group("bad", "full");
+  await Bun.write(path, JSON.stringify(state));
+
+  try {
+    const store = new StateStore(path);
+    const loaded = await store.load();
+    expect(loaded.conversations.summary?.handoffMemory).toBe("summary");
+    expect(loaded.conversations.off?.handoffMemory).toBe("off");
+    expect(loaded.conversations.legacy?.handoffMemory).toBeUndefined();
+    // An unknown mode cannot be defaulted: the whole record is malformed.
+    expect(loaded.conversations.bad).toBeUndefined();
+    // Missing member Bots only warn; the invalid mode drops the record.
+    expect(store.lastLoadReport?.dropped.filter((drop) => drop.key === "bad")).toEqual([
+      { section: "conversations", key: "bad", reason: "malformed conversation record" },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("load quarantines every current worker or external coordinator with a duplicate endpoint identity", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
   const path = join(dir, "state.json");

@@ -451,6 +451,42 @@ test("createGroup validates membership, lead, and opaque identity", async () => 
   expect(state.conversations[group.id]).toBeUndefined();
 });
 
+test("createGroup stores the handoff-memory opt-in and updateGroup patches or clears it", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW) },
+  );
+  const a = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  await expect(
+    service.createGroup({ title: "Bad", botIds: [a.id, b.id], handoffMemory: "full" as never }),
+  ).rejects.toMatchObject({ code: "invalid_handoff_memory" });
+
+  const group = await service.createGroup({ title: "Team", botIds: [a.id, b.id], handoffMemory: "summary" });
+  expect(group.handoffMemory).toBe("summary");
+  expect(state.conversations[group.id]?.handoffMemory).toBe("summary");
+
+  const off = await service.updateGroup(group.id, { handoffMemory: "off" });
+  expect(off.handoffMemory).toBeUndefined();
+  expect(state.conversations[group.id]?.handoffMemory).toBeUndefined();
+  await expect(service.updateGroup(group.id, { handoffMemory: "digest" as never })).rejects.toMatchObject({
+    code: "invalid_handoff_memory",
+  });
+
+  const summaryAgain = await service.updateGroup(group.id, { handoffMemory: "summary" });
+  expect(summaryAgain.handoffMemory).toBe("summary");
+  // An unrelated patch keeps the opt-in.
+  const renamed = await service.updateGroup(group.id, { title: "Team 2" });
+  expect(renamed.handoffMemory).toBe("summary");
+});
+
 test("updateGroup repairs membership dangling from a load-quarantined Bot", async () => {
   const { parseState } = await import("../../../src/state/state-store");
   const dropped: { section: string; key: string; reason: string }[] = [];

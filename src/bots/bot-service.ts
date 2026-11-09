@@ -23,7 +23,7 @@ import {
 } from "./dedicated-workspace-cleanup";
 import { isDedicatedWorkspaceMarker } from "./bot-types";
 import type { BotProfile, BotRuntimeBinding, DedicatedWorkspaceMarker } from "./bot-types";
-import type { ConversationRecord, GroupWorkspaceMode } from "../conversations/conversation-types";
+import type { ConversationRecord, GroupHandoffMemory, GroupWorkspaceMode } from "../conversations/conversation-types";
 
 const NAME_MAX = 80;
 const TEXT_MAX = 16_384;
@@ -83,6 +83,8 @@ export interface CreateGroupInput {
   leadBotId?: string;
   /** Fixed at creation; absent means `shared`. */
   workspaceMode?: GroupWorkspaceMode;
+  /** Handoff task-text projection; absent means `off`. */
+  handoffMemory?: GroupHandoffMemory;
 }
 
 export interface UpdateGroupInput {
@@ -90,6 +92,8 @@ export interface UpdateGroupInput {
   description?: string | null;
   botIds?: string[];
   leadBotId?: string | null;
+  /** `off` clears back to the default. */
+  handoffMemory?: GroupHandoffMemory;
 }
 
 export type BotLifecycleMutation = "update" | "delete";
@@ -625,6 +629,7 @@ export class BotService {
       const title = this.requireGroupTitle(input.title);
       const description = this.optionalGroupDescription(input.description);
       const workspaceMode = this.requireGroupWorkspaceMode(input.workspaceMode);
+      const handoffMemory = this.requireGroupHandoffMemory(input.handoffMemory);
       const timestamp = this.now().toISOString();
       const id = createConversationId();
       const record: ConversationRecord = {
@@ -635,6 +640,7 @@ export class BotService {
         botIds: membership,
         ...(leadBotId ? { leadBotId } : {}),
         ...(workspaceMode ? { workspaceMode } : {}),
+        ...(handoffMemory ? { handoffMemory } : {}),
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -744,6 +750,9 @@ export class BotService {
         if (patch.title !== undefined) {
           this.requireGroupTitle(patch.title);
         }
+        if (patch.handoffMemory !== undefined) {
+          this.requireGroupHandoffMemory(patch.handoffMemory);
+        }
         return await this.updateGroupInner(id, patch);
         },
       );
@@ -784,6 +793,14 @@ export class BotService {
       }
       if (!description) {
         delete next.description;
+      }
+      if (patch.handoffMemory !== undefined) {
+        const handoffMemory = this.requireGroupHandoffMemory(patch.handoffMemory);
+        if (handoffMemory) {
+          next.handoffMemory = handoffMemory;
+        } else {
+          delete next.handoffMemory;
+        }
       }
       const nextState = structuredClone(this.state);
       nextState.conversations[id] = next;
@@ -909,6 +926,16 @@ export class BotService {
     }
     if (mode !== "shared" && mode !== "per-member") {
       throw new BotError("invalid_workspace_mode", "group workspace mode must be 'shared' or 'per-member'");
+    }
+    return mode;
+  }
+
+  private requireGroupHandoffMemory(mode: unknown): GroupHandoffMemory | undefined {
+    if (mode === undefined || mode === "off") {
+      return undefined;
+    }
+    if (mode !== "summary") {
+      throw new BotError("invalid_handoff_memory", "group handoff memory must be 'off' or 'summary'");
     }
     return mode;
   }

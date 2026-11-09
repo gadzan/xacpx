@@ -63,6 +63,33 @@ test("bot dialog keeps the original workspace default on a core without dedicate
   await expect(page.getByText("New workspace", { exact: true })).toHaveCount(0);
 });
 
+test("group dialog offers the handoff-memory opt-in only when the core advertises it", async ({ page, hub }) => {
+  // Default hub CAPS predate the opt-in: no selector.
+  const withoutCapability = await openDialog(page, "group");
+  await expect(withoutCapability.getByTestId("group-dialog-handoff-memory-off")).toHaveCount(0);
+  await withoutCapability.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(withoutCapability).toHaveCount(0);
+
+  await page.route("**/api/instances", async (route) => {
+    const response = await fetch(`http://127.0.0.1:${hub.port}/api/instances`);
+    const body = await response.json() as { instances: Array<{ capabilities?: string[] }> };
+    for (const instance of body.instances) {
+      instance.capabilities = [...(instance.capabilities ?? []), RELAY_CAPABILITIES.handoffMemorySummaryV1];
+    }
+    await route.fulfill({ json: body });
+  });
+  const dialog = await openDialog(page, "group");
+  const off = dialog.getByTestId("group-dialog-handoff-memory-off");
+  const summary = dialog.getByTestId("group-dialog-handoff-memory-summary");
+  await expect(off).toBeVisible();
+  await expect(off.getByRole("radio")).toBeChecked();
+  await summary.getByRole("radio").check();
+  await expect(summary.getByRole("radio")).toBeChecked();
+  await expect(off.getByRole("radio")).not.toBeChecked();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+});
+
 test("bot dialog flags a name with no letters or digits while New workspace is selected", async ({ page }) => {
   const dialog = await openDialog(page, "bot");
   await expect(dialog.locator("#bot-workspace")).toHaveText("New workspace");

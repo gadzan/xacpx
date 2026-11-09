@@ -363,6 +363,51 @@ describe("Group management", () => {
     });
   });
 
+  describe("GroupDialog.vue handoff memory", () => {
+    it("hides the opt-in when the instance does not advertise it", async () => {
+      seedBots([REVIEWER, TESTER]);
+      const wrapper = track(mount(GroupDialog, { props: { instanceId: "i1" }, global: { plugins: [i18n] } }));
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-dialog-handoff-memory-off"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-dialog-handoff-memory-summary"]').exists()).toBe(false);
+    });
+
+    it("sends the opt-in on create and only when it changed on edit", async () => {
+      seedInstance([
+        RELAY_CAPABILITIES.handoffMemorySummaryV1,
+        RELAY_CAPABILITIES.conversationTimelineV1,
+      ]);
+      seedBots([REVIEWER, TESTER]);
+      const created = { ...GROUP, id: "conversation_new", title: "Launch", botIds: ["bot_a", "bot_b"], leadBotId: "bot_a", handoffMemory: "summary" as const };
+      routes.set("control.groups.create", () => ({ group: created }));
+      routes.set("control.groups.list", () => ({ groups: [created] }));
+      const creator = track(mount(GroupDialog, { props: { instanceId: "i1" }, global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      await creator.find('[data-test="group-dialog-title"]').setValue("Launch");
+      await selectMembers(creator, ["bot_a", "bot_b"]);
+      // Default is off: an untouched dialog sends nothing.
+      expect(rpcCalls("control.groups.create")).toHaveLength(0);
+      await creator.find('[data-test="group-dialog-handoff-memory-summary"] input').setValue(true);
+      await creator.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+      expect(rpcCalls("control.groups.create")[0]?.payload.handoffMemory).toBe("summary");
+
+      // Edit: choosing off clears the field explicitly.
+      routes.set("control.groups.update", (payload) => ({ group: { ...created, ...payload } }));
+      const editor = track(mount(GroupDialog, { props: { instanceId: "i1", group: created }, global: { plugins: [i18n] } }));
+      await flushPromises();
+      expect((editor.find('[data-test="group-dialog-handoff-memory-summary"] input').element as HTMLInputElement).checked).toBe(true);
+      await editor.find('[data-test="group-dialog-handoff-memory-off"] input').setValue(true);
+      await editor.find('[data-test="group-dialog-save"]').trigger("click");
+      await flushPromises();
+      expect(rpcCalls("control.groups.update")[0]?.payload).toEqual({
+        id: "conversation_new",
+        handoffMemory: "off",
+      });
+    });
+  });
+
   describe("GroupDialog.vue edit", () => {
     it("moves the Lead to the next enabled member when the Lead is removed and sends only changed fields", async () => {
       seedBots([REVIEWER, TESTER, SLEEPER]);
