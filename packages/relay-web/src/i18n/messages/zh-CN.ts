@@ -110,6 +110,7 @@ export default {
       discussNeedsSpeakers: "讨论至少需要 2 位已启用成员",
       placeholder: "发消息给 {name}",
       placeholderLead: "发消息给负责人",
+      placeholderAutomatic: "发消息给群组（自动）",
     },
   },
   nav: {

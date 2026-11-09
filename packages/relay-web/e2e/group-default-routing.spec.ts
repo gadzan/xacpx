@@ -114,6 +114,9 @@ async function openGroup(page: Page, sent: Array<Record<string, unknown> | undef
 test("the Group default send setting decides the plain-send wire target", async ({ page }) => {
   const sent: Array<Record<string, unknown> | undefined> = [];
   await openGroup(page, sent);
+  const composer = page.getByTestId("group-composer-textarea");
+  const narrow = (page.viewportSize()?.width ?? 0) < 640;
+  if (!narrow) await expect(composer).toHaveAttribute("placeholder", "Message Lead");
 
   // Lead (default): a plain message carries no target, so the server resolves
   // the live Lead inside its accept gates.
@@ -129,6 +132,7 @@ test("the Group default send setting decides the plain-send wire target", async 
   await automatic.getByRole("radio").check();
   await page.getByTestId("group-dialog-save").click();
   await expect(page.getByTestId("group-dialog")).toHaveCount(0);
+  if (!narrow) await expect(composer).toHaveAttribute("placeholder", "Message the group (automatic)");
 
   await page.getByTestId("group-composer-textarea").fill("route this");
   await page.getByTestId("group-send-prompt-button").click();
@@ -141,6 +145,7 @@ test("the Group default send setting decides the plain-send wire target", async 
   await page.getByTestId("group-dialog-default-routing-lead").getByRole("radio").check();
   await page.getByTestId("group-dialog-save").click();
   await expect(page.getByTestId("group-dialog")).toHaveCount(0);
+  if (!narrow) await expect(composer).toHaveAttribute("placeholder", "Message Lead");
 
   await page.getByTestId("group-composer-textarea").fill("back to lead");
   await page.getByTestId("group-send-prompt-button").click();

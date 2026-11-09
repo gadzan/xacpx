@@ -81,6 +81,7 @@ export function publicMemoryMembersFor(
   return groupPublicMemoryProjection(conversation) === "off" ? [] : conversation.botIds;
 }
 
+/**
  * What a plain (un-targeted) Group message does.
  * - `lead`: the Run goes to the Group's Lead, exactly as every Group did
  *   before the setting existed.

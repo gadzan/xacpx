@@ -2769,6 +2769,11 @@ export class ControlService {
    * the Web never shows a switch an older core would drop.
    */
   supportsGroupPublicMemorySwitch(): true {
+    return true;
+  }
+
+  /**
+   * Feature probe for connectors: `createGroup`/`updateGroup` accept
    * `defaultRouting` and Group summaries carry the resolved value. Connectors
    * advertise `RELAY_CAPABILITIES.groupDefaultRoutingV1` only when this
    * exists, so the Web never shows a setting an older core would drop.

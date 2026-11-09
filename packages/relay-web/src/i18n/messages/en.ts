@@ -114,6 +114,7 @@ export default {
       discussNeedsSpeakers: "Discussion needs at least 2 enabled members",
       placeholder: "Message {name}",
       placeholderLead: "Message the lead",
+      placeholderAutomatic: "Message the group (automatic)",
     },
   },
   nav: {
