@@ -1098,6 +1098,28 @@ function isExecutionTarget(value: unknown): value is ConversationTopic["executio
       value.isolation === "worktree-per-member")
   );
 }
+function isConversationTopicFork(value: unknown): value is ConversationTopic["forkedFrom"] {
+  if (value === undefined) {
+    return true;
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  const required = [
+    value.requestId,
+    value.sourceConversationId,
+    value.sourceTopicId,
+    value.sourceTitle,
+    value.rootTopicId,
+    value.createdAt,
+  ];
+  const counts = [value.throughSeq, value.copiedMessages, value.omittedMessages];
+  return (
+    required.every((field) => isString(field) && field.length > 0) &&
+    (value.sourceRunId === undefined || (isString(value.sourceRunId) && value.sourceRunId.length > 0)) &&
+    counts.every((field) => typeof field === "number" && Number.isInteger(field) && field >= 0)
+  );
+}
 
 function isConversationTopic(value: unknown): value is ConversationTopic {
   if (!isRecord(value)) {
@@ -1119,7 +1141,8 @@ function isConversationTopic(value: unknown): value is ConversationTopic {
       || (typeof value.contextGeneration === "number"
         && Number.isInteger(value.contextGeneration)
         && value.contextGeneration >= 1)) &&
-    (value.managedAt === undefined || isString(value.managedAt))
+    (value.managedAt === undefined || isString(value.managedAt)) &&
+    isConversationTopicFork(value.forkedFrom)
   );
 }
 

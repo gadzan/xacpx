@@ -33,7 +33,9 @@ import type {
   JevUpdatePayload,
   RouterAvailability,
   TerminalSettingsDto,
+  ThreadForkSourcePointDto,
 } from "@ganglion/xacpx-relay-protocol";
+
 import type {
   AgentSession,
   ResolvedSession,
@@ -2806,6 +2808,15 @@ export class ControlService {
   supportsConversationTimelineV1(): true {
     return true;
   }
+  /**
+   * Feature probe for connectors: `control.group.topics.fork` snapshots a
+   * source Topic into an independent Topic. Connectors advertise
+   * `RELAY_CAPABILITIES.groupTopicForkV1` only when this exists, so the Web
+   * hides every fork entry against an older core.
+   */
+  supportsGroupTopicFork(): true {
+    return true;
+  }
 
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
@@ -3173,6 +3184,19 @@ export class ControlService {
     });
   }
 
+  async forkGroupTopic(input: {
+    conversationId: string;
+    sourceTopicId: string;
+    targetTopicId: string;
+    requestId: string;
+    sourcePoint?: ThreadForkSourcePointDto;
+    title?: string;
+  }) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.forkGroupTopic(input);
+      return this.topicSummary(topic);
+    });
+  }
   async setGroupTopicIsolation(
     conversationId: string,
     topicId: string,

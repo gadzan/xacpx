@@ -222,6 +222,14 @@ export function supportsRunsPause(instance: { capabilities?: string[] | null } |
 export function supportsGroupTopicIsolation(instance: { capabilities?: string[] | null } | null | undefined): boolean {
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupTopicIsolationV1);
 }
+/**
+ * True when the instance can fork a Group Topic (`control.group.topics.fork`).
+ * An older core answers `unsupported-rpc`; the web hides every fork entry
+ * rather than offering an action the instance cannot perform.
+ */
+export function supportsGroupTopicFork(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupTopicForkV1);
+}
 
 /** True when the instance accepts the roundtable target and history fields.
  *  It gates both the future "discuss" entry and the history compat flag. */

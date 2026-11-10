@@ -483,6 +483,27 @@ contract in [Conversation runtime](conversation-runtime.md).
 
 A Group Topic can also switch isolation after creation through `control.group.topics.set-isolation`, advertised as `RELAY_CAPABILITIES.groupTopicIsolationV1` (`group.topics.isolation.v1`) so the dashboard only offers it on an instance whose core implements the RPC. The write is refused while the Topic has unsettled Runs (`conversation_not_settled`), because in-flight members are already bound to the current directories; it is refused on a deleting Topic or Conversation (`topic_deleting` / `conversation_deleting`) before the same-policy no-op, so a no-op request never reports success on a Topic being torn down; and leaving `worktree-per-member` is refused while that Topic still has unintegrated worktrees (`worktree_runs_pending`, with the Run ids in `details.runIds`), because the dashboard mounts the worktree preview/integrate panel off the live isolation while teardown keeps refusing while those worktrees exist. A known policy this composition cannot serve reports `worktree_unprovisioned` (missing manager), distinct from `invalid-isolation` (unknown policy), on create, accept and the switch alike. The write runs inside every member Bot lifecycle gate and inside `stateMutex` — the same gate→mutex order archive and teardown use — so no materializer can bind a session to the target being replaced and a concurrent Topic create cannot be overwritten by the snapshot being installed.
 
+A Group Topic can fork into a new independent Topic through
+`control.group.topics.fork` (`{conversationId, sourceTopicId, targetTopicId,
+requestId, sourcePoint?, title?}`), advertised as
+`RELAY_CAPABILITIES.groupTopicForkV1` (`group.topics.fork.v1`) only when the
+core exposes the RPC and the connector validator accepts the payload. The
+client mints `targetTopicId` and `requestId` and reuses both on retry; the same
+pair replays to the same Topic while any other existing target is
+`topic_exists`. `sourcePoint` is `{type: "latest_stable"}` (default) or
+`{type: "run", runId}`. The core copies the source Topic's public messages up
+to that settled Run's boundary, re-numbers them from 1, clears Run/MemberTurn
+/handoff/group-say/input provenance, and records `forkedFrom` on the Topic
+summary. At most 500 messages are copied; older rows surface as
+`omittedMessages`. Answers: `topic_fork_empty`,
+`topic_fork_source_unsettled`, `topic_fork_source_changed`,
+`topic_fork_history_missing`, `topic_deleting`, `conversation_deleting`,
+`topic_resetting`, `topic_exists`, and `topic_not_found`. The
+response is `{ topic }`, whose summary carries `forkedFrom`; messages carry
+`forkedFromMessageId`. The copy never touches `bot_public_memory`, Run rows, or
+attachment files. See
+[Conversation Topic fork](design/2026-11-10-conversation-topic-fork.md).
+
 Phase 10C adds authenticated instance RPC `control.conversation.worktree`, returning
 `{worktree}`. Its strict action union accepts `runId` plus: `preview` with complete
 ordered `botIds`; `integrate` with `requestId`, `previewId`, `snapshotUncommitted: true`;

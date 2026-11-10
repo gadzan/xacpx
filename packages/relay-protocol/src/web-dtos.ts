@@ -595,6 +595,21 @@ function validExecutionTarget(value: unknown): boolean {
     && (t.cwd === undefined || typeof t.cwd === "string")
     && (t.isolation === "shared" || t.isolation === "shared-single-writer" || t.isolation === "worktree-per-member");
 }
+function validTopicFork(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const f = value as Record<string, unknown>;
+  return isBoundedStr(f.requestId, 128)
+    && typeof f.sourceConversationId === "string"
+    && typeof f.sourceTopicId === "string"
+    && typeof f.sourceTitle === "string"
+    && (f.sourceRunId === undefined || typeof f.sourceRunId === "string")
+    && isNonNegInt(f.throughSeq)
+    && typeof f.rootTopicId === "string"
+    && isNonNegInt(f.copiedMessages)
+    && isNonNegInt(f.omittedMessages)
+    && typeof f.createdAt === "string";
+}
 
 function validTopicSummary(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
@@ -610,6 +625,7 @@ function validTopicSummary(value: unknown): boolean {
       && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64))
     && (c.contextGeneration === undefined || (typeof c.contextGeneration === "number"
       && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1))
+    && validTopicFork(c.forkedFrom)
     && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
 
@@ -624,6 +640,7 @@ function validConversationMessage(value: unknown): boolean {
     && typeof c.content === "string"
     && typeof c.createdAt === "string"
     && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId)
+    && optStr(c.forkedFromMessageId)
     && (c.handoff === undefined || (c.role === "system" && typeof c.runId === "string"
       && typeof c.senderBotId === "string" && validPublicHandoff(c.handoff)));
 }

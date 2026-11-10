@@ -29,6 +29,8 @@ const props = withDefaults(defineProps<{
   /** Let the user give up on sealed unknown Runs so a teardown that failed
    *  closed can finish. Absent when the connector cannot serve `runs.abandon`. */
   abandonUnknownRuns?: (runIds: string[]) => Promise<void>;
+  /** Absent when the connector cannot serve `control.group.topics.fork`. */
+  forkTopic?: (topic: TopicSummaryDto) => void;
 }>(), { executingTopicIds: () => [] });
 const emit = defineEmits<{ select: [topicId: string]; create: [] }>();
 
@@ -107,6 +109,7 @@ const rowMenuItems = computed<ContextMenuItem[]>(() => {
   }
   if (topic.status === "active") items.push({ key: "archive", label: t("bot.topic.archive") });
   if (topic.status === "archived") items.push({ key: "restore", label: t("bot.topic.restore") });
+  if (props.forkTopic && topic.status !== "deleting") items.push({ key: "fork", label: t("bot.topic.fork") });
   // `deleting` is a barrier with no other exit: the row must keep a retry.
   if (topic.status === "deleting") {
     items.push({ key: "retry-delete", label: t("bot.topic.retryDelete"), danger: true });
@@ -126,6 +129,13 @@ function onRowMenuSelect(key: string): void {
   if (key === "isolation") { openIsolation(topic); return; }
   if (key === "archive") { void archive(topic); return; }
   if (key === "restore") { void restore(topic); return; }
+  if (key === "fork") {
+    const forkTopic = props.forkTopic;
+    closePanel();
+    dd.trigger?.focus();
+    forkTopic?.(topic);
+    return;
+  }
   if (key === "delete" || key === "clear" || key === "retry-delete") void openConfirm("delete", topic);
 }
 

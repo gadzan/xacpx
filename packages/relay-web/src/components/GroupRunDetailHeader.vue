@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { CircleStop, Pause, Play, X } from "lucide-vue-next";
+import { CircleStop, GitFork, Pause, Play, X } from "lucide-vue-next";
 import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
@@ -24,11 +24,13 @@ const props = defineProps<{
   /** Core advertises pause/resume and this Run is the exact current owner. */
   pauseAvailable?: boolean;
   pausePending?: boolean;
+  /** Terminal Run and the instance can fork: offers the run-level entry. */
+  forkAvailable?: boolean;
   /** `sheet` reads as a document header, `popover` as a compact card header. */
   variant: "sheet" | "popover";
 }>();
 
-const emit = defineEmits<{ close: []; stop: []; pause: []; attempt: [attempt: number] }>();
+const emit = defineEmits<{ close: []; stop: []; pause: []; fork: []; attempt: [attempt: number] }>();
 const { t } = useI18n();
 
 const historicalAttempt = computed(() => props.memberTurn && props.attempt !== undefined && props.attempt !== props.memberTurn.attempt);
@@ -125,6 +127,18 @@ const ariaLabel = computed(() =>
         >
           <CircleStop :size="dense ? 12 : 14" />
           <span>{{ $t("group.detail.stopRun") }}</span>
+        </button>
+        <button
+          v-if="forkAvailable"
+          type="button"
+          data-test="group-fork-run-button"
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-surface-2 font-medium text-fg transition-colors hover:bg-fg/10"
+          :class="dense ? 'h-7 px-2 text-xs' : 'min-h-11 px-3 text-sm'"
+          :title="$t('group.topic.forkFromRun')"
+          @click.stop="emit('fork')"
+        >
+          <GitFork :size="dense ? 12 : 14" />
+          <span>{{ $t("group.topic.forkAction") }}</span>
         </button>
         <button
           type="button"

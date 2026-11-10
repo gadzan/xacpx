@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { RELAY_CAPABILITIES } from "../../../../packages/relay-protocol/src/index";
-import { RelayChannel, supportsGroupTopicIsolation } from "../../../../packages/channel-relay/src/channel";
+import { RelayChannel, supportsGroupTopicFork, supportsGroupTopicIsolation } from "../../../../packages/channel-relay/src/channel";
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
 
 /**
@@ -66,4 +66,22 @@ test("the probe requires a callable method, not a truthy field", () => {
   expect(supportsGroupTopicIsolation({})).toBe(false);
   expect(supportsGroupTopicIsolation({ setGroupTopicIsolation: true })).toBe(false);
   expect(supportsGroupTopicIsolation({ setGroupTopicIsolation: async () => ({}) })).toBe(true);
+});
+
+test("the fork capability is advertised only when core and validator agree", async () => {
+  expect(RELAY_CAPABILITIES.groupTopicForkV1).toBe("group.topics.fork.v1");
+  expect(supportsGroupTopicFork({
+    supportsGroupTopicFork: () => true,
+    forkGroupTopic: async () => ({}),
+  })).toBe(true);
+  expect(supportsGroupTopicFork({ forkGroupTopic: async () => ({}) })).toBe(false);
+  expect(supportsGroupTopicFork({ supportsGroupTopicFork: () => true })).toBe(false);
+  expect(supportsGroupTopicFork({ supportsGroupTopicFork: () => false, forkGroupTopic: async () => ({}) })).toBe(false);
+
+  const caps = await advertisedCapabilities({
+    supportsGroupTopicFork: () => true,
+    forkGroupTopic: async () => ({}),
+  });
+  expect(caps).toContain(RELAY_CAPABILITIES.groupTopicForkV1);
+  expect(await advertisedCapabilities({})).not.toContain(RELAY_CAPABILITIES.groupTopicForkV1);
 });

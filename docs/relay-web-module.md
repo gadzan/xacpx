@@ -431,6 +431,7 @@ Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）
 `group_send` 的公开交接在 `GroupTranscript` 里显示关系、任务、期望、已有结果和一句可操作提示。Run 卡片列出实际执行的成员。`shared-single-writer` 的排队语义只在话题的「文件系统隔离」对话框里说明，不在每次执行的浮层里重复。
 
 话题行 ⋯ 菜单对有 executionTarget 的 Group 话题多一项「文件系统隔离」，打开单选对话框列出三种策略并标出当前值；选择即走 `control.group.topics.set-isolation`。只有「每名成员独立 Git 工作树」会让同一轮派发并行执行（每名成员一个已验证的工作树，物理准入仍要求 cwd 互不相同），其余两种对无法证明只读的工作保持串行。切换只影响之后的派发：话题里还有未结束 Run 时服务端返回 `conversation_not_settled`，对话框保持打开并显示原因。失败不关闭、成功才关闭，与删除/清空一致；移动端返回键先关对话框。Direct 页没有 executionTarget，不渲染这一项。
+公布 `group.topics.fork.v1` 的实例在话题行 `⋯` 菜单多一项「分叉」，已结算 Run 的执行浮层头部多一颗「分叉」按钮：前者走 `latest_stable`，后者显式带上该 Run。两个入口打开同一个 `ForkTopicDialog`，默认标题为 `<源标题> fork`，并在确认区写明实际分叉点；打开时一次性生成 `targetTopicId` 与 `requestId`，失败重试复用同一对，成功才关闭并切到新话题。`ConversationTimeline` 在滚动容器之外渲染分叉横幅：来源标题、已复制条数、被截断的更早条数；源话题仍存在时可点跳回，删除后只保留说明。横幅不是 timeline entry，不参与分页或滚动锚点。旧 core 不公布该能力时不渲染任何分叉入口。协议与错误码见 [relay-module](relay-module.md)。
 创建群组时选定工作区模式（`shared` / `per-member`），编辑时只读展示，因为 daemon 拒绝改这个字段。该选择只对公布 `groups.workspace-mode.v1` 的实例显示：旧 core 会丢掉这个字段并建成 `shared` 群组，界面宁可回落到默认也不做静默降级。`per-member` 群组的建话题弹层隐藏工作区与隔离选项，直接创建无 `ExecutionTarget` 的 Topic，并说明成员各自用自己的 Bot 工作区、工作区不同的成员可并行。
 确定性拒绝保留草稿。不确定结果仍复用冻结的 `requestId` 和 target。
 

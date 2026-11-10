@@ -45,6 +45,8 @@ const props = defineProps<{
   interactions?: PendingInteractionState[];
   capability?: { cancelMember: boolean };
   cancelPending?: boolean;
+  /** Terminal Run and the instance can fork: offers the run-level entry. */
+  forkAvailable?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -60,6 +62,7 @@ const emit = defineEmits<{
   interactionDecline: [requestId: string];
   interactionCancel: [requestId: string];
   interactionDismiss: [requestId: string];
+  fork: [];
 }>();
 
 const selectedMember = computed(() =>
@@ -184,7 +187,8 @@ watch(rowEl, observeAnchor, { flush: "post" });
         variant="popover"
         :run="run" :topic-title="topicTitle"
         :attempt="attempt" :attempts="attempts"
-        @close="close" @attempt="emit('attempt', $event)"
+        :fork-available="forkAvailable"
+        @close="close" @attempt="emit('attempt', $event)" @fork="emit('fork')"
       />
       <div ref="drawerScroll" class="group-detail-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-4" @scroll.passive="memoizeScroll()">
         <ConversationRunDetailContent

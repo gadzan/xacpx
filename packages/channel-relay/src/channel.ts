@@ -331,6 +331,25 @@ export function supportsGroupTopicIsolation(control: unknown): boolean {
     isolation: "shared-single-writer",
   }) !== null;
 }
+/**
+ * True when this instance can fork a Group Topic from a settled Run: the core
+ * must expose `forkGroupTopic` (with its `supportsGroupTopicFork` probe) AND
+ * this connector's validator must accept the fork payload. Either half missing
+ * keeps the capability off, so the web never offers a fork an older core or
+ * connector would reject.
+ */
+export function supportsGroupTopicFork(control: unknown): boolean {
+  const probe = (control as { supportsGroupTopicFork?: unknown } | null)?.supportsGroupTopicFork;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  if (typeof (control as { forkGroupTopic?: unknown } | null)?.forkGroupTopic !== "function") return false;
+  return parseControlPayload(MSG.groupTopicsFork, {
+    conversationId: "probe",
+    sourceTopicId: "probe",
+    targetTopicId: "probe",
+    requestId: "probe",
+  }) !== null;
+}
 
 /**
  * True when this instance can accept a roundtable target and return the
@@ -497,6 +516,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsGroupTopicIsolation(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupTopicIsolationV1);
+    }
+    if (supportsGroupTopicFork(control)) {
+      capabilities.push(RELAY_CAPABILITIES.groupTopicForkV1);
     }
     if (supportsGroupWorkspaceMode(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);

@@ -74,9 +74,10 @@ import type {
   ExecutionTarget,
   HumanIngressContext,
   MemberTurnRecord,
+  ThreadForkSourcePoint,
   WorkspaceIsolationPolicy,
 } from "./conversation-types";
-import { groupWorkspaceMode, resolveGroupDefaultRouting, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
+import { groupWorkspaceMode, MAX_FORK_MESSAGES, resolveGroupDefaultRouting, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import {
   projectConversationTimeline,
   type ConversationLiveTurnsByMember,
@@ -1151,6 +1152,189 @@ export class ConversationRunService {
     emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
     emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: created });
     return created;
+  }
+  /**
+   * Fork a Group Topic from a settled Run (or the latest settled Run): copy
+   * the source Topic's public history at or before that Run into a new
+   * Topic. The new Topic owns its rows outright; later traffic on either
+   * side never crosses. Pure-snapshot boundaries (a forked source with no
+   * unsettled Runs and no settled Runs yet) copy up to the current max seq.
+   */
+  async forkGroupTopic(input: {
+    conversationId: string;
+    sourceTopicId: string;
+    targetTopicId: string;
+    requestId: string;
+    sourcePoint?: ThreadForkSourcePoint;
+    title?: string;
+  }): Promise<ConversationTopic> {
+    this.assertOpen();
+    this.assertForkTargetTopicIdShape(input.sourceTopicId, input.targetTopicId);
+    if (!input.requestId) {
+      throw new ConversationError("invalid-payload", "a fork request requires a requestId");
+    }
+    const pendingTarget = this.state.conversation_topics[input.targetTopicId];
+    if (pendingTarget && pendingTarget.forkedFrom?.requestId !== input.requestId) {
+      throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+    }
+    const source = this.requireGroupTopic(input.conversationId, input.sourceTopicId);
+    if (source.status !== "active" && source.status !== "archived") {
+      throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
+    }
+    if (source.peerScope) {
+      throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
+    }
+    this.assertConversationNotDeleting(input.conversationId);
+    this.assertForkSourceNotTearingDown(input.conversationId, input.sourceTopicId);
+    const point: ThreadForkSourcePoint = input.sourcePoint ?? { type: "latest_stable" };
+    if (point.type !== "latest_stable" && point.type !== "run") {
+      throw new ConversationError("invalid-payload", "fork sourcePoint must be latest_stable or a run");
+    }
+    const forked = await this.stateMutex.run(async () => {
+      const live = this.state.conversations[input.conversationId];
+      if (!live || live.kind !== "group") {
+        throw new ConversationError("conversation_not_found", `conversation "${input.conversationId}" does not exist`);
+      }
+      this.assertForkTargetTopicIdShape(input.sourceTopicId, input.targetTopicId);
+      const liveSource = this.state.conversation_topics[input.sourceTopicId];
+      if (!liveSource || liveSource.conversationId !== input.conversationId) {
+        throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
+      }
+      if (liveSource.status !== "active" && liveSource.status !== "archived") {
+        throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
+      }
+      if (liveSource.peerScope) {
+        throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
+      }
+      this.assertConversationNotDeleting(input.conversationId);
+      this.assertForkSourceNotTearingDown(input.conversationId, input.sourceTopicId);
+      const existingTarget = this.state.conversation_topics[input.targetTopicId];
+      if (existingTarget) {
+        if (existingTarget.forkedFrom?.requestId !== input.requestId) {
+          throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+        }
+        if (this.store.topicForkMessageCount(input.targetTopicId) === 0) {
+          throw new ConversationError(
+            "topic_fork_history_missing",
+            `fork target "${input.targetTopicId}" exists but its copied history is missing; delete the corrupt target and retry with a fresh id`,
+          );
+        }
+        if (existingTarget.status === "deleting" || this.store.isTopicDeleting(input.targetTopicId)) {
+          throw new ConversationError("topic_deleting", `topic "${input.targetTopicId}" is deleting`);
+        }
+        return existingTarget;
+      }
+      if (this.store.topicForkMessageCount(input.targetTopicId) > 0) {
+        throw new ConversationError(
+          "topic_fork_history_missing",
+          `fork target "${input.targetTopicId}" holds a committed copy with no Topic record; retry with a fresh target id`,
+        );
+      }
+      const boundary = this.resolveForkPoint(input.conversationId, liveSource, point);
+      const copied = this.store.copyTopicForkMessages({
+        conversationId: input.conversationId,
+        ...(boundary.boundaryRunId !== undefined ? { boundaryRunId: boundary.boundaryRunId } : {}),
+        sourceTopicId: input.sourceTopicId,
+        targetTopicId: input.targetTopicId,
+        throughSeq: boundary.throughSeq,
+        limit: MAX_FORK_MESSAGES,
+      });
+      if (copied.copiedMessages === 0) {
+        throw new ConversationError("topic_fork_empty", `topic "${input.sourceTopicId}" has no messages to fork`);
+      }
+      const timestamp = this.now().toISOString();
+      const topic: ConversationTopic = {
+        id: input.targetTopicId,
+        conversationId: input.conversationId,
+        title: input.title?.trim() ? input.title.trim() : `${liveSource.title} fork`,
+        status: "active",
+        ...(liveSource.executionTarget ? { executionTarget: { ...liveSource.executionTarget } } : {}),
+        ...(liveSource.maxConcurrentMemberTurns !== undefined
+          ? { maxConcurrentMemberTurns: liveSource.maxConcurrentMemberTurns }
+          : {}),
+        forkedFrom: {
+          requestId: input.requestId,
+          sourceConversationId: input.conversationId,
+          sourceTopicId: input.sourceTopicId,
+          sourceTitle: liveSource.title,
+          ...(boundary.boundaryRunId !== undefined ? { sourceRunId: boundary.boundaryRunId } : {}),
+          throughSeq: boundary.throughSeq,
+          rootTopicId: liveSource.forkedFrom?.rootTopicId ?? input.sourceTopicId,
+          copiedMessages: copied.copiedMessages,
+          omittedMessages: copied.omittedMessages,
+          createdAt: timestamp,
+        },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const next = structuredClone(this.state);
+      next.conversation_topics[topic.id] = topic;
+      await this.persist(next);
+      return topic;
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: forked });
+    return forked;
+  }
+
+  private assertForkTargetTopicIdShape(sourceTopicId: string, targetTopicId: string): void {
+    if (typeof targetTopicId !== "string" || !targetTopicId.startsWith("topic_") || targetTopicId.startsWith("topic_peer_")) {
+      throw new ConversationError("invalid-payload", `"${targetTopicId}" is not a forkable Topic id`);
+    }
+    if (targetTopicId === sourceTopicId) {
+      throw new ConversationError("topic_exists", `topic "${targetTopicId}" already exists`);
+    }
+  }
+
+  private resolveForkPoint(
+    conversationId: string,
+    source: ConversationTopic,
+    point: ThreadForkSourcePoint,
+  ): { throughSeq: number; boundaryRunId?: string } {
+    if (point.type === "run") {
+      const run = this.store.getRun(point.runId);
+      if (!run || run.conversationId !== conversationId || run.topicId !== source.id) {
+        throw new ConversationError("topic_not_found", `topic "${source.id}" does not belong to this Group`);
+      }
+      if (!TERMINAL_RUN_STATES.includes(run.state)) {
+        throw new ConversationError("topic_fork_source_unsettled", `run "${run.id}" has not settled`);
+      }
+      const throughSeq = this.forkThroughSeq(run);
+      if (throughSeq === undefined) {
+        throw new ConversationError("topic_fork_source_changed", `run "${run.id}" changed while forking`);
+      }
+      return { throughSeq, boundaryRunId: run.id };
+    }
+    const terminal = this.store.listRuns(conversationId, source.id)
+      .filter((run) => TERMINAL_RUN_STATES.includes(run.state));
+    const latest = terminal[terminal.length - 1];
+    if (latest) {
+      const throughSeq = this.forkThroughSeq(latest);
+      if (throughSeq === undefined) {
+        throw new ConversationError("topic_fork_source_changed", `run "${latest.id}" changed while forking`);
+      }
+      return { throughSeq, boundaryRunId: latest.id };
+    }
+    const unsettled = this.store.listRuns(conversationId, source.id)
+      .filter((run) => this.isUnsettledRun(run.state));
+    if (unsettled.length > 0) {
+      throw new ConversationError("topic_fork_source_unsettled", `topic "${source.id}" has no settled Run to fork`);
+    }
+    if (this.store.maxTopicSeq(conversationId, source.id) === 0) {
+      throw new ConversationError("topic_fork_empty", `topic "${source.id}" has no messages to fork`);
+    }
+    if (!source.forkedFrom) {
+      throw new ConversationError("topic_fork_source_unsettled", `topic "${source.id}" has no settled Run to fork`);
+    }
+    return { throughSeq: this.store.maxTopicSeq(conversationId, source.id) };
+  }
+
+  private forkThroughSeq(run: ConversationRun): number | undefined {
+    const request = this.store.getMessage(run.requestMessageId);
+    if (!request || request.conversationId !== run.conversationId || request.topicId !== run.topicId) {
+      return undefined;
+    }
+    return Math.max(request.seq, this.store.maxRunSeq(run.id) ?? 0);
   }
 
   /**
@@ -3332,6 +3516,19 @@ export class ConversationRunService {
       || this.state.conversations[conversationId]?.lifecycle === "deleting"
     ) {
       throw new ConversationError("conversation_deleting", "conversation is deleting");
+    }
+  }
+
+  private assertForkSourceNotTearingDown(conversationId: string, topicId: string): void {
+    if (
+      this.store.isConversationDeleting(conversationId)
+      || this.store.isTopicDeleting(topicId)
+      || this.store.isTopicResetting(topicId)
+    ) {
+      throw new ConversationError(
+        this.store.isTopicResetting(topicId) ? "topic_resetting" : "conversation_deleting",
+        "conversation is deleting",
+      );
     }
   }
 

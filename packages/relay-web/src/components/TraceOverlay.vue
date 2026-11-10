@@ -48,6 +48,8 @@ const props = defineProps<{
   interactions?: PendingInteractionState[];
   capability?: { cancelMember: boolean };
   cancelPending?: boolean;
+  /** Terminal Run and the instance can fork: offers the run-level entry. */
+  forkAvailable?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -63,6 +65,7 @@ const emit = defineEmits<{
   interactionDecline: [requestId: string];
   interactionCancel: [requestId: string];
   interactionDismiss: [requestId: string];
+  fork: [];
 }>();
 
 const selectedMember = computed(() =>
@@ -110,7 +113,8 @@ function closeSheet(): void {
           variant="sheet" :run="run"
           :topic-title="topicTitle"
           :attempt="attempt" :attempts="attempts"
-          @close="navigateBack" @attempt="emit('attempt', $event)"
+          :fork-available="forkAvailable"
+          @close="navigateBack" @attempt="emit('attempt', $event)" @fork="emit('fork')"
         />
       </template>
       <ConversationRunDetailContent
@@ -145,7 +149,8 @@ function closeSheet(): void {
       :member-turns="memberTurns" :selected-member-turn-id="selectedMember?.id"
       :participants="participants" :budget="budget" :interactions="interactions"
       :capability="capability" :cancel-pending="cancelPending"
-      @close="emit('close')" @attempt="emit('attempt', $event)"
+      :fork-available="forkAvailable"
+      @close="emit('close')" @attempt="emit('attempt', $event)" @fork="emit('fork')"
       @load-more="emit('loadMore')" @load-earlier="emit('loadEarlier')" @retry-trace="emit('retryTrace')"
       @select-member="emit('selectMember', $event)" @stop-member="emit('stopMember', $event)"
       @interaction-answer="(requestId, key, value) => emit('interactionAnswer', requestId, key, value)"

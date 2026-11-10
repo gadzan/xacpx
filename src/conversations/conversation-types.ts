@@ -1,4 +1,4 @@
-import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import type { PromptAttachmentRef, ThreadForkSourcePointDto } from "@ganglion/xacpx-relay-protocol";
 import type { BotProfileSnapshot } from "../bots/bot-types";
 
 export type ConversationKind = "bot" | "group";
@@ -215,6 +215,27 @@ export interface ConversationRecord {
   updatedAt: string;
 }
 
+/** Where `forkGroupTopic` cuts the source Topic: one shape on both ends. */
+export type ThreadForkSourcePoint = ThreadForkSourcePointDto;
+
+/** Provenance of a Topic created by a fork. The copied messages live in the
+ *  target Topic; this record is display/provenance metadata only. */
+export interface ConversationTopicFork {
+  requestId: string;
+  sourceConversationId: string;
+  sourceTopicId: string;
+  /** Source title at fork time, so the banner survives a source delete. */
+  sourceTitle: string;
+  /** Absent for a pure-snapshot boundary (a fork with no settled Run). */
+  sourceRunId?: string;
+  throughSeq: number;
+  /** Root of the fork chain; the source id when the source is not a fork. */
+  rootTopicId: string;
+  copiedMessages: number;
+  omittedMessages: number;
+  createdAt: string;
+}
+
 export interface ConversationTopic {
   id: string;
   conversationId: string;
@@ -241,6 +262,8 @@ export interface ConversationTopic {
    *  persist it on Group Topics; direct Topics resolve execution from the
    *  owning Bot profile instead. */
   executionTarget?: ExecutionTarget;
+  /** Present only on a Topic created by a fork. */
+  forkedFrom?: ConversationTopicFork;
 }
 
 export interface ConversationMessage {
@@ -273,6 +296,8 @@ export interface ConversationMessage {
     sessionAlias: string;
     turnId?: string;
   };
+  /** Source message this row was copied from, when the Topic is a fork. */
+  forkedFromMessageId?: string;
 }
 
 export interface PublicHandoffEnvelope {
@@ -481,6 +506,10 @@ export const TERMINAL_RUN_STATES: readonly ConversationRunState[] = [
   "cancelled",
   "indeterminate",
 ];
+/** Copy cap for a Topic fork snapshot. Matches `PUBLIC_TRANSCRIPT_MESSAGES`:
+ *  a first Group prompt never renders more than this, so copying further
+ *  history would cost storage without reaching the model. */
+export const MAX_FORK_MESSAGES = 500;
 export const TERMINAL_MEMBER_STATES: readonly MemberTurnState[] = [
   "completed",
   "failed",

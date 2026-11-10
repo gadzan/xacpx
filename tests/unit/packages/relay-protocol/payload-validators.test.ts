@@ -704,3 +704,33 @@ test("the file write switch RPCs accept only their exact shapes", () => {
     expect(parseControlPayload(MSG.filesSettingsUpdate, bad)).toBeNull();
   }
 });
+
+test("group.topics.fork validates the tagged boundary and stays permissive on extras", () => {
+  const base = {
+    conversationId: "conversation_g",
+    sourceTopicId: "topic_src",
+    targetTopicId: "topic_dst",
+    requestId: "fork-1",
+  };
+  expect(parseControlPayload(MSG.groupTopicsFork, base)).toEqual(base);
+  expect(parseControlPayload(MSG.groupTopicsFork, { ...base, sourcePoint: { type: "latest_stable" } })).not.toBeNull();
+  expect(parseControlPayload(MSG.groupTopicsFork, {
+    ...base, sourcePoint: { type: "run", runId: "run_1" }, title: "Fork",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.groupTopicsFork, { ...base, unrelatedExtra: true })).not.toBeNull();
+  for (const bad of [
+    {},
+    { ...base, conversationId: 1 },
+    { ...base, sourceTopicId: undefined },
+    { ...base, targetTopicId: null },
+    { ...base, requestId: 2 },
+    { ...base, title: 3 },
+    { ...base, sourcePoint: {} },
+    { ...base, sourcePoint: { type: "run" } },
+    { ...base, sourcePoint: { type: "run", runId: 1 } },
+    { ...base, sourcePoint: "latest_stable" },
+    { ...base, sourcePoint: { type: "checkpoint", runId: "r" } },
+  ]) {
+    expect(parseControlPayload(MSG.groupTopicsFork, bad)).toBeNull();
+  }
+});

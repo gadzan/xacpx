@@ -212,6 +212,7 @@ var MSG = {
   groupTopicsSetIsolation: "control.group.topics.set-isolation",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
+  groupTopicsFork: "control.group.topics.fork",
   conversationCompletionsGet: "control.conversation.completions.get",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
@@ -275,6 +276,7 @@ var RELAY_CAPABILITIES = {
   runsCancelMemberV1: "runs.cancel-member.v1",
   runsPauseV1: "runs.pause.v1",
   groupTopicIsolationV1: "group.topics.isolation.v1",
+  groupTopicForkV1: "group.topics.fork.v1",
   roundtableV1: "conversations.roundtable.v1",
   conversationTimelineV1: "conversations.timeline.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1",
@@ -705,17 +707,25 @@ function validExecutionTarget(value) {
   const t = value;
   return typeof t.workspace === "string" && (t.cwd === undefined || typeof t.cwd === "string") && (t.isolation === "shared" || t.isolation === "shared-single-writer" || t.isolation === "worktree-per-member");
 }
+function validTopicFork(value) {
+  if (value === undefined)
+    return true;
+  if (typeof value !== "object" || value === null)
+    return false;
+  const f = value;
+  return isBoundedStr(f.requestId, 128) && typeof f.sourceConversationId === "string" && typeof f.sourceTopicId === "string" && typeof f.sourceTitle === "string" && (f.sourceRunId === undefined || typeof f.sourceRunId === "string") && isNonNegInt(f.throughSeq) && typeof f.rootTopicId === "string" && isNonNegInt(f.copiedMessages) && isNonNegInt(f.omittedMessages) && typeof f.createdAt === "string";
+}
 function validTopicSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64) && (c.contextGeneration === undefined || typeof c.contextGeneration === "number" && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1) && (c.defaultDirect === undefined || c.defaultDirect === true);
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64) && (c.contextGeneration === undefined || typeof c.contextGeneration === "number" && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1) && validTopicFork(c.forkedFrom) && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
 function validConversationMessage(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.seq === "number" && (c.role === "human" || c.role === "bot" || c.role === "system") && typeof c.content === "string" && typeof c.createdAt === "string" && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId) && (c.handoff === undefined || c.role === "system" && typeof c.runId === "string" && typeof c.senderBotId === "string" && validPublicHandoff(c.handoff));
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.seq === "number" && (c.role === "human" || c.role === "bot" || c.role === "system") && typeof c.content === "string" && typeof c.createdAt === "string" && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId) && optStr(c.forkedFromMessageId) && (c.handoff === undefined || c.role === "system" && typeof c.runId === "string" && typeof c.senderBotId === "string" && validPublicHandoff(c.handoff));
 }
 function validPublicHandoff(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -1899,6 +1909,19 @@ var validateGroupTopicsTeardown = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? o : null;
 };
+var validateGroupTopicsFork = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.conversationId) || !isStr(o.sourceTopicId) || !isStr(o.targetTopicId) || !isStr(o.requestId)) {
+    return null;
+  }
+  if (o.title !== undefined && !isStr(o.title))
+    return null;
+  const point = o.sourcePoint;
+  if (point !== undefined && !(isObj(point) && (point.type === "latest_stable" || point.type === "run" && isStr(point.runId)))) {
+    return null;
+  }
+  return o;
+};
 var validateGroupTopicsSetIsolation = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) && isCreateIsolation(o.isolation) ? o : null;
@@ -2386,6 +2409,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsSetIsolation]: validateGroupTopicsSetIsolation,
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
+  [MSG.groupTopicsFork]: validateGroupTopicsFork,
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationPromptWithPolicy]: validateConversationPolicyPrompt,
   [MSG.conversationWorktree]: validateConversationWorktree,

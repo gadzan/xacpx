@@ -413,6 +413,20 @@ export interface GroupTopicCreateTargetDto {
   isolation: "shared" | "shared-single-writer" | "worktree-per-member";
 }
 
+/** Provenance of a Topic created by `control.group.topics.fork`. */
+export interface TopicForkDto {
+  requestId: string;
+  sourceConversationId: string;
+  sourceTopicId: string;
+  sourceTitle: string;
+  sourceRunId?: string;
+  throughSeq: number;
+  rootTopicId: string;
+  copiedMessages: number;
+  omittedMessages: number;
+  createdAt: string;
+}
+
 export interface TopicSummaryDto {
   maxConcurrentMemberTurns?: number;
   id: string;
@@ -424,6 +438,8 @@ export interface TopicSummaryDto {
   executionTarget?: ExecutionTargetDto;
   /** Absent means generation 1. */
   contextGeneration?: number;
+  /** Present only when this Topic was created by a fork. */
+  forkedFrom?: TopicForkDto;
   /** Present only for the Direct default topic. */
   defaultDirect?: true;
 }
@@ -510,6 +526,8 @@ export interface ConversationMessageDto {
   memberTurnId?: string;
   createdAt: string;
   promptRequestId?: string;
+  /** Source message this row was copied from, when the Topic is a fork. */
+  forkedFromMessageId?: string;
   /** Safe display metadata only; never carries daemon filePath. Omitted when the message has no attachments. */
   attachments?: AttachmentMetadata[];
 }

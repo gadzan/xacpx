@@ -236,4 +236,46 @@ describe("TraceOverlay.vue run-wide mode", () => {
     expect(body.querySelector('[data-test="run-stop-member"]')).not.toBeNull();
     wrapper.unmount();
   });
+
+  it("offers the run-level fork entry on desktop when forking is available", () => {
+    const wrapper = mount(TraceOverlay, {
+      attachTo: document.body,
+      props: {
+        id: "run-drawer-fork-test",
+        run: run({ state: "completed" }),
+        memberTurns: members,
+        selectedMemberTurnId: "turn_b",
+        participants,
+        capability: { cancelMember: true },
+        budget: { consumed: 3, max: 6 },
+        anchorEl: null,
+        forkAvailable: true,
+      },
+      global: { plugins: [i18n] },
+    });
+    const button = document.body.querySelector('[data-test="group-fork-run-button"]');
+    expect(button).not.toBeNull();
+    (button as HTMLButtonElement).click();
+    expect(wrapper.emitted("fork")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("hides the run-level fork entry on desktop when forking is unavailable", () => {
+    const wrapper = mount(TraceOverlay, {
+      attachTo: document.body,
+      props: {
+        id: "run-drawer-no-fork-test",
+        run: run({ state: "completed" }),
+        memberTurns: members,
+        selectedMemberTurnId: "turn_b",
+        participants,
+        capability: { cancelMember: true },
+        budget: { consumed: 3, max: 6 },
+        anchorEl: null,
+      },
+      global: { plugins: [i18n] },
+    });
+    expect(document.body.querySelector('[data-test="group-fork-run-button"]')).toBeNull();
+    wrapper.unmount();
+  });
 });

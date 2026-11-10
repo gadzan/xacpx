@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { Loader2, MessagesSquare } from "lucide-vue-next";
-import type { ConversationTimelineDto } from "@ganglion/xacpx-relay-protocol";
+import { GitFork, Loader2, MessagesSquare } from "lucide-vue-next";
+import type { ConversationTimelineDto, TopicForkDto } from "@ganglion/xacpx-relay-protocol";
 import TimelineRow from "./TimelineRow.vue";
 import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import {
@@ -36,11 +36,16 @@ const props = defineProps<{
   isRunQueued?: (runId: string | undefined) => boolean;
   /** Async loader; the component keeps the prepend anchor while it runs. */
   loadOlder?: () => Promise<void> | void;
+  /** Present when this room is a fork; renders the banner above the scroller. */
+  forkedFrom?: TopicForkDto | null;
+  /** False once the source Topic is gone, so the jump-to-source link is dropped. */
+  forkSourceAvailable?: boolean;
 }>();
 
 const emit = defineEmits<{
   loadOlder: [];
   openDetail: [payload: { runId?: string; memberTurnId?: string }];
+  openSourceTopic: [];
 }>();
 
 const rows = computed(() => buildTimelineRows({
@@ -133,6 +138,31 @@ defineExpose({ scrollToBottom });
 
 <template>
   <div class="relative flex min-h-0 flex-1 flex-col">
+    <div
+      v-if="forkedFrom"
+      data-test="topic-fork-banner"
+      class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline bg-surface-2 px-4 py-2 text-xs text-fg-muted lg:px-5"
+    >
+      <GitFork :size="13" class="shrink-0 text-accent" />
+      <span data-test="topic-fork-banner-title">
+        {{ $t("group.topic.forkBanner", { title: forkedFrom.sourceTitle }) }}
+      </span>
+      <span data-test="topic-fork-banner-count">
+        {{ $t("group.topic.forkCopied", { count: forkedFrom.copiedMessages }) }}
+      </span>
+      <span v-if="forkedFrom.omittedMessages > 0" data-test="topic-fork-banner-omitted">
+        {{ $t("group.topic.forkOmitted", { count: forkedFrom.omittedMessages }) }}
+      </span>
+      <button
+        v-if="forkSourceAvailable"
+        type="button"
+        data-test="topic-fork-banner-source"
+        class="font-medium text-accent underline-offset-2 hover:underline"
+        @click="emit('openSourceTopic')"
+      >
+        {{ $t("group.topic.forkSource") }}
+      </button>
+    </div>
     <div
       ref="scroller"
       data-test="conversation-timeline-scroller"

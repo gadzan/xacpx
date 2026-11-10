@@ -372,3 +372,54 @@ describe("ConversationStatusBar.vue", () => {
     wrapper.unmount();
   });
 });
+
+describe("ConversationTimeline fork banner", () => {
+  const fork = {
+    requestId: "fork-1",
+    sourceConversationId: CONVERSATION,
+    sourceTopicId: "topic_source",
+    sourceTitle: "Original",
+    throughSeq: 2,
+    rootTopicId: "topic_source",
+    copiedMessages: 12,
+    omittedMessages: 3,
+    createdAt: NOW,
+  };
+
+  function mountForked(input: { sourceAvailable?: boolean; forkedFrom?: typeof fork } = {}) {
+    return mount(ConversationTimeline, {
+      props: {
+        room: GROUP_ROOM,
+        timeline: timeline([messageEntry(1)]),
+        forkedFrom: input.forkedFrom ?? { ...fork, omittedMessages: 0 },
+        forkSourceAvailable: input.sourceAvailable ?? true,
+      },
+      global: { plugins: [i18n] },
+    });
+  }
+
+  it("renders the banner outside the scroller and adds no timeline row", () => {
+    const wrapper = mountForked();
+    const banner = wrapper.find('[data-test="topic-fork-banner"]');
+    expect(banner.exists()).toBe(true);
+    expect(banner.text()).toContain("Original");
+    expect(wrapper.find('[data-test="topic-fork-banner-count"]').text()).toContain("12");
+    expect(wrapper.find('[data-test="topic-fork-banner-omitted"]').exists()).toBe(false);
+    const scroller = wrapper.find('[data-test="conversation-timeline-scroller"]');
+    expect(scroller.element.contains(banner.element)).toBe(false);
+    expect(wrapper.findAll("[data-row-key]")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("shows omitted history and only links a surviving source", async () => {
+    const wrapper = mountForked({ forkedFrom: fork });
+    expect(wrapper.find('[data-test="topic-fork-banner-omitted"]').text()).toContain("3");
+    await wrapper.find('[data-test="topic-fork-banner-source"]').trigger("click");
+    expect(wrapper.emitted("openSourceTopic")).toHaveLength(1);
+    wrapper.unmount();
+
+    const gone = mountForked({ sourceAvailable: false });
+    expect(gone.find('[data-test="topic-fork-banner-source"]').exists()).toBe(false);
+    gone.unmount();
+  });
+});

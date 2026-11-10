@@ -9,11 +9,13 @@ import type {
   MemberTurnSummaryDto,
   PromptAttachmentRef,
   InteractionValueDto,
+  TopicSummaryDto,
 } from "@ganglion/xacpx-relay-protocol";
-import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
+import { isTerminalRunState, useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import {
   supportsConversationTimelineV1,
+  supportsGroupTopicFork,
   supportsGroupTopicIsolation,
   supportsRunsCancelMember,
   useInstancesStore,
@@ -23,6 +25,7 @@ import ConversationStatusBar from "./ConversationStatusBar.vue";
 import TraceOverlay from "./TraceOverlay.vue";
 import GroupComposer from "./GroupComposer.vue";
 import GroupTopicDialog from "./GroupTopicDialog.vue";
+import ForkTopicDialog from "./ForkTopicDialog.vue";
 import GroupDialog from "./GroupDialog.vue";
 import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
 import TopicSwitcher from "./TopicSwitcher.vue";
@@ -101,6 +104,63 @@ const isolationSupported = computed(() => {
   const instId = groupsStore.instanceId;
   return instId ? supportsGroupTopicIsolation(instancesStore.byId(instId)) : false;
 });
+const forkSupported = computed(() => {
+  const instId = groupsStore.instanceId;
+  return instId ? supportsGroupTopicFork(instancesStore.byId(instId)) : false;
+});
+
+interface ForkDialogTarget {
+  topic: TopicSummaryDto;
+  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string };
+  resolvedRun?: ConversationRunDto;
+}
+
+const forkTarget = ref<ForkDialogTarget | null>(null);
+
+/** Newest terminal Run the client already knows about for this Topic: label
+ *  only. An empty cache means the dialog says "latest finished run". */
+function newestCachedTerminalRun(topicId: string): ConversationRunDto | undefined {
+  const cached = [
+    ...Object.values(groupsStore.runHistoryDetails).filter((run) => run.topicId === topicId),
+    ...(groupsStore.activeRun?.topicId === topicId ? [groupsStore.activeRun] : []),
+  ].filter((run) => isTerminalRunState(run.state));
+  return cached.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))[0];
+}
+
+function openForkFromTopic(topic: TopicSummaryDto): void {
+  if (!forkSupported.value) return;
+  const resolvedRun = newestCachedTerminalRun(topic.id);
+  forkTarget.value = {
+    topic,
+    sourcePoint: { type: "latest_stable" },
+    ...(resolvedRun ? { resolvedRun } : {}),
+  };
+}
+
+function openForkFromRun(run: ConversationRunDto): void {
+  const topic = groupsStore.currentTopics.find((candidate) => candidate.id === run.topicId);
+  if (!topic || !forkSupported.value || !isTerminalRunState(run.state)) return;
+  // The dialog is a separate modal: retire the drawer/sheet first so the two
+  // never stack and the dialog's submit is the topmost hit target.
+  closeTimelineDetail();
+  forkTarget.value = { topic, sourcePoint: { type: "run", runId: run.id }, resolvedRun: run };
+}
+
+const detailRunForkable = computed(() =>
+  forkSupported.value && !!detailRun.value && isTerminalRunState(detailRun.value.state));
+
+const forkSourceAvailable = computed(() => {
+  const sourceTopicId = groupsStore.currentTopic?.forkedFrom?.sourceTopicId;
+  return !!sourceTopicId && groupsStore.currentTopics.some((topic) => topic.id === sourceTopicId);
+});
+
+function openForkSourceTopic(): void {
+  const sourceTopicId = groupsStore.currentTopic?.forkedFrom?.sourceTopicId;
+  if (sourceTopicId && groupsStore.currentTopics.some((topic) => topic.id === sourceTopicId)) {
+    void groupsStore.switchTopic(sourceTopicId);
+  }
+}
+
 
 async function archiveTopic(topicId: string) {
   const ctx = requireTopicContext();
@@ -588,6 +648,7 @@ const worktreeRunId = computed(() => {
           :teardown-topic="teardownTopic"
           :clear-topic="clearTopic"
           :set-topic-isolation="isolationSupported ? setTopicIsolation : undefined"
+          :fork-topic="forkSupported ? openForkFromTopic : undefined"
           :abandon-unknown-runs="abandonUnknownRuns"
           @select="groupsStore.switchTopic"
           @create="newTopicDialogOpen = true"
@@ -628,6 +689,7 @@ const worktreeRunId = computed(() => {
             :teardown-topic="teardownTopic"
             :clear-topic="clearTopic"
             :set-topic-isolation="isolationSupported ? setTopicIsolation : undefined"
+            :fork-topic="forkSupported ? openForkFromTopic : undefined"
             :abandon-unknown-runs="abandonUnknownRuns"
             @select="groupsStore.switchTopic"
             @create="newTopicDialogOpen = true"
@@ -712,6 +774,9 @@ const worktreeRunId = computed(() => {
       :is-run-queued="groupsStore.isRunQueued"
       :load-older="timelineFeed.loadOlder"
       @open-detail="openTimelineDetail"
+      :forked-from="groupsStore.currentTopic?.forkedFrom ?? null"
+      :fork-source-available="forkSourceAvailable"
+      @open-source-topic="openForkSourceTopic"
     />
     <ConversationWorktreePanel v-if="timelineSupported && groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
       :instance-id="groupsStore.instanceId" :run-id="worktreeRunId" />
@@ -757,6 +822,13 @@ const worktreeRunId = computed(() => {
       v-if="newTopicDialogOpen"
       @close="newTopicDialogOpen = false"
     />
+    <ForkTopicDialog
+      v-if="forkTarget"
+      :source-topic="forkTarget.topic"
+      :source-point="forkTarget.sourcePoint"
+      :resolved-run="forkTarget.resolvedRun ?? null"
+      @close="forkTarget = null"
+    />
     <GroupDialog
       v-if="groupDialogOpen && group && groupsStore.instanceId"
       :instance-id="groupsStore.instanceId"
@@ -795,6 +867,7 @@ const worktreeRunId = computed(() => {
       :interactions="detailInteractions"
       :capability="detailCapability"
       :cancel-pending="!!stopPendingMember"
+      :fork-available="detailRunForkable"
       :topic-title="groupsStore.currentTopic?.title"
       :attempt="detailEffectiveAttempt"
       :attempts="detailTracePage?.attempts"
@@ -810,6 +883,7 @@ const worktreeRunId = computed(() => {
       @attempt="handleTimelineAttempt"
       @select-member="selectTimelineMember"
       @stop-member="handleDetailStopMember"
+      @fork="detailRun && openForkFromRun(detailRun)"
       @interaction-answer="handleDetailAnswer"
       @interaction-submit="handleDetailSubmit"
       @interaction-decline="handleDetailDecline"

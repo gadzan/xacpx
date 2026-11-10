@@ -227,7 +227,7 @@ const RUN_STATE_PRECEDENCE: Record<ConversationRunStateDto, number> = {
   indeterminate: 3,
 };
 
-function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean {
+export function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean {
   return state === "completed" || state === "failed" || state === "cancelled" || state === "indeterminate";
 }
 
@@ -442,6 +442,16 @@ function mergeMemberTurns(
     next[turn.id] = mergeMemberTurn(prior, turn);
   }
   return next;
+}
+
+export interface GroupTopicForkInput {
+  conversationId: string;
+  sourceTopicId: string;
+  /** Minted when the dialog opens and reused on every retry. */
+  targetTopicId: string;
+  requestId: string;
+  sourcePoint?: { type: "latest_stable" } | { type: "run"; runId: string };
+  title?: string;
 }
 
 const PERSISTED_GROUP_SELECTION_KEY = "xrelay.selectedGroup";
@@ -1561,7 +1571,19 @@ export const useGroupsStore = defineStore("groups", () => {
     upsertGroupTopic(targetInstanceId, res.topic);
     return res.topic;
   }
-
+  async function forkGroupTopic(
+    targetInstanceId: string,
+    input: GroupTopicForkInput,
+  ): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.groupTopicsFork, input),
+    );
+    upsertGroupTopic(targetInstanceId, res.topic);
+    if (instanceId.value === targetInstanceId && activeConversationId.value === input.conversationId) {
+      await switchTopic(res.topic.id);
+    }
+    return res.topic;
+  }
   function upsertGroupTopic(targetInstanceId: string, topic: TopicSummaryDto): void {
     const key = `${targetInstanceId}:${topic.conversationId}`;
     if (retiredTopicIds[key]?.has(topic.id)) return;
@@ -3829,6 +3851,7 @@ export const useGroupsStore = defineStore("groups", () => {
     teardownTopic,
     abandonRun,
     clearTopic,
+    forkGroupTopic,
     loadHistory,
     loadOlder,
     selectGroup,

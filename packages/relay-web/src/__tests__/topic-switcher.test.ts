@@ -361,3 +361,56 @@ describe("TopicSwitcher (Bot topics)", () => {
     expect(refreshExecutingTopics).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("TopicSwitcher (Group fork entry)", () => {
+  function mountGroup(forkTopic?: (topic: TopicSummaryDto) => void) {
+    return mount(TopicSwitcher, {
+      props: {
+        variant: "direct",
+        topics,
+        activeTopicId: "t-default",
+        previewTopic: vi.fn(async () => impact()),
+        renameTopic: vi.fn(async () => {}),
+        archiveTopic: vi.fn(async () => {}),
+        restoreTopic: vi.fn(async () => {}),
+        teardownTopic: vi.fn(async () => {}),
+        clearTopic: vi.fn(async () => {}),
+        ...(forkTopic ? { forkTopic } : {}),
+      },
+      global: { plugins: [i18n] },
+    });
+  }
+
+  it("offers Fork only when the capability entry is wired", async () => {
+    const hidden = mountGroup();
+    await hidden.find("[data-test='topic-menu']").trigger("click");
+    await hidden.findAll("[data-test='topic-row']")[1]!.find("[data-test='topic-row-more']").trigger("click");
+    expect(hidden.find("[data-test='menu-fork']").exists()).toBe(false);
+    hidden.unmount();
+
+    const forkTopic = vi.fn();
+    const shown = mountGroup(forkTopic);
+    await shown.find("[data-test='topic-menu']").trigger("click");
+    await shown.findAll("[data-test='topic-row']")[1]!.find("[data-test='topic-row-more']").trigger("click");
+    await shown.find("[data-test='menu-fork']").trigger("click");
+    expect(forkTopic).toHaveBeenCalledWith(expect.objectContaining({ id: "t-extra" }));
+    expect(shown.find("[data-test='topic-panel']").exists()).toBe(false);
+    shown.unmount();
+  });
+
+  it("keeps delete and clear reachable from the row menu", async () => {
+    const wrapper = mountGroup(vi.fn());
+    await wrapper.find("[data-test='topic-menu']").trigger("click");
+    await wrapper.findAll("[data-test='topic-row']")[1]!.find("[data-test='topic-row-more']").trigger("click");
+    await wrapper.find("[data-test='menu-delete']").trigger("click");
+    expect(wrapper.find("[data-test='topic-confirm']").exists()).toBe(true);
+    wrapper.unmount();
+
+    const cleared = mountGroup(vi.fn());
+    await cleared.find("[data-test='topic-menu']").trigger("click");
+    await cleared.findAll("[data-test='topic-row']")[0]!.find("[data-test='topic-row-more']").trigger("click");
+    await cleared.find("[data-test='menu-clear']").trigger("click");
+    expect(cleared.find("[data-test='topic-confirm']").exists()).toBe(true);
+    cleared.unmount();
+  });
+});

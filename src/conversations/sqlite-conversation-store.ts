@@ -58,6 +58,8 @@ import type {
   RoutingDecisionRecord,
   SettleCancelBatchInput,
   SettleCancelBatchResult,
+  TopicForkCopyInput,
+  TopicForkCopyResult,
   SettledCancelMember,
   TopicClearRetirement,
   TopicOperationKind,
@@ -196,6 +198,7 @@ interface MessageRow {
   run_id: string | null;
   source_turn_json: string | null;
   member_turn_id?: string | null;
+  forked_from_message_id?: string | null;
   created_at: string;
 }
 
@@ -371,6 +374,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL,
   group_say_json TEXT,
   member_turn_id TEXT,
+  forked_from_message_id TEXT,
   UNIQUE (topic_id, seq)
 );
 
@@ -466,6 +470,8 @@ CREATE TABLE IF NOT EXISTS pending_dispatches (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_topic_seq ON messages (topic_id, seq);
+-- idx_messages_fork_source is created by ensureForkedFromMessageColumn AFTER
+-- the column exists, so a pre-fork database can open this schema unchanged.
 -- idx_messages_member_turn is created by ensureMessageMemberTurnColumn AFTER
 -- the column exists, so a pre-P1a database can open this schema unchanged.
 CREATE INDEX IF NOT EXISTS idx_runs_topic_state ON runs (topic_id, state, created_at);
@@ -709,6 +715,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
     ...(optionalString(row.member_turn_id) ? { memberTurnId: row.member_turn_id as string } : {}),
     createdAt: row.created_at,
     ...(sourceTurn ? { sourceTurn } : {}),
+    ...(optionalString(row.forked_from_message_id) ? { forkedFromMessageId: row.forked_from_message_id as string } : {}),
   };
 }
 
@@ -985,6 +992,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensurePublicHandoffSchema();
     this.ensureRoundtableColumns();
     this.ensureMessageMemberTurnColumn();
+    this.ensureForkedFromMessageColumn();
     this.ensureExternalStopIngress();
     this.ensureLifecycleWorkspaceCleanupColumn();
     if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)").some(c => c.name === "input_metadata_json")) {
@@ -4597,6 +4605,87 @@ export class SqliteConversationStore implements ConversationStore {
       return { contextGeneration, reused: false };
     });
   }
+  copyTopicForkMessages(input: TopicForkCopyInput): TopicForkCopyResult {
+    return this.sqlite.transaction(() => {
+      const runFilter = "AND (run_id IS NULL OR run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ? AND rowid <= (SELECT rowid FROM runs WHERE id = ?)))";
+      const totalParams: Array<string | number> = input.boundaryRunId === undefined
+        ? [input.conversationId, input.sourceTopicId, input.throughSeq]
+        : [input.conversationId, input.sourceTopicId, input.throughSeq, input.conversationId, input.sourceTopicId, input.boundaryRunId];
+      const total = this.sqlite.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM messages
+         WHERE conversation_id = ? AND topic_id = ? AND seq <= ?
+         ${input.boundaryRunId === undefined ? "" : runFilter}`,
+        totalParams,
+      )?.n ?? 0;
+      const committed = this.sqlite.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM messages WHERE topic_id = ? AND forked_from_message_id IS NOT NULL",
+        [input.targetTopicId],
+      )?.n ?? 0;
+      if (committed > 0) {
+        const newest = this.maxTopicSeq(input.conversationId, input.targetTopicId);
+        return { copiedMessages: committed, omittedMessages: Math.max(0, total - committed), newestTargetSeq: newest };
+      }
+      const targetTotal = this.sqlite.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND topic_id = ?",
+        [input.conversationId, input.targetTopicId],
+      )?.n ?? 0;
+      if (targetTotal > 0) {
+        throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+      }
+      if (total === 0) {
+        return { copiedMessages: 0, omittedMessages: 0, newestTargetSeq: 0 };
+      }
+      const windowParams: Array<string | number> = input.boundaryRunId === undefined
+        ? [input.conversationId, input.sourceTopicId, input.throughSeq, input.limit]
+        : [input.conversationId, input.sourceTopicId, input.throughSeq, input.conversationId, input.sourceTopicId, input.boundaryRunId, input.limit];
+      const rows = this.sqlite.all<MessageRow>(
+        `SELECT * FROM messages
+         WHERE conversation_id = ? AND topic_id = ? AND seq <= ?
+         ${input.boundaryRunId === undefined ? "" : runFilter}
+         ORDER BY seq DESC LIMIT ?`,
+        windowParams,
+      );
+      rows.reverse();
+      for (const row of rows) {
+        const seq = this.allocateSeq(input.conversationId, input.targetTopicId);
+        this.sqlite.run(
+          `INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, media_json, run_id, source_turn_json, created_at, group_say_json, member_turn_id, handoff_json, input_metadata_json, forked_from_message_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, ?)`,
+          [this.ids.messageId(), input.conversationId, input.targetTopicId, seq, row.role, row.sender_bot_id, row.content, row.media_json ?? null, row.created_at, row.id],
+        );
+      }
+      const newestTargetSeq = this.maxTopicSeq(input.conversationId, input.targetTopicId);
+      return { copiedMessages: rows.length, omittedMessages: total - rows.length, newestTargetSeq };
+    }, "immediate");
+  }
+
+  topicForkMessageCount(topicId: string): number {
+    return this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM messages WHERE topic_id = ? AND forked_from_message_id IS NOT NULL",
+      [topicId],
+    )?.n ?? 0;
+  }
+
+  topicMessageCount(conversationId: string, topicId: string): number {
+    return this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    )?.n ?? 0;
+  }
+
+  maxTopicSeq(conversationId: string, topicId: string): number {
+    return this.sqlite.get<{ seq: number | null }>(
+      "SELECT MAX(seq) AS seq FROM messages WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    )?.seq ?? 0;
+  }
+
+  maxRunSeq(runId: string): number | undefined {
+    return this.sqlite.get<{ seq: number | null }>(
+      "SELECT MAX(seq) AS seq FROM messages WHERE run_id = ?",
+      [runId],
+    )?.seq ?? undefined;
+  }
 
   private recordPromptReceipts(conversationId: string, topicId: string, contextGeneration: number): void {
     const rows = this.sqlite.all<{ request_id: string }>(
@@ -4860,6 +4949,23 @@ export class SqliteConversationStore implements ConversationStore {
             WHERE mt.id = json_extract(messages.group_say_json, '$.memberTurnId')
               AND mt.run_id = messages.run_id
           )`);
+    });
+  }
+  /**
+   * Fork provenance (`messages.forked_from_message_id`): the source message
+   * a fork row was copied from. New databases get the column and index from
+   * SCHEMA; older databases are upgraded here. No backfill: pre-fork rows
+   * have no copied history, so they stay NULL.
+   */
+  private ensureForkedFromMessageColumn(): void {
+    this.sqlite.transaction(() => {
+      if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)")
+        .some((column) => column.name === "forked_from_message_id")) {
+        this.sqlite.exec("ALTER TABLE messages ADD COLUMN forked_from_message_id TEXT");
+      }
+      this.sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_fork_source
+        ON messages (topic_id, forked_from_message_id)
+        WHERE forked_from_message_id IS NOT NULL`);
     });
   }
 

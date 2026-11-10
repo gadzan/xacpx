@@ -38,6 +38,7 @@ import {
   type GroupsUpdatePayload,
   type GroupTopicsArchivePayload,
   type GroupTopicsCreatePayload,
+  type GroupTopicsForkPayload,
   type GroupTopicsSetIsolationPayload,
   type GroupTopicsTeardownPayload,
   type FsCopyPayload,
@@ -725,6 +726,18 @@ const validateGroupTopicsTeardown: Validator<GroupTopicsTeardownPayload> = (p) =
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? (o as unknown as GroupTopicsTeardownPayload) : null;
 };
+const validateGroupTopicsFork: Validator<GroupTopicsForkPayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.conversationId) || !isStr(o.sourceTopicId) || !isStr(o.targetTopicId) || !isStr(o.requestId)) {
+    return null;
+  }
+  if (o.title !== undefined && !isStr(o.title)) return null;
+  const point = o.sourcePoint;
+  if (point !== undefined && !(isObj(point) && (point.type === "latest_stable" || (point.type === "run" && isStr(point.runId))))) {
+    return null;
+  }
+  return o as unknown as GroupTopicsForkPayload;
+};
 const validateGroupTopicsSetIsolation: Validator<GroupTopicsSetIsolationPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) && isCreateIsolation(o.isolation)
@@ -1271,7 +1284,7 @@ export type ControlRpcType =
   | typeof MSG.groupsCreate | typeof MSG.groupsUpdate | typeof MSG.groupsDelete | typeof MSG.groupsGet
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsSetIsolation
-  | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
+  | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown | typeof MSG.groupTopicsFork
   | typeof MSG.conversationPrompt | typeof MSG.conversationPromptWithPolicy | typeof MSG.conversationHistory
   | typeof MSG.conversationTimeline
   | typeof MSG.conversationWorktree
@@ -1378,6 +1391,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsSetIsolation]: validateGroupTopicsSetIsolation,
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
+  [MSG.groupTopicsFork]: validateGroupTopicsFork,
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationPromptWithPolicy]: validateConversationPolicyPrompt,
   [MSG.conversationWorktree]: validateConversationWorktree,
