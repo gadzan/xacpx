@@ -1287,6 +1287,14 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsTeardown}: malformed payload`);
       return await control.teardownGroupTopic(input.conversationId, input.topicId);
     }
+    case MSG.groupTopicsFork: {
+      const input = parseControlPayload(MSG.groupTopicsFork, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsFork}: malformed payload`);
+      if (typeof control.forkGroupTopic !== "function") {
+        return errorPayload("unsupported-rpc", "daemon does not support Group topic forking");
+      }
+      return { topic: await control.forkGroupTopic(input) };
+    }
     case MSG.conversationPrompt:
     case MSG.conversationPromptWithPolicy: {
       const policyOperation = envelope.type === MSG.conversationPromptWithPolicy;

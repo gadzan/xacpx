@@ -566,6 +566,27 @@ export interface ClaimRecoveryScope {
   conversationId?: string;
   topicId?: string;
 }
+/** Input for the SQLite fork copy: one transaction copies the source
+ *  boundary's public history into the target Topic with fresh seq. */
+export interface TopicForkCopyInput {
+  conversationId: string;
+  /** Boundary run the fork cuts at (already verified terminal by the
+   *  caller); absent for a pure-snapshot boundary with no settled Run. */
+  boundaryRunId?: string;
+  sourceTopicId: string;
+  targetTopicId: string;
+  throughSeq: number;
+  limit: number;
+}
+
+/** Result of the SQLite fork copy: committed rows, newest-first windowed. */
+export interface TopicForkCopyResult {
+  copiedMessages: number;
+  omittedMessages: number;
+  /** New seq assigned to the newest copied row. */
+  newestTargetSeq: number;
+}
+
 
 export interface ConversationStore {
   readonly traces: SqliteMemberTurnTraceStore;
@@ -869,6 +890,22 @@ export interface ConversationStore {
    * the generation again.
    */
   retireTopicContext(input: TopicClearRetirement): TopicOperationReceipt & { reused: boolean };
+  /**
+   * Copy the source Topic's public history at or before `throughSeq` into
+   * the target Topic in one SQLite transaction. Only Runs accepted at or
+   * before the boundary Run count; the newest `limit` rows win and older
+   * rows surface as `omittedMessages`. Idempotent per target: committed
+   * fork rows (nonzero `forked_from_message_id` count) are reused, and a
+   * nonzero target total without fork provenance is left untouched so the
+   * caller can refuse `topic_exists` instead of polluting a live Topic.
+   */
+  copyTopicForkMessages(input: TopicForkCopyInput): TopicForkCopyResult;
+  /** Committed fork rows for the target Topic. Zero means no fork copy. */
+  topicForkMessageCount(topicId: string): number;
+  /** Every message row for the target Topic, forked or not. */
+  topicMessageCount(conversationId: string, topicId: string): number;
+  /** Largest `seq` stored for the Topic, or 0 when empty. */
+  maxTopicSeq(conversationId: string, topicId: string): number;
   deleteConversationRows(conversationId: string): void;
   close(): void;
 }

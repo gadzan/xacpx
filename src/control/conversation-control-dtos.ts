@@ -13,6 +13,7 @@ import {
   type ConversationRecord,
   type ConversationRun,
   type ConversationTopic,
+  type ConversationTopicFork,
   type GroupDefaultRouting,
   type GroupPublicMemoryProjection,
   type MemberTurnRecord,
@@ -193,6 +194,8 @@ export interface TopicSummaryDto {
   executionTarget?: ConversationTopic["executionTarget"];
   /** Absent means generation 1. */
   contextGeneration?: number;
+  /** Present only on a Topic created by a fork. */
+  forkedFrom?: ConversationTopicFork;
   /** Present only for the virtual or materialized Direct default topic. */
   defaultDirect?: true;
 }
@@ -267,6 +270,8 @@ export interface ConversationMessageDto {
   runId?: string;
   /** Durable physical execution that produced this message (design §5.4). */
   memberTurnId?: string;
+  /** Source message this row was copied from, when the Topic is a fork. */
+  forkedFromMessageId?: string;
   createdAt: string;
   /** Join onto live turn-started.promptRequestId when this message came from a MemberTurn. */
   promptRequestId?: string;
@@ -540,6 +545,7 @@ export function toTopicSummary(
     conversationId: topic.conversationId,
     title: topic.title,
     status: topic.status,
+    ...(topic.forkedFrom ? { forkedFrom: { ...topic.forkedFrom } } : {}),
     createdAt: topic.createdAt,
     updatedAt: topic.updatedAt,
     ...(topic.executionTarget ? { executionTarget: { ...topic.executionTarget } } : {}),
@@ -611,6 +617,7 @@ export function toConversationMessage(message: ConversationMessage): Conversatio
     content: message.content,
     ...(message.handoff ? { handoff: { ...message.handoff } } : {}),
     createdAt: message.createdAt,
+    ...(message.forkedFromMessageId ? { forkedFromMessageId: message.forkedFromMessageId } : {}),
     ...(message.senderBotId ? { senderBotId: message.senderBotId } : {}),
     ...(message.replyTo ? { replyTo: message.replyTo } : {}),
     ...(message.runId ? { runId: message.runId } : {}),

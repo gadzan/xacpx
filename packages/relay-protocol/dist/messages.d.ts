@@ -128,6 +128,7 @@ export declare const MSG: {
     readonly groupTopicsSetIsolation: "control.group.topics.set-isolation";
     readonly groupTopicsArchive: "control.group.topics.archive";
     readonly groupTopicsTeardown: "control.group.topics.teardown";
+    readonly groupTopicsFork: "control.group.topics.fork";
     readonly conversationCompletionsGet: "control.conversation.completions.get";
     readonly conversationPrompt: "control.conversation.prompt";
     readonly conversationPromptWithPolicy: "control.conversation.prompt-with-policy";
@@ -655,6 +656,24 @@ export interface GroupTopicsArchivePayload {
 export interface GroupTopicsTeardownPayload {
     conversationId: string;
     topicId: string;
+}
+/** Where a fork cuts the source Topic's history: the latest settled Run, or
+ *  one named Run. */
+export type ThreadForkSourcePointDto = {
+    type: "latest_stable";
+} | {
+    type: "run";
+    runId: string;
+};
+export interface GroupTopicsForkPayload {
+    conversationId: string;
+    sourceTopicId: string;
+    /** Client-minted and reused across retries; together with `requestId` it is
+     *  the idempotency key. */
+    targetTopicId: string;
+    requestId: string;
+    sourcePoint?: ThreadForkSourcePointDto;
+    title?: string;
 }
 export interface ConversationPromptPayload {
     agentMentions?: AgentMention[];
@@ -1369,6 +1388,11 @@ export declare const RELAY_CAPABILITIES: {
      *  offer the Group topic isolation switch. An older core has no such RPC and
      *  would answer `unknown-type`, which is not a failure a user can act on. */
     readonly groupTopicIsolationV1: "group.topics.isolation.v1";
+    /** `control.group.topics.fork` exists on both ends: the core snapshots a
+     *  source Topic into an independent Topic and the connector validator
+     *  accepts the request. An older core answers `unsupported-rpc`, so the Web
+     *  hides every fork entry until this is advertised. */
+    readonly groupTopicForkV1: "group.topics.fork.v1";
     /** A Group Roundtable target (`mode: "roundtable"`) is accepted end to end:
      *  the connector validator and the core both implement pre-generated
      *  sequential discussion. The Web hides the "discuss" entry when absent. */
