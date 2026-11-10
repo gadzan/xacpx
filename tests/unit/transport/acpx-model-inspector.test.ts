@@ -3,6 +3,7 @@ import type { AcpRuntimeSessionModels } from "acpx/runtime";
 import {
   ACPX_MODEL_INSPECT_TIMEOUT_MS,
   inspectAcpxModels,
+  probeAgentCapabilitiesViaInspector,
   type AcpxModelInspectFn,
 } from "../../../src/transport/acpx-model-inspector";
 
@@ -144,4 +145,75 @@ test("logs carry the digest prefix only, never argv or env", async () => {
   expect(lines[0]).toMatch(/^acpx-model-inspector [0-9a-f]{8} unsupported$/);
   expect(lines[0]).not.toContain("secret-agent");
   expect(lines[0]).not.toContain("hunter2");
+});
+
+test("probe entry reuses structured argv and forwards env without guessing", async () => {
+  const { fn, seen } = stub({ availableModelIds: ["gpt-x"] });
+  const result = await probeAgentCapabilitiesViaInspector(
+    {
+      agent: "codex",
+      cwd: "/tmp/probe-cwd",
+      driver: "codex",
+      acpxAgent: "codex",
+      agentArgv: ["npx", "codex@1"],
+      agentProcessEnv: { KEEP: "yes" },
+    },
+    { inspectAgentModels: fn },
+  );
+  expect(result).toEqual({ ok: true, models: [{ modelId: "gpt-x", name: "gpt-x" }], efforts: [] });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.["agentCommand"]).toEqual(["npx", "codex@1"]);
+  expect(seen[0]?.["cwd"]).toBe("/tmp/probe-cwd");
+  expect(seen[0]?.["agentProcessEnv"]).toEqual({ KEEP: "yes" });
+});
+
+test("probe entry resolves a bare driver through the registry", async () => {
+  const { fn, seen } = stub({ availableModelIds: ["cursor-small"] });
+  const result = await probeAgentCapabilitiesViaInspector(
+    { agent: "cursor", cwd: "/tmp/probe-cwd", driver: "cursor", acpxAgent: "cursor" },
+    {
+      inspectAgentModels: fn,
+      loadAgentRegistry: () => ({ resolve: (driver: string) => (driver === "cursor" ? ["cursor-agent", "--acp"] : "") }),
+    },
+  );
+  expect(result.ok).toBe(true);
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.["agentCommand"]).toEqual(["cursor-agent", "--acp"]);
+});
+
+test("probe entry stays unsupported with zero spawns when the launch is unprovable", async () => {
+  const { fn, seen } = stub({ availableModelIds: ["gpt-guessed"] });
+  const bare = await probeAgentCapabilitiesViaInspector(
+    { agent: "codex", cwd: "/tmp/probe-cwd", driver: "codex", acpxAgent: "codex" },
+    { inspectAgentModels: fn },
+  );
+  expect(bare).toEqual({
+    ok: false,
+    failure: "unsupported",
+    message: expect.stringContaining("no structured launch"),
+  });
+  const raw = await probeAgentCapabilitiesViaInspector(
+    { agent: "claude", cwd: "/tmp/probe-cwd", driver: "claude", rawCommand: "my-claude --acp" },
+    { inspectAgentModels: fn },
+  );
+  expect(raw.ok).toBe(false);
+  if (!raw.ok) expect(raw.failure).toBe("unsupported");
+  expect(seen).toHaveLength(0);
+});
+
+test("probe entry refuses a legacy command string instead of probing the registry default", async () => {
+  const { fn, seen } = stub({ availableModelIds: ["gpt-guessed"] });
+  const result = await probeAgentCapabilitiesViaInspector(
+    { agent: "codex", cwd: "/tmp/probe-cwd", driver: "codex", agentCommand: "my-custom --acp" },
+    {
+      inspectAgentModels: fn,
+      loadAgentRegistry: () => ({ resolve: () => ["codex", "--acp"] }),
+    },
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.failure).toBe("unsupported");
+    expect(result.message).toMatch(/legacy command string/);
+  }
+  expect(seen).toHaveLength(0);
 });

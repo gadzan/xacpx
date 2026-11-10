@@ -1,7 +1,7 @@
 // ADAPTER_AUTH_PATTERN matches a bare backend diagnostic, never the composed
 // "model catalog refresh failed for agent …" prefix, whose session alias can contain
-// auth-ish words. The English text comes from src/agents/capability-probe.ts
-// classifyProbeFailure.
+// auth-ish words. The English text comes from src/transport/acpx-model-inspector.ts
+// (inspectorMessage) and the needs-setup copy in src/agents/capability-discovery.ts.
 const ADAPTER_AUTH_PATTERN = /auth|login|unauthor|credential|sign[\s-]?in/i;
 const COMPOSED_PROBE_DIAGNOSTIC = /^model catalog refresh failed for agent "[^"]*" session "[^"]*": ([\s\S]*)$/;
 

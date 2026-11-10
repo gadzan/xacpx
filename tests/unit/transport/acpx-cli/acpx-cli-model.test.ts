@@ -114,11 +114,68 @@ test("getSessionModel parses status json for current + available models", async 
   expect(args.slice(0, 2)).toEqual(["--format", "json"]);
 });
 
-test("getSessionModel returns an empty available list when status output is not json", async () => {
+test("getSessionModel throws a protocol error when status output is not json", async () => {
   const run = mock(async () => ({ code: 0, stdout: "not json", stderr: "" }));
   const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
-  const result = await transport.getSessionModel(modelSession);
-  expect(result.available).toEqual([]);
+  await expect(transport.getSessionModel(modelSession)).rejects.toThrowError(/not valid JSON/);
+});
+
+test("getSessionModel throws a protocol error when the status has no model list", async () => {
+  const run = mock(async () => ({ code: 0, stdout: JSON.stringify({ model: "gpt-5.2" }), stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, okRunner());
+  await expect(transport.getSessionModel(modelSession)).rejects.toThrowError(/no availableModels list/);
+});
+
+test("probeAgentCapabilities delegates to the inspector without spawning acpx sessions", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const run = mock(async () => { throw new Error("probe must not spawn acpx"); });
+  const transport = new AcpxCliTransport({
+    command: "acpx",
+    inspectAgentModels: async (options) => {
+      seen.push({ ...options });
+      return { availableModelIds: ["gpt-x"] };
+    },
+  }, run, okRunner());
+  const result = await transport.probeAgentCapabilities({
+    agent: "codex",
+    cwd: "/tmp/backend",
+    driver: "codex",
+    acpxAgent: "codex",
+    agentArgv: ["npx", "codex@1"],
+    agentProcessEnv: { KEEP: "yes" },
+  });
+  expect(result).toEqual({ ok: true, models: [{ modelId: "gpt-x", name: "gpt-x" }], efforts: [] });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.["agentCommand"]).toEqual(["npx", "codex@1"]);
+  expect(seen[0]?.["cwd"]).toBe("/tmp/backend");
+  expect(seen[0]?.["agentProcessEnv"]).toEqual({ KEEP: "yes" });
+  expect(seen[0]?.["timeoutMs"]).toBe(75_000);
+});
+
+test("probeAgentCapabilities resolves a bare driver through the registry", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const run = mock(async () => { throw new Error("probe must not spawn acpx"); });
+  const transport = new AcpxCliTransport({
+    command: "acpx",
+    loadAgentRegistry: () => ({ resolve: (driver: string) => (driver === "cursor" ? ["cursor-agent", "--acp"] : "") }),
+    inspectAgentModels: async (options) => {
+      seen.push({ ...options });
+      throw new Error("AUTH_REQUIRED: login required");
+    },
+  }, run, okRunner());
+  const result = await transport.probeAgentCapabilities({
+    agent: "cursor",
+    cwd: "/tmp/backend",
+    driver: "cursor",
+    acpxAgent: "cursor",
+  });
+  expect(result).toEqual({
+    ok: false,
+    failure: "unauthenticated",
+    message: "the adapter requires authentication before it can list models",
+  });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.["agentCommand"]).toEqual(["cursor-agent", "--acp"]);
 });
 
 test("getSessionEffort reads the adapter-advertised thought-level config option", async () => {

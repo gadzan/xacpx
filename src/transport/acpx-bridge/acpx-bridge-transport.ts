@@ -292,6 +292,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       ...(input.acpxAgent ? { acpxAgent: input.acpxAgent } : {}),
       ...(input.rawCommand ? { rawCommand: input.rawCommand } : {}),
       ...(input.agentArgv ? { agentArgv: [...input.agentArgv] } : {}),
+      ...(input.agentProcessEnv ? { agentProcessEnv: { ...input.agentProcessEnv } } : {}),
     });
   }
 

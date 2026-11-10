@@ -21,6 +21,7 @@ import {
   type ModelProbeLaunch,
 } from "../config/resolve-agent-command";
 import type { AgentCapabilityProbeRequest, AgentCapabilityProbeResult, ResolvedSession } from "../transport/types";
+import type { AgentCommandRegistry } from "../config/agent-catalog";
 
 export { launchFingerprint };
 
@@ -153,6 +154,8 @@ export interface AgentCapabilityDeps {
   listTargets(agent: string, workspace: string): CapabilityTarget[];
   readAdvertisement(session: ResolvedSession): Promise<CapabilityAdvertisement | undefined>;
   probe?(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult>;
+  /** acpx registry for bare drivers; without it a bare driver stays probe-unavailable. */
+  loadAgentRegistry?: () => AgentCommandRegistry | null;
   emit?(event: ModelDiscoveryEvent): void;
   log?(message: string): void;
 }
@@ -195,7 +198,7 @@ export class AgentCapabilityService {
   invalidateCapability(agent: string, workspace: string): boolean {
     const resolved = this.deps.resolve(agent, workspace);
     if ("error" in resolved) return false;
-    const launch = resolveModelProbeLaunch(agent, resolved, { env: this.deps.env ?? process.env });
+    const launch = this.probeLaunch(agent, resolved, false);
     const key = fingerprintV2Key(fingerprintOf(agent, resolved, launch));
     this.generations.set(key, this.generationOf(key) + 1);
     this.freshnessCeilings.set(key, this.nowMs());
@@ -251,7 +254,7 @@ export class AgentCapabilityService {
     }
     const selectedModelId = bot?.model ?? resolved.configuredModel;
     const selectedEffort = bot?.effort;
-    const launch = resolveModelProbeLaunch(query.agent, resolved, { env: this.deps.env ?? process.env });
+    const launch = this.probeLaunch(query.agent, resolved, false);
     const fingerprint = fingerprintOf(query.agent, resolved, launch);
     const key = fingerprintV2Key(fingerprint);
     const prefix = fingerprintV2Prefix(key);
@@ -417,6 +420,19 @@ export class AgentCapabilityService {
     });
   }
 
+  /**
+   * One seam for every probe-launch resolution: the already-resolved session
+   * launch plus the acpx registry for bare drivers. Env resolution stays
+   * opt-in (probe time only; profile reads can touch disk).
+   */
+  private probeLaunch(agent: string, resolved: CapabilityContext, includeEnv: boolean): ModelProbeLaunch {
+    return resolveModelProbeLaunch(agent, resolved, {
+      env: this.deps.env ?? process.env,
+      ...(includeEnv ? { includeEnv: true as const } : {}),
+      ...(this.deps.loadAgentRegistry ? { loadAgentRegistry: this.deps.loadAgentRegistry } : {}),
+    });
+  }
+
   private probeShared(
     key: string,
     generation: number,
@@ -437,10 +453,7 @@ export class AgentCapabilityService {
     }
     // The spawn overlay resolves here, at probe time: passive fingerprinting
     // deliberately skips it because profile resolution can touch disk.
-    const withEnv = resolveModelProbeLaunch(agent, resolved, {
-      env: this.deps.env ?? process.env,
-      includeEnv: true,
-    });
+    const withEnv = this.probeLaunch(agent, resolved, true);
     const request: AgentCapabilityProbeRequest = {
       agent,
       cwd: launch.cwd,

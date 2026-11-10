@@ -28,7 +28,8 @@ import { isProcessAlive } from "../daemon/daemon-files";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
-import { CAPABILITY_PROBE_BUDGET_MS, executeCapabilityProbe } from "../agents/capability-probe";
+import { ACPX_MODEL_INSPECT_TIMEOUT_MS, probeAgentCapabilitiesViaInspector, type AcpxModelInspectFn } from "../transport/acpx-model-inspector";
+import type { AgentCommandRegistry } from "../config/agent-catalog";
 import {
   CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
@@ -53,7 +54,7 @@ import {
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../transport/session-effort";
-import { ModelCatalogProtocolError, parseNativeModelCatalog } from "../transport/session-model-catalog";
+import { parseSessionStatusCatalog } from "../transport/session-model-catalog";
 import { runAcpxControlCommand } from "../transport/acpx-owner-control-retry";
 import { MessageInjectionError } from "../transport/message-injection";
 
@@ -180,6 +181,10 @@ interface BridgeRuntimeOptions {
   }) => QueueOwnerAdapterContext;
   /** Test seam and fail-safe owner terminator for an oversized queue event. */
   terminateQueueOwner?: (acpxRecordId: string) => Promise<void>;
+  /** acpx registry for bare-driver probes; without it a bare driver is probe-unavailable. */
+  loadAgentRegistry?: () => AgentCommandRegistry | null;
+  /** Test seam for the model inspector (production calls acpx/runtime). */
+  inspectAgentModels?: AcpxModelInspectFn;
 }
 
 type QueueOwnerLaunchPort = Pick<AcpxQueueOwnerLauncher, "launch"> & {
@@ -917,47 +922,15 @@ export class BridgeRuntime {
       throw new Error(result.stderr || result.stdout || "status failed");
     }
 
-    let raw: unknown;
-    try {
-      raw = JSON.parse(result.stdout);
-    } catch (error) {
-      throw new ModelCatalogProtocolError(
-        `session model status for session "${input.name}" was not valid JSON`,
-        { cause: error },
-      );
-    }
-    const read = parseNativeModelCatalog(raw);
-    if (read.status === "complete") return { current: read.current, available: read.available };
-    if (read.status === "missing") {
-      throw new ModelCatalogProtocolError(
-        `session model status for session "${input.name}" has no availableModels list`,
-      );
-    }
-    throw read.error;
+    return parseSessionStatusCatalog(result.stdout, `session "${input.name}"`);
   }
 
   async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
-    const budgetMs = Math.min(this.sessionInitTimeoutMs(), CAPABILITY_PROBE_BUDGET_MS);
-    return executeCapabilityProbe({
-      run: async (stage, tail, timeoutMs) => {
-        const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs({
-          agent: input.agent,
-          cwd: input.cwd,
-          agentCommand: input.agentCommand,
-          acpxAgent: input.acpxAgent,
-          rawCommand: input.rawCommand,
-          ...(input.agentArgv ? { agentArgv: [...input.agentArgv] } : {}),
-        }, tail, {
-          format: "json",
-          authPolicy: "fail",
-        }));
-        return await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
-          timeoutMs,
-          stage,
-        }));
-      },
-      deleteRecord: (acpxRecordId) => deleteAcpxSessionFiles({ acpxRecordId }),
-    }, budgetMs);
+    return probeAgentCapabilitiesViaInspector(input, {
+      timeoutMs: Math.min(this.sessionInitTimeoutMs(), ACPX_MODEL_INSPECT_TIMEOUT_MS),
+      ...(this.options.loadAgentRegistry ? { loadAgentRegistry: this.options.loadAgentRegistry } : {}),
+      ...(this.options.inspectAgentModels ? { inspectAgentModels: this.options.inspectAgentModels } : {}),
+    });
   }
 
   async getSessionEffort(input: {

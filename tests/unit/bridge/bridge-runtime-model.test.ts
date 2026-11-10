@@ -83,6 +83,34 @@ test("getSessionModel throws a typed error on non-json output", async () => {
   expect(error).toBeInstanceOf(ModelCatalogProtocolError);
 });
 
+test("probeAgentCapabilities delegates to the inspector without acpx sessions or records", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const spawns: string[][] = [];
+  const run = async (_command: string, args: string[]) => {
+    spawns.push(args);
+    throw new Error("probe must not spawn acpx");
+  };
+  const runtime = new BridgeRuntime("acpx", run, undefined, {
+    inspectAgentModels: async (options) => {
+      seen.push({ ...options });
+      return { availableModelIds: ["gpt-x"] };
+    },
+  });
+  const result = await runtime.probeAgentCapabilities({
+    agent: "codex",
+    cwd: "/repo",
+    driver: "codex",
+    acpxAgent: "codex",
+    agentArgv: ["npx", "codex@1"],
+    agentProcessEnv: { KEEP: "yes" },
+  });
+  expect(result).toEqual({ ok: true, models: [{ modelId: "gpt-x", name: "gpt-x" }], efforts: [] });
+  expect(spawns).toHaveLength(0);
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.["agentCommand"]).toEqual(["npx", "codex@1"]);
+  expect(seen[0]?.["agentProcessEnv"]).toEqual({ KEEP: "yes" });
+});
+
 test("getSessionEffort reads the adapter-advertised effort option", async () => {
   const run = async (_command: string, args: string[]) => {
     expect(args).toContain("sessions");
