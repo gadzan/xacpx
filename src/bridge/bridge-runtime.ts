@@ -53,6 +53,7 @@ import {
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../transport/session-effort";
+import { ModelCatalogProtocolError, parseNativeModelCatalog } from "../transport/session-model-catalog";
 import { runAcpxControlCommand } from "../transport/acpx-owner-control-retry";
 import { MessageInjectionError } from "../transport/message-injection";
 
@@ -916,15 +917,23 @@ export class BridgeRuntime {
       throw new Error(result.stderr || result.stdout || "status failed");
     }
 
+    let raw: unknown;
     try {
-      const json = JSON.parse(result.stdout) as { model?: string; availableModels?: string[] };
-      return {
-        current: typeof json.model === "string" ? json.model : undefined,
-        available: Array.isArray(json.availableModels) ? json.availableModels.filter((m): m is string => typeof m === "string") : [],
-      };
-    } catch {
-      return { available: [] };
+      raw = JSON.parse(result.stdout);
+    } catch (error) {
+      throw new ModelCatalogProtocolError(
+        `session model status for session "${input.name}" was not valid JSON`,
+        { cause: error },
+      );
     }
+    const read = parseNativeModelCatalog(raw);
+    if (read.status === "complete") return { current: read.current, available: read.available };
+    if (read.status === "missing") {
+      throw new ModelCatalogProtocolError(
+        `session model status for session "${input.name}" has no availableModels list`,
+      );
+    }
+    throw read.error;
   }
 
   async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
