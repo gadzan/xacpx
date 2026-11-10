@@ -1317,6 +1317,7 @@ export default {
         exists: "That topic already exists. Close the dialog and try again.",
         notFound: "The source topic no longer exists.",
         notGroup: "Only Group topics can be forked.",
+        tearingDown: "That topic is being deleted or reset. Try again once it settles.",
         failed: "The fork failed. Nothing was changed.",
       },
     },

@@ -53,6 +53,10 @@ function errorMessage(code: string): string {
       return t("group.topic.forkErrors.changed");
     case "topic_fork_history_missing":
       return t("group.topic.forkErrors.historyMissing");
+    case "topic_deleting":
+    case "conversation_deleting":
+    case "topic_resetting":
+      return t("group.topic.forkErrors.tearingDown");
     case "topic_exists":
       return t("group.topic.forkErrors.exists");
     case "topic_not_found":
@@ -93,7 +97,7 @@ async function handleFork(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm"
+  <div class="fixed inset-0 z-[70] flex items-center justify-center bg-scrim p-4 backdrop-blur-sm"
        @click.self="navigateBack">
     <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="fork-topic-title" tabindex="-1" data-test="fork-topic-dialog" class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:w-full">
       <h3 id="fork-topic-title" class="mb-2 text-base font-semibold text-fg">{{ $t("group.topic.forkTitle") }}</h3>

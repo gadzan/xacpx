@@ -497,7 +497,8 @@ to that settled Run's boundary, re-numbers them from 1, clears Run/MemberTurn
 summary. At most 500 messages are copied; older rows surface as
 `omittedMessages`. Answers: `topic_fork_empty`,
 `topic_fork_source_unsettled`, `topic_fork_source_changed`,
-`topic_fork_history_missing`, `topic_exists`, and `topic_not_found`. The
+`topic_fork_history_missing`, `topic_deleting`, `conversation_deleting`,
+`topic_resetting`, `topic_exists`, and `topic_not_found`. The
 response is `{ topic }`, whose summary carries `forkedFrom`; messages carry
 `forkedFromMessageId`. The copy never touches `bot_public_memory`, Run rows, or
 attachment files. See

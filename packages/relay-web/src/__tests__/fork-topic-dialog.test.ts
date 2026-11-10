@@ -107,4 +107,26 @@ describe("ForkTopicDialog", () => {
     expect(wrapper.emitted("close")).toHaveLength(1);
     wrapper.unmount();
   });
+
+  it("sits above the run-detail drawer and sheet layers", () => {
+    const wrapper = mountDialog();
+    expect(wrapper.element.className).toContain("z-[70]");
+    wrapper.unmount();
+  });
+
+  it("names a teardown instead of the generic failure", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    for (const code of ["topic_deleting", "conversation_deleting", "topic_resetting"]) {
+      vi.spyOn(store, "forkGroupTopic").mockRejectedValueOnce(Object.assign(new Error(code), { code }));
+      const wrapper = mountDialog();
+      await wrapper.find("form").trigger("submit");
+      await flushPromises();
+      expect(wrapper.find("[data-test='fork-topic-error']").text()).toBe(
+        i18n.global.t("group.topic.forkErrors.tearingDown"),
+      );
+      wrapper.unmount();
+    }
+  });
 });

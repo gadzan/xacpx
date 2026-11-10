@@ -140,6 +140,9 @@ function openForkFromTopic(topic: TopicSummaryDto): void {
 function openForkFromRun(run: ConversationRunDto): void {
   const topic = groupsStore.currentTopics.find((candidate) => candidate.id === run.topicId);
   if (!topic || !forkSupported.value || !isTerminalRunState(run.state)) return;
+  // The dialog is a separate modal: retire the drawer/sheet first so the two
+  // never stack and the dialog's submit is the topmost hit target.
+  closeTimelineDetail();
   forkTarget.value = { topic, sourcePoint: { type: "run", runId: run.id }, resolvedRun: run };
 }
 

@@ -1814,6 +1814,62 @@ describe("Group Components", () => {
       wrapper.unmount();
     });
 
+    it("closes the run detail before opening the fork dialog above every layer", async () => {
+      seedGroupSelection();
+      useInstancesStore().instances[0]!.capabilities = [
+        RELAY_CAPABILITIES.conversationTimelineV1,
+        RELAY_CAPABILITIES.groupTopicForkV1,
+      ];
+      const detail = {
+        id: "run_fork", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "m_req", requestId: "req_fork", mode: "explicit",
+        shape: "fanout", state: "completed", profileRevision: 1, createdAt: "now",
+        memberTurns: [{
+          id: "turn_f", runId: "run_fork", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+          state: "completed", createdAt: "now",
+        }],
+      };
+      const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id, type) => {
+        if (type === MSG.conversationTimeline) {
+          return {
+            conversationId: "conversation_g",
+            topicId: "topic_1",
+            entries: [{
+              kind: "message", key: "message:m_fork", anchorSeq: 2,
+              runId: "run_fork", memberTurnId: "turn_f", ownership: "exact",
+              message: {
+                id: "m_fork", conversationId: "conversation_g", topicId: "topic_1",
+                seq: 2, role: "bot", senderBotId: "bot_a", memberTurnId: "turn_f",
+                runId: "run_fork", content: "done", createdAt: "now",
+              },
+            }],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          } as never;
+        }
+        if (type === MSG.runsDetailsBatch) return { runs: [detail], missingRunIds: [] } as never;
+        if (type === MSG.runsTraceGet) return { events: [], hasMore: false } as never;
+        return {} as never;
+      });
+      const wrapper = mount(GroupPane, { attachTo: document.body, global: { plugins: [i18n] } });
+      await flushPromises();
+      await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
+      await flushPromises();
+      expect(document.body.querySelector('[data-test="group-detail-card"]')).not.toBeNull();
+      const forkButton = document.body.querySelector('[data-test="group-fork-run-button"]');
+      expect(forkButton).not.toBeNull();
+      (forkButton as HTMLButtonElement).click();
+      await flushPromises();
+      // One modal at a time: the detail closes so the dialog's submit is clickable.
+      expect(document.body.querySelector('[data-test="group-detail-card"]')).toBeNull();
+      const dialog = document.body.querySelector('[data-test="fork-topic-dialog"]');
+      expect(dialog).not.toBeNull();
+      expect(dialog!.parentElement!.className).toContain("z-[70]");
+      rpc.mockRestore();
+      wrapper.unmount();
+    });
+
     it("shows one upgrade notice with zero Topics and offers no create or send path", async () => {
       const groups = seedGroupSelection();
       groups.activeTopicId = null;

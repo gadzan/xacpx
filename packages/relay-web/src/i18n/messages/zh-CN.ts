@@ -1313,6 +1313,7 @@ export default {
         exists: "该话题已存在，请关闭对话框后重试。",
         notFound: "源话题已不存在。",
         notGroup: "只有群组话题可以分叉。",
+        tearingDown: "该话题正在删除或重置，请等它稳定后重试。",
         failed: "分叉失败，未做任何更改。",
       },
     },
