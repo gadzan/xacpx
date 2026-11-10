@@ -449,9 +449,10 @@ export class AgentCapabilityService {
       ...(resolved.launch.agentCommand ? { agentCommand: resolved.launch.agentCommand } : {}),
       ...(resolved.launch.acpxAgent ? { acpxAgent: resolved.launch.acpxAgent } : {}),
       ...(resolved.launch.rawCommand ? { rawCommand: resolved.launch.rawCommand } : {}),
+      // argv and identity always travel as a pair from the same resolution.
       agentArgv: withEnv.ok ? withEnv.agentCommand : launch.agentCommand,
       ...(withEnv.ok && withEnv.agentProcessEnv ? { agentProcessEnv: withEnv.agentProcessEnv } : {}),
-      identity: withEnv.identity,
+      identity: withEnv.ok ? withEnv.identity : launch.identity,
     };
     let tracked: Promise<AgentCapabilityProbeResult>;
     tracked = probe(request).finally(() => {

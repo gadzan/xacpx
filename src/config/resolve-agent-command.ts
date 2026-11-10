@@ -21,6 +21,10 @@ import {
 import { hermesAcpShimArgv, hermesAcpShimCommand, isDefaultHermesCommand } from "../adapters/hermes-shim";
 import { wrapAcpOutputGuardArgv } from "../adapters/acp-output-guard";
 import { deriveAgentAlias, renderAgentArgvIdentity, type AgentLaunchSpec } from "./agent-launch";
+
+import type { AgentCommandRegistry } from "./agent-catalog";
+import type { AgentConfig, TransportConfig } from "./types";
+import { resolveConfigPathForCurrentEnv } from "./config-path";
 /** Stable identity of the launch fields a session record persists. Shared by the
  * session launch resolver and the model-probe launch seam so a probe can prove
  * it runs the same launch a normal session would. */
@@ -37,10 +41,6 @@ export function launchFingerprint(spec: {
     agentArgv: spec.agentArgv ?? null,
   })).digest("hex");
 }
-
-import type { AgentCommandRegistry } from "./agent-catalog";
-import type { AgentConfig, TransportConfig } from "./types";
-import { resolveConfigPathForCurrentEnv } from "./config-path";
 
 export function resolveAgentCommand(
   driver: string,
