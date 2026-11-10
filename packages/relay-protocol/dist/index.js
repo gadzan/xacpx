@@ -2575,6 +2575,9 @@ function readyCapability(source, models, draft) {
     source,
     ...draft.reason ? { reason: { code: draft.reason.code, message: draft.reason.message } } : {},
     ...appliedModelId ? { appliedModelId } : {},
+    ...draft.freshness ? { freshness: draft.freshness } : {},
+    ...draft.refreshing !== undefined ? { refreshing: draft.refreshing } : {},
+    ...draft.lastVerifiedAt ? { lastVerifiedAt: draft.lastVerifiedAt } : {},
     ...selectedModelId ? { selectedModelId } : {},
     ...normalizeOptional(draft.selectedEffort) ? { selectedEffort: draft.selectedEffort.trim() } : {},
     effect: classifySelection({ selectedModelId, appliedModelId, advertisedIds })
@@ -2590,6 +2593,19 @@ function needsSetupCapability(reason, recovery, draft) {
   return {
     status: "needs-setup",
     ...closedFailure(reason, recovery, draft)
+  };
+}
+function emptyCapability(reason, recovery, draft) {
+  assertReason(reason);
+  if (!recovery.trim())
+    throw new Error("capability empty requires a recovery hint");
+  return {
+    status: "empty",
+    reason,
+    recovery,
+    fetchedAt: draft.fetchedAt,
+    suggestions: suggestionModels(draft.suggestions ?? []),
+    efforts: { status: "unavailable" }
   };
 }
 function errorCapability(reason, recovery, draft) {
@@ -2615,6 +2631,8 @@ function parseAgentCapabilityState(value) {
     return parseReady(value);
   if (value.status === "unsupported" || value.status === "needs-setup")
     return parseClosed(value.status, value);
+  if (value.status === "empty")
+    return parseEmpty(value);
   if (value.status === "error")
     return parseError(value);
   return stale(`capability status "${value.status}" is not recognized`);
@@ -2639,7 +2657,10 @@ function parseReady(value) {
       selectedEffort: optionalString(value.selectedEffort),
       appliedModelId: value.source === "runtime" ? optionalString(value.appliedModelId) : undefined,
       efforts: parseEfforts(value.efforts),
-      reason: parseReason(value.reason)
+      reason: parseReason(value.reason),
+      freshness: value.freshness === "fresh" || value.freshness === "stale" ? value.freshness : undefined,
+      refreshing: typeof value.refreshing === "boolean" ? value.refreshing : undefined,
+      lastVerifiedAt: optionalString(value.lastVerifiedAt)
     });
   } catch {
     return stale("ready capability could not be constructed");
@@ -2658,6 +2679,20 @@ function parseClosed(status, value) {
     efforts: parseEfforts(value.efforts)
   };
   return status === "unsupported" ? unsupportedCapability(reason, value.recovery, draft) : needsSetupCapability(reason, value.recovery, draft);
+}
+function parseEmpty(value) {
+  const reason = parseReason(value.reason);
+  if (!reason || typeof value.recovery !== "string" || !value.recovery.trim() || typeof value.fetchedAt !== "string") {
+    return stale("empty capability is missing a reason or recovery hint");
+  }
+  try {
+    return emptyCapability(reason, value.recovery, {
+      fetchedAt: value.fetchedAt,
+      suggestions: stringIds(value.suggestions, "modelId")
+    });
+  } catch {
+    return stale("empty capability could not be constructed");
+  }
 }
 function parseError(value) {
   const reason = parseReason(value.reason);
@@ -3282,6 +3317,7 @@ export {
   classifySelection,
   copyBotAvatar,
   decodeEnvelope,
+  emptyCapability,
   encodeEnvelope,
   errorCapability,
   errorPayload,
