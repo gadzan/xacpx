@@ -490,7 +490,10 @@ requestId, sourcePoint?, title?}`), advertised as
 core exposes the RPC and the connector validator accepts the payload. The
 client mints `targetTopicId` and `requestId` and reuses both on retry; the same
 pair replays to the same Topic while any other existing target is
-`topic_exists`. `sourcePoint` is `{type: "latest_stable"}` (default) or
+`topic_exists`. The one exception is `topic_fork_history_missing`: the target is
+damaged or orphaned, so the dialog mints a fresh pair and the next click starts
+over instead of replaying unrecoverable ids; every other error keeps the pair.
+`sourcePoint` is `{type: "latest_stable"}` (default) or
 `{type: "run", runId}`. The core copies the source Topic's public messages up
 to that settled Run's boundary, re-numbers them from 1, clears Run/MemberTurn
 /handoff/group-say/input provenance, and records `forkedFrom` on the Topic

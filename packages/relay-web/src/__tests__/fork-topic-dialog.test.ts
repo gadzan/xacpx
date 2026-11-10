@@ -108,6 +108,32 @@ describe("ForkTopicDialog", () => {
     wrapper.unmount();
   });
 
+  it("remints the ids after a missing-history failure so the next click starts over", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    const fork = vi.spyOn(store, "forkGroupTopic")
+      .mockRejectedValueOnce(Object.assign(new Error("orphan"), { code: "topic_fork_history_missing" }))
+      .mockResolvedValueOnce({ ...SOURCE, id: "topic_dst" });
+    const wrapper = mountDialog();
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+    // The core fails closed on orphan rows, so the dialog must not replay the
+    // same pair: it names the start-over and mints fresh ids for the retry.
+    expect(wrapper.find("[data-test='fork-topic-error']").text()).toBe(
+      i18n.global.t("group.topic.forkErrors.historyMissing"),
+    );
+    expect(wrapper.emitted("close")).toBeUndefined();
+    const first = fork.mock.calls[0]![1];
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+    const second = fork.mock.calls[1]![1];
+    expect(second.targetTopicId).not.toBe(first.targetTopicId);
+    expect(second.requestId).not.toBe(first.requestId);
+    expect(wrapper.emitted("close")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
   it("sits above the run-detail drawer and sheet layers", () => {
     const wrapper = mountDialog();
     expect(wrapper.element.className).toContain("z-[70]");

@@ -1,5 +1,5 @@
 # Conversation Topic Fork（会话分叉）技术方案
-- 状态：Proposed
+- 状态：Accepted；已实现（#571 `83526ba5`；e2e 覆盖、孤儿重试与重放计数一致性补于 #572）
 - 日期：2026-11-10
 - 范围：xacpx Group Topic 的应用层 fork；Direct / 普通 Session / 原生 Agent Session fork 不在本期
 - 参考：t3code 的 `thread.fork`（应用层引用式 fork + provider native fork 两级模型）
@@ -291,9 +291,11 @@ AND (run_id IS NULL OR run_id IN (
 双存储恢复（fail-closed）：
 
 - 复制先于 AppState：崩溃可能留下“目标消息已提交、AppState 无 Topic 记录”的孤儿行。**不自动收养**：重试时若发现目标存在 fork 复制行但没有 Topic 记录，直接返回 `topic_fork_history_missing`。原因是重试会重新解析边界；源 Topic 若已推进，用新边界覆盖旧行的 `sourceRunId/throughSeq` 会悄悄丢掉较新的历史并伪造来源。
+- 重放（同一 `targetTopicId + requestId`）只在目标仍持有全部复制行时返回已有 Topic：判定是 `topicForkMessageCount(target) === forkedFrom.copiedMessages`。计数不符（部分行丢失、或 fork Topic 被清空）同样返回 `topic_fork_history_missing`；否则 UI 会对着缺失历史显示“复制了 N 条”的成功 banner。
 - 恢复路径只有一条：用**新的 `targetTopicId`** 重新分叉；孤儿行由运维随旧目标一起清理。
 - 不会出现“AppState 有 Topic、消息没复制”的正常路径（除非手工改库）；若检测到该状态，同样返回 `topic_fork_history_missing`，不静默创建空历史。
 - `topic_fork_history_missing` 是 fail-closed 的人工恢复路径：不自动重建、不自动删除损坏的 AppState 记录；运维先删除该目标 Topic，再用新的 `targetTopicId` 重新分叉。
+- Web 端 `ForkTopicDialog` 收到该错误时立即重铸 `targetTopicId` 与 `requestId`，并显示“再次分叉即重新开始”的提示；其他错误仍复用原 id，保证普通重试的幂等。
 
 ### 6.5 源 Topic 并发变化
 
@@ -603,6 +605,7 @@ supportsGroupTopicFork(): true
 12. 源 Topic clear/delete 后 fork 消息不受影响。
 13. 公共记忆表不新增 fork 行。
 14. 源 Topic 在复制后新增消息，不进入 fork。
+15. 重放时目标只剩部分复制行（计数与 `forkedFrom.copiedMessages` 不符）→ `topic_fork_history_missing`，不返回受损目标。
 
 ### 14.2 执行 / prompt
 
@@ -621,11 +624,11 @@ supportsGroupTopicFork(): true
 
 ### 14.4 Relay Web
 
-- `groups-store`：fork 成功插入并选中；失败不改变当前 Topic；重试复用 target id。
+- `groups-store`：fork 成功插入并选中；失败不改变当前 Topic；普通失败重试复用 target id。
 - `TopicSwitcher`：有 capability 才显示 Fork；无 capability 隐藏。
-- `ForkTopicDialog`：默认标题；提交中禁用。
+- `ForkTopicDialog`：默认标题；提交中禁用；`topic_fork_history_missing` 后重铸 id 并在下一次点击用新 id 成功（`src/__tests__/fork-topic-dialog.test.ts`）。
 - `ConversationTimeline`：fork banner 内容、omitted 提示、源链接。
-- Playwright：fork 后时间线出现历史；在 fork 发消息只出现在 fork；刷新后仍在；源 Topic 继续发言不受影响。
+- Playwright（`e2e/group-topic-fork.spec.ts`，desktop + mobile）：Topic 菜单 Fork 打开对话框；提交发出带 `sourceTopicId`、`sourcePoint`、`targetTopicId`、`requestId` 的 `control.group.topics.fork`；对话框关闭后新 Topic 出现 `topic-fork-banner`、复制条数与源链接；Run 级入口提交 `{ type: "run", runId }`；`topic_fork_history_missing` 文案可见且第二次点击使用不同 id 并成功（含 omitted 提示）。真实复制、持久化与独立会话仍由 core 测试和 live lane 证明。
 - 旧 web 兼容：`forkedFrom` 未知字段不导致解码失败。
 
 ### 14.5 CI 命令
@@ -636,6 +639,7 @@ bun test tests/unit/conversations tests/unit/state
 bun run --cwd packages/relay-web test
 bun run build:relay-protocol && bun run build:channel-relay
 bun run build:relay-web
+bun run --cwd packages/relay-web test:e2e -- e2e/group-topic-fork.spec.ts
 ```
 
 ## 15. 风险与缓解
@@ -673,12 +677,14 @@ bun run build:relay-web
 
 ## 17. 验收标准
 
-- [ ] `control.group.topics.fork` 可从终端 Run 创建新 Topic，返回 `TopicSummaryDto.forkedFrom`。
-- [ ] 新 Topic 包含源 Topic 截至边界的公开消息快照；消息内容/发送者/时间/附件引用保留，Run/MemberTurn 归属清除。
-- [ ] 新 Topic 第一条消息的 Group prompt 包含快照历史；Router 输入同样包含。
-- [ ] fork 与源 Topic 完全独立；源 clear/delete 不影响 fork。
-- [ ] 同一 `requestId + targetTopicId` 重放不产生重复消息/Topic。
-- [ ] 超过 500 条时只复制最近 500 条并报告 `omittedMessages`。
-- [ ] capability `group.topics.fork.v1` 在旧 core / 旧 connector 上不广告，Web 入口隐藏。
-- [ ] relay-web 可 fork、切换、刷新恢复，并显示 fork banner。
-- [ ] `tsc`、conversation/state 单测、relay-web vitest、协议/connector 构建、Playwright 全绿。
+- [x] `control.group.topics.fork` 可从终端 Run 创建新 Topic，返回 `TopicSummaryDto.forkedFrom`（core：`tests/unit/conversations/topic-fork.test.ts`）。
+- [x] 新 Topic 包含源 Topic 截至边界的公开消息快照；消息内容/发送者/时间/附件引用保留，Run/MemberTurn 归属清除（core 快照测试 + e2e 中复制消息不出现 Run 详情入口）。
+- [x] 新 Topic 第一条消息的 Group prompt 包含快照历史；Router 输入同样包含（`tests/unit/conversations/topic-fork.test.ts` 末组）。
+- [x] fork 与源 Topic 完全独立；源 clear/delete 不影响 fork。
+- [x] 同一 `requestId + targetTopicId` 重放不产生重复消息/Topic；目标复制行数少于 `forkedFrom.copiedMessages` 时 fail-closed 返回 `topic_fork_history_missing`（部分复制丢失测试）。
+- [x] 超过 500 条时只复制最近 500 条并报告 `omittedMessages`。
+- [x] capability `group.topics.fork.v1` 在旧 core / 旧 connector 上不广告，Web 入口隐藏。
+- [x] relay-web 可 fork、切换、刷新恢复，并显示 fork banner：committed e2e `e2e/group-topic-fork.spec.ts`（desktop + mobile）覆盖菜单、对话框、RPC 载荷、切换与 banner；刷新恢复由 live lane（真实 daemon + 真实 core）证明。
+- [x] `tsc`、conversation/state 单测、relay-web vitest、协议/connector 构建、Playwright 全绿。
+
+补充：mock-hub/e2e 只能证明 UI 接线与 RPC 载荷；真实的消息复制、AppState 持久化、会话隔离与刷新恢复仍以 live lane（`node ./scripts/verify-stack.mjs up --router-ready` 后跑真实 core）为准，core 单测覆盖复制本身。
