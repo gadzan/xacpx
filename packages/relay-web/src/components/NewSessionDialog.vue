@@ -164,7 +164,7 @@ watch([sessionSource, agentValue, workspaceSel], () => {
   }
 });
 
-async function loadCapabilities(probe = false): Promise<void> {
+async function loadCapabilities(probe = false, silent = false): Promise<void> {
   const seq = ++capabilitySeq;
   if (sessionSource.value !== "new") return;
   if (!agentValue.value || wsMode.value !== "existing" || !workspaceSel.value) {
@@ -175,23 +175,50 @@ async function loadCapabilities(probe = false): Promise<void> {
     );
     return;
   }
-  capability.value = { status: "loading" };
+  if (!silent) capability.value = { status: "loading" };
   const next = await store.getAgentCapabilities(props.instanceId, {
     agent: agentValue.value,
     workspace: workspaceSel.value,
     ...(probe ? { probe: true } : {}),
   });
   if (seq !== capabilitySeq) return;
-  const merged = mergeEffortRefresh(lastSettledCapability, next);
+  const picked = model.value.trim();
+  const scopeId = picked && picked.toLowerCase() !== "default"
+    ? picked
+    : (next.status === "ready" ? next.appliedModelId : undefined);
+  const merged = mergeEffortRefresh(lastSettledCapability, next, scopeId);
   if (merged.state.status !== "error") lastSettledCapability = merged.state;
-  capability.value = merged.state;
-  if (merged.efforts?.status === "known") {
-    carriedEfforts.value = merged.efforts.options.map((option) => ({ id: option.id, name: option.name }));
+  // A background re-read that fails keeps the last good list on screen
+  // instead of wiping it to an error; an explicit Fetch still surfaces
+  // failures. The carry below still updates, so a scope move clears it.
+  if (!silent || merged.state.status !== "error" || !lastSettledCapability) {
+    capability.value = merged.state;
   }
+  carriedEfforts.value = merged.efforts?.status === "known"
+    ? merged.efforts.options.map((option) => ({ id: option.id, name: option.name }))
+    : [];
+}
+function onModelPick(value: string): void {
+  model.value = value;
+  // A committed model switch re-reads; the cache plus in-flight merge keep it
+  // cheap, and silent keeps the old list up until the new read lands.
+  void loadCapabilities(false, true);
 }
 watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
+  // A new agent/workspace is a new capability scope: drop the previous
+  // scope's settled list and effort carry before the loud read replaces them.
+  if (sessionSource.value === "new") {
+    lastSettledCapability = undefined;
+    carriedEfforts.value = [];
+  }
   void loadCapabilities(false);
 });
+// An invalidation that touches exactly this scope re-reads while the dialog is
+// open; anything else leaves the shown list alone.
+watch(
+  () => store.capabilityEpochFor(props.instanceId, agentValue.value, workspaceSel.value),
+  () => { void loadCapabilities(false, true); },
+);
 
 // Turn a raw backend error into a friendlier hint. Listing an agent's native sessions
 // shells out to its CLI, which can fail because the CLI isn't authenticated (e.g. codex
@@ -382,7 +409,7 @@ async function submit(): Promise<void> {
             :carried-efforts="carriedEfforts"
             model-test-id="ns-model"
             list-test-id="ns-model-list"
-            @update:model="model = $event"
+            @update:model="onModelPick"
             @fetch="loadCapabilities(true)"
           />
 

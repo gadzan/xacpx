@@ -1316,6 +1316,9 @@ export default {
     effectFellBack: "所选 {model} 未生效。实际生效：{applied}。",
     appliesLater: "Bot 的模型变更作用于保存之后接受的运行。已经接受的运行保持当时的配置快照。",
     savedListUnverified: "已保存的列表。上次刷新失败：{message}",
+    stale: "列表已过期。",
+    staleVerified: "列表已过期。上次验证于{time}。",
+    refreshing: "正在后台刷新…下方列表仍可使用。",
   },
   time: {
     justNow: "刚刚",

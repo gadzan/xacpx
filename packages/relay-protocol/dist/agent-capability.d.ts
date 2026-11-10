@@ -48,6 +48,7 @@ export type EffortView = {
     status: "known";
     options: CapabilityEffort[];
     current?: string;
+    forModelId?: string;
 } | {
     status: "unavailable";
 };
@@ -120,7 +121,7 @@ export declare function adapterModels(ids: readonly {
     name?: string;
 }[]): CapabilityModel[];
 export declare function suggestionModels(ids: readonly string[]): CapabilityModel[];
-export declare function knownEfforts(ids: readonly string[], current?: string): EffortView;
+export declare function knownEfforts(ids: readonly string[], current?: string, forModelId?: string): EffortView;
 export interface CapabilityDraft {
     fetchedAt: string;
     suggestions?: readonly string[];

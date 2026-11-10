@@ -2541,7 +2541,7 @@ function suggestionModels(ids) {
   }
   return models;
 }
-function knownEfforts(ids, current) {
+function knownEfforts(ids, current, forModelId) {
   const seen = new Set;
   const options = [];
   for (const raw of ids) {
@@ -2552,10 +2552,12 @@ function knownEfforts(ids, current) {
     options.push({ id, name: id, source: "adapter" });
   }
   const normalized = normalizeOptional(current);
+  const scope = normalizeOptional(forModelId);
   return {
     status: "known",
     options,
-    ...normalized && seen.has(normalized) ? { current: normalized } : {}
+    ...normalized && seen.has(normalized) ? { current: normalized } : {},
+    ...scope ? { forModelId: scope } : {}
   };
 }
 function readyCapability(source, models, draft) {
@@ -2745,13 +2747,17 @@ function parseEfforts(value) {
     return { status: "unavailable" };
   if (value.status !== "known" || !Array.isArray(value.options))
     return { status: "unavailable" };
+  if ("forModelId" in value) {
+    if (typeof value.forModelId !== "string" || !value.forModelId.trim())
+      return { status: "unavailable" };
+  }
   const ids = [];
   for (const option of value.options) {
     if (!isRecord2(option) || typeof option.id !== "string" || option.source !== "adapter")
       continue;
     ids.push(option.id);
   }
-  return knownEfforts(ids, optionalString(value.current));
+  return knownEfforts(ids, optionalString(value.current), typeof value.forModelId === "string" ? value.forModelId : undefined);
 }
 function stringIds(value, key) {
   if (!Array.isArray(value))

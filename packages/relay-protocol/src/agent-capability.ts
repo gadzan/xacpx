@@ -51,7 +51,7 @@ export type SelectionEffect =
   | { kind: "fell-back"; selectedModelId: string; appliedModelId: string };
 
 export type EffortView =
-  | { status: "known"; options: CapabilityEffort[]; current?: string }
+  | { status: "known"; options: CapabilityEffort[]; current?: string; forModelId?: string }
   | { status: "unavailable" };
 
 interface CapabilitySelection {
@@ -188,7 +188,7 @@ export function suggestionModels(ids: readonly string[]): CapabilityModel[] {
   return models;
 }
 
-export function knownEfforts(ids: readonly string[], current?: string): EffortView {
+export function knownEfforts(ids: readonly string[], current?: string, forModelId?: string): EffortView {
   const seen = new Set<string>();
   const options: CapabilityEffort[] = [];
   for (const raw of ids) {
@@ -198,10 +198,12 @@ export function knownEfforts(ids: readonly string[], current?: string): EffortVi
     options.push({ id, name: id, source: "adapter" });
   }
   const normalized = normalizeOptional(current);
+  const scope = normalizeOptional(forModelId);
   return {
     status: "known",
     options,
     ...(normalized && seen.has(normalized) ? { current: normalized } : {}),
+    ...(scope ? { forModelId: scope } : {}),
   };
 }
 
@@ -427,12 +429,21 @@ function parseEfforts(value: unknown): EffortView {
   if (!isRecord(value)) return { status: "unavailable" };
   if (value.status === "unavailable") return { status: "unavailable" };
   if (value.status !== "known" || !Array.isArray(value.options)) return { status: "unavailable" };
+  // A scope that is present but not a usable model id is a malformed boundary:
+  // drop the whole list rather than serve options of unknown provenance.
+  if ("forModelId" in value) {
+    if (typeof value.forModelId !== "string" || !value.forModelId.trim()) return { status: "unavailable" };
+  }
   const ids: string[] = [];
   for (const option of value.options) {
     if (!isRecord(option) || typeof option.id !== "string" || option.source !== "adapter") continue;
     ids.push(option.id);
   }
-  return knownEfforts(ids, optionalString(value.current));
+  return knownEfforts(
+    ids,
+    optionalString(value.current),
+    typeof value.forModelId === "string" ? value.forModelId : undefined,
+  );
 }
 
 function stringIds(value: unknown, key: string): string[] {

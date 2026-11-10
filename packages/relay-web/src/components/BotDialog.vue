@@ -130,7 +130,7 @@ function normalizedModel(value: string): string | undefined {
   return trimmed;
 }
 
-async function loadCapabilities(probe = false): Promise<void> {
+async function loadCapabilities(probe = false, silent = false): Promise<void> {
   const seq = ++capabilitySeq;
   if (!agent.value) return;
   // Edit mode fills the workspace from the authoritative detail; stay in the
@@ -141,7 +141,10 @@ async function loadCapabilities(probe = false): Promise<void> {
   const previewWorkspace = capabilityWorkspace.value;
   let next: AgentCapabilityState;
   if (previewWorkspace) {
-    capability.value = { status: "loading" };
+    // A background re-read keeps the old list: the picker already shows a
+    // refreshing line when the daemon reports one, and the sequence fence
+    // below drops anything a newer read superseded.
+    if (!silent) capability.value = { status: "loading" };
     next = await instancesStore.getAgentCapabilities(props.instanceId, {
       agent: agent.value,
       workspace: previewWorkspace,
@@ -160,17 +163,29 @@ async function loadCapabilities(probe = false): Promise<void> {
     );
   }
   if (seq !== capabilitySeq) return;
-  const merged = mergeEffortRefresh(lastSettledCapability, next);
+  // Scope the effort list to the model in effect at this read; a switch drops
+  // the previous model's options instead of carrying them over.
+  const scopeId = normalizedModel(model.value) ?? (next.status === "ready" ? next.appliedModelId : undefined);
+  const merged = mergeEffortRefresh(lastSettledCapability, next, scopeId);
   if (merged.state.status !== "error") lastSettledCapability = merged.state;
-  capability.value = merged.state;
-  if (merged.efforts?.status === "known") {
-    carriedEfforts.value = merged.efforts.options.map((option) => ({ id: option.id, name: option.name }));
+  // A background re-read that fails keeps the last good list on screen
+  // instead of wiping it to an error; an explicit Fetch still surfaces
+  // failures. The carry below still updates, so a scope move clears it.
+  if (!silent || merged.state.status !== "error" || !lastSettledCapability) {
+    capability.value = merged.state;
   }
+  carriedEfforts.value = merged.efforts?.status === "known"
+    ? merged.efforts.options.map((option) => ({ id: option.id, name: option.name }))
+    : [];
 }
 
 function onModelPick(value: string): void {
   model.value = value;
   modelDirty.value = true;
+  // A committed model switch re-reads: effort options belong to the model in
+  // effect, and the 60s cache plus in-flight merge keep this cheap. Silent, so
+  // the old list stays up until the new read lands.
+  void loadCapabilities(false, true);
 }
 function onEffortPick(value: string): void {
   effort.value = value;
@@ -321,8 +336,19 @@ onMounted(() => {
   })();
 });
 watch([agent, capabilityWorkspace, () => props.bot?.id], () => {
+  // A new agent/workspace/bot is a new capability scope: the previous scope's
+  // settled list and effort carry must not leak into it, even when the model
+  // string matches. The loud read below replaces the list either way.
+  lastSettledCapability = undefined;
+  carriedEfforts.value = [];
   void loadCapabilities(false);
 });
+// An invalidation that touches exactly this scope re-reads while the dialog is
+// open; anything else leaves the shown list alone. Silent keeps the old list.
+watch(
+  () => instancesStore.capabilityEpochFor(props.instanceId, agent.value, capabilityWorkspace.value ?? "", props.bot?.id),
+  () => { void loadCapabilities(false, true); },
+);
 
 function retryHydrate(): void {
   void hydrateDetail(dialogGeneration);

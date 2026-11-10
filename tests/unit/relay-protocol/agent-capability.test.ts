@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import {
   emptyCapability,
+  knownEfforts,
   parseAgentCapabilityState,
   readyCapability,
 } from "../../../packages/relay-protocol/src/agent-capability";
@@ -90,3 +91,45 @@ test("incomplete empty stays fail-closed, never an empty list", () => {
   expect(parsed.status).toBe("error");
   if (parsed.status === "error") expect(parsed.reason.code).toBe("stale-response");
 });
+
+test("known efforts record the model they were read for", () => {
+  const state = readyCapability("session", [{ modelId: "gpt-a" }], {
+    fetchedAt: FETCHED_AT,
+    efforts: knownEfforts(["high"], "high", "gpt-a"),
+  });
+  const parsed = parseAgentCapabilityState(roundTrip(state));
+  expect(parsed).toEqual(state);
+  if (parsed.status === "ready" && parsed.efforts.status === "known") {
+    expect(parsed.efforts.forModelId).toBe("gpt-a");
+  } else {
+    throw new Error(`expected ready with known efforts, got ${parsed.status}`);
+  }
+});
+
+test("effort scope without a model id behaves as unscoped", () => {
+  const scoped = knownEfforts(["high"], undefined, "");
+  if (scoped.status !== "known") throw new Error("expected known efforts");
+  expect(scoped).not.toHaveProperty("forModelId");
+});
+
+test.each(["", "   ", 42, { id: "gpt-a" }])(
+  "malformed effort scope fails closed to unavailable (got %o)",
+  (forModelId) => {
+    const payload = {
+      status: "ready",
+      models: [{ modelId: "gpt-a", name: "gpt-a", source: "adapter" }],
+      suggestions: [],
+      efforts: {
+        status: "known",
+        options: [{ id: "high", name: "high", source: "adapter" }],
+        forModelId,
+      },
+      fetchedAt: FETCHED_AT,
+      source: "session",
+      effect: { kind: "default" },
+    };
+    const parsed = parseAgentCapabilityState(roundTrip(payload));
+    expect(parsed.status).toBe("ready");
+    if (parsed.status === "ready") expect(parsed.efforts).toEqual({ status: "unavailable" });
+  },
+);
