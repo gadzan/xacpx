@@ -135,18 +135,12 @@ export async function probeAgentCapabilitiesViaInspector(
   };
   const launch = resolveModelProbeLaunch(input.agent, context, {
     ...(options.loadAgentRegistry ? { loadAgentRegistry: options.loadAgentRegistry } : {}),
+    ...(input.agentProcessEnv === undefined ? { includeEnv: true as const } : {}),
   });
   if (!launch.ok) {
     return { ok: false, failure: "unsupported", message: launch.message };
   }
-  let agentProcessEnv = input.agentProcessEnv;
-  if (!agentProcessEnv) {
-    const withEnv = resolveModelProbeLaunch(input.agent, context, {
-      ...(options.loadAgentRegistry ? { loadAgentRegistry: options.loadAgentRegistry } : {}),
-      includeEnv: true,
-    });
-    if (withEnv.ok) agentProcessEnv = withEnv.agentProcessEnv;
-  }
+  const agentProcessEnv = input.agentProcessEnv ?? launch.agentProcessEnv;
   return inspectAcpxModels(
     {
       agentCommand: launch.agentCommand,

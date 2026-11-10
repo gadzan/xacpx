@@ -414,6 +414,12 @@ function probeArgvForLaunch(
       message: `agent "${driver}" uses a raw command override; the probe cannot prove argv boundaries without lossy splitting, so it stays unavailable. Start a normal session or migrate the command to argv.`,
     };
   }
+  if (launch.agentCommand !== undefined) {
+    return {
+      ok: false,
+      message: `agent "${driver}" carries a legacy command string the probe cannot prove without lossy splitting; probing the registry default instead would verify the wrong launch, so it stays unavailable. Start a normal session or migrate the command to argv.`,
+    };
+  }
   let registry: AgentCommandRegistry | null = null;
   try {
     registry = options.loadAgentRegistry?.() ?? null;

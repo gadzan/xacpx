@@ -200,3 +200,20 @@ test("probe entry stays unsupported with zero spawns when the launch is unprovab
   if (!raw.ok) expect(raw.failure).toBe("unsupported");
   expect(seen).toHaveLength(0);
 });
+
+test("probe entry refuses a legacy command string instead of probing the registry default", async () => {
+  const { fn, seen } = stub({ availableModelIds: ["gpt-guessed"] });
+  const result = await probeAgentCapabilitiesViaInspector(
+    { agent: "codex", cwd: "/tmp/probe-cwd", driver: "codex", agentCommand: "my-custom --acp" },
+    {
+      inspectAgentModels: fn,
+      loadAgentRegistry: () => ({ resolve: () => ["codex", "--acp"] }),
+    },
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.failure).toBe("unsupported");
+    expect(result.message).toMatch(/legacy command string/);
+  }
+  expect(seen).toHaveLength(0);
+});
