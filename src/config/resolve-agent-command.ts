@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import { resolveLocalAgentArgv, resolveLocalAgentCommand } from "./local-agent-bin";
@@ -11,11 +12,35 @@ import {
 } from "../adapters/adapter-catalog";
 import { effectiveAdapterRegistry } from "../adapters/adapter-registry";
 import { resolveActiveAdapterArgvSync, resolveActiveAdapterCommandSync } from "../adapters/adapter-preinstall";
+import {
+  DEFAULT_CLAUDE_SETTINGS_POLICY,
+  resolveClaudeAgentProcessEnv,
+  type ClaudeSettingsPolicy,
+  type ResolveClaudeSpawnEnvironmentOptions,
+} from "../adapters/claude-settings-policy";
 import { hermesAcpShimArgv, hermesAcpShimCommand, isDefaultHermesCommand } from "../adapters/hermes-shim";
 import { wrapAcpOutputGuardArgv } from "../adapters/acp-output-guard";
 import { deriveAgentAlias, renderAgentArgvIdentity, type AgentLaunchSpec } from "./agent-launch";
+
+import type { AgentCommandRegistry } from "./agent-catalog";
 import type { AgentConfig, TransportConfig } from "./types";
 import { resolveConfigPathForCurrentEnv } from "./config-path";
+/** Stable identity of the launch fields a session record persists. Shared by the
+ * session launch resolver and the model-probe launch seam so a probe can prove
+ * it runs the same launch a normal session would. */
+export function launchFingerprint(spec: {
+  agentCommand?: string;
+  acpxAgent?: string;
+  rawCommand?: string;
+  agentArgv?: readonly string[];
+}): string {
+  return createHash("sha256").update(JSON.stringify({
+    agentCommand: spec.agentCommand ?? null,
+    acpxAgent: spec.acpxAgent ?? null,
+    rawCommand: spec.rawCommand ?? null,
+    agentArgv: spec.agentArgv ?? null,
+  })).digest("hex");
+}
 
 export function resolveAgentCommand(
   driver: string,
@@ -205,4 +230,215 @@ export function isLegacyCodexCommand(command: string): boolean {
     normalized.includes("/@zed-industries/codex-acp/bin/codex-acp.js") ||
     normalized.includes("@zed-industries/codex-acp/bin/codex-acp.js")
   );
+}
+
+/**
+ * The `CapabilityContext` subset a model probe needs. `CapabilityContext` itself
+ * satisfies this shape; the narrower type keeps the config layer free of an
+ * import cycle with the agents layer.
+ */
+export interface ModelProbeLaunchContext {
+  cwd: string;
+  driver: string;
+  settingsPolicy?: ClaudeSettingsPolicy;
+  configuredModel?: string;
+  launch: {
+    agentCommand?: string;
+    acpxAgent?: string;
+    rawCommand?: string;
+    agentArgv?: readonly string[];
+  };
+  adapterVersion?: string;
+  adapterRegistryDigest?: string;
+  configRevision?: string;
+}
+
+/** Fingerprint identity of one resolved probe (design section 4.2). No argv, no
+ * env values, no secrets — digests only. */
+export interface ModelProbeLaunchIdentity {
+  agent: string;
+  driver: string;
+  settingsPolicy: string;
+  launchDigest: string;
+  resolvedAgentCommandDigest: string;
+  adapterVersion?: string;
+  adapterRegistryDigest?: string;
+  authRevision: string;
+  configRevision: string;
+}
+
+export type ModelProbeLaunch =
+  | {
+      ok: true;
+      agentCommand: string[];
+      cwd: string;
+      agentProcessEnv?: Record<string, string>;
+      identity: ModelProbeLaunchIdentity;
+    }
+  | {
+      ok: false;
+      cwd: string;
+      identity: ModelProbeLaunchIdentity;
+      reason: "probe-unavailable";
+      message: string;
+    };
+
+export interface ResolveModelProbeLaunchOptions {
+  cwd?: string;
+  platform?: NodeJS.Platform;
+  /** Auth presence is read from here; defaults to `process.env`. Values never leave. */
+  env?: NodeJS.ProcessEnv;
+  /** Resolve the Claude `agentProcessEnv` overlay. Off by default: profile
+   * resolution can touch disk, so passive fingerprinting never opts in. */
+  includeEnv?: boolean;
+  transport?: Pick<TransportConfig, "adapterVersions" | "adapterRegistry">;
+  /** acpx registry for bare drivers. No hand-written driver-to-command table:
+   * without a loader a bare driver is probe-unavailable. */
+  loadAgentRegistry?: () => AgentCommandRegistry | null;
+  claudeEnv?: ResolveClaudeSpawnEnvironmentOptions;
+}
+
+/** Policy identity shared by the probe env and the fingerprint: an unset Claude
+ * policy behaves as the resolver default, anything else is meaningless. */
+export function normalizeProbeSettingsPolicy(driver: string, policy?: ClaudeSettingsPolicy): string {
+  if (policy) return policy;
+  if (driver === "claude") return DEFAULT_CLAUDE_SETTINGS_POLICY;
+  return "none";
+}
+
+/**
+ * Auth revision from an allowlist of auth-indicating variable NAMES. Presence
+ * only — values (and therefore secrets or their hashes) never enter the
+ * fingerprint. File-based logins stay invisible here by design; the short TTL
+ * plus explicit refresh covers those.
+ */
+const AUTH_PRESENCE_ALLOWLIST: Record<string, true> = {
+  ANTHROPIC_API_KEY: true,
+  ANTHROPIC_AUTH_TOKEN: true,
+  CLAUDE_CODE_OAUTH_TOKEN: true,
+  OPENAI_API_KEY: true,
+  GEMINI_API_KEY: true,
+  GOOGLE_API_KEY: true,
+};
+
+export function authRevisionForEnv(env: NodeJS.ProcessEnv): string {
+  const present = Object.keys(env).filter((key) => AUTH_PRESENCE_ALLOWLIST[key]).sort();
+  return createHash("sha256").update(`auth-revision-v1\n${present.join("\n")}`).digest("hex");
+}
+
+function adapterRegistryDigestFor(registry: string | undefined): string | undefined {
+  if (!registry) return undefined;
+  return createHash("sha256").update(`adapter-registry-v1\n${effectiveAdapterRegistry(registry)}`).digest("hex");
+}
+
+/**
+ * Resolve the exact argv a cold model probe must spawn: the ALREADY-resolved
+ * session launch from the capability context, never a re-guessed driver.
+ * Structured launches (user argv, managed pin, preinstalled release, Hermes
+ * shim, local fallback, overlay alias, Windows single-token synthesis) carry
+ * their argv and are reused verbatim. Unix raw commands and bare drivers
+ * without a registry answer are probe-unavailable, never guessed.
+ *
+ * A probe has no session, so recorded-launch stickiness does not apply: the
+ * current config resolution is the only provable identity. Sessions pinned to
+ * older recorded launches keep their own identity and simply do not match.
+ */
+export function resolveModelProbeLaunch(
+  agent: string,
+  context: ModelProbeLaunchContext,
+  options: ResolveModelProbeLaunchOptions = {},
+): ModelProbeLaunch {
+  const env = options.env ?? options.claudeEnv?.baseEnv ?? process.env;
+  const cwd = options.cwd ?? context.cwd;
+  const settingsPolicy = normalizeProbeSettingsPolicy(context.driver, context.settingsPolicy);
+  const launchDigest = launchFingerprint(context.launch);
+  const argv = probeArgvForLaunch(context.driver, context.launch, options);
+  const resolvedAgentCommandDigest = argv.ok
+    ? createHash("sha256").update(JSON.stringify(argv.argv)).digest("hex")
+    : createHash("sha256").update(`unresolved-model-probe-launch\n${launchDigest}`).digest("hex");
+  const adapterVersion = context.adapterVersion ??
+    (isManagedAdapterId(context.driver)
+      ? effectiveAdapterVersion(context.driver, options.transport?.adapterVersions)
+      : undefined);
+  const adapterRegistryDigest = context.adapterRegistryDigest ??
+    adapterRegistryDigestFor(options.transport?.adapterRegistry);
+  const identity: ModelProbeLaunchIdentity = {
+    agent,
+    driver: context.driver,
+    settingsPolicy,
+    launchDigest,
+    resolvedAgentCommandDigest,
+    ...(adapterVersion !== undefined ? { adapterVersion } : {}),
+    ...(adapterRegistryDigest !== undefined ? { adapterRegistryDigest } : {}),
+    authRevision: authRevisionForEnv(env),
+    configRevision: context.configRevision ?? "unversioned",
+  };
+  if (!argv.ok) {
+    return { ok: false, cwd, identity, reason: "probe-unavailable", message: argv.message };
+  }
+  if (!options.includeEnv) {
+    return { ok: true, agentCommand: argv.argv, cwd, identity };
+  }
+  const agentProcessEnv = resolveClaudeAgentProcessEnv(
+    {
+      driver: context.driver,
+      ...(context.settingsPolicy ? { settingsPolicy: context.settingsPolicy } : {}),
+      ...(context.configuredModel ? { model: context.configuredModel } : {}),
+    },
+    {
+      ...(options.claudeEnv ?? {}),
+      baseEnv: env,
+      platform: options.platform ?? options.claudeEnv?.platform ?? process.platform,
+    },
+  );
+  return {
+    ok: true,
+    agentCommand: argv.argv,
+    cwd,
+    ...(agentProcessEnv ? { agentProcessEnv } : {}),
+    identity,
+  };
+}
+
+function probeArgvForLaunch(
+  driver: string,
+  launch: ModelProbeLaunchContext["launch"],
+  options: ResolveModelProbeLaunchOptions,
+): { ok: true; argv: string[] } | { ok: false; message: string } {
+  if (launch.agentArgv && launch.agentArgv.length > 0 && launch.agentArgv[0]) {
+    return { ok: true, argv: [...launch.agentArgv] };
+  }
+  if (launch.rawCommand !== undefined) {
+    return {
+      ok: false,
+      message: `agent "${driver}" uses a raw command override; the probe cannot prove argv boundaries without lossy splitting, so it stays unavailable. Start a normal session or migrate the command to argv.`,
+    };
+  }
+  let registry: AgentCommandRegistry | null = null;
+  try {
+    registry = options.loadAgentRegistry?.() ?? null;
+  } catch {
+    registry = null;
+  }
+  if (registry) {
+    let resolved: string | string[] | undefined;
+    try {
+      resolved = registry.resolve(driver);
+    } catch {
+      resolved = undefined;
+    }
+    if (Array.isArray(resolved) && resolved.length > 0 && resolved[0]) {
+      return { ok: true, argv: [...resolved] };
+    }
+    if (typeof resolved === "string" && resolved.trim()) {
+      return {
+        ok: false,
+        message: `agent "${driver}" resolved to a raw registry command; the probe cannot prove argv boundaries without lossy splitting, so it stays unavailable.`,
+      };
+    }
+  }
+  return {
+    ok: false,
+    message: `agent "${driver}" has no structured launch for the probe to reuse; start a normal session or configure an explicit command or argv.`,
+  };
 }

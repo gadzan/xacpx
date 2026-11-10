@@ -333,6 +333,19 @@ export interface SessionEffortState {
   available: string[];
 }
 
+/** Fingerprint identity of one resolved probe. Digests only — never argv, env values, or secrets. */
+export interface AgentCapabilityProbeIdentity {
+  agent: string;
+  driver: string;
+  settingsPolicy: string;
+  launchDigest: string;
+  resolvedAgentCommandDigest: string;
+  adapterVersion?: string;
+  adapterRegistryDigest?: string;
+  authRevision: string;
+  configRevision: string;
+}
+
 /** Launch identity for a cold capability probe. No session alias is accepted. */
 export interface AgentCapabilityProbeRequest {
   agent: string;
@@ -343,6 +356,9 @@ export interface AgentCapabilityProbeRequest {
   acpxAgent?: string;
   rawCommand?: string;
   agentArgv?: readonly string[];
+  /** Spawn overlay (Claude settingsPolicy). Never logged, cached, or persisted. */
+  agentProcessEnv?: Record<string, string>;
+  identity?: AgentCapabilityProbeIdentity;
 }
 
 export type AgentCapabilityProbeResult =
@@ -352,6 +368,12 @@ export type AgentCapabilityProbeResult =
       currentModelId?: string;
       efforts: string[];
       currentEffort?: string;
+      /**
+       * True only when the producer verified efforts alongside the models (a
+       * live session read). Absent or false means unknown — never known-empty.
+       * Cold probes leave it unset; consumers must render efforts unavailable.
+       */
+      effortKnown?: boolean;
     }
   | {
       ok: false;
