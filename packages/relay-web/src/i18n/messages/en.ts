@@ -1313,7 +1313,7 @@ export default {
         empty: "This topic has no messages to copy yet.",
         unsettled: "This topic has no finished run to fork from. Wait for the current run to finish.",
         changed: "The source topic changed while forking. Try again.",
-        historyMissing: "This fork's copied history is missing. Delete the broken topic and fork again with a new one.",
+        historyMissing: "This fork's copied history is missing, so it cannot be reused. Click Fork again to start over with a new topic.",
         exists: "That topic already exists. Close the dialog and try again.",
         notFound: "The source topic no longer exists.",
         notGroup: "Only Group topics can be forked.",

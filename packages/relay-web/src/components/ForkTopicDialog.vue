@@ -28,9 +28,12 @@ const title = ref(`${props.sourceTopic.title} fork`);
 const creating = ref(false);
 const errorCode = ref<string | null>(null);
 // Minted once per open: every retry of this dialog replays the same pair, so
-// the core returns the already-committed Topic instead of a second one.
-const targetTopicId = `topic_${crypto.randomUUID()}`;
-const requestId = crypto.randomUUID();
+// the core returns the already-committed Topic instead of a second one. The
+// one exception is `topic_fork_history_missing`: the core fails closed rather
+// than adopting a damaged target, so the next click must start over with a
+// fresh pair or it would replay the same unrecoverable ids forever.
+const targetTopicId = ref(`topic_${crypto.randomUUID()}`);
+const requestId = ref(crypto.randomUUID());
 
 const forkPointLabel = computed(() => {
   if (props.sourcePoint.type === "run") {
@@ -80,16 +83,21 @@ async function handleFork(): Promise<void> {
     await groupsStore.forkGroupTopic(instanceId, {
       conversationId: groupsStore.activeConversationId,
       sourceTopicId: props.sourceTopic.id,
-      targetTopicId,
-      requestId,
+      targetTopicId: targetTopicId.value,
+      requestId: requestId.value,
       sourcePoint: props.sourcePoint,
       title: title.value.trim() || undefined,
     });
     emit("close");
   } catch (err: unknown) {
-    errorCode.value = typeof (err as { code?: unknown }).code === "string"
+    const code = typeof (err as { code?: unknown }).code === "string"
       ? (err as { code: string }).code
       : "failed";
+    if (code === "topic_fork_history_missing") {
+      targetTopicId.value = `topic_${crypto.randomUUID()}`;
+      requestId.value = crypto.randomUUID();
+    }
+    errorCode.value = code;
   } finally {
     creating.value = false;
   }
