@@ -906,6 +906,8 @@ export interface ConversationStore {
   topicMessageCount(conversationId: string, topicId: string): number;
   /** Largest `seq` stored for the Topic, or 0 when empty. */
   maxTopicSeq(conversationId: string, topicId: string): number;
+  /** Largest `seq` attributed to a Run, or undefined when the Run owns none. */
+  maxRunSeq(runId: string): number | undefined;
   deleteConversationRows(conversationId: string): void;
   close(): void;
 }

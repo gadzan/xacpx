@@ -55,6 +55,30 @@ test("Topic event projection accepts legacy/concurrency metadata and rejects inv
   for (const value of [1, 2, 64]) expect(valid({ ...topic, maxConcurrentMemberTurns: value })).toBe(true);
   for (const value of [0, -1, 1.5, NaN, Infinity, 65, null, "2"]) expect(valid({ ...topic, maxConcurrentMemberTurns: value })).toBe(false);
 });
+test("fork provenance is validated on topics and messages", () => {
+  const topic = { id: "t", conversationId: "c", title: "t", status: "active", createdAt: "now", updatedAt: "now" };
+  const fork = {
+    requestId: "fork-1", sourceConversationId: "c", sourceTopicId: "src", sourceTitle: "Source",
+    sourceRunId: "run", throughSeq: 4, rootTopicId: "src", copiedMessages: 4, omittedMessages: 0, createdAt: "now",
+  };
+  const validTopic = (value: unknown) => validControlEvent({ type: "conversation-topic-changed", topic: value });
+  expect(validTopic({ ...topic, forkedFrom: fork })).toBe(true);
+  expect(validTopic({ ...topic, forkedFrom: { ...fork, sourceRunId: undefined } })).toBe(true);
+  for (const bad of [
+    { ...fork, requestId: "" },
+    { ...fork, throughSeq: -1 },
+    { ...fork, copiedMessages: 1.5 },
+    { ...fork, omittedMessages: "0" },
+    { ...fork, sourceTopicId: undefined },
+    { ...fork, createdAt: 1 },
+  ]) {
+    expect(validTopic({ ...topic, forkedFrom: bad })).toBe(false);
+  }
+  const message = { id: "m", conversationId: "c", topicId: "t", seq: 1, role: "human", content: "hi", createdAt: "now" };
+  const validMessage = (value: unknown) => validControlEvent({ type: "conversation-message", message: value });
+  expect(validMessage({ ...message, forkedFromMessageId: "src-message" })).toBe(true);
+  expect(validMessage({ ...message, forkedFromMessageId: 7 })).toBe(false);
+});
 
 test("webEventEnvelope wraps an event and round-trips through encode/decode", () => {
   const event: WebServerEvent = {

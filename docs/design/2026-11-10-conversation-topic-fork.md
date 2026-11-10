@@ -1,5 +1,4 @@
 # Conversation Topic Fork（会话分叉）技术方案
-
 - 状态：Proposed
 - 日期：2026-11-10
 - 范围：xacpx Group Topic 的应用层 fork；Direct / 普通 Session / 原生 Agent Session fork 不在本期
@@ -127,6 +126,8 @@ export interface TopicSummaryDto {
 
 `toTopicSummary` 直接透传 `topic.forkedFrom`。旧客户端会忽略未知字段。
 
+`src/control/conversation-control-dtos.ts` 与 `packages/relay-protocol/src/dtos.ts` 各自声明同名 DTO（协议包不依赖 xacpx）；两处都必须带上可选字段，漏一处会静默丢字段。`ThreadForkSourcePointDto` 只在协议包声明，core 直接复用。
+
 ### 5.3 `messages` 新列
 
 新增可空列：
@@ -213,7 +214,7 @@ Payload：
 
 `latest_stable`：
 
-1. 取源 Topic 中 `createdAt` 最新（同时间按 id）的终端 Run
+1. 取源 Topic 中最后接受（按 `runs.created_at ASC, runs.rowid ASC`，与 `listRuns` 一致）的终端 Run
    （`completed | failed | cancelled | indeterminate`）；
 2. 若没有终端 Run：
    - 仅当源 Topic 本身是 fork（`forkedFrom` 存在）、没有非终态 Run 且已有消息时，
@@ -234,7 +235,18 @@ runMaxSeq  = MAX(messages.seq WHERE run_id = run.id)
 throughSeq = max(requestSeq, runMaxSeq)
 ```
 
-随后复制源 Topic 中所有 `seq <= throughSeq` 的消息。
+复制谓词（总量与最近 500 条窗口使用同一谓词）：
+
+```sql
+seq <= throughSeq
+AND (run_id IS NULL OR run_id IN (
+  SELECT id FROM runs
+  WHERE conversation_id = ? AND topic_id = ?
+    AND rowid <= (SELECT rowid FROM runs WHERE id = ?)
+))
+```
+
+边界 Run 之后才接受的排队 Run，即使其请求 `seq` 低于边界 Run 的回复，也不会被复制；纯快照边界（无 Run）只按 `seq <= max(seq)`。`omittedMessages` 等于谓词过滤后的总数减去实际复制数，绝不是原始 seq 总数。
 
 ### 6.3 复制事务
 
@@ -250,9 +262,9 @@ throughSeq = max(requestSeq, runMaxSeq)
 
 幂等：
 
-- 事务开始时检查目标 Topic 是否已有消息：
-  - 有：视为复制已提交，直接返回已有计数（不重复插入）；
-  - 无：执行复制。
+- 事务开始时按 `forked_from_message_id IS NOT NULL` 统计目标已提交的复制行：
+  - 已提交：复用这些行，并用同一谓词重算 `omittedMessages = max(0, 过滤总数 - 已提交数)`，不重复插入；
+  - 目标有普通消息但没有复制行：直接 `topic_exists`，绝不把在线话题当副本；
 - 配合 `(topic_id, forked_from_message_id)` 唯一索引，重放不会产生重复行。
 - 不依赖 `messages` 的 `id` 复用：目标消息总是新 id。
 
@@ -274,11 +286,14 @@ throughSeq = max(requestSeq, runMaxSeq)
 3. `structuredClone(this.state)` → 写入 `conversation_topics` → `persist(next)`；
 4. 发出 `conversations-changed` 与 `conversation-topic-changed` 产品事件。
 
+两个产品事件在 `stateMutex` 之外发出（与 `createGroupTopic` 一致），锁内只做目标复查、复制与持久化。
+
 双存储恢复：
 
 - 复制先于 AppState：崩溃后目标 Topic 不存在但消息已存在。重试时复制事务识别到已有消息并复用，然后写 AppState。
 - AppState 写失败：同上，重试可恢复。
 - 不会出现“AppState 有 Topic、消息没复制”的正常路径（除非手工改库）；若检测到该状态，返回 `topic_fork_history_missing`，不静默创建空历史。
+- `topic_fork_history_missing` 是 fail-closed 的人工恢复路径：不自动重建、不自动删除损坏的 AppState 记录；运维先删除该目标 Topic，再用新的 `targetTopicId` 重新分叉。
 
 ### 6.5 源 Topic 并发变化
 
@@ -297,7 +312,7 @@ throughSeq = max(requestSeq, runMaxSeq)
 | `topic_fork_source_changed` | 复制时源 Run/request 已被并发清除 |
 | `topic_fork_history_missing` | AppState 中已有同 requestId 的 fork，但目标消息缺失（异常状态） |
 | `topic_exists` | `targetTopicId` 已被其他请求占用 |
-| `invalid-payload` | RPC 字段缺失/类型错误/未知字段 |
+| `invalid-payload` | RPC 字段缺失/类型错误；`targetTopicId` 形状不合法；`requestId` 为空 |
 
 ## 7. 消息复制规则
 
@@ -358,6 +373,8 @@ export const MAX_FORK_MESSAGES = 500;
 ### 8.3 Router
 
 `ConversationRouterEngine.buildRoutingInput` 同样读取当前 Topic 的 `beforeSeq: request.seq`；复制后的消息自然进入 Router 的公开 transcript，无需改动。
+
+Router 的公开 transcript 窗口是既有的 `ROUTER_PUBLIC_TRANSCRIPT_MESSAGES = 200`，小于快照上限 500：副本历史足够让 Router 看到近期发言，但 Router 从不读取整段快照。本期不改这两个常量。
 
 ### 8.4 公共记忆
 
@@ -430,7 +447,7 @@ groupTopicsFork: "control.group.topics.fork"
 groupTopicForkV1: "group.topics.fork.v1"
 ```
 
-`payload-validators.ts` 增加 `groupTopicsFork` 的 payload 校验（见 6.1）。请求字段全部显式校验；`sourcePoint` 使用 tagged union；拒绝未知字段。
+`payload-validators.ts` 增加 `groupTopicsFork` 的 payload 校验（见 6.1）。校验保持 shape-only：必填字符串、可选 title、tagged `sourcePoint`；未知字段不拒绝（与既有 `fields()` 校验一致），语义检查留给 `forkGroupTopic`。
 
 生成物：
 
@@ -449,10 +466,10 @@ async forkGroupTopic(input: {
   requestId: string;
   sourcePoint?: ThreadForkSourcePointDto;
   title?: string;
-}): Promise<{ topic: TopicSummaryDto }>
+}): Promise<TopicSummaryDto>
 ```
 
-内部调用 `runtime.runs.forkGroupTopic(input)`，返回 `this.topicSummary(topic)`。
+内部调用 `runtime.runs.forkGroupTopic(input)`，直接返回 `this.topicSummary(topic)`（裸 `TopicSummaryDto`）；`{ topic }` 包装由 channel-relay bridge 负责，服务层不重复包装。
 
 新增 feature probe：
 

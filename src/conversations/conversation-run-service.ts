@@ -1169,7 +1169,14 @@ export class ConversationRunService {
     title?: string;
   }): Promise<ConversationTopic> {
     this.assertOpen();
-    this.assertForkTargetTopicId(input.sourceTopicId, input.targetTopicId, input.requestId);
+    this.assertForkTargetTopicIdShape(input.sourceTopicId, input.targetTopicId);
+    if (!input.requestId) {
+      throw new ConversationError("invalid-payload", "a fork request requires a requestId");
+    }
+    const pendingTarget = this.state.conversation_topics[input.targetTopicId];
+    if (pendingTarget && pendingTarget.forkedFrom?.requestId !== input.requestId) {
+      throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+    }
     const source = this.requireGroupTopic(input.conversationId, input.sourceTopicId);
     if (source.status !== "active" && source.status !== "archived") {
       throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
@@ -1181,12 +1188,12 @@ export class ConversationRunService {
     if (point.type !== "latest_stable" && point.type !== "run") {
       throw new ConversationError("invalid-payload", "fork sourcePoint must be latest_stable or a run");
     }
-    return this.stateMutex.run(async () => {
+    const forked = await this.stateMutex.run(async () => {
       const live = this.state.conversations[input.conversationId];
       if (!live || live.kind !== "group") {
         throw new ConversationError("conversation_not_found", `conversation "${input.conversationId}" does not exist`);
       }
-      this.assertForkTargetTopicId(input.sourceTopicId, input.targetTopicId, input.requestId);
+      this.assertForkTargetTopicIdShape(input.sourceTopicId, input.targetTopicId);
       const liveSource = this.state.conversation_topics[input.sourceTopicId];
       if (!liveSource || liveSource.conversationId !== input.conversationId) {
         throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
@@ -1197,30 +1204,20 @@ export class ConversationRunService {
       if (liveSource.peerScope) {
         throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
       }
-      const boundary = this.resolveForkPoint(input.conversationId, liveSource, point);
-      const forkCount = this.store.topicForkMessageCount(input.targetTopicId);
-      if (forkCount > 0) {
-        const existing = this.state.conversation_topics[input.targetTopicId];
-        if (existing?.forkedFrom && existing.forkedFrom.requestId === input.requestId) {
-          return existing;
-        }
-        throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
-      }
       const existingTarget = this.state.conversation_topics[input.targetTopicId];
       if (existingTarget) {
-        if (existingTarget.forkedFrom
-          && existingTarget.forkedFrom.requestId === input.requestId
-          && this.store.topicMessageCount(input.conversationId, input.targetTopicId) === 0) {
+        if (existingTarget.forkedFrom?.requestId !== input.requestId) {
+          throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+        }
+        if (this.store.topicForkMessageCount(input.targetTopicId) === 0) {
           throw new ConversationError(
             "topic_fork_history_missing",
             `fork target "${input.targetTopicId}" exists but its copied history is missing; delete the corrupt target and retry with a fresh id`,
           );
         }
-        throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+        return existingTarget;
       }
-      if (this.store.topicMessageCount(input.conversationId, input.targetTopicId) > 0) {
-        throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
-      }
+      const boundary = this.resolveForkPoint(input.conversationId, liveSource, point);
       const copied = this.store.copyTopicForkMessages({
         conversationId: input.conversationId,
         ...(boundary.boundaryRunId !== undefined ? { boundaryRunId: boundary.boundaryRunId } : {}),
@@ -1231,13 +1228,6 @@ export class ConversationRunService {
       });
       if (copied.copiedMessages === 0) {
         throw new ConversationError("topic_fork_empty", `topic "${input.sourceTopicId}" has no messages to fork`);
-      }
-      const replayedTarget = this.state.conversation_topics[input.targetTopicId];
-      if (replayedTarget) {
-        if (replayedTarget.forkedFrom && replayedTarget.forkedFrom.requestId === input.requestId) {
-          return replayedTarget;
-        }
-        throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
       }
       const timestamp = this.now().toISOString();
       const topic: ConversationTopic = {
@@ -1267,27 +1257,20 @@ export class ConversationRunService {
       const next = structuredClone(this.state);
       next.conversation_topics[topic.id] = topic;
       await this.persist(next);
-      emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
-      emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic });
       return topic;
     });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: forked });
+    return forked;
   }
 
-  private assertForkTargetTopicId(sourceTopicId: string, targetTopicId: string, requestId: string): void {
-    if (!targetTopicId.startsWith("topic_") || targetTopicId.startsWith("topic_peer_")) {
-      throw new ConversationError("topic_exists", `topic "${targetTopicId}" is not a forkable Topic id`);
+  private assertForkTargetTopicIdShape(sourceTopicId: string, targetTopicId: string): void {
+    if (typeof targetTopicId !== "string" || !targetTopicId.startsWith("topic_") || targetTopicId.startsWith("topic_peer_")) {
+      throw new ConversationError("invalid-payload", `"${targetTopicId}" is not a forkable Topic id`);
     }
     if (targetTopicId === sourceTopicId) {
       throw new ConversationError("topic_exists", `topic "${targetTopicId}" already exists`);
     }
-    const existing = this.state.conversation_topics[targetTopicId];
-    if (!existing) {
-      return;
-    }
-    if (existing.forkedFrom && existing.forkedFrom.requestId === requestId) {
-      return;
-    }
-    throw new ConversationError("topic_exists", `topic "${targetTopicId}" already exists`);
   }
 
   private resolveForkPoint(
@@ -1338,13 +1321,7 @@ export class ConversationRunService {
     if (!request || request.conversationId !== run.conversationId || request.topicId !== run.topicId) {
       return undefined;
     }
-    let throughSeq = request.seq;
-    for (const message of this.store.listMessages({ conversationId: run.conversationId, topicId: run.topicId, limit: Number.MAX_SAFE_INTEGER })) {
-      if (message.runId === run.id && message.seq > throughSeq) {
-        throughSeq = message.seq;
-      }
-    }
-    return throughSeq;
+    return Math.max(request.seq, this.store.maxRunSeq(run.id) ?? 0);
   }
 
   /**

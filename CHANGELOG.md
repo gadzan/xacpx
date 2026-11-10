@@ -17,6 +17,7 @@
 - 公共记忆读窗口在应用 20 条上限前先排除投影为 `off` 的 Group，避免一个关闭投影的群用新版消息占满窗口、把其他仍开启群的旧消息挤出成员的 Direct prompt。
 - 公共记忆的 Direct prompt 块补上时间戳与 `(you)` 标记，消息正文压成单行后按 800 字截断；整块新增 4,000 字总预算，超出时从最旧消息丢弃并标注 `[…older messages omitted]`，不再出现最多 20 × 800 字的无上限窗口。
 - 群组默认发送设置：普通消息的路由不再由 composer 决定，改为每个 Group 的 `defaultRouting`（`lead` 默认 / `automatic`），只在 Group 设置里修改；`@成员`、`@everyone`、讨论与斜杠命令仍发送各自显式 target，语义不变。`lead` 保持旧的“无 target、服务端在 accept gates 内重算 live lead”形状；`automatic` 显式发送自动 Run，缺少可用 Router 时以 `automatic_unsupported` 明确失败（外站点名消息仍走 lead，effect policy 仍要求显式成员）。迁移只依据持久证据：升级前有过 automatic Run 的 Group 在 Router 可用时继续 automatic，其余（以及 Router 关闭时的前者）保持 lead，因此旧 Group 的普通消息不会悄悄改变含义或开始被拒绝；Group DTO 暴露解析后的值，`groups.default-routing.v1` capability 让旧 core 不显示该设置。
+- 群组话题分叉（应用层快照）：新增 `control.group.topics.fork`（`{conversationId, sourceTopicId, targetTopicId, requestId, sourcePoint?, title?}`，capability `group.topics.fork.v1`），从最新已结算 Run 或指定 Run 把源话题的公开消息复制进新话题，最多 500 条并报告 `omittedMessages`。副本重编 `seq`，保留角色/发送者/正文/附件引用/时间，清空 Run、MemberTurn、handoff、group-say 与 input metadata，写 `messages.forked_from_message_id` 并在 `TopicSummaryDto.forkedFrom` 记录来源、根话题与边界；`run_id IS NULL` 或所属 Run 在边界之前才参与复制，因此边界之后排队 Run 的请求不会进入副本。同一 `requestId + targetTopicId` 重放返回同一话题，异常残留（有话题无复制行）报 `topic_fork_history_missing`，已有普通消息的目标报 `topic_exists`。新话题有自己的成员 session，首轮 Group prompt 与 Router 通过既有读取看到副本历史；源话题的 clear/delete 不影响副本，`bot_public_memory` 不复制。relay-web 在话题菜单与已结算 Run 头部提供入口、`ForkTopicDialog` 与时间线分叉横幅（中英双语），能力缺失时全部隐藏。不是原生 Agent session fork，也不创建 git 分支/工作树。
 
 ### Changed
 

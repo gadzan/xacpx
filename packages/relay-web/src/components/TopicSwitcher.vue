@@ -136,6 +136,7 @@ function onRowMenuSelect(key: string): void {
     forkTopic?.(topic);
     return;
   }
+  if (key === "delete" || key === "clear" || key === "retry-delete") void openConfirm("delete", topic);
 }
 
 // A failed delete/clear keeps the confirm dialog open with its error, so only a closed

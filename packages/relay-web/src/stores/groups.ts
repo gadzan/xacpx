@@ -227,7 +227,7 @@ const RUN_STATE_PRECEDENCE: Record<ConversationRunStateDto, number> = {
   indeterminate: 3,
 };
 
-function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean {
+export function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean {
   return state === "completed" || state === "failed" || state === "cancelled" || state === "indeterminate";
 }
 

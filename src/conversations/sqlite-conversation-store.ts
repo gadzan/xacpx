@@ -470,7 +470,8 @@ CREATE TABLE IF NOT EXISTS pending_dispatches (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_topic_seq ON messages (topic_id, seq);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_fork_source ON messages (topic_id, forked_from_message_id) WHERE forked_from_message_id IS NOT NULL;
+-- idx_messages_fork_source is created by ensureForkedFromMessageColumn AFTER
+-- the column exists, so a pre-fork database can open this schema unchanged.
 -- idx_messages_member_turn is created by ensureMessageMemberTurnColumn AFTER
 -- the column exists, so a pre-P1a database can open this schema unchanged.
 CREATE INDEX IF NOT EXISTS idx_runs_topic_state ON runs (topic_id, state, created_at);
@@ -4606,14 +4607,6 @@ export class SqliteConversationStore implements ConversationStore {
   }
   copyTopicForkMessages(input: TopicForkCopyInput): TopicForkCopyResult {
     return this.sqlite.transaction(() => {
-      const committed = this.sqlite.get<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM messages WHERE topic_id = ? AND forked_from_message_id IS NOT NULL",
-        [input.targetTopicId],
-      )?.n ?? 0;
-      if (committed > 0) {
-        const newest = this.maxTopicSeq(input.conversationId, input.targetTopicId);
-        return { copiedMessages: committed, omittedMessages: 0, newestTargetSeq: newest };
-      }
       const runFilter = "AND (run_id IS NULL OR run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ? AND rowid <= (SELECT rowid FROM runs WHERE id = ?)))";
       const totalParams: Array<string | number> = input.boundaryRunId === undefined
         ? [input.conversationId, input.sourceTopicId, input.throughSeq]
@@ -4624,6 +4617,21 @@ export class SqliteConversationStore implements ConversationStore {
          ${input.boundaryRunId === undefined ? "" : runFilter}`,
         totalParams,
       )?.n ?? 0;
+      const committed = this.sqlite.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM messages WHERE topic_id = ? AND forked_from_message_id IS NOT NULL",
+        [input.targetTopicId],
+      )?.n ?? 0;
+      if (committed > 0) {
+        const newest = this.maxTopicSeq(input.conversationId, input.targetTopicId);
+        return { copiedMessages: committed, omittedMessages: Math.max(0, total - committed), newestTargetSeq: newest };
+      }
+      const targetTotal = this.sqlite.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND topic_id = ?",
+        [input.conversationId, input.targetTopicId],
+      )?.n ?? 0;
+      if (targetTotal > 0) {
+        throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+      }
       if (total === 0) {
         return { copiedMessages: 0, omittedMessages: 0, newestTargetSeq: 0 };
       }
@@ -4670,6 +4678,13 @@ export class SqliteConversationStore implements ConversationStore {
       "SELECT MAX(seq) AS seq FROM messages WHERE conversation_id = ? AND topic_id = ?",
       [conversationId, topicId],
     )?.seq ?? 0;
+  }
+
+  maxRunSeq(runId: string): number | undefined {
+    return this.sqlite.get<{ seq: number | null }>(
+      "SELECT MAX(seq) AS seq FROM messages WHERE run_id = ?",
+      [runId],
+    )?.seq ?? undefined;
   }
 
   private recordPromptReceipts(conversationId: string, topicId: string, contextGeneration: number): void {

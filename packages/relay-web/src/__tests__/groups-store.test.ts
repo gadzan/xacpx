@@ -3270,6 +3270,57 @@ describe("useGroupsStore Group management", () => {
       .toBe("worktree-per-member");
   });
 
+  it("forks a Group Topic through the RPC, inserts it, and selects it", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_src";
+    store.topicsByConversation["inst_1:conversation_g"] = [{
+      id: "topic_src", conversationId: "conversation_g", title: "Source", status: "active", createdAt: "now", updatedAt: "now",
+    }];
+    const forked = {
+      id: "topic_dst", conversationId: "conversation_g", title: "Source fork", status: "active" as const,
+      createdAt: "later", updatedAt: "later",
+      forkedFrom: {
+        requestId: "fork-1", sourceConversationId: "conversation_g", sourceTopicId: "topic_src",
+        sourceTitle: "Source", throughSeq: 2, rootTopicId: "topic_src", copiedMessages: 2, omittedMessages: 0, createdAt: "later",
+      },
+    };
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.group.topics.fork") return { topic: forked };
+      if (type === "control.conversation.history") {
+        return { conversationId: "conversation_g", topicId: "topic_dst", messages: [], hasMoreBefore: false, hasMoreAfter: false };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    const input = {
+      conversationId: "conversation_g",
+      sourceTopicId: "topic_src",
+      targetTopicId: "topic_dst",
+      requestId: "fork-1",
+      sourcePoint: { type: "latest_stable" as const },
+    };
+    await expect(store.forkGroupTopic("inst_1", input)).resolves.toEqual(forked);
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.group.topics.fork", input);
+    expect(store.topicsByConversation["inst_1:conversation_g"]?.map((topic) => topic.id)).toEqual(["topic_src", "topic_dst"]);
+    expect(store.activeTopicId).toBe("topic_dst");
+  });
+
+  it("keeps the current Topic when the fork RPC fails", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_src";
+    mockRpc.mockResolvedValueOnce({ error: { code: "unknown-type", message: "old hub" } });
+    await expect(store.forkGroupTopic("inst_1", {
+      conversationId: "conversation_g",
+      sourceTopicId: "topic_src",
+      targetTopicId: "topic_dst",
+      requestId: "fork-1",
+    })).rejects.toMatchObject({ code: "unknown-type", message: "connectorOutdated" });
+    expect(store.activeTopicId).toBe("topic_src");
+  });
+
   function memberTurn(botId: string, state: MemberTurnSummaryDto["state"], runId: string): MemberTurnSummaryDto {
     return {
       id: `mt_${runId}_${botId}`, runId, conversationId: "conversation_g", topicId: "topic_1", botId,

@@ -2405,3 +2405,30 @@ test("a connector without the Jev RPCs answers unsupported instead of a blank fo
     });
   }
 });
+
+test("group.topics.fork dispatches, maps malformed payloads, and refuses old cores", async () => {
+  const forks: unknown[] = [];
+  const { control } = makeFakeControl({
+    forkGroupTopic: async (input: unknown) => {
+      forks.push(input);
+      return { id: "topic_dst", conversationId: "conversation_g", title: "Fork", status: "active" };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  const input = {
+    conversationId: "conversation_g",
+    sourceTopicId: "topic_src",
+    targetTopicId: "topic_dst",
+    requestId: "fork-1",
+    sourcePoint: { type: "run", runId: "run_1" },
+  };
+  expect(await dispatch(bridge, req(MSG.groupTopicsFork, input))).toMatchObject({ topic: { id: "topic_dst" } });
+  expect(forks).toEqual([input]);
+  expect(await dispatch(bridge, req(MSG.groupTopicsFork, { ...input, sourcePoint: { type: "nope" } }))).toMatchObject({
+    error: { code: "invalid-payload" },
+  });
+  const old = createControlBridge(makeFakeControl().control as never);
+  expect(await dispatch(old, req(MSG.groupTopicsFork, input))).toMatchObject({
+    error: { code: "unsupported-rpc" },
+  });
+});
