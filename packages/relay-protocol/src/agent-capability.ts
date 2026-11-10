@@ -234,6 +234,7 @@ export function readyCapability(
     efforts: draft.efforts ?? { status: "unavailable" },
     fetchedAt: draft.fetchedAt,
     source,
+    ...(draft.reason ? { reason: { code: draft.reason.code, message: draft.reason.message } } : {}),
     ...(appliedModelId ? { appliedModelId } : {}),
     ...(draft.freshness ? { freshness: draft.freshness } : {}),
     ...(draft.refreshing !== undefined ? { refreshing: draft.refreshing } : {}),

@@ -60,6 +60,20 @@ test("unknown status stays fail-closed, never an empty list", () => {
   if (parsed.status === "error") expect(parsed.reason.code).toBe("stale-response");
 });
 
+test("ready with a stale reason round-trips through stringify/parse", () => {
+  const state = readyCapability("cache", [{ modelId: "gpt-a" }], {
+    fetchedAt: FETCHED_AT,
+    reason: { code: "timeout", message: "Re-verification timed out; showing the saved list." },
+  });
+  const parsed = parseAgentCapabilityState(roundTrip(state));
+  expect(parsed).toEqual(state);
+  if (parsed.status === "ready") {
+    expect(parsed.reason?.code).toBe("timeout");
+  } else {
+    throw new Error(`expected ready, got ${parsed.status}`);
+  }
+});
+
 test("incomplete ready stays fail-closed", () => {
   const parsed = parseAgentCapabilityState({
     status: "ready",
