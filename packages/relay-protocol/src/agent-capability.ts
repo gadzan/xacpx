@@ -106,6 +106,8 @@ export interface EmptyCapability {
   recovery: string;
   fetchedAt: string;
   suggestions: CapabilityModel[];
+  /** Always `unavailable`: with no models there is nothing to read efforts from. */
+  efforts: EffortView;
 }
 
 export interface ErrorCapability {
@@ -280,6 +282,7 @@ export function emptyCapability(
     recovery,
     fetchedAt: draft.fetchedAt,
     suggestions: suggestionModels(draft.suggestions ?? []),
+    efforts: { status: "unavailable" },
   };
 }
 
