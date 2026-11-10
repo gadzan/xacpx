@@ -1,27 +1,22 @@
 # Changelog
-## [Unreleased]
-
-### Fixed
-
-- Resume after a pause that drained the Run's last attempt now re-derives the deferred settlement: an explicit Run whose waiting graph (or legacy batch) is already closed completes instead of staying `running` with nothing to claim and permanently owning the Topic. Automatic Runs stay running so the Router can continue. Covers human pause mid-turn and resource-shortfall pauses that refused work without creating a replacement task.
-- Topic teardown, Direct teardown, Group ghost-run settle, and bot-removal `cancelDirectExecution` now treat `paused` as unsettled, matching `isUnsettledRun` / `cancelTopicRuns`. A paused Run is cancelled before sessions are released or rows are deleted, so deleting a Topic or removing a Bot cannot skip pause-owned work and get stuck on its still-open dispatch.
+## [0.24.10-beta.15] - 2026-11-10
 
 ### Added
 
+- 冷探测改用 `acpx/runtime` 的 `inspectAgentModels()`（模型发现 V2）：新增单一受控封装 `src/transport/acpx-model-inspector.ts`，删除 `sessions new → status → show → close → delete record` 命令链，探测不再创建临时 session、不写不删 acpx record、不发 prompt；`scripts/lint-acpx-imports.mjs` 的 acpx 导入 allowlist 同步收口到该文件（#567、#570）。
+- 探测复用正常会话的 launch：CLI 与 bridge 两条传输都经 `probeAgentCapabilitiesViaInspector` 把请求里的完整 launch（command / `rawCommand` / `agentArgv` / driver / settingsPolicy / `agentProcessEnv` / cwd）交给 `resolveModelProbeLaunch`，argv、env 与实际会话启动一致，等待上限为 `min(sessionInit, 75s)`；解析不出结构化 launch 时 fail closed 为 `unsupported`，不拼一条猜测的命令。只配 `acpxAgent` 的 bare driver 经 acpx registry 解析成真实 argv 后再探测，raw command 与 legacy `agentCommand` 字符串在 registry 之前拒绝，避免探测到错误的 launch（#570）。
+- 模型列表读取 fail-closed：CLI 与 bridge 的会话 status 读取统一走 `parseSessionStatusCatalog`（`src/transport/session-model-catalog.ts`），坏 JSON、缺 `availableModels`、结构不符一律抛 `ModelCatalogProtocolError`；此前两条传输各自把解析失败吞成空列表，让“读不到”与“没有模型”不可区分（#566、#570）。
+- 缓存身份与生命周期（fingerprint v2）：key 覆盖 agent、driver、规范化 cwd、settingsPolicy、完整 launch digest、解析后的 argv digest 与认证修订（presence-only），同一 agent 在不同 workspace 或不同 pin 之间不再复用上一次的模型列表；15 分钟 soft TTL，过期只作 stale 展示且保留上一次可用列表，同 key single-flight 合并并发探测，generation fencing 阻止失效前的旧探测回写。`adapterVersion` / `adapterRegistryDigest` / `configRevision` 三个维度本轮只留占位、不接配置，argv digest 已随 pin / release / registry 变化轮换（#568）。
+- 冷探测的失败语义与 effort 边界：`inspectAgentModels()` 的 undefined 映射为 `unsupported`、显式空数组映射为 `ok:true` 的空列表、超时 / 认证 / spawn / abort 映射为具名失败，日志只带 digest 前缀；冷探测不返回 effort，因此不用它推断空 effort，effort 仍按当前 Session 与当前模型实时读取（#567、#569）。
 - 群聊圆桌后端（P0）：`roundtable` target 在 accept 事务内预生成 `rounds × speakers` 个 MemberTurn（batch 1、连续 `memberIndex`、1-based `roundIndex`/0-based `speakerIndex`），由共享 claim 谓词的顺序 floor 严格串行，重启后只靠持久行恢复；`(pass)` 以 `speechOutcome:"pass"` 终态结束且不写公开消息，全 pass 的 Run 以 `roundtable-no-speech` 完成；空最终文本按 `empty-speech` 失败；失败会取消后续未开始的 turn 且不计预算；圆桌拒绝 `group_send` 与单成员 Stop。Run/MemberTurn DTO 与 `conversations.roundtable.v1` capability 已暴露，旧 Run 仍读作 `fanout`。
 - 圆桌工具面收敛：`run.shape === "roundtable"` 的成员 turn 启动不再暴露 `group_send` / `group_read_result`，MCP server 只列出 `group_say`（形状随 launch capability 本身传递，子进程无需读取 Run），圆桌 prompt 的快照截断标记也不再指向该读工具；服务端第二道门保留 `handoff_from_roundtable_refused`，并新增 `group_read_result_from_roundtable_refused` 拒绝直接读取。fanout / Direct 的工具面与 P0 调度不变。
 - 会话时间线后端（P1a）：`messages.member_turn_id` 列与 `idx_messages_member_turn` 索引把公开消息接到产生它的 MemberTurn，所有 bot/handoff 插入点（handoff、正常回复、密封证据、取消结算、迟到结果、`group_say`、无回复状态行）都写归属，人类请求保持 NULL；升级迁移只回填可证明的腿（同一 Run 唯一 `sourceTurn.turnId`、handoff envelope、`group_say` marker），歧义行保持 NULL。新增纯投影 `projectConversationTimeline()` 与 `control.conversation.timeline` RPC（`conversations.timeline.v1` capability）：每条消息按 seq 出现一次、handoff 归属精确、只为没有公开消息的 MemberTurn 生成 activity、未来 queued 圆桌 turn 只进 RoundStrip 计数、非终态 Run 恒随页返回、归属未知时保留并标 `unresolved`；Runs 与 MemberTurns 批量读取，无按 Run 的 N+1。旧 `conversation.history` 与旧客户端行为不变。
-- 一条时间线 UI（P1b）：Direct 与 Group 共用一个 `ConversationTimeline`（共享 `RoomView` + `conversation.timeline`），消息、当前发言者（live 覆盖层按 `memberTurnId` 去重）、handoff 一行、排队/全员 pass/失败 notice 都走同一投影；空结算证据气泡只在渲染层隐藏，持久行照旧。新增一行状态条（当前发言者 / 已发言 / 跳过 / 进行中 + Stop all）和多发言人 RoundStrip；Group composer 删除 target 下拉、成员勾选与每消息 automatic，默认发 lead，`@` 选成员并行、`@everyone` 保持并行、`讨论` 发送 `{mode:"roundtable",botIds,rounds:1}` 且仅在 `conversations.roundtable.v1` 存在时出现；`/command` 支持前置 `@成员` 或默认 lead 作为目标。缺少 `conversations.timeline.v1` 的旧 daemon 继续渲染 `ConversationMessageList`/`GroupTranscript`，P1c 再删除旧组件与合并抽屉。
-- Run 详情抽屉与旧路径收口（P1c）：Direct 与 Group 的 bot meta、头像、发言者标签、状态条都打开同一个 Run-wide `TraceOverlay` 抽屉；抽屉包含该 Run 的成员列表（状态 / 来源 / 轮次位次 / 失败原因）、Run 状态与 completion reason、失败原因、预算 `consumedMemberTurns/maxMemberTurns`（含 epoch/batch）、选中成员的既有 trace（Live Stack + 全量过程），以及按成员关联的审批表单。fanout 运行中成员提供 scoped Stop（`runs.cancel-member.v1`），圆桌与 single 永不提供；Stop all 仍只在 `ConversationStatusBar`。旧 daemon（无 `conversations.timeline.v1`）的旧路径回退随后已删除，见下一条。
-- 一条时间线成为唯一会话界面（P1d）：Direct 与 Group 永远渲染 `ConversationTimeline` + 状态条 + Run-wide 抽屉；缺少 `conversations.timeline.v1` 的 daemon（旧 daemon 不再支持）只显示一次升级提示并禁用发送/Stop，不再渲染第二套转录。删除旧转录组件 `GroupTranscript`、`ConversationMessageList`、`GroupDispatchRow`、`GroupAgentTurnRow`、`GroupWorkingRow`、`GroupDispatchLeaderStop`、`AgentThinkingBubble`、`RunStatusChip`、`ThinkingDotsTrigger`、`TraceLink`，`group-run-presentation` 的归属猜测与派发聚合，`group-live-stream` 的 settled/live 双流归并，以及随之失效的 i18n key 与 store API。`runs.details.batch` 返回 `missingRunIds` 时不再挂起待打开的详情，改为负缓存：无关的详情 revision 不重取，抽屉内显示 `Run detail unavailable` 与 Retry，Retry 只清除该条并重取一次。
 - 公开记忆安全补丁（不改变默认行为）：handoff 的公开记忆投影保留单一扩展点 `recordHandoffPublicMemory`，默认不注入、不记录任何 handoff 任务文本；启动时校验 `bot_public_memory` 是否指向缺失的 `messages` 行，非零时只报告（`onPublicMemoryOrphans` 或 `console.warn`），从不自动删除。现有 Topic/Conversation 清理事务已同步删除引用行；仓库内不存在单条消息删除路径，因此 per-message 同步清理仍未覆盖。
 - Handoff 记忆 opt-in（默认 off）：Group 新增可选 `handoffMemory: "off" | "summary"`（缺省/off 不改变任何行为），`summary` 的 Group 在每次新 handoff 的同一事务里多写一条截断到 500 字的任务摘要 bot 消息并按当前成员投影进公共记忆（`INSERT OR IGNORE`、重放不写、移出成员不再写）；完整子 trace 从不进入投影。`groups.create`/`update` 透传该字段并经 `groups.handoff-memory-summary.v1` capability 设门，Group 设置里多一个 off/summary 选择器（中英双语）；state load 校验非法值直接丢弃该 Group 行。Handoff 本就是公开群消息，任务文本也早就在 handoff 行里公开，因此该开关只拓宽公共记忆、不拓宽可见性。
-- 话题执行态徽标：Group 页的话题 pill 与话题面板行在该话题确实有活跃 Run 时显示旋转徽标（`bot.topic.executing`，`aria-label` 同步，尊重 `prefers-reduced-motion`），其余话题不显示；执行态由 `selectGroup` 与重连对齐的 `runs.list` 探测播种，`conversation-run-changed` 按 topic 增量维护（同 topic 的竞争 Run 不覆盖已知 owner），owner 终态后重读 `runs.list` 重新选举后继（排队 Run 已被提升而它自己的事件尚在途时不漏标），面板打开时整表重探 `refreshExecutingTopics`。徽标只覆盖当前话题列表内的话题；Direct 页不传该 prop，因而不显示。
 - 群组公共记忆开关：每个 Group 新增 `publicMemoryProjection`（`on` 默认 / `off`），带 state-load 校验、create/update 载荷、解析后的 DTO 与 `groups.public-memory-switch.v1` capability，Group 设置里提供开关（旧 Group 与旧 core 都按 `on` 读取）。`off` 时该群新消息不再写入 `bot_public_memory`，已存行也不再注入成员的 Direct prompt；开关只拦投影、不删数据，重新开启后既有行恢复可见。群内自身的对话与普通发送目标不受影响；bot 级开关与双向记忆仍不在范围内。
 - 公共记忆读窗口在应用 20 条上限前先排除投影为 `off` 的 Group，避免一个关闭投影的群用新版消息占满窗口、把其他仍开启群的旧消息挤出成员的 Direct prompt。
 - 公共记忆的 Direct prompt 块补上时间戳与 `(you)` 标记，消息正文压成单行后按 800 字截断；整块新增 4,000 字总预算，超出时从最旧消息丢弃并标注 `[…older messages omitted]`，不再出现最多 20 × 800 字的无上限窗口。
 - 群组默认发送设置：普通消息的路由不再由 composer 决定，改为每个 Group 的 `defaultRouting`（`lead` 默认 / `automatic`），只在 Group 设置里修改；`@成员`、`@everyone`、讨论与斜杠命令仍发送各自显式 target，语义不变。`lead` 保持旧的“无 target、服务端在 accept gates 内重算 live lead”形状；`automatic` 显式发送自动 Run，缺少可用 Router 时以 `automatic_unsupported` 明确失败（外站点名消息仍走 lead，effect policy 仍要求显式成员）。迁移只依据持久证据：升级前有过 automatic Run 的 Group 在 Router 可用时继续 automatic，其余（以及 Router 关闭时的前者）保持 lead，因此旧 Group 的普通消息不会悄悄改变含义或开始被拒绝；Group DTO 暴露解析后的值，`groups.default-routing.v1` capability 让旧 core 不显示该设置。
-- 群聊讨论轮数选择：Group composer 的 `讨论` chip 旁新增 1/2/3 轮选择（默认 1，按 Group 记忆在 localStorage），发送时把所选轮数写进 `{mode:"roundtable",botIds,rounds}` 的 wire target；按钮 hint 显示「N 位成员 × R 轮」，`botIds.length × rounds > 24` 的超限计划在客户端就禁用讨论 chip、不发出请求（后端校验保持第二道门）；缺少 `conversations.roundtable.v1` 时 chip 与轮数选择一并隐藏。
 
 ### Changed
 
@@ -29,8 +24,54 @@
 
 ### Fixed
 
+- Resume after a pause that drained the Run's last attempt now re-derives the deferred settlement: an explicit Run whose waiting graph (or legacy batch) is already closed completes instead of staying `running` with nothing to claim and permanently owning the Topic. Automatic Runs stay running so the Router can continue. Covers human pause mid-turn and resource-shortfall pauses that refused work without creating a replacement task.
+- Topic teardown, Direct teardown, Group ghost-run settle, and bot-removal `cancelDirectExecution` now treat `paused` as unsettled, matching `isUnsettledRun` / `cancelTopicRuns`. A paused Run is cancelled before sessions are released or rows are deleted, so deleting a Topic or removing a Bot cannot skip pause-owned work and get stuck on its still-open dispatch.
 - 圆桌后位发言者现在真的能看到前面发言者已经发表的公开消息：dispatcher 在该 Run 内按 `memberIndex` 取已完成且非 pass 的成员，把它们的公开消息按精确 id 并入 `frozenGroupTranscript` 的允许集，不扩大 seq 窗口、不写回触发集。此前每个 turn 的触发集只有人类请求，导致圆桌契约里的“Read the public messages above”与设计 §7.3 实际不成立；pass 仍不进入后续上下文。
 
+## [relay 0.14.12-beta.19] - 2026-11-10
+
+### Added
+
+- 一条时间线 UI（P1b）：Direct 与 Group 共用一个 `ConversationTimeline`（共享 `RoomView` + `conversation.timeline`），消息、当前发言者（live 覆盖层按 `memberTurnId` 去重）、handoff 一行、排队/全员 pass/失败 notice 都走同一投影；空结算证据气泡只在渲染层隐藏，持久行照旧。新增一行状态条（当前发言者 / 已发言 / 跳过 / 进行中 + Stop all）和多发言人 RoundStrip；Group composer 删除 target 下拉、成员勾选与每消息 automatic，默认发 lead，`@` 选成员并行、`@everyone` 保持并行、`讨论` 发送 `{mode:"roundtable",botIds,rounds:1}` 且仅在 `conversations.roundtable.v1` 存在时出现；`/command` 支持前置 `@成员` 或默认 lead 作为目标。
+- Run 详情抽屉与旧路径收口（P1c）：Direct 与 Group 的 bot meta、头像、发言者标签、状态条都打开同一个 Run-wide `TraceOverlay` 抽屉；抽屉包含该 Run 的成员列表（状态 / 来源 / 轮次位次 / 失败原因）、Run 状态与 completion reason、失败原因、预算 `consumedMemberTurns/maxMemberTurns`（含 epoch/batch）、选中成员的既有 trace（Live Stack + 全量过程），以及按成员关联的审批表单。fanout 运行中成员提供 scoped Stop（`runs.cancel-member.v1`），圆桌与 single 永不提供；Stop all 仍只在 `ConversationStatusBar`。
+- 一条时间线成为唯一会话界面（P1d）：Direct 与 Group 永远渲染 `ConversationTimeline` + 状态条 + Run-wide 抽屉；缺少 `conversations.timeline.v1` 的 daemon（旧 daemon 不再支持）只显示一次升级提示并禁用发送/Stop，不再渲染第二套转录。删除旧转录组件 `GroupTranscript`、`ConversationMessageList`、`GroupDispatchRow`、`GroupAgentTurnRow`、`GroupWorkingRow`、`GroupDispatchLeaderStop`、`AgentThinkingBubble`、`RunStatusChip`、`ThinkingDotsTrigger`、`TraceLink`，`group-run-presentation` 的归属猜测与派发聚合，`group-live-stream` 的 settled/live 双流归并，以及随之失效的 i18n key 与 store API。
+- 话题执行态徽标：Group 页的话题 pill 与话题面板行在该话题确实有活跃 Run 时显示旋转徽标（`bot.topic.executing`，`aria-label` 同步，尊重 `prefers-reduced-motion`），其余话题不显示；执行态由 `selectGroup` 与重连对齐的 `runs.list` 探测播种，`conversation-run-changed` 按 topic 增量维护（同 topic 的竞争 Run 不覆盖已知 owner），owner 终态后重读 `runs.list` 重新选举后继（排队 Run 已被提升而它自己的事件尚在途时不漏标），面板打开时整表重探 `refreshExecutingTopics`。徽标只覆盖当前话题列表内的话题；Direct 页不传该 prop，因而不显示。
+- 群聊讨论轮数选择：Group composer 的 `讨论` chip 旁新增 1/2/3 轮选择（默认 1，按 Group 记忆在 localStorage），发送时把所选轮数写进 `{mode:"roundtable",botIds,rounds}` 的 wire target；按钮 hint 显示「N 位成员 × R 轮」，`botIds.length × rounds > 24` 的超限计划在客户端就禁用讨论 chip、不发出请求（后端校验保持第二道门）；缺少 `conversations.roundtable.v1` 时 chip 与轮数选择一并隐藏。
+- 模型选择器状态矩阵（模型发现 V2）：loading / ready fresh / ready stale（带 last-verified 与 Refresh，可选中但不冒充 fresh）/ refreshing（保留旧列表）/ empty / unsupported / needs-setup / error+retry；默认模型、自定义 ID 与 suggestions 在每个非 ready 状态都可用，显式 Fetch 绕过缓存；effort 只在 `forModelId` 与当前模型匹配时显示，web 在读取时打标、不匹配即隐藏、切换模型时重读，不维护静态能力矩阵（#569）。
+- 模型能力缓存的 scope 失效：web 侧 60 秒缓存保留 scope 并合并 in-flight，`agent-capabilities-changed` 只失效对应 scope，per-scope epoch 让已打开的对话框重读；关闭对话框不会取消共享探测，更新的显式探测用 entry identity 围栏旧 RPC（daemon 尚未发出该事件，属前向防御，畸形载荷忽略）（#569）。
+- trace 抽屉固定 Live Stack：`GroupTraceTimeline` 全量渲染 `presentation.nodes`，折叠窗口与「显示更早步骤」一并删除；新增 `TraceLiveStack` 显示最新 3 条（移动端 2 条），沿用同一 nodes，120ms 节流、只做 transform/opacity 过渡并尊重 reduced-motion，终态给出一行 done/failed/cancelled 摘要。读者在底部时自动跟随，向上滚动即冻结并显示「N new events ↓」，点击回到尾部；展开状态按 `memberTurnId:attempt:node.key` 记在抽屉层，追加不清、切成员或重试才重置（#544）。
+- Group 设置新增三个 capability 门控项：公共记忆投影开关、handoff 记忆 off/summary、默认发送路由 lead/automatic（中英双语）；旧 core 不广告对应 capability 时不显示该设置（#558、#559、#560）。
+
+### Fixed
+
+- `runs.details.batch` 返回 `missingRunIds` 时不再挂起待打开的详情，改为负缓存：无关的详情 revision 不重取，抽屉内显示 `Run detail unavailable` 与 Retry，Retry 只清除该条并重取一次（#549）。
+- trace 抽屉 live feed 残留：终态结算中途到达的 burst 不再让下一轮静止，`indeterminate` 与 `GroupRunDetailContent.terminalState` 判定一致并保留 live tail（#545）。
+
+## [channel-relay 0.7.8-beta.15] - 2026-11-10
+
+### Added
+
+- relay connector 为新增的会话与 Group capability 加上「core 探测 + 本端 validator」双门：`conversations.roundtable.v1`、`conversations.timeline.v1`、`groups.public-memory-switch.v1`、`groups.handoff-memory-summary.v1`、`groups.default-routing.v1` 只在两侧都成立时才对外广告，旧 daemon 上对应 RPC 返回 `unsupported-rpc`；历史批次按对端是否广告圆桌 capability 决定是否请求 `roundtableV1` 投影（#546、#548、#558、#559、#560）。
+
+## [channel-feishu 0.8.7-beta.15] - 2026-11-10
+
+- Compatibility floor raised to `0.24.10-beta.15` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.15] - 2026-11-10
+
+- Compatibility floor raised to `0.24.10-beta.15` with no channel behavior change.
+
+## [relay-protocol 0.6.4-beta.11] - 2026-11-10
+
+### Added
+
+- 会话协议增量：`{mode:"roundtable",botIds,rounds?}` target 及边界校验、Run/MemberTurn 的 `shape`/`rounds`/`leadBotId`/`roundIndex`/`speakerIndex`/`speechOutcome`/`origin` 字段、`conversations.roundtable.v1`；`ConversationTimelineDto`/`ConversationRoundSummaryDto`/`ConversationTimelineOwnership`、`ConversationMessageDto.memberTurnId`、`msg.conversation.timeline` 与 `conversations.timeline.v1`。全部为增量：旧客户端忽略新字段，`control.conversation.history` 形状不变（#546、#548）。
+- 模型能力的发现语义：新增 `EmptyCapability`（明确「已公布且为空」），`ReadyCapability` 增加 `freshness`/`refreshing`/`lastVerifiedAt`，`EffortView` 增加可选 `forModelId`；未知或不完整载荷仍解析为 stale-response，不冒充空列表（#565、#569）。
+- 群组字段进入 wire：`handoffMemory`、`publicMemoryProjection`、`defaultRouting` 及各自 capability（`groups.handoff-memory-summary.v1`、`groups.public-memory-switch.v1`、`groups.default-routing.v1`），旧 core 不广告时设置不可见（#558、#559、#560）。
+
+### Changed
+
+- `runsDetailsBatch` 支持可选 `roundtableV1` 标记：不带标记时返回旧投影（剥离 shape/round 字段并把 `origin:"roundtable"` 映射回 `human-explicit`），旧严格校验器仍能接受历史批次（#546）。
 
 ## [relay 0.14.12-beta.18] - 2026-11-06
 

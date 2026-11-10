@@ -32,12 +32,12 @@
     },
     "packages/channel-discord": {
       "name": "@ganglion/xacpx-channel-discord",
-      "version": "0.8.7-beta.14",
+      "version": "0.8.7-beta.15",
       "dependencies": {
         "discord.js": "^14.26.0",
       },
       "peerDependencies": {
-        "xacpx": ">=0.24.10-beta.14",
+        "xacpx": ">=0.24.10-beta.15",
       },
       "optionalPeers": [
         "xacpx",
@@ -45,12 +45,12 @@
     },
     "packages/channel-feishu": {
       "name": "@ganglion/xacpx-channel-feishu",
-      "version": "0.8.7-beta.14",
+      "version": "0.8.7-beta.15",
       "dependencies": {
         "@larksuiteoapi/node-sdk": "~1.60.0",
       },
       "peerDependencies": {
-        "xacpx": ">=0.24.10-beta.14",
+        "xacpx": ">=0.24.10-beta.15",
       },
       "optionalPeers": [
         "xacpx",
@@ -58,20 +58,20 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.7.8-beta.14",
+      "version": "0.7.8-beta.15",
       "dependencies": {
-        "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.10",
+        "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.11",
         "ws": "^8.20.0",
       },
       "optionalDependencies": {
-        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.8-beta.14",
-        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.8-beta.14",
-        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.8-beta.14",
-        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.8-beta.14",
-        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.8-beta.14",
+        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.8-beta.15",
+        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.8-beta.15",
+        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.8-beta.15",
+        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.8-beta.15",
+        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.8-beta.15",
       },
       "peerDependencies": {
-        "xacpx": ">=0.24.10-beta.14",
+        "xacpx": ">=0.24.10-beta.15",
       },
       "optionalPeers": [
         "xacpx",
@@ -101,12 +101,12 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.14.12-beta.18",
+      "version": "0.14.12-beta.19",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
       "dependencies": {
-        "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.10",
+        "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.11",
         "@hono/node-server": "^1.13.0",
         "hono": "^4.6.0",
         "web-push": "^3.6.7",
@@ -118,7 +118,7 @@
     },
     "packages/relay-protocol": {
       "name": "@ganglion/xacpx-relay-protocol",
-      "version": "0.6.4-beta.10",
+      "version": "0.6.4-beta.11",
     },
     "packages/relay-web": {
       "name": "@ganglion/xacpx-relay-web",
@@ -141,7 +141,7 @@
         "@codemirror/view": "^6.0.0",
         "@fontsource/inter": "^5.2.8",
         "@fontsource/jetbrains-mono": "^5.2.8",
-        "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.10",
+        "@ganglion/xacpx-relay-protocol": "^0.6.4-beta.11",
         "@lezer/highlight": "^1.0.0",
         "@lobehub/icons-static-svg": "1.91.0",
         "@novnc/novnc": "1.7.0",
@@ -1276,8 +1276,6 @@
 
     "fastq": ["fastq@1.20.1", "https://registry.npmmirror.com/fastq/-/fastq-1.20.1.tgz", { "dependencies": { "reusify": "^1.0.4" } }, ""],
 
-    "fdir": ["fdir@6.5.0", "https://registry.npmmirror.com/fdir/-/fdir-6.5.0.tgz", { "peerDependencies": { "picomatch": "^3 || ^4" } }, ""],
-
     "filelist": ["filelist@1.0.6", "https://registry.npmmirror.com/filelist/-/filelist-1.0.6.tgz", { "dependencies": { "minimatch": "^5.0.1" } }, ""],
 
     "fill-range": ["fill-range@7.1.1", "https://registry.npmmirror.com/fill-range/-/fill-range-7.1.1.tgz", { "dependencies": { "to-regex-range": "^5.0.1" } }, ""],
@@ -2164,8 +2162,6 @@
 
     "fast-glob/glob-parent": ["glob-parent@5.1.2", "https://registry.npmmirror.com/glob-parent/-/glob-parent-5.1.2.tgz", { "dependencies": { "is-glob": "^4.0.1" } }, ""],
 
-    "fdir/picomatch": ["picomatch@4.0.4", "https://registry.npmmirror.com/picomatch/-/picomatch-4.0.4.tgz", {}, ""],
-
     "filelist/minimatch": ["minimatch@5.1.9", "https://registry.npmmirror.com/minimatch/-/minimatch-5.1.9.tgz", { "dependencies": { "brace-expansion": "^2.0.1" } }, ""],
 
     "foreground-child/signal-exit": ["signal-exit@4.1.0", "https://registry.npmmirror.com/signal-exit/-/signal-exit-4.1.0.tgz", {}, ""],
@@ -2201,6 +2197,8 @@
     "sucrase/commander": ["commander@4.1.1", "https://registry.npmmirror.com/commander/-/commander-4.1.1.tgz", {}, ""],
 
     "terser/commander": ["commander@2.20.3", "https://registry.npmmirror.com/commander/-/commander-2.20.3.tgz", {}, ""],
+
+    "tinyglobby/fdir": ["fdir@6.5.0", "https://registry.npmmirror.com/fdir/-/fdir-6.5.0.tgz", { "peerDependencies": { "picomatch": "^3 || ^4" } }, ""],
 
     "tinyglobby/picomatch": ["picomatch@4.0.4", "https://registry.npmmirror.com/picomatch/-/picomatch-4.0.4.tgz", {}, ""],
 
