@@ -1,5 +1,5 @@
 # Conversation Topic Fork（会话分叉）技术方案
-- 状态：Accepted；已实现（#571 `83526ba5`；e2e 覆盖、孤儿重试与重放计数一致性补于 `fix/topic-fork-followup`）
+- 状态：Accepted；已实现（#571 `83526ba5`；e2e 覆盖、孤儿重试与重放计数一致性补于 #572）
 - 日期：2026-11-10
 - 范围：xacpx Group Topic 的应用层 fork；Direct / 普通 Session / 原生 Agent Session fork 不在本期
 - 参考：t3code 的 `thread.fork`（应用层引用式 fork + provider native fork 两级模型）
