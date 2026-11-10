@@ -56,7 +56,6 @@ interface CapabilitySelection {
     selectedEffort?: string;
     effect: SelectionEffect;
 }
-export type CapabilityFreshness = "fresh" | "stale";
 export interface ReadyCapability extends CapabilitySelection {
     status: "ready";
     models: [CapabilityModel, ...CapabilityModel[]];
@@ -71,9 +70,6 @@ export interface ReadyCapability extends CapabilitySelection {
     reason?: CapabilityReason;
     /** Set only when this result was read from the target's own runtime. */
     appliedModelId?: string;
-    freshness?: CapabilityFreshness;
-    refreshing?: boolean;
-    lastVerifiedAt?: string;
 }
 export interface UnsupportedCapability extends CapabilitySelection {
     status: "unsupported";
@@ -91,16 +87,6 @@ export interface NeedsSetupCapability extends CapabilitySelection {
     suggestions: CapabilityModel[];
     efforts: EffortView;
 }
-/** The adapter answered but advertised no models. Never produced from a parse failure. */
-export interface EmptyCapability {
-    status: "empty";
-    reason: CapabilityReason;
-    recovery: string;
-    fetchedAt: string;
-    suggestions: CapabilityModel[];
-    /** Always `unavailable`: with no models there is nothing to read efforts from. */
-    efforts: EffortView;
-}
 export interface ErrorCapability {
     status: "error";
     reason: CapabilityReason;
@@ -109,7 +95,7 @@ export interface ErrorCapability {
     selectedModelId?: string;
     selectedEffort?: string;
 }
-export type AgentCapabilityState = ReadyCapability | UnsupportedCapability | NeedsSetupCapability | EmptyCapability | ErrorCapability;
+export type AgentCapabilityState = ReadyCapability | UnsupportedCapability | NeedsSetupCapability | ErrorCapability;
 export declare function classifySelection(input: {
     selectedModelId?: string;
     appliedModelId?: string;
@@ -129,9 +115,6 @@ export interface CapabilityDraft {
     appliedModelId?: string;
     efforts?: EffortView;
     reason?: CapabilityReason;
-    freshness?: CapabilityFreshness;
-    refreshing?: boolean;
-    lastVerifiedAt?: string;
 }
 export declare function readyCapability(source: CapabilityFetchSource, models: readonly {
     modelId: string;
@@ -139,7 +122,6 @@ export declare function readyCapability(source: CapabilityFetchSource, models: r
 }[], draft: CapabilityDraft): ReadyCapability;
 export declare function unsupportedCapability(reason: CapabilityReason, recovery: string, draft: CapabilityDraft): UnsupportedCapability;
 export declare function needsSetupCapability(reason: CapabilityReason, recovery: string, draft: CapabilityDraft): NeedsSetupCapability;
-export declare function emptyCapability(reason: CapabilityReason, recovery: string, draft: Pick<CapabilityDraft, "fetchedAt" | "suggestions">): EmptyCapability;
 export declare function errorCapability(reason: CapabilityReason, recovery: string, draft: Pick<CapabilityDraft, "fetchedAt" | "selectedModelId" | "selectedEffort">): ErrorCapability;
 /** Boundary parse. An old or partial payload becomes `error` / `stale-response`, never an empty model list. */
 export declare function parseAgentCapabilityState(value: unknown): AgentCapabilityState;
