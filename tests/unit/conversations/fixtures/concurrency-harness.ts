@@ -9,6 +9,7 @@ import type { AcpxCommandMetadata } from "../../../../src/config/resolve-acpx-co
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../../src/conversations/conversation-dispatcher";
 import { ConversationRunService } from "../../../../src/conversations/conversation-run-service";
 import { ConversationRouterEngine } from "../../../../src/conversations/conversation-router-engine";
+import { planRoundtable } from "../../../../src/conversations/conversation-roundtable";
 import { bindRouter } from "../../../../src/conversations/conversation-router-gate";
 import type { ConversationRouter } from "../../../../src/conversations/conversation-router-types";
 import { SqliteConversationStore } from "../../../../src/conversations/sqlite-conversation-store";
@@ -172,5 +173,26 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
       primaryMember: first, members: pool.slice(1, count).map(member), content, now: NOW,
       maxMemberTurns: 24, authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN });
   }
-  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; }, claimAttempts: () => claimCounter.attempts, claimScans: () => claimCounter.attempts + claimCounter.peeks };
+  /** Accept a roundtable exactly as the run service plans one: one ordered
+   *  batch, every speaker pre-generated, no assignment and no dependencies. */
+  function acceptRoundtable(conversationId: string, topicId: string, botIds: string[], rounds: number, requestId = "roundtable") {
+    const plan = planRoundtable({ botIds, rounds });
+    const [primary, ...rest] = plan.turns;
+    return store.acceptRequest({
+      conversationId, topicId, requestId, botId: primary!.botId,
+      profileSnapshot: snapshotBotProfile(bots.getBot(primary!.botId), NOW),
+      content: "Discuss the rollout",
+      primaryMember: { roundIndex: primary!.roundIndex, speakerIndex: primary!.speakerIndex },
+      members: rest.map((turn) => ({
+        botId: turn.botId,
+        profileSnapshot: snapshotBotProfile(bots.getBot(turn.botId), NOW),
+        roundIndex: turn.roundIndex,
+        speakerIndex: turn.speakerIndex,
+      })),
+      shape: "roundtable", rounds: plan.rounds,
+      maxMemberTurns: plan.turns.length, now: NOW,
+      authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN,
+    });
+  }
+  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, acceptRoundtable, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; }, claimAttempts: () => claimCounter.attempts, claimScans: () => claimCounter.attempts + claimCounter.peeks };
 }
