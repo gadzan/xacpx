@@ -776,6 +776,7 @@ export async function buildApp(
     { stateMutex },
   );
   const pendingWorkerDispatches = new Set<Promise<void>>();
+  const loadAgentRegistry = createAcpxAgentRegistryLoader({ logger });
   const baseTransport =
     config.transport.type === "acpx-bridge"
       ? await (deps.createBridgeTransport?.() ??
@@ -879,6 +880,7 @@ export async function buildApp(
       : (deps.createCliTransport?.(acpxCommand) ??
         new AcpxCliTransport({
           ...config.transport,
+          loadAgentRegistry,
           command: acpxCommand,
           createAdapterContext: ({ id, sessionKey, agentCommand }) =>
             createQueueOwnerAdapterContext({
@@ -1996,7 +1998,6 @@ export async function buildApp(
     shell: () => terminalShell(config),
   });
   const uploadStore = new UploadStore();
-  const loadAgentRegistry = createAcpxAgentRegistryLoader({ logger });
   void uploadStore.cleanup(); // best-effort startup sweep of expired uploads
   // A long-lived daemon never re-sweeps on the startup pass alone, so expired uploads
   // would accumulate forever despite the 24h TTL. Re-run hourly; cleared on dispose.
@@ -2176,6 +2177,7 @@ export async function buildApp(
           return { error: error instanceof Error ? error.message : String(error) };
         }
       },
+      loadAgentRegistry,
       catalog: () =>
         listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {

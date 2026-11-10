@@ -17,6 +17,7 @@ import { AsyncMutex } from "../orchestration/async-mutex.js";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
 import { AgentCapabilityService, type CapabilityAdvertisement, type CapabilityCacheStore } from "../agents/capability-discovery";
+import type { AgentCommandRegistry } from "../config/agent-catalog";
 import { advertisedCommandsFor, hasAdvertisedCommands, rememberAdvertisedCommands, markCommandRevision, markCommandAdapterRevision } from "../conversations/advertised-commands";
 import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
 import type { RunsDetailsBatchPayload, RunsDetailsBatchResult, RunsTraceGetPayload, RunsTraceGetResult } from "@ganglion/xacpx-relay-protocol";
@@ -319,6 +320,8 @@ export interface ControlServiceDeps {
      * never call `getAgentCapabilities`.
      */
     resolveCapabilityContext?(agent: string, workspace: string): import("../agents/capability-discovery").CapabilityContext | { error: string };
+    /** acpx registry for bare-driver probes; absent on test fakes. */
+    loadAgentRegistry?(): AgentCommandRegistry | null;
     catalog(): AgentCatalogEntry[];
     create(name: string, driver: string): Promise<ControlAgentInfo>;
     remove(name: string): Promise<void>;
@@ -2283,6 +2286,7 @@ export class ControlService {
   private capabilities(): AgentCapabilityService {
     if (this.capabilityService) return this.capabilityService;
     const probe = this.deps.transport.probeAgentCapabilities?.bind(this.deps.transport);
+    const loadAgentRegistry = this.deps.agents.loadAgentRegistry?.bind(this.deps.agents);
     this.capabilityService = new AgentCapabilityService({
       now: () => new Date().toISOString(),
       resolve: (agent, workspace) => this.deps.agents.resolveCapabilityContext?.(agent, workspace)
@@ -2298,6 +2302,7 @@ export class ControlService {
       listTargets: (agent, workspace) => this.deps.sessions.listCapabilityTargets?.(agent, workspace) ?? [],
       readAdvertisement: (session) => readCapabilityAdvertisement(this.deps.transport, session),
       ...(probe ? { probe } : {}),
+      ...(loadAgentRegistry ? { loadAgentRegistry } : {}),
     }, this.deps.capabilityCache);
     return this.capabilityService;
   }

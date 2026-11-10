@@ -69,6 +69,35 @@ export function parseNativeModelCatalog(
   };
 }
 
+/**
+ * One strict `status --format json` read shared by both transports: invalid
+ * JSON, a missing list, and a misshapen list all throw
+ * `ModelCatalogProtocolError` instead of posing as an empty catalog. Only a
+ * complete advertisement (possibly explicitly empty) returns.
+ */
+export function parseSessionStatusCatalog(
+  stdout: string,
+  label: string,
+): { current?: string; available: string[] } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout);
+  } catch (error) {
+    throw new ModelCatalogProtocolError(
+      `session model status for ${label} was not valid JSON`,
+      { cause: error },
+    );
+  }
+  const read = parseNativeModelCatalog(raw);
+  if (read.status === "complete") return { current: read.current, available: read.available };
+  if (read.status === "missing") {
+    throw new ModelCatalogProtocolError(
+      `session model status for ${label} has no availableModels list`,
+    );
+  }
+  throw read.error;
+}
+
 /** Read options shared by the control RPC and the chat `/model` path. */
 export interface SessionModelReadOptions {
   /**

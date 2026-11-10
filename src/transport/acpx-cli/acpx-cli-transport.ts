@@ -54,7 +54,9 @@ import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js"
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
-import { CAPABILITY_PROBE_BUDGET_MS, executeCapabilityProbe } from "../../agents/capability-probe";
+import { ACPX_MODEL_INSPECT_TIMEOUT_MS, probeAgentCapabilitiesViaInspector, type AcpxModelInspectFn } from "../acpx-model-inspector";
+import { parseSessionStatusCatalog } from "../session-model-catalog";
+import type { AgentCommandRegistry } from "../../config/agent-catalog";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../session-effort";
 import {
   CommandTimeoutError,
@@ -109,6 +111,10 @@ interface AcpxCliTransportOptions {
   /** Test seams for the omp native model-restore recovery path. */
   ompModelRecovery?: { recoverOmpSessionModel: typeof recoverOmpSessionModel };
   queueOwnerAbsence?: { assertAcpxQueueOwnerAbsent: typeof assertAcpxQueueOwnerAbsent };
+  /** acpx registry for bare-driver probes; without it a bare driver is probe-unavailable. */
+  loadAgentRegistry?: () => AgentCommandRegistry | null;
+  /** Test seam for the model inspector (production calls acpx/runtime). */
+  inspectAgentModels?: AcpxModelInspectFn;
 }
 
 interface CommandResult {
@@ -270,6 +276,8 @@ export class AcpxCliTransport implements SessionTransport {
   private readonly streamingHooks: StreamingPromptHooks;
   private readonly resolveSpawnEnvironment: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
   private readonly createAdapterContext?: AcpxCliTransportOptions["createAdapterContext"];
+  private readonly probeLoadAgentRegistry: AcpxCliTransportOptions["loadAgentRegistry"];
+  private readonly probeInspectAgentModels: AcpxCliTransportOptions["inspectAgentModels"];
 
   constructor(
     options: AcpxCliTransportOptions,
@@ -308,6 +316,8 @@ export class AcpxCliTransport implements SessionTransport {
     this.streamingHooks = streamingHooks;
     this.resolveSpawnEnvironment = options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment;
     this.createAdapterContext = options.createAdapterContext;
+    this.probeLoadAgentRegistry = options.loadAgentRegistry;
+    this.probeInspectAgentModels = options.inspectAgentModels;
     this.ompModelRecovery = options.ompModelRecovery;
     this.queueOwnerAbsence = options.queueOwnerAbsence;
   }
@@ -822,8 +832,8 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   // Read the session's current model and the agent-advertised available ids from
-  // `<agent> status --format json`. Returns an empty list when status output is
-  // not parseable, so callers can still show the current model.
+  // `<agent> status --format json`. A broken payload throws instead of posing
+  // as an empty catalog.
   async prepareSessionCommands(session: ResolvedSession): Promise<AgentCommand[] | undefined> {
     await this.ensureSession(session);
     const args = this.buildAgentQueryArgs(this.sessionInput(session), 'json', ['status','-s',session.transportSession]);
@@ -849,41 +859,15 @@ export class AcpxCliTransport implements SessionTransport {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);
     }
-    try {
-      const json = JSON.parse(result.stdout) as { model?: string; availableModels?: string[] };
-      return {
-        current: typeof json.model === "string" ? json.model : undefined,
-        available: Array.isArray(json.availableModels) ? json.availableModels.filter((m): m is string => typeof m === "string") : [],
-      };
-    } catch {
-      return { available: [] };
-    }
+    return parseSessionStatusCatalog(result.stdout, `session "${session.transportSession}"`);
   }
 
   async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
-    const budgetMs = Math.min(this.sessionInitTimeoutMs, CAPABILITY_PROBE_BUDGET_MS);
-    return executeCapabilityProbe({
-      run: (stage, tail, timeoutMs) => this.runCommandWithTimeout(
-        this.runCommand,
-        sharedBuildSessionArgs({
-          agent: input.agent,
-          agentCommand: input.agentCommand,
-          acpxAgent: input.acpxAgent,
-          rawCommand: input.rawCommand,
-          cwd: input.cwd,
-          permission: this.permissionInput(),
-        }, tail, { format: "json", authPolicy: "fail" }),
-        {
-          timeoutMs,
-          stage,
-          env: this.effectiveSpawnEnvironment({
-            driver: input.driver,
-            settingsPolicy: input.settingsPolicy,
-          }),
-        },
-      ),
-      deleteRecord: (acpxRecordId) => deleteAcpxSessionFiles({ acpxRecordId }),
-    }, budgetMs);
+    return probeAgentCapabilitiesViaInspector(input, {
+      timeoutMs: Math.min(this.sessionInitTimeoutMs, ACPX_MODEL_INSPECT_TIMEOUT_MS),
+      ...(this.probeLoadAgentRegistry ? { loadAgentRegistry: this.probeLoadAgentRegistry } : {}),
+      ...(this.probeInspectAgentModels ? { inspectAgentModels: this.probeInspectAgentModels } : {}),
+    });
   }
 
   async getSessionEffort(session: ResolvedSession): Promise<SessionEffortState> {

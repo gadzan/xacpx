@@ -724,6 +724,22 @@ test("an unprovable launch stays probe-unavailable without calling transport", a
   expect(state.reason.code).toBe("probe-unavailable");
   expect(events.some((event) => event.type === "agent.model_discovery.probe_unsupported" && event.outcome === "probe-unavailable")).toBe(true);
 });
+test("a bare driver with a registry answer probes instead of staying probe-unavailable", async () => {
+  let probes = 0;
+  const service = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    resolve: () => ({ cwd: "/repo", driver: "cursor", launch: { acpxAgent: "cursor" }, suggestions: [] }),
+    loadAgentRegistry: () => ({ resolve: (driver: string) => (driver === "cursor" ? ["cursor-agent", "--acp"] : "") }),
+    probe: async () => {
+      probes += 1;
+      return { ok: false, failure: "unauthenticated", message: "the adapter requires authentication before it can list models" };
+    },
+  }));
+  const state = await service.get({ agent: "cursor", workspace: "backend", probe: true });
+  expect(probes).toBe(1);
+  expect(state.status).toBe("needs-setup");
+  if (state.status === "needs-setup") expect(state.reason.code).toBe("unauthenticated");
+});
 
 test("the probe request carries argv, identity, and no secrets", async () => {
   const seen: unknown[] = [];

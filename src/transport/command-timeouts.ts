@@ -47,10 +47,6 @@ export type AcpxCommandStage =
   | "inject-message"
   | "cancel"
   | "remove-session"
-  | "capability-probe-new"
-  | "capability-probe-status"
-  | "capability-probe-show"
-  | "capability-probe-close";
 
 /** Timeout from a one-shot acpx command, with bounded diagnostics safe to retain. */
 export class CommandTimeoutError extends Error {

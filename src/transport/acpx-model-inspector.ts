@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { inspectAgentModels } from "acpx/runtime";
 import type { AcpRuntimeSessionModels, InspectAgentModelsOptions } from "acpx/runtime";
-import type { AgentCapabilityProbeResult } from "./types";
+import type { AgentCommandRegistry } from "../config/agent-catalog";
+import { resolveModelProbeLaunch } from "../config/resolve-agent-command";
+import type { AgentCapabilityProbeRequest, AgentCapabilityProbeResult } from "./types";
 
 /**
  * Sole wrapper around acpx/runtime `inspectAgentModels` (design §4.3). xacpx
@@ -100,6 +102,63 @@ export async function inspectAcpxModels(
   // Digest prefix only: argv and env must never reach logs.
   deps.log?.(`acpx-model-inspector ${digest} ${status}`);
   return result;
+}
+
+/**
+ * Transport probe entry: resolve the request's launch to the exact argv a
+ * normal session would spawn (registry-backed for bare drivers, fail-closed
+ * for raw commands on every platform), then inspect it. No reserved session
+ * name, no record writes, no prompt dispatch. A request that already carries
+ * `agentProcessEnv` keeps it; otherwise the Claude overlay resolves here, at
+ * probe time. An unprovable launch is `unsupported`, never a guessed spawn.
+ */
+export interface InspectorProbeDeps {
+  loadAgentRegistry?: () => AgentCommandRegistry | null;
+  inspectAgentModels?: AcpxModelInspectFn;
+  log?: (message: string) => void;
+}
+
+export async function probeAgentCapabilitiesViaInspector(
+  input: AgentCapabilityProbeRequest,
+  options: { timeoutMs?: number } & InspectorProbeDeps = {},
+): Promise<AgentCapabilityProbeResult> {
+  const context = {
+    cwd: input.cwd,
+    driver: input.driver ?? input.agent,
+    ...(input.settingsPolicy ? { settingsPolicy: input.settingsPolicy } : {}),
+    launch: {
+      ...(input.agentCommand ? { agentCommand: input.agentCommand } : {}),
+      ...(input.acpxAgent ? { acpxAgent: input.acpxAgent } : {}),
+      ...(input.rawCommand ? { rawCommand: input.rawCommand } : {}),
+      ...(input.agentArgv ? { agentArgv: input.agentArgv } : {}),
+    },
+  };
+  const launch = resolveModelProbeLaunch(input.agent, context, {
+    ...(options.loadAgentRegistry ? { loadAgentRegistry: options.loadAgentRegistry } : {}),
+  });
+  if (!launch.ok) {
+    return { ok: false, failure: "unsupported", message: launch.message };
+  }
+  let agentProcessEnv = input.agentProcessEnv;
+  if (!agentProcessEnv) {
+    const withEnv = resolveModelProbeLaunch(input.agent, context, {
+      ...(options.loadAgentRegistry ? { loadAgentRegistry: options.loadAgentRegistry } : {}),
+      includeEnv: true,
+    });
+    if (withEnv.ok) agentProcessEnv = withEnv.agentProcessEnv;
+  }
+  return inspectAcpxModels(
+    {
+      agentCommand: launch.agentCommand,
+      cwd: launch.cwd,
+      ...(agentProcessEnv ? { agentProcessEnv } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    },
+    {
+      ...(options.inspectAgentModels ? { inspectAgentModels: options.inspectAgentModels } : {}),
+      ...(options.log ? { log: options.log } : {}),
+    },
+  );
 }
 
 function classifyInspectorError(

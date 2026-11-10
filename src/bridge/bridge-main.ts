@@ -24,6 +24,7 @@ import { RuntimeEngine, defaultWorkerEntryCandidates } from "./engine/runtime-en
 import { coreEnv } from "../runtime/core-env";
 import { coreHomeDir } from "../runtime/core-home";
 import { resolveAcpxHomeDir } from "../transport/acpx-session-files";
+import { createAcpxAgentRegistryLoader } from "../transport/agent-registry";
 import { ensurePrivateRuntimeDir } from "../daemon/private-runtime-dir";
 import { createQueueOwnerAdapterContext } from "../transport/queue-owner-adapter-context";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
@@ -127,6 +128,7 @@ export async function runBridgeMain(): Promise<void> {
   }
   let server: BridgeServer;
   const cliRuntime = new BridgeRuntime(coreEnv("BRIDGE_ACPX_COMMAND") ?? "acpx", undefined, undefined, {
+      loadAgentRegistry: createAcpxAgentRegistryLoader(),
       permissionMode: bridgeConfig.permissionMode,
       nonInteractivePermissions: bridgeConfig.nonInteractivePermissions,
       permissionPolicy: bridgeConfig.permissionPolicy,

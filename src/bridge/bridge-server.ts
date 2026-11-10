@@ -525,6 +525,7 @@ agent: requireString(params, "agent"),
           acpxAgent: asOptionalString(params.acpxAgent),
           rawCommand: asOptionalString(params.rawCommand),
           agentArgv: asOptionalStringArray(params.agentArgv),
+          agentProcessEnv: asOptionalStringRecord(params.agentProcessEnv),
           cwd: requireString(params, "cwd"),
         });
       case "setSessionEffort":
@@ -774,6 +775,18 @@ function asOptionalStringArray(value: unknown): string[] | undefined {
     return undefined;
   }
   return [...value] as string[];
+}
+
+function asOptionalStringRecord(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new BridgeInvalidRequestError("agentProcessEnv must be an object of strings when provided");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.some(([key, entry]) => !key || typeof entry !== "string")) {
+    throw new BridgeInvalidRequestError("agentProcessEnv must be an object of strings when provided");
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
 }
 
 /** Structured launch selection (acpxAgent/rawCommand/agentArgv) carried by new
