@@ -60,6 +60,8 @@ interface CapabilitySelection {
   effect: SelectionEffect;
 }
 
+export type CapabilityFreshness = "fresh" | "stale";
+
 export interface ReadyCapability extends CapabilitySelection {
   status: "ready";
   models: [CapabilityModel, ...CapabilityModel[]];
@@ -74,6 +76,9 @@ export interface ReadyCapability extends CapabilitySelection {
   reason?: CapabilityReason;
   /** Set only when this result was read from the target's own runtime. */
   appliedModelId?: string;
+  freshness?: CapabilityFreshness;
+  refreshing?: boolean;
+  lastVerifiedAt?: string;
 }
 
 export interface UnsupportedCapability extends CapabilitySelection {
@@ -94,6 +99,17 @@ export interface NeedsSetupCapability extends CapabilitySelection {
   efforts: EffortView;
 }
 
+/** The adapter answered but advertised no models. Never produced from a parse failure. */
+export interface EmptyCapability {
+  status: "empty";
+  reason: CapabilityReason;
+  recovery: string;
+  fetchedAt: string;
+  suggestions: CapabilityModel[];
+  /** Always `unavailable`: with no models there is nothing to read efforts from. */
+  efforts: EffortView;
+}
+
 export interface ErrorCapability {
   status: "error";
   reason: CapabilityReason;
@@ -107,6 +123,7 @@ export type AgentCapabilityState =
   | ReadyCapability
   | UnsupportedCapability
   | NeedsSetupCapability
+  | EmptyCapability
   | ErrorCapability;
 
 const REASON_CODES = new Set<CapabilityReasonCode>([
@@ -196,6 +213,9 @@ export interface CapabilityDraft {
   appliedModelId?: string;
   efforts?: EffortView;
   reason?: CapabilityReason;
+  freshness?: CapabilityFreshness;
+  refreshing?: boolean;
+  lastVerifiedAt?: string;
 }
 
 export function readyCapability(
@@ -218,6 +238,9 @@ export function readyCapability(
     source,
     ...(draft.reason ? { reason: { code: draft.reason.code, message: draft.reason.message } } : {}),
     ...(appliedModelId ? { appliedModelId } : {}),
+    ...(draft.freshness ? { freshness: draft.freshness } : {}),
+    ...(draft.refreshing !== undefined ? { refreshing: draft.refreshing } : {}),
+    ...(draft.lastVerifiedAt ? { lastVerifiedAt: draft.lastVerifiedAt } : {}),
     ...(selectedModelId ? { selectedModelId } : {}),
     ...(normalizeOptional(draft.selectedEffort) ? { selectedEffort: draft.selectedEffort!.trim() } : {}),
     effect: classifySelection({ selectedModelId, appliedModelId, advertisedIds }),
@@ -246,6 +269,23 @@ export function needsSetupCapability(
   };
 }
 
+export function emptyCapability(
+  reason: CapabilityReason,
+  recovery: string,
+  draft: Pick<CapabilityDraft, "fetchedAt" | "suggestions">,
+): EmptyCapability {
+  assertReason(reason);
+  if (!recovery.trim()) throw new Error("capability empty requires a recovery hint");
+  return {
+    status: "empty",
+    reason,
+    recovery,
+    fetchedAt: draft.fetchedAt,
+    suggestions: suggestionModels(draft.suggestions ?? []),
+    efforts: { status: "unavailable" },
+  };
+}
+
 export function errorCapability(reason: CapabilityReason, recovery: string, draft: Pick<CapabilityDraft, "fetchedAt" | "selectedModelId" | "selectedEffort">): ErrorCapability {
   assertReason(reason);
   if (!recovery.trim()) throw new Error("capability error requires a recovery hint");
@@ -268,6 +308,7 @@ export function parseAgentCapabilityState(value: unknown): AgentCapabilityState 
   if (!isRecord(value) || typeof value.status !== "string") return stale("capability response is missing a status");
   if (value.status === "ready") return parseReady(value);
   if (value.status === "unsupported" || value.status === "needs-setup") return parseClosed(value.status, value);
+  if (value.status === "empty") return parseEmpty(value);
   if (value.status === "error") return parseError(value);
   return stale(`capability status "${value.status}" is not recognized`);
 }
@@ -291,6 +332,9 @@ function parseReady(value: Record<string, unknown>): AgentCapabilityState {
       appliedModelId: value.source === "runtime" ? optionalString(value.appliedModelId) : undefined,
       efforts: parseEfforts(value.efforts),
       reason: parseReason(value.reason),
+      freshness: value.freshness === "fresh" || value.freshness === "stale" ? value.freshness : undefined,
+      refreshing: typeof value.refreshing === "boolean" ? value.refreshing : undefined,
+      lastVerifiedAt: optionalString(value.lastVerifiedAt),
     });
   } catch {
     return stale("ready capability could not be constructed");
@@ -312,6 +356,21 @@ function parseClosed(status: "unsupported" | "needs-setup", value: Record<string
   return status === "unsupported"
     ? unsupportedCapability(reason, value.recovery, draft)
     : needsSetupCapability(reason, value.recovery, draft);
+}
+
+function parseEmpty(value: Record<string, unknown>): AgentCapabilityState {
+  const reason = parseReason(value.reason);
+  if (!reason || typeof value.recovery !== "string" || !value.recovery.trim() || typeof value.fetchedAt !== "string") {
+    return stale("empty capability is missing a reason or recovery hint");
+  }
+  try {
+    return emptyCapability(reason, value.recovery, {
+      fetchedAt: value.fetchedAt,
+      suggestions: stringIds(value.suggestions, "modelId"),
+    });
+  } catch {
+    return stale("empty capability could not be constructed");
+  }
 }
 
 function parseError(value: Record<string, unknown>): AgentCapabilityState {
