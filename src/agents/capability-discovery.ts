@@ -627,6 +627,9 @@ export class AgentCapabilityService {
         return;
       }
       if (result.models.length === 0) {
+        // An empty advertisement is not a failure, but it must not trigger a
+        // probe on every read: suppress background retries like a failure.
+        this.noteFailure(key, "empty");
         this.emit({
           type: "agent.model_discovery.probe_empty",
           agent,
@@ -744,8 +747,7 @@ export class AgentCapabilityService {
     const targets = this.deps.listTargets(agent, workspace)
       .filter((target) => target.productOwned && target.botId === botId)
       .sort((left, right) => (left.scope === "bot-direct" ? 0 : 1) - (right.scope === "bot-direct" ? 0 : 1));
-    const ordered = targets;
-    for (const target of ordered) {
+    for (const target of targets) {
       if (!matchesLaunchIdentity(resolved, target.resolved)) continue;
       const advertisement = await this.deps.readAdvertisement(target.resolved);
       if (advertisement && advertisement.models.length > 0) return advertisement;

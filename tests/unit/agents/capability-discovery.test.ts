@@ -679,6 +679,32 @@ test("an explicit empty stays empty and is never cached", async () => {
   expect(passive.status).toBe("needs-setup");
 });
 
+test("an empty background advertisement suppresses retries like a failure", async () => {
+  const staleAt = new Date(NOW_MS - 16 * 60 * 1000).toISOString();
+  const { cache } = seedStore(["gpt-stale"], staleAt);
+  const emptied = Promise.withResolvers<void>();
+  let probes = 0;
+  const service = new AgentCapabilityService(deps({
+    listTargets: () => [],
+    probe: async () => {
+      probes += 1;
+      return { ok: true, models: [], efforts: [] };
+    },
+    emit: (event) => {
+      if (event.type === "agent.model_discovery.probe_empty") emptied.resolve();
+    },
+  }), cache);
+  const first = await service.get({ agent: "codex", workspace: "backend" });
+  expect(first.status).toBe("ready");
+  await emptied.promise;
+  expect(probes).toBe(1);
+  const second = await service.get({ agent: "codex", workspace: "backend" });
+  expect(second.status).toBe("ready");
+  if (second.status !== "ready") return;
+  expect(second.refreshing).toBeUndefined();
+  expect(probes).toBe(1);
+});
+
 test("an unprovable launch stays probe-unavailable without calling transport", async () => {
   const events: ModelDiscoveryEvent[] = [];
   let probes = 0;
