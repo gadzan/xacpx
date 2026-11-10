@@ -263,7 +263,7 @@ AND (run_id IS NULL OR run_id IN (
 幂等：
 
 - 事务开始时按 `forked_from_message_id IS NOT NULL` 统计目标已提交的复制行：
-  - 已提交：复用这些行，并用同一谓词重算 `omittedMessages = max(0, 过滤总数 - 已提交数)`，不重复插入；
+  - 已提交：仅当 AppState 已有该目标 Topic（即重放）时复用这些行，并用同一谓词重算 `omittedMessages = max(0, 过滤总数 - 已提交数)`，不重复插入；没有 Topic 记录的复制行不进入复制事务（见 §6.4）。
   - 目标有普通消息但没有复制行：直接 `topic_exists`，绝不把在线话题当副本；
 - 配合 `(topic_id, forked_from_message_id)` 唯一索引，重放不会产生重复行。
 - 不依赖 `messages` 的 `id` 复用：目标消息总是新 id。
@@ -272,7 +272,7 @@ AND (run_id IS NULL OR run_id IN (
 
 复制提交后，在 `stateMutex` 内：
 
-1. 重新确认目标 Topic 不存在；若同一 `requestId` 的 fork 已存在且消息计数匹配，直接返回该 Topic；
+1. 重新确认目标 Topic 不存在；若同一 `requestId` 的 fork 已存在且消息计数匹配，直接返回该 Topic；目标正在删除（AppState `status = deleting` 或存储删除屏障）时返回 `topic_deleting`，不复用；
 2. 创建 `ConversationTopic`：
    - `id = targetTopicId`
    - `conversationId`
@@ -286,13 +286,13 @@ AND (run_id IS NULL OR run_id IN (
 3. `structuredClone(this.state)` → 写入 `conversation_topics` → `persist(next)`；
 4. 发出 `conversations-changed` 与 `conversation-topic-changed` 产品事件。
 
-两个产品事件在 `stateMutex` 之外发出（与 `createGroupTopic` 一致），锁内只做目标复查、复制与持久化。
+两个产品事件在 `stateMutex` 之外发出（与 `createGroupTopic` 一致），锁内只做目标复查、复制与持久化。生命周期屏障在锁外与锁内各检查一次：`assertConversationNotDeleting` 加上源 Topic 的 `isTopicDeleting` / `isTopicResetting`，与 `acceptGroupPrompt` 同码（`conversation_deleting` / `topic_resetting`），避免在拆除中的源 Topic 上提交 fork。
 
-双存储恢复：
+双存储恢复（fail-closed）：
 
-- 复制先于 AppState：崩溃后目标 Topic 不存在但消息已存在。重试时复制事务识别到已有消息并复用，然后写 AppState。
-- AppState 写失败：同上，重试可恢复。
-- 不会出现“AppState 有 Topic、消息没复制”的正常路径（除非手工改库）；若检测到该状态，返回 `topic_fork_history_missing`，不静默创建空历史。
+- 复制先于 AppState：崩溃可能留下“目标消息已提交、AppState 无 Topic 记录”的孤儿行。**不自动收养**：重试时若发现目标存在 fork 复制行但没有 Topic 记录，直接返回 `topic_fork_history_missing`。原因是重试会重新解析边界；源 Topic 若已推进，用新边界覆盖旧行的 `sourceRunId/throughSeq` 会悄悄丢掉较新的历史并伪造来源。
+- 恢复路径只有一条：用**新的 `targetTopicId`** 重新分叉；孤儿行由运维随旧目标一起清理。
+- 不会出现“AppState 有 Topic、消息没复制”的正常路径（除非手工改库）；若检测到该状态，同样返回 `topic_fork_history_missing`，不静默创建空历史。
 - `topic_fork_history_missing` 是 fail-closed 的人工恢复路径：不自动重建、不自动删除损坏的 AppState 记录；运维先删除该目标 Topic，再用新的 `targetTopicId` 重新分叉。
 
 ### 6.5 源 Topic 并发变化
@@ -310,7 +310,10 @@ AND (run_id IS NULL OR run_id IN (
 | `topic_fork_empty` | 源 Topic 没有可复制的消息 |
 | `topic_fork_source_unsettled` | 指定 Run 非终态，或 `latest_stable` 无法解析稳定边界 |
 | `topic_fork_source_changed` | 复制时源 Run/request 已被并发清除 |
-| `topic_fork_history_missing` | AppState 中已有同 requestId 的 fork，但目标消息缺失（异常状态） |
+| `topic_fork_history_missing` | 目标有复制行但没有 AppState Topic 记录（崩溃孤儿行），或 AppState 已有 fork 但目标消息缺失；两种都要求换新的 `targetTopicId` |
+| `topic_deleting` | 目标 Topic 正在删除（AppState `status` 或存储屏障），重放也不复用 |
+| `conversation_deleting` | 源会话/源 Topic 正在拆除（`assertConversationNotDeleting` / 存储删除屏障） |
+| `topic_resetting` | 源 Topic 正在重置上下文 |
 | `topic_exists` | `targetTopicId` 已被其他请求占用 |
 | `invalid-payload` | RPC 字段缺失/类型错误；`targetTopicId` 形状不合法；`requestId` 为空 |
 

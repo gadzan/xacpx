@@ -291,7 +291,7 @@ test("an existing fork topic without copied rows fails closed", async () => {
   h.store.close();
 });
 
-test("a crash between copy and persist recovers the committed rows", async () => {
+test("orphan copied rows without a Topic record fail closed instead of being adopted", async () => {
   const { h, group, topic } = await forkFixture();
   await settleRun(h, group.id, topic.id, "run-a", 1);
   const targetTopicId = randomTopicId();
@@ -304,14 +304,49 @@ test("a crash between copy and persist recovers the committed rows", async () =>
     limit: MAX_FORK_MESSAGES,
   });
   expect(h.state.conversation_topics[targetTopicId]).toBeUndefined();
-  const recovered = await h.service.forkGroupTopic({
+  // The source advances before the retry: adopting the stale rows under the
+  // new boundary would silently drop the newer history and misstate provenance.
+  await settleRun(h, group.id, topic.id, "run-b", 1);
+  await expect(h.service.forkGroupTopic({
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId,
+    requestId: "fork-a",
+  })).rejects.toMatchObject({ code: "topic_fork_history_missing" });
+  expect(h.state.conversation_topics[targetTopicId]).toBeUndefined();
+  h.store.close();
+});
+
+test("a deleting source or target refuses the fork", async () => {
+  const { h, group, topic } = await forkFixture();
+  await settleRun(h, group.id, topic.id, "run-a", 1);
+  h.store.markTopicDeleting(topic.id, group.id, NOW);
+  await expect(h.service.forkGroupTopic({
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId: randomTopicId(),
+    requestId: "fork-a",
+  })).rejects.toMatchObject({ code: "conversation_deleting" });
+  h.store.close();
+});
+
+test("a deleting fork target is not returned on replay", async () => {
+  const { h, group, topic } = await forkFixture();
+  await settleRun(h, group.id, topic.id, "run-a", 1);
+  const targetTopicId = randomTopicId();
+  await h.service.forkGroupTopic({
     conversationId: group.id,
     sourceTopicId: topic.id,
     targetTopicId,
     requestId: "fork-a",
   });
-  expect(recovered.forkedFrom?.copiedMessages).toBe(2);
-  expect(h.store.topicMessageCount(group.id, targetTopicId)).toBe(2);
+  h.store.markTopicDeleting(targetTopicId, group.id, NOW);
+  await expect(h.service.forkGroupTopic({
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId,
+    requestId: "fork-a",
+  })).rejects.toMatchObject({ code: "topic_deleting" });
   h.store.close();
 });
 

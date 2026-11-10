@@ -1184,6 +1184,8 @@ export class ConversationRunService {
     if (source.peerScope) {
       throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
     }
+    this.assertConversationNotDeleting(input.conversationId);
+    this.assertForkSourceNotTearingDown(input.conversationId, input.sourceTopicId);
     const point: ThreadForkSourcePoint = input.sourcePoint ?? { type: "latest_stable" };
     if (point.type !== "latest_stable" && point.type !== "run") {
       throw new ConversationError("invalid-payload", "fork sourcePoint must be latest_stable or a run");
@@ -1204,6 +1206,8 @@ export class ConversationRunService {
       if (liveSource.peerScope) {
         throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this Group`);
       }
+      this.assertConversationNotDeleting(input.conversationId);
+      this.assertForkSourceNotTearingDown(input.conversationId, input.sourceTopicId);
       const existingTarget = this.state.conversation_topics[input.targetTopicId];
       if (existingTarget) {
         if (existingTarget.forkedFrom?.requestId !== input.requestId) {
@@ -1215,7 +1219,16 @@ export class ConversationRunService {
             `fork target "${input.targetTopicId}" exists but its copied history is missing; delete the corrupt target and retry with a fresh id`,
           );
         }
+        if (existingTarget.status === "deleting" || this.store.isTopicDeleting(input.targetTopicId)) {
+          throw new ConversationError("topic_deleting", `topic "${input.targetTopicId}" is deleting`);
+        }
         return existingTarget;
+      }
+      if (this.store.topicForkMessageCount(input.targetTopicId) > 0) {
+        throw new ConversationError(
+          "topic_fork_history_missing",
+          `fork target "${input.targetTopicId}" holds a committed copy with no Topic record; retry with a fresh target id`,
+        );
       }
       const boundary = this.resolveForkPoint(input.conversationId, liveSource, point);
       const copied = this.store.copyTopicForkMessages({
@@ -3503,6 +3516,19 @@ export class ConversationRunService {
       || this.state.conversations[conversationId]?.lifecycle === "deleting"
     ) {
       throw new ConversationError("conversation_deleting", "conversation is deleting");
+    }
+  }
+
+  private assertForkSourceNotTearingDown(conversationId: string, topicId: string): void {
+    if (
+      this.store.isConversationDeleting(conversationId)
+      || this.store.isTopicDeleting(topicId)
+      || this.store.isTopicResetting(topicId)
+    ) {
+      throw new ConversationError(
+        this.store.isTopicResetting(topicId) ? "topic_resetting" : "conversation_deleting",
+        "conversation is deleting",
+      );
     }
   }
 
