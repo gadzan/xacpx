@@ -10,6 +10,65 @@ export type AgentCapabilityProbe = (
   input: AgentCapabilityProbeRequest,
 ) => Promise<AgentCapabilityProbeResult>;
 
+/** A native session model read that cannot be trusted as a catalog. */
+export class ModelCatalogProtocolError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "ModelCatalogProtocolError";
+  }
+}
+
+/** Structured read quality of a native session model advertisement. */
+export type NativeModelRead =
+  | { status: "complete"; current?: string; available: string[] }
+  | { status: "missing" }
+  | { status: "malformed"; error: ModelCatalogProtocolError };
+
+/**
+ * Classify a native `status --format json` payload without ever treating a
+ * broken advertisement as an empty catalog: only an explicit empty
+ * `availableModels` array is complete-and-empty. A missing field is missing,
+ * anything else misshapen is malformed. Partially invalid entries are
+ * filtered (reported via `onParseWarning`); an all-invalid list is
+ * malformed. A non-string `model` yields no current model rather than
+ * overwriting a known-good one with garbage.
+ */
+export function parseNativeModelCatalog(
+  raw: unknown,
+  onParseWarning?: (message: string) => void,
+): NativeModelRead {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      status: "malformed",
+      error: new ModelCatalogProtocolError("session model status is not an object"),
+    };
+  }
+  const availableModels: unknown =
+    "availableModels" in raw ? raw.availableModels : undefined;
+  if (availableModels === undefined) return { status: "missing" };
+  if (!Array.isArray(availableModels)) {
+    return {
+      status: "malformed",
+      error: new ModelCatalogProtocolError("session model status has no availableModels array"),
+    };
+  }
+  const available = availableModels.filter((entry): entry is string => typeof entry === "string");
+  if (available.length === 0 && availableModels.length > 0) {
+    return {
+      status: "malformed",
+      error: new ModelCatalogProtocolError("session model status advertises no parseable model ids"),
+    };
+  }
+  const dropped = availableModels.length - available.length;
+  if (dropped > 0) onParseWarning?.(`ignoring ${dropped} invalid availableModels entries`);
+  const model: unknown = "model" in raw ? raw.model : undefined;
+  return {
+    status: "complete",
+    ...(typeof model === "string" ? { current: model } : {}),
+    available,
+  };
+}
+
 /** Read options shared by the control RPC and the chat `/model` path. */
 export interface SessionModelReadOptions {
   /**

@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 
 import {
+  ModelCatalogProtocolError,
+  parseNativeModelCatalog,
   probeSessionModelCatalog,
   readSessionModelCatalog,
   sessionLaunchProbeRequest,
@@ -195,5 +197,92 @@ test("without the cold fallback flag an empty native catalog stays empty", async
     },
   });
   expect(result).toEqual({ current: undefined, available: [] });
+  expect(probes).toBe(0);
+});
+
+test("a valid native payload parses as a complete catalog", () => {
+  expect(
+    parseNativeModelCatalog({ model: "gpt-5.2[high]", availableModels: ["gpt-5.2[high]", "gpt-5.2[low]"] }),
+  ).toEqual({
+    status: "complete",
+    current: "gpt-5.2[high]",
+    available: ["gpt-5.2[high]", "gpt-5.2[low]"],
+  });
+});
+
+test("an explicit empty list parses as complete, never missing", () => {
+  expect(parseNativeModelCatalog({ availableModels: [] })).toEqual({
+    status: "complete",
+    current: undefined,
+    available: [],
+  });
+});
+
+test("a missing availableModels field reads as missing, never empty", () => {
+  expect(parseNativeModelCatalog({})).toEqual({ status: "missing" });
+  expect(parseNativeModelCatalog({ model: "gpt-5.2[high]" })).toEqual({ status: "missing" });
+});
+
+test("a wrong-typed availableModels field reads as malformed", () => {
+  for (const availableModels of ["gpt-5.2", 42, null, {}]) {
+    const read = parseNativeModelCatalog({ availableModels });
+    if (read.status !== "malformed") throw new Error(`expected malformed, got ${read.status}`);
+    expect(read.error).toBeInstanceOf(ModelCatalogProtocolError);
+  }
+});
+
+test("a non-object payload reads as malformed", () => {
+  for (const raw of [null, "not json", 42, ["gpt-5.2"]]) {
+    const read = parseNativeModelCatalog(raw);
+    if (read.status !== "malformed") throw new Error(`expected malformed, got ${read.status}`);
+    expect(read.error).toBeInstanceOf(ModelCatalogProtocolError);
+  }
+});
+
+test("partially invalid entries are filtered with a parse warning", () => {
+  const warnings: string[] = [];
+  const read = parseNativeModelCatalog(
+    { model: "a", availableModels: ["a", 1, null, "b"] },
+    (message) => warnings.push(message),
+  );
+  expect(read).toEqual({ status: "complete", current: "a", available: ["a", "b"] });
+  expect(warnings).toHaveLength(1);
+});
+
+test("an all-invalid list reads as malformed", () => {
+  const read = parseNativeModelCatalog({ availableModels: [1, null, {}] });
+  if (read.status !== "malformed") throw new Error(`expected malformed, got ${read.status}`);
+  expect(read.error).toBeInstanceOf(ModelCatalogProtocolError);
+});
+
+test("an invalid current model never overwrites", () => {
+  expect(parseNativeModelCatalog({ model: 42, availableModels: ["a"] })).toEqual({
+    status: "complete",
+    current: undefined,
+    available: ["a"],
+  });
+  expect(parseNativeModelCatalog({ model: null, availableModels: ["a"] })).toEqual({
+    status: "complete",
+    current: undefined,
+    available: ["a"],
+  });
+});
+
+test("a native protocol failure propagates instead of becoming an empty catalog", async () => {
+  const failure = new ModelCatalogProtocolError("status was not valid JSON");
+  let probes = 0;
+  await expect(
+    readSessionModelCatalog({
+      session,
+      coldFallbackWhenEmpty: true,
+      read: async () => {
+        throw failure;
+      },
+      probe: async () => {
+        probes += 1;
+        return { ok: true, models: [], efforts: [] };
+      },
+    }),
+  ).rejects.toBe(failure);
   expect(probes).toBe(0);
 });

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { BridgeRuntime } from "../../../src/bridge/bridge-runtime";
+import { ModelCatalogProtocolError } from "../../../src/transport/session-model-catalog";
 
 test("prompt injects --model when the session input carries a model", async () => {
   const calls: string[][] = [];
@@ -75,11 +76,11 @@ test("getSessionModel parses status json", async () => {
   expect(result.available).toEqual(["gpt-5.2[high]", "gpt-5.2[low]"]);
 });
 
-test("getSessionModel returns empty available list on non-json output", async () => {
+test("getSessionModel throws a typed error on non-json output", async () => {
   const run = async () => ({ code: 0, stdout: "not json", stderr: "" });
   const runtime = new BridgeRuntime("acpx", run);
-  const result = await runtime.getSessionModel({ agent: "codex", cwd: "/repo", name: "s1" });
-  expect(result.available).toEqual([]);
+  const error = await runtime.getSessionModel({ agent: "codex", cwd: "/repo", name: "s1" }).catch((e) => e);
+  expect(error).toBeInstanceOf(ModelCatalogProtocolError);
 });
 
 test("getSessionEffort reads the adapter-advertised effort option", async () => {
