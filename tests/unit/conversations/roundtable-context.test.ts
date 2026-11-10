@@ -23,6 +23,33 @@ test("a roundtable speaker receives the earlier speakers' public speech", async 
   }
 });
 
+test("an earlier speaker's public group_say remark reaches the next speaker", async () => {
+  const h = await harness();
+  try {
+    const { group, topic } = await h.group();
+    const speakers = h.ids.slice(0, 2);
+    h.acceptRoundtable(group.id, topic.id, speakers, 1);
+    const drain = h.dispatcher.kick();
+    await until(() => h.runner.calls.length === 1);
+    const first = h.runner.calls[0]!;
+    h.store.appendGroupSay({
+      senderMemberTurnId: first.memberTurnId,
+      sourceTurnId: first.sourceTurnId!,
+      invocationId: "say-1",
+      text: "progress remark from alpha",
+      now: h.now().toISOString(),
+    });
+    h.runner.finish(0, { status: "completed", text: "alpha conclusion" });
+    await until(() => h.runner.calls.length === 2);
+    expect(h.runner.calls[1]!.text).toContain("progress remark from alpha");
+    expect(h.runner.calls[1]!.text).toContain("alpha conclusion");
+    h.runner.finish(1, { status: "completed", text: "beta conclusion" });
+    await drain;
+  } finally {
+    h.store.close();
+  }
+});
+
 test("a pass adds no phantom speech to the next speaker's context", async () => {
   const h = await harness();
   try {
@@ -31,8 +58,17 @@ test("a pass adds no phantom speech to the next speaker's context", async () => 
     h.acceptRoundtable(group.id, topic.id, speakers, 1);
     const drain = h.dispatcher.kick();
     await until(() => h.runner.calls.length === 1);
+    const first = h.runner.calls[0]!;
+    h.store.appendGroupSay({
+      senderMemberTurnId: first.memberTurnId,
+      sourceTurnId: first.sourceTurnId!,
+      invocationId: "say-pass",
+      text: "pass progress remark",
+      now: h.now().toISOString(),
+    });
     h.runner.finish(0, { status: "completed", text: "(pass)" });
     await until(() => h.runner.calls.length === 2);
+    expect(h.runner.calls[1]!.text).not.toContain("pass progress remark");
     expect(h.runner.calls[1]!.text).not.toContain(`Bot ${speakers[0]}:`);
     h.runner.finish(1, { status: "completed", text: "(pass)" });
     await drain;
