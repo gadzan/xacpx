@@ -132,6 +132,37 @@ test("an unused bot retires, and deleteBot still removes a different unused bot"
   }
 });
 
+test("removing a bot cancels its paused Direct Run instead of getting stuck on the open dispatch", async () => {
+  const current = await compose();
+  try {
+    const speaker = await bot(current, "Speaker");
+    const conversationId = createDirectConversationId(speaker.id);
+    const topicId = createDirectTopicId(speaker.id);
+    await current.control.promptConversation({
+      conversationId,
+      topicId,
+      requestId: "paused-direct",
+      text: "hold this",
+    });
+    const run = current.runtime.store.listRuns(conversationId)[0]!;
+    expect(run.state).toBe("queued");
+    const paused = current.runtime.runs.pauseRun({
+      runId: run.id,
+      requestId: "pause-remove",
+      controlRevision: run.controlRevision,
+    });
+    expect(paused.run.state).toBe("paused");
+    expect(current.runtime.store.hasOpenBotDispatch(speaker.id)).toBe(true);
+    const removed = await remove(current, speaker.id, "remove-paused");
+    expect(removed.operation.phase).toBe("completed");
+    expect(current.runtime.store.getRun(run.id)?.state).toBe("cancelled");
+    expect(current.runtime.store.hasOpenBotDispatch(speaker.id)).toBe(false);
+    expect(() => current.control.getBot(speaker.id)).toThrow(BotError);
+  } finally {
+    await current.close();
+  }
+});
+
 test("a bot that only created a topic can be removed while that topic stays", async () => {
   const current = await compose();
   try {

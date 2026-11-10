@@ -136,11 +136,14 @@ test("a resource shortfall refuses the work and parks the Run recoverably", asyn
       sourceTurn: { sessionAlias: "session_a", turnId: "source_a" }, now: NOW });
     expect(store.getRun(runId)?.state).toBe("paused");
     store.directWriteForTest("runs", runId, { unavailable_bot_ids_json: "[]" });
-    store.resumeRun({ runId, requestId: "resume-resource",
+    // The refused handoff created no work and the leader already settled, so
+    // resume re-derives the deferred completion instead of a zombie `running`
+    // Run that owns the Topic with nothing to claim.
+    const resumed = store.resumeRun({ runId, requestId: "resume-resource",
       expectedControlRevision: store.getRun(runId)!.controlRevision, now: NOW });
-    expect(store.getRun(runId)?.state).toBe("running");
-    const admitted = store.claimNextDispatch({ owner: "owner", now: NOW, leaseExpiresAt: LEASE });
-    expect(admitted).toBeUndefined();
+    expect(resumed.run.state).toBe("completed");
+    expect(resumed.run.completionReason).toBe("members-completed");
+    expect(store.claimNextDispatch({ owner: "owner", now: NOW, leaseExpiresAt: LEASE })).toBeUndefined();
   } finally { store.close(); }
 });
 

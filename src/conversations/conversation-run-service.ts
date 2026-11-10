@@ -1488,15 +1488,14 @@ export class ConversationRunService {
     const conversationId = createDirectConversationId(botId);
     const runs = this.store.listRuns(conversationId);
     for (const run of runs) {
-      if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
+      if (this.isUnsettledRun(run.state)) {
         await this.cancelRun(run.id);
       }
     }
     await this.dispatcher.flushOwnedClaimLeases();
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const remaining = this.store.listRuns(conversationId);
-    const blocking = remaining.filter((run) =>
-      run.state === "queued" || run.state === "running" || run.state === "waiting-human");
+    const blocking = remaining.filter((run) => this.isUnsettledRun(run.state));
     if (blocking.length > 0) {
       throw new ConversationError("conversation_not_settled", "direct conversation has unsettled runs", {
         runIds: blocking.map((run) => run.id),
@@ -2294,7 +2293,7 @@ export class ConversationRunService {
 
     const runs = this.store.listRuns(conversationId);
     for (const run of runs) {
-      if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
+      if (this.isUnsettledRun(run.state)) {
         await this.cancelRunAndAbortRouting(run.id);
       }
     }
@@ -2404,14 +2403,14 @@ export class ConversationRunService {
     // deleting live work with the cleanup root would strand it with no
     // cancel/reconcile entrypoint.
     const ghostRuns = this.store.listRuns(conversationId)
-      .filter((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
+      .filter((run) => this.isUnsettledRun(run.state));
     for (const run of ghostRuns) {
       await this.cancelRunAndAbortRouting(run.id);
     }
     await this.dispatcher.flushOwnedClaimLeases();
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const unsettled = this.store.listRuns(conversationId)
-      .filter((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
+      .filter((run) => this.isUnsettledRun(run.state));
     if (unsettled.length > 0) {
       throw new ConversationError("conversation_not_settled", "group has unsettled runs", {
         runIds: unsettled.map((run) => run.id),
@@ -2981,16 +2980,14 @@ export class ConversationRunService {
     await this.afterTeardownMarkedDeleting?.();
     const runs = this.store.listRuns(conversationId, topicId);
     for (const run of runs) {
-      if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
+      if (this.isUnsettledRun(run.state)) {
         await this.cancelRunAndAbortRouting(run.id);
       }
     }
     await this.dispatcher.flushOwnedClaimLeases();
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId, topicId });
     const remaining = this.store.listRuns(conversationId, topicId);
-    const blocking = remaining.filter(
-      (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
-    );
+    const blocking = remaining.filter((run) => this.isUnsettledRun(run.state));
     if (blocking.length > 0) {
       // Any non-terminal survivor (e.g. an automatic Run awaiting routing
       // after cancel, or a still-running member) fails closed: releasing

@@ -148,6 +148,49 @@ test("a pause during an active member turn drains before the Run becomes paused"
   store.close();
 });
 
+async function expectResumeSettlesDrainedRun(followupRedispatch: boolean) {
+  const store = await SqliteConversationStore.open(":memory:", { followupRedispatch });
+  const accepted = accept(store);
+  const work = claim(store);
+  start(store, work);
+
+  const paused = store.pauseRun({ runId: accepted.run.id, requestId: "pause-1", expectedControlRevision: 0, now: NOW });
+  expect(paused.run.state).toBe("running");
+  const settled = store.completeExecution({
+    runId: accepted.run.id,
+    memberTurnId: work.memberTurn.id,
+    content: "review done",
+    sourceTurn: { sessionAlias: "reviewer", turnId: "turn-1" },
+    now: LATER,
+  });
+  expect(settled.run.state).toBe("paused");
+  expect(settled.run.finishedAt).toBeUndefined();
+
+  // The pause held the deferred completion. Resume must write it: a closed
+  // Run that stays `running` with nothing to claim owns the Topic forever.
+  const resumed = store.resumeRun({
+    runId: accepted.run.id,
+    requestId: "resume-1",
+    expectedControlRevision: settled.run.controlRevision,
+    now: LATER,
+  });
+  expect(resumed.changed).toBe(true);
+  expect(resumed.run.state).toBe("completed");
+  expect(resumed.run.completionReason).toBe("members-completed");
+  expect(resumed.run.finishedAt).toBe(LATER);
+  expect(resumed.run.pauseRequestedAt).toBeUndefined();
+  expect(store.claimNextDispatch({ now: LATER, owner: OWNER, leaseExpiresAt: LEASE, authorityEpoch: "epoch-1" })).toBeUndefined();
+  store.close();
+}
+
+test("resuming after a drained last attempt settles the closed Run instead of leaving a zombie", async () => {
+  await expectResumeSettlesDrainedRun(false);
+});
+
+test("resuming a drained last attempt also settles under the production waiting graph", async () => {
+  await expectResumeSettlesDrainedRun(true);
+});
+
 test("a paused Run keeps its Topic and cannot be claimed until resume", async () => {
   const store = await SqliteConversationStore.open(":memory:");
   const accepted = accept(store);

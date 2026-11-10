@@ -3886,8 +3886,39 @@ export class SqliteConversationStore implements ConversationStore {
       if (this.followupRedispatch) {
         this.enqueueSettledHandoffFollowups(updated, input.now);
       }
-      return { run: this.requireRun(run.id), changed: true };
+      // Pause drained the last attempt without inventing an outcome. Once the
+      // hold lifts, re-derive that deferred settlement: otherwise a closed
+      // waiting graph (or a fully terminal legacy batch) stays `running`
+      // forever with nothing to claim, and the Topic is stuck under a zombie
+      // Run. Automatic Runs stay running so the Router can take the next step.
+      return { run: this.settleAfterResume(this.requireRun(run.id), input.now), changed: true };
     });
+  }
+
+  /**
+   * Resume-time counterpart of the pause short-circuit in settlement. When
+   * every member is already terminal and no wake was owed, the Run must
+   * reach the same outcome settlement would have written without the pause.
+   * Open work (queued siblings, a just-materialized wake) stays claimable.
+   */
+  private settleAfterResume(run: ConversationRun, now: string): ConversationRun {
+    if (run.mode !== "explicit") return run;
+    const members = this.listMemberTurns(run.id);
+    if (members.length === 0 || members.some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state))) {
+      return run;
+    }
+    const anchor = members[members.length - 1]!.id;
+    if (this.followupRedispatch || run.shape === "roundtable") {
+      return this.aggregateRunOnWorkGraph(run, members, anchor, now);
+    }
+    const batch = run.activeBatch ?? 1;
+    const batchMembers = members.filter((turn) => turn.batch === batch);
+    if (batchMembers.length === 0 || batchMembers.some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state))) {
+      return run;
+    }
+    const exhausted = this.settleExhaustedBudget(run, now);
+    if (exhausted) return exhausted;
+    return this.classifySettledBatch(run.id, batchMembers, now);
   }
 
   reconcilePauseIntents(now: string): ConversationRun[] {

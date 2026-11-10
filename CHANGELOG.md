@@ -1,6 +1,11 @@
 # Changelog
 ## [Unreleased]
 
+### Fixed
+
+- Resume after a pause that drained the Run's last attempt now re-derives the deferred settlement: an explicit Run whose waiting graph (or legacy batch) is already closed completes instead of staying `running` with nothing to claim and permanently owning the Topic. Automatic Runs stay running so the Router can continue. Covers human pause mid-turn and resource-shortfall pauses that refused work without creating a replacement task.
+- Topic teardown, Direct teardown, Group ghost-run settle, and bot-removal `cancelDirectExecution` now treat `paused` as unsettled, matching `isUnsettledRun` / `cancelTopicRuns`. A paused Run is cancelled before sessions are released or rows are deleted, so deleting a Topic or removing a Bot cannot skip pause-owned work and get stuck on its still-open dispatch.
+
 ### Added
 
 - 群聊圆桌后端（P0）：`roundtable` target 在 accept 事务内预生成 `rounds × speakers` 个 MemberTurn（batch 1、连续 `memberIndex`、1-based `roundIndex`/0-based `speakerIndex`），由共享 claim 谓词的顺序 floor 严格串行，重启后只靠持久行恢复；`(pass)` 以 `speechOutcome:"pass"` 终态结束且不写公开消息，全 pass 的 Run 以 `roundtable-no-speech` 完成；空最终文本按 `empty-speech` 失败；失败会取消后续未开始的 turn 且不计预算；圆桌拒绝 `group_send` 与单成员 Stop。Run/MemberTurn DTO 与 `conversations.roundtable.v1` capability 已暴露，旧 Run 仍读作 `fanout`。
