@@ -2333,6 +2333,33 @@ export class ConversationDispatcher {
     for (const messageId of work.memberTurn.triggerMessageIds) {
       claim(messageId);
     }
+    // A discussion speaker reads every public message earlier speakers already
+    // produced in this same Run. The claim floor keeps those turns terminal, so
+    // the read is deterministic. Rows enter by exact id through `claim`, never
+    // by widening a seq window; a pass wrote no speech and stays out.
+    if (work.run.shape === "roundtable") {
+      const request = this.store.getMessage(work.run.requestMessageId);
+      if (request === undefined) {
+        throw new ConversationError("request_snapshot_mismatch", `run "${work.run.id}" lost its request snapshot`);
+      }
+      const earlierTurns = new Set(this.store.listMemberTurns(work.run.id)
+        .filter((turn) => turn.memberIndex < work.memberTurn.memberIndex
+          && turn.state === "completed"
+          && turn.speechOutcome !== "pass")
+        .map((turn) => turn.id));
+      for (const message of this.store.listMessages({
+        conversationId: work.run.conversationId,
+        topicId: work.run.topicId,
+        afterSeq: request.seq,
+        limit: PUBLIC_TRANSCRIPT_MESSAGES,
+      })) {
+        if (message.runId === work.run.id
+          && message.memberTurnId !== undefined
+          && earlierTurns.has(message.memberTurnId)) {
+          claim(message.id);
+        }
+      }
+    }
     return [...rows.values()];
   }
 
