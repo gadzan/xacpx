@@ -191,6 +191,29 @@ test("replay reuses the same fork and a different request or live target is refu
   h.store.close();
 });
 
+test("a replay after new traffic in the fork still returns the same Topic", async () => {
+  const { h, group, topic } = await forkFixture();
+  await settleRun(h, group.id, topic.id, "run-a", 1);
+  const input = {
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId: randomTopicId(),
+    requestId: "fork-a",
+  };
+  const forked = await h.service.forkGroupTopic(input);
+  const copied = forked.forkedFrom!.copiedMessages;
+  // Ordinary traffic in the fork is not a copied row: the replay guard compares
+  // fork provenance, so a busy fork must still replay instead of failing.
+  h.accept(group.id, forked.id, 1, true, "post-fork-message");
+  expect(h.store.topicMessageCount(group.id, forked.id)).toBe(copied + 1);
+  expect(h.store.topicForkMessageCount(forked.id)).toBe(copied);
+
+  const replay = await h.service.forkGroupTopic(input);
+  expect(replay.id).toBe(forked.id);
+  expect(h.store.topicForkMessageCount(forked.id)).toBe(copied);
+  h.store.close();
+});
+
 test("more than the cap copies only the newest window and reports omissions", async () => {
   const { h, group, topic } = await forkFixture();
   const limit = MAX_FORK_MESSAGES + 3;
