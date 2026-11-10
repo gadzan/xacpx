@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // G13 gate (plan §61): xacpx source may import ONLY "acpx/runtime". The
 // Runtime ENGINE boundary is src/bridge/engine/runtime/runtime-adapter.ts.
-// One deliberate legacy exception: src/transport/agent-registry.ts lazily
-// requires "acpx/runtime" for createAgentRegistry (install hints). Anything
+// The model-discovery inspector src/transport/acpx-model-inspector.ts is the
+// single controlled inspectAgentModels wrapper (design §4.3). One deliberate
+// legacy exception: src/transport/agent-registry.ts lazily requires
+// "acpx/runtime" for createAgentRegistry (install hints). Anything
 // else — acpx/dist/*, acpx/src/*, or a bare "acpx" — fails with a file:line
 // list.
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -13,10 +15,13 @@ import { fileURLToPath } from "node:url";
 // "D:\D:\..." — always convert through fileURLToPath for a real platform path.
 const ROOT = fileURLToPath(new URL("../src", import.meta.url));
 const ALLOWED_FILE = join(ROOT, "bridge/engine/runtime/runtime-adapter.ts");
-// Legacy lazy require for install-hint flows; Wave B folds it into the adapter.
+// Model-discovery inspector (design §4.3): the single controlled wrapper
+// around inspectAgentModels. Legacy lazy requires for install-hint flows;
+// Wave B folds them into the adapter.
 const ALLOWED_LAZY_FILES = new Set([
   join(ROOT, "transport/agent-registry.ts"),
   join(ROOT, "bridge/engine/runtime-capability.ts"),
+  join(ROOT, "transport/acpx-model-inspector.ts"),
 ]);
 const ALLOWED_SPEC = "acpx/runtime";
 
@@ -51,8 +56,8 @@ function walk(dir) {
 walk(ROOT);
 
 if (violations.length > 0) {
-  console.error("acpx import policy violated (engine boundary: runtime-adapter.ts; legacy exception: agent-registry.ts):");
+  console.error("acpx import policy violated (engine boundary: runtime-adapter.ts; inspector: acpx-model-inspector.ts; legacy exception: agent-registry.ts):");
   for (const v of violations) console.error(`  ${v}`);
   process.exit(1);
 }
-console.log("acpx import policy OK (engine boundary: runtime-adapter.ts; legacy exception: agent-registry.ts)");
+console.log("acpx import policy OK (engine boundary: runtime-adapter.ts; inspector: acpx-model-inspector.ts; legacy exception: agent-registry.ts)");
