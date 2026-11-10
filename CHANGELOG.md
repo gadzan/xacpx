@@ -18,6 +18,14 @@
 - 群组默认发送设置：普通消息的路由不再由 composer 决定，改为每个 Group 的 `defaultRouting`（`lead` 默认 / `automatic`），只在 Group 设置里修改；`@成员`、`@everyone`、讨论与斜杠命令仍发送各自显式 target，语义不变。`lead` 保持旧的“无 target、服务端在 accept gates 内重算 live lead”形状；`automatic` 显式发送自动 Run，缺少可用 Router 时以 `automatic_unsupported` 明确失败（外站点名消息仍走 lead，effect policy 仍要求显式成员）。迁移只依据持久证据：升级前有过 automatic Run 的 Group 在 Router 可用时继续 automatic，其余（以及 Router 关闭时的前者）保持 lead，因此旧 Group 的普通消息不会悄悄改变含义或开始被拒绝；Group DTO 暴露解析后的值，`groups.default-routing.v1` capability 让旧 core 不显示该设置。
 - 群聊讨论轮数选择：Group composer 的 `讨论` chip 旁新增 1/2/3 轮选择（默认 1，按 Group 记忆在 localStorage），发送时把所选轮数写进 `{mode:"roundtable",botIds,rounds}` 的 wire target；按钮 hint 显示「N 位成员 × R 轮」，`botIds.length × rounds > 24` 的超限计划在客户端就禁用讨论 chip、不发出请求（后端校验保持第二道门）；缺少 `conversations.roundtable.v1` 时 chip 与轮数选择一并隐藏。
 
+### Changed
+
+- 群聊契约显式声明可见通道：`GROUP_COLLABORATION_CONTRACT` 现在写明 Group Topic 里只能看见 `group_say` 发言、`group_send` 派活与最终回复，工具调用、推理和其他文本保持私有，并明确最终回复一定会被发布、结论必须写在里面。规则本身未变，只是把既有行为说出来，避免模型把 `group_say` 当成唯一出口。
+
+### Fixed
+
+- 圆桌后位发言者现在真的能看到前面发言者已经发表的公开消息：dispatcher 在该 Run 内按 `memberIndex` 取已完成且非 pass 的成员，把它们的公开消息按精确 id 并入 `frozenGroupTranscript` 的允许集，不扩大 seq 窗口、不写回触发集。此前每个 turn 的触发集只有人类请求，导致圆桌契约里的“Read the public messages above”与设计 §7.3 实际不成立；pass 仍不进入后续上下文。
+
 
 ## [relay 0.14.12-beta.18] - 2026-11-06
 
