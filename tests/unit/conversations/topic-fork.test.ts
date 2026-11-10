@@ -291,6 +291,28 @@ test("an existing fork topic without copied rows fails closed", async () => {
   h.store.close();
 });
 
+test("a replay over a partially lost copy fails closed instead of returning the target", async () => {
+  const { h, group, topic } = await forkFixture();
+  await settleRun(h, group.id, topic.id, "run-a", 1);
+  const input = {
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId: randomTopicId(),
+    requestId: "fork-a",
+  };
+  const forked = await h.service.forkGroupTopic(input);
+  const copied = h.store.listMessages({ conversationId: group.id, topicId: forked.id, limit: 50 });
+  expect(copied.length).toBe(forked.forkedFrom!.copiedMessages);
+  // The row survives but loses its fork provenance, so the target still looks
+  // populated while one copied message is unaccounted for. A count-only
+  // "is it nonzero" replay check would hand this damaged target back.
+  h.store.directWriteForTest("messages", copied[0]!.id, { forked_from_message_id: null });
+  expect(h.store.topicForkMessageCount(forked.id)).toBe(forked.forkedFrom!.copiedMessages - 1);
+  await expect(h.service.forkGroupTopic(input)).rejects.toMatchObject({ code: "topic_fork_history_missing" });
+  expect(h.state.conversation_topics[forked.id]?.id).toBe(forked.id);
+  h.store.close();
+});
+
 test("orphan copied rows without a Topic record fail closed instead of being adopted", async () => {
   const { h, group, topic } = await forkFixture();
   await settleRun(h, group.id, topic.id, "run-a", 1);

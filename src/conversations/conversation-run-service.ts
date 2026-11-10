@@ -1213,10 +1213,15 @@ export class ConversationRunService {
         if (existingTarget.forkedFrom?.requestId !== input.requestId) {
           throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
         }
-        if (this.store.topicForkMessageCount(input.targetTopicId) === 0) {
+        // A replay is only the same fork when the target still holds every
+        // copied row. A damaged target (partial loss, or a cleared fork) must
+        // not be handed back as the finished result: the caller would show a
+        // banner over missing history and believe the fork succeeded.
+        const copiedRows = this.store.topicForkMessageCount(input.targetTopicId);
+        if (copiedRows !== existingTarget.forkedFrom.copiedMessages) {
           throw new ConversationError(
             "topic_fork_history_missing",
-            `fork target "${input.targetTopicId}" exists but its copied history is missing; delete the corrupt target and retry with a fresh id`,
+            `fork target "${input.targetTopicId}" holds ${copiedRows} of ${existingTarget.forkedFrom.copiedMessages} copied messages; delete the damaged target and retry with a fresh id`,
           );
         }
         if (existingTarget.status === "deleting" || this.store.isTopicDeleting(input.targetTopicId)) {
