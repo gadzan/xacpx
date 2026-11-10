@@ -34,3 +34,6 @@ packages/docs/.vitepress/dist
 .pi/
 
 .mock-agent-*.json
+
+# Agent session decision logs (never product artifacts)
+/.audit/
