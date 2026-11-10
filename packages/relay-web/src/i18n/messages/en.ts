@@ -1321,6 +1321,9 @@ export default {
     effectFellBack: "Selected {model} did not take effect. In effect: {applied}.",
     appliesLater: "A bot model change applies to runs accepted after you save. An accepted run keeps its profile.",
     savedListUnverified: "Saved list. The last refresh failed: {message}",
+    stale: "Stale list.",
+    staleVerified: "Stale. Last verified {time}.",
+    refreshing: "Refreshing in the background… The list below stays usable.",
   },
   time: {
     justNow: "just now",

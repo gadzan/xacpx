@@ -6,6 +6,8 @@ import type { AgentCapabilityState, CapabilityModel, SelectionEffect } from "@ga
 import { classifySelection } from "@ganglion/xacpx-relay-protocol";
 import { useDropdown } from "../lib/use-dropdown";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
+import { effortsForModel } from "../lib/capability-view";
+import { fmtTime } from "../lib/format";
 
 const props = withDefaults(defineProps<{
   state: { status: "loading" } | AgentCapabilityState;
@@ -60,11 +62,12 @@ const suggestions = computed((): CapabilityModel[] => {
   if (!state || state.status === "error" || !("suggestions" in state)) return [];
   return state.suggestions;
 });
+const appliedModelId = computed(() => settled.value?.status === "ready" ? settled.value.appliedModelId : undefined);
 const effortOptions = computed(() => {
-  const state = settled.value;
-  if (state && state.status !== "error" && "efforts" in state && state.efforts.status === "known" && state.efforts.options.length > 0) {
-    return state.efforts.options;
-  }
+  // A list scoped to another model stays hidden; the error carry below is
+  // already scope-checked in mergeEffortRefresh, so it renders as-is.
+  const scoped = effortsForModel(settled.value, props.model, appliedModelId.value);
+  if (scoped?.status === "known" && scoped.options.length > 0) return scoped.options;
   return props.carriedEfforts ?? [];
 });
 const effortGroups = computed<SelectGroup[]>(() => [
@@ -75,7 +78,6 @@ const effortGroups = computed<SelectGroup[]>(() => [
     ],
   },
 ]);
-const appliedModelId = computed(() => settled.value?.status === "ready" ? settled.value.appliedModelId : undefined);
 const effect = computed((): SelectionEffect => classifySelection({
   selectedModelId: props.model,
   appliedModelId: appliedModelId.value,
@@ -105,6 +107,13 @@ const reason = computed(() => {
     return state.reason ? t("capability.savedListUnverified", { message: state.reason.message }) : "";
   }
   return state.reason.message;
+});
+const isStale = computed(() => settled.value?.status === "ready" && settled.value.freshness === "stale");
+const isRefreshing = computed(() => settled.value?.status === "ready" && settled.value.refreshing === true);
+const staleText = computed(() => {
+  const verifiedAt = settled.value?.status === "ready" ? settled.value.lastVerifiedAt : undefined;
+  const time = fmtTime(verifiedAt);
+  return time ? t("capability.staleVerified", { time }) : t("capability.stale");
 });
 const recovery = computed(() => {
   const state = settled.value;
@@ -140,6 +149,8 @@ function onEffort(value: string): void {
       {{ t("capability.loading") }}
     </p>
     <p v-else-if="reason" data-test="model-picker-reason" class="text-xs text-fg-muted">{{ reason }}</p>
+    <p v-if="isStale" data-test="model-picker-stale" class="text-xs text-fg-muted">{{ staleText }}</p>
+    <p v-if="isRefreshing" data-test="model-picker-refreshing" class="text-xs text-fg-muted">{{ t("capability.refreshing") }}</p>
     <p v-if="recovery" data-test="model-picker-recovery" class="text-xs text-fg-muted">{{ recovery }}</p>
     <div class="flex gap-2">
       <button v-if="canFetch" type="button" data-test="model-picker-fetch" class="rounded-lg px-2 py-1 text-xs text-fg hover:bg-fg/5" @click="emit('fetch')">

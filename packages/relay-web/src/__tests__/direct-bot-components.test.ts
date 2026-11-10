@@ -3,8 +3,11 @@ import { config, mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import {
   RELAY_CAPABILITIES,
+  errorCapability,
+  knownEfforts,
   needsSetupCapability,
   readyCapability,
+  type AgentCapabilityState,
   type BotDetailDto,
   type BotSummaryDto,
   type ConversationMessageDto,
@@ -111,6 +114,207 @@ describe("Direct Bot Components", () => {
       // Unadvertised low and max must NOT be present
       expect(values).not.toContain("low");
       expect(values).not.toContain("max");
+    });
+
+    it("re-reads silently when the picked model changes and scopes efforts to it", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "reviewer", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      const first = readyCapability("session", [{ modelId: "gpt-a" }, { modelId: "gpt-b" }], {
+        fetchedAt: "2026-10-09T00:00:00.000Z",
+      });
+      // The switched-to model arrives with efforts scoped elsewhere: a real
+      // scope mismatch the dialog must hide, not a static render.
+      const second = readyCapability("session", [{ modelId: "gpt-b" }], {
+        fetchedAt: "2026-10-09T00:00:00.000Z",
+        efforts: knownEfforts(["xhigh"], undefined, "zzz"),
+      });
+      let secondArmed = false;
+      const secondGate = Promise.withResolvers<AgentCapabilityState>();
+      const caps = vi.spyOn(useInstancesStore(), "getAgentCapabilities").mockImplementation(() => {
+        if (!secondArmed) return Promise.resolve(first);
+        return secondGate.promise;
+      });
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const settled = caps.mock.calls.length;
+      expect(settled).toBeGreaterThan(0);
+      secondArmed = true;
+      await wrapper.get('[data-test="bot-model"]').trigger("focus");
+      await wrapper.get('[data-test="model-option"][data-model-id="gpt-b"]').trigger("mousedown");
+      await flushPromises();
+      // Silent: no loading flash and the old list stays selectable mid-flight.
+      expect(caps.mock.calls.length).toBeGreaterThan(settled);
+      expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+      await wrapper.get('[data-test="bot-model"]').trigger("focus");
+      expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-a");
+      secondGate.resolve(second);
+      await flushPromises();
+      await wrapper.get('[data-test="bot-model"]').trigger("focus");
+      expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-b");
+      // Efforts scoped to another model stay hidden under the new pick.
+      expect(wrapper.find('[data-test="model-picker-effort"]').element.tagName).toBe("INPUT");
+    });
+
+    it("re-reads only when an invalidation touches exactly its scope", async () => {
+      // Drop the describe-level getAgentCapabilities mock: this test drives the real store.
+      vi.restoreAllMocks();
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "reviewer", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      // The real store path: the epoch only moves when a real cache entry drops.
+      const caps = vi.spyOn(api, "rpc").mockImplementation(async (_iid, type) => {
+        if (type === "control.agents.capabilities.get") {
+          return readyCapability("session", [{ modelId: "gpt-a" }], { fetchedAt: "2026-10-09T00:00:00.000Z" });
+        }
+        if (type === "control.agents.list") return { agents: [{ name: "reviewer", driver: "codex" }] };
+        if (type === "control.workspaces.list") return { workspaces: [{ name: "repo", cwd: "/repo" }] };
+        return {};
+      });
+      const capabilityCalls = () => caps.mock.calls.filter(([, type]) => type === "control.agents.capabilities.get").length;
+      mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const settled = capabilityCalls();
+      expect(settled).toBeGreaterThan(0);
+      instances.applyEvent({
+        kind: "control-event",
+        instanceId: "i1",
+        event: { type: "agent-capabilities-changed", agent: "reviewer", workspace: "elsewhere" },
+      } as never);
+      await flushPromises();
+      expect(capabilityCalls()).toBe(settled);
+      instances.applyEvent({
+        kind: "control-event",
+        instanceId: "i1",
+        event: { type: "agent-capabilities-changed", agent: "reviewer", workspace: "repo" },
+      } as never);
+      await flushPromises();
+      expect(capabilityCalls()).toBeGreaterThan(settled);
+    });
+
+    it("keeps the usable list when a background re-read fails, and surfaces an explicit fetch", async () => {
+      vi.restoreAllMocks();
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "reviewer", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      const brokenGate = Promise.withResolvers<unknown>();
+      let reads = 0;
+      let phase: "mount" | "broken" | "fresh" = "mount";
+      const caps = vi.spyOn(api, "rpc").mockImplementation(async (_iid, type) => {
+        if (type === "control.agents.capabilities.get") {
+          reads += 1;
+          if (phase === "mount") return readyCapability("session", [{ modelId: "gpt-a" }], { fetchedAt: "2026-10-09T00:00:00.000Z" });
+          if (phase === "broken") return brokenGate.promise;
+          return readyCapability("probe", [{ modelId: "gpt-new" }], { fetchedAt: "2026-10-09T00:01:00.000Z" });
+        }
+        if (type === "control.agents.list") return { agents: [{ name: "reviewer", driver: "codex" }] };
+        if (type === "control.workspaces.list") return { workspaces: [{ name: "repo", cwd: "/repo" }] };
+        return {};
+      });
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const settled = reads;
+      expect(settled).toBeGreaterThan(0);
+      phase = "broken";
+      instances.applyEvent({
+        kind: "control-event",
+        instanceId: "i1",
+        event: { type: "agent-capabilities-changed", agent: "reviewer", workspace: "repo" },
+      } as never);
+      await flushPromises();
+      // The background re-read is in flight: no loading flash, old list stays.
+      expect(reads).toBe(settled + 1);
+      expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+      brokenGate.resolve(errorCapability({ code: "transport", message: "offline" }, "Retry.", { fetchedAt: "2026-10-09T00:00:00.000Z" }));
+      await flushPromises();
+      // The failed background read keeps the usable list instead of wiping it.
+      await wrapper.get('[data-test="bot-model"]').trigger("focus");
+      expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-a");
+      expect(wrapper.find('[data-test="model-picker-reason"]').exists()).toBe(false);
+      // An explicit Fetch still surfaces failures and recovery.
+      phase = "fresh";
+      await wrapper.get('[data-test="model-picker-fetch"]').trigger("click");
+      await flushPromises();
+      expect(reads).toBe(settled + 2);
+      await wrapper.get('[data-test="bot-model"]').trigger("focus");
+      expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-new");
+    });
+
+    it("does not carry the previous scope's efforts across an agent switch", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "reviewer", driver: "codex" }, { name: "helper", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      vi.spyOn(useInstancesStore(), "getAgentCapabilities").mockImplementation(async (_iid, input: { agent: string }) => {
+        if (input.agent === "helper") {
+          return errorCapability({ code: "transport", message: "offline" }, "Retry.", { fetchedAt: "2026-10-09T00:00:00.000Z" });
+        }
+        return readyCapability("session", [{ modelId: "gpt-a" }], {
+          fetchedAt: "2026-10-09T00:00:00.000Z",
+          efforts: knownEfforts(["high"]),
+        });
+      });
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      // Pick the model the effort list belongs to, so the carry is legitimate.
+      await wrapper.get('[data-test="bot-model"]').trigger("focus");
+      await wrapper.get('[data-test="model-option"][data-model-id="gpt-a"]').trigger("mousedown");
+      await flushPromises();
+      await wrapper.get('[data-test="model-picker-effort"]').trigger("click");
+      expect(wrapper.findAll('[data-test="effort-option"]').map((o) => o.attributes("data-value"))).toEqual(["", "high"]);
+      // A new agent is a new scope: its failed read must not show the old list.
+      await wrapper.find("#bot-agent").trigger("click");
+      await wrapper.find('[data-value="helper"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-test="model-picker-reason"]').text()).toContain("offline");
+      expect(wrapper.find('[data-test="model-picker-effort"]').element.tagName).toBe("INPUT");
     });
 
     it("renders open effort input with datalist when no advertised efforts are provided", async () => {

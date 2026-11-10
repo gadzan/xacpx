@@ -1,6 +1,6 @@
 import { setActivePinia, createPinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { readyCapability, RELAY_CAPABILITIES, type AgentCapabilityState } from "@ganglion/xacpx-relay-protocol";
+import { errorCapability, readyCapability, RELAY_CAPABILITIES, type AgentCapabilityState } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { supportsGroupTopicIsolation, supportsRmuxTerminal, useInstancesStore } from "../stores/instances";
 
@@ -636,7 +636,7 @@ describe("getAgentCapabilities", () => {
     expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ models: [{ modelId: "new" }] });
   });
 
-  test.each(["instance-status", "workspaces-changed", "bots-changed"] as const)(
+  test.each(["instance-status", "workspaces-changed", "bots-changed", "agent-capabilities-changed"] as const)(
     "%s invalidates ready data and pending reads only for that instance", async (type) => {
       const store = useInstancesStore();
       store.instances = [
@@ -658,6 +658,13 @@ describe("getAgentCapabilities", () => {
       const pending = store.getAgentCapabilities("i1", { ...input, probe: true });
       if (type === "instance-status") {
         store.applyEvent({ kind: "instance-status", instanceId: "i1", online: false });
+      } else if (type === "agent-capabilities-changed") {
+        // A bot-less notice covers every botId of the agent + workspace scope.
+        store.applyEvent({
+          kind: "control-event",
+          instanceId: "i1",
+          event: { type, agent: input.agent, workspace: input.workspace },
+        } as never);
       } else {
         store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type } });
       }
@@ -715,6 +722,81 @@ describe("getAgentCapabilities", () => {
     expect(recovered).toMatchObject({ models: [{ modelId: "recovered" }] });
     expect(recovered).not.toHaveProperty("reason");
     expect(rpc).toHaveBeenCalledTimes(3);
+  });
+
+  test("agent-capabilities-changed drops only the named scope", async () => {
+    const store = useInstancesStore();
+    const other = { agent: "codex", workspace: "other" };
+    const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_iid, type, payload) => {
+      if (type !== "control.agents.capabilities.get") return { workspaces: [] };
+      const scope = payload as { agent: string; workspace: string };
+      return catalog(`${scope.agent}:${scope.workspace}`);
+    });
+    await store.getAgentCapabilities("i1", input);
+    await store.getAgentCapabilities("i1", other);
+    const untouchedEpoch = store.capabilityEpochFor("i1", other.agent, other.workspace);
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: { type: "agent-capabilities-changed", agent: input.agent, workspace: input.workspace },
+    } as never);
+    // Exactly this scope woke; the sibling scope keeps its generation and its cache.
+    expect(store.capabilityEpochFor("i1", input.agent, input.workspace, input.botId)).toBe(1);
+    expect(store.capabilityEpochFor("i1", other.agent, other.workspace)).toBe(untouchedEpoch);
+    expect(await store.getAgentCapabilities("i1", other)).toMatchObject({ models: [{ modelId: "codex:other" }] });
+    expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ models: [{ modelId: "codex:w" }] });
+    expect(rpc.mock.calls.filter(([, type]) => type === "control.agents.capabilities.get")).toHaveLength(3);
+  });
+
+  test("a malformed capabilities-changed event is ignored, never widened", async () => {
+    const store = useInstancesStore();
+    const rpc = vi.spyOn(api, "rpc").mockResolvedValue(catalog("old"));
+    await store.getAgentCapabilities("i1", input);
+    store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "agent-capabilities-changed" } } as never);
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: { type: "agent-capabilities-changed", agent: "", workspace: "w" },
+    } as never);
+    expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ models: [{ modelId: "old" }] });
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(store.capabilityEpochFor("i1", input.agent, input.workspace, input.botId)).toBe(0);
+  });
+
+  test("abandoning one reader never cancels the shared probe", async () => {
+    const store = useInstancesStore();
+    const gate = deferred();
+    const rpc = vi.spyOn(api, "rpc").mockReturnValueOnce(gate.promise);
+    // Two dialogs read the same scope: one closes while the RPC is in flight.
+    const abandoned = store.getAgentCapabilities("i1", input);
+    const kept = store.getAgentCapabilities("i1", input);
+    gate.resolve(catalog("new"));
+    expect(await kept).toMatchObject({ models: [{ modelId: "new" }] });
+    await expect(abandoned).resolves.toMatchObject({ models: [{ modelId: "new" }] });
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  test("agent-capabilities-changed wakes scopes with no cached entry", async () => {
+    const store = useInstancesStore();
+    const rpc = vi.spyOn(api, "rpc")
+      .mockResolvedValueOnce(errorCapability(
+        { code: "transport", message: "offline" },
+        "Retry the model fetch.",
+        { fetchedAt: "2026-10-09T00:00:00.000Z" },
+      ))
+      .mockResolvedValueOnce(catalog("new"));
+    // Errors never cache, so the event finds nothing to drop — the dialog
+    // still needs its generation moved to re-read.
+    expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ status: "error" });
+    expect(store.capabilityEpochFor("i1", input.agent, input.workspace, input.botId)).toBe(0);
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: { type: "agent-capabilities-changed", agent: input.agent, workspace: input.workspace },
+    } as never);
+    expect(store.capabilityEpochFor("i1", input.agent, input.workspace, input.botId)).toBe(1);
+    expect(await store.getAgentCapabilities("i1", input)).toMatchObject({ models: [{ modelId: "new" }] });
+    expect(rpc).toHaveBeenCalledTimes(2);
   });
 
   test("parses a ready payload and keeps the model id intact", async () => {

@@ -431,6 +431,13 @@ function toggleSettingsPanel<const T extends { enabled: boolean }>(
 }
 
 
+/** A future `agent-capabilities-changed` control event (design 11.2). The relay
+ *  protocol does not carry it yet, so this narrows by discriminant instead of
+ *  the generated union: unknown shapes never match. */
+function isCapabilitiesChangedEvent(value: unknown): value is { type: "agent-capabilities-changed"; agent?: unknown; workspace?: unknown; botId?: unknown } {
+  return !!value && typeof value === "object" && "type" in value && value.type === "agent-capabilities-changed";
+}
+
 export const useInstancesStore = defineStore("instances", () => {
   const agentDirectory = ref<WebAgentDirectoryEndpointDto[]>([]);
   const terminalPanel = toggleSettingsPanel<TerminalSettingsDto>({
@@ -1325,11 +1332,64 @@ export const useInstancesStore = defineStore("instances", () => {
     instanceId: string;
     request: Promise<AgentCapabilityState>;
   }>();
+  // Per-scope re-read generations. Dialogs watch their own scope's epoch so an
+  // invalidation re-reads exactly the dialogs it touches.
+  const capabilityEpochs = ref<Record<string, number>>({});
 
-  function invalidateAgentCapabilities(instanceId?: string): void {
+  /** Narrow an invalidation to one capability scope. botId narrows exact-only
+   *  when present; an event without one covers every botId of the scope.
+   *  Waking rides along: a dialog showing an error or an uncached
+   *  failed-refresh list has nothing to drop, but it still needs the re-read
+   *  an invalidation promises to open dialogs. */
+  function invalidateAgentCapabilities(instanceId?: string, scope?: { agent?: string; workspace?: string; botId?: string }): void {
     for (const entries of [agentCapabilityCache, agentCapabilityInflight]) {
       for (const [key, entry] of entries) {
-        if (instanceId === undefined || entry.instanceId === instanceId) entries.delete(key);
+        if (instanceId === undefined || capabilityScopeMatches(key, entry.instanceId, instanceId, scope)) {
+          entries.delete(key);
+        }
+      }
+    }
+    wakeCapabilityScope(instanceId, scope);
+  }
+
+  function capabilityScopeMatches(key: string, entryInstanceId: string, instanceId: string, scope?: { agent?: string; workspace?: string; botId?: string }): boolean {
+    if (entryInstanceId !== instanceId) return false;
+    if (!scope) return true;
+    try {
+      const parsed = JSON.parse(key) as [string, string, string, string | null];
+      if (parsed[1] !== scope.agent || parsed[2] !== scope.workspace) return false;
+      return scope.botId === undefined || (parsed[3] ?? undefined) === scope.botId;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Re-read generation for one capability scope. Dialogs watch this and
+   *  re-read when an invalidation touches exactly their scope. */
+  function capabilityEpochFor(instanceId: string, agent: string, workspace: string, botId?: string): number {
+    return capabilityEpochs.value[capabilityKey(instanceId, { agent, workspace, botId })] ?? 0;
+  }
+
+  /**
+   * Move the epochs of every watched scope, so open dialogs re-read. Waking
+   * covers scopes with no live cache entry too: a dialog showing an error or
+   * an uncached failed-refresh list has nothing to drop, but it still needs
+   * the re-read a settled background refresh promises.
+   */
+  function wakeCapabilityScope(instanceId?: string, scope?: { agent?: string; workspace?: string; botId?: string }): void {
+    // Only scopes a read has registered can have a watching dialog; unknown
+    // keys stay untouched.
+    for (const key of Object.keys(capabilityEpochs.value)) {
+      try {
+        const parsed = JSON.parse(key) as [string, string, string, string | null];
+        if (instanceId !== undefined && parsed[0] !== instanceId) continue;
+        if (scope?.agent !== undefined && scope?.workspace !== undefined) {
+          if (parsed[1] !== scope.agent || parsed[2] !== scope.workspace) continue;
+          if (scope.botId !== undefined && (parsed[3] ?? undefined) !== scope.botId) continue;
+        }
+        capabilityEpochs.value[key] = (capabilityEpochs.value[key] ?? 0) + 1;
+      } catch {
+        // A key this store did not write never matches; leave it alone.
       }
     }
   }
@@ -1347,6 +1407,10 @@ export const useInstancesStore = defineStore("instances", () => {
     input: { agent: string; workspace: string; botId?: string; probe?: boolean },
   ): Promise<AgentCapabilityState> {
     const key = capabilityKey(instanceId, input);
+    // Every read scope owns a generation from birth, so a later invalidation
+    // wakes exactly the dialogs watching it — even when the answer was never
+    // cached and there was nothing to drop.
+    if (!(key in capabilityEpochs.value)) capabilityEpochs.value[key] = 0;
     if (!input.probe) {
       const pending = agentCapabilityInflight.get(key);
       if (pending) return pending.request;
@@ -1559,6 +1623,10 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   function applyEvent(event: WebServerEvent): void {
+    // The future agent-capabilities-changed discriminant is not in the
+    // generated union yet; read it through unknown so the guard below narrows
+    // without collapsing to never.
+    const innerEvent: unknown = event.kind === "control-event" ? event.event : undefined;
     if (event.kind === "instance-status") {
       invalidateAgentCapabilities(event.instanceId);
       const inst = byId(event.instanceId);
@@ -1592,6 +1660,19 @@ export const useInstancesStore = defineStore("instances", () => {
       void loadWorkspaces(event.instanceId).catch(() => {});
     } else if (event.kind === "control-event" && event.event.type === "bots-changed") {
       invalidateAgentCapabilities(event.instanceId);
+    } else if (event.kind === "control-event" && isCapabilitiesChangedEvent(innerEvent)) {
+      // Design 11.2: a background refresh settled for one agent + workspace.
+      // The daemon does not emit this yet, so this arm is forward defense: it
+      // drops exactly the named scope and wakes exactly its dialogs. A payload
+      // without a usable agent + workspace is ignored, never widened.
+      const { agent, workspace, botId } = innerEvent;
+      if (typeof agent === "string" && agent.trim() && typeof workspace === "string" && workspace.trim()) {
+        invalidateAgentCapabilities(event.instanceId, {
+          agent,
+          workspace,
+          ...(typeof botId === "string" && botId.trim() ? { botId } : {}),
+        });
+      }
     } else if (event.kind === "control-event" && event.event.type === "conversation-router-changed") {
       // Automatic collaboration was switched on another client/surface — re-read so the
       // composer's automatic target and the instance dialog's panel converge. The panel
@@ -1629,7 +1710,7 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, capabilityEpochFor, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });
 
 /** The instances store's public shape, named for consumers (tests, helpers). */
