@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { ConversationError } from "../../../src/conversations/conversation-error";
+import { ConversationRouterEngine } from "../../../src/conversations/conversation-router-engine";
 import type { ConversationDispatcher } from "../../../src/conversations/conversation-dispatcher";
 import type { ConversationRunService } from "../../../src/conversations/conversation-run-service";
 import type { AcceptMemberInput, AcceptRequestResult } from "../../../src/conversations/conversation-store";
@@ -329,5 +330,45 @@ test("a malformed target id is an invalid payload", async () => {
     targetTopicId: randomTopicId(),
     requestId: "",
   })).rejects.toBeInstanceOf(ConversationError);
+  h.store.close();
+});
+
+test("the first fork run's prompt and Router input see the copied history", async () => {
+  const { h, group, topic } = await forkFixture();
+  await settleRun(h, group.id, topic.id, "run-a", 1);
+  const forked = await h.service.forkGroupTopic({
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId: randomTopicId(),
+    requestId: "fork-a",
+  });
+  const sourceContents = h.store.listMessages({ conversationId: group.id, topicId: forked.id, limit: 50 })
+    .map((message) => message.content);
+
+  const accepted = h.accept(group.id, forked.id, 1, true, "fork-run");
+  const start = h.runner.calls.length;
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length > start);
+  const prompt = h.runner.calls[start]!.text;
+  for (const content of sourceContents) {
+    expect(prompt).toContain(content);
+  }
+
+  h.runner.finish(start);
+  await drain;
+
+  const engine = new ConversationRouterEngine(undefined, {
+    store: h.store,
+    readGroup: (id) => h.state.conversations[id],
+    readTopic: (_id, topicId) => h.state.conversation_topics[topicId],
+    readBot: (id) => h.state.bots[id],
+    runLifecycleAll: async (_botIds, critical) => critical(),
+    now: () => new Date(NOW),
+  });
+  const input = engine.buildRoutingInput(h.store.getRun(accepted.run.id)!);
+  for (const content of sourceContents) {
+    expect(input.publicTranscript.map((entry) => entry.content)).toContain(content);
+  }
+  expect(input.publicTranscript.length).toBeLessThanOrEqual(200);
   h.store.close();
 });
