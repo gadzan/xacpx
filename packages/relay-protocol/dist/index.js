@@ -1919,7 +1919,7 @@ var validateGroupTopicsFork = (p) => {
   if (o.title !== undefined && !isStr(o.title))
     return null;
   const point = o.sourcePoint;
-  if (point !== undefined && !(isObj(point) && (point.type === "latest_stable" || point.type === "run" && isStr(point.runId)))) {
+  if (point !== undefined && !(isObj(point) && (point.type === "latest_stable" || point.type === "run" && isStr(point.runId) || point.type === "message" && isStr(point.messageId)))) {
     return null;
   }
   return o;

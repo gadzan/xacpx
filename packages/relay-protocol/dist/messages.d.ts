@@ -663,13 +663,17 @@ export interface GroupTopicsTeardownPayload {
     conversationId: string;
     topicId: string;
 }
-/** Where a fork cuts the source Topic's history: the latest settled Run, or
- *  one named Run. */
+/** Where a fork cuts the source Topic's history: the latest settled Run, one
+ *  named Run, or one named message. A message boundary cuts at that message's
+ *  `seq`, no matter which Run (if any) owns it. */
 export type ThreadForkSourcePointDto = {
     type: "latest_stable";
 } | {
     type: "run";
     runId: string;
+} | {
+    type: "message";
+    messageId: string;
 };
 export interface GroupTopicsForkPayload {
     conversationId: string;
