@@ -69,14 +69,20 @@ function prefixOf(message: TopicForkHandoffMessage): string {
 
 /** One row, collapsed to a single line, capped with the ellipsis inside the
  *  cap. `limit` is what the caller can still spend, never above the
- *  per-message cap. */
+ *  per-message cap, and it bounds the WHOLE row: the prefix and its two
+ *  characters come out of it, or a boundary row sized to `limit` would be
+ *  refused by exactly its prefix width and the render would come back empty. */
 function renderRow(message: TopicForkHandoffMessage, limit: number): string {
-  const cap = Math.min(MAX_FORK_HANDOFF_MESSAGE_CHARS, Math.max(0, limit));
+  const prefix = `${prefixOf(message)}: `;
+  const cap = Math.min(
+    MAX_FORK_HANDOFF_MESSAGE_CHARS,
+    Math.max(0, limit - prefix.length),
+  );
   const collapsed = message.content.replace(/\s+/g, " ").trim();
   const body = collapsed.length > cap
     ? collapsed.slice(0, Math.max(0, cap - ELLIPSIS.length)) + ELLIPSIS
     : collapsed;
-  return `${prefixOf(message)}: ${body}`;
+  return `${prefix}${body}`;
 }
 
 function lastIndexWhere(messages: readonly TopicForkHandoffMessage[], role: ConversationMessage["role"]): number {

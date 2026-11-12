@@ -469,10 +469,8 @@ function terminalRunForTopic(topicId: string): ConversationRunDto | undefined {
 function openForkFromRun(run: ConversationRunDto): void {
   const topic = directBotsStore.currentTopics.find((candidate) => candidate.id === run.topicId);
   if (!topic || !forkSupported.value || !isTerminalRunState(run.state)) return;
-  const wasOpen = !!detailTarget.value;
   closeTraceOverlay();
   forkTarget.value = { topic, sourcePoint: { type: "run", runId: run.id }, resolvedRun: run };
-  void wasOpen;
 }
 
 const detailRunForkable = computed(() =>
@@ -749,7 +747,9 @@ function handleStopAll(): void {
       :empty-hint="emptyHint"
       :is-run-queued="directBotsStore.isRunQueued"
       :load-older="timelineFeed.loadOlder"
-      top-inset-class="pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5"
+      :top-inset-class="directBotsStore.currentTopic?.forkedFrom
+        ? 'pt-[0.5rem] lg:pt-5'
+        : 'pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5'"
       banner-inset-class="mt-[calc(6rem+env(safe-area-inset-top))] lg:mt-0"
       :forked-from="directBotsStore.currentTopic?.forkedFrom ?? null"
       :fork-source-available="forkSourceAvailable"

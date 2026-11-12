@@ -74,6 +74,27 @@ test("always keeps the boundary message even when the budget is hostile", () => 
   expect(rendered.omittedMessages).toBeGreaterThan(0);
 });
 
+test("the boundary row is charged its own prefix, so a one-prefix-tight budget still renders", () => {
+  // The exact band the pre-fix renderer failed in: 2196 leaves 2007 for rows,
+  // and the old cap spent all of it on the 2,000-character body before adding
+  // "Human: ", so the row overran by 1, was refused, and the whole render came
+  // back empty for a boundary the user had explicitly chosen.
+  const rendered = renderTopicForkHandoff({
+    sourceTitle: "T",
+    throughSeq: 2,
+    messages: [message(2, "human", "z".repeat(5_000))],
+    budget: 2_196,
+  });
+  expect(rendered.text).not.toBe("");
+  const row = rendered.text.split("\n").find((line) => line.startsWith("Human: "));
+  expect(row).toBeDefined();
+  expect(row!.endsWith("…")).toBe(true);
+  expect(row!.length).toBe(2_006);
+  expect(rendered.text.length).toBeLessThanOrEqual(2_196);
+  expect(rendered.messageCount).toBe(1);
+  expect(rendered.omittedMessages).toBe(0);
+});
+
 test("holds the 12,000 character postcondition on a large history", () => {
   const rendered = renderTopicForkHandoff({
     sourceTitle: "Big",

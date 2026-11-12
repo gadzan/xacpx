@@ -102,6 +102,8 @@ interface ForkReply {
   /** Error code the core would answer instead of a Topic. */
   code?: string;
   topic?: TopicSummaryDto;
+  /** Rows the fork has after its own first turn; a fresh fork starts with none. */
+  seeded?: ConversationMessageDto[];
 }
 
 interface Harness {
@@ -253,8 +255,9 @@ async function openDirect(
         const forkTopic = reply.topic as TopicSummaryDto;
         harness.topics = [...harness.topics, forkTopic];
         // A Direct fork copies no rows: the target starts empty and its history
-        // reaches the model through the one-time prompt handoff.
-        harness.messages[forkTopic.id] = [];
+        // reaches the model through the one-time prompt handoff. `seeded` stands
+        // in for the rows that exist after the fork's own first turn.
+        harness.messages[forkTopic.id] = reply.seeded ? [...reply.seeded] : [];
         result = { topic: forkTopic };
         break;
       }
@@ -397,7 +400,18 @@ test("a missing-history answer names the start-over and the next click forks wit
 test("the dialog fits the viewport on the mobile project", async ({ page, hub }, info) => {
   test.skip(!info.project.name.includes("mobile"), "mobile-only layout assertion");
   const harness = await openDirect(page, hub, [
-    { topic: forkedTopic({ id: "topic_mobile", requestId: "request_mobile", carried: 2 }) },
+    {
+      topic: forkedTopic({ id: "topic_mobile", requestId: "request_mobile", carried: 2 }),
+      seeded: [{
+        conversationId,
+        topicId: "topic_mobile",
+        id: "message_first",
+        seq: 1,
+        role: "human",
+        content: "First prompt after the fork",
+        createdAt,
+      }],
+    },
   ]);
   await openForkFromTopicMenu(page, info.project.name);
   const dialog = page.getByTestId("fork-topic-dialog");
@@ -417,6 +431,12 @@ test("the dialog fits the viewport on the mobile project", async ({ page, hub },
   const banner = await page.getByTestId("topic-fork-banner").boundingBox();
   expect(banner).not.toBeNull();
   expect(banner!.y).toBeGreaterThanOrEqual(88);
+  // The banner already pays that offset, so the scroller must not pay it again:
+  // the first row starts right under the banner instead of after a dead band.
+  await expect(page.locator("[data-row-key]").first()).toBeVisible();
+  const row = await page.locator("[data-row-key]").first().boundingBox();
+  expect(row).not.toBeNull();
+  expect(Math.abs(row!.y - (banner!.y + banner!.height))).toBeLessThanOrEqual(8);
 });
 
 test("a core without the Direct fork capability offers no fork entry", async ({ page, hub }, info) => {
