@@ -1,6 +1,6 @@
 # Direct 会话与消息节点 fork
 
-状态：Accepted（Phase A 已实现；Phase B 消息节点见第 5 节，尚未实现）
+状态：Accepted（Phase A 与 Phase B 均已实现；Phase C 受上游阻塞，见第 6 节）
 
 范围：在现有 Group Topic fork 之上，增加 Direct Bot 会话的 fork，以及 Group/Direct 共同的消息节点边界。原生 Agent session fork 不在本期。
 
@@ -232,6 +232,13 @@ Group 的 `latest_stable`/`run` 行为不变。Direct 的 `latest_stable`/`run` 
 
 `ForkTopicDialog` 的 sourcePoint 联合类型增加 message。分叉点文案增加消息边界分支。移动端依赖 `ConversationMeta` 已有的 `@media (hover: none)` 常显规则，不需要额外的入口。
 
+### 5.3 实现记录
+
+- 协议：`ThreadForkSourcePointDto` 的三个变体在 `messages.ts` 与 `payload-validators.ts` 同步；Group 与 Direct 共用同一份形状检查，`latest_stable` / `run` 的检查不变。
+- 服务端：`resolveForkPoint` 的 `message` 分支先校验行属于该 Conversation 与该 Topic、且不是 peer-scope Topic，再以 `message.seq` 作为 `throughSeq` 返回 `boundaryMessageId`，不返回 `boundaryRunId`。两条 fork 路径只在返回了 `boundaryMessageId` 时写 `forkedFrom.sourceMessageId`，因此消息边界永远不带 `sourceRunId`。
+- Group：`copyTopicForkMessages` 收到的是纯 `throughSeq`，因此边界所在 Run 之前的 Run 消息保留，边界之后（包括排队 Run 的请求行）不进入副本。`forkDirectTopic` 原先只接受 `latest_stable` / `run` 的入参校验同步放宽到 `message`，handoff 渲染窗口由同一个 `throughSeq` 决定。
+- 测试：`topic-fork.test.ts` 覆盖人类消息、bot 消息、边界后的排队 Run 与跨 Topic 拒绝；`direct-topic-fork.test.ts` 覆盖消息边界只渲染到该行、不写 `sourceRunId`、跨 Topic 拒绝；`packages/relay-web/src/__tests__/timeline-row.test.ts` 断言回调缺席时没有控件、存在时把该行自己的 id 交给回调；`fork-topic-dialog.test.ts` 断言消息分叉点文案与载荷；两个 e2e spec 各加一条消息行用例，并断言无 capability 时控件不存在。
+
 ## 6. Phase C，原生 session fork
 
 当前不可做，原因在上游而不在 xacpx。
@@ -313,8 +320,8 @@ RPC 列表：
 - [x] `control.direct.topics.fork` 在 Direct Bot 会话创建新 Topic，返回 `forkedFrom.mode = "handoff"` 且写入 handoff 行。
 - [x] 新 Topic 第一条 prompt 包含边界内历史，第一条 bot 回复之后不再包含。
 - [x] 源 Topic 删除后 fork 仍可对话，同 `requestId` 重放仍返回已有 Topic。
-- [ ] Group 与 Direct 都能以 `{ type: "message", messageId }` 为边界。（Phase B，未实现）
-- [ ] Group 消息边界只复制到该消息的 seq。（Phase B，未实现）
+- [x] Group 与 Direct 都能以 `{ type: "message", messageId }` 为边界。
+- [x] Group 消息边界只复制到该消息的 seq，Direct 只渲染到该行。
 - [x] 旧 core/connector 不广告新 capability，入口隐藏。
 - [x] 单元测试、relay-web 测试、Playwright、真实栈全部通过。
 - [x] 原生 fork 的上游依赖与解锁步骤记录在文档中，没有死代码。

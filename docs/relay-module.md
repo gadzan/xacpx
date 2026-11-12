@@ -493,11 +493,18 @@ pair replays to the same Topic while any other existing target is
 `topic_exists`. The one exception is `topic_fork_history_missing`: the target is
 damaged or orphaned, so the dialog mints a fresh pair and the next click starts
 over instead of replaying unrecoverable ids; every other error keeps the pair.
-`sourcePoint` is `{type: "latest_stable"}` (default) or
-`{type: "run", runId}`. The core copies the source Topic's public messages up
-to that settled Run's boundary, re-numbers them from 1, clears Run/MemberTurn
-/handoff/group-say/input provenance, and records `forkedFrom` on the Topic
-summary. At most 500 messages are copied; older rows surface as
+`sourcePoint` is `{type: "latest_stable"}` (default),
+`{type: "run", runId}`, or `{type: "message", messageId}`. The core copies the
+source Topic's public messages up to that settled Run's boundary — or, for a
+message point, up to that row's `seq` — re-numbers them from 1, clears
+Run/MemberTurn/handoff/group-say/input provenance, and records `forkedFrom` on
+the Topic summary. A message point must belong to the source Conversation and
+Topic and must not be a peer-scope row, else the RPC answers `topic_not_found`.
+Its boundary is seq-only: `seq` is allocated inside the accept transaction and
+strictly increases per Topic, so `seq <= throughSeq` already excludes every Run
+accepted later, while a `sourceRunId` filter would also drop earlier Runs' rows.
+The fork therefore writes `forkedFrom.sourceMessageId` and never
+`sourceRunId` for a message point. At most 500 messages are copied; older rows surface as
 `omittedMessages`. Answers: `topic_fork_empty`,
 `topic_fork_source_unsettled`, `topic_fork_source_changed`,
 `topic_fork_history_missing`, `topic_deleting`, `conversation_deleting`,
@@ -518,8 +525,10 @@ provider. Instead the core renders the source Topic's messages up to the
 boundary into `topic_fork_handoffs` — a SQLite table beside the Topic, never
 `state.json`, because that text can reach 12,000 characters and every state
 save would carry it — and the target Topic injects it into its first real
-prompt. `forkedFrom.mode` is `"handoff"` (absent reads as `"snapshot"` for
-pre-Direct rows); `copiedMessages` counts rendered messages and
+prompt. The boundary is the same `sourcePoint` union: `latest_stable`, one
+`runId`, or one `messageId`, and a message point renders only rows at or before
+that row's `seq`. `forkedFrom.mode` is `"handoff"` (absent reads as `"snapshot"`
+for pre-Direct rows); `copiedMessages` counts rendered messages and
 `omittedMessages` counts in-boundary messages the 500-row window or the budget
 dropped.
 
