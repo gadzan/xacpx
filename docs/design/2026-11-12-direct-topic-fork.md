@@ -8,14 +8,14 @@
 
 Group Topic 的 fork 是应用层消息快照。它成立的原因是 Group prompt 每轮都从 SQLite 重建，复制消息就等于复制上下文。
 
-Direct 会话不同。`conversation-dispatcher.ts` 对 Direct turn 只传 `userText`，历史通过持久化的 Agent session 延续。复制消息到一个新 Topic 不会进入 prompt，模型看不到，分叉只剩界面效果。因此 Direct fork 必须把有界历史作为一次性上下文注入新 Topic 的第一个 prompt。
+Direct 会话不同。`conversation-dispatcher.ts` 对 Direct turn 只传 `userText`，历史通过持久化的 Agent session 延续。复制消息到一个新 Topic 不会进入 prompt，模型看不到，分叉只剩界面效果。因此 Direct fork 必须把有界历史作为一次性上下文注入新 Topic 的第一个有效 prompt。
 
 ## 2. 三种 fork
 
 | 形态 | 源 | 目标里有什么 | 上下文如何到达模型 |
 |---|---|---|---|
 | Group 快照 | Group Topic | 复制到边界的消息行 | 每轮从目标 Topic 重建 |
-| Direct handoff | Direct Topic | 不复制消息行，只存待注入文本 | 新 Topic 的第一个 prompt 注入一次 |
+| Direct handoff | Direct Topic | 不复制消息行，SQLite 存一份渲染文本 | 目标 Topic 首个有效 prompt 注入，直到第一条 bot 回复落地 |
 | 原生 session fork | 任意 Agent session | Provider 原生分叉 | 需要 acpx 暴露 `session/fork` |
 
 `forkedFrom.mode` 区分前两种。原生 fork 依赖上游，见第 6 节。
@@ -33,7 +33,7 @@ export type ThreadForkSourcePointDto =
   | { type: "message"; messageId: string };
 ```
 
-`message` 的边界是该消息的 `seq`。它不要求消息所属 Run 已结算。用户选中一条已经写入的消息，就得到该消息之前的可见历史。
+`message` 的边界是该消息的 `seq`。它不要求消息所属 Run 已结算。用户选中一条已写入的消息，就得到该消息之前的可见历史。
 
 ### 3.2 fork 来源记录
 
@@ -49,31 +49,61 @@ export interface ConversationTopicFork {
 }
 ```
 
-`copiedMessages` 在 `snapshot` 下是复制的消息数，在 `handoff` 下是注入文本包含的消息数。`omittedMessages` 在两种形态下都表示被预算截断的更早消息数。
+`copiedMessages` 在 `snapshot` 下是复制的消息数，在 `handoff` 下是渲染文本包含的消息数。`omittedMessages` 在两种形态下都表示边界内被预算截断的更早消息数。
 
-### 3.3 Direct handoff 正文
+### 3.3 Direct handoff 正文存放在 SQLite
 
-`ConversationTopic` 增加一个 core-private 字段。它不进入 `TopicSummaryDto`，避免把内部 prompt 文本暴露给客户端。
+渲染后的文本不进 `state.json`。`StateStore.save` 每次写整份 state，把 12k 字符放进 Topic 记录会让之后每一次 state 写入都多背 12KB。正文放进独立表，随 Topic 一起删除。
+
+```sql
+CREATE TABLE IF NOT EXISTS topic_fork_handoffs (
+  topic_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  through_seq INTEGER NOT NULL,
+  message_count INTEGER NOT NULL,
+  omitted_messages INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+```
+
+store 接口：
 
 ```ts
-export interface TopicForkHandoff {
-  text: string;
-  throughSeq: number;
-  messageCount: number;
-  omittedMessages: number;
-}
-
-export interface ConversationTopic {
-  // 现有字段不变
-  forkHandoff?: TopicForkHandoff;
+interface ConversationStore {
+  putTopicForkHandoff(input: {
+    topicId: string;
+    conversationId: string;
+    text: string;
+    throughSeq: number;
+    messageCount: number;
+    omittedMessages: number;
+    createdAt: string;
+  }): void;
+  getTopicForkHandoff(topicId: string): TopicForkHandoff | undefined;
+  /** 该 Topic 是否已有 bot 消息。注入窗口的判据。 */
+  hasBotMessage(conversationId: string, topicId: string): boolean;
+  /** 只数边界内的消息，用于 omittedMessages。 */
+  topicMessageCountThrough(conversationId: string, topicId: string, throughSeq: number): number;
+  /** 边界内最新 N 条，升序返回。 */
+  listRecentMessages(input: {
+    conversationId: string;
+    topicId: string;
+    throughSeq: number;
+    limit: number;
+  }): ConversationMessage[];
 }
 ```
 
-`forkHandoff` 只在 `forkedFrom.mode === "handoff"` 时出现。它保存渲染后的有界文本，因此源 Topic 被删除后 fork 仍能工作。
+`deleteTopicRows` 在同一事务里删除该 Topic 的 handoff 行。目标 Topic 的元数据仍在 `forkedFrom`，因此删除正文不影响来源展示。
+
+`ConversationTopic` 不新增字段。`forkedFrom.mode` 是唯一的形态判据，正文是否存在用 `getTopicForkHandoff` 判定，两者不一致时按损坏处理。
 
 ### 3.4 状态校验
 
-`state-store.ts` 的 `isConversationTopicFork` 接受可选 `mode` 与 `sourceMessageId`。新增 `isTopicForkHandoff`，检查 `text` 非空、`throughSeq`/`messageCount`/`omittedMessages` 是非负整数，并在 `isConversationTopic` 中校验 `forkHandoff`。非法 Topic 仍按现有逻辑丢弃，不把半损坏状态带进运行时。
+`state-store.ts` 的 `isConversationTopicFork` 接受可选 `mode`，取值只能是 `snapshot` 或 `handoff`，并接受可选 `sourceMessageId`（非空字符串）。非法 Topic 仍按现有逻辑丢弃。
+
+清理（`clearDefaultTopic`）退役上下文时，重建的 Topic 记录不保留 `forkedFrom`，并删除该 Topic 的 handoff 行。否则 seq 从 1 重新开始时，旧文本会被再次注入一个全新 session。
 
 ## 4. Phase A，Direct portable fork
 
@@ -93,26 +123,75 @@ payload 与 `GroupTopicsForkPayload` 同形。协议层用独立类型名 `Direc
 
 `ConversationRunService.forkDirectTopic` 与 `forkGroupTopic` 并列，共用 `resolveForkPoint`。
 
-1. 只接受 `conversation.kind === "bot"`。`kind === "group"` 返回 `conversation_not_group` 的对应错误。
-2. 源 Topic 必须属于该 Direct 会话，状态为 `active` 或 `archived`，且没有 `peerScope`。Agent 私有 peer Topic 不可 fork。
-3. `sourcePoint` 缺省为 `latest_stable`。`latest_stable` 取最近一个终态 Run 的边界。存在未结算 Run 时返回 `topic_fork_source_unsettled`。`run` 必须是该 Topic 的终态 Run。`message` 必须是该 Topic 的可见消息。
-4. 读取边界之前最新的 500 条消息。新增 store 方法 `listRecentMessages`，SQL 为 `seq <= throughSeq ORDER BY seq DESC LIMIT n`，返回时按 `seq` 升序。`topicMessageCount` 提供总条数，用于 `omittedMessages`。
-5. 渲染 handoff。纯函数 `renderTopicForkHandoff` 接受源标题、边界 seq、消息、字符预算。默认预算 `MAX_FORK_HANDOFF_CHARS = 12_000`，单条消息截断到 `MAX_FORK_HANDOFF_MESSAGE_CHARS = 2_000`。选择顺序为新到旧，优先保留最后一条 human、最后一条 bot、第一条 human，再按新到旧填满。输出按时间升序，头部写明这是背景而不是新请求，附件的文件和工具状态不会重放。
-6. 创建目标 Topic。`forkedFrom.mode = "handoff"`，写入 `sourceMessageId`（消息边界时）、`throughSeq`、`messageCount`、`omittedMessages`、`rootTopicId` 和 `forkHandoff`。默认标题为 `<源标题> fork`。不设置 `executionTarget`，Direct Topic 的执行目标来自 Bot profile。
-7. 幂等。同 `targetTopicId + requestId` 重放返回已有 Topic。已有 Topic 缺少 `forkHandoff` 或 `forkedFrom.mode !== "handoff"` 时返回 `topic_fork_history_missing`，不把损坏目标当成功。不同 `requestId` 返回 `topic_exists`。
-8. 源 Topic 没有消息时返回 `topic_fork_empty`。
+顺序很重要。重放判定在读取源之前完成，否则源被删除后同 `requestId` 的重试会返回 `topic_not_found`，客户端只能换新 id 再 fork 一次。
 
-### 4.3 Prompt 注入
+1. 基础校验。`conversation.kind` 必须是 `bot`。`targetTopicId` 必须是 `topic_` 前缀、不是 `topic_peer_`、不等于源、且不等于 `createDirectTopicId(botId)`。默认 Direct Topic 不能被当成 fork 目标。
+2. 重放。`state.conversation_topics[targetTopicId]` 存在时：
+   - `forkedFrom?.requestId !== requestId` 返回 `topic_exists`。
+   - `forkedFrom.mode !== "handoff"` 返回 `topic_exists`。
+   - `getTopicForkHandoff(targetTopicId)` 缺失，或 `text` 为空，或 `throughSeq`/`messageCount`/`omittedMessages` 与 `forkedFrom` 不一致，返回 `topic_fork_history_missing`。
+   - 目标 Topic 处于 `deleting` 或正在拆除，返回 `topic_deleting`。
+   - 否则返回已有 Topic。**重放路径不读源 Topic，也不重新渲染。**
+3. 目标 id 无 Topic 记录但已有消息行，返回 `topic_fork_history_missing`。这条复用 Group 的孤儿检查，在 Direct 下等价于 `topicMessageCount(conversationId, targetTopicId) > 0`。
+4. 读取源 Topic。必须属于该 Direct 会话，状态为 `active` 或 `archived`，且没有 `peerScope`。
+5. 解析来源点。`latest_stable` 取**最近一个已结算 Run** 的边界；若没有任何已结算 Run 而存在未结算 Run，返回 `topic_fork_source_unsettled`。这与 Group 语义一致：在途 turn 不在快照内，不报错。`run` 必须是该 Topic 的终态 Run。`message` 必须是该 Topic 的消息。边界计算复用 `forkThroughSeq` 与 `message.seq`。
+6. 用 `topicMessageCountThrough` 得到边界内总数，用 `listRecentMessages` 取边界内最新 500 条（升序）。
+7. 渲染 handoff。纯函数 `renderTopicForkHandoff`，输出结构见 §4.3。
+8. 创建目标 Topic。`forkedFrom.mode = "handoff"`，写入 `sourceMessageId`（消息边界时）、`throughSeq`、`copiedMessages`（等于 `messageCount`）、`omittedMessages`、`rootTopicId`。默认标题为 `<源标题> fork`。不设置 `executionTarget`。写入 handoff 行。
+9. 先写 SQLite handoff 行，再 `persist` state。写入顺序与 Group 的复制一致。崩溃点在两者之间时，重放命中第 3 条的孤儿检查并 fail-closed，不会静默返回半成品。
+10. 源 Topic 没有边界内消息时返回 `topic_fork_empty`。
+
+### 4.3 handoff 渲染
+
+`renderTopicForkHandoff` 是纯函数，输入 `{ sourceTitle, throughSeq, messages, parentText?, budget }`，输出 `{ text, messageCount, omittedMessages }`。
+
+结构固定，顺序固定：
+
+```text
+Historical context from the Direct Topic "<sanitized title>" (messages up to #<throughSeq>).
+This is background material, not a new request. Attached files and tool state are not replayed.
+
+<<<HISTORY
+Human: <content>
+Bot <name>: <content>
+...
+>>>END HISTORY
+```
+
+规则：
+
+- 标题先折叠空白并截断到 80 字符，再插入头部。标题是用户可控文本，不能换行，也不能提前闭合头部。
+- 每条消息占一行或一段，前缀为 `Human:` 或 `Bot <name>:`，按时间升序。
+- 消息正文超过 `MAX_FORK_HANDOFF_MESSAGE_CHARS = 2_000` 时截断，并把省略号计入上限。
+- 预算 `MAX_FORK_HANDOFF_CHARS = 12_000`。先扣除头部、分隔符和截断标记的保留空间，再用剩余预算从新到旧填充。填充完成后断言 `text.length <= MAX_FORK_HANDOFF_CHARS`。
+- 选择优先级：边界消息本身必选；然后是最后一条 human、最后一条 bot；再按新到旧填充。
+- 边界消息因角色或超长被排除时，必须仍以截断形式收录。用户明确选了这个边界点。
+- 如果一条可渲染消息都没有，返回空结果，调用方报 `topic_fork_empty`。
+- `parentText` 存在时（fork-of-fork），作为最旧的一段内容放在所有可见消息之后，只使用剩余预算。计数传递：`messageCount += parent.messageCount`，`omittedMessages += parent.omittedMessages`，再加本次新截断的条数。父块被裁剪时在块首加截断标记。
+
+### 4.4 Prompt 注入
 
 `composeBotTurnPrompt` 增加第五个可选参数 `historicalContext`，放在 Group scope 之后、shared group context 之前。`composeBotTurnPromptFromSnapshot` 同步透传。
 
-`conversation-dispatcher.ts` 的 Direct 分支在 `work.run.requestMessageId` 对应的消息 `seq === 1` 且当前 Topic 有 `forkHandoff` 时传入该文本。Group 分支与后续 Direct 轮次不传。
+`historicalContext` 只能作为 header 参数传入，**不能**拼进 `body` 或 `userText`。命令识别只看 `body`，`adapterFacingPrompt` 只看 `userText`，混进去会让历史文本被当成命令。反过来这也保证历史文本不会触发命令路径。
 
-这条规则不需要额外的消费标记。目标 Topic 没有复制消息，fork 后第一条 human 消息的 seq 恒为 1。同一请求重试时消息 id 不变，仍会注入。第二条消息 seq 为 2，不再注入。
+位置固定在正文之前。dispatcher 计算 mention 偏移时用 `peerPrefix.length + text.length - userText.length`，只有 `userText` 仍是最终文本的后缀时这个式子成立。历史块附加在正文之后会让偏移错位。
 
-已知边界：如果第一条请求在 provider 启动前失败，用户改用一条新消息重试，新消息的 seq 为 2，handoff 不会再次注入。该情况记录为风险，不在本期加入额外状态。重复注入到同一 session 与丢失上下文之间，当前实现选择不重复注入。
+注入判据，按顺序：
 
-### 4.4 UI
+1. 目标 Topic 有 `getTopicForkHandoff(topicId)` 结果。
+2. `hasBotMessage(conversationId, topicId) === false`。第一条 bot 回复落地后，手交已完成，不再注入。
+3. 本轮不是已知 xacpx 命令，也不是 advertised runtime 命令。命令轮只返回裸命令文本，不会带上头部；这类轮次不消耗注入机会。
+
+这三条全部用已有的 store 读与现有命令判定完成，不需要新的状态字段。
+
+已知边界：
+
+- 首条请求在 provider 启动前失败，用户换了新消息重试，下一轮仍满足条件 1 和 2，会重新注入。重复注入优于丢失上下文。
+- 命令轮不注入，下一条普通消息仍会注入。
+- 首条 bot 回复落地的同一轮，注入已经生效；下一轮不再注入。
+
+### 4.5 UI
 
 `ForkTopicDialog` 的提交改为调用父组件传入的 `fork` 回调，不再直接依赖 `groupsStore`。GroupPane 传 `groupsStore.forkGroupTopic`，DirectBotPane 传 `directBotsStore.forkDirectTopic`。对话框的标题、错误映射、id 重铸逻辑保持不变。
 
@@ -132,11 +211,11 @@ banner 增加 `mode` 文案。`snapshot` 显示已复制消息数，`handoff` �
 
 `resolveForkPoint` 增加 `message` 分支：
 
-1. `store.getMessage(messageId)` 必须存在，`conversationId` 与 `topicId` 必须匹配源 Topic。
+1. `store.getMessage(messageId)` 必须存在，`conversationId` 与 `topicId` 必须匹配源 Topic，消息不能属于 `peerScope` Topic。
 2. `throughSeq = message.seq`。
-3. 不设置 `boundaryRunId`。消息边界就是可见 seq 边界，后续 Run 不会因为 seq 更大而进入副本。
+3. 不设置 `boundaryRunId`。seq 分配在 accept 事务内、每个 Topic 严格单调，任何在后才写入的消息都会拿到更大的 seq，因此 `seq <= throughSeq` 已经排除了后续 Run，无需额外过滤。加 `boundaryRunId` 反而会把边界消息之前的其他 Run 消息误删。
 4. Group 的 `copyTopicForkMessages` 使用该 `throughSeq`。Direct 的 handoff 渲染使用该 `throughSeq`。
-5. `forkedFrom.sourceMessageId` 写入该消息 id。
+5. `forkedFrom.sourceMessageId` 写入该消息 id，且不写 `sourceRunId`。
 
 Group 的 `latest_stable`/`run` 行为不变。Direct 的 `latest_stable`/`run` 行为不变。
 
@@ -186,10 +265,16 @@ RPC 列表：
 
 单元测试覆盖：
 
-- Direct fork 创建目标 Topic，写入 handoff，消息行不复制。
-- 第一条 prompt 包含 handoff，第二条不包含。
+- Direct fork 创建目标 Topic，写入 handoff 行，消息行不复制。
+- 第一条 prompt 包含 handoff，第一条 bot 回复之后不再包含。
 - 源 Topic 删除后目标仍能发出带 handoff 的 prompt。
-- 幂等重放、损坏目标 fail-closed、空源、未结算 Run、跨 Topic 消息。
+- 源 Topic 删除后同 `requestId` 重放仍返回已有 Topic。
+- 幂等重放、`mode` 不一致、handoff 行缺失、孤儿行、空源、未结算 Run、跨 Topic 消息。
+- 默认 Direct Topic 作为目标被拒绝。
+- 清理默认 Topic 后 `forkedFrom` 与 handoff 都不存在。
+- 超过 500 条时只渲染窗口内消息，边界消息仍被收录。
+- 渲染结果长度不超过 12,000，单条不超过 2,000。
+- fork-of-fork 带上父 handoff 文本，计数累加。
 - Group 消息边界只复制到该 seq，后续消息不进入副本。
 - Direct 消息边界只注入到该 seq。
 
@@ -198,6 +283,7 @@ RPC 列表：
 - 起一个 Direct Bot，发多轮消息，从 Topic 菜单 fork。
 - 在新 Topic 发第一条消息，检查 provider prompt 或 trace 中出现历史块，第二条不出现。
 - 删除源 Topic，再在 fork 中发消息。
+- 首条消息故意失败，再发一条，确认历史块出现。
 - Group 从某条消息 fork，确认只复制到该消息。
 - 旧 connector 不广告 capability 时入口隐藏。
 
@@ -205,18 +291,21 @@ RPC 列表：
 
 | 风险 | 处理 |
 |---|---|
-| 首条请求在 provider 启动前失败，新消息失去 handoff | 记录为已知边界，后续版本可加入“首个成功 bot 回复前保持 pending”的状态 |
-| handoff 文本进入 state.json，体量随 fork 增加 | 12k 字符上限，单条 2k；不复制消息行，净增小于 Group 快照 |
-| 注入文本被当成指令 | 独立 prompt 区块，头部写明是背景；不进入 `body` 的命令识别路径 |
-| Direct 新 Topic 已有独立 session，注入重复 | 只在第一条 human 消息注入；同一请求重试会重复注入，视为可接受 |
-| fork-of-fork 丢失最初 handoff | 只快照可见消息，文档明确；后续可把源 `forkHandoff.text` 作为前缀 |
+| 首条请求在 provider 启动前失败，用户换消息重试 | 判据是“还没有 bot 回复”，因此下一轮会重新注入。重复注入视为可接受 |
+| 命令轮丢上下文 | 命令轮不消耗注入机会，下一条普通消息仍注入 |
+| handoff 文本进入 state.json | 不进入。正文在 `topic_fork_handoffs`，随 Topic 删除 |
+| 注入文本被当成指令 | 独立 header 区块，逐条带 `Human:` / `Bot <name>:` 前缀，标题折叠并截断；历史不进 `body`/`userText` |
+| mention 偏移错位 | 历史块固定在正文之前，`userText` 仍是最终文本的后缀 |
+| 默认 Direct Topic 被当成目标 | fork 时显式拒绝；清理时清除 `forkedFrom` 与 handoff 行 |
+| fork-of-fork 丢失最初上下文 | 父 handoff 文本作为最旧一段内联，共用 12k 预算 |
+| `omittedMessages` 把边界之后的消息算进去 | 用 `topicMessageCountThrough` 只数边界内 |
 | 消息边界与 Run 边界语义混淆 | `sourceMessageId` 与 `sourceRunId` 互斥展示；消息边界不写 `sourceRunId` |
 
 ## 10. 验收
 
-- [ ] `control.direct.topics.fork` 在 Direct Bot 会话创建新 Topic，返回 `forkedFrom.mode = "handoff"`。
-- [ ] 新 Topic 第一条 prompt 包含边界内历史，第二条不包含。
-- [ ] 源 Topic 删除后 fork 仍可对话。
+- [ ] `control.direct.topics.fork` 在 Direct Bot 会话创建新 Topic，返回 `forkedFrom.mode = "handoff"` 且写入 handoff 行。
+- [ ] 新 Topic 第一条 prompt 包含边界内历史，第一条 bot 回复之后不再包含。
+- [ ] 源 Topic 删除后 fork 仍可对话，同 `requestId` 重放仍返回已有 Topic。
 - [ ] Group 与 Direct 都能以 `{ type: "message", messageId }` 为边界。
 - [ ] Group 消息边界只复制到该消息的 seq。
 - [ ] 旧 core/connector 不广告新 capability，入口隐藏。
