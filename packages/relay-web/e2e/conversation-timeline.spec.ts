@@ -330,6 +330,13 @@ function watchConsoleErrors(page: Page): string[] {
   return errors;
 }
 
+test("group keeps the speaker avatar at every viewport", async ({ page, hub }) => {
+  await openTimeline(page, hub, { olderPages: false });
+  await expect(page.locator('[data-test="timeline-open-detail-avatar"]').first()).toBeVisible();
+  await expect(page.locator('[data-test="timeline-open-detail-avatar"]').first()).toHaveCSS("width", "32px");
+  await expect(page.getByTestId("transcript-speaker").first()).toBeVisible();
+});
+
 
 test("one timeline: handoff line, round strip, Stop all, detail drawer, no console errors", async ({ page, hub }) => {
   const errors = watchConsoleErrors(page);

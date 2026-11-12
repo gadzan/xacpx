@@ -73,14 +73,14 @@ describe("trace drawer state", () => {
     const parts = [tool(0), tool(1)];
     const wrapper = mountContent(parts);
     await flushPromises();
-    await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
+    await wrapper.get('[data-trace-key="tool:step-0"] [data-test="group-trace-step-head"]').trigger("click");
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
 
     // Attempt 2 starts empty: a retry never inherits attempt 1's expansion.
     await wrapper.setProps({ attempt: 2, parts });
     await flushPromises();
     expect(wrapper.find('[data-test="tool-step-body"]').exists()).toBe(false);
-    await wrapper.findAll('[data-test="group-trace-step-head"]')[1]!.trigger("click");
+    await wrapper.get('[data-trace-key="tool:step-1"] [data-test="group-trace-step-head"]').trigger("click");
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 1");
 
     // Back to attempt 1: its own expansion is restored, attempt 2's is not shown.
@@ -95,7 +95,7 @@ describe("trace drawer state", () => {
   it("keeps an expanded step across appends inside the same scope", async () => {
     const wrapper = mountContent([tool(0), tool(1)]);
     await flushPromises();
-    await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
+    await wrapper.get('[data-trace-key="tool:step-0"] [data-test="group-trace-step-head"]').trigger("click");
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
 
     await wrapper.setProps({ parts: [tool(0), tool(1), ...Array.from({ length: 20 }, (_, i) => tool(i + 2))] });
@@ -108,7 +108,7 @@ describe("trace drawer state", () => {
   it("keeps an expanded step across a remount of the same member and attempt", async () => {
     const first = mountContent([tool(0), tool(1)]);
     await flushPromises();
-    await first.get('[data-test="group-trace-step-head"]').trigger("click");
+    await first.get('[data-trace-key="tool:step-0"] [data-test="group-trace-step-head"]').trigger("click");
     expect(first.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
     first.unmount();
 
@@ -118,32 +118,49 @@ describe("trace drawer state", () => {
     second.unmount();
   });
 
-  it("freezes the viewport and counts new events while the reader is above the tail", async () => {
+  it("freezes the viewport and counts new events while the reader is below the top", async () => {
     const wrapper = mountContent([tool(0)]);
     await flushPromises();
+    offset = 400;
     scroller.dispatchEvent(new Event("scroll"));
 
     await wrapper.setProps({ parts: [tool(0), tool(1), tool(2)] });
     await flushPromises();
-    expect(offset).toBe(0);
+    expect(offset).toBe(400);
     expect(wrapper.get('[data-test="group-trace-new-events"]').text()).toContain("2 new events");
 
     await wrapper.get('[data-test="group-trace-new-events"]').trigger("click");
-    expect(offset).toBe(scrollHeight);
+    expect(offset).toBe(0);
     expect(wrapper.find('[data-test="group-trace-new-events"]').exists()).toBe(false);
     wrapper.unmount();
   });
 
-  it("follows appended events again once the reader is back at the bottom", async () => {
+  it("follows appended events again once the reader is back at the top", async () => {
     const wrapper = mountContent([tool(0)]);
     await flushPromises();
-    offset = scrollHeight - clientHeight;
+    offset = 0;
     scroller.dispatchEvent(new Event("scroll"));
 
     await wrapper.setProps({ parts: [tool(0), tool(1)] });
     await flushPromises();
-    expect(offset).toBe(scrollHeight);
+    expect(offset).toBe(0);
     expect(wrapper.find('[data-test="group-trace-new-events"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("counts new events only while the reader is scrolled down, not at the top", async () => {
+    const wrapper = mountContent([tool(0)]);
+    await flushPromises();
+    scroller.dispatchEvent(new Event("scroll"));
+    await wrapper.setProps({ parts: [tool(0), tool(1)] });
+    await flushPromises();
+    expect(wrapper.find('[data-test="group-trace-new-events"]').exists()).toBe(false);
+
+    offset = 600;
+    scroller.dispatchEvent(new Event("scroll"));
+    await wrapper.setProps({ parts: [tool(0), tool(1), tool(2), tool(3)] });
+    await flushPromises();
+    expect(wrapper.get('[data-test="group-trace-new-events"]').text()).toContain("2 new events");
     wrapper.unmount();
   });
 

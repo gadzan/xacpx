@@ -19,11 +19,12 @@ import { resolveSubagentStatus } from "../lib/subagent-status";
 import { tallyTrace, type TurnPresentationItem } from "../lib/turn-presentation";
 
 /**
- * The full, chronological process. Every presentation node is rendered — there
+ * The full process, newest first. Every presentation node is rendered — there
  * is no fold window, because a moving window unloads the row the reader just
- * opened. Expansion is controlled by the drawer layer (`expandedKeys` +
- * `toggle`), so appending events, re-rendering and the drawer's own scroll
- * handling never reset it.
+ * opened. The visual list is a reversed copy of the chronological nodes (never
+ * a mutated prop). Expansion is controlled by the drawer layer
+ * (`expandedKeys` + `toggle`), so appending events, re-rendering and the
+ * drawer's own scroll handling never reset it.
  *
  * Rows opt into `content-visibility: auto` (skipped layout/paint offscreen)
  * unless the reader expanded them, they are in the live stack, or they failed.
@@ -52,7 +53,7 @@ interface RenderedNode {
 }
 
 const rendered = computed<RenderedNode[]>(() =>
-  props.nodes.map((node) => ({
+  props.nodes.slice().reverse().map((node) => ({
     node,
     isStep: node.type === "tool" || node.type === "subagent",
     key: node.key,
@@ -99,6 +100,16 @@ function alwaysRendered(entry: RenderedNode): boolean {
 
 <template>
   <div data-test="group-trace-timeline" class="min-w-0">
+    <p v-if="tally.byVerb.length || tally.failed > 0" data-test="group-trace-tally"
+       class="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-fg-muted">
+      <template v-for="(entry, index) in tally.byVerb" :key="entry.verb">
+        <span v-if="index > 0" aria-hidden="true" class="opacity-50">·</span>
+        <span>{{ t(`turnTrace.verbs.${entry.verb}`, entry.count) }}</span>
+      </template>
+      <span v-if="tally.failed > 0" class="inline-flex items-center rounded-full bg-danger/10 px-1.5 py-0.5 font-medium text-danger">
+        {{ t("turnTrace.failedSteps", tally.failed) }}
+      </span>
+    </p>
     <ol class="mt-1 space-y-0">
       <li
         v-for="(entry, index) in rendered"
@@ -217,17 +228,6 @@ function alwaysRendered(entry: RenderedNode): boolean {
         </div>
       </li>
     </ol>
-
-    <p v-if="tally.byVerb.length || tally.failed > 0" data-test="group-trace-tally"
-       class="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-fg-muted">
-      <template v-for="(entry, index) in tally.byVerb" :key="entry.verb">
-        <span v-if="index > 0" aria-hidden="true" class="opacity-50">·</span>
-        <span>{{ t(`turnTrace.verbs.${entry.verb}`, entry.count) }}</span>
-      </template>
-      <span v-if="tally.failed > 0" class="inline-flex items-center rounded-full bg-danger/10 px-1.5 py-0.5 font-medium text-danger">
-        {{ t("turnTrace.failedSteps", tally.failed) }}
-      </span>
-    </p>
   </div>
 </template>
 

@@ -1263,16 +1263,13 @@ export default {
         failed: "执行失败",
         cancelled: "已取消",
       },
-      newEvents: "{count} 条新事件 ↓",
+      newEvents: "{count} 条新事件 ↑",
 
       stopAllMembers: "停止作用于整个运行：所有参与成员都会被取消。",
       attemptLabel: "尝试",
       duration: "耗时 {duration}",
       expectedOutput: "期望输出：",
-      partialPage: "存在更早的过程数据。请加载更多以查看。",
-      earlierWindow: "加载窗口边界之外仍存在更早的过程事件。",
-      loadEarlier: "加载更早事件",
-      loadMore: "加载更多事件",
+      earlierWindow: "过程过长，仅保留最近 1000 条事件。",
       retryTrace: "重新加载",
     },
     worktree: {

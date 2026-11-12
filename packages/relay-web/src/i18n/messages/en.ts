@@ -1267,16 +1267,13 @@ export default {
         failed: "Run failed",
         cancelled: "Run cancelled",
       },
-      newEvents: "{count} new event ↓ | {count} new events ↓",
+      newEvents: "{count} new event ↑ | {count} new events ↑",
 
       stopAllMembers: "Stop applies to the whole run: all participating members are cancelled.",
       attemptLabel: "Attempt",
       duration: "Duration {duration}",
       expectedOutput: "Expected output:",
-      partialPage: "Older process pages exist. Load more to reveal them.",
-      earlierWindow: "Earlier process events exist beyond the loaded window.",
-      loadEarlier: "Load earlier events",
-      loadMore: "Load more events",
+      earlierWindow: "This process is long; only the newest 1000 events are kept.",
       retryTrace: "Retry loading",
     },
     worktree: {

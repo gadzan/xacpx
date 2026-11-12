@@ -736,6 +736,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     events: ConversationRunTraceEventDto[];
     nextSeq?: number;
     hasMore: boolean;
+    /** True once the 1000-event window evicted older rows. */
+    hasEarlier?: boolean;
     recordingState: ConversationRunTraceDto["recordingState"];
     /** Every attempt the core recorded for this member turn: the drawer's
      *  attempt selector and the follow cursor both read it. */
@@ -744,6 +746,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     error: string | null;
   }>>({});
   const directTraceRequests: Record<string, Promise<void>> = {};
+  /** Durable window matching the Group path: the drawer loads the whole trace
+   *  on open, so a huge history converges here instead of paging forever. */
+  const MAX_DIRECT_TRACE_EVENTS = 1000;
   let directTraceGeneration = 0;
   function directTraceScopeKey(
     iId: string | null = instanceId.value,
@@ -855,18 +860,32 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           for (const event of prevEvents) bySeq.set(event.seq, event);
           for (const event of decoded.events) bySeq.set(event.seq, event);
           const events = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+          // Same 1000-event durable window as the Group path: the drawer loads
+          // the whole trace on open, so an unbounded history cannot grow the
+          // cache without limit. Oldest rows fall off first.
+          const hasEarlier = previous.hasEarlier === true || events.length > MAX_DIRECT_TRACE_EVENTS;
+          if (events.length > MAX_DIRECT_TRACE_EVENTS) events.splice(0, events.length - MAX_DIRECT_TRACE_EVENTS);
           directTracePages.value = {
             ...directTracePages.value,
             [key]: {
               events,
               nextSeq: decoded.nextSeq ?? previous.nextSeq,
               hasMore: decoded.hasMore,
+              hasEarlier,
               recordingState: decoded.recordingState,
               ...(decoded.attempts ? { attempts: decoded.attempts } : {}),
               loading: false,
               error: null,
             },
           };
+          // Opening the drawer loads the whole durable trace: chain the next
+          // page while the server still has more and the cursor advances. The
+          // duplicate in-flight guard above turns a repeated cursor into a
+          // no-op, so a non-advancing nextSeq converges instead of looping. A
+          // huge trace keeps paging so the window retains the newest rows.
+          if (decoded.hasMore && decoded.nextSeq !== undefined && decoded.nextSeq > cursor) {
+            ensureDirectTracePage(runId, memberTurnId, attempt, decoded.nextSeq);
+          }
         } catch (err) {
           const current = directTracePages.value[key];
           if (!current) return;

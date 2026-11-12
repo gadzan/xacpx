@@ -232,28 +232,31 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   const plainRow = detailEl.locator('[data-trace-key="tool:tool-20"]');
   expect(await plainRow.evaluate((el) => getComputedStyle(el).contentVisibility)).toBe("auto");
 
-  await detailEl.getByTestId("group-trace-step-head").first().click();
-  await expect(detailEl.getByTestId("tool-step-body").first()).toContainText("output 1");
+  // Newest first: the oldest durable step is addressed by key, not by position.
+  await detailEl.locator('[data-trace-key="tool:tool-01"] [data-test="group-trace-step-head"]').click();
+  await expect(detailEl.getByTestId("tool-step-body")).toContainText("output 1");
   expect(await detailEl.locator('[data-trace-key="tool:tool-01"]').evaluate((el) => getComputedStyle(el).contentVisibility))
     .toBe("visible");
   fixture.appendEvents(37, 56);
   fixture.triggerRefetch();
   await expect(detailEl.getByTestId("group-trace-step")).toHaveCount(56);
-  await expect(detailEl.getByTestId("tool-step-body").first()).toContainText("output 1");
+  await expect(detailEl.getByTestId("tool-step-body")).toContainText("output 1");
   await expect(detailEl.locator('[data-trace-key="tool:tool-01"]')).toHaveAttribute("data-state", "success");
   await expect(stackRows.first()).toContainText("Tool 56");
   await screenshot(page, info, mobile ? "mobile-expanded-after-append" : "desktop-expanded-after-append");
 
   const newEvents = page.getByTestId("group-trace-new-events");
+  // Following the top: the newest row is above the fold, so an append stays at
+  // scrollTop 0 and nothing queues as unread.
   await scroll.evaluate((el) => {
-    el.scrollTop = el.scrollHeight;
+    el.scrollTop = 0;
     el.dispatchEvent(new Event("scroll"));
   });
   await expect(newEvents).toHaveCount(0);
   await scroll.evaluate((el) => {
-    // Clear the tail by more than a viewport, otherwise the bottom is still
-    // on screen and follow mode is (correctly) still active.
-    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - 800);
+    // Leave the top by more than the follow threshold: a reader down the list
+    // must keep their rows while new events prepend above them.
+    el.scrollTop = 900;
     el.dispatchEvent(new Event("scroll"));
   });
   // The acceptance contract is "the reader's viewport does not move", not "the
@@ -299,19 +302,14 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   await screenshot(page, info, mobile ? "mobile-unread-chip" : "desktop-unread-chip");
 
   await newEvents.click();
-  await expect.poll(async () => {
-    const { top, height, scrollHeight } = await scroll.evaluate((el) => ({
-      top: el.scrollTop, height: el.clientHeight, scrollHeight: el.scrollHeight,
-    }));
-    return Math.round(scrollHeight - top - height);
-  }).toBeLessThanOrEqual(1);
+  await expect.poll(async () => Math.round(await scroll.evaluate((el) => el.scrollTop))).toBeLessThanOrEqual(1);
   await expect(newEvents).toHaveCount(0);
 
   if (mobile) {
     await page.keyboard.press("Escape");
     await expect(detail(page)).toHaveCount(0);
     await openLiveDrawer(page);
-    await expect(detail(page).getByTestId("tool-step-body").first()).toContainText("output 1");
+    await expect(detail(page).getByTestId("tool-step-body")).toContainText("output 1");
   }
 
   fixture.appendEvents(77, 77);
@@ -319,7 +317,7 @@ async function expectLiveFeed(page: Page, hub: MockHub, info: TestInfo, mobile: 
   await expect(page.getByTestId("trace-live-summary")).toContainText("Run complete");
   await expect(page.getByTestId("trace-live-item")).toHaveCount(0);
   await expect(detail(page).getByTestId("group-trace-step")).toHaveCount(77);
-  await expect(detail(page).getByTestId("tool-step-body").first()).toContainText("output 1");
+  await expect(detail(page).getByTestId("tool-step-body")).toContainText("output 1");
   await screenshot(page, info, mobile ? "mobile-terminal-summary" : "desktop-terminal-summary");
 }
 

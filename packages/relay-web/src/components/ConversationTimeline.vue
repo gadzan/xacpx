@@ -46,6 +46,8 @@ const props = defineProps<{
   /** Present when a message row may cut a fork boundary at its own seq. Absent
    *  hides the per-row control (old core, peer-scope Topic, other Topic). */
   forkMessage?: (messageId: string) => void;
+  /** Group rooms keep each speaker's avatar and name at every breakpoint. */
+  keepMobileIdentity?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -212,6 +214,7 @@ defineExpose({ scrollToBottom });
           :row="row"
           :room="room"
           :is-run-queued="isRunQueued"
+          :keep-mobile-identity="keepMobileIdentity"
           :fork-message="forkMessage"
           @open-detail="(payload) => emit('openDetail', payload)"
         />

@@ -34,6 +34,10 @@ const props = defineProps<{
   /** Present when this row's message may cut a fork boundary. Absent hides the
    *  control: an older core, a peer-scope Topic, or another Topic's row. */
   forkMessage?: (messageId: string) => void;
+  /** Group rooms keep each speaker's avatar and name at every breakpoint:
+   *  many Bots speak there, so the reader cannot infer the speaker from the
+   *  pane. Direct rooms can drop them below lg. */
+  keepMobileIdentity?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -176,7 +180,7 @@ const noticeToneClass = computed(() => {
     v-else-if="row.kind === 'message' && message?.role === 'bot'"
     :driver="author?.driver"
     :row-id="message.id"
-    hide-identity-on-mobile
+    :hide-identity-on-mobile="!keepMobileIdentity"
     :speaker="author?.name"
     :speaker-role="author?.role"
     speaker-clickable
@@ -257,7 +261,7 @@ const noticeToneClass = computed(() => {
     :data-state="activity.turn.state"
     :driver="speakerOf(activity.turn.botId)?.driver"
     :row-id="activity.turn.id"
-    hide-identity-on-mobile
+    :hide-identity-on-mobile="!keepMobileIdentity"
     :speaker="activity.author"
     speaker-clickable
     @speaker-click="emit('openDetail', messageDetail)"

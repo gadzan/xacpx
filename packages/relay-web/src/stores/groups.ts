@@ -995,6 +995,15 @@ export const useGroupsStore = defineStore("groups", () => {
             throw new Error("invalid_trace_response");
           }
           adoptTracePage(scope, memberTurnId, attempt, decoded);
+          // Opening the drawer loads the whole durable trace: chain the next
+          // page while the server still has more and the cursor advances. The
+          // duplicate in-flight guard above turns a repeated cursor into a
+          // no-op, so a non-advancing nextSeq converges instead of looping. A
+          // huge trace keeps paging so the 1000-event window retains the
+          // newest rows, not the oldest; `hasEarlier` reports the eviction.
+          if (decoded.hasMore && decoded.nextSeq !== undefined && decoded.nextSeq > cursor) {
+            ensureTracePage(memberTurnId, attempt, decoded.nextSeq);
+          }
         } catch (err) {
           failTracePage(key, err);
         }

@@ -32,7 +32,6 @@ const props = defineProps<{
   plan?: PlanEntryDto[];
   traceLoading?: boolean;
   traceError?: string | null;
-  traceHasMore?: boolean;
   traceHasEarlier?: boolean;
   traceStreaming?: boolean;
   scrollMemory?: Map<string, number>;
@@ -52,8 +51,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   attempt: [attempt: number];
-  loadMore: [];
-  loadEarlier: [];
   retryTrace: [];
   selectMember: [memberTurnId: string];
   stopMember: [memberTurnId: string];
@@ -198,9 +195,9 @@ watch(rowEl, observeAnchor, { flush: "post" });
           :attempt="attempt" :attempts="attempts" :parts="parts"
           :recording-state="recordingState" :plan="plan"
           :trace-loading="traceLoading" :trace-error="traceError"
-          :trace-has-more="traceHasMore" :trace-has-earlier="traceHasEarlier" :trace-streaming="traceStreaming"
+          :trace-has-earlier="traceHasEarlier" :trace-streaming="traceStreaming"
           @select-member="emit('selectMember', $event)" @stop-member="emit('stopMember', $event)"
-          @load-more="emit('loadMore')" @load-earlier="emit('loadEarlier')" @retry-trace="emit('retryTrace')"
+          @retry-trace="emit('retryTrace')"
           @interaction-answer="(requestId, key, value) => emit('interactionAnswer', requestId, key, value)"
           @interaction-submit="emit('interactionSubmit', $event)"
           @interaction-decline="emit('interactionDecline', $event)"
