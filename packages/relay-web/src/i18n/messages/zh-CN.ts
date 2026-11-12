@@ -1269,8 +1269,7 @@ export default {
       attemptLabel: "尝试",
       duration: "耗时 {duration}",
       expectedOutput: "期望输出：",
-      earlierWindow: "加载窗口边界之外仍存在更早的过程事件。",
-      loadEarlier: "加载更早事件",
+      earlierWindow: "过程过长，仅保留最近 1000 条事件。",
       retryTrace: "重新加载",
     },
     worktree: {

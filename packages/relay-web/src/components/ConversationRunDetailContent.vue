@@ -52,7 +52,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   selectMember: [memberTurnId: string];
   stopMember: [memberTurnId: string];
-  loadEarlier: [];
   retryTrace: [];
   interactionAnswer: [requestId: string, key: string, value: InteractionValueDto];
   interactionSubmit: [requestId: string];
@@ -284,7 +283,6 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
         :trace-error="traceError"
         :trace-has-earlier="traceHasEarlier"
         :trace-streaming="traceStreaming"
-        @load-earlier="emit('loadEarlier')"
         @retry-trace="emit('retryTrace')"
       />
     </div>

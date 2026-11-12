@@ -79,8 +79,8 @@ export function traceLiveBurstActive(
  * How many genuinely NEW events the tail gained between two observations.
  * Identities come from `traceNodeIdentity`, so a streaming markdown paragraph
  * growing longer (same `markdown:<start>`) or a same-key status update counts
- * as zero. Only a tail append counts; a head prepend (load-earlier page) and a
- * wholesale replacement (attempt switch) both reset the baseline with zero.
+ * as zero. Only a chronological tail append counts; a wholesale replacement
+ * (attempt switch) resets the baseline with zero.
  */
 export function appendedTraceNodeCount(
   previous: readonly string[],

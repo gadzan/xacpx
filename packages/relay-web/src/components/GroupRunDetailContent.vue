@@ -29,7 +29,7 @@ const props = defineProps<{
   plan?: PlanEntryDto[];
   traceLoading?: boolean;
   traceError?: string | null;
-  /** Terminal trace event failure (tool/terminal failure surface). */
+  /** True once the 1000-event window dropped older rows. */
   traceHasEarlier?: boolean;
   traceStreaming?: boolean;
   /** Exact-current active run ownership: Stop is shown only when all agree. */
@@ -38,7 +38,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  loadEarlier: [];
   retryTrace: [];
 }>();
 
@@ -188,10 +187,6 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
       <p v-if="traceLoading">{{ $t("group.detail.loading") }}</p>
       <p v-if="traceError" role="alert" class="break-words text-danger">{{ traceError }}</p>
       <div class="flex flex-wrap gap-2">
-        <button v-if="traceHasEarlier" type="button" data-test="group-trace-load-earlier"
-                class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('loadEarlier')">
-          {{ $t("group.detail.loadEarlier") }}
-        </button>
         <button v-if="traceError" type="button" data-test="group-trace-retry"
                 class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('retryTrace')">
           {{ $t("group.detail.retryTrace") }}

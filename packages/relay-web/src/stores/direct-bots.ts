@@ -736,6 +736,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     events: ConversationRunTraceEventDto[];
     nextSeq?: number;
     hasMore: boolean;
+    /** True once the 1000-event window evicted older rows. */
+    hasEarlier?: boolean;
     recordingState: ConversationRunTraceDto["recordingState"];
     /** Every attempt the core recorded for this member turn: the drawer's
      *  attempt selector and the follow cursor both read it. */
@@ -861,6 +863,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           // Same 1000-event durable window as the Group path: the drawer loads
           // the whole trace on open, so an unbounded history cannot grow the
           // cache without limit. Oldest rows fall off first.
+          const hasEarlier = previous.hasEarlier === true || events.length > MAX_DIRECT_TRACE_EVENTS;
           if (events.length > MAX_DIRECT_TRACE_EVENTS) events.splice(0, events.length - MAX_DIRECT_TRACE_EVENTS);
           directTracePages.value = {
             ...directTracePages.value,
@@ -868,6 +871,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
               events,
               nextSeq: decoded.nextSeq ?? previous.nextSeq,
               hasMore: decoded.hasMore,
+              hasEarlier,
               recordingState: decoded.recordingState,
               ...(decoded.attempts ? { attempts: decoded.attempts } : {}),
               loading: false,
@@ -877,10 +881,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           // Opening the drawer loads the whole durable trace: chain the next
           // page while the server still has more and the cursor advances. The
           // duplicate in-flight guard above turns a repeated cursor into a
-          // no-op, so a non-advancing nextSeq converges instead of looping; the
-          // event cap is the other terminal.
-          if (decoded.hasMore && decoded.nextSeq !== undefined && decoded.nextSeq > cursor
-            && events.length < MAX_DIRECT_TRACE_EVENTS) {
+          // no-op, so a non-advancing nextSeq converges instead of looping. A
+          // huge trace keeps paging so the window retains the newest rows.
+          if (decoded.hasMore && decoded.nextSeq !== undefined && decoded.nextSeq > cursor) {
             ensureDirectTracePage(runId, memberTurnId, attempt, decoded.nextSeq);
           }
         } catch (err) {

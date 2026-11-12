@@ -51,7 +51,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   attempt: [attempt: number];
-  loadEarlier: [];
   retryTrace: [];
   selectMember: [memberTurnId: string];
   stopMember: [memberTurnId: string];
@@ -198,7 +197,7 @@ watch(rowEl, observeAnchor, { flush: "post" });
           :trace-loading="traceLoading" :trace-error="traceError"
           :trace-has-earlier="traceHasEarlier" :trace-streaming="traceStreaming"
           @select-member="emit('selectMember', $event)" @stop-member="emit('stopMember', $event)"
-          @load-earlier="emit('loadEarlier')" @retry-trace="emit('retryTrace')"
+          @retry-trace="emit('retryTrace')"
           @interaction-answer="(requestId, key, value) => emit('interactionAnswer', requestId, key, value)"
           @interaction-submit="emit('interactionSubmit', $event)"
           @interaction-decline="emit('interactionDecline', $event)"

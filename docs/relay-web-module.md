@@ -1115,9 +1115,9 @@ Escape 关闭并回焦气泡；面板打开时先关闭它再操作背景。桌�
 成员的范围说明，触屏无需悬停。其他 MobileSheet 未声明初始焦点时仍采用原默认规则。
 
 `GroupRunDetailContent.vue` 的过程区统一使用 `GroupTraceTimeline.vue`，复用唯一
-`deriveTurnPresentation` 保持 Markdown、思考、工具与子代理顺序。相邻工具以状态圆圈与虚线
-连接，叙述打断连线；超过 6 个步骤默认保留最近 3 个，可展开已加载的前序内容。
-这与服务端分页独立：记录完整性、错误、加载更多与加载更早事件仍保留。
+`deriveTurnPresentation` 保持 Markdown、思考、工具与子代理身份。全量列表最新在上、最旧在底；
+相邻工具以状态圆圈与虚线连接，叙述打断连线。打开抽屉会自动读完整个可保留窗口（最多
+1000 条），不再有手动的“加载更多 / 加载更早”；超过上限时只提示保留最近 1000 条。
 工具展开体由 `ToolStepDetail.vue` 与消息流的 `ToolStepCard.vue` 共享。
 子代理时间线圆圈与展开卡片共用 `resolveSubagentStatus`：任一子步骤失败则失败，仍有子步骤
 运行则继续显示运行中，避免父级 success 遮盖子步骤的实际状态。

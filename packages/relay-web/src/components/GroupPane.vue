@@ -928,7 +928,6 @@ const worktreeRunId = computed(() => {
       @interaction-decline="handleDetailDecline"
       @interaction-cancel="handleDetailCancel"
       @interaction-dismiss="handleDetailDismiss"
-      @load-earlier="detailSelectedMember && detailEffectiveAttempt !== undefined && groupsStore.ensureTracePage(detailSelectedMember.id, detailEffectiveAttempt, 0)"
       @retry-trace="detailSelectedMember && detailEffectiveAttempt !== undefined && groupsStore.ensureTracePage(detailSelectedMember.id, detailEffectiveAttempt)"
     />
   </div>

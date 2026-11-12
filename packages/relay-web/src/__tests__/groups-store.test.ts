@@ -3592,6 +3592,23 @@ describe("useGroupsStore durable trace cache", () => {
     expect(page?.hasEarlier).toBe(true);
   });
 
+  it("keeps paging past the cap so the window holds the newest rows", async () => {
+    const store = await ready();
+    const events = Array.from({ length: 1000 }, (_, index) => ({ seq: index + 1, kind: "reasoning" as const,
+      payload: { text: `r${index + 1}` }, createdAt: `t${index + 1}` }));
+    store.tracePages[key] = { events, nextSeq: 1000, hasMore: true, recordingState: "recording", loading: false, error: null };
+    mockRpc.mockResolvedValueOnce(tracePage([1001], true));
+    mockRpc.mockResolvedValueOnce(tracePage([1002], false));
+    store.ensureTracePage(member.id, 2);
+    await flushPromises();
+    expect(traceCursors()).toEqual([1000, 1001]);
+    const page = store.tracePages[key];
+    expect(page?.events).toHaveLength(1000);
+    expect(page?.events[0]?.seq).toBe(3);
+    expect(page?.events.at(-1)?.seq).toBe(1002);
+    expect(page).toMatchObject({ hasMore: false, hasEarlier: true });
+  });
+
   it("reconnect refreshes every requested Run detail once", async () => {
     const store = await ready();
     mockRpc.mockResolvedValue({ runs: [{ ...run, memberTurns: [member] }] });

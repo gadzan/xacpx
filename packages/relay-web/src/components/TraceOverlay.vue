@@ -54,7 +54,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   attempt: [attempt: number];
-  loadEarlier: [];
   retryTrace: [];
   selectMember: [memberTurnId: string];
   stopMember: [memberTurnId: string];
@@ -124,7 +123,7 @@ function closeSheet(): void {
         :trace-loading="traceLoading" :trace-error="traceError"
         :trace-has-earlier="traceHasEarlier" :trace-streaming="traceStreaming"
         @select-member="emit('selectMember', $event)" @stop-member="emit('stopMember', $event)"
-        @load-earlier="emit('loadEarlier')" @retry-trace="emit('retryTrace')"
+        @retry-trace="emit('retryTrace')"
         @interaction-answer="(requestId, key, value) => emit('interactionAnswer', requestId, key, value)"
         @interaction-submit="emit('interactionSubmit', $event)"
         @interaction-decline="emit('interactionDecline', $event)"
@@ -149,7 +148,7 @@ function closeSheet(): void {
       :capability="capability" :cancel-pending="cancelPending"
       :fork-available="forkAvailable"
       @close="emit('close')" @attempt="emit('attempt', $event)" @fork="emit('fork')"
-      @load-earlier="emit('loadEarlier')" @retry-trace="emit('retryTrace')"
+      @retry-trace="emit('retryTrace')"
       @select-member="emit('selectMember', $event)" @stop-member="emit('stopMember', $event)"
       @interaction-answer="(requestId, key, value) => emit('interactionAnswer', requestId, key, value)"
       @interaction-submit="emit('interactionSubmit', $event)"

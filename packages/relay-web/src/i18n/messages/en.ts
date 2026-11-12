@@ -1273,8 +1273,7 @@ export default {
       attemptLabel: "Attempt",
       duration: "Duration {duration}",
       expectedOutput: "Expected output:",
-      earlierWindow: "Earlier process events exist beyond the loaded window.",
-      loadEarlier: "Load earlier events",
+      earlierWindow: "This process is long; only the newest 1000 events are kept.",
       retryTrace: "Retry loading",
     },
     worktree: {
