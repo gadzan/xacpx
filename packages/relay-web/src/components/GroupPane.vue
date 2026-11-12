@@ -916,7 +916,6 @@ const worktreeRunId = computed(() => {
       :plan="detailTracePage?.plan"
       :trace-loading="detailTracePage?.loading"
       :trace-error="detailTracePage?.error"
-      :trace-has-more="detailTracePage?.hasMore"
       :trace-has-earlier="detailTracePage?.hasEarlier"
       :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && !!groupsStore.liveTurnForMember(detailSelectedMember.id)"
       @close="closeTimelineDetail"
@@ -929,7 +928,6 @@ const worktreeRunId = computed(() => {
       @interaction-decline="handleDetailDecline"
       @interaction-cancel="handleDetailCancel"
       @interaction-dismiss="handleDetailDismiss"
-      @load-more="detailSelectedMember && detailEffectiveAttempt !== undefined && groupsStore.ensureTracePage(detailSelectedMember.id, detailEffectiveAttempt)"
       @load-earlier="detailSelectedMember && detailEffectiveAttempt !== undefined && groupsStore.ensureTracePage(detailSelectedMember.id, detailEffectiveAttempt, 0)"
       @retry-trace="detailSelectedMember && detailEffectiveAttempt !== undefined && groupsStore.ensureTracePage(detailSelectedMember.id, detailEffectiveAttempt)"
     />

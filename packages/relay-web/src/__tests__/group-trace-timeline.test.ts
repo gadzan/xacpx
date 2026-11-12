@@ -50,7 +50,7 @@ describe("group process timeline", () => {
     resetTraceDrawerState();
   });
 
-  it("renders every step in order with no fold window or fold control", async () => {
+  it("renders every step newest first with no fold window or fold control", async () => {
     const parts: TurnPartDto[] = [
       { type: "text", text: "Before the first tool" },
       ...Array.from({ length: 7 }, (_, i) => tool(i)),
@@ -58,13 +58,22 @@ describe("group process timeline", () => {
     ];
     const wrapper = mount(Harness, { props: { parts, streaming: true } });
     expect(wrapper.findAll('[data-test="group-trace-step"]')).toHaveLength(7);
+    const keys = wrapper.findAll("[data-trace-key]").map((row) => row.attributes("data-trace-key"));
+    expect(keys).toHaveLength(9);
+    expect(keys[0]).toMatch(/^markdown:/);
+    expect(keys.slice(1, 8)).toEqual([
+      "tool:step-6", "tool:step-5", "tool:step-4", "tool:step-3", "tool:step-2", "tool:step-1", "tool:step-0",
+    ]);
+    expect(keys[8]).toMatch(/^markdown:/);
+    expect(keys[8]).not.toBe(keys[0]);
     const text = wrapper.text();
     expect(text).toContain("Read file 0");
     expect(text).toContain("Read file 6");
     expect(text).toContain("Before the first tool");
     expect(text).toContain("Final public report");
-    expect(text.indexOf("Before the first tool")).toBeLessThan(text.indexOf("Read file 0"));
-    expect(text.indexOf("Read file 6")).toBeLessThan(text.indexOf("Final public report"));
+    expect(text.indexOf("Final public report")).toBeLessThan(text.indexOf("Read file 6"));
+    expect(text.indexOf("Read file 6")).toBeLessThan(text.indexOf("Read file 0"));
+    expect(text.indexOf("Read file 0")).toBeLessThan(text.indexOf("Before the first tool"));
     expect(wrapper.find('[data-test="group-trace-fold"]').exists()).toBe(false);
     wrapper.unmount();
   });
@@ -73,14 +82,15 @@ describe("group process timeline", () => {
     const parts: TurnPartDto[] = [tool(0), tool(1)];
     const wrapper = mount(Harness, { props: { parts, streaming: true } });
     expect(wrapper.findAll('[data-test="group-trace-step"]')).toHaveLength(2);
-    await wrapper.get('[data-test="group-trace-step-head"]').trigger("click");
+    const head = () => wrapper.get('[data-trace-key="tool:step-0"] [data-test="group-trace-step-head"]');
+    await head().trigger("click");
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
 
     const appended: TurnPartDto[] = [...parts, ...Array.from({ length: 20 }, (_, i) => tool(i + 2)), { type: "text", text: "Final public report" }];
     await wrapper.setProps({ parts: appended });
     expect(wrapper.findAll('[data-test="group-trace-step"]')).toHaveLength(22);
     expect(wrapper.get('[data-test="tool-step-body"]').text()).toContain("Recorded output 0");
-    expect(wrapper.get('[data-test="group-trace-step-head"]').attributes("aria-expanded")).toBe("true");
+    expect(head().attributes("aria-expanded")).toBe("true");
     wrapper.unmount();
   });
 

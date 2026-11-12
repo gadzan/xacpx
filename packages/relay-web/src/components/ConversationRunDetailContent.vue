@@ -45,7 +45,6 @@ const props = defineProps<{
   plan?: PlanEntryDto[];
   traceLoading?: boolean;
   traceError?: string | null;
-  traceHasMore?: boolean;
   traceHasEarlier?: boolean;
   traceStreaming?: boolean;
 }>();
@@ -53,7 +52,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   selectMember: [memberTurnId: string];
   stopMember: [memberTurnId: string];
-  loadMore: [];
   loadEarlier: [];
   retryTrace: [];
   interactionAnswer: [requestId: string, key: string, value: InteractionValueDto];
@@ -284,10 +282,8 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
         :plan="plan"
         :trace-loading="traceLoading"
         :trace-error="traceError"
-        :trace-has-more="traceHasMore"
         :trace-has-earlier="traceHasEarlier"
         :trace-streaming="traceStreaming"
-        @load-more="emit('loadMore')"
         @load-earlier="emit('loadEarlier')"
         @retry-trace="emit('retryTrace')"
       />

@@ -12,7 +12,8 @@ import { test, expect, loginAndShowInstances } from "./fixtures";
 /**
  * The Run-wide drawer's containment and per-member trace, end to end. Every
  * assertion runs on both Playwright projects, so the desktop overlay and the
- * mobile sheet are held to the same geometry and the same paged trace.
+ * mobile sheet are held to the same geometry and the same whole trace: opening
+ * the drawer loads every durable page, newest first.
  */
 
 const createdAt = "2026-11-08T00:00:00.000Z";
@@ -240,24 +241,29 @@ test("Escape closes the drawer and returns focus to the timeline trigger", async
   await expect(trigger).toBeFocused();
 });
 
-test("each member's trace pages on its own, and switching members swaps it", async ({ page, hub }) => {
+test("opening the drawer loads the whole trace, newest first; switching members swaps it", async ({ page, hub }) => {
   await openTimeline(page, hub);
   await page.getByTestId("timeline-open-detail").first().click();
   const surface = drawer(page);
   await expect(surface.getByTestId("run-selected-member")).toHaveAttribute("data-member-turn-id", "turn_lead");
-  await expect(surface.getByTestId("group-trace-step")).toHaveCount(100);
-  await expect(surface).toContainText("Lead step 1");
-  await expect(surface).not.toContainText("Reviewer step 1");
 
-  // The second page appends to the same member trace, never to a sibling's.
-  await surface.getByTestId("group-trace-load-more").click();
+  // 130 durable events, no load-more click: opening chains every page.
   await expect(surface.getByTestId("group-trace-step")).toHaveCount(130);
+  await expect(surface.getByTestId("group-trace-load-more")).toHaveCount(0);
   await expect(surface).toContainText("Lead step 130");
   await expect(surface).not.toContainText("Reviewer step 1");
+
+  // Newest at the top, oldest at the bottom.
+  const leadRows = surface.locator("[data-trace-key]");
+  await expect(leadRows.first()).toHaveAttribute("data-trace-key", "tool:tool_turn_lead_130");
+  await expect(leadRows.last()).toHaveAttribute("data-trace-key", "tool:tool_turn_lead_1");
 
   await surface.getByTestId("run-member-row").filter({ hasText: "Bob" }).click();
   await expect(surface.getByTestId("run-selected-member")).toHaveAttribute("data-member-turn-id", "turn_reviewer");
   await expect(surface.getByTestId("group-trace-step")).toHaveCount(3);
   await expect(surface).toContainText("Reviewer step 3");
   await expect(surface).not.toContainText("Lead step 1");
+  const reviewerRows = surface.locator("[data-trace-key]");
+  await expect(reviewerRows.first()).toHaveAttribute("data-trace-key", "tool:tool_turn_reviewer_3");
+  await expect(reviewerRows.last()).toHaveAttribute("data-trace-key", "tool:tool_turn_reviewer_1");
 });

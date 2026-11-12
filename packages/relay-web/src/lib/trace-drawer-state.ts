@@ -2,8 +2,8 @@ import { nextTick, onBeforeUnmount, onMounted, reactive, watch } from "vue";
 
 /**
  * Drawer-layer state for the execution-process surface: which nodes the reader
- * expanded, whether the list is following the tail, and how many events arrived
- * while they were reading above the fold.
+ * expanded, whether the list is following the newest row at the top, and how
+ * many events arrived while they were reading below it.
  *
  * It lives outside `GroupTraceTimeline` on purpose. The timeline is re-rendered
  * on every streamed part, and the desktop drawer / mobile sheet branches remount
@@ -37,7 +37,7 @@ const store = reactive<TraceDrawerStore>({
   highlight: null,
 });
 
-const NEAR_BOTTOM_PX = 32;
+const NEAR_TOP_PX = 32;
 const HIGHLIGHT_MS = 1200;
 /** Re-check times after an append. `content-visibility` can trade estimates for
  *  real heights long after the patch (and rows above/below can swap heights
@@ -76,18 +76,23 @@ export interface TraceDrawerStateOptions {
   scroller: () => HTMLElement | null | undefined;
   /** Root of the drawer content, used to resolve rows for reveal and freeze. */
   root: () => HTMLElement | null | undefined;
-  /** Stable node identities in list order, used to detect appended events. */
+  /** Stable node identities in chronological list order, used to detect appended events. */
   nodeIds: () => readonly string[];
 }
 
-function nearBottom(el: HTMLElement): boolean {
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+function nearTop(el: HTMLElement): boolean {
+  return el.scrollTop <= NEAR_TOP_PX;
 }
 
-function scrollToBottom(el: HTMLElement): void {
-  el.scrollTop = el.scrollHeight;
+function scrollToTop(el: HTMLElement): void {
+  el.scrollTop = 0;
 }
 
+/**
+ * How many genuinely NEW events a chronological `nodeIds` observation gained
+ * at its tail. The timeline renders newest first, so those appended ids are
+ * the rows the reader sees prepended at the visual top.
+ */
 export function appendedTraceNodes(previous: readonly string[], next: readonly string[]): number {
   if (previous.length === 0 || next.length === 0) return 0;
   const last = previous[previous.length - 1]!;
@@ -146,7 +151,7 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
       const echo = settleBaseTop !== null && Math.abs(top - settleBaseTop) <= 1;
       if (!ours && !echo) stopSettle();
     }
-    store.following = nearBottom(bound);
+    store.following = nearTop(bound);
     if (store.following) store.unread = 0;
   }
 
@@ -168,7 +173,7 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
     bound.addEventListener("keydown", onUserIntent);
     // The remembered offset is restored after mount, so the first check only
     // answers "can this content even scroll yet"; later appends re-check.
-    store.following = nearBottom(bound);
+    store.following = nearTop(bound);
   }
 
   function unbind(): void {
@@ -268,7 +273,7 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
     }, delay));
   }
 
-  /** While following, stay pinned to the tail across the same async re-measure. */
+  /** While following, stay pinned to the top across the same async re-measure. */
   function settleFollow(scrollerEl: HTMLElement): void {
     stopSettle();
     settling = true;
@@ -279,11 +284,11 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
         stopSettle();
         return;
       }
-      scrollToBottom(scrollerEl);
+      scrollToTop(scrollerEl);
       settleTop = scrollerEl.scrollTop;
     };
     if (typeof ResizeObserver === "undefined") {
-      scrollToBottom(scrollerEl);
+      scrollToTop(scrollerEl);
       settleTop = scrollerEl.scrollTop;
     } else {
       const list = listEl();
@@ -309,7 +314,7 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
   function jumpToLatest(): void {
     stopSettle();
     const el = options.scroller();
-    if (el) scrollToBottom(el);
+    if (el) scrollToTop(el);
     store.following = true;
     store.unread = 0;
   }
@@ -336,12 +341,13 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
 
   // Appended events only. A prepended page (load earlier) or a replaced trace
   // must not be counted as unread, and same-key streaming updates are not
-  // events at all.
+  // events at all. Chronological appends land at the visual top (newest
+  // first), so a reader away from the top keeps their first visible row while
+  // the unread count grows.
   //
-  // This runs BEFORE the DOM patch: "was the reader at the tail" and the
-  // freeze anchor must describe the pre-append layout. A post-patch check
-  // would see the grown scrollHeight and call a tail reader "away", and a
-  // post-patch anchor would already contain the shift it is meant to undo.
+  // This runs BEFORE the DOM patch: "was the reader at the top" and the
+  // freeze anchor must describe the pre-append layout. A post-patch anchor
+  // would already contain the shift it is meant to undo.
   watch(options.nodeIds, (next) => {
     const previous = previousIds;
     previousIds = next;
@@ -352,13 +358,13 @@ export function useTraceDrawerState(options: TraceDrawerStateOptions) {
       store.unread += appended;
       return;
     }
-    if (nearBottom(el)) {
+    if (nearTop(el)) {
       store.following = true;
       store.unread = 0;
       void nextTick(() => {
         const current = options.scroller();
         if (!current || !store.following) return;
-        scrollToBottom(current);
+        scrollToTop(current);
         settleFollow(current);
       });
       return;

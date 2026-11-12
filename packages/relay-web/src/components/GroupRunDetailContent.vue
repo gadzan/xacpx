@@ -29,7 +29,6 @@ const props = defineProps<{
   plan?: PlanEntryDto[];
   traceLoading?: boolean;
   traceError?: string | null;
-  traceHasMore?: boolean;
   /** Terminal trace event failure (tool/terminal failure surface). */
   traceHasEarlier?: boolean;
   traceStreaming?: boolean;
@@ -39,7 +38,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  loadMore: [];
   loadEarlier: [];
   retryTrace: [];
 }>();
@@ -102,10 +100,11 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
 </script>
 
 <template>
-  <!-- `overflow-anchor: none`: this content grows at the tail while output
-       streams. The browser otherwise re-anchors by a few pixels when a
-       viewport-skipped row re-estimates its height, nudging a reader who is
-       above the tail. Follow/freeze is owned by useTraceDrawerState instead. -->
+  <!-- `overflow-anchor: none`: this content grows at the head while output
+       streams (the trace renders newest first). The browser otherwise
+       re-anchors by a few pixels when a viewport-skipped row re-estimates its
+       height, nudging a reader who is below the top. Follow/freeze is owned by
+       useTraceDrawerState instead. -->
   <div ref="contentEl" class="flex flex-col gap-3 text-sm [overflow-anchor:none]" data-test="group-run-detail">
     <TraceLiveStack
       v-if="nodes.length"
@@ -173,18 +172,18 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
       />
     </div>
 
-    <!-- Trace completeness/pagination/failure status: always audible, even
-         when a partial window is all that exists. -->
+    <!-- Trace completeness/cap/failure status: always audible, even when a
+         capped window is all that exists. -->
     <div
-      v-if="memberTurn && (recordingNotice || traceHasMore || traceHasEarlier || traceLoading || traceError)"
+      v-if="memberTurn && (recordingNotice || traceHasEarlier || traceLoading || traceError)"
       data-test="group-trace-status"
       class="space-y-1 text-xs text-fg-muted"
       aria-live="polite"
       aria-atomic="true"
     >
       <p v-if="recordingNotice">{{ recordingNotice }}</p>
-      <p v-if="recordingState === 'complete' && (traceHasMore || traceHasEarlier)" class="break-words">
-        {{ traceHasEarlier ? $t("group.detail.earlierWindow") : $t("group.detail.partialPage") }}
+      <p v-if="recordingState === 'complete' && traceHasEarlier" class="break-words">
+        {{ $t("group.detail.earlierWindow") }}
       </p>
       <p v-if="traceLoading">{{ $t("group.detail.loading") }}</p>
       <p v-if="traceError" role="alert" class="break-words text-danger">{{ traceError }}</p>
@@ -192,10 +191,6 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
         <button v-if="traceHasEarlier" type="button" data-test="group-trace-load-earlier"
                 class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('loadEarlier')">
           {{ $t("group.detail.loadEarlier") }}
-        </button>
-        <button v-if="traceHasMore" type="button" data-test="group-trace-load-more"
-                class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('loadMore')">
-          {{ $t("group.detail.loadMore") }}
         </button>
         <button v-if="traceError" type="button" data-test="group-trace-retry"
                 class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('retryTrace')">

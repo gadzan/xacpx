@@ -806,7 +806,6 @@ function handleStopAll(): void {
       :recording-state="detailTracePage?.recordingState"
       :trace-loading="detailTracePage?.loading"
       :trace-error="detailTracePage?.error"
-      :trace-has-more="detailTracePage?.hasMore"
       :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && directBotsStore.activeMemberTurn?.id === detailSelectedMember.id && !!directBotsStore.liveTurn"
       @close="closeTraceOverlay"
       @fork="detailTarget && openForkFromRun(detailTarget.run)"
@@ -818,7 +817,6 @@ function handleStopAll(): void {
       @interaction-decline="handleDetailDecline"
       @interaction-cancel="handleDetailCancel"
       @interaction-dismiss="handleDetailDismiss"
-      @load-more="detailSelectedMember && detailEffectiveAttempt !== undefined && detailTarget && directBotsStore.ensureDirectTracePage(detailTarget.run.id, detailSelectedMember.id, detailEffectiveAttempt)"
       @load-earlier="detailSelectedMember && detailEffectiveAttempt !== undefined && detailTarget && directBotsStore.ensureDirectTracePage(detailTarget.run.id, detailSelectedMember.id, detailEffectiveAttempt, 0)"
       @retry-trace="detailSelectedMember && detailEffectiveAttempt !== undefined && detailTarget && directBotsStore.ensureDirectTracePage(detailTarget.run.id, detailSelectedMember.id, detailEffectiveAttempt)"
     />

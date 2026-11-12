@@ -3508,32 +3508,59 @@ describe("useGroupsStore durable trace cache", () => {
     return store;
   }
 
-  it("maps an unknown RPC to connectorOutdated without claiming an empty complete trace", async () => {
+  /** One durable trace page; `nextSeq` is its last committed seq. */
+  function tracePage(seqs: number[], hasMore: boolean) {
+    return {
+      memberTurnId: member.id, attempt: 2, recordingState: "recording",
+      events: seqs.map((seq) => ({ seq, kind: "text", payload: { text: `e${seq}` }, createdAt: `t${seq}` })),
+      nextSeq: seqs[seqs.length - 1], hasMore,
+    };
+  }
+
+  /** `afterSeq` of every trace read, in call order; the first page omits it. */
+  function traceCursors(): Array<number | undefined> {
+    return mockRpc.mock.calls
+      .filter((call) => call[1] === "control.runs.trace.get")
+      .map((call) => {
+        const payload: unknown = call[2];
+        return payload !== null && typeof payload === "object" && "afterSeq" in payload
+          && typeof payload.afterSeq === "number"
+          ? payload.afterSeq
+          : undefined;
+      });
+  }
+
+  it("loads the whole trace at once: an advancing page chains itself", async () => {
     const store = await ready();
-    mockRpc.mockResolvedValueOnce({ error: { code: "unknown-type", message: "unsupported" } });
-    store.ensureTracePage(member.id, member.attempt);
+    mockRpc.mockResolvedValueOnce(tracePage([1, 2], true));
+    mockRpc.mockResolvedValueOnce(tracePage([3, 4], true));
+    mockRpc.mockResolvedValueOnce(tracePage([5], false));
+    store.ensureTracePage(member.id, 2);
     await flushPromises();
-    expect(mockRpc).toHaveBeenLastCalledWith("inst_1", "control.runs.trace.get",
-      expect.objectContaining({ runId: run.id, memberTurnId: member.id, attempt: 2, limit: 100 }));
-    expect(store.tracePages[key]).toMatchObject({ recordingState: "unavailable", error: "connectorOutdated", loading: false });
-    expect(store.tracePages[key]?.events).toEqual([]);
+    expect(traceCursors()).toEqual([undefined, 2, 4]);
+    expect(store.tracePages[key]?.events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(store.tracePages[key]).toMatchObject({ nextSeq: 5, hasMore: false, loading: false });
+  });
+
+  it("stops chaining when the server's cursor does not advance", async () => {
+    const store = await ready();
+    mockRpc.mockResolvedValueOnce(tracePage([1, 2], true));
+    // The follow-up page claims more but repeats the cursor it was read at.
+    mockRpc.mockResolvedValueOnce({ ...tracePage([], true), nextSeq: 2 });
+    store.ensureTracePage(member.id, 2);
+    await flushPromises();
+    expect(traceCursors()).toEqual([undefined, 2]);
+    expect(store.tracePages[key]).toMatchObject({ nextSeq: 2, hasMore: true, loading: false });
+    expect(store.tracePages[key]?.events.map((event) => event.seq)).toEqual([1, 2]);
   });
 
   it("pages from the committed cursor and deduplicates replayed seqs", async () => {
     const store = await ready();
-    const page = (afterSeq: number, seqs: number[], hasMore: boolean) => ({
-      memberTurnId: member.id, attempt: 2, recordingState: "recording",
-      events: seqs.map((seq) => ({ seq, kind: "text", payload: { text: `e${seq}` }, createdAt: `t${seq}` })),
-      nextSeq: seqs[seqs.length - 1], hasMore,
-    });
-    mockRpc.mockResolvedValueOnce(page(0, [1, 2], true));
+    mockRpc.mockResolvedValueOnce(tracePage([1, 2], true));
+    mockRpc.mockResolvedValueOnce(tracePage([2, 3], false));
     store.ensureTracePage(member.id, 2);
     await flushPromises();
-    mockRpc.mockResolvedValueOnce(page(2, [2, 3], false));
-    store.ensureTracePage(member.id, 2);
-    await flushPromises();
-    expect(mockRpc.mock.calls.filter((call) => call[1] === "control.runs.trace.get").map((call) => (call[2] as { afterSeq?: number }).afterSeq))
-      .toEqual([undefined, 2]);
+    expect(traceCursors()).toEqual([undefined, 2]);
     expect(store.tracePages[key]?.events.map((event) => event.seq)).toEqual([1, 2, 3]);
     expect(store.tracePages[key]).toMatchObject({ nextSeq: 3, hasMore: false, recordingState: "recording" });
   });
