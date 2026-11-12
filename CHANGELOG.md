@@ -1,4 +1,47 @@
 # Changelog
+## [relay-protocol 0.6.4-beta.12] - 2026-11-12
+
+### Added
+
+- 话题分叉协议增量：新增 `control.direct.topics.fork` 消息与 `DirectTopicsForkPayload`，`ThreadForkSourcePointDto` 增加 `{ type: "message", messageId }` 来源点（Group 与 Direct 的载荷校验同时接受），`TopicForkDto` 增加可选 `mode: "snapshot" | "handoff"` 与 `sourceMessageId`（缺省读作 `snapshot`，所有 Direct 之前的行保持原义），并导出 `group.topics.fork.v1`、`group.topics.fork.message.v1`、`direct.topics.fork.v1`、`direct.topics.fork.message.v1` 四个 capability 常量。全部为增量：旧客户端忽略新字段，`control.conversation.history` 形状不变（#571、#573、#574）。
+
+## [relay 0.14.12-beta.20] - 2026-11-12
+
+### Added
+
+- 消息节点分叉入口（Web）：人类消息与 bot 消息的 meta 操作区各多一颗分叉图标，只在 `ConversationTimeline` / `TimelineRow` 收到可选 `forkMessage` 回调时渲染 —— peer-scope 话题、或消息不属于当前话题时都不出现。行级入口有自己的 capability `group.topics.fork.message.v1` / `direct.topics.fork.message.v1`：core 侧 `supportsGroupTopicForkMessage` / `supportsDirectTopicForkMessage` probe 为 true 且 connector validator 接受 message 形状才广告；缺任一条件只隐藏行控件，Topic 菜单与 Run 浮层入口仍在基础 capability 上，新 web 对旧 connector/core 不会提供点了会 `invalid-payload` 的按钮。Group 与 Direct 面板在 message capability 可用时传入 opener，opener 再要求该行出现在当前话题的 timeline entry 里，点击后打开同一个 `ForkTopicDialog`，确认区写「分叉点：此消息」，`sourcePoint` 为 `{ type: "message", messageId }`，Group 复制到该行 seq、Direct 只把截至该行的历史渲染进首条 prompt 的交接块。悬停或键盘聚焦出现，触屏沿用 `ConversationMeta` 既有的 `@media (hover: none)` 常显规则。
+
+### Changed
+
+- Trace 抽屉改为最新在上、最旧在底：全量过程按 `presentation.nodes` 反转渲染，新事件从顶部插入；只有读者在顶部时才跟随，向下阅读旧事件时冻结视口并显示“N 条新事件 ↑”。打开抽屉会自动读完整个可保留窗口（最多 1000 条），删除手动的“加载更多 / 加载更早”及其 i18n；超过上限时只提示保留最近 1000 条。Live Stack 保留为顶部紧凑摘要。
+- 群聊时间线在移动端也保留每位 bot 的头像与发言人名称（`keepMobileIdentity`）；Direct 私聊仍在 `lg` 以下收起逐行身份，因为读者已知对话对象。
+
+## [channel-relay 0.7.8-beta.16] - 2026-11-12
+
+### Added
+
+- relay connector 为四个话题分叉 capability 加上「core 探测 + 本端 validator」双门：`group.topics.fork.v1`、`direct.topics.fork.v1` 与行级的 `group.topics.fork.message.v1` / `direct.topics.fork.message.v1` 只在 core probe（`supportsGroupTopicFork` / `supportsDirectTopicFork` 及其 `…Message` 变体）为 true 且本端 validator 接受载荷时才对外广告；message 形状缺任一条件只隐藏行级入口，Topic 菜单与 Run 浮层仍在基础 capability 上，旧 core 上对应 RPC 返回 `unsupported-rpc`（#571、#573、#574）。
+
+## [0.24.10-beta.16] - 2026-11-12
+
+### Added
+
+- 群组话题分叉（应用层快照）：新增 `control.group.topics.fork`（`{conversationId, sourceTopicId, targetTopicId, requestId, sourcePoint?, title?}`，capability `group.topics.fork.v1`），从最新已结算 Run 或指定 Run 把源话题的公开消息复制进新话题，最多 500 条并报告 `omittedMessages`。副本重编 `seq`，保留角色/发送者/正文/附件引用/时间，清空 Run、MemberTurn、handoff、group-say 与 input metadata，写 `messages.forked_from_message_id` 并在 `TopicSummaryDto.forkedFrom` 记录来源、根话题与边界；`run_id IS NULL` 或所属 Run 在边界之前才参与复制，因此边界之后排队 Run 的请求不会进入副本。同一 `requestId + targetTopicId` 重放返回同一话题，异常残留（有话题无复制行）报 `topic_fork_history_missing`，已有普通消息的目标报 `topic_exists`。新话题有自己的成员 session，首轮 Group prompt 与 Router 通过既有读取看到副本历史；源话题的 clear/delete 不影响副本，`bot_public_memory` 不复制。relay-web 在话题菜单与已结算 Run 头部提供入口、`ForkTopicDialog` 与时间线分叉横幅（中英双语），能力缺失时全部隐藏。不是原生 Agent session fork，也不创建 git 分支/工作树。
+- Direct 话题分叉（一次性 prompt 交接）：新增 `control.direct.topics.fork`（载荷与 Group 同形，capability `direct.topics.fork.v1`）。Direct turn 不从消息行重建上下文（历史经持久 Agent session 延续），所以本 RPC 不复制任何消息行：它把源话题边界内的消息渲染成一段有界文本写入新表 `topic_fork_handoffs`（正文不进 `state.json`），`forkedFrom.mode = "handoff"` 记录形态，`copiedMessages` / `omittedMessages` 表示已携带与被预算或读取窗口截断的条数。渲染是纯函数：12,000 字总上限与 2,000 字单条上限是后置条件，边界消息必然包含，标题折叠且截断到 80 字并剔除围栏分隔符，fork-of-fork 把父 handoff 作为最旧一段内联并累加计数。注入窗口用显式消费标记 `consumed_at` 而非消息行：命令轮会落 bot 回复，按行推断会在第一条真实 prompt 之前关窗；命令轮不注入也不消费，组合完成后、调用 runner 前写入，provider 失败不会重新注入。重放判定在读取源之前完成，源被删除后同 `requestId` 仍返回已提交话题；默认 Direct Topic 不能作为目标；`clearDefaultTopic` 同时清除 `forkedFrom` 与 handoff 行。Web 侧 `ForkTopicDialog` 改为调用父组件传入的 `fork` 回调，Group 与 Direct 共用同一对话框，横幅按 `mode` 区分「已携带」与「已复制」。
+- 消息节点分叉（Phase B）：`ThreadForkSourcePointDto` 增加 `{ type: "message", messageId }`，Group 与 Direct 的 fork 载荷校验同时接受它。`resolveForkPoint` 新增 `message` 分支：消息必须属于源会话与源话题、且不是 peer-scope 话题，边界取该消息的 `seq`，不设置 `boundaryRunId` —— seq 在 accept 事务内按话题严格单调，`seq <= throughSeq` 已经排除之后接受的 Run，而 Run 过滤会把边界消息之前其他 Run 的消息一并误删。Group 的 `copyTopicForkMessages` 与 Direct 的 handoff 渲染都用这个 `throughSeq`，`forkedFrom` 写入 `sourceMessageId` 且不写 `sourceRunId`；`forkDirectTopic` 原先拒绝除 `latest_stable` / `run` 之外的来源点，现在接受 `message`。
+
+### Fixed
+
+- 群组话题分叉收尾：仓库内新增 `packages/relay-web/e2e/group-topic-fork.spec.ts`（desktop + mobile：Topic 菜单与 Run 级入口、`control.group.topics.fork` 载荷、fork banner/复制条数/源链接、孤儿错误后换新 id 重试）；`ForkTopicDialog` 收到 `topic_fork_history_missing` 时重铸 `targetTopicId`/`requestId` 并提示重新开始；重放只在目标复制行数等于 `forkedFrom.copiedMessages` 时返回已有话题，部分复制丢失改为 fail-closed；设计文档标记 Accepted 并勾选验收表。
+
+## [channel-feishu 0.8.7-beta.16] - 2026-11-12
+
+- Compatibility floor raised to `0.24.10-beta.16` with no channel behavior change.
+
+## [channel-discord 0.8.7-beta.16] - 2026-11-12
+
+- Compatibility floor raised to `0.24.10-beta.16` with no channel behavior change.
+
 ## [0.24.10-beta.15] - 2026-11-10
 
 ### Added
@@ -11,23 +54,16 @@
 - 群聊圆桌后端（P0）：`roundtable` target 在 accept 事务内预生成 `rounds × speakers` 个 MemberTurn（batch 1、连续 `memberIndex`、1-based `roundIndex`/0-based `speakerIndex`），由共享 claim 谓词的顺序 floor 严格串行，重启后只靠持久行恢复；`(pass)` 以 `speechOutcome:"pass"` 终态结束且不写公开消息，全 pass 的 Run 以 `roundtable-no-speech` 完成；空最终文本按 `empty-speech` 失败；失败会取消后续未开始的 turn 且不计预算；圆桌拒绝 `group_send` 与单成员 Stop。Run/MemberTurn DTO 与 `conversations.roundtable.v1` capability 已暴露，旧 Run 仍读作 `fanout`。
 - 圆桌工具面收敛：`run.shape === "roundtable"` 的成员 turn 启动不再暴露 `group_send` / `group_read_result`，MCP server 只列出 `group_say`（形状随 launch capability 本身传递，子进程无需读取 Run），圆桌 prompt 的快照截断标记也不再指向该读工具；服务端第二道门保留 `handoff_from_roundtable_refused`，并新增 `group_read_result_from_roundtable_refused` 拒绝直接读取。fanout / Direct 的工具面与 P0 调度不变。
 - 会话时间线后端（P1a）：`messages.member_turn_id` 列与 `idx_messages_member_turn` 索引把公开消息接到产生它的 MemberTurn，所有 bot/handoff 插入点（handoff、正常回复、密封证据、取消结算、迟到结果、`group_say`、无回复状态行）都写归属，人类请求保持 NULL；升级迁移只回填可证明的腿（同一 Run 唯一 `sourceTurn.turnId`、handoff envelope、`group_say` marker），歧义行保持 NULL。新增纯投影 `projectConversationTimeline()` 与 `control.conversation.timeline` RPC（`conversations.timeline.v1` capability）：每条消息按 seq 出现一次、handoff 归属精确、只为没有公开消息的 MemberTurn 生成 activity、未来 queued 圆桌 turn 只进 RoundStrip 计数、非终态 Run 恒随页返回、归属未知时保留并标 `unresolved`；Runs 与 MemberTurns 批量读取，无按 Run 的 N+1。旧 `conversation.history` 与旧客户端行为不变。
-- Direct 话题分叉（一次性 prompt 交接）：新增 `control.direct.topics.fork`（载荷与 Group 同形，capability `direct.topics.fork.v1`）。Direct turn 不从消息行重建上下文（历史经持久 Agent session 延续），所以本 RPC 不复制任何消息行：它把源话题边界内的消息渲染成一段有界文本写入新表 `topic_fork_handoffs`（正文不进 `state.json`），`forkedFrom.mode = "handoff"` 记录形态，`copiedMessages` / `omittedMessages` 表示已携带与被预算或读取窗口截断的条数。渲染是纯函数：12,000 字总上限与 2,000 字单条上限是后置条件，边界消息必然包含，标题折叠且截断到 80 字并剔除围栏分隔符，fork-of-fork 把父 handoff 作为最旧一段内联并累加计数。注入窗口用显式消费标记 `consumed_at` 而非消息行：命令轮会落 bot 回复，按行推断会在第一条真实 prompt 之前关窗；命令轮不注入也不消费，组合完成后、调用 runner 前写入，provider 失败不会重新注入。重放判定在读取源之前完成，源被删除后同 `requestId` 仍返回已提交话题；默认 Direct Topic 不能作为目标；`clearDefaultTopic` 同时清除 `forkedFrom` 与 handoff 行。Web 侧 `ForkTopicDialog` 改为调用父组件传入的 `fork` 回调，Group 与 Direct 共用同一对话框，横幅按 `mode` 区分「已携带」与「已复制」。
-- 消息节点分叉（Phase B）：`ThreadForkSourcePointDto` 增加 `{ type: "message", messageId }`，Group 与 Direct 的 fork 载荷校验同时接受它。`resolveForkPoint` 新增 `message` 分支：消息必须属于源会话与源话题、且不是 peer-scope 话题，边界取该消息的 `seq`，不设置 `boundaryRunId` —— seq 在 accept 事务内按话题严格单调，`seq <= throughSeq` 已经排除之后接受的 Run，而 Run 过滤会把边界消息之前其他 Run 的消息一并误删。Group 的 `copyTopicForkMessages` 与 Direct 的 handoff 渲染都用这个 `throughSeq`，`forkedFrom` 写入 `sourceMessageId` 且不写 `sourceRunId`；`forkDirectTopic` 原先拒绝除 `latest_stable` / `run` 之外的来源点，现在接受 `message`。
-- 消息节点分叉入口（Web）：人类消息与 bot 消息的 meta 操作区各多一颗分叉图标，只在 `ConversationTimeline` / `TimelineRow` 收到可选 `forkMessage` 回调时渲染 —— peer-scope 话题、或消息不属于当前话题时都不出现。行级入口有自己的 capability `group.topics.fork.message.v1` / `direct.topics.fork.message.v1`：core 侧 `supportsGroupTopicForkMessage` / `supportsDirectTopicForkMessage` probe 为 true 且 connector validator 接受 message 形状才广告；缺任一条件只隐藏行控件，Topic 菜单与 Run 浮层入口仍在基础 capability 上，新 web 对旧 connector/core 不会提供点了会 `invalid-payload` 的按钮。Group 与 Direct 面板在 message capability 可用时传入 opener，opener 再要求该行出现在当前话题的 timeline entry 里，点击后打开同一个 `ForkTopicDialog`，确认区写「分叉点：此消息」，`sourcePoint` 为 `{ type: "message", messageId }`，Group 复制到该行 seq、Direct 只把截至该行的历史渲染进首条 prompt 的交接块。悬停或键盘聚焦出现，触屏沿用 `ConversationMeta` 既有的 `@media (hover: none)` 常显规则。
 - 公开记忆安全补丁（不改变默认行为）：handoff 的公开记忆投影保留单一扩展点 `recordHandoffPublicMemory`，默认不注入、不记录任何 handoff 任务文本；启动时校验 `bot_public_memory` 是否指向缺失的 `messages` 行，非零时只报告（`onPublicMemoryOrphans` 或 `console.warn`），从不自动删除。现有 Topic/Conversation 清理事务已同步删除引用行；仓库内不存在单条消息删除路径，因此 per-message 同步清理仍未覆盖。
 - Handoff 记忆 opt-in（默认 off）：Group 新增可选 `handoffMemory: "off" | "summary"`（缺省/off 不改变任何行为），`summary` 的 Group 在每次新 handoff 的同一事务里多写一条截断到 500 字的任务摘要 bot 消息并按当前成员投影进公共记忆（`INSERT OR IGNORE`、重放不写、移出成员不再写）；完整子 trace 从不进入投影。`groups.create`/`update` 透传该字段并经 `groups.handoff-memory-summary.v1` capability 设门，Group 设置里多一个 off/summary 选择器（中英双语）；state load 校验非法值直接丢弃该 Group 行。Handoff 本就是公开群消息，任务文本也早就在 handoff 行里公开，因此该开关只拓宽公共记忆、不拓宽可见性。
 - 群组公共记忆开关：每个 Group 新增 `publicMemoryProjection`（`on` 默认 / `off`），带 state-load 校验、create/update 载荷、解析后的 DTO 与 `groups.public-memory-switch.v1` capability，Group 设置里提供开关（旧 Group 与旧 core 都按 `on` 读取）。`off` 时该群新消息不再写入 `bot_public_memory`，已存行也不再注入成员的 Direct prompt；开关只拦投影、不删数据，重新开启后既有行恢复可见。群内自身的对话与普通发送目标不受影响；bot 级开关与双向记忆仍不在范围内。
 - 公共记忆读窗口在应用 20 条上限前先排除投影为 `off` 的 Group，避免一个关闭投影的群用新版消息占满窗口、把其他仍开启群的旧消息挤出成员的 Direct prompt。
 - 公共记忆的 Direct prompt 块补上时间戳与 `(you)` 标记，消息正文压成单行后按 800 字截断；整块新增 4,000 字总预算，超出时从最旧消息丢弃并标注 `[…older messages omitted]`，不再出现最多 20 × 800 字的无上限窗口。
 - 群组默认发送设置：普通消息的路由不再由 composer 决定，改为每个 Group 的 `defaultRouting`（`lead` 默认 / `automatic`），只在 Group 设置里修改；`@成员`、`@everyone`、讨论与斜杠命令仍发送各自显式 target，语义不变。`lead` 保持旧的“无 target、服务端在 accept gates 内重算 live lead”形状；`automatic` 显式发送自动 Run，缺少可用 Router 时以 `automatic_unsupported` 明确失败（外站点名消息仍走 lead，effect policy 仍要求显式成员）。迁移只依据持久证据：升级前有过 automatic Run 的 Group 在 Router 可用时继续 automatic，其余（以及 Router 关闭时的前者）保持 lead，因此旧 Group 的普通消息不会悄悄改变含义或开始被拒绝；Group DTO 暴露解析后的值，`groups.default-routing.v1` capability 让旧 core 不显示该设置。
-- 群组话题分叉（应用层快照）：新增 `control.group.topics.fork`（`{conversationId, sourceTopicId, targetTopicId, requestId, sourcePoint?, title?}`，capability `group.topics.fork.v1`），从最新已结算 Run 或指定 Run 把源话题的公开消息复制进新话题，最多 500 条并报告 `omittedMessages`。副本重编 `seq`，保留角色/发送者/正文/附件引用/时间，清空 Run、MemberTurn、handoff、group-say 与 input metadata，写 `messages.forked_from_message_id` 并在 `TopicSummaryDto.forkedFrom` 记录来源、根话题与边界；`run_id IS NULL` 或所属 Run 在边界之前才参与复制，因此边界之后排队 Run 的请求不会进入副本。同一 `requestId + targetTopicId` 重放返回同一话题，异常残留（有话题无复制行）报 `topic_fork_history_missing`，已有普通消息的目标报 `topic_exists`。新话题有自己的成员 session，首轮 Group prompt 与 Router 通过既有读取看到副本历史；源话题的 clear/delete 不影响副本，`bot_public_memory` 不复制。relay-web 在话题菜单与已结算 Run 头部提供入口、`ForkTopicDialog` 与时间线分叉横幅（中英双语），能力缺失时全部隐藏。不是原生 Agent session fork，也不创建 git 分支/工作树。
-- 群组话题分叉收尾：仓库内新增 `packages/relay-web/e2e/group-topic-fork.spec.ts`（desktop + mobile：Topic 菜单与 Run 级入口、`control.group.topics.fork` 载荷、fork banner/复制条数/源链接、孤儿错误后换新 id 重试）；`ForkTopicDialog` 收到 `topic_fork_history_missing` 时重铸 `targetTopicId`/`requestId` 并提示重新开始；重放只在目标复制行数等于 `forkedFrom.copiedMessages` 时返回已有话题，部分复制丢失改为 fail-closed；设计文档标记 Accepted 并勾选验收表。
 
 ### Changed
 
 - 群聊契约显式声明可见通道：`GROUP_COLLABORATION_CONTRACT` 现在写明 Group Topic 里只能看见 `group_say` 发言、`group_send` 派活与最终回复，工具调用、推理和其他文本保持私有，并明确最终回复一定会被发布、结论必须写在里面。规则本身未变，只是把既有行为说出来，避免模型把 `group_say` 当成唯一出口。
-- Trace 抽屉改为最新在上、最旧在底：全量过程按 `presentation.nodes` 反转渲染，新事件从顶部插入；只有读者在顶部时才跟随，向下阅读旧事件时冻结视口并显示“N 条新事件 ↑”。打开抽屉会自动读完整个可保留窗口（最多 1000 条），删除手动的“加载更多 / 加载更早”及其 i18n；超过上限时只提示保留最近 1000 条。Live Stack 保留为顶部紧凑摘要。
-- 群聊时间线在移动端也保留每位 bot 的头像与发言人名称（`keepMobileIdentity`）；Direct 私聊仍在 `lg` 以下收起逐行身份，因为读者已知对话对象。
 
 ### Fixed
 
