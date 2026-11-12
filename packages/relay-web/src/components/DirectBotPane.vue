@@ -750,6 +750,7 @@ function handleStopAll(): void {
       :is-run-queued="directBotsStore.isRunQueued"
       :load-older="timelineFeed.loadOlder"
       top-inset-class="pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5"
+      banner-inset-class="mt-[calc(6rem+env(safe-area-inset-top))] lg:mt-0"
       :forked-from="directBotsStore.currentTopic?.forkedFrom ?? null"
       :fork-source-available="forkSourceAvailable"
       @open-source-topic="openForkSourceTopic"
@@ -877,6 +878,7 @@ function handleStopAll(): void {
       :source-point="forkTarget.sourcePoint"
       :resolved-run="forkTarget.resolvedRun ?? null"
       :conversation-id="directBotsStore.activeConversationId ?? ''"
+      mode="handoff"
       :fork="forkDirectTopicFromDialog"
       @close="forkTarget = null"
     />

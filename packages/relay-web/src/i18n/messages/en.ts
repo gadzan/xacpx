@@ -1299,6 +1299,7 @@ export default {
       perMemberHint: "This Group runs every member in its own Bot workspace, so a Topic has no workspace to pick. Members in different workspaces run in parallel; members sharing one workspace are serialized.",
       forkTitle: "Fork this topic",
       forkHint: "Copies this topic's public messages up to the fork point into a new, independent topic. Runs, agent sessions, and attachment files are not copied.",
+      forkHintHandoff: "Carries this topic's messages up to the fork point into a new, independent topic as one block of background context on its first prompt. The bot answers from that block once; later turns rely on the new topic's own history.",
       forkAction: "Fork",
       forkFromRun: "Fork a topic from this run",
       forkPointRun: "Fork point: this run",

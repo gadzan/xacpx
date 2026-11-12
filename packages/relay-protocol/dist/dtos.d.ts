@@ -424,6 +424,8 @@ export interface TopicForkDto {
     sourceRunId?: string;
     /** Set by a message-boundary fork; never present with `sourceRunId`. */
     sourceMessageId?: string;
+    throughSeq: number;
+    rootTopicId: string;
     copiedMessages: number;
     omittedMessages: number;
     createdAt: string;

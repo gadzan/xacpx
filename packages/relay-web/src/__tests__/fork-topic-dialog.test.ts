@@ -34,6 +34,7 @@ const RUN: ConversationRunDto = {
 function mountDialog(input: {
   sourcePoint?: { type: "latest_stable" } | { type: "run"; runId: string };
   resolvedRun?: ConversationRunDto | null;
+  mode?: "snapshot" | "handoff";
 } = {}) {
   const fork = vi.fn<(request: ForkTopicRequest) => Promise<TopicSummaryDto>>()
     .mockResolvedValue({ ...SOURCE, id: "topic_dst" });
@@ -44,6 +45,7 @@ function mountDialog(input: {
       conversationId: "conversation_g",
       fork,
       ...(input.resolvedRun !== undefined ? { resolvedRun: input.resolvedRun } : {}),
+      ...(input.mode !== undefined ? { mode: input.mode } : {}),
     },
     global: { plugins: [i18n] },
   });
@@ -165,5 +167,17 @@ describe("ForkTopicDialog", () => {
       );
       wrapper.unmount();
     }
+  });
+});
+
+describe("ForkTopicDialog copy", () => {
+  it("promises copied rows by default and a one-time block for a handoff", () => {
+    const snapshot = mountDialog();
+    expect(snapshot.wrapper.find("[data-test='fork-topic-hint']").text()).toContain("Copies this topic's public messages");
+    const handoff = mountDialog({ mode: "handoff" });
+    const hint = handoff.wrapper.find("[data-test='fork-topic-hint']").text();
+    expect(hint).toContain("one block of background context on its first prompt");
+    // A Direct fork copies no rows, so the snapshot promise must never render there.
+    expect(hint).not.toContain("Copies this topic's public messages");
   });
 });

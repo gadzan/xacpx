@@ -24,6 +24,9 @@ const props = defineProps<{
   /** Cache-resolved Run for the confirm label only; never sent as the point. */
   resolvedRun?: ConversationRunDto | null;
   conversationId: string;
+  /** `handoff` tells the user the boundary arrives as one prompt block rather
+   *  than as copied rows, so a Direct fork never promises a copied timeline. */
+  mode?: "snapshot" | "handoff";
   fork: (input: ForkTopicRequest) => Promise<TopicSummaryDto>;
 }>();
 
@@ -46,6 +49,10 @@ const creating = ref(false);
 // fresh pair or it would replay the same unrecoverable ids forever.
 const targetTopicId = ref(`topic_${crypto.randomUUID()}`);
 const requestId = ref(crypto.randomUUID());
+
+const hint = computed(() =>
+  props.mode === "handoff" ? t("group.topic.forkHintHandoff") : t("group.topic.forkHint"),
+);
 
 const forkPointLabel = computed(() => {
   if (props.sourcePoint.type === "run") {
@@ -120,7 +127,7 @@ async function handleFork(): Promise<void> {
        @click.self="navigateBack">
     <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="fork-topic-title" tabindex="-1" data-test="fork-topic-dialog" class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:w-full">
       <h3 id="fork-topic-title" class="mb-2 text-base font-semibold text-fg">{{ $t("group.topic.forkTitle") }}</h3>
-      <p class="mb-3 text-sm text-fg-muted-overlay">{{ $t("group.topic.forkHint") }}</p>
+      <p class="mb-3 text-sm text-fg-muted-overlay" data-test="fork-topic-hint">{{ hint }}</p>
       <form @submit.prevent="handleFork">
         <input
           v-model="title"

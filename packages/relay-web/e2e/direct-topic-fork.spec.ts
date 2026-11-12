@@ -321,6 +321,9 @@ test("the Direct Topic menu forks with a handoff and opens the new Topic with it
   ]);
   await openForkFromTopicMenu(page, info.project.name);
   await page.screenshot({ path: "test-results/direct-fork-topic-menu.png" });
+  // A Direct fork carries the boundary as one prompt block, so the dialog must
+  // describe that instead of promising a copied timeline.
+  await expect(page.getByTestId("fork-topic-hint")).toContainText("one block of background context");
   await page.getByTestId("fork-topic-submit").click();
 
   await expect.poll(() => harness.forkRequests.length).toBe(1);
@@ -409,6 +412,11 @@ test("the dialog fits the viewport on the mobile project", async ({ page, hub },
   await page.getByTestId("fork-topic-submit").click();
   await expect.poll(() => harness.forkRequests.length).toBe(1);
   await expect(page.getByTestId("topic-fork-banner-count")).toContainText("2 messages carried");
+  // The mobile identity bar floats over the timeline, so the banner must be
+  // pushed below it or the avatar disc covers "Forked from …" and the count.
+  const banner = await page.getByTestId("topic-fork-banner").boundingBox();
+  expect(banner).not.toBeNull();
+  expect(banner!.y).toBeGreaterThanOrEqual(88);
 });
 
 test("a core without the Direct fork capability offers no fork entry", async ({ page, hub }, info) => {

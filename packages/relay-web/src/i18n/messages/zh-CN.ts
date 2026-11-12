@@ -1295,6 +1295,7 @@ export default {
       perMemberHint: "该群组让每个成员在自己的 Bot 工作区中工作，因此话题不需要选择工作区。工作区不同的成员可并行执行；共用同一工作区的成员仍会串行。",
       forkTitle: "分叉此话题",
       forkHint: "把此话题截至分叉点的公开消息复制到一个全新的独立话题。运行记录、Agent 会话与附件文件不会复制。",
+      forkHintHandoff: "把此话题截至分叉点的消息作为一段背景上下文，随新话题的第一条 prompt 一次性带入。Bot 只在这一条中看到它，之后依赖新话题自身的历史。",
       forkAction: "分叉",
       forkFromRun: "从此运行分叉新话题",
       forkPointRun: "分叉点：本次运行",
