@@ -25,7 +25,7 @@ import ConversationStatusBar from "./ConversationStatusBar.vue";
 import TraceOverlay from "./TraceOverlay.vue";
 import GroupComposer from "./GroupComposer.vue";
 import GroupTopicDialog from "./GroupTopicDialog.vue";
-import ForkTopicDialog from "./ForkTopicDialog.vue";
+import ForkTopicDialog, { type ForkTopicRequest } from "./ForkTopicDialog.vue";
 import GroupDialog from "./GroupDialog.vue";
 import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
 import TopicSwitcher from "./TopicSwitcher.vue";
@@ -161,6 +161,14 @@ function openForkSourceTopic(): void {
   }
 }
 
+
+/** The dialog's one call: the pane owns the instance and the store, so the
+ *  dialog itself has no store dependency and both panes can share it. */
+async function forkGroupTopicFromDialog(input: ForkTopicRequest): Promise<TopicSummaryDto> {
+  const instanceId = groupsStore.instanceId;
+  if (!instanceId) throw new Error("no active instance");
+  return groupsStore.forkGroupTopic(instanceId, input);
+}
 
 async function archiveTopic(topicId: string) {
   const ctx = requireTopicContext();
@@ -827,6 +835,8 @@ const worktreeRunId = computed(() => {
       :source-topic="forkTarget.topic"
       :source-point="forkTarget.sourcePoint"
       :resolved-run="forkTarget.resolvedRun ?? null"
+      :conversation-id="groupsStore.activeConversationId ?? ''"
+      :fork="forkGroupTopicFromDialog"
       @close="forkTarget = null"
     />
     <GroupDialog

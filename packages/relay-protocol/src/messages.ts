@@ -188,6 +188,12 @@ export const MSG = {
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
   groupTopicsFork: "control.group.topics.fork",
+  /**
+   * Direct fork (design §4.1): a Direct Bot Topic gets a bounded one-time
+   * prompt handoff instead of copied rows, because a Direct turn rebuilds
+   * nothing from message rows. Additive to `control.group.topics.fork`.
+   */
+  directTopicsFork: "control.direct.topics.fork",
   conversationCompletionsGet: "control.conversation.completions.get",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
@@ -767,6 +773,10 @@ export interface GroupTopicsForkPayload {
   sourcePoint?: ThreadForkSourcePointDto;
   title?: string;
 }
+/** `control.direct.topics.fork` carries the Group fork shape: one source
+ *  point, one client-minted target, one idempotency key. The distinct type
+ *  name keeps the two capabilities independently advertised. */
+export type DirectTopicsForkPayload = GroupTopicsForkPayload;
 export interface ConversationPromptPayload {
   agentMentions?: AgentMention[];
   conversationId: string;
@@ -1510,6 +1520,11 @@ export const RELAY_CAPABILITIES = {
    *  accepts the request. An older core answers `unsupported-rpc`, so the Web
    *  hides every fork entry until this is advertised. */
   groupTopicForkV1: "group.topics.fork.v1",
+  /** `control.direct.topics.fork` exists on both ends: the core renders a
+   *  bounded handoff for a new Direct Topic and the connector validator
+   *  accepts the request. An older core answers `unsupported-rpc`, so the Web
+   *  hides the Direct fork entry until this is advertised. */
+  directTopicForkV1: "direct.topics.fork.v1",
   /** A Group Roundtable target (`mode: "roundtable"`) is accepted end to end:
    *  the connector validator and the core both implement pre-generated
    *  sequential discussion. The Web hides the "discuss" entry when absent. */

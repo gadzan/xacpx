@@ -217,23 +217,47 @@ export interface ConversationRecord {
 
 /** Where `forkGroupTopic` cuts the source Topic: one shape on both ends. */
 export type ThreadForkSourcePoint = ThreadForkSourcePointDto;
+/** How the target Topic receives its history. `snapshot` copies message rows
+ *  (Group); `handoff` injects one bounded prompt block (Direct). */
+export type TopicForkMode = "snapshot" | "handoff";
 
-/** Provenance of a Topic created by a fork. The copied messages live in the
- *  target Topic; this record is display/provenance metadata only. */
+/** Provenance of a Topic created by a fork. `copiedMessages` counts rows under
+ *  `snapshot` and rendered messages under `handoff`; `omittedMessages` counts
+ *  the in-boundary messages a budget or window dropped in both modes. */
 export interface ConversationTopicFork {
   requestId: string;
   sourceConversationId: string;
   sourceTopicId: string;
   /** Source title at fork time, so the banner survives a source delete. */
   sourceTitle: string;
+  /** Absent on pre-Direct rows, which read as `snapshot`. */
+  mode?: TopicForkMode;
   /** Absent for a pure-snapshot boundary (a fork with no settled Run). */
   sourceRunId?: string;
+  /** Set by a message-boundary fork; never present with `sourceRunId`. */
+  sourceMessageId?: string;
   throughSeq: number;
   /** Root of the fork chain; the source id when the source is not a fork. */
   rootTopicId: string;
   copiedMessages: number;
   omittedMessages: number;
   createdAt: string;
+}
+
+/** Rendered Direct handoff text, stored beside the Topic rather than in it so
+ *  `StateStore.save` never carries up to 12 KB of prompt text on every write.
+ *  The row is the injected block verbatim and dies with its Topic. */
+export interface TopicForkHandoff {
+  topicId: string;
+  conversationId: string;
+  text: string;
+  throughSeq: number;
+  messageCount: number;
+  omittedMessages: number;
+  createdAt: string;
+  /** When the first non-command turn injected this text. Absent means the
+   *  handoff is still owed to the target Topic's next real prompt. */
+  consumedAt?: string;
 }
 
 export interface ConversationTopic {

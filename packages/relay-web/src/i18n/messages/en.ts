@@ -1308,6 +1308,8 @@ export default {
       forkBanner: "Forked from {title}",
       forkCopied: "{count} messages copied",
       forkOmitted: "{count} older messages omitted",
+      /** Direct forks copy no rows: the count is messages handed to the model. */
+      forkCarried: "{count} messages carried",
       forkSource: "Open source topic",
       forkErrors: {
         empty: "This topic has no messages to copy yet.",

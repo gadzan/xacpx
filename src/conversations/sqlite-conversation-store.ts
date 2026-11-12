@@ -87,6 +87,7 @@ import type {
   MemberTurnState,
   PendingDispatch,
   PendingDispatchState,
+  TopicForkHandoff,
 } from "./conversation-types";
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
@@ -304,6 +305,17 @@ interface RoutingDecisionRow {
   reason: string | null;
   assignment_ids_json: string;
   created_at: string;
+}
+
+interface HandoffRow {
+  topic_id: string;
+  conversation_id: string;
+  text: string;
+  through_seq: number;
+  message_count: number;
+  omitted_messages: number;
+  created_at: string;
+  consumed_at: string | null;
 }
 
 const SCHEMA = `
@@ -534,6 +546,23 @@ CREATE TABLE IF NOT EXISTS followup_reservations (
 
 CREATE INDEX IF NOT EXISTS idx_followup_reservations_status
   ON followup_reservations (run_id, status);
+
+-- Direct fork handoff text (design §3.3). The rendered prompt block lives here
+-- rather than on the Topic so every state save never re-writes up to 12 KB of
+-- prompt text. One row per forked Topic, deleted with it.
+CREATE TABLE IF NOT EXISTS topic_fork_handoffs (
+  topic_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  through_seq INTEGER NOT NULL,
+  message_count INTEGER NOT NULL,
+  omitted_messages INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  -- Set by the first NON-command turn that injected this text (design §4.4).
+  -- Never derived from message rows: a command turn persists a bot reply, so
+  -- inferring the window from rows would close it early and lose the history.
+  consumed_at TEXT
+);
 `;
 
 /**
@@ -4527,8 +4556,10 @@ export class SqliteConversationStore implements ConversationStore {
          SELECT 1 AS ok FROM runs WHERE conversation_id = ? AND topic_id = ?
          UNION ALL
          SELECT 1 AS ok FROM messages WHERE conversation_id = ? AND topic_id = ?
+         UNION ALL
+         SELECT 1 AS ok FROM topic_fork_handoffs WHERE conversation_id = ? AND topic_id = ?
          LIMIT 1`,
-        [conversationId, topicId, conversationId, topicId, conversationId, topicId, conversationId, topicId],
+        [conversationId, topicId, conversationId, topicId, conversationId, topicId, conversationId, topicId, conversationId, topicId],
       );
       if (!owned) {
         return;
@@ -4545,6 +4576,13 @@ export class SqliteConversationStore implements ConversationStore {
       );
       this.sqlite.run(
         "DELETE FROM bot_public_memory WHERE conversation_id = ? AND topic_id = ?",
+        [conversationId, topicId],
+      );
+      // The handoff text is part of the Topic, so it leaves in the same
+      // transaction: a surviving row would inject stale history into a new
+      // Topic that reuses no seq and owns no messages.
+      this.sqlite.run(
+        "DELETE FROM topic_fork_handoffs WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
       this.sqlite.run(
@@ -4659,6 +4697,78 @@ export class SqliteConversationStore implements ConversationStore {
     }, "immediate");
   }
 
+  putTopicForkHandoff(input: TopicForkHandoff): void {
+    this.sqlite.run(
+      `INSERT INTO topic_fork_handoffs
+         (topic_id, conversation_id, text, through_seq, message_count, omitted_messages, created_at, consumed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(topic_id) DO UPDATE SET
+         conversation_id = excluded.conversation_id,
+         text = excluded.text,
+         through_seq = excluded.through_seq,
+         message_count = excluded.message_count,
+         omitted_messages = excluded.omitted_messages,
+         created_at = excluded.created_at`,
+      [
+        input.topicId,
+        input.conversationId,
+        input.text,
+        input.throughSeq,
+        input.messageCount,
+        input.omittedMessages,
+        input.createdAt,
+        input.consumedAt ?? null,
+      ],
+    );
+  }
+
+  getTopicForkHandoff(topicId: string): TopicForkHandoff | undefined {
+    const row = this.sqlite.get<HandoffRow>(
+      "SELECT * FROM topic_fork_handoffs WHERE topic_id = ?",
+      [topicId],
+    );
+    if (!row) return undefined;
+    return {
+      topicId: row.topic_id,
+      conversationId: row.conversation_id,
+      text: row.text,
+      throughSeq: Number(row.through_seq),
+      messageCount: Number(row.message_count),
+      omittedMessages: Number(row.omitted_messages),
+      createdAt: row.created_at,
+      ...(row.consumed_at ? { consumedAt: row.consumed_at } : {}),
+    };
+  }
+
+  markTopicForkHandoffConsumed(topicId: string, consumedAt: string): void {
+    this.sqlite.run(
+      "UPDATE topic_fork_handoffs SET consumed_at = ? WHERE topic_id = ? AND consumed_at IS NULL",
+      [consumedAt, topicId],
+    );
+  }
+
+  topicMessageCountThrough(conversationId: string, topicId: string, throughSeq: number): number {
+    return this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND topic_id = ? AND seq <= ?",
+      [conversationId, topicId, throughSeq],
+    )?.n ?? 0;
+  }
+
+  listRecentMessages(input: {
+    conversationId: string;
+    topicId: string;
+    throughSeq: number;
+    limit: number;
+  }): ConversationMessage[] {
+    const rows = this.sqlite.all<MessageRow>(
+      `SELECT * FROM messages
+       WHERE conversation_id = ? AND topic_id = ? AND seq <= ?
+       ORDER BY seq DESC LIMIT ?`,
+      [input.conversationId, input.topicId, input.throughSeq, input.limit],
+    );
+    return rows.reverse().map(mapMessage);
+  }
+
   topicForkMessageCount(topicId: string): number {
     return this.sqlite.get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM messages WHERE topic_id = ? AND forked_from_message_id IS NOT NULL",
@@ -4728,6 +4838,13 @@ export class SqliteConversationStore implements ConversationStore {
         [conversationId, topicId],
       );
     }
+    // Clearing retires the Topic's context generation but keeps its id, so the
+    // handoff text must go with it: a surviving row would replay old history
+    // into a brand-new session whose seq restarts at 1.
+    this.sqlite.run(
+      "DELETE FROM topic_fork_handoffs WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
     this.traces.deleteRows(conversationId, topicId);
     this.sqlite.run(
       `DELETE FROM pending_dispatches
@@ -4785,6 +4902,7 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run("DELETE FROM member_turns WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM bot_public_memory WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM topic_fork_handoffs WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM runs WHERE conversation_id = ?", [conversationId]);

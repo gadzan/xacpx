@@ -17,6 +17,7 @@ import { useGroupsStore } from "../stores/groups";
 import {
   supportsBotDedicatedWorkspaceCleanup,
   supportsConversationTimelineV1,
+  supportsDirectTopicFork,
   supportsRunsCancelMember,
   useInstancesStore,
 } from "../stores/instances";
@@ -25,6 +26,7 @@ import type {
   ConversationRunDto,
   InteractionValueDto,
   MemberTurnSummaryDto,
+  TopicSummaryDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { MSG, isErrorPayload } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
@@ -46,6 +48,8 @@ import { textBubblesOf } from "../lib/turn-presentation";
 import BotDialog from "./BotDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
+import ForkTopicDialog, { type ForkTopicRequest } from "./ForkTopicDialog.vue";
+import { isTerminalRunState } from "../stores/groups";
 import TopicSwitcher from "./TopicSwitcher.vue";
 import DropdownPanel from "./DropdownPanel.vue";
 import { useDropdown, useIsMobile } from "../lib/use-dropdown";
@@ -428,6 +432,64 @@ async function abandonUnknownRuns(runIds: string[]): Promise<void> {
   }
 }
 
+// --- Direct Topic fork (design §4.5) ----------------------------------------
+const forkSupported = computed(() => supportsDirectTopicFork(instance.value));
+
+interface DirectForkTarget {
+  topic: TopicSummaryDto;
+  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string };
+  resolvedRun?: ConversationRunDto;
+}
+
+const forkTarget = ref<DirectForkTarget | null>(null);
+
+/** The dialog's one call; the pane owns the instance and the store. */
+async function forkDirectTopicFromDialog(input: ForkTopicRequest): Promise<TopicSummaryDto> {
+  const instanceId = directBotsStore.instanceId;
+  if (!instanceId) throw new Error("no active instance");
+  return directBotsStore.forkDirectTopic(instanceId, input);
+}
+
+function openForkFromTopic(topic: TopicSummaryDto): void {
+  if (!forkSupported.value) return;
+  const resolvedRun = terminalRunForTopic(topic.id);
+  forkTarget.value = {
+    topic,
+    sourcePoint: { type: "latest_stable" },
+    ...(resolvedRun ? { resolvedRun } : {}),
+  };
+}
+
+/** The newest terminal Run this pane already knows about, for the label only. */
+function terminalRunForTopic(topicId: string): ConversationRunDto | undefined {
+  const active = directBotsStore.activeRun;
+  return active && active.topicId === topicId && isTerminalRunState(active.state) ? active : undefined;
+}
+
+function openForkFromRun(run: ConversationRunDto): void {
+  const topic = directBotsStore.currentTopics.find((candidate) => candidate.id === run.topicId);
+  if (!topic || !forkSupported.value || !isTerminalRunState(run.state)) return;
+  const wasOpen = !!detailTarget.value;
+  closeTraceOverlay();
+  forkTarget.value = { topic, sourcePoint: { type: "run", runId: run.id }, resolvedRun: run };
+  void wasOpen;
+}
+
+const detailRunForkable = computed(() =>
+  forkSupported.value && !!detailTarget.value && isTerminalRunState(detailTarget.value.run.state));
+
+const forkSourceAvailable = computed(() => {
+  const sourceTopicId = directBotsStore.currentTopic?.forkedFrom?.sourceTopicId;
+  return !!sourceTopicId && directBotsStore.currentTopics.some((topic) => topic.id === sourceTopicId);
+});
+
+function openForkSourceTopic(): void {
+  const sourceTopicId = directBotsStore.currentTopic?.forkedFrom?.sourceTopicId;
+  if (sourceTopicId && directBotsStore.currentTopics.some((topic) => topic.id === sourceTopicId)) {
+    void directBotsStore.switchTopic(sourceTopicId);
+  }
+}
+
 const removalOpen = ref(false);
 
 function openRemoval(): void {
@@ -546,6 +608,7 @@ function handleStopAll(): void {
         :restore-topic="restoreTopic"
         :teardown-topic="teardownTopic"
         :clear-topic="clearTopic"
+        :fork-topic="forkSupported ? openForkFromTopic : undefined"
         :abandon-unknown-runs="abandonUnknownRuns"
         @select="directBotsStore.switchTopic"
         @create="newTopicDialogOpen = true"
@@ -589,6 +652,7 @@ function handleStopAll(): void {
               :restore-topic="restoreTopic"
               :teardown-topic="teardownTopic"
               :clear-topic="clearTopic"
+              :fork-topic="forkSupported ? openForkFromTopic : undefined"
               :abandon-unknown-runs="abandonUnknownRuns"
               @select="directBotsStore.switchTopic"
               @create="newTopicDialogOpen = true"
@@ -686,6 +750,9 @@ function handleStopAll(): void {
       :is-run-queued="directBotsStore.isRunQueued"
       :load-older="timelineFeed.loadOlder"
       top-inset-class="pt-[calc(6rem+env(safe-area-inset-top))] lg:pt-5"
+      :forked-from="directBotsStore.currentTopic?.forkedFrom ?? null"
+      :fork-source-available="forkSourceAvailable"
+      @open-source-topic="openForkSourceTopic"
       @open-detail="openTimelineDetail"
     />
     <div
@@ -708,6 +775,7 @@ function handleStopAll(): void {
       :capability="detailCapability"
       :cancel-pending="!!stopPendingMember"
       :topic-title="directBotsStore.currentTopic?.title"
+      :fork-available="detailRunForkable"
       :attempt="detailEffectiveAttempt"
       :attempts="detailTracePage?.attempts"
       :parts="detailTraceParts"
@@ -717,6 +785,7 @@ function handleStopAll(): void {
       :trace-has-more="detailTracePage?.hasMore"
       :trace-streaming="!detailTracePage?.events.length && !!detailSelectedMember && directBotsStore.activeMemberTurn?.id === detailSelectedMember.id && !!directBotsStore.liveTurn"
       @close="closeTraceOverlay"
+      @fork="detailTarget && openForkFromRun(detailTarget.run)"
       @attempt="handleDirectAttempt"
       @select-member="selectDirectMember"
       @stop-member="handleDetailStopMember"
@@ -800,6 +869,16 @@ function handleStopAll(): void {
     <NewTopicDialog
       v-if="newTopicDialogOpen"
       @close="newTopicDialogOpen = false"
+    />
+
+    <ForkTopicDialog
+      v-if="forkTarget"
+      :source-topic="forkTarget.topic"
+      :source-point="forkTarget.sourcePoint"
+      :resolved-run="forkTarget.resolvedRun ?? null"
+      :conversation-id="directBotsStore.activeConversationId ?? ''"
+      :fork="forkDirectTopicFromDialog"
+      @close="forkTarget = null"
     />
 
     <!-- Bot ⋯ sheet (<lg): the desktop header's nav / edit / delete entries. -->

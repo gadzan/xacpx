@@ -603,6 +603,8 @@ function validTopicFork(value: unknown): boolean {
     && typeof f.sourceConversationId === "string"
     && typeof f.sourceTopicId === "string"
     && typeof f.sourceTitle === "string"
+    && (f.mode === undefined || f.mode === "snapshot" || f.mode === "handoff")
+    && (f.sourceMessageId === undefined || isBoundedStr(f.sourceMessageId, 128))
     && (f.sourceRunId === undefined || typeof f.sourceRunId === "string")
     && isNonNegInt(f.throughSeq)
     && typeof f.rootTopicId === "string"

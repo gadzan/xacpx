@@ -52,6 +52,15 @@ export interface BotRuntimeManagerOptions {
    *  cancel in the materialize/start window). Must never throw: product
    *  projection must not affect dispatch fencing. */
   onRuntimeMaterialized?: (botId: string) => void;
+  /** Durable read of Direct fork handoffs. Injected so the injected-history
+   *  decision lives here, in one place, instead of in each caller that can
+   *  reach the store. Absent means this process serves no Direct fork. */
+  forkHandoffs?: ForkHandoffReader;
+}
+
+/** The durable reads the injection window needs, and nothing else. */
+export interface ForkHandoffReader {
+  getTopicForkHandoff(topicId: string): { conversationId: string; text: string; consumedAt?: string } | undefined;
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -62,6 +71,7 @@ export class BotRuntimeManager {
   private readonly afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
   private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly onRuntimeMaterialized?: (botId: string) => void;
+  private readonly forkHandoffs?: ForkHandoffReader;
 
   constructor(
     private readonly bots: BotService,
@@ -76,6 +86,7 @@ export class BotRuntimeManager {
     this.now = options.now ?? (() => new Date());
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.afterDirectSnapshot = options.afterDirectSnapshot;
+    this.forkHandoffs = options.forkHandoffs;
     this.releaseOwnedSession = options.releaseOwnedSession;
     this.onRuntimeMaterialized = options.onRuntimeMaterialized;
   }
@@ -136,6 +147,20 @@ export class BotRuntimeManager {
     return Object.values(this.state.conversations)
       .filter((conversation) => conversation.kind === "group" && groupPublicMemoryProjection(conversation) === "off")
       .map((conversation) => conversation.id);
+  }
+
+  /**
+   * The bounded history a Direct fork still owes its target Topic, or
+   * undefined. The window is an explicit consumption marker, never a row
+   * count: a command turn persists a bot reply, so deriving the window from
+   * messages would close it before the first real prompt ever saw the history.
+   */
+  forkHandoff(topicId: string, conversationId: string): string | undefined {
+    const handoffs = this.forkHandoffs;
+    if (!handoffs) return undefined;
+    const handoff = handoffs.getTopicForkHandoff(topicId);
+    if (!handoff || handoff.conversationId !== conversationId || handoff.consumedAt !== undefined) return undefined;
+    return handoff.text.trim() ? handoff.text : undefined;
   }
 
   /** Durable Topic scheduling metadata; no live execution counter. */

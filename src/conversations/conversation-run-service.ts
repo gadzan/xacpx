@@ -83,6 +83,7 @@ import {
   type ConversationLiveTurnsByMember,
   type ConversationTimeline,
 } from "./conversation-timeline";
+import { renderTopicForkHandoff } from "./topic-fork-handoff";
 
 export interface ConversationRunServiceOptions {
   worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
@@ -1282,6 +1283,203 @@ export class ConversationRunService {
     return forked;
   }
 
+  /**
+   * Fork a Direct Bot Topic as a one-time prompt handoff (design §4).
+   *
+   * A Direct turn rebuilds nothing from message rows — history reaches the
+   * model through the persisted Agent session — so copying rows into the
+   * target would be invisible to the provider. Instead the source history is
+   * rendered once into `topic_fork_handoffs` and injected into the target's
+   * first effective prompt.
+   *
+   * Replay resolves BEFORE the source read. Otherwise a retry after the source
+   * Topic was deleted would answer `topic_not_found` for a fork that already
+   * exists, and the client could only start over with fresh ids.
+   */
+  async forkDirectTopic(input: {
+    conversationId: string;
+    sourceTopicId: string;
+    targetTopicId: string;
+    requestId: string;
+    sourcePoint?: ThreadForkSourcePoint;
+    title?: string;
+  }): Promise<ConversationTopic> {
+    this.assertOpen();
+    const botId = this.resolveDirectBotId(input.conversationId);
+    this.assertForkTargetTopicIdShape(input.sourceTopicId, input.targetTopicId);
+    // The Direct default Topic is synthesized from the Bot: a fork into it
+    // would overwrite the Bot's own conversation and inject a stranger's
+    // history into it.
+    if (input.targetTopicId === createDirectTopicId(botId)) {
+      throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+    }
+    if (!input.requestId) {
+      throw new ConversationError("invalid-payload", "a fork request requires a requestId");
+    }
+    const point = input.sourcePoint ?? { type: "latest_stable" as const };
+    if (point.type !== "latest_stable" && point.type !== "run") {
+      throw new ConversationError("invalid-payload", "fork sourcePoint must be latest_stable or a run");
+    }
+    this.assertConversationNotDeleting(input.conversationId);
+    const replay = this.resolveDirectForkReplay(input);
+    if (replay) return replay;
+
+    const forked = await this.bots.runLifecycle(botId, async () => {
+      this.assertConversationNotDeleting(input.conversationId);
+      return await this.stateMutex.run(async () => {
+        this.assertConversationNotDeleting(input.conversationId);
+        // Re-resolved inside the lock: a concurrent first call may have
+        // committed this exact target while this one waited for the mutex.
+        const settled = this.resolveDirectForkReplay(input);
+        if (settled) return settled;
+        const liveSource = this.state.conversation_topics[input.sourceTopicId];
+        if (!liveSource || liveSource.conversationId !== input.conversationId || liveSource.peerScope) {
+          throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this conversation`);
+        }
+        if (liveSource.status !== "active" && liveSource.status !== "archived") {
+          throw new ConversationError("topic_not_found", `topic "${input.sourceTopicId}" does not belong to this conversation`);
+        }
+        this.assertForkSourceNotTearingDown(input.conversationId, input.sourceTopicId);
+        const boundary = this.resolveForkPoint(
+          input.conversationId,
+          liveSource,
+          point,
+        );
+        const inBoundary = this.store.topicMessageCountThrough(
+          input.conversationId,
+          input.sourceTopicId,
+          boundary.throughSeq,
+        );
+        if (inBoundary === 0) {
+          throw new ConversationError("topic_fork_empty", `topic "${input.sourceTopicId}" has no messages to fork`);
+        }
+        const messages = this.store.listRecentMessages({
+          conversationId: input.conversationId,
+          topicId: input.sourceTopicId,
+          throughSeq: boundary.throughSeq,
+          limit: MAX_FORK_MESSAGES,
+        });
+        // Fork-of-fork: the source's own handoff text is the chain's oldest
+        // block and travels inline, counts included. Without it the second
+        // generation would silently lose everything the first one carried.
+        const parent = liveSource.forkedFrom?.mode === "handoff"
+          ? this.store.getTopicForkHandoff(input.sourceTopicId)
+          : undefined;
+        const rendered = renderTopicForkHandoff({
+          sourceTitle: liveSource.title,
+          throughSeq: boundary.throughSeq,
+          messages,
+          inBoundaryCount: inBoundary,
+          ...(parent ? { parentText: parent.text, parentMessageCount: parent.messageCount, parentOmittedMessages: parent.omittedMessages } : {}),
+        });
+        if (!rendered.text) {
+          throw new ConversationError("topic_fork_empty", `topic "${input.sourceTopicId}" has no messages to fork`);
+        }
+        const timestamp = this.now().toISOString();
+        const topic: ConversationTopic = {
+          id: input.targetTopicId,
+          conversationId: input.conversationId,
+          title: input.title?.trim() ? input.title.trim() : `${liveSource.title} fork`,
+          status: "active",
+          forkedFrom: {
+            requestId: input.requestId,
+            sourceConversationId: input.conversationId,
+            sourceTopicId: input.sourceTopicId,
+            sourceTitle: liveSource.title,
+            mode: "handoff",
+            ...(boundary.boundaryRunId !== undefined ? { sourceRunId: boundary.boundaryRunId } : {}),
+            throughSeq: boundary.throughSeq,
+            rootTopicId: liveSource.forkedFrom?.rootTopicId ?? input.sourceTopicId,
+            copiedMessages: rendered.messageCount,
+            omittedMessages: rendered.omittedMessages,
+            createdAt: timestamp,
+          },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        // SQLite first, state second: a crash between them leaves orphan rows
+        // that the replay's orphan check refuses, never a banner over missing
+        // prompt text.
+        this.store.putTopicForkHandoff({
+          topicId: topic.id,
+          conversationId: input.conversationId,
+          text: rendered.text,
+          throughSeq: boundary.throughSeq,
+          messageCount: rendered.messageCount,
+          omittedMessages: rendered.omittedMessages,
+          createdAt: timestamp,
+        });
+        const next = structuredClone(this.state);
+        // The fork may be the first write that materializes this Direct
+        // conversation: record its plan alongside the Topic so the target has
+        // an owner from its first read.
+        const planned = this.planDirect(this.bots.getBot(botId));
+        next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
+        next.conversation_topics[planned.topic.id] = next.conversation_topics[planned.topic.id] ?? planned.topic;
+        next.conversation_topics[topic.id] = topic;
+        await this.persist(next);
+        return topic;
+      });
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: forked });
+    return forked;
+  }
+
+  /**
+   * The replay answer for an existing fork target, or undefined when the target
+   * is genuinely new. Reads only the target and its handoff row: a replay must
+   * never touch the source, which may already be gone.
+   */
+  private resolveDirectForkReplay(input: {
+    conversationId: string;
+    sourceTopicId: string;
+    targetTopicId: string;
+    requestId: string;
+  }): ConversationTopic | undefined {
+    const existing = this.state.conversation_topics[input.targetTopicId];
+    if (existing) {
+      if (existing.conversationId !== input.conversationId || existing.forkedFrom?.requestId !== input.requestId) {
+        throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+      }
+      // A snapshot target under the same request id is a Group fork, not this
+      // one: adopting it would show a handoff banner over copied rows.
+      if (existing.forkedFrom.mode !== "handoff") {
+        throw new ConversationError("topic_exists", `topic "${input.targetTopicId}" already exists`);
+      }
+      const handoff = this.store.getTopicForkHandoff(input.targetTopicId);
+      if (
+        !handoff
+        || !handoff.text.trim()
+        || handoff.conversationId !== input.conversationId
+        || handoff.throughSeq !== existing.forkedFrom.throughSeq
+        || handoff.messageCount !== existing.forkedFrom.copiedMessages
+        || handoff.omittedMessages !== existing.forkedFrom.omittedMessages
+      ) {
+        throw new ConversationError(
+          "topic_fork_history_missing",
+          `fork target "${input.targetTopicId}" has no matching handoff text; delete the damaged target and retry with a fresh id`,
+        );
+      }
+      if (existing.status === "deleting" || this.store.isTopicDeleting(input.targetTopicId)) {
+        throw new ConversationError("topic_deleting", `topic "${input.targetTopicId}" is deleting`);
+      }
+      if (this.store.isTopicResetting(input.targetTopicId)) {
+        throw new ConversationError("topic_resetting", `topic "${input.targetTopicId}" is resetting`);
+      }
+      return existing;
+    }
+    // Handoff rows without a Topic record are the crash window between the two
+    // writes. Fail closed instead of adopting rows the state never committed.
+    if (this.store.getTopicForkHandoff(input.targetTopicId) || this.store.topicMessageCount(input.conversationId, input.targetTopicId) > 0) {
+      throw new ConversationError(
+        "topic_fork_history_missing",
+        `fork target "${input.targetTopicId}" holds committed fork rows with no Topic record; retry with a fresh target id`,
+      );
+    }
+    return undefined;
+  }
+
   private assertForkTargetTopicIdShape(sourceTopicId: string, targetTopicId: string): void {
     if (typeof targetTopicId !== "string" || !targetTopicId.startsWith("topic_") || targetTopicId.startsWith("topic_peer_")) {
       throw new ConversationError("invalid-payload", `"${targetTopicId}" is not a forkable Topic id`);
@@ -1648,6 +1846,11 @@ export class ConversationRunService {
           }
           const next = structuredClone(this.state);
           next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
+          // Clearing retires the context, so the Topic must also stop
+          // claiming a fork: seq restarts at 1 and the handoff row is gone
+          // (retireTopicContext deleted it). A surviving `forkedFrom` would
+          // show a banner over a conversation that no longer descends from
+          // anything.
           const stored: ConversationTopic = {
             ...current,
             conversationId,
@@ -1656,6 +1859,7 @@ export class ConversationRunService {
             managedAt: timestamp,
             updatedAt: timestamp,
           };
+          delete stored.forkedFrom;
           next.conversation_topics[topicId] = stored;
           this.deleteDirectTopicBindings(next, conversationId, topicId);
           await this.persist(next);
@@ -4070,7 +4274,7 @@ export class ConversationRunService {
         const timestamp = this.now().toISOString();
         const next = structuredClone(this.state);
         next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
-        next.conversation_topics[topicId] = {
+        const cleared: ConversationTopic = {
           ...current,
           conversationId,
           id: topicId,
@@ -4078,6 +4282,10 @@ export class ConversationRunService {
           managedAt: current.managedAt ?? timestamp,
           updatedAt: current.updatedAt,
         };
+        // Same rule as the first pass: a cleared Topic keeps its id but no
+        // longer descends from a fork, and its handoff row is already gone.
+        delete cleared.forkedFrom;
+        next.conversation_topics[topicId] = cleared;
         this.deleteDirectTopicBindings(next, conversationId, topicId);
         await this.persist(next);
         return this.presentDefaultTopic(next.conversation_topics[topicId]!, this.requireConversation(conversationId));

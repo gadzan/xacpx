@@ -15,6 +15,7 @@ import type {
   MemberTurnSpeechOutcome,
   MemberTurnState,
   PendingDispatch,
+  TopicForkHandoff,
 } from "./conversation-types";
 import type { SqliteMemberTurnTraceStore } from "./sqlite-member-turn-trace-store";
 import type { RunWorkOutcome } from "./conversation-work-graph";
@@ -900,6 +901,29 @@ export interface ConversationStore {
    * caller can refuse `topic_exists` instead of polluting a live Topic.
    */
   copyTopicForkMessages(input: TopicForkCopyInput): TopicForkCopyResult;
+  /**
+   * Store the rendered Direct fork handoff for one Topic. Written before the
+   * state persist, so a crash between the two surfaces as orphan rows the fork
+   * replay refuses rather than a banner over missing prompt text.
+   */
+  putTopicForkHandoff(input: TopicForkHandoff): void;
+  /** The rendered handoff for a Direct fork target, or undefined. */
+  getTopicForkHandoff(topicId: string): TopicForkHandoff | undefined;
+  /**
+   * Spend the one injection this handoff gets. Idempotent convergence: an
+   * already-consumed row keeps its first timestamp, so a retry after a
+   * provider failure never re-arms the injection.
+   */
+  markTopicForkHandoffConsumed(topicId: string, consumedAt: string): void;
+  /** Messages at or before `throughSeq`, for `omittedMessages`. */
+  topicMessageCountThrough(conversationId: string, topicId: string, throughSeq: number): number;
+  /** The newest `limit` messages at or before `throughSeq`, ascending. */
+  listRecentMessages(input: {
+    conversationId: string;
+    topicId: string;
+    throughSeq: number;
+    limit: number;
+  }): ConversationMessage[];
   /** Committed fork rows for the target Topic. Zero means no fork copy. */
   topicForkMessageCount(topicId: string): number;
   /** Every message row for the target Topic, forked or not. */

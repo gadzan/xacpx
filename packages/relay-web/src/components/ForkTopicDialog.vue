@@ -4,7 +4,18 @@ import { useI18n } from "vue-i18n";
 import type { ConversationRunDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
-import { useGroupsStore } from "../stores/groups";
+
+/** The one fork call both panes share. The dialog owns the ids and the error
+ *  mapping; the pane owns which store performs the RPC, so Group and Direct
+ *  reuse this component instead of forking two dialogs. */
+export interface ForkTopicRequest {
+  conversationId: string;
+  sourceTopicId: string;
+  targetTopicId: string;
+  requestId: string;
+  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string };
+  title?: string;
+}
 
 const props = defineProps<{
   sourceTopic: TopicSummaryDto;
@@ -12,21 +23,22 @@ const props = defineProps<{
   sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string };
   /** Cache-resolved Run for the confirm label only; never sent as the point. */
   resolvedRun?: ConversationRunDto | null;
+  conversationId: string;
+  fork: (input: ForkTopicRequest) => Promise<TopicSummaryDto>;
 }>();
 
 const emit = defineEmits<{
   close: [];
 }>();
 
-const groupsStore = useGroupsStore();
 const { t } = useI18n();
 
 const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
 
 const title = ref(`${props.sourceTopic.title} fork`);
-const creating = ref(false);
 const errorCode = ref<string | null>(null);
+const creating = ref(false);
 // Minted once per open: every retry of this dialog replays the same pair, so
 // the core returns the already-committed Topic instead of a second one. The
 // one exception is `topic_fork_history_missing`: the core fails closed rather
@@ -75,13 +87,12 @@ function errorMessage(code: string): string {
 }
 
 async function handleFork(): Promise<void> {
-  const instanceId = groupsStore.instanceId;
-  if (!instanceId || !groupsStore.activeConversationId || creating.value) return;
+  if (!props.conversationId || creating.value) return;
   creating.value = true;
   errorCode.value = null;
   try {
-    await groupsStore.forkGroupTopic(instanceId, {
-      conversationId: groupsStore.activeConversationId,
+    await props.fork({
+      conversationId: props.conversationId,
       sourceTopicId: props.sourceTopic.id,
       targetTopicId: targetTopicId.value,
       requestId: requestId.value,

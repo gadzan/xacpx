@@ -148,7 +148,9 @@ defineExpose({ scrollToBottom });
         {{ $t("group.topic.forkBanner", { title: forkedFrom.sourceTitle }) }}
       </span>
       <span data-test="topic-fork-banner-count">
-        {{ $t("group.topic.forkCopied", { count: forkedFrom.copiedMessages }) }}
+        {{ forkedFrom.mode === "handoff"
+          ? $t("group.topic.forkCarried", { count: forkedFrom.copiedMessages })
+          : $t("group.topic.forkCopied", { count: forkedFrom.copiedMessages }) }}
       </span>
       <span v-if="forkedFrom.omittedMessages > 0" data-test="topic-fork-banner-omitted">
         {{ $t("group.topic.forkOmitted", { count: forkedFrom.omittedMessages }) }}

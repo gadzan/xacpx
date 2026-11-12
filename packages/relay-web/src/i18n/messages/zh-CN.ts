@@ -1304,6 +1304,7 @@ export default {
       forkBanner: "分叉自 {title}",
       forkCopied: "已复制 {count} 条消息",
       forkOmitted: "较早的 {count} 条消息未复制",
+      forkCarried: "已携带 {count} 条消息",
       forkSource: "打开源话题",
       forkErrors: {
         empty: "此话题还没有可复制的消息。",

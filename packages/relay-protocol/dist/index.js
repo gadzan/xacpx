@@ -213,6 +213,7 @@ var MSG = {
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
   groupTopicsFork: "control.group.topics.fork",
+  directTopicsFork: "control.direct.topics.fork",
   conversationCompletionsGet: "control.conversation.completions.get",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
@@ -277,6 +278,7 @@ var RELAY_CAPABILITIES = {
   runsPauseV1: "runs.pause.v1",
   groupTopicIsolationV1: "group.topics.isolation.v1",
   groupTopicForkV1: "group.topics.fork.v1",
+  directTopicForkV1: "direct.topics.fork.v1",
   roundtableV1: "conversations.roundtable.v1",
   conversationTimelineV1: "conversations.timeline.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1",
@@ -713,7 +715,7 @@ function validTopicFork(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const f = value;
-  return isBoundedStr(f.requestId, 128) && typeof f.sourceConversationId === "string" && typeof f.sourceTopicId === "string" && typeof f.sourceTitle === "string" && (f.sourceRunId === undefined || typeof f.sourceRunId === "string") && isNonNegInt(f.throughSeq) && typeof f.rootTopicId === "string" && isNonNegInt(f.copiedMessages) && isNonNegInt(f.omittedMessages) && typeof f.createdAt === "string";
+  return isBoundedStr(f.requestId, 128) && typeof f.sourceConversationId === "string" && typeof f.sourceTopicId === "string" && typeof f.sourceTitle === "string" && (f.mode === undefined || f.mode === "snapshot" || f.mode === "handoff") && (f.sourceMessageId === undefined || isBoundedStr(f.sourceMessageId, 128)) && (f.sourceRunId === undefined || typeof f.sourceRunId === "string") && isNonNegInt(f.throughSeq) && typeof f.rootTopicId === "string" && isNonNegInt(f.copiedMessages) && isNonNegInt(f.omittedMessages) && typeof f.createdAt === "string";
 }
 function validTopicSummary(value) {
   if (typeof value !== "object" || value === null)
@@ -1922,6 +1924,7 @@ var validateGroupTopicsFork = (p) => {
   }
   return o;
 };
+var validateDirectTopicsFork = validateGroupTopicsFork;
 var validateGroupTopicsSetIsolation = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) && isCreateIsolation(o.isolation) ? o : null;
@@ -2410,6 +2413,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.groupTopicsFork]: validateGroupTopicsFork,
+  [MSG.directTopicsFork]: validateDirectTopicsFork,
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationPromptWithPolicy]: validateConversationPolicyPrompt,
   [MSG.conversationWorktree]: validateConversationWorktree,

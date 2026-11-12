@@ -51,6 +51,18 @@ export interface DirectCancelScope {
   botId: string;
 }
 
+/** Wire shape of `control.direct.topics.fork`: the Group fork payload's shape
+ *  under the Direct RPC's own name. */
+export interface DirectTopicForkInput {
+  conversationId: string;
+  sourceTopicId: string;
+  /** Minted when the dialog opens and reused on every retry. */
+  targetTopicId: string;
+  requestId: string;
+  sourcePoint?: { type: "latest_stable" } | { type: "run"; runId: string };
+  title?: string;
+}
+
 export type CancelOutcome =
   | { status: "cancelled"; scope: DirectCancelScope; runId: string; run: ConversationRunDetailDto }
   | { status: "terminal"; scope: DirectCancelScope; runId: string; run: ConversationRunDetailDto }
@@ -1589,6 +1601,25 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       title,
     }));
     upsertTopic(targetInstanceId, res.topic);
+    return res.topic;
+  }
+
+  /**
+   * Fork this Direct Topic with a bounded prompt handoff. Mirrors
+   * `groupsStore.forkGroupTopic`: upsert the returned Topic and switch to it,
+   * so the caller's dialog closes onto the fork it just created.
+   */
+  async function forkDirectTopic(
+    targetInstanceId: string,
+    input: DirectTopicForkInput,
+  ): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.directTopicsFork, input),
+    );
+    upsertTopic(targetInstanceId, res.topic);
+    if (instanceId.value === targetInstanceId && activeConversationId.value === input.conversationId) {
+      await switchTopic(res.topic.id);
+    }
     return res.topic;
   }
 
@@ -4425,6 +4456,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     createTopic,
     updateTopic,
     archiveTopic,
+    forkDirectTopic,
     restoreTopic,
     previewTopic,
     teardownTopic,

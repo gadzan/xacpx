@@ -63,13 +63,12 @@ CREATE TABLE IF NOT EXISTS topic_fork_handoffs (
   through_seq INTEGER NOT NULL,
   message_count INTEGER NOT NULL,
   omitted_messages INTEGER NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  consumed_at TEXT
 );
-```
 
 store 接口：
 
-```ts
 interface ConversationStore {
   putTopicForkHandoff(input: {
     topicId: string;
@@ -81,8 +80,8 @@ interface ConversationStore {
     createdAt: string;
   }): void;
   getTopicForkHandoff(topicId: string): TopicForkHandoff | undefined;
-  /** 该 Topic 是否已有 bot 消息。注入窗口的判据。 */
-  hasBotMessage(conversationId: string, topicId: string): boolean;
+  /** 写入首次消费时间；已消费时不再改写。 */
+  markTopicForkHandoffConsumed(topicId: string, consumedAt: string): void;
   /** 只数边界内的消息，用于 omittedMessages。 */
   topicMessageCountThrough(conversationId: string, topicId: string, throughSeq: number): number;
   /** 边界内最新 N 条，升序返回。 */
@@ -180,16 +179,22 @@ Bot <name>: <content>
 注入判据，按顺序：
 
 1. 目标 Topic 有 `getTopicForkHandoff(topicId)` 结果。
-2. `hasBotMessage(conversationId, topicId) === false`。第一条 bot 回复落地后，手交已完成，不再注入。
-3. 本轮不是已知 xacpx 命令，也不是 advertised runtime 命令。命令轮只返回裸命令文本，不会带上头部；这类轮次不消耗注入机会。
+2. `handoff.consumedAt` 为空。
+3. 本轮不是已知 xacpx 命令，也不是 advertised runtime 命令。命令轮只返回裸命令文本，不会带上头部；这类轮次既不能注入，也不能标记已消费。
 
-这三条全部用已有的 store 读与现有命令判定完成，不需要新的状态字段。
+前两条是消费标记，不能从消息行推导。命令轮会落一条 bot 回复，`hasBotMessage` 会在下一轮之前就把窗口关掉，于是历史永久丢失。因此 `topic_fork_handoffs` 增加一列：
+
+```sql
+consumed_at TEXT
+```
+
+dispatcher 在把历史块放进本轮 prompt 之后、调用 runner 之前写入 `consumed_at`。写入是幂等收敛：已消费的 handoff 只保留第一次的时间。命令轮不写。
 
 已知边界：
 
-- 首条请求在 provider 启动前失败，用户换了新消息重试，下一轮仍满足条件 1 和 2，会重新注入。重复注入优于丢失上下文。
-- 命令轮不注入，下一条普通消息仍会注入。
-- 首条 bot 回复落地的同一轮，注入已经生效；下一轮不再注入。
+- 首条请求在 provider 启动前失败，`consumed_at` 尚未写入，用户换新消息重试仍会注入。重复注入优于丢失上下文。
+- 首条请求已注入但 provider 失败，`consumed_at` 已写入，不会重注。这是有意选择：fork 的价值是模型看到一次历史，而不是每次失败都重放。
+- 命令轮不注入也不消费，下一条普通消息仍注入。
 
 ### 4.5 UI
 

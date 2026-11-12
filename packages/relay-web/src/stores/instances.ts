@@ -231,6 +231,15 @@ export function supportsGroupTopicFork(instance: { capabilities?: string[] | nul
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupTopicForkV1);
 }
 
+/**
+ * True when the instance can fork a Direct Bot Topic
+ * (`control.direct.topics.fork`). An older core answers `unsupported-rpc`, so
+ * the Direct pane hides its fork entry rather than offering a dead action.
+ */
+export function supportsDirectTopicFork(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.directTopicForkV1);
+}
+
 /** True when the instance accepts the roundtable target and history fields.
  *  It gates both the future "discuss" entry and the history compat flag. */
 export function supportsRoundtableV1(instance: { capabilities?: string[] | null } | null | undefined): boolean {

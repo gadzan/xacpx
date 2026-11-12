@@ -181,6 +181,9 @@ export async function createConversationRuntime(
   const productSinkRef: ConversationProductEventSink | undefined = input.onProductEvent;
   const botRuntime = new BotRuntimeManager(bots, input.sessions, input.state, input.stateStore, {
     releaseOwnedSession: input.releaseOwnedSession,
+    forkHandoffs: {
+      getTopicForkHandoff: (topicId: string) => store.getTopicForkHandoff(topicId),
+    },
     onRuntimeMaterialized: () => {
       // Actual binding/session publish is the ground truth for Bot
       // lifecycle: execution-start may never follow (cancel in the
