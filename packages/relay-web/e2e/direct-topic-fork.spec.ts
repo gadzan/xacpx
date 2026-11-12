@@ -148,7 +148,7 @@ async function openDirect(
   page: Page,
   hub: { port: number },
   replies: ForkReply[],
-  capabilities: string[] = [RELAY_CAPABILITIES.directTopicForkV1],
+  capabilities: string[] = [RELAY_CAPABILITIES.directTopicForkV1, RELAY_CAPABILITIES.directTopicForkMessageV1],
 ): Promise<Harness> {
   const harness: Harness = {
     topics: [sourceTopic],
@@ -482,7 +482,24 @@ test("a core without the Direct fork capability offers no fork entry", async ({ 
   await expect(page.getByTestId("menu-rename")).toBeVisible();
   await expect(page.getByTestId("menu-fork")).toHaveCount(0);
   await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
-  // The per-row control is the same capability: it must stay hidden too.
+  // Both fork entries hide: the base capability is gone, so the message one
+  // cannot apply either.
   await expect(page.getByTestId("timeline-fork-message")).toHaveCount(0);
+  expect(harness.forkRequests).toHaveLength(0);
+});
+
+test("a base-only Direct fork keeps the Topic menu but hides the row control", async ({ page, hub }, info) => {
+  // Same skew as the Group pane: an old connector rejects the message shape,
+  // so the Topic-menu entry stays on the base capability while the per-row
+  // control hides on the message one.
+  const harness = await openDirect(page, hub, [], [RELAY_CAPABILITIES.directTopicForkV1]);
+  const row = page.getByTestId("conversation-timeline-scroller")
+    .locator(`[data-row-key="message:${requestMessage.id}"]`);
+  await row.hover();
+  await expect(page.getByTestId("timeline-fork-message")).toHaveCount(0);
+  await openTopicSwitcher(page, info.project.name);
+  const topicRow = page.locator(`[data-test="topic-row"][data-topic-id="${sourceTopicId}"]`);
+  await topicRow.getByTestId("topic-row-more").click();
+  await expect(page.getByTestId("menu-fork")).toBeVisible();
   expect(harness.forkRequests).toHaveLength(0);
 });
