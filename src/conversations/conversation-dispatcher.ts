@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import { markCommandRevision, adapterFacingPrompt } from "./advertised-commands";
+import { adapterFacingPrompt, isAdvertisedRuntimeCommand, markCommandRevision, type AdvertisedCommandIdentity } from "./advertised-commands";
+import { isKnownXacpxCommandText } from "../commands/command-list";
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
 import { GROUP_COLLABORATION_CONTRACT, GROUP_ROUNDTABLE_CONTRACT, type CollaborationEvidence, type CollaborationSnapshot } from "../bots/collaboration-prompt";
 import { parseRoundtableSpeech } from "./conversation-roundtable";
@@ -1741,6 +1742,7 @@ export class ConversationDispatcher {
       // of this exact execution; it never precedes the cacheable contract.
       const group = isGroup ? this.runtime.getGroupScope(work.run.conversationId) : undefined;
       const sharedGroupContext = isGroup ? undefined : this.sharedGroupContext(work);
+      const historicalContext = isGroup ? undefined : this.directForkHandoff(work, commandIdentity);
       const wrapped = isGroup
         ? composeBotTurnPromptFromSnapshot(snapshot, {
           contract: work.run.shape === "roundtable" ? GROUP_ROUNDTABLE_CONTRACT : GROUP_COLLABORATION_CONTRACT,
@@ -1749,8 +1751,14 @@ export class ConversationDispatcher {
           evidence: groupPrompt!,
           readResultAvailable: work.run.shape !== "roundtable",
         }, group)
-        : composeBotTurnPromptFromSnapshot(snapshot, userText, undefined, sharedGroupContext);
+        : composeBotTurnPromptFromSnapshot(snapshot, userText, undefined, sharedGroupContext, historicalContext);
       const text = adapterFacingPrompt(commandIdentity, userText, wrapped);
+      // The injection is spent once it is IN this turn's prompt: a provider
+      // failure afterwards must not replay the history on every retry, and the
+      // write happens before `run()` so no retry can race it.
+      if (historicalContext !== undefined) {
+        this.store.markTopicForkHandoffConsumed(work.run.topicId, this.now().toISOString());
+      }
       // The runner registers its tracked execution synchronously inside
       // `run()`, so the tracked-execution window opens HERE: the pre-provider
       // marker is deleted only AFTER the call returns the promise. Deleting it
@@ -2125,6 +2133,20 @@ export class ConversationDispatcher {
 
   private requestText(messageId: string): string {
     return this.store.getMessage(messageId)?.content ?? "";
+  }
+
+  /**
+   * The one-time Direct fork handoff this turn should inject, or undefined.
+   *
+   * A command turn returns the bare command text and never sees the header, so
+   * it must neither inject nor consume the single injection the fork gets: it
+   * still persists a bot reply, which is exactly why the window is a durable
+   * consumption marker rather than a message-row count.
+   */
+  private directForkHandoff(work: ClaimedWork, commandIdentity: AdvertisedCommandIdentity): string | undefined {
+    const text = this.requestText(work.run.requestMessageId);
+    if (isKnownXacpxCommandText(text) || isAdvertisedRuntimeCommand(commandIdentity, text)) return undefined;
+    return this.runtime.forkHandoff(work.run.topicId, work.run.conversationId);
   }
 
   /** Newest public Group messages this Bot can access, as untrusted context

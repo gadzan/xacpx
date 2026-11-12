@@ -32,6 +32,7 @@ import {
   type DesktopCancelPayload,
   type DesktopPreparePayload,
   type DesktopPrepareResult,
+  type DirectTopicsForkPayload,
   type GroupsCreatePayload,
   type GroupsDeletePayload,
   type GroupsGetPayload,
@@ -738,6 +739,10 @@ const validateGroupTopicsFork: Validator<GroupTopicsForkPayload> = (p) => {
   }
   return o as unknown as GroupTopicsForkPayload;
 };
+/** The Direct fork wire shape is the Group one verbatim, so the shape check is
+ *  shared instead of duplicated. The registry still keys it by its own RPC, so
+ *  a connector can accept one fork and refuse the other. */
+const validateDirectTopicsFork: Validator<DirectTopicsForkPayload> = validateGroupTopicsFork;
 const validateGroupTopicsSetIsolation: Validator<GroupTopicsSetIsolationPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) && isCreateIsolation(o.isolation)
@@ -1285,6 +1290,7 @@ export type ControlRpcType =
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsSetIsolation
   | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown | typeof MSG.groupTopicsFork
+  | typeof MSG.directTopicsFork
   | typeof MSG.conversationPrompt | typeof MSG.conversationPromptWithPolicy | typeof MSG.conversationHistory
   | typeof MSG.conversationTimeline
   | typeof MSG.conversationWorktree
@@ -1392,6 +1398,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.groupTopicsFork]: validateGroupTopicsFork,
+  [MSG.directTopicsFork]: validateDirectTopicsFork,
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationPromptWithPolicy]: validateConversationPolicyPrompt,
   [MSG.conversationWorktree]: validateConversationWorktree,

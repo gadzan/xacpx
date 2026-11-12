@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 
 import { RELAY_CAPABILITIES } from "../../../../packages/relay-protocol/src/index";
-import { RelayChannel, supportsGroupTopicFork, supportsGroupTopicIsolation } from "../../../../packages/channel-relay/src/channel";
+import {
+  RelayChannel,
+  supportsDirectTopicFork,
+  supportsGroupTopicFork,
+  supportsGroupTopicIsolation,
+} from "../../../../packages/channel-relay/src/channel";
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
 
 /**
@@ -84,4 +89,32 @@ test("the fork capability is advertised only when core and validator agree", asy
   });
   expect(caps).toContain(RELAY_CAPABILITIES.groupTopicForkV1);
   expect(await advertisedCapabilities({})).not.toContain(RELAY_CAPABILITIES.groupTopicForkV1);
+});
+
+test("the Direct fork capability is advertised only when core and validator agree", async () => {
+  expect(RELAY_CAPABILITIES.directTopicForkV1).toBe("direct.topics.fork.v1");
+  expect(supportsDirectTopicFork({
+    supportsDirectTopicFork: () => true,
+    forkDirectTopic: async () => ({}),
+  })).toBe(true);
+  // Either half missing keeps the entry hidden: a core without the RPC or a
+  // connector whose validator rejects the payload would answer an unactionable
+  // `unsupported-rpc` / `invalid-payload`.
+  expect(supportsDirectTopicFork({ forkDirectTopic: async () => ({}) })).toBe(false);
+  expect(supportsDirectTopicFork({ supportsDirectTopicFork: () => true })).toBe(false);
+  expect(supportsDirectTopicFork({ supportsDirectTopicFork: () => false, forkDirectTopic: async () => ({}) })).toBe(false);
+  expect(supportsDirectTopicFork(null)).toBe(false);
+
+  const caps = await advertisedCapabilities({
+    supportsDirectTopicFork: () => true,
+    forkDirectTopic: async () => ({}),
+  });
+  expect(caps).toContain(RELAY_CAPABILITIES.directTopicForkV1);
+  expect(await advertisedCapabilities({})).not.toContain(RELAY_CAPABILITIES.directTopicForkV1);
+  // A Group-only fork core must not advertise the Direct capability.
+  const groupOnly = await advertisedCapabilities({
+    supportsGroupTopicFork: () => true,
+    forkGroupTopic: async () => ({}),
+  });
+  expect(groupOnly).not.toContain(RELAY_CAPABILITIES.directTopicForkV1);
 });

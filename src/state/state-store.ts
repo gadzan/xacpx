@@ -1114,8 +1114,14 @@ function isConversationTopicFork(value: unknown): value is ConversationTopic["fo
     value.createdAt,
   ];
   const counts = [value.throughSeq, value.copiedMessages, value.omittedMessages];
+  // Absent `mode` reads as `snapshot`: every pre-Direct fork row predates it.
+  const modeOk = value.mode === undefined || value.mode === "snapshot" || value.mode === "handoff";
+  const sourceMessageOk = value.sourceMessageId === undefined
+    || (isString(value.sourceMessageId) && value.sourceMessageId.length > 0);
   return (
     required.every((field) => isString(field) && field.length > 0) &&
+    modeOk &&
+    sourceMessageOk &&
     (value.sourceRunId === undefined || (isString(value.sourceRunId) && value.sourceRunId.length > 0)) &&
     counts.every((field) => typeof field === "number" && Number.isInteger(field) && field >= 0)
   );

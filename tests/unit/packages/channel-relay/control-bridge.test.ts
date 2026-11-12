@@ -2432,3 +2432,32 @@ test("group.topics.fork dispatches, maps malformed payloads, and refuses old cor
     error: { code: "unsupported-rpc" },
   });
 });
+
+test("direct.topics.fork dispatches, maps malformed payloads, and refuses old cores", async () => {
+  const forks: unknown[] = [];
+  const { control } = makeFakeControl({
+    forkDirectTopic: async (input: unknown) => {
+      forks.push(input);
+      return { id: "topic_dst", conversationId: "conversation_d", title: "Fork", status: "active" };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  const input = {
+    conversationId: "conversation_d",
+    sourceTopicId: "topic_src",
+    targetTopicId: "topic_dst",
+    requestId: "fork-1",
+    sourcePoint: { type: "run", runId: "run_1" },
+  };
+  expect(await dispatch(bridge, req(MSG.directTopicsFork, input))).toMatchObject({ topic: { id: "topic_dst" } });
+  expect(forks).toEqual([input]);
+  expect(await dispatch(bridge, req(MSG.directTopicsFork, { ...input, sourcePoint: { type: "nope" } }))).toMatchObject({
+    error: { code: "invalid-payload" },
+  });
+  // A core that only knows the Group fork must answer `unsupported-rpc`, which
+  // is what keeps the Web's Direct entry hidden behind the capability.
+  const old = createControlBridge(makeFakeControl().control as never);
+  expect(await dispatch(old, req(MSG.directTopicsFork, input))).toMatchObject({
+    error: { code: "unsupported-rpc" },
+  });
+});

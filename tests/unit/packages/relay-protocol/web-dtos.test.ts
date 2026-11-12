@@ -64,6 +64,11 @@ test("fork provenance is validated on topics and messages", () => {
   const validTopic = (value: unknown) => validControlEvent({ type: "conversation-topic-changed", topic: value });
   expect(validTopic({ ...topic, forkedFrom: fork })).toBe(true);
   expect(validTopic({ ...topic, forkedFrom: { ...fork, sourceRunId: undefined } })).toBe(true);
+  // A Direct fork carries no rows: `mode` and `sourceMessageId` are the extra
+  // provenance fields, and absence still reads as a snapshot fork.
+  expect(validTopic({ ...topic, forkedFrom: { ...fork, sourceRunId: undefined, mode: "handoff" } })).toBe(true);
+  expect(validTopic({ ...topic, forkedFrom: { ...fork, mode: "snapshot" } })).toBe(true);
+  expect(validTopic({ ...topic, forkedFrom: { ...fork, sourceRunId: undefined, sourceMessageId: "m1" } })).toBe(true);
   for (const bad of [
     { ...fork, requestId: "" },
     { ...fork, throughSeq: -1 },
@@ -71,6 +76,9 @@ test("fork provenance is validated on topics and messages", () => {
     { ...fork, omittedMessages: "0" },
     { ...fork, sourceTopicId: undefined },
     { ...fork, createdAt: 1 },
+    { ...fork, mode: "native" },
+    { ...fork, sourceMessageId: "" },
+    { ...fork, sourceMessageId: 7 },
   ]) {
     expect(validTopic({ ...topic, forkedFrom: bad })).toBe(false);
   }

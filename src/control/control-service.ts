@@ -2817,6 +2817,15 @@ export class ControlService {
   supportsGroupTopicFork(): true {
     return true;
   }
+  /**
+   * Feature probe for connectors: `control.direct.topics.fork` renders a
+   * bounded handoff into a new Direct Topic. Connectors advertise
+   * `RELAY_CAPABILITIES.directTopicForkV1` only when this exists, so the Web
+   * hides the Direct fork entry against an older core.
+   */
+  supportsDirectTopicFork(): true {
+    return true;
+  }
 
   async createBot(input: BotCreateRequestDto) {
     return this.runConversationMutation(async (runtime) => {
@@ -3194,6 +3203,24 @@ export class ControlService {
   }) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.forkGroupTopic(input);
+      return this.topicSummary(topic);
+    });
+  }
+  /**
+   * Fork a Direct Bot Topic with a bounded one-time prompt handoff. Separate
+   * from `forkGroupTopic` because the two have different wire caps and a
+   * connector may advertise one without the other.
+   */
+  async forkDirectTopic(input: {
+    conversationId: string;
+    sourceTopicId: string;
+    targetTopicId: string;
+    requestId: string;
+    sourcePoint?: ThreadForkSourcePointDto;
+    title?: string;
+  }) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.forkDirectTopic(input);
       return this.topicSummary(topic);
     });
   }

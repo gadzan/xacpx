@@ -413,13 +413,18 @@ export interface GroupTopicCreateTargetDto {
   isolation: "shared" | "shared-single-writer" | "worktree-per-member";
 }
 
-/** Provenance of a Topic created by `control.group.topics.fork`. */
+/** Provenance of a Topic created by a fork. `snapshot` copies message rows into
+ *  the target; `handoff` carries bounded history as one prompt injection.
+ *  Absent `mode` reads as `snapshot` (pre-Direct rows). */
 export interface TopicForkDto {
   requestId: string;
   sourceConversationId: string;
   sourceTopicId: string;
   sourceTitle: string;
+  mode?: "snapshot" | "handoff";
   sourceRunId?: string;
+  /** Set by a message-boundary fork; never present with `sourceRunId`. */
+  sourceMessageId?: string;
   throughSeq: number;
   rootTopicId: string;
   copiedMessages: number;

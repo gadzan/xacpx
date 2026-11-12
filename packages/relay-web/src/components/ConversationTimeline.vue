@@ -33,6 +33,9 @@ const props = defineProps<{
   emptyHint?: string | null;
   /** Extra scroll-padding for the pane's floating identity bar. */
   topInsetClass?: string;
+  /** Margin for the fork banner, which sits in flow above the scroller: without
+   *  it a floating identity bar would cover the banner's own text. */
+  bannerInsetClass?: string;
   isRunQueued?: (runId: string | undefined) => boolean;
   /** Async loader; the component keeps the prepend anchor while it runs. */
   loadOlder?: () => Promise<void> | void;
@@ -142,13 +145,16 @@ defineExpose({ scrollToBottom });
       v-if="forkedFrom"
       data-test="topic-fork-banner"
       class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline bg-surface-2 px-4 py-2 text-xs text-fg-muted lg:px-5"
+      :class="bannerInsetClass"
     >
       <GitFork :size="13" class="shrink-0 text-accent" />
       <span data-test="topic-fork-banner-title">
         {{ $t("group.topic.forkBanner", { title: forkedFrom.sourceTitle }) }}
       </span>
       <span data-test="topic-fork-banner-count">
-        {{ $t("group.topic.forkCopied", { count: forkedFrom.copiedMessages }) }}
+        {{ forkedFrom.mode === "handoff"
+          ? $t("group.topic.forkCarried", { count: forkedFrom.copiedMessages })
+          : $t("group.topic.forkCopied", { count: forkedFrom.copiedMessages }) }}
       </span>
       <span v-if="forkedFrom.omittedMessages > 0" data-test="topic-fork-banner-omitted">
         {{ $t("group.topic.forkOmitted", { count: forkedFrom.omittedMessages }) }}

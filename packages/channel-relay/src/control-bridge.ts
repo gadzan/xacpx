@@ -1295,6 +1295,14 @@ async function dispatchControlRequest(
       }
       return { topic: await control.forkGroupTopic(input) };
     }
+    case MSG.directTopicsFork: {
+      const input = parseControlPayload(MSG.directTopicsFork, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.directTopicsFork}: malformed payload`);
+      if (typeof control.forkDirectTopic !== "function") {
+        return errorPayload("unsupported-rpc", "daemon does not support Direct topic forking");
+      }
+      return { topic: await control.forkDirectTopic(input) };
+    }
     case MSG.conversationPrompt:
     case MSG.conversationPromptWithPolicy: {
       const policyOperation = envelope.type === MSG.conversationPromptWithPolicy;

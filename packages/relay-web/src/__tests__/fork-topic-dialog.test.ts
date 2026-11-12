@@ -1,10 +1,8 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationRunDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import ForkTopicDialog from "../components/ForkTopicDialog.vue";
+import ForkTopicDialog, { type ForkTopicRequest } from "../components/ForkTopicDialog.vue";
 import { i18n } from "../i18n";
-import { useGroupsStore } from "../stores/groups";
 
 const NOW = "2026-11-10T00:00:00.000Z";
 const SOURCE: TopicSummaryDto = {
@@ -28,37 +26,45 @@ const RUN: ConversationRunDto = {
   createdAt: NOW,
 };
 
+/**
+ * The dialog performs no RPC itself: it owns the ids, the labels and the error
+ * mapping and calls the `fork` prop its pane supplies. Group and Direct share
+ * this exact component, so these tests assert the callback contract only.
+ */
 function mountDialog(input: {
   sourcePoint?: { type: "latest_stable" } | { type: "run"; runId: string };
   resolvedRun?: ConversationRunDto | null;
+  mode?: "snapshot" | "handoff";
 } = {}) {
-  return mount(ForkTopicDialog, {
+  const fork = vi.fn<(request: ForkTopicRequest) => Promise<TopicSummaryDto>>()
+    .mockResolvedValue({ ...SOURCE, id: "topic_dst" });
+  const wrapper = mount(ForkTopicDialog, {
     props: {
       sourceTopic: SOURCE,
       sourcePoint: input.sourcePoint ?? { type: "latest_stable" },
+      conversationId: "conversation_g",
+      fork,
       ...(input.resolvedRun !== undefined ? { resolvedRun: input.resolvedRun } : {}),
+      ...(input.mode !== undefined ? { mode: input.mode } : {}),
     },
     global: { plugins: [i18n] },
   });
+  return { wrapper, fork };
 }
 
 describe("ForkTopicDialog", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
+    vi.clearAllMocks();
   });
 
   it("defaults the title, labels an unresolved point honestly, and forks once", async () => {
-    const store = useGroupsStore();
-    store.instanceId = "inst_1";
-    store.activeConversationId = "conversation_g";
-    const fork = vi.spyOn(store, "forkGroupTopic").mockResolvedValue({ ...SOURCE, id: "topic_dst" });
-    const wrapper = mountDialog();
+    const { wrapper, fork } = mountDialog();
     expect((wrapper.find("[data-test='fork-topic-title']").element as HTMLInputElement).value).toBe("Release fork");
     expect(wrapper.find("[data-test='fork-topic-point']").text()).toContain("latest finished run");
     await wrapper.find("form").trigger("submit");
     await flushPromises();
     expect(fork).toHaveBeenCalledTimes(1);
-    const input = fork.mock.calls[0]![1];
+    const input = fork.mock.calls[0]![0];
     expect(input).toMatchObject({
       conversationId: "conversation_g",
       sourceTopicId: "topic_source",
@@ -72,12 +78,18 @@ describe("ForkTopicDialog", () => {
   });
 
   it("names the run it cuts at and disables submit while pending", async () => {
-    const store = useGroupsStore();
-    store.instanceId = "inst_1";
-    store.activeConversationId = "conversation_g";
     const { promise, resolve } = Promise.withResolvers<TopicSummaryDto>();
-    const fork = vi.spyOn(store, "forkGroupTopic").mockReturnValue(promise);
-    const wrapper = mountDialog({ sourcePoint: { type: "run", runId: RUN.id }, resolvedRun: RUN });
+    const fork = vi.fn<(request: ForkTopicRequest) => Promise<TopicSummaryDto>>().mockReturnValue(promise);
+    const wrapper = mount(ForkTopicDialog, {
+      props: {
+        sourceTopic: SOURCE,
+        sourcePoint: { type: "run", runId: RUN.id },
+        resolvedRun: RUN,
+        conversationId: "conversation_g",
+        fork,
+      },
+      global: { plugins: [i18n] },
+    });
     expect(wrapper.find("[data-test='fork-topic-point']").text()).toContain(NOW);
     await wrapper.find("form").trigger("submit");
     expect(wrapper.find("[data-test='fork-topic-submit']").attributes("disabled")).toBeDefined();
@@ -87,21 +99,21 @@ describe("ForkTopicDialog", () => {
   });
 
   it("maps a failure and reuses the same ids on retry", async () => {
-    const store = useGroupsStore();
-    store.instanceId = "inst_1";
-    store.activeConversationId = "conversation_g";
-    const fork = vi.spyOn(store, "forkGroupTopic")
+    const fork = vi.fn<(request: ForkTopicRequest) => Promise<TopicSummaryDto>>()
       .mockRejectedValueOnce(Object.assign(new Error("empty"), { code: "topic_fork_empty" }))
       .mockResolvedValueOnce({ ...SOURCE, id: "topic_dst" });
-    const wrapper = mountDialog();
+    const wrapper = mount(ForkTopicDialog, {
+      props: { sourceTopic: SOURCE, sourcePoint: { type: "latest_stable" }, conversationId: "conversation_g", fork },
+      global: { plugins: [i18n] },
+    });
     await wrapper.find("form").trigger("submit");
     await flushPromises();
     expect(wrapper.find("[data-test='fork-topic-error']").text()).toContain("no messages");
     expect(wrapper.emitted("close")).toBeUndefined();
-    const first = fork.mock.calls[0]![1];
+    const first = fork.mock.calls[0]![0];
     await wrapper.find("form").trigger("submit");
     await flushPromises();
-    const second = fork.mock.calls[1]![1];
+    const second = fork.mock.calls[1]![0];
     expect(second.targetTopicId).toBe(first.targetTopicId);
     expect(second.requestId).toBe(first.requestId);
     expect(wrapper.emitted("close")).toHaveLength(1);
@@ -109,13 +121,13 @@ describe("ForkTopicDialog", () => {
   });
 
   it("remints the ids after a missing-history failure so the next click starts over", async () => {
-    const store = useGroupsStore();
-    store.instanceId = "inst_1";
-    store.activeConversationId = "conversation_g";
-    const fork = vi.spyOn(store, "forkGroupTopic")
+    const fork = vi.fn<(request: ForkTopicRequest) => Promise<TopicSummaryDto>>()
       .mockRejectedValueOnce(Object.assign(new Error("orphan"), { code: "topic_fork_history_missing" }))
       .mockResolvedValueOnce({ ...SOURCE, id: "topic_dst" });
-    const wrapper = mountDialog();
+    const wrapper = mount(ForkTopicDialog, {
+      props: { sourceTopic: SOURCE, sourcePoint: { type: "latest_stable" }, conversationId: "conversation_g", fork },
+      global: { plugins: [i18n] },
+    });
     await wrapper.find("form").trigger("submit");
     await flushPromises();
     // The core fails closed on orphan rows, so the dialog must not replay the
@@ -124,10 +136,10 @@ describe("ForkTopicDialog", () => {
       i18n.global.t("group.topic.forkErrors.historyMissing"),
     );
     expect(wrapper.emitted("close")).toBeUndefined();
-    const first = fork.mock.calls[0]![1];
+    const first = fork.mock.calls[0]![0];
     await wrapper.find("form").trigger("submit");
     await flushPromises();
-    const second = fork.mock.calls[1]![1];
+    const second = fork.mock.calls[1]![0];
     expect(second.targetTopicId).not.toBe(first.targetTopicId);
     expect(second.requestId).not.toBe(first.requestId);
     expect(wrapper.emitted("close")).toHaveLength(1);
@@ -135,18 +147,19 @@ describe("ForkTopicDialog", () => {
   });
 
   it("sits above the run-detail drawer and sheet layers", () => {
-    const wrapper = mountDialog();
+    const { wrapper } = mountDialog();
     expect(wrapper.element.className).toContain("z-[70]");
     wrapper.unmount();
   });
 
   it("names a teardown instead of the generic failure", async () => {
-    const store = useGroupsStore();
-    store.instanceId = "inst_1";
-    store.activeConversationId = "conversation_g";
     for (const code of ["topic_deleting", "conversation_deleting", "topic_resetting"]) {
-      vi.spyOn(store, "forkGroupTopic").mockRejectedValueOnce(Object.assign(new Error(code), { code }));
-      const wrapper = mountDialog();
+      const fork = vi.fn<(request: ForkTopicRequest) => Promise<TopicSummaryDto>>()
+        .mockRejectedValueOnce(Object.assign(new Error(code), { code }));
+      const wrapper = mount(ForkTopicDialog, {
+        props: { sourceTopic: SOURCE, sourcePoint: { type: "latest_stable" }, conversationId: "conversation_g", fork },
+        global: { plugins: [i18n] },
+      });
       await wrapper.find("form").trigger("submit");
       await flushPromises();
       expect(wrapper.find("[data-test='fork-topic-error']").text()).toBe(
@@ -154,5 +167,17 @@ describe("ForkTopicDialog", () => {
       );
       wrapper.unmount();
     }
+  });
+});
+
+describe("ForkTopicDialog copy", () => {
+  it("promises copied rows by default and a one-time block for a handoff", () => {
+    const snapshot = mountDialog();
+    expect(snapshot.wrapper.find("[data-test='fork-topic-hint']").text()).toContain("Copies this topic's public messages");
+    const handoff = mountDialog({ mode: "handoff" });
+    const hint = handoff.wrapper.find("[data-test='fork-topic-hint']").text();
+    expect(hint).toContain("one block of background context on its first prompt");
+    // A Direct fork copies no rows, so the snapshot promise must never render there.
+    expect(hint).not.toContain("Copies this topic's public messages");
   });
 });
