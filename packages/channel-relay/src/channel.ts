@@ -369,6 +369,43 @@ export function supportsDirectTopicFork(control: unknown): boolean {
     requestId: "probe",
   }) !== null;
 }
+/**
+ * True when this instance can fork a Group Topic at one visible message: the
+ * core must expose `forkGroupTopic` with the matching `supportsGroupTopicForkMessage`
+ * probe AND this connector's validator must accept a message source point.
+ * An old connector whose payload check rejects the shape keeps this off even
+ * when the core knows the branch, so the Web shows only the Run-level entries.
+ */
+export function supportsGroupTopicForkMessage(control: unknown): boolean {
+  if (!supportsGroupTopicFork(control)) return false;
+  const probe = (control as { supportsGroupTopicForkMessage?: unknown } | null)?.supportsGroupTopicForkMessage;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parseControlPayload(MSG.groupTopicsFork, {
+    conversationId: "probe",
+    sourceTopicId: "probe",
+    targetTopicId: "probe",
+    requestId: "probe",
+    sourcePoint: { type: "message", messageId: "probe" },
+  }) !== null;
+}
+/**
+ * True when this instance can fork a Direct Bot Topic at one visible message:
+ * the same conjunction as the Group message entry, against the Direct RPC.
+ */
+export function supportsDirectTopicForkMessage(control: unknown): boolean {
+  if (!supportsDirectTopicFork(control)) return false;
+  const probe = (control as { supportsDirectTopicForkMessage?: unknown } | null)?.supportsDirectTopicForkMessage;
+  if (typeof probe !== "function") return false;
+  if ((probe as () => unknown).call(control) !== true) return false;
+  return parseControlPayload(MSG.directTopicsFork, {
+    conversationId: "probe",
+    sourceTopicId: "probe",
+    targetTopicId: "probe",
+    requestId: "probe",
+    sourcePoint: { type: "message", messageId: "probe" },
+  }) !== null;
+}
 
 /**
  * True when this instance can accept a roundtable target and return the
@@ -539,8 +576,14 @@ export class RelayChannel implements MessageChannelRuntime {
     if (supportsGroupTopicFork(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupTopicForkV1);
     }
+    if (supportsGroupTopicForkMessage(control)) {
+      capabilities.push(RELAY_CAPABILITIES.groupTopicForkMessageV1);
+    }
     if (supportsDirectTopicFork(control)) {
       capabilities.push(RELAY_CAPABILITIES.directTopicForkV1);
+    }
+    if (supportsDirectTopicForkMessage(control)) {
+      capabilities.push(RELAY_CAPABILITIES.directTopicForkMessageV1);
     }
     if (supportsGroupWorkspaceMode(control)) {
       capabilities.push(RELAY_CAPABILITIES.groupWorkspaceModeV1);

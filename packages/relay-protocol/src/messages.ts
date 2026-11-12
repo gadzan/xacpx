@@ -758,11 +758,13 @@ export interface GroupTopicsTeardownPayload {
   conversationId: string;
   topicId: string;
 }
-/** Where a fork cuts the source Topic's history: the latest settled Run, or
- *  one named Run. */
+/** Where a fork cuts the source Topic's history: the latest settled Run, one
+ *  named Run, or one named message. A message boundary cuts at that message's
+ *  `seq`, no matter which Run (if any) owns it. */
 export type ThreadForkSourcePointDto =
   | { type: "latest_stable" }
-  | { type: "run"; runId: string };
+  | { type: "run"; runId: string }
+  | { type: "message"; messageId: string };
 export interface GroupTopicsForkPayload {
   conversationId: string;
   sourceTopicId: string;
@@ -1520,11 +1522,21 @@ export const RELAY_CAPABILITIES = {
    *  accepts the request. An older core answers `unsupported-rpc`, so the Web
    *  hides every fork entry until this is advertised. */
   groupTopicForkV1: "group.topics.fork.v1",
+  /** `control.group.topics.fork` with a message boundary: the connector
+   *  validator accepts `sourcePoint: { type: "message", messageId }` end to
+   *  end. Older payload checks reject the shape with `invalid-payload`, so
+   *  the Web shows only the Run-level entries until this is advertised. */
+  groupTopicForkMessageV1: "group.topics.fork.message.v1",
   /** `control.direct.topics.fork` exists on both ends: the core renders a
    *  bounded handoff for a new Direct Topic and the connector validator
    *  accepts the request. An older core answers `unsupported-rpc`, so the Web
    *  hides the Direct fork entry until this is advertised. */
   directTopicForkV1: "direct.topics.fork.v1",
+  /** `control.direct.topics.fork` with a message boundary: the connector
+   *  validator accepts `sourcePoint: { type: "message", messageId }` end to
+   *  end. Older payload checks reject the shape with `invalid-payload`, so
+   *  the Web shows only the Run-level entries until this is advertised. */
+  directTopicForkMessageV1: "direct.topics.fork.message.v1",
   /** A Group Roundtable target (`mode: "roundtable"`) is accepted end to end:
    *  the connector validator and the core both implement pre-generated
    *  sequential discussion. The Web hides the "discuss" entry when absent. */

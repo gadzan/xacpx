@@ -32,7 +32,7 @@ const RUN: ConversationRunDto = {
  * this exact component, so these tests assert the callback contract only.
  */
 function mountDialog(input: {
-  sourcePoint?: { type: "latest_stable" } | { type: "run"; runId: string };
+  sourcePoint?: { type: "latest_stable" } | { type: "run"; runId: string } | { type: "message"; messageId: string };
   resolvedRun?: ConversationRunDto | null;
   mode?: "snapshot" | "handoff";
 } = {}) {
@@ -149,6 +149,15 @@ describe("ForkTopicDialog", () => {
   it("sits above the run-detail drawer and sheet layers", () => {
     const { wrapper } = mountDialog();
     expect(wrapper.element.className).toContain("z-[70]");
+    wrapper.unmount();
+  });
+
+  it("names the message it cuts at and sends that point verbatim", async () => {
+    const { wrapper, fork } = mountDialog({ sourcePoint: { type: "message", messageId: "message_9" } });
+    expect(wrapper.find("[data-test='fork-topic-point']").text()).toBe("Fork point: this message");
+    await wrapper.find("form").trigger("submit");
+    await flushPromises();
+    expect(fork.mock.calls[0]![0].sourcePoint).toEqual({ type: "message", messageId: "message_9" });
     wrapper.unmount();
   });
 

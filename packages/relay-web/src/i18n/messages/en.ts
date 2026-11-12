@@ -1306,6 +1306,9 @@ export default {
       forkPointRunAt: "Fork point: this run, started {time}",
       forkPointLatest: "Fork point: the latest finished run",
       forkPointLatestAt: "Fork point: the latest finished run, started {time}",
+      /** Per-message entry: the boundary is one visible row's own `seq`. */
+      forkPointMessage: "Fork point: this message",
+      forkMessage: "Fork from this message",
       forkBanner: "Forked from {title}",
       forkCopied: "{count} messages copied",
       forkOmitted: "{count} older messages omitted",

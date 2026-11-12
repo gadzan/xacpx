@@ -452,3 +452,109 @@ test("the first fork run's prompt and Router input see the copied history", asyn
   expect(input.publicTranscript.length).toBeLessThanOrEqual(200);
   h.store.close();
 });
+
+test("a message boundary cuts at that row's seq and records the source message", async () => {
+  const { h, group, topic } = await forkFixture();
+  await settleRun(h, group.id, topic.id, "run-a", 1);
+  const second = await settleRun(h, group.id, topic.id, "run-b", 1);
+  const boundary = h.store.getMessage(second.run.requestMessageId)!;
+
+  const forked = await h.service.forkGroupTopic({
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId: randomTopicId(),
+    requestId: "fork-a",
+    sourcePoint: { type: "message", messageId: boundary.id },
+  });
+
+  expect(forked.forkedFrom).toMatchObject({
+    requestId: "fork-a",
+    sourceMessageId: boundary.id,
+    throughSeq: boundary.seq,
+    copiedMessages: 3,
+    omittedMessages: 0,
+  });
+  // A message boundary is not a Run boundary: the reply that follows the
+  // boundary row and the whole later Run must stay out of the copy.
+  expect(forked.forkedFrom?.sourceRunId).toBeUndefined();
+  const copied = h.store.listMessages({ conversationId: group.id, topicId: forked.id, limit: 50 });
+  expect(copied.map((message) => message.forkedFromMessageId)).toEqual(
+    h.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 })
+      .filter((message) => message.seq <= boundary.seq)
+      .map((message) => message.id),
+  );
+  expect(copied.map((message) => message.seq)).toEqual([1, 2, 3]);
+  h.store.close();
+});
+
+test("a message boundary inside a later Run keeps the earlier Runs' rows", async () => {
+  const { h, group, topic } = await forkFixture();
+  const first = await settleRun(h, group.id, topic.id, "run-a", 1);
+  await settleRun(h, group.id, topic.id, "run-b", 1);
+  const source = h.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 });
+  const boundary = source[source.length - 1]!;
+  expect(boundary.role).toBe("bot");
+  const firstRunRow = source.find((message) => message.runId === first.run.id && message.role === "bot")!;
+
+  const forked = await h.service.forkGroupTopic({
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId: randomTopicId(),
+    requestId: "fork-a",
+    sourcePoint: { type: "message", messageId: boundary.id },
+  });
+
+  const copied = h.store.listMessages({ conversationId: group.id, topicId: forked.id, limit: 50 });
+  expect(copied).toHaveLength(source.length);
+  // A `boundaryRunId` filter would have dropped this earlier Run's reply.
+  expect(copied.map((message) => message.forkedFromMessageId)).toContain(firstRunRow.id);
+  expect(forked.forkedFrom?.throughSeq).toBe(boundary.seq);
+  h.store.close();
+});
+
+test("a message boundary excludes a Run queued after it", async () => {
+  const { h, group, topic } = await forkFixture();
+  const settled = await settleRun(h, group.id, topic.id, "run-a", 1);
+  const queued = h.accept(group.id, topic.id, 1, true, "run-b");
+  const boundary = h.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 })
+    .filter((message) => message.runId === settled.run.id)
+    .at(-1)!;
+  expect(h.store.getMessage(queued.run.requestMessageId)!.seq).toBeGreaterThan(boundary.seq);
+
+  const forked = await h.service.forkGroupTopic({
+    conversationId: group.id,
+    sourceTopicId: topic.id,
+    targetTopicId: randomTopicId(),
+    requestId: "fork-a",
+    sourcePoint: { type: "message", messageId: boundary.id },
+  });
+  const start = h.runner.calls.length;
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length > start);
+  h.runner.finish(start);
+  await drain;
+
+  const copied = h.store.listMessages({ conversationId: group.id, topicId: forked.id, limit: 50 });
+  expect(copied.map((message) => message.forkedFromMessageId)).not.toContain(queued.run.requestMessageId);
+  expect(copied).toHaveLength(2);
+  h.store.close();
+});
+
+test("a message boundary refuses a message from another Topic or an unknown id", async () => {
+  const { h, group, topic } = await forkFixture();
+  await settleRun(h, group.id, topic.id, "run-a", 1);
+  const other = await h.service.createGroupTopic(group.id, "Other", { workspace: "backend", isolation: "shared-single-writer" });
+  const foreign = await settleRun(h, group.id, other.id, "run-other", 1);
+  const foreignRequest = h.store.getMessage(foreign.run.requestMessageId)!;
+
+  for (const messageId of [foreignRequest.id, "message_unknown"]) {
+    await expect(h.service.forkGroupTopic({
+      conversationId: group.id,
+      sourceTopicId: topic.id,
+      targetTopicId: randomTopicId(),
+      requestId: `fork-${messageId}`,
+      sourcePoint: { type: "message", messageId },
+    })).rejects.toMatchObject({ code: "topic_not_found" });
+  }
+  h.store.close();
+});

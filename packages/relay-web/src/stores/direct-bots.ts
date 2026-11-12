@@ -59,7 +59,7 @@ export interface DirectTopicForkInput {
   /** Minted when the dialog opens and reused on every retry. */
   targetTopicId: string;
   requestId: string;
-  sourcePoint?: { type: "latest_stable" } | { type: "run"; runId: string };
+  sourcePoint?: { type: "latest_stable" } | { type: "run"; runId: string } | { type: "message"; messageId: string };
   title?: string;
 }
 

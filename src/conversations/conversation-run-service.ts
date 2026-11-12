@@ -1188,8 +1188,8 @@ export class ConversationRunService {
     this.assertConversationNotDeleting(input.conversationId);
     this.assertForkSourceNotTearingDown(input.conversationId, input.sourceTopicId);
     const point: ThreadForkSourcePoint = input.sourcePoint ?? { type: "latest_stable" };
-    if (point.type !== "latest_stable" && point.type !== "run") {
-      throw new ConversationError("invalid-payload", "fork sourcePoint must be latest_stable or a run");
+    if (point.type !== "latest_stable" && point.type !== "run" && point.type !== "message") {
+      throw new ConversationError("invalid-payload", "fork sourcePoint must be latest_stable, a run, or a message");
     }
     const forked = await this.stateMutex.run(async () => {
       const live = this.state.conversations[input.conversationId];
@@ -1264,6 +1264,7 @@ export class ConversationRunService {
           sourceTopicId: input.sourceTopicId,
           sourceTitle: liveSource.title,
           ...(boundary.boundaryRunId !== undefined ? { sourceRunId: boundary.boundaryRunId } : {}),
+          ...(boundary.boundaryMessageId !== undefined ? { sourceMessageId: boundary.boundaryMessageId } : {}),
           throughSeq: boundary.throughSeq,
           rootTopicId: liveSource.forkedFrom?.rootTopicId ?? input.sourceTopicId,
           copiedMessages: copied.copiedMessages,
@@ -1317,8 +1318,8 @@ export class ConversationRunService {
       throw new ConversationError("invalid-payload", "a fork request requires a requestId");
     }
     const point = input.sourcePoint ?? { type: "latest_stable" as const };
-    if (point.type !== "latest_stable" && point.type !== "run") {
-      throw new ConversationError("invalid-payload", "fork sourcePoint must be latest_stable or a run");
+    if (point.type !== "latest_stable" && point.type !== "run" && point.type !== "message") {
+      throw new ConversationError("invalid-payload", "fork sourcePoint must be latest_stable, a run, or a message");
     }
     this.assertConversationNotDeleting(input.conversationId);
     const replay = this.resolveDirectForkReplay(input);
@@ -1388,6 +1389,7 @@ export class ConversationRunService {
             sourceTitle: liveSource.title,
             mode: "handoff",
             ...(boundary.boundaryRunId !== undefined ? { sourceRunId: boundary.boundaryRunId } : {}),
+            ...(boundary.boundaryMessageId !== undefined ? { sourceMessageId: boundary.boundaryMessageId } : {}),
             throughSeq: boundary.throughSeq,
             rootTopicId: liveSource.forkedFrom?.rootTopicId ?? input.sourceTopicId,
             copiedMessages: rendered.messageCount,
@@ -1493,7 +1495,22 @@ export class ConversationRunService {
     conversationId: string,
     source: ConversationTopic,
     point: ThreadForkSourcePoint,
-  ): { throughSeq: number; boundaryRunId?: string } {
+  ): { throughSeq: number; boundaryRunId?: string; boundaryMessageId?: string } {
+    if (point.type === "message") {
+      const message = this.store.getMessage(point.messageId);
+      // The boundary row must be visible history of this exact Topic. A row
+      // from another conversation, another Topic, or a private peer-scope
+      // Topic would fork text the reader was never meant to see.
+      if (!message || message.conversationId !== conversationId || message.topicId !== source.id || this.isPeerTopic(message.topicId)) {
+        throw new ConversationError("topic_not_found", `topic "${source.id}" does not contain message "${point.messageId}"`);
+      }
+      // `seq` is allocated inside the accept transaction and is strictly
+      // monotonic per Topic, so `seq <= throughSeq` already excludes every Run
+      // accepted later. Adding `boundaryRunId` here would additionally filter
+      // to one Run's rows and silently drop the earlier Runs the reader asked
+      // to keep, so a message boundary is seq-only by design.
+      return { throughSeq: message.seq, boundaryMessageId: message.id };
+    }
     if (point.type === "run") {
       const run = this.store.getRun(point.runId);
       if (!run || run.conversationId !== conversationId || run.topicId !== source.id) {

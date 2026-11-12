@@ -519,3 +519,69 @@ test("a message boundary outside the source Topic is refused", async () => {
     h.store.close();
   }
 });
+
+test("a message boundary renders the handoff through that row only", async () => {
+  const h = await harness();
+  try {
+    await h.send(h.topic.id, "first request", "req-1");
+    await h.send(h.topic.id, "second request", "req-2");
+    const boundary = h.store.listMessages({ conversationId: h.conversation.id, topicId: h.topic.id, limit: 50 })[1]!;
+    expect(boundary.role).toBe("bot");
+    const targetTopicId = randomTopicId();
+
+    const forked = await h.service.forkDirectTopic({
+      conversationId: h.conversation.id,
+      sourceTopicId: h.topic.id,
+      targetTopicId,
+      requestId: "fork-1",
+      sourcePoint: { type: "message", messageId: boundary.id },
+    });
+
+    expect(forked.forkedFrom).toMatchObject({
+      mode: "handoff",
+      sourceMessageId: boundary.id,
+      throughSeq: boundary.seq,
+      copiedMessages: 2,
+      omittedMessages: 0,
+    });
+    // A message boundary writes no Run provenance: the seq alone decided it.
+    expect(forked.forkedFrom?.sourceRunId).toBeUndefined();
+    const handoff = h.store.getTopicForkHandoff(targetTopicId)!;
+    expect(handoff.throughSeq).toBe(boundary.seq);
+    expect(handoff.text).toContain("Human: first request");
+    expect(handoff.text).toContain("Bot bot_direct: reply 1");
+    expect(handoff.text).not.toContain("second request");
+    expect(handoff.text).not.toContain("reply 2");
+    // No rows are copied for a Direct fork, whatever the boundary kind.
+    expect(h.store.listMessages({ conversationId: h.conversation.id, topicId: targetTopicId, limit: 50 })).toEqual([]);
+
+    const before = h.runner.calls.length;
+    await h.send(targetTopicId, "continue", "req-3");
+    const prompt = h.runner.calls[before]!.text;
+    expect(prompt).toContain("Human: first request");
+    expect(prompt).not.toContain("second request");
+    expect(prompt.endsWith("continue")).toBe(true);
+  } finally {
+    h.store.close();
+  }
+});
+
+test("a message boundary from another Topic is refused", async () => {
+  const h = await harness();
+  try {
+    await h.send(h.topic.id, "history", "req-1");
+    const other = await h.service.createDirectTopic(BOT_ID, "Other");
+    const foreign = await h.send(other.id, "elsewhere", "req-2");
+    void foreign;
+    const foreignMessage = h.store.listMessages({ conversationId: h.conversation.id, topicId: other.id, limit: 50 })[0]!;
+    await expect(h.service.forkDirectTopic({
+      conversationId: h.conversation.id,
+      sourceTopicId: h.topic.id,
+      targetTopicId: randomTopicId(),
+      requestId: "fork-1",
+      sourcePoint: { type: "message", messageId: foreignMessage.id },
+    })).rejects.toMatchObject({ code: "topic_not_found" });
+  } finally {
+    h.store.close();
+  }
+});

@@ -278,7 +278,9 @@ var RELAY_CAPABILITIES = {
   runsPauseV1: "runs.pause.v1",
   groupTopicIsolationV1: "group.topics.isolation.v1",
   groupTopicForkV1: "group.topics.fork.v1",
+  groupTopicForkMessageV1: "group.topics.fork.message.v1",
   directTopicForkV1: "direct.topics.fork.v1",
+  directTopicForkMessageV1: "direct.topics.fork.message.v1",
   roundtableV1: "conversations.roundtable.v1",
   conversationTimelineV1: "conversations.timeline.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1",
@@ -1919,7 +1921,7 @@ var validateGroupTopicsFork = (p) => {
   if (o.title !== undefined && !isStr(o.title))
     return null;
   const point = o.sourcePoint;
-  if (point !== undefined && !(isObj(point) && (point.type === "latest_stable" || point.type === "run" && isStr(point.runId)))) {
+  if (point !== undefined && !(isObj(point) && (point.type === "latest_stable" || point.type === "run" && isStr(point.runId) || point.type === "message" && isStr(point.messageId)))) {
     return null;
   }
   return o;

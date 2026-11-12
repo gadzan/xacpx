@@ -18,6 +18,7 @@ import {
   supportsBotDedicatedWorkspaceCleanup,
   supportsConversationTimelineV1,
   supportsDirectTopicFork,
+  supportsDirectTopicForkMessage,
   supportsRunsCancelMember,
   useInstancesStore,
 } from "../stores/instances";
@@ -434,10 +435,20 @@ async function abandonUnknownRuns(runIds: string[]): Promise<void> {
 
 // --- Direct Topic fork (design §4.5) ----------------------------------------
 const forkSupported = computed(() => supportsDirectTopicFork(instance.value));
+/**
+ * The per-row entry additionally requires the message capability: under a new
+ * web / old connector or core skew the validator would reject the shape with
+ * `invalid-payload`, so the row control hides while the Topic-menu and
+ * run-level entries keep working on the base capability.
+ */
+const forkMessageSupported = computed(() => supportsDirectTopicForkMessage(instance.value));
 
 interface DirectForkTarget {
   topic: TopicSummaryDto;
-  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string };
+  sourcePoint:
+    | { type: "latest_stable" }
+    | { type: "run"; runId: string }
+    | { type: "message"; messageId: string };
   resolvedRun?: ConversationRunDto;
 }
 
@@ -471,6 +482,17 @@ function openForkFromRun(run: ConversationRunDto): void {
   if (!topic || !forkSupported.value || !isTerminalRunState(run.state)) return;
   closeTraceOverlay();
   forkTarget.value = { topic, sourcePoint: { type: "run", runId: run.id }, resolvedRun: run };
+}
+
+/** Fork at one visible message row (design §5.2), with the same ownership
+ *  proof the Group pane uses: the row must be in this Topic's own timeline. */
+function openForkFromMessage(messageId: string): void {
+  const topic = directBotsStore.currentTopic;
+  if (!topic || !forkMessageSupported.value) return;
+  const entry = (timelineFeed.timeline.value?.entries ?? [])
+    .find((candidate) => candidate.kind === "message" && candidate.message.id === messageId);
+  if (!entry || entry.kind !== "message" || entry.message.topicId !== topic.id) return;
+  forkTarget.value = { topic, sourcePoint: { type: "message", messageId } };
 }
 
 const detailRunForkable = computed(() =>
@@ -753,6 +775,7 @@ function handleStopAll(): void {
       banner-inset-class="mt-[calc(6rem+env(safe-area-inset-top))] lg:mt-0"
       :forked-from="directBotsStore.currentTopic?.forkedFrom ?? null"
       :fork-source-available="forkSourceAvailable"
+      :fork-message="forkMessageSupported ? openForkFromMessage : undefined"
       @open-source-topic="openForkSourceTopic"
       @open-detail="openTimelineDetail"
     />

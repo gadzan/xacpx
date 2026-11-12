@@ -232,12 +232,29 @@ export function supportsGroupTopicFork(instance: { capabilities?: string[] | nul
 }
 
 /**
+ * True when the instance accepts a message boundary on a Group fork. Older
+ * connectors reject the payload shape, so only the per-row entry hides while
+ * the Topic-menu and run-level entries keep working.
+ */
+export function supportsGroupTopicForkMessage(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.groupTopicForkMessageV1);
+}
+
+/**
  * True when the instance can fork a Direct Bot Topic
  * (`control.direct.topics.fork`). An older core answers `unsupported-rpc`, so
  * the Direct pane hides its fork entry rather than offering a dead action.
  */
 export function supportsDirectTopicFork(instance: { capabilities?: string[] | null } | null | undefined): boolean {
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.directTopicForkV1);
+}
+
+/**
+ * True when the instance accepts a message boundary on a Direct fork. Same
+ * skew rule as the Group message entry: only the per-row control hides.
+ */
+export function supportsDirectTopicForkMessage(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.directTopicForkMessageV1);
 }
 
 /** True when the instance accepts the roundtable target and history fields.

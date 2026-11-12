@@ -2818,12 +2818,30 @@ export class ControlService {
     return true;
   }
   /**
+   * Feature probe for connectors: `control.group.topics.fork` accepts a
+   * `{ type: "message", messageId }` source point. An older core still has the
+   * fork RPC (so v1 stays on) but no message branch, so the Web hides only the
+   * per-row entry until this probe exists.
+   */
+  supportsGroupTopicForkMessage(): true {
+    return true;
+  }
+  /**
    * Feature probe for connectors: `control.direct.topics.fork` renders a
    * bounded handoff into a new Direct Topic. Connectors advertise
    * `RELAY_CAPABILITIES.directTopicForkV1` only when this exists, so the Web
    * hides the Direct fork entry against an older core.
    */
   supportsDirectTopicFork(): true {
+    return true;
+  }
+  /**
+   * Feature probe for connectors: `control.direct.topics.fork` accepts a
+   * `{ type: "message", messageId }` source point. An older core still has the
+   * Direct fork RPC (so v1 stays on) but no message branch, so the Web hides
+   * only the per-row entry until this probe exists.
+   */
+  supportsDirectTopicForkMessage(): true {
     return true;
   }
 

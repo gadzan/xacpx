@@ -69,6 +69,21 @@ const replyMessage: ConversationMessageDto = {
   content: "Release triaged",
   createdAt,
 };
+/** A row past the message boundary. If the core ignores the `messageId` and
+ *  copies the whole source instead, the extra `forkedFromMessageId` below
+ *  catches it: the mock answers only what the payload asked for. */
+const laterMessage: ConversationMessageDto = {
+  conversationId,
+  topicId: sourceTopicId,
+  id: "message_after",
+  seq: 3,
+  runId,
+  memberTurnId: "turn_lead",
+  role: "bot",
+  senderBotId: "lead",
+  content: "Release shipped",
+  createdAt,
+};
 
 function memberTurn(): MemberTurnSummaryDto {
   return {
@@ -159,10 +174,15 @@ function timelineOf(harness: Harness, topicId: string): ConversationTimelineDto 
   };
 }
 
-async function openGroup(page: Page, hub: { port: number }, replies: ForkReply[]): Promise<Harness> {
+async function openGroup(
+  page: Page,
+  hub: { port: number },
+  replies: ForkReply[],
+  forkCapability: true | "message" | false = true,
+): Promise<Harness> {
   const harness: Harness = {
     topics: [sourceTopic],
-    messages: { [sourceTopicId]: [requestMessage, replyMessage] },
+    messages: { [sourceTopicId]: [requestMessage, replyMessage, laterMessage] },
     historyTopicIds: [],
     forkRequests: [],
     forkReplies: replies,
@@ -174,6 +194,9 @@ async function openGroup(page: Page, hub: { port: number }, replies: ForkReply[]
   });
 
   // The core advertises fork on top of the mock hub's timeline capability.
+  // `false` drops the whole fork; `"message"` keeps the base entries but
+  // drops the per-row control — the exact skew a new web has against an old
+  // connector, where the Topic menu must work but the row must hide.
   await page.route("**/api/instances", async (route) => {
     const response = await fetch(`http://127.0.0.1:${hub.port}/api/instances`);
     const body = await response.json() as { instances: Array<{ capabilities?: string[] }> };
@@ -181,7 +204,8 @@ async function openGroup(page: Page, hub: { port: number }, replies: ForkReply[]
       instance.capabilities = [...new Set([
         ...(instance.capabilities ?? []),
         RELAY_CAPABILITIES.conversationTimelineV1,
-        RELAY_CAPABILITIES.groupTopicForkV1,
+        ...(forkCapability !== false ? [RELAY_CAPABILITIES.groupTopicForkV1] : []),
+        ...(forkCapability === true ? [RELAY_CAPABILITIES.groupTopicForkMessageV1] : []),
       ])];
     }
     await route.fulfill({ json: body });
@@ -247,7 +271,17 @@ async function openGroup(page: Page, hub: { port: number }, replies: ForkReply[]
         }
         const forkTopic = reply.topic as TopicSummaryDto;
         harness.topics = [...harness.topics, forkTopic];
-        harness.messages[forkTopic.id] = copiedOf(harness.messages[sourceTopicId] ?? [], forkTopic.id);
+        // Mirror the core: a message boundary copies rows through that row's
+        // own seq only, so the mock never hands back a fuller copy than asked.
+        const source = harness.messages[sourceTopicId] ?? [];
+        const point = input.sourcePoint as { type?: string; messageId?: string } | undefined;
+        const boundarySeq = point?.type === "message"
+          ? source.find((message) => message.id === point.messageId)?.seq
+          : undefined;
+        harness.messages[forkTopic.id] = copiedOf(
+          boundarySeq === undefined ? source : source.filter((message) => message.seq <= boundarySeq),
+          forkTopic.id,
+        );
         result = { topic: forkTopic };
         break;
       }
@@ -318,23 +352,23 @@ test("the Topic menu forks at the latest settled run and opens the new Topic wit
   await expect(page.getByTestId("topic-fork-banner-omitted")).toHaveCount(0);
   // The forked Topic renders the copied messages without Run ownership:
   // copied rows carry no Run, so they never offer the Run detail entry.
-  await expect(page.getByTestId("conversation-timeline-scroller").getByTestId("timeline-bot-message")).toContainText("Release triaged");
+  await expect(page.getByTestId("conversation-timeline-scroller").getByTestId("timeline-bot-message").first()).toContainText("Release triaged");
   await expect(page.getByTestId("conversation-timeline-scroller").getByTestId("timeline-open-detail")).toHaveCount(0);
   expect(harness.historyTopicIds).toContain("topic_forked");
 
   // The source link is real: it switches back to the source Topic, which is
-  // not a fork and still owns its Run.
+  // not a fork and still owns its Run — one detail entry per bot row.
   await page.getByTestId("topic-fork-banner-source").click();
   await expect.poll(() => harness.historyTopicIds.at(-1)).toBe(sourceTopicId);
   await expect(page.getByTestId("topic-fork-banner")).toHaveCount(0);
-  await expect(page.getByTestId("conversation-timeline-scroller").getByTestId("timeline-open-detail")).toHaveCount(1);
+  await expect(page.getByTestId("conversation-timeline-scroller").getByTestId("timeline-open-detail")).toHaveCount(2);
 });
 
 test("the run-level entry forks from the exact settled run id", async ({ page, hub }) => {
   const harness = await openGroup(page, hub, [
     { topic: forkedTopic({ id: "topic_from_run", requestId: "request_run", copiedMessages: 2, sourceRunId: runId }) },
   ]);
-  await page.getByTestId("conversation-timeline-scroller").getByTestId("timeline-open-detail").click();
+  await page.getByTestId("conversation-timeline-scroller").getByTestId("timeline-open-detail").first().click();
   await page.getByTestId("group-fork-run-button").click();
   await expect(page.getByTestId("fork-topic-dialog")).toBeVisible();
   await page.getByTestId("fork-topic-submit").click();
@@ -367,4 +401,57 @@ test("a missing-history answer names the start-over and the next click forks wit
   await expect(page.getByTestId("fork-topic-dialog")).toHaveCount(0);
   await expect(page.getByTestId("topic-fork-banner-count")).toContainText("2 messages copied");
   await expect(page.getByTestId("topic-fork-banner-omitted")).toContainText("3 older messages omitted");
+});
+
+/** Hover a row and click its fork control, the way a reader finds it. */
+async function forkAtMessage(page: Page, messageId: string): Promise<void> {
+  const row = page.getByTestId("conversation-timeline-scroller")
+    .locator(`[data-row-key="message:${messageId}"]`);
+  await row.hover();
+  await row.getByTestId("timeline-fork-message").click();
+  await expect(page.getByTestId("fork-topic-dialog")).toBeVisible();
+}
+
+test("a message row's fork control cuts the boundary at that row", async ({ page, hub }) => {
+  const harness = await openGroup(page, hub, [
+    { topic: forkedTopic({ id: "topic_at_bot", requestId: "request_at_bot", copiedMessages: 2 }) },
+  ]);
+  await page.screenshot({ path: "test-results/group-fork-message-row.png" });
+  await forkAtMessage(page, replyMessage.id);
+  await expect(page.getByTestId("fork-topic-point")).toContainText("Fork point: this message");
+  await page.getByTestId("fork-topic-submit").click();
+
+  await expect.poll(() => harness.forkRequests.length).toBe(1);
+  expect(harness.forkRequests[0]!.sourcePoint).toEqual({ type: "message", messageId: replyMessage.id });
+  await expect(page.getByTestId("fork-topic-dialog")).toHaveCount(0);
+  // The copy holds the boundary row and everything before it — and not the
+  // third row. `replyMessage` (seq 2) is no longer the fixture's last row, so
+  // a core or mock that copies the whole source instead of stopping at the
+  // boundary id fails this assertion.
+  const copied = harness.messages.topic_at_bot!;
+  expect(copied.map((message) => message.forkedFromMessageId))
+    .toEqual([requestMessage.id, replyMessage.id]);
+  expect(copied.map((message) => message.forkedFromMessageId)).not.toContain(laterMessage.id);
+  await expect(page.getByTestId("topic-fork-banner-count")).toContainText("2 messages copied");
+});
+test("a core without the Group fork capability offers no row control", async ({ page, hub }) => {
+  const harness = await openGroup(page, hub, [], false);
+  await expect(page.getByTestId("conversation-timeline-scroller").getByTestId("timeline-bot-message").first()).toBeVisible();
+  await expect(page.getByTestId("timeline-fork-message")).toHaveCount(0);
+  expect(harness.forkRequests).toHaveLength(0);
+});
+
+test("a base-only fork keeps the Topic menu but hides the row control", async ({ page, hub }) => {
+  // The message capability is the row's own gate: a new web against an old
+  // connector (base fork only) must keep the Topic-menu entry while the
+  // per-row control stays hidden, never offering an `invalid-payload` action.
+  await openGroup(page, hub, [], "message");
+  const row = page.getByTestId("conversation-timeline-scroller")
+    .locator(`[data-row-key="message:${replyMessage.id}"]`);
+  await row.hover();
+  await expect(page.getByTestId("timeline-fork-message")).toHaveCount(0);
+  await page.getByTestId("group-topic-pill").click();
+  const topicRow = page.locator(`[data-test="topic-row"][data-topic-id="${sourceTopicId}"]`);
+  await topicRow.getByTestId("topic-row-more").click();
+  await expect(page.getByTestId("menu-fork")).toBeVisible();
 });

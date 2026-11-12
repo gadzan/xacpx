@@ -717,6 +717,9 @@ test("group.topics.fork validates the tagged boundary and stays permissive on ex
   expect(parseControlPayload(MSG.groupTopicsFork, {
     ...base, sourcePoint: { type: "run", runId: "run_1" }, title: "Fork",
   })).not.toBeNull();
+  expect(parseControlPayload(MSG.groupTopicsFork, {
+    ...base, sourcePoint: { type: "message", messageId: "message_1" },
+  })).not.toBeNull();
   expect(parseControlPayload(MSG.groupTopicsFork, { ...base, unrelatedExtra: true })).not.toBeNull();
   for (const bad of [
     {},
@@ -729,6 +732,8 @@ test("group.topics.fork validates the tagged boundary and stays permissive on ex
     { ...base, sourcePoint: { type: "run" } },
     { ...base, sourcePoint: { type: "run", runId: 1 } },
     { ...base, sourcePoint: "latest_stable" },
+    { ...base, sourcePoint: { type: "message" } },
+    { ...base, sourcePoint: { type: "message", messageId: 1 } },
     { ...base, sourcePoint: { type: "checkpoint", runId: "r" } },
   ]) {
     expect(parseControlPayload(MSG.groupTopicsFork, bad)).toBeNull();
@@ -747,12 +752,16 @@ test("direct.topics.fork shares the Group shape under its own RPC", () => {
   expect(parseControlPayload(MSG.directTopicsFork, {
     ...base, sourcePoint: { type: "run", runId: "run_1" }, title: "Fork",
   })).not.toBeNull();
+  expect(parseControlPayload(MSG.directTopicsFork, {
+    ...base, sourcePoint: { type: "message", messageId: "message_1" },
+  })).not.toBeNull();
   for (const bad of [
     {},
     { ...base, conversationId: undefined },
     { ...base, targetTopicId: 7 },
     { ...base, sourcePoint: { type: "run" } },
-    { ...base, sourcePoint: { type: "message", messageId: "m1" } },
+    { ...base, sourcePoint: { type: "message" } },
+    { ...base, sourcePoint: { type: "message", messageId: 7 } },
   ]) {
     expect(parseControlPayload(MSG.directTopicsFork, bad)).toBeNull();
   }

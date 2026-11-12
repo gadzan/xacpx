@@ -43,6 +43,9 @@ const props = defineProps<{
   forkedFrom?: TopicForkDto | null;
   /** False once the source Topic is gone, so the jump-to-source link is dropped. */
   forkSourceAvailable?: boolean;
+  /** Present when a message row may cut a fork boundary at its own seq. Absent
+   *  hides the per-row control (old core, peer-scope Topic, other Topic). */
+  forkMessage?: (messageId: string) => void;
 }>();
 
 const emit = defineEmits<{
@@ -209,6 +212,7 @@ defineExpose({ scrollToBottom });
           :row="row"
           :room="room"
           :is-run-queued="isRunQueued"
+          :fork-message="forkMessage"
           @open-detail="(payload) => emit('openDetail', payload)"
         />
       </div>
