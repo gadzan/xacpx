@@ -228,16 +228,19 @@ Group 的 `latest_stable`/`run` 行为不变。Direct 的 `latest_stable`/`run` 
 
 ### 5.2 UI
 
-`ConversationTimeline` 增加可选 `forkMessage` 回调，`TimelineRow` 在 `ConversationMeta` 的 operations 区渲染一个 fork 图标按钮，只在回调存在时出现。GroupPane 与 DirectBotPane 在 capability 可用且消息属于当前 Topic 时传入回调，构造 `sourcePoint: { type: "message", messageId }`。
+`ConversationTimeline` 增加可选 `forkMessage` 回调，`TimelineRow` 在 `ConversationMeta` 的 operations 区渲染一个 fork 图标按钮，只在回调存在时出现。GroupPane 与 DirectBotPane 只在消息 capability 可用且消息属于当前 Topic 时传入回调，构造 `sourcePoint: { type: "message", messageId }`；Topic 菜单与 Run 级入口仍用基础 capability，不受影响。
+
+行级入口另有自己的 capability：`group.topics.fork.message.v1` 与 `direct.topics.fork.message.v1`。core 侧新增 `supportsGroupTopicForkMessage` / `supportsDirectTopicForkMessage` probe，connector 侧要求 core message probe 为 true 且 `parseControlPayload` 能接受带 message sourcePoint 的探测载荷。缺少任一条件时只隐藏行控件， older 的分叉入口照常工作——新 web 对旧 connector/core 不会提供点了只会 `invalid-payload` 的按钮。
 
 `ForkTopicDialog` 的 sourcePoint 联合类型增加 message。分叉点文案增加消息边界分支。移动端依赖 `ConversationMeta` 已有的 `@media (hover: none)` 常显规则，不需要额外的入口。
 
 ### 5.3 实现记录
 
 - 协议：`ThreadForkSourcePointDto` 的三个变体在 `messages.ts` 与 `payload-validators.ts` 同步；Group 与 Direct 共用同一份形状检查，`latest_stable` / `run` 的检查不变。
+- 能力：`group.topics.fork.message.v1` 与 `direct.topics.fork.message.v1` 独立于基础 fork capability；core 侧新增 message probe，connector 侧要求 message probe 为 true 且 validator 接受 message 形状，无任一条件时只隐藏行控件。
 - 服务端：`resolveForkPoint` 的 `message` 分支先校验行属于该 Conversation 与该 Topic、且不是 peer-scope Topic，再以 `message.seq` 作为 `throughSeq` 返回 `boundaryMessageId`，不返回 `boundaryRunId`。两条 fork 路径只在返回了 `boundaryMessageId` 时写 `forkedFrom.sourceMessageId`，因此消息边界永远不带 `sourceRunId`。
 - Group：`copyTopicForkMessages` 收到的是纯 `throughSeq`，因此边界所在 Run 之前的 Run 消息保留，边界之后（包括排队 Run 的请求行）不进入副本。`forkDirectTopic` 原先只接受 `latest_stable` / `run` 的入参校验同步放宽到 `message`，handoff 渲染窗口由同一个 `throughSeq` 决定。
-- 测试：`topic-fork.test.ts` 覆盖人类消息、bot 消息、边界后的排队 Run 与跨 Topic 拒绝；`direct-topic-fork.test.ts` 覆盖消息边界只渲染到该行、不写 `sourceRunId`、跨 Topic 拒绝；`packages/relay-web/src/__tests__/timeline-row.test.ts` 断言回调缺席时没有控件、存在时把该行自己的 id 交给回调；`fork-topic-dialog.test.ts` 断言消息分叉点文案与载荷；两个 e2e spec 各加一条消息行用例，并断言无 capability 时控件不存在。
+- 测试：`topic-fork.test.ts` 覆盖人类消息、bot 消息、边界后的排队 Run 与跨 Topic 拒绝；`direct-topic-fork.test.ts` 覆盖消息边界只渲染到该行、不写 `sourceRunId`、跨 Topic 拒绝；`packages/relay-web/src/__tests__/timeline-row.test.ts` 断言回调缺席时没有控件、存在时把该行自己的 id 交给回调；`fork-topic-dialog.test.ts` 断言消息分叉点文案与载荷；两个 e2e spec 各加一条消息行用例，并断言无 capability 时控件不存在。Group e2e 的消息用例在源里塞了第三行并断言它不进入副本；`topic-fork-message-capability.test.ts` 与两个 store 单测覆盖 message capability 的三种 skew（无 probe、validator 拒绝、base-only 广告）。
 
 ## 6. Phase C，原生 session fork
 
@@ -263,7 +266,9 @@ Group 的 `latest_stable`/`run` 行为不变。Direct 的 `latest_stable`/`run` 
 | 能力 | 用途 |
 |---|---|
 | `group.topics.fork.v1` | 现有 Group fork，不变 |
+| `group.topics.fork.message.v1` | Group 行级消息边界；只管行控件，菜单与 Run 级入口保留在基础 capability |
 | `direct.topics.fork.v1` | Direct fork，Phase A 新增 |
+| `direct.topics.fork.message.v1` | Direct 行级消息边界；只管行控件，其余入口保留在基础 capability |
 | `native.session.fork.v1` | 原生 fork，Phase C 待上游 |
 
 RPC 列表：
