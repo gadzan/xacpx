@@ -18,7 +18,7 @@ vi.mock("../api/client", () => ({
 }));
 
 import { useDirectBotsStore } from "../stores/direct-bots";
-import { supportsDirectTopicFork } from "../stores/instances";
+import { supportsDirectTopicFork, supportsDirectTopicForkMessage } from "../stores/instances";
 import ConversationTimeline from "../components/ConversationTimeline.vue";
 import ForkTopicDialog, { type ForkTopicRequest } from "../components/ForkTopicDialog.vue";
 import { i18n } from "../i18n";
@@ -119,6 +119,17 @@ describe("Direct Topic fork", () => {
     expect(supportsDirectTopicFork({ capabilities: [RELAY_CAPABILITIES.groupTopicForkV1] })).toBe(false);
     expect(supportsDirectTopicFork({ capabilities: [] })).toBe(false);
     expect(supportsDirectTopicFork(null)).toBe(false);
+  });
+
+  it("gates only the per-row control on the message capability", () => {
+    // Base present, message absent: the Topic-menu and run-level entries stay,
+    // only the row control hides. That is the exact new-web/old-connector
+    // skew: the fork RPC exists but the validator would reject the message shape.
+    expect(supportsDirectTopicFork({ capabilities: [RELAY_CAPABILITIES.directTopicForkV1] })).toBe(true);
+    expect(supportsDirectTopicForkMessage({ capabilities: [RELAY_CAPABILITIES.directTopicForkV1] })).toBe(false);
+    expect(supportsDirectTopicForkMessage({ capabilities: [RELAY_CAPABILITIES.directTopicForkV1, RELAY_CAPABILITIES.directTopicForkMessageV1] })).toBe(true);
+    expect(supportsDirectTopicForkMessage({ capabilities: [] })).toBe(false);
+    expect(supportsDirectTopicForkMessage(null)).toBe(false);
   });
 
   it("hands the dialog a Direct fork callback and mints ids the store can replay", async () => {

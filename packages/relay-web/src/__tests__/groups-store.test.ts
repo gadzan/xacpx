@@ -26,6 +26,8 @@ vi.mock("../api/client", () => ({
 
 import { useGroupsStore } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
+import { supportsGroupTopicFork, supportsGroupTopicForkMessage } from "../stores/instances";
 
 const GROUP: GroupSummaryDto = {
   id: "conversation_g",
@@ -3319,6 +3321,19 @@ describe("useGroupsStore Group management", () => {
       requestId: "fork-1",
     })).rejects.toMatchObject({ code: "unknown-type", message: "connectorOutdated" });
     expect(store.activeTopicId).toBe("topic_src");
+  });
+
+  it("gates only the per-row control on the message capability", () => {
+    // Base present, message absent: the Topic-menu and run-level entries stay,
+    // only the row control hides. That is the exact new-web/old-connector
+    // skew: the fork RPC exists but the validator would reject the message shape.
+    expect(supportsGroupTopicFork({ capabilities: [RELAY_CAPABILITIES.groupTopicForkV1] })).toBe(true);
+    expect(supportsGroupTopicForkMessage({ capabilities: [RELAY_CAPABILITIES.groupTopicForkV1] })).toBe(false);
+    expect(supportsGroupTopicForkMessage({
+      capabilities: [RELAY_CAPABILITIES.groupTopicForkV1, RELAY_CAPABILITIES.groupTopicForkMessageV1],
+    })).toBe(true);
+    expect(supportsGroupTopicForkMessage({ capabilities: [] })).toBe(false);
+    expect(supportsGroupTopicForkMessage(null)).toBe(false);
   });
 
   function memberTurn(botId: string, state: MemberTurnSummaryDto["state"], runId: string): MemberTurnSummaryDto {

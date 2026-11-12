@@ -16,6 +16,7 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import {
   supportsConversationTimelineV1,
   supportsGroupTopicFork,
+  supportsGroupTopicForkMessage,
   supportsGroupTopicIsolation,
   supportsRunsCancelMember,
   useInstancesStore,
@@ -108,6 +109,16 @@ const forkSupported = computed(() => {
   const instId = groupsStore.instanceId;
   return instId ? supportsGroupTopicFork(instancesStore.byId(instId)) : false;
 });
+/**
+ * The per-row entry additionally requires the message capability: under a new
+ * web / old connector or core skew the validator would reject the shape with
+ * `invalid-payload`, so the row control hides while the Topic-menu and
+ * run-level entries keep working on the base capability.
+ */
+const forkMessageSupported = computed(() => {
+  const instId = groupsStore.instanceId;
+  return instId ? supportsGroupTopicForkMessage(instancesStore.byId(instId)) : false;
+});
 
 interface ForkDialogTarget {
   topic: TopicSummaryDto;
@@ -156,7 +167,7 @@ function openForkFromRun(run: ConversationRunDto): void {
  */
 function openForkFromMessage(messageId: string): void {
   const topic = groupsStore.currentTopic;
-  if (!topic || !forkSupported.value) return;
+  if (!topic || !forkMessageSupported.value) return;
   const entry = (timelineFeed.timeline.value?.entries ?? [])
     .find((candidate) => candidate.kind === "message" && candidate.message.id === messageId);
   if (!entry || entry.kind !== "message" || entry.message.topicId !== topic.id) return;
@@ -801,7 +812,7 @@ const worktreeRunId = computed(() => {
       @open-detail="openTimelineDetail"
       :forked-from="groupsStore.currentTopic?.forkedFrom ?? null"
       :fork-source-available="forkSourceAvailable"
-      :fork-message="forkSupported ? openForkFromMessage : undefined"
+      :fork-message="forkMessageSupported ? openForkFromMessage : undefined"
       @open-source-topic="openForkSourceTopic"
     />
     <ConversationWorktreePanel v-if="timelineSupported && groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
