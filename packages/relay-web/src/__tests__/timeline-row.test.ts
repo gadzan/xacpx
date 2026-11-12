@@ -43,12 +43,17 @@ function rowOf(source: ConversationMessageDto): TimelineRowModel {
  * parent hands a callback. Everything else about the row is unchanged, so the
  * gating test mounts the same row twice and compares the operations slot.
  */
-function mountRow(source: ConversationMessageDto, forkMessage?: (messageId: string) => void) {
+function mountRow(
+  source: ConversationMessageDto,
+  forkMessage?: (messageId: string) => void,
+  extra: Record<string, unknown> = {},
+) {
   return mount(TimelineRow, {
     props: {
       row: rowOf(source),
       room: ROOM,
       ...(forkMessage ? { forkMessage } : {}),
+      ...extra,
     },
     global: { plugins: [i18n] },
   });
@@ -81,5 +86,25 @@ describe("TimelineRow fork control", () => {
       expect(forkMessage).toHaveBeenCalledWith(source.id);
       wrapper.unmount();
     }
+  });
+});
+
+describe("TimelineRow speaker identity", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("hides the avatar and speaker below lg for a Direct room", () => {
+    const wrapper = mountRow(message("bot", 2));
+    expect(wrapper.get(".agent-avatar").classes()).toContain("hidden");
+    expect(wrapper.get('[data-test="transcript-speaker"]').element.parentElement?.className).toContain("hidden");
+    wrapper.unmount();
+  });
+
+  it("keeps the avatar and speaker at every breakpoint for a Group room", () => {
+    const wrapper = mountRow(message("bot", 2), undefined, { keepMobileIdentity: true });
+    expect(wrapper.get(".agent-avatar").classes()).not.toContain("hidden");
+    expect(wrapper.get('[data-test="transcript-speaker"]').element.parentElement?.className).not.toContain("hidden");
+    wrapper.unmount();
   });
 });

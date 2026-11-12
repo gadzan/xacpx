@@ -809,6 +809,7 @@ const worktreeRunId = computed(() => {
       :error="timelineFeed.error.value"
       :is-run-queued="groupsStore.isRunQueued"
       :load-older="timelineFeed.loadOlder"
+      keep-mobile-identity
       @open-detail="openTimelineDetail"
       :forked-from="groupsStore.currentTopic?.forkedFrom ?? null"
       :fork-source-available="forkSourceAvailable"
