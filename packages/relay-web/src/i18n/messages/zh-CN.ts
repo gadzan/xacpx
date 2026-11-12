@@ -1302,6 +1302,9 @@ export default {
       forkPointRunAt: "分叉点：本次运行，开始于 {time}",
       forkPointLatest: "分叉点：最近一次已结束的运行",
       forkPointLatestAt: "分叉点：最近一次已结束的运行，开始于 {time}",
+      /** 逐条消息入口：分叉点就是该可见消息自己的 seq。 */
+      forkPointMessage: "分叉点：此消息",
+      forkMessage: "从此消息分叉",
       forkBanner: "分叉自 {title}",
       forkCopied: "已复制 {count} 条消息",
       forkOmitted: "较早的 {count} 条消息未复制",

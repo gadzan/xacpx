@@ -111,7 +111,10 @@ const forkSupported = computed(() => {
 
 interface ForkDialogTarget {
   topic: TopicSummaryDto;
-  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string };
+  sourcePoint:
+    | { type: "latest_stable" }
+    | { type: "run"; runId: string }
+    | { type: "message"; messageId: string };
   resolvedRun?: ConversationRunDto;
 }
 
@@ -144,6 +147,20 @@ function openForkFromRun(run: ConversationRunDto): void {
   // never stack and the dialog's submit is the topmost hit target.
   closeTimelineDetail();
   forkTarget.value = { topic, sourcePoint: { type: "run", runId: run.id }, resolvedRun: run };
+}
+
+/**
+ * Fork at one visible message row (design §5.2). The row hands over its id;
+ * the pane proves the row is in the Topic currently on screen, so the control
+ * never offers a boundary the core would refuse as cross-Topic.
+ */
+function openForkFromMessage(messageId: string): void {
+  const topic = groupsStore.currentTopic;
+  if (!topic || !forkSupported.value) return;
+  const entry = (timelineFeed.timeline.value?.entries ?? [])
+    .find((candidate) => candidate.kind === "message" && candidate.message.id === messageId);
+  if (!entry || entry.kind !== "message" || entry.message.topicId !== topic.id) return;
+  forkTarget.value = { topic, sourcePoint: { type: "message", messageId } };
 }
 
 const detailRunForkable = computed(() =>
@@ -784,6 +801,7 @@ const worktreeRunId = computed(() => {
       @open-detail="openTimelineDetail"
       :forked-from="groupsStore.currentTopic?.forkedFrom ?? null"
       :fork-source-available="forkSourceAvailable"
+      :fork-message="forkSupported ? openForkFromMessage : undefined"
       @open-source-topic="openForkSourceTopic"
     />
     <ConversationWorktreePanel v-if="timelineSupported && groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { AlertCircle, ArrowRight, Clock, MessageSquare } from "lucide-vue-next";
+import { AlertCircle, ArrowRight, Clock, GitFork, MessageSquare } from "lucide-vue-next";
 import type { ConversationMessageDto } from "@ganglion/xacpx-relay-protocol";
 import TranscriptRow from "./TranscriptRow.vue";
 import ConversationBubble from "./ConversationBubble.vue";
@@ -31,6 +31,9 @@ const props = defineProps<{
   /** True while a message's Run is durable but still queued behind the Topic's
    *  standing owner. */
   isRunQueued?: (runId: string | undefined) => boolean;
+  /** Present when this row's message may cut a fork boundary. Absent hides the
+   *  control: an older core, a peer-scope Topic, or another Topic's row. */
+  forkMessage?: (messageId: string) => void;
 }>();
 
 const emit = defineEmits<{
@@ -80,6 +83,12 @@ const handoffDetail = computed(() => ({
   ...(handoff.value?.memberTurnId ? { memberTurnId: handoff.value.memberTurnId } : {}),
 }));
 
+/** Cut a fork boundary at this row. The parent owns the capability gate; the
+ *  row only reflects whether the callback exists. */
+function forkHere(message: ConversationMessageDto): void {
+  props.forkMessage?.(message.id);
+}
+
 const activity = computed(() => {
   if (props.row.kind !== "activity") return null;
   const turn = props.row.entry.memberTurn;
@@ -118,7 +127,20 @@ const noticeToneClass = computed(() => {
   >
     <ConversationBubble :message="message" :attachments="message.attachments" own />
     <template #meta>
-      <ConversationMeta :message="message" />
+      <ConversationMeta :message="message">
+        <template v-if="forkMessage" #operations>
+          <button
+            type="button"
+            data-test="timeline-fork-message"
+            :aria-label="$t('group.topic.forkMessage')"
+            :title="$t('group.topic.forkMessage')"
+            class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block"
+            @click.stop="forkHere(message)"
+          >
+            <GitFork :size="14" />
+          </button>
+        </template>
+      </ConversationMeta>
       <p
         v-if="isRunQueued?.(message.runId)"
         data-test="queued-prompt"
@@ -194,7 +216,20 @@ const noticeToneClass = computed(() => {
       </p>
     </div>
     <template #meta>
-      <ConversationMeta :message="message" />
+      <ConversationMeta :message="message">
+        <template v-if="forkMessage" #operations>
+          <button
+            type="button"
+            data-test="timeline-fork-message"
+            :aria-label="$t('group.topic.forkMessage')"
+            :title="$t('group.topic.forkMessage')"
+            class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted hover:bg-fg/5 hover:text-fg [&_svg]:block"
+            @click.stop="forkHere(message)"
+          >
+            <GitFork :size="14" />
+          </button>
+        </template>
+      </ConversationMeta>
       <button
         v-if="message.runId"
         type="button"

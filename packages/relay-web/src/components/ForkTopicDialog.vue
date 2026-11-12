@@ -13,14 +13,14 @@ export interface ForkTopicRequest {
   sourceTopicId: string;
   targetTopicId: string;
   requestId: string;
-  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string };
+  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string } | { type: "message"; messageId: string };
   title?: string;
 }
 
 const props = defineProps<{
   sourceTopic: TopicSummaryDto;
   /** The boundary this open explicitly cuts at. */
-  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string };
+  sourcePoint: { type: "latest_stable" } | { type: "run"; runId: string } | { type: "message"; messageId: string };
   /** Cache-resolved Run for the confirm label only; never sent as the point. */
   resolvedRun?: ConversationRunDto | null;
   conversationId: string;
@@ -55,6 +55,9 @@ const hint = computed(() =>
 );
 
 const forkPointLabel = computed(() => {
+  if (props.sourcePoint.type === "message") {
+    return t("group.topic.forkPointMessage");
+  }
   if (props.sourcePoint.type === "run") {
     return props.resolvedRun?.createdAt
       ? t("group.topic.forkPointRunAt", { time: props.resolvedRun.createdAt })
