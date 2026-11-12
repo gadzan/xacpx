@@ -301,6 +301,9 @@ function forkedTopic(input: {
   requestId: string;
   carried: number;
   omitted?: number;
+  /** Set by a message boundary; never together with a Run id. */
+  sourceMessageId?: string;
+  throughSeq?: number;
 }): TopicSummaryDto {
   return topic(input.id, "Release fork", {
     forkedFrom: {
@@ -309,7 +312,8 @@ function forkedTopic(input: {
       sourceTopicId,
       sourceTitle,
       mode: "handoff",
-      throughSeq: 2,
+      ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}),
+      throughSeq: input.throughSeq ?? 2,
       rootTopicId: sourceTopicId,
       copiedMessages: input.carried,
       omittedMessages: input.omitted ?? 0,
@@ -439,6 +443,36 @@ test("the dialog fits the viewport on the mobile project", async ({ page, hub },
   expect(Math.abs(row!.y - (banner!.y + banner!.height))).toBeLessThanOrEqual(8);
 });
 
+test("a message row's fork control cuts the Direct handoff at that row", async ({ page, hub }) => {
+  const harness = await openDirect(page, hub, [
+    {
+      topic: forkedTopic({
+        id: "topic_at_message",
+        requestId: "request_at_message",
+        carried: 1,
+        sourceMessageId: requestMessage.id,
+        throughSeq: 1,
+      }),
+    },
+  ]);
+  const row = page.getByTestId("conversation-timeline-scroller")
+    .locator(`[data-row-key="message:${requestMessage.id}"]`);
+  await row.hover();
+  await row.getByTestId("timeline-fork-message").click();
+  await expect(page.getByTestId("fork-topic-dialog")).toBeVisible();
+  await expect(page.getByTestId("fork-topic-point")).toContainText("Fork point: this message");
+  // The boundary kind does not change how a Direct fork arrives: still one
+  // prompt block, never a copied timeline.
+  await expect(page.getByTestId("fork-topic-hint")).toContainText("one block of background context");
+  await page.getByTestId("fork-topic-submit").click();
+
+  await expect.poll(() => harness.forkRequests.length).toBe(1);
+  expect(harness.forkRequests[0]!.sourcePoint).toEqual({ type: "message", messageId: requestMessage.id });
+  expect(harness.groupForkRequests).toHaveLength(0);
+  await expect(page.getByTestId("fork-topic-dialog")).toHaveCount(0);
+  await expect(page.getByTestId("topic-fork-banner-count")).toContainText("1 messages carried");
+});
+
 test("a core without the Direct fork capability offers no fork entry", async ({ page, hub }, info) => {
   const harness = await openDirect(page, hub, [], []);
   await openTopicSwitcher(page, info.project.name);
@@ -448,5 +482,7 @@ test("a core without the Direct fork capability offers no fork entry", async ({ 
   await expect(page.getByTestId("menu-rename")).toBeVisible();
   await expect(page.getByTestId("menu-fork")).toHaveCount(0);
   await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
+  // The per-row control is the same capability: it must stay hidden too.
+  await expect(page.getByTestId("timeline-fork-message")).toHaveCount(0);
   expect(harness.forkRequests).toHaveLength(0);
 });
