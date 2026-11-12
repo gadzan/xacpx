@@ -78,6 +78,8 @@ interface ConversationStore {
     messageCount: number;
     omittedMessages: number;
     createdAt: string;
+    /** 仅 fork 重放时用于收敛：首次消费时间写进同一行，已存在时不再改写。 */
+    consumedAt?: string;
   }): void;
   getTopicForkHandoff(topicId: string): TopicForkHandoff | undefined;
   /** 写入首次消费时间；已消费时不再改写。 */
