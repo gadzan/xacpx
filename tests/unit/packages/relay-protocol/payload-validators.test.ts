@@ -734,3 +734,26 @@ test("group.topics.fork validates the tagged boundary and stays permissive on ex
     expect(parseControlPayload(MSG.groupTopicsFork, bad)).toBeNull();
   }
 });
+
+test("direct.topics.fork shares the Group shape under its own RPC", () => {
+  const base = {
+    conversationId: "conversation_d",
+    sourceTopicId: "topic_src",
+    targetTopicId: "topic_dst",
+    requestId: "fork-1",
+  };
+  expect(parseControlPayload(MSG.directTopicsFork, base)).toEqual(base);
+  expect(parseControlPayload(MSG.directTopicsFork, { ...base, sourcePoint: { type: "latest_stable" } })).not.toBeNull();
+  expect(parseControlPayload(MSG.directTopicsFork, {
+    ...base, sourcePoint: { type: "run", runId: "run_1" }, title: "Fork",
+  })).not.toBeNull();
+  for (const bad of [
+    {},
+    { ...base, conversationId: undefined },
+    { ...base, targetTopicId: 7 },
+    { ...base, sourcePoint: { type: "run" } },
+    { ...base, sourcePoint: { type: "message", messageId: "m1" } },
+  ]) {
+    expect(parseControlPayload(MSG.directTopicsFork, bad)).toBeNull();
+  }
+});

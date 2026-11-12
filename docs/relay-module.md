@@ -507,6 +507,48 @@ response is `{ topic }`, whose summary carries `forkedFrom`; messages carry
 attachment files. See
 [Conversation Topic fork](design/2026-11-10-conversation-topic-fork.md).
 
+A Direct Bot Topic forks through `control.direct.topics.fork` with the same
+payload shape (`DirectTopicsForkPayload`), advertised as
+`RELAY_CAPABILITIES.directTopicForkV1` (`direct.topics.fork.v1`) only when the
+core exposes `forkDirectTopic` with its `supportsDirectTopicFork` probe and the
+connector validator accepts the payload. The mechanism differs because a Direct
+turn rebuilds no context from message rows: history reaches the model through
+the persisted Agent session, so copying rows would be invisible to the
+provider. Instead the core renders the source Topic's messages up to the
+boundary into `topic_fork_handoffs` — a SQLite table beside the Topic, never
+`state.json`, because that text can reach 12,000 characters and every state
+save would carry it — and the target Topic injects it into its first real
+prompt. `forkedFrom.mode` is `"handoff"` (absent reads as `"snapshot"` for
+pre-Direct rows); `copiedMessages` counts rendered messages and
+`omittedMessages` counts in-boundary messages the 500-row window or the budget
+dropped.
+
+The handoff text is bounded and structurally fixed: a two-line header naming the
+source (title collapsed and capped at 80 characters, delimiters stripped), a
+`<<<HISTORY` … `>>>END HISTORY` fence, and one `Human:` / `Bot <name>:` row per
+message at 2,000 characters each. The 12,000-character cap is a postcondition:
+header and separators are reserved first and every row is charged before it is
+accepted. The boundary message is always present — the user picked that point —
+and a fork-of-fork chains its parent's handoff inline as the oldest block with
+both counts accumulated. The block is passed as a separate prompt parameter, so
+it never joins `body` or `userText`, the command check and
+`adapterFacingPrompt` still see only the request text, and `userText` stays a
+suffix for mention offsets.
+
+The injection window is an explicit consumption marker, not a message-row
+count. `topic_fork_handoffs.consumed_at` is written by the first non-command turn
+that composes the block, before the runner starts, and converges on the first
+timestamp. A command turn (`/status`, or an advertised runtime command)
+neither injects nor consumes it, even though it persists a bot reply — that is
+exactly why deriving the window from rows would close it early and lose the
+history. A provider failure after composition does not re-arm the injection:
+the fork is worth one look, not a replay loop. Replay resolves before the
+source read, so the same `requestId` still returns the committed Topic after
+the source was deleted; `targetTopicId === createDirectTopicId(botId)` is
+refused, and `clearDefaultTopic` drops both `forkedFrom` and the handoff row.
+Error codes match the Group fork plus `conversation_not_direct`. See
+[Direct Topic fork](design/2026-11-12-direct-topic-fork.md).
+
 Phase 10C adds authenticated instance RPC `control.conversation.worktree`, returning
 `{worktree}`. Its strict action union accepts `runId` plus: `preview` with complete
 ordered `botIds`; `integrate` with `requestId`, `previewId`, `snapshotUncommitted: true`;

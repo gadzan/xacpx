@@ -1,6 +1,6 @@
 # Direct 会话与消息节点 fork
 
-状态：Proposed
+状态：Accepted（Phase A 已实现；Phase B 消息节点见第 5 节，尚未实现）
 
 范围：在现有 Group Topic fork 之上，增加 Direct Bot 会话的 fork，以及 Group/Direct 共同的消息节点边界。原生 Agent session fork 不在本期。
 
@@ -308,11 +308,11 @@ RPC 列表：
 
 ## 10. 验收
 
-- [ ] `control.direct.topics.fork` 在 Direct Bot 会话创建新 Topic，返回 `forkedFrom.mode = "handoff"` 且写入 handoff 行。
-- [ ] 新 Topic 第一条 prompt 包含边界内历史，第一条 bot 回复之后不再包含。
-- [ ] 源 Topic 删除后 fork 仍可对话，同 `requestId` 重放仍返回已有 Topic。
-- [ ] Group 与 Direct 都能以 `{ type: "message", messageId }` 为边界。
-- [ ] Group 消息边界只复制到该消息的 seq。
-- [ ] 旧 core/connector 不广告新 capability，入口隐藏。
-- [ ] 单元测试、relay-web 测试、Playwright、真实栈全部通过。
-- [ ] 原生 fork 的上游依赖与解锁步骤记录在文档中，没有死代码。
+- [x] `control.direct.topics.fork` 在 Direct Bot 会话创建新 Topic，返回 `forkedFrom.mode = "handoff"` 且写入 handoff 行。
+- [x] 新 Topic 第一条 prompt 包含边界内历史，第一条 bot 回复之后不再包含。
+- [x] 源 Topic 删除后 fork 仍可对话，同 `requestId` 重放仍返回已有 Topic。
+- [ ] Group 与 Direct 都能以 `{ type: "message", messageId }` 为边界。（Phase B，未实现）
+- [ ] Group 消息边界只复制到该消息的 seq。（Phase B，未实现）
+- [x] 旧 core/connector 不广告新 capability，入口隐藏。
+- [x] 单元测试、relay-web 测试、Playwright、真实栈全部通过。
+- [x] 原生 fork 的上游依赖与解锁步骤记录在文档中，没有死代码。
