@@ -182,17 +182,18 @@ const SESSION_CONTROLS_READY_MAX_POLL_MS = 4_000;
  *  still announced. */
 const SESSION_CONTROLS_READY_BUDGET_MS = 2 * DEFAULT_SESSION_INIT_TIMEOUT_MS;
 
-function sleepMs(ms: number): { promise: Promise<void>; cancel: () => void } {
+function sleepMs(ms: number, signal: AbortSignal): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
-  const timer = setTimeout(resolve, ms);
-  timer.unref?.();
-  return {
-    promise,
-    cancel: () => {
-      clearTimeout(timer);
-      resolve();
-    },
+  const done = () => {
+    signal.removeEventListener("abort", done);
+    clearTimeout(timer);
+    resolve();
   };
+  const timer = setTimeout(done, ms);
+  timer.unref?.();
+  if (signal.aborted) resolve();
+  else signal.addEventListener("abort", done, { once: true });
+  return promise;
 }
 
 function normalizeAdvertisedEffortCurrent(observed: {
@@ -653,8 +654,8 @@ export class ControlService {
   private readonly modelMutationGenerations = new Map<string, number>();
   /** One pending-catalog wait per session alias; repeated cold reads join it. */
   private readonly pendingControlAnnouncements = new Set<string>();
-  /** Cancels an in-flight wait's sleep on shutdown. */
-  private readonly pendingCatalogSleeps = new Map<string, () => void>();
+  /** Aborts the waits' sleeps and in-flight reads on shutdown. */
+  private readonly pendingCatalogAborts = new Map<string, AbortController>();
   private backgroundMaintenanceStopped = false;
   /** Fire-and-forget maintenance (timeout reconciliation, pending-catalog waits)
    *  awaited by tests/shutdown. */
@@ -1349,6 +1350,7 @@ export class ControlService {
    * unrelated turn or poll happens to refresh them.
    */
   private announceSessionControlsWhenReady(session: ResolvedSession): void {
+    if (this.backgroundMaintenanceStopped) return;
     if (this.pendingControlAnnouncements.has(session.alias)) return;
     this.pendingControlAnnouncements.add(session.alias);
     const task = this.waitForSessionControls(session.alias).catch(() => {});
@@ -1368,40 +1370,51 @@ export class ControlService {
     );
     if (!readModel && !readEffort) return;
     const deadline = Date.now() + SESSION_CONTROLS_READY_BUDGET_MS;
+    const abort = new AbortController();
+    this.pendingCatalogAborts.set(sessionAlias, abort);
+    const stopped = new Promise<void>((resolve) => {
+      if (abort.signal.aborted) resolve();
+      else abort.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
     let wait = SESSION_CONTROLS_READY_FIRST_POLL_MS;
-    while (Date.now() < deadline && !this.backgroundMaintenanceStopped) {
-      const sleep = sleepMs(wait);
-      this.pendingCatalogSleeps.set(sessionAlias, sleep.cancel);
-      await sleep.promise;
-      this.pendingCatalogSleeps.delete(sessionAlias);
-      if (this.backgroundMaintenanceStopped) return;
-      wait = Math.min(wait * 2, SESSION_CONTROLS_READY_MAX_POLL_MS);
-      // Re-resolved per round: a rotation or handoff replaces the transport
-      // session, and the announcement must name the incarnation clients show.
-      const session = await this.deps.sessions.getSession(sessionAlias);
-      if (!session) return;
-      let modelPending: boolean;
-      try {
-        const model = readModel ? await readModel(session) : undefined;
-        modelPending = model?.pending === true;
-      } catch {
-        // An unreadable model catalog is the caller's error; never announce it.
+    try {
+      while (Date.now() < deadline && !this.backgroundMaintenanceStopped) {
+        await sleepMs(wait, abort.signal);
+        if (this.backgroundMaintenanceStopped) return;
+        wait = Math.min(wait * 2, SESSION_CONTROLS_READY_MAX_POLL_MS);
+        // Re-resolved per round: a rotation or handoff replaces the transport
+        // session, and the announcement must name the incarnation clients show.
+        const resolved = await this.raceWithStop(this.deps.sessions.getSession(sessionAlias), stopped);
+        if (resolved.status !== "done") return;
+        const session = resolved.value;
+        if (!session) return;
+        let modelPending = false;
+        if (readModel) {
+          const model = await this.raceWithStop(readModel(session), stopped);
+          if (model.status === "stopped") return;
+          if (model.status === "failed") return; // the caller's error; never announce it
+          modelPending = model.value.pending === true;
+        }
+        if (modelPending) continue;
+        let effortPending = false;
+        if (readEffort) {
+          const effort = await this.raceWithStop(readEffort(session), stopped);
+          if (effort.status === "stopped") return;
+          // A transient effort failure must not keep the model picker disabled,
+          // but a genuinely pending effort catalog is not ready yet.
+          effortPending = effort.status === "done" && effort.value.pending === true;
+        }
+        if (this.backgroundMaintenanceStopped) return;
+        if (effortPending) continue;
+        this.deps.events.emit({
+          type: "sessions-changed",
+          readySessionAlias: toDisplaySessionAlias(session.alias),
+          readyTransportSession: session.transportSession,
+        });
         return;
       }
-      if (modelPending) continue;
-      if (readEffort) {
-        // Effort comes from the same worker snapshot; a transient effort failure
-        // must not keep the model picker disabled.
-        try {
-          await readEffort(session);
-        } catch {}
-      }
-      this.deps.events.emit({
-        type: "sessions-changed",
-        readySessionAlias: toDisplaySessionAlias(session.alias),
-        readyTransportSession: session.transportSession,
-      });
-      return;
+    } finally {
+      this.pendingCatalogAborts.delete(sessionAlias);
     }
     if (!this.backgroundMaintenanceStopped) {
       await this.deps.logger?.debug(
@@ -1412,11 +1425,26 @@ export class ControlService {
     }
   }
 
-  /** Stop pending-catalog waits on daemon shutdown; their sleeps must not hold
-   *  shutdown open. */
+  /** Settle an awaited maintenance read as soon as shutdown starts, so a slow
+   *  transport call cannot hold shutdown or announce afterwards. */
+  private async raceWithStop<T>(
+    promise: Promise<T>,
+    stopped: Promise<void>,
+  ): Promise<{ status: "done"; value: T } | { status: "failed"; error: unknown } | { status: "stopped" }> {
+    return await Promise.race([
+      promise.then(
+        (value) => ({ status: "done" as const, value }),
+        (error: unknown) => ({ status: "failed" as const, error }),
+      ),
+      stopped.then(() => ({ status: "stopped" as const })),
+    ]);
+  }
+
+  /** Stop pending-catalog waits on daemon shutdown: their sleeps and any
+   *  in-flight read must not hold shutdown open or announce a stale catalog. */
   cancelPendingCatalogWaits(): void {
     this.backgroundMaintenanceStopped = true;
-    for (const cancel of this.pendingCatalogSleeps.values()) cancel();
+    for (const abort of this.pendingCatalogAborts.values()) abort.abort();
   }
 
   /** Await in-flight background maintenance (timeout reconciliation, pending catalogs). */
