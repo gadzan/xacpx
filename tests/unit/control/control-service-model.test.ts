@@ -978,3 +978,82 @@ test("a fresh catalog read never announces the session", async () => {
 
   expect(events).toEqual([]);
 });
+
+/** Deterministic clock: each sleep advances virtual time by its own delay, so a
+ *  worker that needs longer than the real worker timeouts can be exercised
+ *  without waiting on wall-clock time. */
+async function withVirtualClock(run: (now: () => number) => Promise<void>): Promise<void> {
+  const realNow = Date.now;
+  const realSetTimeout = globalThis.setTimeout;
+  let virtualNow = 0;
+  Date.now = () => virtualNow;
+  globalThis.setTimeout = ((fn: () => void, ms: number) => {
+    virtualNow += ms;
+    queueMicrotask(fn);
+    return 0;
+  }) as unknown as typeof setTimeout;
+  try {
+    await run(() => virtualNow);
+  } finally {
+    Date.now = realNow;
+    globalThis.setTimeout = realSetTimeout;
+  }
+}
+
+const readyBackendEvent = {
+  type: "sessions-changed",
+  readySessionAlias: "internal-backend",
+  readyTransportSession: "t",
+};
+
+test("a worker fresh after the old 30s budget is still announced", async () => {
+  await withVirtualClock(async (now) => {
+    const { deps, events, logs } = makeDeps();
+    deps.transport.getSessionModel = async () =>
+      now() < 35_000
+        ? { available: [], pending: true }
+        : { current: "mock-alpha", available: ["mock-alpha", "mock-beta"] };
+    const control = new ControlService(deps as never);
+
+    await expect(control.getSessionModel("relay:acc", "backend")).resolves.toEqual({ available: [] });
+    await control.whenBackgroundIdle();
+
+    expect(now()).toBeGreaterThanOrEqual(35_000);
+    expect(logs.map((entry) => entry.event)).toEqual([]);
+    expect(events).toEqual([readyBackendEvent]);
+  });
+});
+
+test("a fresh model catalog is announced even when the effort read fails", async () => {
+  await withVirtualClock(async () => {
+    const { deps, events } = makeDeps();
+    let modelReads = 0;
+    deps.transport.getSessionModel = async () => {
+      modelReads += 1;
+      return modelReads === 1
+        ? { available: [], pending: true }
+        : { current: "mock-alpha", available: ["mock-alpha", "mock-beta"] };
+    };
+    deps.transport.getSessionEffort = async () => {
+      throw new Error("effort status timed out");
+    };
+    const control = new ControlService(deps as never);
+
+    await expect(control.getSessionModel("relay:acc", "backend")).resolves.toEqual({ available: [] });
+    await control.whenBackgroundIdle();
+
+    expect(events).toEqual([readyBackendEvent]);
+  });
+});
+
+test("daemon shutdown cancels the pending-catalog sleep", async () => {
+  const { deps, events } = makeDeps();
+  deps.transport.getSessionModel = async () => ({ available: [], pending: true });
+  const control = new ControlService(deps as never);
+
+  await expect(control.getSessionModel("relay:acc", "backend")).resolves.toEqual({ available: [] });
+  control.cancelPendingCatalogWaits();
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([]);
+});

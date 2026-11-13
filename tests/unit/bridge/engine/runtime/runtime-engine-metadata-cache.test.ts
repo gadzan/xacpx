@@ -22,12 +22,28 @@ const sessionInput = {
 };
 
 /** Fake worker that reports a fixed model/effort catalog and journals every
- *  status/setConfigOption call so tests can prove cache hits skipped the wire. */
-async function withMetadataWorker(entry: string, journal: string): Promise<void> {
+ *  status/setConfigOption call so tests can prove cache hits skipped the wire.
+ *  When `gate` exists, `status` fails so a fast-failing worker can be simulated. */
+async function withMetadataWorker(entry: string, journal: string, gate?: string): Promise<void> {
+  const statusSuccess = [
+    "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {",
+    "          models: { currentModelId: 'm1', availableModelIds: ['m1', 'm2'] },",
+    "          details: { configOptions: [{ id: 'effort', category: 'thought_level', currentValue: 'medium', options: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }] }] },",
+    "        } }) + '\\n');",
+  ];
+  const statusLines = gate
+    ? [
+        `        if (existsSync(${JSON.stringify(gate)})) {`,
+        "          process.stdout.write(JSON.stringify({ id: msg.id, ok: false, error: { code: 'WORKER_RPC_FAILED', message: 'status refused' } }) + '\\n');",
+        "        } else {",
+        ...statusSuccess.map((line) => `  ${line}`),
+        "        }",
+      ]
+    : statusSuccess;
   await writeFile(
     entry,
     [
-      "import { appendFileSync } from 'node:fs';",
+      "import { appendFileSync, existsSync } from 'node:fs';",
       `const JOURNAL = ${JSON.stringify(journal)};`,
       "let buffer='';",
       "process.stdin.on('data', (d) => {",
@@ -39,10 +55,7 @@ async function withMetadataWorker(entry: string, journal: string): Promise<void>
       "    try { const msg = JSON.parse(line);",
       "      if (msg.method === 'status') {",
       "        appendFileSync(JOURNAL, 'status\\n');",
-      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {",
-      "          models: { currentModelId: 'm1', availableModelIds: ['m1', 'm2'] },",
-      "          details: { configOptions: [{ id: 'effort', category: 'thought_level', currentValue: 'medium', options: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }] }] },",
-      "        } }) + '\\n');",
+      ...statusLines,
       "      } else if (msg.method === 'ensure') {",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-test-1' } }) + '\\n');",
       "      } else if (msg.method === 'setConfigOption') {",
@@ -82,13 +95,16 @@ async function waitFor<T>(read: () => Promise<T | undefined>, timeoutMs = 5_000)
 }
 
 async function withEngine(
-  run: (engine: RuntimeEngine, journal: string) => Promise<void>,
+  run: (engine: RuntimeEngine, journal: string, gate: string) => Promise<void>,
+  options: { failureGate?: boolean; metadataRefreshFailureBackoffMs?: number } = {},
 ): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "rt-metadata-"));
   try {
     const entry = join(dir, "fake-worker.mjs");
     const journal = join(dir, "journal.log");
-    await withMetadataWorker(entry, journal);
+    const gate = join(dir, "status-fails");
+    await withMetadataWorker(entry, journal, options.failureGate ? gate : undefined);
+    if (options.failureGate) await writeFile(gate, "fail");
     const stateDir = join(dir, "state", "sessions");
     await mkdir(stateDir, { recursive: true });
     const engine = new RuntimeEngine({
@@ -98,9 +114,12 @@ async function withEngine(
       stateDir,
       queueDir: join(dir, "queue"),
       fenceDir: join(dir, "fences"),
+      ...(options.metadataRefreshFailureBackoffMs !== undefined
+        ? { metadataRefreshFailureBackoffMs: options.metadataRefreshFailureBackoffMs }
+        : {}),
     });
     try {
-      await run(engine, journal);
+      await run(engine, journal, gate);
     } finally {
       await engine.shutdown();
     }
@@ -206,4 +225,41 @@ test("a stale snapshot is served but reported pending until the refresh lands", 
     });
     expect(fresh).toEqual({ current: "m1", available: ["m1", "m2"] });
   });
+}, 20_000);
+
+async function waitForStatusCount(journal: string, count: number): Promise<void> {
+  await waitFor(async () => {
+    const lines = await journalLines(journal);
+    return lines.filter((line) => line === "status").length >= count ? lines : undefined;
+  });
+}
+
+test("a fast-failing refresh is not restarted by every pending read", async () => {
+  await withEngine(async (engine, journal) => {
+    for (let i = 0; i < 4; i += 1) {
+      expect(await engine.getSessionModel(sessionInput)).toEqual({ available: [], pending: true });
+      await waitForStatusCount(journal, 1);
+      // Let the failed refresh settle before the next watcher tick: without the
+      // failure backoff that tick would start another worker `status` read.
+      for (let turn = 0; turn < 200; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+    expect(await journalLines(journal)).toEqual(["status"]);
+  }, { failureGate: true });
+}, 20_000);
+
+test("a refresh retried after the failure backoff heals the catalog", async () => {
+  await withEngine(async (engine, journal, gate) => {
+    expect(await engine.getSessionModel(sessionInput)).toEqual({ available: [], pending: true });
+    await waitForStatusCount(journal, 1);
+    await rm(gate);
+
+    const warmed = await waitFor(async () => {
+      const read = await engine.getSessionModel(sessionInput);
+      return read.current === "m1" ? read : undefined;
+    });
+    expect(warmed).toEqual({ current: "m1", available: ["m1", "m2"] });
+    expect((await journalLines(journal)).filter((line) => line === "status").length).toBeGreaterThan(1);
+  }, { failureGate: true, metadataRefreshFailureBackoffMs: 50 });
 }, 20_000);
