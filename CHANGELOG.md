@@ -1,4 +1,43 @@
 # Changelog
+## [relay-protocol 0.6.4-beta.13] - 2026-11-13
+
+### Added
+
+- peer 回合的因果字段：`MessageRecordDto.structured` 增加可选 `peerTriggerMessageId`（唤醒该回合的 peer 消息 id），`LiveTurnSnapshotDto` 以及 `InstanceStateSyncPayload.turns[]` / `finishedOffline[]` 同步携带，Hub 重启后仍能还原 live 槽位。全部为增量：旧连接器省略该字段照样通过 `validInstanceStateSync`，wire 版本不变（#581）。
+
+## [relay 0.14.12-beta.21] - 2026-11-13
+
+### Added
+
+- 圆桌讨论改为输入区模式：点开后选 1/2/3 轮，再由普通发送键提交草稿；被停止的成员回合合并成一行去重头像，不再每个 bot 一个 spinner；交接渲染为重叠的发送/接收头像对并去掉边框底色；消息详情入口用 bot 头像替代名字（#579）。
+- peer 卡片归到它唤醒的回合：Direct 时间线里 received 卡片渲染在回复气泡上方、作为气泡的兄弟节点（不进 trace，也不被失败回合的红色 ring 罩住）；回合折叠时改显示一行 `← Worker A` / `→ Worker B` chip，点开恢复真实位置。归属由 `structured.peerTriggerMessageId` 承载，`history-turn-slots` 不再把它当成中途行，Hub 中途重启也经 `instance.state.sync` 还原；卡片只在紧邻回合上方时才被接管，中间插进别的行（排队回合的卡先落库）就留在原位（#581）。
+
+### Fixed
+
+- Direct Bot 话题的删除确认在窄屏不再只关窗不删除：确认层与遮罩标记为 `data-dd-panel`，与话题面板同属一个浮层；默认话题的**清空**改走 `openConfirm("clear")`（#576）。
+- trace 抽屉里的子对话框（子代理全量 trace、`ConfirmDialog`）不再被抽屉自己关掉：`TraceOverlayDrawer` 的外点判定先查共享 modal 栈，有子层挂载时指针按下不关闭抽屉（#578）。
+- Group 编辑/新建对话框不再白屏：`group.manage` 的默认路由提示把字面量 `@` 写成 `{'@'}`，并新增逐条编译 en / zh-CN 两份目录的测试，生产构建的编译失败会在 CI 里现形（#577）。
+
+## [channel-relay 0.7.8-beta.17] - 2026-11-13
+
+### Added
+
+- peer 触发关联随 `instance.state.sync` 上报：镜像在 `turn-started.peerOrigin` 记下触发消息 id（没见过 start 的 finish 从 `turn-finished.peerOrigin` 取），`turns` 与 `finishedOffline` 都带上，Hub 重启后回复上方的那张 peer 卡片不会掉到下面（#581）。
+
+## [0.24.10-beta.17] - 2026-11-13
+
+### Fixed
+
+- 模型目录还在探测的会话不再被 control 公告跳过：`control-service` 记下待决目录，目录就绪后再广播（#524、#580）。
+
+## [channel-feishu 0.8.7-beta.17] - 2026-11-13
+
+- Patch release; no user-visible behavior change beyond the version bump.
+
+## [channel-discord 0.8.7-beta.17] - 2026-11-13
+
+- Patch release; no user-visible behavior change beyond the version bump.
+
 ## [relay-protocol 0.6.4-beta.12] - 2026-11-12
 
 ### Added
