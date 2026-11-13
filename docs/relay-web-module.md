@@ -882,6 +882,22 @@ export interface LiveTurn {
   user prompt）挪到该 `out` 之后；无 `slotAfterId` 的旧行不重排。**不以** `createdAt` /
   `startedAt` 墙钟比较决定顺序（发送端 daemon、Hub、浏览器时钟不可比）。Stick-to-bottom /
   jump-latest 在 live turn 存在时跟随 live 气泡，而不是最新一行。
+- **peer 卡归回合（v0.5 槽位）**：peer 投递先 admit 回合、再发出 received card 事件
+  （`agent-message-router` 在 `deliver()` 之后才 emit），所以触发卡的行号**必然大于**
+  该回合的锚点。因果上它比回复更早，因此 Hub 把同一个 id 写进 `out` 行的
+  `structured.peerTriggerMessageId`（`turn-finished.peerOrigin` 或缓冲区；
+  `finishedOffline` 无 `peerOrigin` 时留空 = 旧行为），`placeTurnsInSlots` 把它从
+  “可搬运行”中排除，`slotAfterIndexFromAnchor(rows, id, trigger)` 也优先落在该卡之后。
+  live turn 在 `turn-started` 记下 `peerTriggerMessageId`，迟到的触发卡插在槽位内
+  （气泡上方），历史/快照恢复走同一条因果。
+- **`MessageList` 的回合 peer 槽**：被回合拥有的卡不再以独立行渲染（复用 sent 卡的
+  抑制机制）——received 触发卡渲染在该回合 `msg-out` 的**顶部槽**（气泡的兄弟节点，
+  仍满足 Gate B：永不嵌进 trace）；sent 卡照旧锚在 `agent_send` 步骤之后（Gate A）。
+  回合**折叠**时两者都不出现，顶部槽改渲染一行 chip：`← Worker A` / `→ Worker B`
+  （同 peer 合并计数，点击 chip 行即展开；`expandedTraces` 是唯一状态源，所以
+  chip 与 TurnParts 的展开按钮不会打架）。**展开后**恢复真实位置：received 卡回到
+  顶部槽、sent 卡回到各自步骤后。未被本页任何回合拥有的 received 卡仍以独立行渲染
+  （分页边界 / 投递被拒时不丢卡）。
 
 ### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）
 

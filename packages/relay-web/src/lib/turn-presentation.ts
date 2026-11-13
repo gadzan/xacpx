@@ -76,6 +76,15 @@ export function anchoredAgentMessageIds(parts: TurnPartDto[]): Set<string> {
   return ids;
 }
 
+/** A finished turn may fold only when its trace carries tool steps or non-blank
+ *  reasoning. MessageList decides the peer-slot chips from the same predicate that
+ *  TurnParts uses, so the chip line and the fold can never disagree. */
+export function hasCollapsibleTrace(parts: TurnPartDto[] | undefined): boolean {
+  return parts?.some(
+    (part) => part.type === "tool" || (part.type === "reasoning" && part.text.trim().length > 0),
+  ) ?? false;
+}
+
 function decorateActivities(
   timelineActivities: readonly TimelineActivity[],
 ): DecoratedActivity[] {

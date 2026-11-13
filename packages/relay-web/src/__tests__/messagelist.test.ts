@@ -13,6 +13,7 @@ import ToolCallPanel from "../components/ToolCallPanel.vue";
 import ToolStepCard from "../components/ToolStepCard.vue";
 import CopyButton from "../components/CopyButton.vue";
 import TurnParts from "../components/TurnParts.vue";
+import { expandedTraces } from "../lib/trace-expansion";
 
 // StreamMarkdown (rendered for "out" messages) reads useThemeStore() to re-hydrate mermaid
 // diagrams on theme change, so every mount here needs an active Pinia instance.
@@ -1527,6 +1528,118 @@ describe("thinking bubble", () => {
     // The one live slot sits after the newest prompt, not on the earlier turn.
     expect(wrapper.findAll('[data-test="msg-streaming"]')).toHaveLength(1);
     expect(wrapper.find('[data-test="msg-streaming"] [data-test="live-working"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+});
+
+// Peer slot (v0.5): a turn OWNS the cards its execution produced — the received
+// message that admitted it (top slot, sibling to the bubble) and each sent message
+// (after its agent_send step). Collapsed turns summarize that activity as one chip
+// line; expanding restores both at their real positions.
+function peerTurn(opts: {
+  startedAt: number;
+  triggerMessageId: string;
+  sentMessageId?: string;
+}): ChatMessage {
+  return msg({
+    direction: "out",
+    text: "reply",
+    status: "done",
+    startedAt: opts.startedAt,
+    createdAt: new Date(opts.startedAt + 5_000).toISOString(),
+    structured: {
+      peerTriggerMessageId: opts.triggerMessageId,
+      parts: [
+        { type: "text", text: "reply" },
+        ...(opts.sentMessageId
+          ? [{ type: "tool" as const, step: sendStep("send-1", opts.sentMessageId) }]
+          : []),
+      ],
+    },
+  });
+}
+
+describe("turn peer slot", () => {
+  it("summarizes a collapsed turn as ←/→ chips and folds the cards away", () => {
+    const turn = peerTurn({ startedAt: 11_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_recv"), sentCard("m_sent"), turn], liveTurn: null },
+    });
+
+    const chips = wrapper.findAll('[data-test="turn-peer-chip"]');
+    expect(chips.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
+    expect(chips.map((c) => c.text())).toEqual(["Worker A", "Worker B"]);
+    // Nothing renders as a full card while folded (the sent card hides with the trace).
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("expanding restores the received card at the turn top and the sent card after its step", () => {
+    expandedTraces.add("i1:s1:t:12000");
+    try {
+      const turn = peerTurn({ startedAt: 12_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
+      const wrapper = mount(MessageList, {
+        props: { messages: [receivedCard("m_recv"), sentCard("m_sent"), turn], liveTurn: null },
+      });
+
+      expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
+      const turnContent = wrapper.find('[data-test="msg-out"]');
+      // The received card belongs to the turn's slot, not to a standalone row.
+      expect(
+        turnContent.find('[data-test="turn-peer-trigger"] [data-test="agent-message-card"]').attributes("data-direction"),
+      ).toBe("received");
+      // The sent card is restored inline, right after the agent_send step.
+      const cards = wrapper.findAll('[data-test="agent-message-card"]');
+      expect(cards.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
+      wrapper.unmount();
+    } finally {
+      expandedTraces.delete("i1:s1:t:12000");
+    }
+  });
+
+  it("clicking the chip line expands the turn", async () => {
+    const turn = peerTurn({ startedAt: 13_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_recv"), sentCard("m_sent"), turn], liveTurn: null },
+    });
+    await wrapper.find('[data-test="turn-peer-summary"]').trigger("click");
+    expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
+    expect(wrapper.find('[data-test="turn-peer-trigger"]').exists()).toBe(true);
+    wrapper.unmount();
+    expandedTraces.delete("i1:s1:t:13000");
+  });
+
+  it("keeps a received card standalone when no turn on this page owns it", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_orphan")], liveTurn: null },
+    });
+    expect(wrapper.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
+    expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
+    wrapper.unmount();
+  });
+});
+
+describe("turn peer slot — sent only", () => {
+  it("summarizes a human turn's sent peer message as a → chip while folded", () => {
+    const turn = msg({
+      direction: "out",
+      text: "done",
+      status: "done",
+      startedAt: 14_000,
+      createdAt: new Date(14_000 + 5_000).toISOString(),
+      structured: {
+        parts: [
+          { type: "text", text: "done" },
+          { type: "tool", step: sendStep("send-1", "m_sent") },
+        ],
+      },
+    });
+    const wrapper = mount(MessageList, {
+      props: { messages: [sentCard("m_sent"), turn], liveTurn: null },
+    });
+    const chips = wrapper.findAll('[data-test="turn-peer-chip"]');
+    expect(chips.map((c) => [c.attributes("data-direction"), c.text()])).toEqual([["sent", "Worker B"]]);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
     wrapper.unmount();
   });
 });
