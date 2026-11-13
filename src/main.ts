@@ -2748,6 +2748,7 @@ export async function buildApp(
       ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }
       : {}),
     dispose: async () => {
+      control.cancelPendingCatalogWaits();
       // Invalidate pending permission UI first: no approval may settle after
       // shutdown starts. Memory-only state is never resurrected on restart.
       try {

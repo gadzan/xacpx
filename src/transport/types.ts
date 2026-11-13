@@ -268,7 +268,7 @@ export interface SessionTransport {
   getSessionModel?(
     session: ResolvedSession,
     options?: { refresh?: boolean },
-  ): Promise<{ current?: string; available: string[] }>;
+  ): Promise<SessionModelState>;
   /** Set the adapter-advertised reasoning effort for this session. Optional. */
   setSessionEffort?(session: ResolvedSession, effort: string): Promise<void>;
   /** Read the current and adapter-advertised reasoning-effort values. Optional. */
@@ -328,9 +328,19 @@ export interface SessionTransport {
   dispose?(): Promise<void>;
 }
 
+export interface SessionModelState {
+  current?: string;
+  available: string[];
+  /** No fresh snapshot yet and a background refresh is in flight: an empty
+   *  `available` means "unknown", not "this agent advertises no models". */
+  pending?: boolean;
+}
+
 export interface SessionEffortState {
   current?: string;
   available: string[];
+  /** Same pending contract as {@link SessionModelState.pending}. */
+  pending?: boolean;
 }
 
 /** Fingerprint identity of one resolved probe. Digests only — never argv, env values, or secrets. */

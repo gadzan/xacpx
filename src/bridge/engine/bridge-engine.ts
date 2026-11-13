@@ -1,6 +1,6 @@
 import type { ClaudeSettingsPolicy } from "../../adapters/claude-settings-policy";
 import type { NonInteractivePermissions, PermissionMode } from "../../config/types";
-import type { AgentCommand, AgentSessionListResult, PromptMediaInput, SessionEffortState, ToolEventMode, UsageBreakdown, UsageCost } from "../../transport/types";
+import type { AgentCommand, AgentSessionListResult, PromptMediaInput, SessionEffortState, SessionModelState, ToolEventMode, UsageBreakdown, UsageCost } from "../../transport/types";
 import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 
 /**
@@ -30,7 +30,7 @@ export interface BridgeEngine {
   setMode(input: EngineSessionInput & { modeId: string }): Promise<Record<string, never>>;
   setModel(input: EngineSessionInput & { modelId: string }): Promise<Record<string, never>>;
   prepareSessionCommands?(input: EngineSessionInput): Promise<AgentCommand[] | undefined>;
-  getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }>;
+  getSessionModel(input: EngineSessionInput): Promise<SessionModelState>;
   /** Agent-level cold probe. Not bound to a logical session. */
   probeAgentCapabilities(input: import("../../transport/types").AgentCapabilityProbeRequest): Promise<import("../../transport/types").AgentCapabilityProbeResult>;
   setSessionEffort(input: EngineSessionInput & { effort: string }): Promise<Record<string, never>>;

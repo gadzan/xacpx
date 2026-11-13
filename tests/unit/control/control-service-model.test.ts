@@ -878,3 +878,182 @@ test("a restore-failure fallback reports the original error when the probe also 
     control.getSessionModel("relay:acc", "backend"),
   ).rejects.toThrow("Could not restore model provider/openai/gpt-5.2");
 });
+
+// Issue #524: a pending (cold, rotated or turn-end-stale) read refreshes off the
+// request path, so the service announces the session once the catalog is real.
+test("a cold pending model read announces the session when the catalog lands", async () => {
+  const { deps, events } = makeDeps();
+  let pendingReads = 2;
+  deps.transport.getSessionModel = async () => {
+    if (pendingReads > 0) {
+      pendingReads -= 1;
+      return { available: [], pending: true };
+    }
+    return {
+      current: "gpt-5.2[high]",
+      available: ["gpt-5.2[high]", "gpt-5.2[low]"],
+    };
+  };
+  const control = new ControlService(deps as never);
+
+  // The pending marker stays internal: the control RPC shape is unchanged.
+  await expect(
+    control.getSessionModel("relay:acc", "backend"),
+  ).resolves.toEqual({ available: [] });
+  // A second cold read joins the same wait instead of stacking another one.
+  await expect(
+    control.getSessionModel("relay:acc", "backend"),
+  ).resolves.toEqual({ available: [] });
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([
+    {
+      type: "sessions-changed",
+      readySessionAlias: "internal-backend",
+      readyTransportSession: "t",
+    },
+  ]);
+});
+
+test("a stale catalog read at turn end is announced so clients re-read it", async () => {
+  const { deps, events } = makeDeps();
+  let pendingReads = 1;
+  deps.transport.getSessionModel = async () => {
+    if (pendingReads > 0) {
+      pendingReads -= 1;
+      // What `decActiveTurn` leaves behind: the last known catalog, now stale.
+      return { current: "before-turn", available: ["before-turn"], pending: true };
+    }
+    return { current: "after-turn", available: ["after-turn"] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionModel("relay:acc", "backend"),
+  ).resolves.toEqual({ current: "before-turn", available: ["before-turn"] });
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([
+    {
+      type: "sessions-changed",
+      readySessionAlias: "internal-backend",
+      readyTransportSession: "t",
+    },
+  ]);
+});
+
+test("a pending effort read is announced by the same mechanism", async () => {
+  const { deps, events } = makeDeps();
+  let pendingReads = 1;
+  deps.transport.getSessionEffort = async () => {
+    if (pendingReads > 0) {
+      pendingReads -= 1;
+      return { available: [], pending: true };
+    }
+    return { current: "medium", available: ["low", "medium", "high"] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionEffort("relay:acc", "backend"),
+  ).resolves.toEqual({ available: [] });
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([
+    {
+      type: "sessions-changed",
+      readySessionAlias: "internal-backend",
+      readyTransportSession: "t",
+    },
+  ]);
+});
+
+test("a fresh catalog read never announces the session", async () => {
+  const { deps, events } = makeDeps();
+  const control = new ControlService(deps as never);
+
+  await control.getSessionModel("relay:acc", "backend");
+  await control.getSessionEffort("relay:acc", "backend");
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([]);
+});
+
+/** Deterministic clock: each sleep advances virtual time by its own delay, so a
+ *  worker that needs longer than the real worker timeouts can be exercised
+ *  without waiting on wall-clock time. */
+async function withVirtualClock(run: (now: () => number) => Promise<void>): Promise<void> {
+  const realNow = Date.now;
+  const realSetTimeout = globalThis.setTimeout;
+  let virtualNow = 0;
+  Date.now = () => virtualNow;
+  globalThis.setTimeout = ((fn: () => void, ms: number) => {
+    virtualNow += ms;
+    queueMicrotask(fn);
+    return 0;
+  }) as unknown as typeof setTimeout;
+  try {
+    await run(() => virtualNow);
+  } finally {
+    Date.now = realNow;
+    globalThis.setTimeout = realSetTimeout;
+  }
+}
+
+const readyBackendEvent = {
+  type: "sessions-changed",
+  readySessionAlias: "internal-backend",
+  readyTransportSession: "t",
+};
+
+test("a worker fresh after the old 30s budget is still announced", async () => {
+  await withVirtualClock(async (now) => {
+    const { deps, events, logs } = makeDeps();
+    deps.transport.getSessionModel = async () =>
+      now() < 35_000
+        ? { available: [], pending: true }
+        : { current: "mock-alpha", available: ["mock-alpha", "mock-beta"] };
+    const control = new ControlService(deps as never);
+
+    await expect(control.getSessionModel("relay:acc", "backend")).resolves.toEqual({ available: [] });
+    await control.whenBackgroundIdle();
+
+    expect(now()).toBeGreaterThanOrEqual(35_000);
+    expect(logs.map((entry) => entry.event)).toEqual([]);
+    expect(events).toEqual([readyBackendEvent]);
+  });
+});
+
+test("a fresh model catalog is announced even when the effort read fails", async () => {
+  await withVirtualClock(async () => {
+    const { deps, events } = makeDeps();
+    let modelReads = 0;
+    deps.transport.getSessionModel = async () => {
+      modelReads += 1;
+      return modelReads === 1
+        ? { available: [], pending: true }
+        : { current: "mock-alpha", available: ["mock-alpha", "mock-beta"] };
+    };
+    deps.transport.getSessionEffort = async () => {
+      throw new Error("effort status timed out");
+    };
+    const control = new ControlService(deps as never);
+
+    await expect(control.getSessionModel("relay:acc", "backend")).resolves.toEqual({ available: [] });
+    await control.whenBackgroundIdle();
+
+    expect(events).toEqual([readyBackendEvent]);
+  });
+});
+
+test("daemon shutdown cancels the pending-catalog sleep", async () => {
+  const { deps, events } = makeDeps();
+  deps.transport.getSessionModel = async () => ({ available: [], pending: true });
+  const control = new ControlService(deps as never);
+
+  await expect(control.getSessionModel("relay:acc", "backend")).resolves.toEqual({ available: [] });
+  control.cancelPendingCatalogWaits();
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([]);
+});
