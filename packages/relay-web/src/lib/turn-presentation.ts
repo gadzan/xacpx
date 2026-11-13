@@ -76,9 +76,7 @@ export function anchoredAgentMessageIds(parts: TurnPartDto[]): Set<string> {
   return ids;
 }
 
-/** A finished turn may fold only when its trace carries tool steps or non-blank
- *  reasoning. MessageList decides the peer-slot chips from the same predicate that
- *  TurnParts uses, so the chip line and the fold can never disagree. */
+/** Shared with MessageList so the peer-chip line and TurnParts' fold cannot disagree. */
 export function hasCollapsibleTrace(parts: TurnPartDto[] | undefined): boolean {
   return parts?.some(
     (part) => part.type === "tool" || (part.type === "reasoning" && part.text.trim().length > 0),

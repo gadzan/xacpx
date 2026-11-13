@@ -1504,7 +1504,6 @@ test("a peer turn stamps its trigger message id on the out row (card stays above
   expect(rows[0]!.id).toBeGreaterThan(0);
   expect(rows[1]!.id).toBeGreaterThan(rows[0]!.id);
   expect(rows[1]!.structured?.peerTriggerMessageId).toBe("msg_peer_trigger");
-  // A human turn never carries one.
   fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "hi" });
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
   const human = runtime.messages.listBySession("a1", "i1", "backend").messages.at(-1)!;

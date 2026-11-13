@@ -60,7 +60,6 @@ describe("slotAfterIndexFromAnchor", () => {
     const rows = [received(2, "card1", 1_000), received(3, "card2", 3_000)];
     expect(slotAfterIndexFromAnchor(rows, 1, "card1")).toBe(0);
     expect(slotAfterIndexFromAnchor(rows, 1, "card2")).toBe(1);
-    // Unknown trigger id falls back to the plain anchor.
     expect(slotAfterIndexFromAnchor(rows, 1, "missing")).toBe(-1);
   });
 

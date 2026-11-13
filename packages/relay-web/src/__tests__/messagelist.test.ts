@@ -1532,10 +1532,7 @@ describe("thinking bubble", () => {
   });
 });
 
-// Peer slot (v0.5): a turn OWNS the cards its execution produced — the received
-// message that admitted it (top slot, sibling to the bubble) and each sent message
-// (after its agent_send step). Collapsed turns summarize that activity as one chip
-// line; expanding restores both at their real positions.
+// A turn owns the received card that admitted it and every card it sent.
 function peerTurn(opts: {
   startedAt: number;
   triggerMessageId: string;
@@ -1569,7 +1566,6 @@ describe("turn peer slot", () => {
     const chips = wrapper.findAll('[data-test="turn-peer-chip"]');
     expect(chips.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
     expect(chips.map((c) => c.text())).toEqual(["Worker A", "Worker B"]);
-    // Nothing renders as a full card while folded (the sent card hides with the trace).
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
     wrapper.unmount();
   });
@@ -1584,11 +1580,9 @@ describe("turn peer slot", () => {
 
       expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
       const turnContent = wrapper.find('[data-test="msg-out"]');
-      // The received card belongs to the turn's slot, not to a standalone row.
       expect(
         turnContent.find('[data-test="turn-peer-trigger"] [data-test="agent-message-card"]').attributes("data-direction"),
       ).toBe("received");
-      // The sent card is restored inline, right after the agent_send step.
       const cards = wrapper.findAll('[data-test="agent-message-card"]');
       expect(cards.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
       wrapper.unmount();

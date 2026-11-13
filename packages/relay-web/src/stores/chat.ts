@@ -915,8 +915,6 @@ export const useChatStore = defineStore("chat", () => {
       // A background turn must retain it so selecting that session later can place
       // the pre-buffered live reply back after its triggering persisted prompt.
       if (typeof e.slotAfterId === "number") live.slotAfterId = e.slotAfterId;
-      // A peer turn names the card that woke it. That card row may not exist yet; when it
-      // lands it is inserted at the live slot instead of below the bubble.
       if (e.peerOrigin?.requestMessageId) live.peerTriggerMessageId = e.peerOrigin.requestMessageId;
       // Scheduled turns have no optimistic bubble; drained queue turns use queueItemId
       // to move their existing bubble. Other clients can add the carried prompt here.

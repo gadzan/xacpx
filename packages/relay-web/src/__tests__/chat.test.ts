@@ -1880,7 +1880,6 @@ test("the received card that admitted the running peer turn is inserted at the l
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "reply" } } as never);
   store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
 
-  // The card it answered stays above the reply, not below it.
   expect(store.messages.map((m) => [m.direction, m.text])).toEqual([
     ["in", "msg_peer_trigger"],
     ["out", "reply"],

@@ -163,8 +163,6 @@ const receivedEntryById = computed(() => {
   }
   return map;
 });
-
-/** Peer message ids owned by a turn already present in this transcript page. */
 const consumedReceivedIds = computed(() => {
   const ids = new Set<string>();
   for (const m of props.messages) {
@@ -182,7 +180,6 @@ function isSuppressedPeerRow(m: ChatMessage): boolean {
     : consumedReceivedIds.value.has(am.messageId);
 }
 
-/** True only when the trace is folded AND this row can toggle it (stable key). */
 function traceCollapsedOf(m: ChatMessage): boolean {
   if (!traceSummaryEligible(m) || !hasCollapsibleTrace(m.structured?.parts)) return false;
   const key = traceKeyOf(m);
@@ -208,7 +205,6 @@ interface PeerChip {
   count: number;
 }
 
-/** This turn's peer activity, in cause-then-actions order, one chip per peer. */
 function peerChipsOf(m: ChatMessage): PeerChip[] {
   const chips: PeerChip[] = [];
   const add = (entry: PeerMessageHistoryEntry): void => {
@@ -661,9 +657,6 @@ watch(
               <ThinkingDots v-else data-test="live-working" />
             </div>
           </div>
-          <!-- AGENT MESSAGE card (sender / receiver collaboration event). A card owned
-               by a turn renders inside that turn (sent: after its agent_send step;
-               received: the turn's top slot), so its standalone row is suppressed. -->
           <AgentMessageCard
             v-if="m.structured?.agentMessage && !isSuppressedPeerRow(m)"
             :message="m.structured.agentMessage"
@@ -703,9 +696,6 @@ watch(
           <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" hide-identity-on-mobile :class="enterRowClass" :style="enterStyle(i)">
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
-              <!-- Peer slot. Collapsed: one chip line summarizing this turn's peer
-                   activity (the sent cards live inside the folded trace). Expanded:
-                   the full received card, sibling to the bubble so Gate B holds. -->
               <button
                 v-if="traceCollapsedOf(m) && peerChipsOf(m).length > 0"
                 type="button"

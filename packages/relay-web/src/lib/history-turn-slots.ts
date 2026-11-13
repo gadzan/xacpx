@@ -30,10 +30,6 @@ function isSlotAfterId(value: unknown): value is number {
  *
  * Live path uses transcript index at turn-start; this is for history/seed/snapshot
  * where rows carry Hub ids. Do not infer this from wall clocks.
- *
- * A peer trigger card is newer than the anchor by construction (the turn is admitted
- * before the card row is written), so it wins: the slot belongs after the card whose
- * arrival caused this turn.
  */
 export function slotAfterIndexFromAnchor(
   messages: SlottableMessage[],
@@ -62,9 +58,6 @@ export function slotAfterIndexFromAnchor(
  * this, reload restacks mid-turn received cards AND queued prompts above the finished
  * turn. Rows without `slotAfterId` are not moved (legacy). Relative order of movers
  * is preserved. Clocks (`createdAt` / `startedAt`) are never consulted.
- *
- * Exception: the peer card this turn was admitted for (`structured.peerTriggerMessageId`)
- * is the turn's cause, not a mid-turn arrival — it stays in front of the out.
  */
 export function placeTurnsInSlots<T extends SlottableMessage>(rows: T[]): T[] {
   const out = rows.slice();
