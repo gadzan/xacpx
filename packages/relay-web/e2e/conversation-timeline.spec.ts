@@ -381,6 +381,9 @@ test("composer sends to the lead by default and discusses with a roundtable targ
 
   await textarea.fill("Compare the risks");
   await page.getByTestId("group-discuss-chip").click();
+  // The mode only reveals the rounds selector; Send commits the roundtable.
+  await expect.poll(() => harness.promptRequests.length).toBe(1);
+  await page.getByTestId("group-send-prompt-button").click();
   await expect.poll(() => harness.promptRequests.length).toBe(2);
   expect(harness.promptRequests[1]?.target).toEqual({
     mode: "roundtable",
@@ -396,8 +399,9 @@ test("discussion sends the chosen rounds on the wire target", async ({ page, hub
 
   const textarea = page.getByTestId("group-composer-textarea");
   await textarea.fill("Compare the risks");
-  await page.getByTestId("group-discuss-rounds-2").click();
   await page.getByTestId("group-discuss-chip").click();
+  await page.getByTestId("group-discuss-rounds-2").click();
+  await page.getByTestId("group-send-prompt-button").click();
   await expect.poll(() => harness.promptRequests.length).toBe(1);
   expect(harness.promptRequests[0]?.target).toEqual({
     mode: "roundtable",

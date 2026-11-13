@@ -158,6 +158,11 @@ const discussionSpeakers = computed<string[]>(() => {
     left === leadId ? -1 : right === leadId ? 1 : 0);
 });
 const discussionReady = computed(() => roundtableSupported.value && discussionSpeakers.value.length >= 2);
+/** Roundtable is a mode, not a send shortcut: toggling it reveals the round
+ *  selector, and the ordinary Send button commits the draft as a roundtable. */
+const discussionMode = ref(false);
+const discussionToggleBlocked = computed(() =>
+  !discussionMode.value && !discussionReady.value);
 /** 讨论 rounds: 1/2/3 next to the chip, default 1. Persisted per Group in
  *  localStorage (cheap, survives reload); falls back to the session default
  *  when storage is unavailable or the Group changes. */
@@ -193,8 +198,9 @@ function setDiscussionRounds(rounds: number): void {
  *  The backend rejects over-limit plans; the chip blocks them first. */
 const discussionOverLimit = computed(() =>
   discussionSpeakers.value.length * discussionRounds.value > MAX_ROUNDTABLE_MEMBER_TURNS);
-/** Button hint names the chosen rounds so the wire target is visible before
- *  the send; over-limit plans name the bound instead. */
+/** Mode hint explains the toggle before it is armed; once armed it names the
+ *  chosen rounds so the wire target is visible before the send. Over-limit
+ *  plans name the bound instead. */
 const discussionHint = computed(() => {
   if (!discussionReady.value) return t("conversation.composer.discussNeedsSpeakers");
   if (discussionOverLimit.value) {
@@ -204,6 +210,8 @@ const discussionHint = computed(() => {
       max: MAX_ROUNDTABLE_MEMBER_TURNS,
     });
   }
+  if (!discussionMode.value) return t("conversation.composer.discussModeOff");
+  if (!promptText.value.trim() && !readyMedia.value) return t("conversation.composer.discussNeedsDraft");
   return t(discussionRounds.value === 1
     ? "conversation.composer.discussHintOne"
     : "conversation.composer.discussHintMany", {
@@ -211,6 +219,10 @@ const discussionHint = computed(() => {
     rounds: discussionRounds.value,
   });
 });
+function toggleDiscussion(): void {
+  if (discussionToggleBlocked.value) return;
+  discussionMode.value = !discussionMode.value;
+}
 
 /** Drop everything tied to a draft that is no longer editable: the text, the
  *  derived-mention suppression, the autogrow height and the picker menu.
@@ -222,6 +234,7 @@ function clearSentDraft(): void {
   mentionOwned.value = false;
   cmdDismissed.value = false;
   mentionDismissed.value = false;
+  discussionMode.value = false;
   // The target belongs to ONE message: a sent `@everyone` or `@member` selection
   // must not linger and silently route the next plain message. Reset to the
   // Group default (the lead), which the send path only uses as a fallback.
@@ -560,15 +573,14 @@ const baseCanSend = computed(() => !props.disabled
   && !groupsStore.hasUncertainPrompt);
 
 /** Final send guard: evaluated after any pending mention has been committed.
- *  Staged attachments make an empty text sendable. There is no target guard:
- *  a plain message is the implicit lead, which the server resolves. */
+ *  Staged attachments make an empty text sendable. A roundtable send also
+ *  needs its speaker floor and product bound; over-limit plans never reach the
+ *  backend. There is no target guard: a plain message is the implicit lead,
+ *  which the server resolves. */
 const canSend = computed(() => baseCanSend.value
   && !sendBusy.value
-  && (promptText.value.trim().length > 0 || readyMedia.value));
-
-/** 讨论 is a send variant, so it needs the same draft, the speaker floor, and
- *  the product bound. Over-limit plans never reach the backend. */
-const canDiscuss = computed(() => canSend.value && discussionReady.value && !discussionOverLimit.value);
+  && (promptText.value.trim().length > 0 || readyMedia.value)
+  && (!discussionMode.value || (discussionReady.value && !discussionOverLimit.value)));
 
 /** True when the draft carries a slash command after any leading mentions.
  *  Commands are per-Bot, so such a send must never broadcast: it goes to the
@@ -603,7 +615,7 @@ function sendTarget(discuss: boolean): ConversationTargetDto | null {
   return null;
 }
 
-async function handleSend(confirmedEveryone?: EveryoneConfirmation, discuss = false): Promise<void> {
+async function handleSend(confirmedEveryone?: EveryoneConfirmation, discuss = discussionMode.value): Promise<void> {
   if (sendBusy.value || !baseCanSend.value) return;
   if (discuss && (!discussionReady.value || discussionOverLimit.value)) return;
   if (confirmedEveryone && (confirmedEveryone.key !== draftKey.value
@@ -679,11 +691,6 @@ async function handleSend(confirmedEveryone?: EveryoneConfirmation, discuss = fa
   sendBusy.value = false;
   attachments.consume(attachKey.value, staged.ids);
   clearSentDraft();
-}
-
-/** 讨论: send the same draft as a discussion with the chosen rounds. */
-function handleDiscuss(): void {
-  void handleSend(undefined, true);
 }
 
 async function onPaste(e: ClipboardEvent): Promise<void> {
@@ -779,10 +786,11 @@ function handleRetry(): void {
       @compositionend="onCompositionEnd"
       @blur="onComposerBlur"
     >
-      <!-- One-line chips: @ selects members for this send (parallel), 讨论 turns
-           the same draft into a sequential discussion with the chosen rounds.
-           The chip and its 1/2/3 selector are absent when the daemon does not
-           advertise roundtable v1. -->
+      <!-- One-line chips: @ selects members for this send (parallel), while
+          圆桌讨论 is a mode. Toggling it reveals the 1/2/3 rounds selector; the
+          ordinary Send button then commits the draft as a sequential
+          discussion. The chip and its selector are absent when the daemon does
+          not advertise roundtable v1. -->
       <template #chips>
         <button
           type="button"
@@ -801,16 +809,17 @@ function handleRetry(): void {
           data-test="group-discuss-chip"
           :title="discussionHint"
           :aria-label="$t('conversation.composer.discuss')"
-          :disabled="!canDiscuss"
-          class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors"
-          :class="canDiscuss ? 'text-accent-text hover:bg-accent/10' : 'cursor-not-allowed text-fg-muted/60'"
-          @click="handleDiscuss"
+          :aria-pressed="discussionMode"
+          :disabled="discussionToggleBlocked"
+          class="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          :class="discussionMode ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+          @click="toggleDiscussion"
         >
           <MessagesSquare :size="13" />
           <span>{{ $t("conversation.composer.discuss") }}</span>
         </button>
         <div
-          v-if="roundtableSupported"
+          v-if="roundtableSupported && discussionMode"
           data-test="group-discuss-rounds"
           role="group"
           :aria-label="$t('conversation.composer.discussRoundsLabel')"

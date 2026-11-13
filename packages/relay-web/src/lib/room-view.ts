@@ -54,11 +54,15 @@ export type TimelineActivityEntry = Extract<ConversationTimelineEntryDto, { kind
 export type TimelineNoticeEntry = Extract<ConversationTimelineEntryDto, { kind: "notice" }>;
 
 /** One rendered row of the timeline. Message rows are the durable speech, an
- *  activity row is a speaking position (optionally carrying live text), and a
- *  notice is a light one-line status. */
+ *  activity row is a speaking position (optionally carrying live text), a
+ *  stopped row is the aggregated terminal state of a cancelled Run, a handoffs
+ *  row groups consecutive assignments into one compact line, and a notice is a
+ *  light one-line status. */
 export type TimelineRow =
   | { kind: "message"; key: string; anchorSeq: number; entry: TimelineMessageEntry }
   | { kind: "activity"; key: string; anchorSeq: number; entry: TimelineActivityEntry; live?: TimelineLiveTurn }
+  | { kind: "stopped"; key: string; anchorSeq: number; runId: string; turns: TimelineActivityEntry[] }
+  | { kind: "handoffs"; key: string; anchorSeq: number; entries: TimelineMessageEntry[] }
   | { kind: "notice"; key: string; anchorSeq: number; entry: TimelineNoticeEntry };
 
 const ENTRY_RANK: Record<ConversationTimelineEntryDto["kind"], number> = {
@@ -118,14 +122,43 @@ export function buildTimelineRows(input: {
   const liveByTurn = new Map<string, TimelineLiveTurn>();
   for (const live of input.liveOverlay ?? []) liveByTurn.set(live.memberTurnId, live);
 
+  /** A cancelled Run draws one terminal row, not one row per member turn. The
+   *  row lands where the Run's last cancelled turn appears, so completed speech
+   *  from the same Run keeps its place above it. */
+  function stoppedRunKey(entry: TimelineActivityEntry): string {
+    return entry.runId || entry.memberTurn.runId || entry.memberTurn.id;
+  }
+  const lastStoppedIndex = new Map<string, number>();
+  const stoppedTurns = new Map<string, TimelineActivityEntry[]>();
+  input.entries.forEach((entry, index) => {
+    if (entry.kind !== "activity" || entry.memberTurn.state !== "cancelled") return;
+    if (claimed.has(entry.memberTurn.id)) return;
+    lastStoppedIndex.set(stoppedRunKey(entry), index);
+  });
+
   const rows: TimelineRow[] = [];
   const renderedTurns = new Set<string>();
   let newestAnchor = 0;
 
-  for (const entry of input.entries) {
+  for (const [index, entry] of input.entries.entries()) {
     newestAnchor = Math.max(newestAnchor, entry.anchorSeq);
     if (entry.kind === "message") {
       if (isSuppressedEvidence(entry.message)) continue;
+      if (entry.message.handoff) {
+        const previous = rows.at(-1);
+        if (previous?.kind === "handoffs") {
+          previous.entries.push(entry);
+          previous.anchorSeq = entry.anchorSeq;
+        } else {
+          rows.push({
+            kind: "handoffs",
+            key: `handoffs:${entry.key}`,
+            anchorSeq: entry.anchorSeq,
+            entries: [entry],
+          });
+        }
+        continue;
+      }
       rows.push({ kind: "message", key: entry.key, anchorSeq: entry.anchorSeq, entry });
       continue;
     }
@@ -134,8 +167,24 @@ export function buildTimelineRows(input: {
       continue;
     }
     // Activity: the durable speech of this turn (if any) already draws it.
-    if (claimed.has(entry.memberTurn.id)) continue;
+    if (claimed.has(entry.memberTurn.id) || renderedTurns.has(entry.memberTurn.id)) continue;
     renderedTurns.add(entry.memberTurn.id);
+    if (entry.memberTurn.state === "cancelled") {
+      const runKey = stoppedRunKey(entry);
+      const turns = stoppedTurns.get(runKey) ?? [];
+      if (!turns.some((turn) => turn.memberTurn.id === entry.memberTurn.id)) turns.push(entry);
+      stoppedTurns.set(runKey, turns);
+      if (lastStoppedIndex.get(runKey) === index) {
+        rows.push({
+          kind: "stopped",
+          key: `stopped:${runKey}`,
+          anchorSeq: entry.anchorSeq,
+          runId: entry.runId || entry.memberTurn.runId,
+          turns,
+        });
+      }
+      continue;
+    }
     const live = liveByTurn.get(entry.memberTurn.id);
     // A queued turn is a speaking position, not a speaker yet; the server never
     // projects one for a roundtable, and any other queued turn is covered by the

@@ -193,24 +193,88 @@ describe("ConversationTimeline.vue", () => {
       }),
     ]);
     const wrapper = mountTimeline({ data });
+    expect(wrapper.findAll('[data-test="timeline-handoffs"]')).toHaveLength(1);
     const handoff = wrapper.find('[data-test="timeline-handoff"]');
     expect(handoff.exists()).toBe(true);
     expect(handoff.text()).toContain("Ada");
     expect(handoff.text()).toContain("Bob");
     expect(handoff.text()).toContain("check the lock");
+    // The compact pair draws both Bots and keeps no card chrome.
+    expect(handoff.findAll('[data-test="bot-avatar"]')).toHaveLength(2);
+    expect(handoff.classes()).not.toContain("border");
     // The handoff never becomes a second bubble.
     expect(wrapper.findAll('[data-test="timeline-bot-message"]')).toHaveLength(1);
     wrapper.unmount();
   });
 
-  it("suppresses the empty settlement evidence bubble but keeps the activity row", () => {
+  it("groups consecutive handoffs into one compact row", () => {
+    const data = timeline([
+      messageEntry(1, {
+        role: "system",
+        senderBotId: "bot_a",
+        content: "",
+        runId: "run_1",
+        handoff: {
+          senderMemberTurnId: "turn_a",
+          to: "bot_b",
+          assignmentId: "assignment_1",
+          memberTurnId: "turn_b",
+          task: "check the lock",
+        },
+      }),
+      messageEntry(2, {
+        role: "system",
+        senderBotId: "bot_b",
+        content: "",
+        runId: "run_1",
+        handoff: {
+          senderMemberTurnId: "turn_b",
+          to: "bot_c",
+          assignmentId: "assignment_2",
+          memberTurnId: "turn_c",
+          task: "run the tests",
+        },
+      }),
+    ]);
+    const wrapper = mountTimeline({ data });
+    expect(wrapper.findAll('[data-test="timeline-handoffs"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-test="timeline-handoff"]')).toHaveLength(2);
+    expect(wrapper.find('[data-test="timeline-handoff"]').attributes("title")).toContain("check the lock");
+    wrapper.unmount();
+  });
+
+  it("suppresses the empty settlement evidence bubble and draws one stopped row", () => {
     const data = timeline([
       activityEntry("turn_silent", 1, { state: "cancelled", botId: "bot_b" }),
       messageEntry(2, { content: "   ", memberTurnId: "turn_silent", senderBotId: "bot_b", runId: "run_1" }),
     ]);
     const wrapper = mountTimeline({ data });
     expect(wrapper.findAll('[data-test="timeline-bot-message"]')).toHaveLength(0);
-    expect(wrapper.find('[data-test="timeline-activity"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="timeline-activity"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="timeline-stopped"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="timeline-stopped-avatar"]').exists()).toBe(true);
+    // A terminal state never keeps the live wave animation alive.
+    expect(wrapper.findAll(".dot")).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("aggregates every cancelled turn of a roundtable into one avatar row", async () => {
+    const data = timeline([
+      activityEntry("turn_a", 1, { state: "cancelled", botId: "bot_a" }),
+      activityEntry("turn_b1", 2, { state: "cancelled", botId: "bot_b" }),
+      activityEntry("turn_b2", 3, { state: "cancelled", botId: "bot_b" }),
+      activityEntry("turn_c", 4, { state: "cancelled", botId: "bot_c" }),
+    ]);
+    const wrapper = mountTimeline({ data });
+    const stopped = wrapper.findAll('[data-test="timeline-stopped"]');
+    expect(stopped).toHaveLength(1);
+    expect(stopped[0]!.find('[data-test="timeline-stopped-state"]').exists()).toBe(true);
+    // One avatar per Bot, not one per cancelled MemberTurn.
+    expect(stopped[0]!.findAll('[data-test="timeline-stopped-avatar"]')).toHaveLength(3);
+    await stopped[0]!.find('[data-test="timeline-stopped-avatar"]').trigger("click");
+    expect(wrapper.emitted("openDetail")?.[0]).toEqual([{ runId: "run_1", memberTurnId: "turn_a" }]);
+    expect(wrapper.findAll('[data-test="timeline-activity"]')).toHaveLength(0);
+    expect(wrapper.findAll(".dot")).toHaveLength(0);
     wrapper.unmount();
   });
 
@@ -295,6 +359,7 @@ describe("ConversationTimeline.vue", () => {
     await wrapper.find('[data-test="timeline-open-detail"]').trigger("click");
     expect(wrapper.emitted("openDetail")?.[0]).toEqual([{ runId: "run_1", memberTurnId: "turn_a" }]);
     await wrapper.find('[data-test="timeline-handoff"]').trigger("click");
+
     expect(wrapper.emitted("openDetail")?.[1]).toEqual([{ runId: "run_1", memberTurnId: "turn_b" }]);
     wrapper.unmount();
   });
