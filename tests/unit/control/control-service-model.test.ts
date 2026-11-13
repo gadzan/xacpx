@@ -879,11 +879,8 @@ test("a restore-failure fallback reports the original error when the probe also 
   ).rejects.toThrow("Could not restore model provider/openai/gpt-5.2");
 });
 
-// Issue #524: a cold, rotated or turn-end-stale transport snapshot answers
-// `{ available: [], pending: true }` because it refreshes off the request path.
-// The read must not leave the caller believing the agent advertises no models:
-// the service announces the session once the catalog is real, so clients re-read
-// their controls without waiting for an unrelated turn or poll.
+// Issue #524: a pending (cold, rotated or turn-end-stale) read refreshes off the
+// request path, so the service announces the session once the catalog is real.
 test("a cold pending model read announces the session when the catalog lands", async () => {
   const { deps, events } = makeDeps();
   let pendingReads = 2;
@@ -899,8 +896,7 @@ test("a cold pending model read announces the session when the catalog lands", a
   };
   const control = new ControlService(deps as never);
 
-  // The request path stays non-blocking and never leaks the pending marker to the
-  // control RPC (older Hubs do not know it).
+  // The pending marker stays internal: the control RPC shape is unchanged.
   await expect(
     control.getSessionModel("relay:acc", "backend"),
   ).resolves.toEqual({ available: [] });

@@ -2219,18 +2219,15 @@ export class RuntimeEngine implements BridgeEngine {
     const cached = this.liveSessionMetadata(this.workerKey(input));
     if (cached) {
       if (Date.now() - cached.refreshedAt >= SESSION_METADATA_TTL_MS) {
-        // The values keep the picker responsive, but they no longer describe the
-        // worker; `pending` says a refresh is in flight and they are not
-        // authoritative (turn end marks the snapshot stale this way).
+        // Last known values keep the picker responsive; `pending` says they are
+        // not authoritative (turn end marks the snapshot stale this way).
         this.refreshSessionMetadataInBackground(input);
         return { current: cached.model, available: cached.availableModels ?? [], pending: true };
       }
       return { current: cached.model, available: cached.availableModels ?? [] };
     }
-    // No snapshot yet: never block the read on a cold worker handshake. Kick a
-    // background refresh and report the catalog as pending — the empty list is
-    // "unknown", not "this agent has no models" — so the caller can announce the
-    // session once the refresh lands instead of waiting for an unrelated event.
+    // Never block a cold read on the worker handshake: refresh off-path and report
+    // "unknown" rather than "this agent has no models".
     this.refreshSessionMetadataInBackground(input);
     return { available: [], pending: true };
   }

@@ -112,9 +112,7 @@ async function withEngine(
 test("a cold metadata read is unknown and never waits for the worker", async () => {
   await withEngine(async (engine, journal) => {
     const first = await engine.getSessionModel(sessionInput);
-    // "unknown", not "this agent has no models": the caller must be able to tell a
-    // cold catalog apart from a real empty one, so it can announce the session once
-    // the refresh lands instead of waiting for an unrelated event (issue #524).
+    // "unknown", not "this agent has no models" (issue #524).
     expect(first).toEqual({ available: [], pending: true });
 
     // The fire-and-forget refresh fills the cache; later reads are served from it.
@@ -189,10 +187,8 @@ test("a stale snapshot is served but reported pending until the refresh lands", 
       available: ["low", "medium", "high"],
     });
 
-    // A failed config write keeps the last known values for responsiveness but
-    // requires a re-read before they are trusted again — the same mark a turn end
-    // applies in `decActiveTurn`, which is what makes a read racing the
-    // turn-finished refresh serve a stale catalog with no way to notice.
+    // A failed config write keeps the last known values but requires a re-read:
+    // the same mark `decActiveTurn` applies, which a turn-end read then races.
     await expect(
       engine.setSessionEffort({ ...sessionInput, effort: "boom" }),
     ).rejects.toThrow();
@@ -203,7 +199,7 @@ test("a stale snapshot is served but reported pending until the refresh lands", 
       pending: true,
     });
 
-    // That read kicked a refresh; once it lands the catalog is authoritative again.
+    // Once the refresh lands the catalog is authoritative again.
     const fresh = await waitFor(async () => {
       const read = await engine.getSessionModel(sessionInput);
       return read.pending === undefined ? read : undefined;

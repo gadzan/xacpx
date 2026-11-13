@@ -331,13 +331,8 @@ export interface SessionTransport {
 export interface SessionModelState {
   current?: string;
   available: string[];
-  /**
-   * The catalog is not authoritative: the transport has no fresh snapshot and a
-   * background refresh is in flight, so an empty `available` means "unknown",
-   * not "this agent advertises no models". Callers must surface it as pending
-   * (or re-read when the transport announces the session) instead of caching it
-   * as the session's real catalog.
-   */
+  /** No fresh snapshot yet and a background refresh is in flight: an empty
+   *  `available` means "unknown", not "this agent advertises no models". */
   pending?: boolean;
 }
 
