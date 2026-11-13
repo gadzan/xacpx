@@ -1862,7 +1862,6 @@ test("the received card that admitted the running peer turn is inserted at the l
     source: { nodeId: "n1", endpointId: "sender" },
     target: { nodeId: "n1", endpointId: "target" },
   };
-  // Delivery admission starts the turn first; the card row lands afterwards.
   store.applyEvent({
     kind: "control-event",
     instanceId: "i1",
@@ -1884,8 +1883,6 @@ test("the received card that admitted the running peer turn is inserted at the l
     ["in", "msg_peer_trigger"],
     ["out", "reply"],
   ]);
-  // The local flush row already owns its trigger card (turn top slot + folded chip),
-  // so the grouping holds before the hub converges the persisted row.
   expect(store.messages[1]!.structured?.peerTriggerMessageId).toBe("msg_peer_trigger");
 });
 

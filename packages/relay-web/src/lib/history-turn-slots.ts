@@ -11,9 +11,6 @@ export function isAssistantOutRow(row: SlottableMessage): boolean {
   return row.direction === "out" && row.structured?.agentMessage === undefined;
 }
 
-/** The received card this turn was admitted for (its CAUSE). Peer delivery admits the
- *  turn before the card row exists, so the card's Hub id is greater than the turn's
- *  anchor even though it arrived first. It must stay above the reply it caused. */
 function isPeerTriggerRow(row: SlottableMessage, triggerMessageId: string | undefined): boolean {
   return triggerMessageId !== undefined
     && row.structured?.agentMessage?.direction === "received"

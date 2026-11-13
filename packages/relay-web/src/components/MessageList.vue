@@ -150,11 +150,6 @@ const anchoredSentMessageIds = computed(() => {
   return anchored;
 });
 
-// A peer turn owns the cards its execution produced. The received card that admitted
-// the turn renders at the turn's top slot (a sibling of the bubble, never part of the
-// agent's trace); the sent cards stay anchored after their `agent_send` step. The turn
-// renders them, so their standalone rows are suppressed. A folded turn shows one chip
-// line instead (`← Worker A` / `→ Worker B`), because the sent cards fold with the trace.
 const receivedEntryById = computed(() => {
   const map = new Map<string, PeerMessageHistoryEntry>();
   for (const m of props.messages) {
@@ -694,8 +689,6 @@ watch(
           </div>
           <!-- ASSISTANT row -->
           <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" hide-identity-on-mobile :class="enterRowClass" :style="enterStyle(i)">
-            <!-- Peer slot, a sibling of the bubble so the trigger card never enters the
-                 turn body (no danger ring on failure, no nesting in the trace). -->
             <button
               v-if="traceCollapsedOf(m) && peerChipsOf(m).length > 0"
               type="button"

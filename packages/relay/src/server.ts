@@ -235,8 +235,6 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     slotAfterId: number;
     /** Connector-local receive-order seq at turn-start; maps to `slotAfterId` after restart. */
     startedAfterSeq?: number;
-    /** Peer message id this turn was admitted for (`turn-started.peerOrigin`). Persisted on
-     *  the `out` row so history keeps that received card above the reply it caused. */
     peerTriggerMessageId?: string;
     truncated?: boolean;
     notification?: TurnNotificationContext;

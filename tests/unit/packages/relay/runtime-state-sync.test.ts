@@ -995,7 +995,6 @@ test("a recovered offline turn keeps the peer card it answered on its out row", 
   });
   const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(rows.map((row) => [row.direction, row.text])).toEqual([["out", "ack"]]);
-  // The web keeps the received card above this reply after a hub that restarted mid-turn.
   expect(rows[0]!.structured?.peerTriggerMessageId).toBe("msg_peer");
   runtime.close();
 });

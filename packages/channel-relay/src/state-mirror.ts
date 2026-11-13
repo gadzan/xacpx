@@ -46,8 +46,6 @@ interface MirrorTurn {
   /** Hub-issued pre-write correlation (PromptPayload.promptRequestId); carried into
    *  the sync so the hub can tie the turn back to its pre-written inbound row. */
   promptRequestId?: string;
-  /** Peer message id this turn answered; the hub stamps it on the recovered row so
-   *  the received card keeps its place above the reply after a mid-turn outage. */
   peerTriggerMessageId?: string;
   /** Stamped locally when the connector first saw `turn-started` — HUD telemetry
    *  only. Hub insert-order (`slotAfterId`) is the timeline identity. */

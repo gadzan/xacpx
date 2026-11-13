@@ -494,9 +494,6 @@ export const useChatStore = defineStore("chat", () => {
     const hasContent = text.length > 0 || toolSteps.length > 0 || reasoning.length > 0;
     if (hasContent && selected) {
       const hasStructured = toolSteps.length > 0 || reasoning.length > 0;
-      // Carry the peer trigger id locally too: the row must own its received card from
-      // the very first frame (render grouping + folded chip), not only after the hub
-      // converges with `structured.peerTriggerMessageId`.
       const trigger = t.peerTriggerMessageId
         ? { peerTriggerMessageId: t.peerTriggerMessageId }
         : undefined;
@@ -1022,9 +1019,6 @@ export const useChatStore = defineStore("chat", () => {
             structured: markRaw({ agentMessage: e.message }),
           };
           const live = liveTurns.value[bufKey(event.instanceId, e.sessionAlias)];
-          // The card that CAUSED the running turn is not a mid-turn arrival: the turn was
-          // admitted before this row existed. Put it at the live slot (above the bubble)
-          // and let the bubble follow it, so the reply it causes lands below it.
           if (direction === "in" && live?.peerTriggerMessageId === e.message.messageId) {
             const at = Math.min(
               Math.max((live.slotAfterIndex ?? messages.value.length - 1) + 1, 0),

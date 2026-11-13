@@ -1479,9 +1479,7 @@ test("a peer turn stamps its trigger message id on the out row (card stays above
     target: { nodeId: "n1", endpointId: "target" },
   };
 
-  // Peer delivery admits the turn first (no prompt text for peer turns)…
   fire({ type: "turn-started", chatKey: "relay:agent-message:backend", sessionAlias: "backend", promptRequestId: "msg_peer_trigger", peerOrigin });
-  // …then the received card row lands, so its Hub id exceeds the turn's anchor.
   fire({ type: "agent-message", chatKey: "relay:agent-message:backend", sessionAlias: "backend", message: {
     kind: "agent_message",
     direction: "received",

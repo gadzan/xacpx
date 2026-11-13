@@ -1532,7 +1532,6 @@ describe("thinking bubble", () => {
   });
 });
 
-// A turn owns the received card that admitted it and every card it sent.
 function peerTurn(opts: {
   startedAt: number;
   triggerMessageId: string;
@@ -1582,7 +1581,6 @@ describe("turn peer slot", () => {
       expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
       const trigger = wrapper.find('[data-test="turn-peer-trigger"]');
       expect(trigger.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
-      // Gate B: the card sits beside the bubble, never inside the turn body.
       expect(wrapper.find('[data-test="msg-out"] [data-test="turn-peer-trigger"]').exists()).toBe(false);
       const cards = wrapper.findAll('[data-test="agent-message-card"]');
       expect(cards.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
