@@ -8,6 +8,7 @@ import type {
   TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { modalLayers } from "../lib/mobile-back";
 import { useDetailScrollMemory } from "../lib/use-detail-scroll-memory";
 import type { PendingInteractionState } from "../stores/direct-bots";
 import type { RoomParticipant } from "../lib/room-view";
@@ -105,7 +106,7 @@ function close(): void {
 
 // Escape closes through the same focus-restoring path as the ✕ button — not
 // through navigateBack, which would pop a history entry without refocusing.
-useModalA11y(drawerEl, () => close(), {
+useModalA11y(drawerEl, close, {
   onEscape: () => { close(); return true; },
   // The drawer has no pre-appointed control to open with: keep focus on the
   // dialog element itself instead of stealing it for the ✕ button.
@@ -121,6 +122,19 @@ const { remember: memoizeScroll } = useDetailScrollMemory(
 
 function onOutsidePointer(event: PointerEvent): void {
   if (document.querySelector('[data-composer-confirm]')) return;
+  // A dialog opened from the drawer (subagent trace, confirm, composer
+  // confirm) is a separate modal layer above it. A pointerdown inside that
+  // dialog must not close the drawer: the drawer would unmount the dialog
+  // before its own click lands. The modal stack is the authoritative order,
+  // and it also covers the child's backdrop.
+  if (modalLayers.value.at(-1)?.close !== close) return;
+  // Defensive DOM fallback for a nested layer that has not registered yet.
+  const nestedDialog = event.composedPath().some((node) =>
+    node instanceof Element
+    && (node.getAttribute("role") === "dialog" || node.getAttribute("role") === "alertdialog")
+    && node !== drawerEl.value
+    && !drawerEl.value?.contains(node));
+  if (nestedDialog) return;
   // The layer itself is pointer-through (collapsed popover contract): only the
   // drawer intercepts. Clicks that land on the drawer or the anchor's row stay.
   if (rowEl() && event.composedPath().includes(rowEl()!)) return;

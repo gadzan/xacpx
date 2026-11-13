@@ -19,6 +19,7 @@
 ### Fixed
 
 - Bot 话题删除确认在窄屏/移动端会被底层话题面板的 outside-pointerdown 当成外部点击：面板的 history entry 回退随即关掉确认层，`click` 还没送达就只剩“弹层关闭、什么都没发生”。确认/隔离浮层现在标记为 `data-dd-panel`，与话题面板同属一个 owned layer，删除提交不再被面板关闭抢先。默认话题的“清空”菜单也改为真正的 `clear` 确认并调用 `clearTopic`，不再走 `teardownTopic` 的“删除这个话题？”路径。
+- Trace 抽屉里的子层弹窗（子代理完整过程、确认框等）不再被抽屉的 outside-pointerdown 抢先关闭：抽屉只忽略自己的面板，不忽略 `role=dialog`/`alertdialog` 的子层，因此点击子层按钮不会先卸载抽屉、再丢掉这次 click。
 
 ## [channel-relay 0.7.8-beta.16] - 2026-11-12
 
