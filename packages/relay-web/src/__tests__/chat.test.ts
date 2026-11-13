@@ -1852,6 +1852,44 @@ test("flushTurn inserts the out row into the live slot, not at the end", () => {
   expect(store.messages[1]).toMatchObject({ direction: "out", text: "reply", startedAt });
 });
 
+test("the received card that admitted the running peer turn is inserted at the live slot, above the bubble", () => {
+  vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const peerOrigin = {
+    requestMessageId: "msg_peer_trigger",
+    completion: "none" as const,
+    source: { nodeId: "n1", endpointId: "sender" },
+    target: { nodeId: "n1", endpointId: "target" },
+  };
+  // Delivery admission starts the turn first; the card row lands afterwards.
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: { type: "turn-started", chatKey: "c", sessionAlias: "backend", peerOrigin },
+  } as never);
+  expect(store.liveTurn?.slotAfterIndex).toBe(-1);
+
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: { type: "agent-message", chatKey: "c", sessionAlias: "backend", message: receivedPeer("msg_peer_trigger", 2_000) },
+  } as never);
+  expect(store.liveTurn?.slotAfterIndex).toBe(0);
+
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "reply" } } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
+
+  // The card it answered stays above the reply, not below it.
+  expect(store.messages.map((m) => [m.direction, m.text])).toEqual([
+    ["in", "msg_peer_trigger"],
+    ["out", "reply"],
+  ]);
+  // The local flush row already owns its trigger card (turn top slot + folded chip),
+  // so the grouping holds before the hub converges the persisted row.
+  expect(store.messages[1]!.structured?.peerTriggerMessageId).toBe("msg_peer_trigger");
+});
+
 test("switching to a running background session restores the live reply after its persisted prompt", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
     messages: [
