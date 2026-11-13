@@ -15,6 +15,7 @@ import { acpxRecordFileNameMatches } from "../../transport/acpx-record-discovery
 import type {
   AgentSessionListResult,
   SessionEffortState,
+  SessionModelState,
 } from "../../transport/types";
 import type { NonInteractivePermissions, PermissionMode } from "../../config/types";
 import type { BridgeEngine, EngineInjectInput, EngineListInput, EnginePromptInput, EnginePromptStreamEvent, EngineSessionInput } from "./bridge-engine";
@@ -2210,7 +2211,7 @@ export class RuntimeEngine implements BridgeEngine {
     });
   }
 
-  async getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }> {
+  async getSessionModel(input: EngineSessionInput): Promise<SessionModelState> {
     if (input.refresh) {
       const snapshot = await this.readSessionMetadata(input);
       return { current: snapshot.model, available: snapshot.availableModels ?? [] };
@@ -2218,15 +2219,20 @@ export class RuntimeEngine implements BridgeEngine {
     const cached = this.liveSessionMetadata(this.workerKey(input));
     if (cached) {
       if (Date.now() - cached.refreshedAt >= SESSION_METADATA_TTL_MS) {
+        // The values keep the picker responsive, but they no longer describe the
+        // worker; `pending` says a refresh is in flight and they are not
+        // authoritative (turn end marks the snapshot stale this way).
         this.refreshSessionMetadataInBackground(input);
+        return { current: cached.model, available: cached.availableModels ?? [], pending: true };
       }
       return { current: cached.model, available: cached.availableModels ?? [] };
     }
     // No snapshot yet: never block the read on a cold worker handshake. Kick a
-    // background refresh and report "unknown" so the caller can render a
-    // pending/unknown state instead of a 45s timeout.
+    // background refresh and report the catalog as pending — the empty list is
+    // "unknown", not "this agent has no models" — so the caller can announce the
+    // session once the refresh lands instead of waiting for an unrelated event.
     this.refreshSessionMetadataInBackground(input);
-    return { available: [] };
+    return { available: [], pending: true };
   }
 
   async setSessionEffort(input: EngineSessionInput & { effort: string }): Promise<Record<string, never>> {
@@ -2259,11 +2265,12 @@ export class RuntimeEngine implements BridgeEngine {
     if (cached) {
       if (Date.now() - cached.refreshedAt >= SESSION_METADATA_TTL_MS) {
         this.refreshSessionMetadataInBackground(input);
+        return { current: cached.effort, available: cached.availableEfforts ?? [], pending: true };
       }
       return { current: cached.effort, available: cached.availableEfforts ?? [] };
     }
     this.refreshSessionMetadataInBackground(input);
-    return { available: [] };
+    return { available: [], pending: true };
   }
 
   /** Direct worker read: ensure + status, then replace the cached snapshot.

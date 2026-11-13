@@ -2,6 +2,7 @@ import type {
   AgentCapabilityProbeRequest,
   AgentCapabilityProbeResult,
   ResolvedSession,
+  SessionModelState,
 } from "./types";
 import { modelRestoreFailure } from "./omp-model-recovery";
 
@@ -142,7 +143,7 @@ export function sessionLaunchProbeRequest(
 export async function probeSessionModelCatalog(
   probe: AgentCapabilityProbe,
   session: ResolvedSession,
-): Promise<{ current?: string; available: string[] }> {
+): Promise<SessionModelState> {
   const label = `agent "${session.agent}" session "${session.alias}"`;
   let result: AgentCapabilityProbeResult;
   try {
@@ -181,14 +182,14 @@ export async function probeSessionModelCatalog(
 export async function readSessionModelCatalog(input: {
   session: ResolvedSession;
   /** Native-session read; absent when the transport cannot query it. */
-  read?: () => Promise<{ current?: string; available: string[] }>;
+  read?: () => Promise<SessionModelState>;
   /** Cold probe of the exact launch; absent when the transport cannot probe. */
   probe?: AgentCapabilityProbe;
   /** Skip the native read and cold-probe the exact launch instead. */
   refresh?: boolean;
   /** Probe the exact launch when the native read advertises no models. */
   coldFallbackWhenEmpty?: boolean;
-}): Promise<{ current?: string; available: string[] }> {
+}): Promise<SessionModelState> {
   const { session, read, probe } = input;
   if (input.refresh) {
     if (!probe) {

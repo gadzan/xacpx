@@ -172,6 +172,23 @@ import {
 const MODEL_SET_SETTLE_BUDGET_MS =
   2 * (DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS);
 
+/** First re-read of a pending catalog: the read that reported `pending` already
+ *  kicked the transport's background refresh, so it usually lands within this. */
+const SESSION_CONTROLS_READY_FIRST_POLL_MS = 500;
+/** Backoff ceiling for the pending-catalog wait: a worker that is still booting or
+ *  busy is observed at this cadence rather than polled flat out. */
+const SESSION_CONTROLS_READY_MAX_POLL_MS = 4_000;
+/** Stop waiting after this long and let the next read restart the wait; the
+ *  underlying worker read is itself bounded by the management command timeout. */
+const SESSION_CONTROLS_READY_BUDGET_MS = 30_000;
+
+function sleepMs(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const timer = setTimeout(resolve, ms);
+  timer.unref?.();
+  return promise;
+}
+
 function normalizeAdvertisedEffortCurrent(observed: {
   current?: string;
   available: string[];
@@ -628,7 +645,11 @@ export class ControlService {
   /** Monotonic per-session model-selection generation; background reconciliation only
    *  persists while it still owns the newest user selection. */
   private readonly modelMutationGenerations = new Map<string, number>();
-  /** Fire-and-forget maintenance (timeout reconciliation) awaited by tests/shutdown. */
+  /** Sessions with a pending-catalog announcement already in flight, so repeated
+   *  cold reads share one convergence wait instead of stacking pollers. */
+  private readonly pendingControlAnnouncements = new Set<string>();
+  /** Fire-and-forget maintenance (timeout reconciliation, pending catalog
+   *  announcements) awaited by tests/shutdown. */
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
   private readonly botWorkspaceMutex = new AsyncMutex();
@@ -988,12 +1009,17 @@ export class ControlService {
     if (!session) return { available: [] };
     const probe = this.deps.transport.probeAgentCapabilities?.bind(this.deps.transport);
     const read = this.deps.transport.getSessionModel?.bind(this.deps.transport);
-    return await readSessionModelCatalog({
+    const observed = await readSessionModelCatalog({
       session,
       ...(read ? { read: () => read(session) } : {}),
       ...(probe ? { probe } : {}),
       ...(options.refresh ? { refresh: true } : {}),
     });
+    if (observed.pending) this.announceSessionControlsWhenReady(session);
+    return {
+      ...(observed.current !== undefined ? { current: observed.current } : {}),
+      available: observed.available,
+    };
   }
 
   /** Switch a session's model (acpx validates the id) and persist the override. */
@@ -1063,6 +1089,7 @@ export class ControlService {
         const session = await this.resolveControlSession(chatKey, alias);
         if (!session) return { available: [] };
         const observed = await getEffort(session);
+        if (observed.pending) this.announceSessionControlsWhenReady(session);
         const observedCurrent = normalizeAdvertisedEffortCurrent(observed);
         let current =
           session.effort && observed.available.includes(session.effort)
@@ -1301,6 +1328,79 @@ export class ControlService {
             ? "Model switch timed out; reconciliation skipped because a newer selection won"
             : "Model switch timed out; background reconciliation did not persist",
         { ...fields, outcome },
+      );
+    } catch {
+      // Logging is diagnostic only.
+    }
+  }
+
+  /**
+   * A cold, rotated or turn-end-stale transport snapshot reports `pending` and
+   * refreshes off the request path (issue #524). Wait for that refresh to land and
+   * announce the session, so clients re-read its controls instead of showing an
+   * empty catalog until an unrelated turn or poll happens to refresh them. One
+   * wait per session: repeated cold reads join it.
+   */
+  private announceSessionControlsWhenReady(session: ResolvedSession): void {
+    if (this.pendingControlAnnouncements.has(session.alias)) return;
+    this.pendingControlAnnouncements.add(session.alias);
+    const task = this.waitForSessionControls(session.alias).catch(() => {});
+    this.backgroundTasks.add(task);
+    void task.finally(() => {
+      this.backgroundTasks.delete(task);
+      this.pendingControlAnnouncements.delete(session.alias);
+    });
+  }
+
+  private async waitForSessionControls(sessionAlias: string): Promise<void> {
+    const readModel = this.deps.transport.getSessionModel?.bind(
+      this.deps.transport,
+    );
+    const readEffort = this.deps.transport.getSessionEffort?.bind(
+      this.deps.transport,
+    );
+    if (!readModel && !readEffort) return;
+    const deadline = Date.now() + SESSION_CONTROLS_READY_BUDGET_MS;
+    let wait = SESSION_CONTROLS_READY_FIRST_POLL_MS;
+    while (Date.now() < deadline) {
+      await sleepMs(wait);
+      // Back off so a slow worker is observed, not hammered: each round's read
+      // kicks the transport's own refresh only when the previous one has settled.
+      wait = Math.min(wait * 2, SESSION_CONTROLS_READY_MAX_POLL_MS);
+      // Re-resolve per round: a rotation or handoff replaces the transport
+      // session, and the announcement must name the incarnation clients show.
+      const session = await this.deps.sessions.getSession(sessionAlias);
+      if (!session) return;
+      let pending: boolean;
+      try {
+        const model = readModel ? await readModel(session) : undefined;
+        const effort =
+          model?.pending === true || !readEffort
+            ? undefined
+            : await readEffort(session);
+        pending = model?.pending === true || effort?.pending === true;
+      } catch {
+        // A failing read reaches the caller as an error on its own; announcing a
+        // catalog that could not be read would be a lie.
+        return;
+      }
+      if (pending) continue;
+      try {
+        this.deps.events.emit({
+          type: "sessions-changed",
+          readySessionAlias: toDisplaySessionAlias(session.alias),
+          readyTransportSession: session.transportSession,
+        });
+      } catch {
+        // Event fan-out is best-effort, exactly like the reconciliation emit.
+      }
+      return;
+    }
+    try {
+      await this.deps.logger?.debug(
+        "control.session.controls.pending_unresolved",
+        "Session controls stayed pending for the whole convergence budget; the next read restarts the wait",
+        { sessionAlias },
       );
     } catch {
       // Logging is diagnostic only.

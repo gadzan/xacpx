@@ -268,7 +268,7 @@ export interface SessionTransport {
   getSessionModel?(
     session: ResolvedSession,
     options?: { refresh?: boolean },
-  ): Promise<{ current?: string; available: string[] }>;
+  ): Promise<SessionModelState>;
   /** Set the adapter-advertised reasoning effort for this session. Optional. */
   setSessionEffort?(session: ResolvedSession, effort: string): Promise<void>;
   /** Read the current and adapter-advertised reasoning-effort values. Optional. */
@@ -328,9 +328,24 @@ export interface SessionTransport {
   dispose?(): Promise<void>;
 }
 
+export interface SessionModelState {
+  current?: string;
+  available: string[];
+  /**
+   * The catalog is not authoritative: the transport has no fresh snapshot and a
+   * background refresh is in flight, so an empty `available` means "unknown",
+   * not "this agent advertises no models". Callers must surface it as pending
+   * (or re-read when the transport announces the session) instead of caching it
+   * as the session's real catalog.
+   */
+  pending?: boolean;
+}
+
 export interface SessionEffortState {
   current?: string;
   available: string[];
+  /** Same pending contract as {@link SessionModelState.pending}. */
+  pending?: boolean;
 }
 
 /** Fingerprint identity of one resolved probe. Digests only — never argv, env values, or secrets. */

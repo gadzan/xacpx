@@ -13,6 +13,7 @@ import type {
   AgentCapabilityProbeResult,
   SessionTransport,
   SessionEffortState,
+  SessionModelState,
 } from "../types";
 import {
   buildOverflowSummary,
@@ -275,7 +276,7 @@ export class AcpxBridgeTransport implements SessionTransport {
   async getSessionModel(
     session: ResolvedSession,
     options?: { refresh?: boolean },
-  ): Promise<{ current?: string; available: string[] }> {
+  ): Promise<SessionModelState> {
     return await this.client.request("getSessionModel", {
       ...this.toParams(session),
       ...(options?.refresh ? { refresh: true } : {}),
