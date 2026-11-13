@@ -16,6 +16,10 @@
 - Trace 抽屉改为最新在上、最旧在底：全量过程按 `presentation.nodes` 反转渲染，新事件从顶部插入；只有读者在顶部时才跟随，向下阅读旧事件时冻结视口并显示“N 条新事件 ↑”。打开抽屉会自动读完整个可保留窗口（最多 1000 条），删除手动的“加载更多 / 加载更早”及其 i18n；超过上限时只提示保留最近 1000 条。Live Stack 保留为顶部紧凑摘要。
 - 群聊时间线在移动端也保留每位 bot 的头像与发言人名称（`keepMobileIdentity`）；Direct 私聊仍在 `lg` 以下收起逐行身份，因为读者已知对话对象。
 
+### Fixed
+
+- Bot 话题删除确认在窄屏/移动端会被底层话题面板的 outside-pointerdown 当成外部点击：面板的 history entry 回退随即关掉确认层，`click` 还没送达就只剩“弹层关闭、什么都没发生”。确认/隔离浮层现在标记为 `data-dd-panel`，与话题面板同属一个 owned layer，删除提交不再被面板关闭抢先。默认话题的“清空”菜单也改为真正的 `clear` 确认并调用 `clearTopic`，不再走 `teardownTopic` 的“删除这个话题？”路径。
+
 ## [channel-relay 0.7.8-beta.16] - 2026-11-12
 
 ### Added

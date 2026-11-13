@@ -32,12 +32,14 @@ function mountSwitcher(overrides: Partial<{
   renameTopic: (topicId: string, title: string) => Promise<void>;
   restoreTopic: (topicId: string) => Promise<void>;
   teardownTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
+  clearTopic: (topicId: string, requestId: string, releaseBindings: boolean) => Promise<void>;
   abandonUnknownRuns?: (runIds: string[]) => Promise<void>;
 }> = {}) {
   const renameTopic = overrides.renameTopic ?? vi.fn(async () => {});
   const setTopicIsolation = overrides.setTopicIsolation ?? vi.fn(async () => {});
   const restoreTopic = overrides.restoreTopic ?? vi.fn(async () => {});
   const teardownTopic = overrides.teardownTopic ?? vi.fn(async () => {});
+  const clearTopic = overrides.clearTopic ?? vi.fn(async () => {});
   const wrapper = mount(TopicSwitcher, {
     props: {
       variant: "direct",
@@ -48,13 +50,13 @@ function mountSwitcher(overrides: Partial<{
       archiveTopic: vi.fn(async () => {}),
       restoreTopic,
       teardownTopic,
-      clearTopic: vi.fn(async () => {}),
+      clearTopic,
       setTopicIsolation,
       ...(overrides.abandonUnknownRuns ? { abandonUnknownRuns: overrides.abandonUnknownRuns } : {}),
     },
     global: { plugins: [i18n] },
   });
-  return { wrapper, renameTopic, restoreTopic, teardownTopic, setTopicIsolation };
+  return { wrapper, renameTopic, restoreTopic, teardownTopic, clearTopic, setTopicIsolation };
 }
 
 async function rowMenu(wrapper: ReturnType<typeof mountSwitcher>["wrapper"], index: number) {
@@ -79,6 +81,22 @@ describe("TopicSwitcher (Bot topics)", () => {
     await wrapper.find("[data-test='topic-panel'] form").trigger("submit");
     await flushPromises();
     expect(renameTopic).toHaveBeenCalledWith("t-extra", "Renamed");
+  });
+
+  it("routes the default topic's Clear through clearTopic and keeps the confirm in the owned layer", async () => {
+    const clearTopic = vi.fn(async () => {});
+    const teardownTopic = vi.fn(async () => {});
+    const { wrapper } = mountSwitcher({ clearTopic, teardownTopic });
+    const menu = await rowMenu(wrapper, 0);
+    await menu.find("[data-test='menu-clear']").trigger("click");
+    await flushPromises();
+    const confirm = wrapper.find('[data-test="topic-confirm"]');
+    expect(confirm.text()).toContain("Clear the default topic?");
+    expect(confirm.element.parentElement?.getAttribute("data-dd-panel")).not.toBeNull();
+    await wrapper.find('[data-test="topic-confirm-submit"]').trigger("click");
+    await flushPromises();
+    expect(clearTopic).toHaveBeenCalledWith("t-default", expect.any(String), false);
+    expect(teardownTopic).not.toHaveBeenCalled();
   });
 
   it("filters long topic lists through the panel search", async () => {
