@@ -901,8 +901,9 @@ export interface LiveTurn {
   （同 peer 合并计数，点击 chip 行即展开；`expandedTraces` 是唯一状态源，所以
   chip 与 TurnParts 的展开按钮不会打架）。**展开后**恢复真实位置：received 卡回到
   顶部槽、sent 卡回到各自步骤后。失败回合不折叠，触发卡仍在气泡上方，只是 `msg-out`
-  继续带错误 ring。未被本页任何回合拥有的 received 卡仍以独立行渲染
-  （分页边界 / 投递被拒时不丢卡）。
+  继续带错误 ring——ring 来自本地 `failed` 标记，只存在于 live flush 行；刷新后读回的
+  `structured.turnStatus: "error"` 行不带 ring，卡片的槽位不受影响。未被本页任何回合
+  拥有的 received 卡仍以独立行渲染（分页边界 / 投递被拒时不丢卡）。
 
 ### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）
 
