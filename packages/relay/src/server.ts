@@ -1013,7 +1013,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   appendAssistantOut(
                     finished.sessionAlias,
                     text,
-                    { ...(finished.truncated ? { truncated: true } : {}), turnStatus: turnStatusOf(finished.ok, finished.cancelled) },
+                    {
+                      ...(finished.truncated ? { truncated: true } : {}),
+                      ...(finished.peerTriggerMessageId ? { peerTriggerMessageId: finished.peerTriggerMessageId } : {}),
+                      turnStatus: turnStatusOf(finished.ok, finished.cancelled),
+                    },
                     slot,
                   );
                 } else {
@@ -1128,6 +1132,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // final flush persists structured.truncated instead of a gappy reply
                 // that reads as complete.
                 ...(turn.truncated ? { truncated: true } : {}),
+                ...(turn.peerTriggerMessageId ? { peerTriggerMessageId: turn.peerTriggerMessageId } : {}),
                 ...(notification ? { notification } : {}),
                 ...(turn.conversation ? { conversation: turn.conversation } : {}),
               });

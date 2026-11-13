@@ -163,10 +163,10 @@ const receivedEntryById = computed(() => {
   }
   return map;
 });
-const consumedReceivedIds = computed(() => {
+const ownedPeerTriggerIds = computed(() => {
   const ids = new Set<string>();
   for (const m of props.messages) {
-    const id = m.structured?.peerTriggerMessageId;
+    const id = m.direction === "out" ? m.structured?.peerTriggerMessageId : undefined;
     if (id !== undefined) ids.add(id);
   }
   return ids;
@@ -177,7 +177,7 @@ function isSuppressedPeerRow(m: ChatMessage): boolean {
   if (!am) return false;
   return am.direction === "sent"
     ? anchoredSentMessageIds.value.has(am.messageId)
-    : consumedReceivedIds.value.has(am.messageId);
+    : ownedPeerTriggerIds.value.has(am.messageId);
 }
 
 function traceCollapsedOf(m: ChatMessage): boolean {
@@ -694,37 +694,40 @@ watch(
           </div>
           <!-- ASSISTANT row -->
           <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" hide-identity-on-mobile :class="enterRowClass" :style="enterStyle(i)">
+            <!-- Peer slot, a sibling of the bubble so the trigger card never enters the
+                 turn body (no danger ring on failure, no nesting in the trace). -->
+            <button
+              v-if="traceCollapsedOf(m) && peerChipsOf(m).length > 0"
+              type="button"
+              data-test="turn-peer-summary"
+              class="flex flex-wrap items-center gap-1.5 bg-transparent p-0 text-left"
+              :aria-expanded="false"
+              :title="$t('turnTrace.toggleTrace')"
+              @click="toggleTraceOf(m)"
+            >
+              <span
+                v-for="chip in peerChipsOf(m)"
+                :key="chip.key"
+                data-test="turn-peer-chip"
+                :data-direction="chip.direction"
+                :data-arrow="chip.direction === 'sent' ? 'right' : 'left'"
+                class="inline-flex max-w-full items-center gap-1 rounded-lg border border-hairline bg-surface/60 px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+              >
+                <ArrowRight v-if="chip.direction === 'sent'" :size="12" class="shrink-0 text-accent" />
+                <ArrowLeft v-else :size="12" class="shrink-0 text-accent" />
+                <span class="truncate font-medium text-fg">{{ chip.name }}</span>
+                <span v-if="chip.count > 1" class="shrink-0">×{{ chip.count }}</span>
+              </span>
+            </button>
+            <div
+              v-else-if="receivedTriggerOf(m)"
+              data-test="turn-peer-trigger"
+              class="mr-auto w-full max-w-2xl"
+            >
+              <AgentMessageCard :message="receivedTriggerOf(m)!" anchored />
+            </div>
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
-              <button
-                v-if="traceCollapsedOf(m) && peerChipsOf(m).length > 0"
-                type="button"
-                data-test="turn-peer-summary"
-                class="flex flex-wrap items-center gap-1.5 bg-transparent p-0 text-left"
-                :aria-expanded="false"
-                :title="$t('turnTrace.toggleTrace')"
-                @click="toggleTraceOf(m)"
-              >
-                <span
-                  v-for="chip in peerChipsOf(m)"
-                  :key="chip.key"
-                  data-test="turn-peer-chip"
-                  :data-direction="chip.direction"
-                  class="inline-flex max-w-full items-center gap-1 rounded-lg border border-hairline bg-surface/60 px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
-                >
-                  <ArrowRight v-if="chip.direction === 'sent'" :size="12" class="shrink-0 text-accent" />
-                  <ArrowLeft v-else :size="12" class="shrink-0 text-accent" />
-                  <span class="truncate font-medium text-fg">{{ chip.name }}</span>
-                  <span v-if="chip.count > 1" class="shrink-0">×{{ chip.count }}</span>
-                </span>
-              </button>
-              <div
-                v-else-if="receivedTriggerOf(m)"
-                data-test="turn-peer-trigger"
-                class="mr-auto w-full max-w-2xl"
-              >
-                <AgentMessageCard :message="receivedTriggerOf(m)!" anchored />
-              </div>
               <!-- Structured transcript: activity cards interleave with the Markdown
                    narrative at wire-ordered slots. Tool cards own their collapsed state. -->
               <ConversationBubble

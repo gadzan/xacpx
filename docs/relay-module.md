@@ -293,7 +293,10 @@ messageId 时的句末判断使用 Unicode 句子终止属性，不绑定中文�
 `createRelayRuntime` 的 `onEvent` 回调里维护 `Map<string, TurnAccumulator>`，键为 `"${instanceId}\0${sessionAlias}"`：
 
 ```ts
-interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string }
+interface TurnAccumulator {
+  text: string; steps: Map<string, ToolStepDto>; reasoning: string;
+  slotAfterId: number; startedAfterSeq?: number; peerTriggerMessageId?: string;
+}
 ```
 
 事件处理逻辑：
@@ -310,13 +313,13 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 ### 数据库 `messages.structured` 列（packages/relay/src/db.ts）
 
-`messages` 表含 `structured TEXT` 列（存 JSON 序列化的 `{ toolSteps, reasoning? }`），直接由建表 DDL 定义。
+`messages` 表含 `structured TEXT` 列（存 JSON 序列化的 `{ toolSteps, reasoning?, turnStatus?, peerTriggerMessageId? }`），直接由建表 DDL 定义。
 
 - `MessageStore.append(instanceId, alias, dir, text, structured?, attachments?, promptRequestId?, createdAt?, startedAt?, slotAfterId?, startedAfterSeq?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto` 中返回完整行（含可选 `startedAt` / `slotAfterId` / `startedAfterSeq`）。HTTP 列表在 `view=compact` 时由 `compactHistoryMessage` 投影后再发给看板——**不得丢弃** `slotAfterId`（live-slot 重排依赖 Hub 插入序，不能按 `createdAt` 完结时间或跨机器墙钟排序）；`startedAt` 仅作 HUD 遥测。`getById` 仍返回未经投影的原文。
 - Hub 在 `turn-started`（对账 inbound prompt 之后）把当时该 session 最后一条 `messages.id` 写入 `turn_slot_anchors`，并带到 accumulator / `out` 行。Hub 重启后 `finishedOffline` 与无 buffer 的 `turn-finished` 都从该锚点恢复，而不是用 `lastId`（会把中途到达的 card 当成触发卡）或 connector 墙钟。
 - 锚点按 **recovery 身份** 精确查找：非空 `recoveryId` 未命中时 **不得** 回落到该 session 的其它 leftover（过期/FIFO 逐出的 turn A 不能绑到后来的 turn B）。权威 `instance.state.sync` 成功后只保留 `turns ∪ finishedOffline` 中的锚点。无 `recoveryId` 的旧 connector 使用 per-session 专用 key，同一 instance 上 backend/frontend 互不覆盖。Session / instance 删除会清掉对应锚点。
 
-- peer 回合在 accumulator 里记下 `turn-started.peerOrigin.requestMessageId`，flush 时写进 `out` 行的 `structured.peerTriggerMessageId`（有 buffer 与无 buffer 两条路径都写；`finishedOffline` 恢复项没有 `peerOrigin` 时不写）。peer 投递先 admit 回合、再落 received card 行，所以该卡的 `messages.id` 必然大于回合锚点；这个 id 让看板把它认成“这一轮的因”而不是中途行，留在回复上方。compact 投影整份保留 `structured`，刷新后同样成立。
+- peer 回合在 accumulator 里记下 `turn-started.peerOrigin.requestMessageId`，flush 时写进 `out` 行的 `structured.peerTriggerMessageId`（有 buffer 与无 buffer 两条路径都写）。Hub 中途重启时走 `instance.state.sync`：connector 镜像在 `turn-started` 时记下同一个 id，`turns`（在跑的回合）与 `finishedOffline`（断线期间完成的回合）都带着它；Hub 重建 accumulator 时恢复，持久化时写进同一字段。peer 投递先 admit 回合、再落 received card 行，所以该卡的 `messages.id` 必然大于回合锚点；这个 id 让看板把它认成“这一轮的因”而不是中途行，留在回复上方。compact 投影整份保留 `structured`，刷新后同样成立。
 
 ## 阶段七：Hub 重启状态恢复（instance.state.sync + turn-finished.text）
 

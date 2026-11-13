@@ -1171,7 +1171,7 @@ function validInstanceStateSync(p) {
     if (typeof t !== "object" || t === null)
       return false;
     const turn = t;
-    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId) && validScheduledOrigin(turn.scheduled) && finiteNonNegative(turn.startedAt) && optNonNegInt(turn.startedAfterSeq) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean") && validConversationCorrelation(turn.conversation);
+    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId) && optStr(turn.peerTriggerMessageId) && validScheduledOrigin(turn.scheduled) && finiteNonNegative(turn.startedAt) && optNonNegInt(turn.startedAfterSeq) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean") && validConversationCorrelation(turn.conversation);
   }))
     return false;
   if (!Array.isArray(c.usage) || !c.usage.every((u) => {
@@ -1199,7 +1199,7 @@ function validInstanceStateSync(p) {
     if (typeof f !== "object" || f === null)
       return false;
     const finished = f;
-    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId) && validScheduledOrigin(finished.scheduled) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean") && (finished.startedAt === undefined || finiteNonNegative(finished.startedAt)) && optNonNegInt(finished.startedAfterSeq) && validConversationCorrelation(finished.conversation);
+    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId) && validScheduledOrigin(finished.scheduled) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean") && (finished.startedAt === undefined || finiteNonNegative(finished.startedAt)) && optNonNegInt(finished.startedAfterSeq) && optStr(finished.peerTriggerMessageId) && validConversationCorrelation(finished.conversation);
   });
 }
 function validNotice(n) {

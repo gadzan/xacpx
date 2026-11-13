@@ -1565,6 +1565,7 @@ describe("turn peer slot", () => {
 
     const chips = wrapper.findAll('[data-test="turn-peer-chip"]');
     expect(chips.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
+    expect(chips.map((c) => c.attributes("data-arrow"))).toEqual(["left", "right"]);
     expect(chips.map((c) => c.text())).toEqual(["Worker A", "Worker B"]);
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
     wrapper.unmount();
@@ -1579,10 +1580,10 @@ describe("turn peer slot", () => {
       });
 
       expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
-      const turnContent = wrapper.find('[data-test="msg-out"]');
-      expect(
-        turnContent.find('[data-test="turn-peer-trigger"] [data-test="agent-message-card"]').attributes("data-direction"),
-      ).toBe("received");
+      const trigger = wrapper.find('[data-test="turn-peer-trigger"]');
+      expect(trigger.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
+      // Gate B: the card sits beside the bubble, never inside the turn body.
+      expect(wrapper.find('[data-test="msg-out"] [data-test="turn-peer-trigger"]').exists()).toBe(false);
       const cards = wrapper.findAll('[data-test="agent-message-card"]');
       expect(cards.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
       wrapper.unmount();
@@ -1603,12 +1604,19 @@ describe("turn peer slot", () => {
     expandedTraces.delete("i1:s1:t:13000");
   });
 
-  it("keeps a received card standalone when no turn on this page owns it", () => {
+  it("suppresses only the owned card and keeps an unowned one standalone in the same transcript", () => {
+    const turn = peerTurn({ startedAt: 16_000, triggerMessageId: "m_owned" });
     const wrapper = mount(MessageList, {
-      props: { messages: [receivedCard("m_orphan")], liveTurn: null },
+      props: {
+        messages: [receivedCard("m_owned"), receivedCard("m_orphan"), turn],
+        liveTurn: null,
+      },
     });
-    expect(wrapper.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
-    expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
+    const cards = wrapper.findAll('[data-test="agent-message-card"]');
+    const standalone = cards.filter((card) => !card.element.closest('[data-test="turn-peer-trigger"]'));
+    expect(standalone).toHaveLength(1);
+    expect(standalone[0]!.text()).toContain("m_orphan");
+    expect(wrapper.find('[data-test="turn-peer-trigger"]').text()).toContain("m_owned");
     wrapper.unmount();
   });
 });
@@ -1632,8 +1640,38 @@ describe("turn peer slot — sent only", () => {
       props: { messages: [sentCard("m_sent"), turn], liveTurn: null },
     });
     const chips = wrapper.findAll('[data-test="turn-peer-chip"]');
-    expect(chips.map((c) => [c.attributes("data-direction"), c.text()])).toEqual([["sent", "Worker B"]]);
+    expect(chips.map((c) => [c.attributes("data-direction"), c.attributes("data-arrow"), c.text()]))
+      .toEqual([["sent", "right", "Worker B"]]);
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
+    wrapper.unmount();
+  });
+});
+
+describe("turn peer slot — failed turn", () => {
+  it("keeps the error ring on the reply and the trigger card outside it", () => {
+    const turn = msg({
+      direction: "out",
+      text: "boom",
+      status: "error",
+      failed: true,
+      startedAt: 15_000,
+      createdAt: new Date(15_000 + 5_000).toISOString(),
+      structured: {
+        peerTriggerMessageId: "m_recv",
+        turnStatus: "error",
+        parts: [
+          { type: "text", text: "boom" },
+          { type: "tool", step: sendStep("send-1") },
+        ],
+      },
+    });
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_recv"), turn], liveTurn: null },
+    });
+    expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
+    expect(wrapper.find('[data-test="turn-peer-trigger"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-peer-trigger"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="msg-out"]').classes()).toContain("ring-danger/40");
     wrapper.unmount();
   });
 });

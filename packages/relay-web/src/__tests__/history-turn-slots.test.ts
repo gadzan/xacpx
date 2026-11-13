@@ -57,10 +57,11 @@ describe("slotAfterIndexFromAnchor", () => {
   it("places the live slot after the peer trigger card that is newer than the anchor", () => {
     // Peer delivery admits the turn BEFORE the card row is written, so the card id
     // exceeds the anchor; the card is still the cause and owns the slot.
-    const rows = [received(2, "card1", 1_000), received(3, "card2", 3_000)];
-    expect(slotAfterIndexFromAnchor(rows, 1, "card1")).toBe(0);
-    expect(slotAfterIndexFromAnchor(rows, 1, "card2")).toBe(1);
-    expect(slotAfterIndexFromAnchor(rows, 1, "missing")).toBe(-1);
+    const rows = [received(1, "card0", 500), received(2, "card1", 1_000), received(3, "card2", 3_000)];
+    expect(slotAfterIndexFromAnchor(rows, 1, "card1")).toBe(1);
+    expect(slotAfterIndexFromAnchor(rows, 1, "card2")).toBe(2);
+    // A trigger id that is not in the page falls back to the anchor row, not to -1.
+    expect(slotAfterIndexFromAnchor(rows, 1, "missing")).toBe(0);
   });
 
   it("returns -1 when every row was inserted after the turn started", () => {

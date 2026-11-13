@@ -875,7 +875,9 @@ export interface LiveTurn {
   之后（触发用 received card / prompt），而不是列表底部。回合中途再来的 received card 追加到
   `messages[]`，因此出现在 live 气泡**下面**：`card1 → live turn → card2`。`parts.length === 0`
   时仍占据该槽（`live-working` 只留高度占位，运行指示在头像气泡上），避免第二张卡叠在尚未可见的 turn 上。Sent card 仍按
-  `agentMessageId` 接入 `TurnParts`（Gate A）；received card 永不抑制、永不嵌进 turn（Gate B）。
+  `agentMessageId` 接入 `TurnParts`（Gate A）；received card 永不抑制、永不嵌进 trace（Gate B
+  对“普通 received 卡”仍然成立；触发卡按下一段的 v0.5 回合槽规则渲染，是对 Gate B “receiver
+  stays standalone” 的唯一例外，见 v0.3 spec 2026-08-21 Gate B）。
   `turn-finished` 把 `out` 行 **splice 进该槽**（带 `startedAt` 作 HUD 遥测，以及 Hub
   `slotAfterId` 作插入序锚点），而不是 `push` 到末尾。`loadHistory` 对带 `slotAfterId`
   的 `out` 把 **Hub id 大于该锚点** 的 transcript 行（received card **以及** 忙时排队的
@@ -885,18 +887,21 @@ export interface LiveTurn {
 - **peer 卡归回合（v0.5 槽位）**：peer 投递先 admit 回合、再发出 received card 事件
   （`agent-message-router` 在 `deliver()` 之后才 emit），所以触发卡的行号**必然大于**
   该回合的锚点。因果上它比回复更早，因此 Hub 把同一个 id 写进 `out` 行的
-  `structured.peerTriggerMessageId`（`turn-finished.peerOrigin` 或缓冲区；
-  `finishedOffline` 无 `peerOrigin` 时留空 = 旧行为），`placeTurnsInSlots` 把它从
+  `structured.peerTriggerMessageId`（`turn-finished.peerOrigin` 或缓冲区；Hub 中途重启时
+  由 `instance.state.sync` 的 `turns` / `finishedOffline` 带回来，connector 镜像在
+  `turn-started` 时记下 `peerOrigin.requestMessageId`），`placeTurnsInSlots` 把它从
   “可搬运行”中排除，`slotAfterIndexFromAnchor(rows, id, trigger)` 也优先落在该卡之后。
   live turn 在 `turn-started` 记下 `peerTriggerMessageId`，迟到的触发卡插在槽位内
   （气泡上方），历史/快照恢复走同一条因果。
 - **`MessageList` 的回合 peer 槽**：被回合拥有的卡不再以独立行渲染（复用 sent 卡的
-  抑制机制）——received 触发卡渲染在该回合 `msg-out` 的**顶部槽**（气泡的兄弟节点，
-  仍满足 Gate B：永不嵌进 trace）；sent 卡照旧锚在 `agent_send` 步骤之后（Gate A）。
+  抑制机制）——received 触发卡渲染在 `TranscriptRow` 的内容列里、`msg-out` **之外**，
+  也就是气泡上方的兄弟节点。它在 `msg-out` 外，所以失败回合的红色 ring 不会罩住它，
+  它也不进 trace 的折叠。sent 卡照旧锚在 `agent_send` 步骤之后（Gate A）。
   回合**折叠**时两者都不出现，顶部槽改渲染一行 chip：`← Worker A` / `→ Worker B`
   （同 peer 合并计数，点击 chip 行即展开；`expandedTraces` 是唯一状态源，所以
   chip 与 TurnParts 的展开按钮不会打架）。**展开后**恢复真实位置：received 卡回到
-  顶部槽、sent 卡回到各自步骤后。未被本页任何回合拥有的 received 卡仍以独立行渲染
+  顶部槽、sent 卡回到各自步骤后。失败回合不折叠，触发卡仍在气泡上方，只是 `msg-out`
+  继续带错误 ring。未被本页任何回合拥有的 received 卡仍以独立行渲染
   （分页边界 / 投递被拒时不丢卡）。
 
 ### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）

@@ -1183,6 +1183,7 @@ export function validInstanceStateSync(p: unknown): boolean {
     const turn = t as Record<string, unknown>;
     return typeof turn.sessionAlias === "string"
       && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId)
+      && optStr(turn.peerTriggerMessageId)
       && validScheduledOrigin(turn.scheduled)
       && finiteNonNegative(turn.startedAt)
       && optNonNegInt(turn.startedAfterSeq)
@@ -1227,6 +1228,7 @@ export function validInstanceStateSync(p: unknown): boolean {
       && (finished.truncated === undefined || typeof finished.truncated === "boolean")
       && (finished.startedAt === undefined || finiteNonNegative(finished.startedAt))
       && optNonNegInt(finished.startedAfterSeq)
+      && optStr(finished.peerTriggerMessageId)
       && validConversationCorrelation(finished.conversation);
   });
 }

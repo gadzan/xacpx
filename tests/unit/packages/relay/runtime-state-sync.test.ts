@@ -978,3 +978,24 @@ test("recovered offline rows carry turnStatus derived from ok/cancelled", async 
   expect(runtime.messages.listBySession("a1", "i1", "failed").messages[0]!.structured?.turnStatus).toBe("error");
   runtime.close();
 });
+
+test("a recovered offline turn keeps the peer card it answered on its out row", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [{
+      sessionAlias: "backend",
+      ok: true,
+      text: "ack",
+      recoveryId: "r_peer",
+      peerTriggerMessageId: "msg_peer",
+    }],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((row) => [row.direction, row.text])).toEqual([["out", "ack"]]);
+  // The web keeps the received card above this reply after a hub that restarted mid-turn.
+  expect(rows[0]!.structured?.peerTriggerMessageId).toBe("msg_peer");
+  runtime.close();
+});

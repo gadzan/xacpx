@@ -1351,6 +1351,11 @@ Received AgentMessageCard
 B assistant turn
 ```
 
+> Superseded for one card only. Since the v0.5 turn peer slot, the received card that
+> admitted a turn renders at that turn's top slot, as a sibling of the bubble and outside
+> its trace (`docs/relay-web-module.md`, peer 卡归回合). Every other received card stays
+> standalone, matching the history above.
+
 ## Gate C — Legacy sender fallback
 
 History contains a sender AgentMessage card with no matching tool correlation.

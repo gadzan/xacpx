@@ -1493,20 +1493,42 @@ test("a peer turn stamps its trigger message id on the out row (card stays above
     status: "delivered",
   } });
   fire({ type: "turn-output", chatKey: "relay:agent-message:backend", sessionAlias: "backend", chunk: "ack" });
-  fire({ type: "turn-finished", chatKey: "relay:agent-message:backend", sessionAlias: "backend", ok: true, peerOrigin });
+  // The buffered finish carries no peerOrigin here on purpose: the accumulator captured
+  // it at turn-started, and only that capture can stamp the row.
+  fire({ type: "turn-finished", chatKey: "relay:agent-message:backend", sessionAlias: "backend", ok: true });
 
   const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(rows.map((m) => [m.direction, m.text])).toEqual([
     ["in", "schema changed"],
     ["out", "ack"],
   ]);
-  // The durable correlation the web uses to keep the card above the reply after reload.
-  expect(rows[0]!.id).toBeGreaterThan(0);
-  expect(rows[1]!.id).toBeGreaterThan(rows[0]!.id);
   expect(rows[1]!.structured?.peerTriggerMessageId).toBe("msg_peer_trigger");
+
   fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "hi" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "human reply" });
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
-  const human = runtime.messages.listBySession("a1", "i1", "backend").messages.at(-1)!;
-  expect(human.structured?.peerTriggerMessageId).toBeUndefined();
+  const humanOut = runtime.messages.listBySession("a1", "i1", "backend").messages
+    .find((row) => row.direction === "out" && row.text === "human reply")!;
+  expect(humanOut.structured?.peerTriggerMessageId).toBeUndefined();
+  runtime.close();
+});
+
+test("a peer finish with no buffer still stamps the trigger id from turn-finished", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({
+    type: "turn-finished", chatKey: "relay:agent-message:backend", sessionAlias: "backend", ok: true, text: "ack",
+    peerOrigin: {
+      requestMessageId: "msg_no_buffer",
+      completion: "none",
+      source: { nodeId: "n1", endpointId: "sender" },
+      target: { nodeId: "n1", endpointId: "target" },
+    },
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((row) => [row.direction, row.text])).toEqual([["out", "ack"]]);
+  expect(rows[0]!.structured?.peerTriggerMessageId).toBe("msg_no_buffer");
   runtime.close();
 });
