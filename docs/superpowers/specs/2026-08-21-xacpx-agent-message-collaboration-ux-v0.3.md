@@ -1354,7 +1354,9 @@ B assistant turn
 
 > Superseded for one card only. Since the v0.5 turn peer slot, the received card that
 > admitted a turn renders at that turn's top slot, as a sibling of the bubble and outside
-> its trace (`docs/relay-web-module.md`, peer 卡归回合). Every other received card stays
+> its trace (`docs/relay-web-module.md`, peer 卡归回合). That takeover needs the card to
+> sit directly above the turn; a card separated by another row (a queued turn starts after
+> its card is written) stays standalone in its own place. Every other received card stays
 > standalone, matching the history above.
 
 ## Gate C — Legacy sender fallback
