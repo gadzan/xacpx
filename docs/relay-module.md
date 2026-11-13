@@ -316,6 +316,8 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - Hub 在 `turn-started`（对账 inbound prompt 之后）把当时该 session 最后一条 `messages.id` 写入 `turn_slot_anchors`，并带到 accumulator / `out` 行。Hub 重启后 `finishedOffline` 与无 buffer 的 `turn-finished` 都从该锚点恢复，而不是用 `lastId`（会把中途到达的 card 当成触发卡）或 connector 墙钟。
 - 锚点按 **recovery 身份** 精确查找：非空 `recoveryId` 未命中时 **不得** 回落到该 session 的其它 leftover（过期/FIFO 逐出的 turn A 不能绑到后来的 turn B）。权威 `instance.state.sync` 成功后只保留 `turns ∪ finishedOffline` 中的锚点。无 `recoveryId` 的旧 connector 使用 per-session 专用 key，同一 instance 上 backend/frontend 互不覆盖。Session / instance 删除会清掉对应锚点。
 
+- peer 回合在 accumulator 里记下 `turn-started.peerOrigin.requestMessageId`，flush 时写进 `out` 行的 `structured.peerTriggerMessageId`（有 buffer 与无 buffer 两条路径都写；`finishedOffline` 恢复项没有 `peerOrigin` 时不写）。peer 投递先 admit 回合、再落 received card 行，所以该卡的 `messages.id` 必然大于回合锚点；这个 id 让看板把它认成“这一轮的因”而不是中途行，留在回复上方。compact 投影整份保留 `structured`，刷新后同样成立。
+
 ## 阶段七：Hub 重启状态恢复（instance.state.sync + turn-finished.text）
 
 设计 spec：docs/superpowers/specs/2026-08-03-relay-hub-restart-state-recovery-spec.md。
