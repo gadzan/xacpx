@@ -150,14 +150,6 @@ const anchoredSentMessageIds = computed(() => {
   return anchored;
 });
 
-const receivedEntryById = computed(() => {
-  const map = new Map<string, PeerMessageHistoryEntry>();
-  for (const m of props.messages) {
-    const am = m.structured?.agentMessage;
-    if (am?.direction === "received") map.set(am.messageId, am);
-  }
-  return map;
-});
 const visibleIndexOf = computed(() => {
   const map = new Map<ChatMessage, number>();
   visibleMessages.value.forEach((m, i) => map.set(m, i));
