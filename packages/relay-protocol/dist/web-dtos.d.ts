@@ -66,6 +66,12 @@ export interface MessageRecordDto {
          *  `failed`/`status` flags live only on optimistic rows). Collapsing policies key
          *  off `error` — a failed turn's trace must stay unmissable. */
         turnStatus?: "done" | "cancelled" | "error";
+        /** Which agent-message card this turn answered: the peer message id the turn was
+         *  admitted for (source `turn-started.peerOrigin.requestMessageId`). That card is
+         *  the turn's CAUSE, so history keeps it above this `out` row even though its Hub
+         *  id is greater than `slotAfterId` (the turn starts before the card row exists).
+         *  Absent on human/scheduled turns and on rows recovered without peerOrigin. */
+        peerTriggerMessageId?: string;
     };
     attachments?: AttachmentMetadata[];
 }
@@ -85,6 +91,12 @@ export interface LiveTurnSnapshotDto {
      * Web places the live turn by this id, never by comparing clocks.
      */
     slotAfterId?: number;
+    /**
+     * Peer message id that admitted this turn (`turn-started.peerOrigin`). The received
+     * card row is written AFTER the turn starts, so it can be newer than `slotAfterId`;
+     * the live bubble still belongs after that card, which is the turn's cause.
+     */
+    peerTriggerMessageId?: string;
     /**
      * Exact Conversation/Run/MemberTurn join identity when this live turn belongs
      * to a Conversation Run. Additive; `sessionAlias` remains legacy plumbing.

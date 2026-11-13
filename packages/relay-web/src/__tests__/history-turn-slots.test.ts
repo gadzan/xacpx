@@ -54,6 +54,13 @@ describe("slotAfterIndexFromAnchor", () => {
     expect(slotAfterIndexFromAnchor(rows, 1)).toBe(0);
   });
 
+  it("places the live slot after the peer trigger card that is newer than the anchor", () => {
+    const rows = [received(1, "card0", 500), received(2, "card1", 1_000), received(3, "card2", 3_000)];
+    expect(slotAfterIndexFromAnchor(rows, 1, "card1")).toBe(1);
+    expect(slotAfterIndexFromAnchor(rows, 1, "card2")).toBe(2);
+    expect(slotAfterIndexFromAnchor(rows, 1, "missing")).toBe(0);
+  });
+
   it("returns -1 when every row was inserted after the turn started", () => {
     expect(slotAfterIndexFromAnchor([received(2, "card2", 3_000)], 1)).toBe(-1);
   });
@@ -146,5 +153,25 @@ describe("placeTurnsInSlots", () => {
     const out = assistantOut(2, "reply", 1);
     const card2 = received(3, "card2", 3_000);
     expect(placeTurnsInSlots([card1, out, card2]).map((m) => m.text)).toEqual(["card1", "reply", "card2"]);
+  });
+
+  it("keeps the peer trigger card above the reply it caused, and still moves other mid-turn rows below", () => {
+    const trigger = received(2, "m_peer", 1_000);
+    const other = received(3, "m_other", 1_500);
+    const out: MessageRecordDto = {
+      ...assistantOut(4, "reply", 1),
+      structured: { peerTriggerMessageId: "m_peer" },
+    };
+    expect(placeTurnsInSlots([trigger, other, out]).map((m) => m.text)).toEqual(["m_peer", "reply", "m_other"]);
+    expect(placeTurnsInSlots([trigger, other, assistantOut(4, "reply", 1)]).map((m) => m.text))
+      .toEqual(["reply", "m_peer", "m_other"]);
+  });
+});
+
+describe("slotAfterIndexFromAnchor — trigger older than the anchor", () => {
+  it("keeps the later anchor when a queued peer turn started after its card", () => {
+    const rows = [received(1, "card", 500), received(2, "later", 1_000)];
+    expect(slotAfterIndexFromAnchor(rows, 2, "card")).toBe(1);
+    expect(slotAfterIndexFromAnchor(rows, 2)).toBe(1);
   });
 });

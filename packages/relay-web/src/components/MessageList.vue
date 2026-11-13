@@ -8,7 +8,7 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
-import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
+import { AlertCircle, ArrowLeft, ArrowRight, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import LiveTurnAvatar from "./LiveTurnAvatar.vue";
@@ -18,9 +18,11 @@ import { fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
   extractCollapsedTraceSummary,
+  hasCollapsibleTrace,
   type CollapsedTraceSummary,
 } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../lib/turn-layout";
+import { expandedTraces } from "../lib/trace-expansion";
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
@@ -148,12 +150,81 @@ const anchoredSentMessageIds = computed(() => {
   return anchored;
 });
 
-// Direction guard on the join above: only the SENT twin of an anchored pair may
-// drop its standalone row. Echo/forward topologies can carry one messageId on
-// both a sent and a received entry — a received card must NEVER be suppressed.
-function isSuppressedSentRow(m: ChatMessage): boolean {
+const visibleIndexOf = computed(() => {
+  const map = new Map<ChatMessage, number>();
+  visibleMessages.value.forEach((m, i) => map.set(m, i));
+  return map;
+});
+/** A turn renders the received card only when that row sits directly above it, so a
+ *  card that arrived before an intervening row keeps its own place (matching live). */
+function triggerCardAbove(m: ChatMessage): ChatMessage | undefined {
+  const id = m.structured?.peerTriggerMessageId;
+  if (id === undefined) return undefined;
+  const at = visibleIndexOf.value.get(m);
+  if (at === undefined || at <= 0) return undefined;
+  const above = visibleMessages.value[at - 1]!;
+  const am = above.structured?.agentMessage;
+  return am?.direction === "received" && am.messageId === id ? above : undefined;
+}
+
+function isSuppressedPeerRow(m: ChatMessage): boolean {
   const am = m.structured?.agentMessage;
-  return am?.direction === "sent" && anchoredSentMessageIds.value.has(am.messageId);
+  if (!am) return false;
+  if (am.direction === "sent") return anchoredSentMessageIds.value.has(am.messageId);
+  const at = visibleIndexOf.value.get(m);
+  const below = at === undefined ? undefined : visibleMessages.value[at + 1];
+  return below !== undefined && triggerCardAbove(below) === m;
+}
+
+function traceCollapsedOf(m: ChatMessage): boolean {
+  if (!traceSummaryEligible(m) || !hasCollapsibleTrace(m.structured?.parts)) return false;
+  const key = traceKeyOf(m);
+  return key !== undefined && !expandedTraces.has(key);
+}
+
+function toggleTraceOf(m: ChatMessage): void {
+  const key = traceKeyOf(m);
+  if (!key) return;
+  if (expandedTraces.has(key)) expandedTraces.delete(key);
+  else expandedTraces.add(key);
+}
+
+function receivedTriggerOf(m: ChatMessage): PeerMessageHistoryEntry | undefined {
+  const above = triggerCardAbove(m);
+  const entry = above?.structured?.agentMessage;
+  return entry?.direction === "received" ? entry : undefined;
+}
+
+interface PeerChip {
+  key: string;
+  direction: "sent" | "received";
+  name: string;
+  count: number;
+}
+
+function peerChipsOf(m: ChatMessage): PeerChip[] {
+  const chips: PeerChip[] = [];
+  const add = (entry: PeerMessageHistoryEntry): void => {
+    const key = `${entry.direction}:${entry.peer.handle}`;
+    const found = chips.find((c) => c.key === key);
+    if (found) found.count += 1;
+    else chips.push({
+      key,
+      direction: entry.direction,
+      name: entry.peer.displayName || entry.peer.handle,
+      count: 1,
+    });
+  };
+  const trigger = receivedTriggerOf(m);
+  if (trigger) add(trigger);
+  const parts = m.structured?.parts;
+  if (parts?.length) {
+    for (const id of anchoredAgentMessageIds(parts)) {
+      const entry = sentAgentMessageById.value.get(id);
+      if (entry?.direction === "sent") add(entry);
+    }
+  }
+  return chips;
 }
 
 function messageKey(m: ChatMessage, index: number): string {
@@ -583,11 +654,8 @@ watch(
               <ThinkingDots v-else data-test="live-working" />
             </div>
           </div>
-          <!-- AGENT MESSAGE card (sender / receiver collaboration event). A sent card
-               already anchored inside an assistant turn's agent_send step renders
-               there; its standalone row is suppressed so the card never shows twice. -->
           <AgentMessageCard
-            v-if="m.structured?.agentMessage && !isSuppressedSentRow(m)"
+            v-if="m.structured?.agentMessage && !isSuppressedPeerRow(m)"
             :message="m.structured.agentMessage"
             :class="enterRowClass"
             :style="enterStyle(i)"
@@ -623,6 +691,36 @@ watch(
           </div>
           <!-- ASSISTANT row -->
           <TranscriptRow v-else-if="!m.structured?.agentMessage" :driver="driver" hide-identity-on-mobile :class="enterRowClass" :style="enterStyle(i)">
+            <button
+              v-if="traceCollapsedOf(m) && peerChipsOf(m).length > 0"
+              type="button"
+              data-test="turn-peer-summary"
+              class="flex flex-wrap items-center gap-1.5 bg-transparent p-0 text-left"
+              :aria-expanded="false"
+              :title="$t('turnTrace.toggleTrace')"
+              @click="toggleTraceOf(m)"
+            >
+              <span
+                v-for="chip in peerChipsOf(m)"
+                :key="chip.key"
+                data-test="turn-peer-chip"
+                :data-direction="chip.direction"
+                :data-arrow="chip.direction === 'sent' ? 'right' : 'left'"
+                class="inline-flex max-w-full items-center gap-1 rounded-lg border border-hairline bg-surface/60 px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+              >
+                <ArrowRight v-if="chip.direction === 'sent'" :size="12" class="shrink-0 text-accent" />
+                <ArrowLeft v-else :size="12" class="shrink-0 text-accent" />
+                <span class="truncate font-medium text-fg">{{ chip.name }}</span>
+                <span v-if="chip.count > 1" class="shrink-0">×{{ chip.count }}</span>
+              </span>
+            </button>
+            <div
+              v-else-if="receivedTriggerOf(m)"
+              data-test="turn-peer-trigger"
+              class="mr-auto w-full max-w-2xl"
+            >
+              <AgentMessageCard :message="receivedTriggerOf(m)!" anchored />
+            </div>
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
               <!-- Structured transcript: activity cards interleave with the Markdown

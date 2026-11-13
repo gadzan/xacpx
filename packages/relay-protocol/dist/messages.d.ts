@@ -252,6 +252,9 @@ export interface InstanceStateSyncPayload {
         /** Hub-issued pre-write correlation (see PromptPayload.promptRequestId); lets the
          *  hub tie this turn's prompt back to its pre-written inbound row. */
         promptRequestId?: string;
+        /** Peer message id this turn answered (`turn-started.peerOrigin`). Additive;
+         *  lets a hub that restarted mid-turn restore the live bubble's slot. */
+        peerTriggerMessageId?: string;
         /** The connector's stable id for this running turn (mirrors the recoveryId it
          *  stamps on the eventual `turn-finished`), so the hub can tell a running turn
          *  apart from a finished-offline entry of the same session. */
@@ -319,6 +322,9 @@ export interface InstanceStateSyncPayload {
         queueItemId?: string;
         scheduled?: ScheduledOriginDto;
         promptRequestId?: string;
+        /** Peer message id this turn answered (`turn-started.peerOrigin`). Additive; an
+         *  old hub ignores it, and absence means the old mid-turn card placement. */
+        peerTriggerMessageId?: string;
         recoveryId?: string;
         truncated?: boolean;
         /** Connector-local epoch ms at the original turn-start (HUD telemetry only). */

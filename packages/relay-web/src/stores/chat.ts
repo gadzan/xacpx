@@ -57,6 +57,13 @@ export interface LiveTurn {
    * whose transcript rows have not yet been assigned Hub ids.
    */
   slotAfterId?: number;
+  /**
+   * Peer message id that admitted this turn. That received card is written to the Hub
+   * AFTER the turn starts, so it is newer than `slotAfterId` — but it is the turn's
+   * CAUSE, so the bubble still belongs after it, and a card arriving later in the
+   * stream must be inserted at the slot instead of below the bubble.
+   */
+  peerTriggerMessageId?: string;
 }
 
 // Coalescing appenders — consecutive same-type chunks merge into one part. Text chunks
@@ -381,7 +388,7 @@ export const useChatStore = defineStore("chat", () => {
     const t = liveTurns.value[k];
     if (!t || selectedKey.value !== k) return;
     if (typeof t.slotAfterId === "number") {
-      t.slotAfterIndex = slotAfterIndexFromAnchor(messages.value, t.slotAfterId);
+      t.slotAfterIndex = slotAfterIndexFromAnchor(messages.value, t.slotAfterId, t.peerTriggerMessageId);
     }
   }
 
@@ -487,8 +494,14 @@ export const useChatStore = defineStore("chat", () => {
     const hasContent = text.length > 0 || toolSteps.length > 0 || reasoning.length > 0;
     if (hasContent && selected) {
       const hasStructured = toolSteps.length > 0 || reasoning.length > 0;
-      const structured = hasStructured
-        ? markRaw({ toolSteps, ...(reasoning ? { reasoning } : {}), parts: t.parts })
+      const trigger = t.peerTriggerMessageId
+        ? { peerTriggerMessageId: t.peerTriggerMessageId }
+        : undefined;
+      const structured = hasStructured || trigger
+        ? markRaw({
+          ...(hasStructured ? { toolSteps, ...(reasoning ? { reasoning } : {}), parts: t.parts } : {}),
+          ...trigger,
+        })
         : undefined;
       const insertAt = Math.min(Math.max((t.slotAfterIndex ?? messages.value.length - 1) + 1, 0), messages.value.length);
       const row: ChatMessage = {
@@ -704,8 +717,9 @@ export const useChatStore = defineStore("chat", () => {
         status: t.status,
         startedAt: t.startedAt,
         ...(typeof t.slotAfterId === "number" ? { slotAfterId: t.slotAfterId } : {}),
+        ...(t.peerTriggerMessageId ? { peerTriggerMessageId: t.peerTriggerMessageId } : {}),
         slotAfterIndex: selectedKey.value === k && typeof t.slotAfterId === "number"
-          ? slotAfterIndexFromAnchor(messages.value, t.slotAfterId)
+          ? slotAfterIndexFromAnchor(messages.value, t.slotAfterId, t.peerTriggerMessageId)
           : selectedKey.value === k ? messages.value.length - 1 : -1,
       };
     }
@@ -755,8 +769,9 @@ export const useChatStore = defineStore("chat", () => {
         status: turn.status,
         startedAt: turn.startedAt,
         ...(typeof turn.slotAfterId === "number" ? { slotAfterId: turn.slotAfterId } : {}),
+        ...(turn.peerTriggerMessageId ? { peerTriggerMessageId: turn.peerTriggerMessageId } : {}),
         slotAfterIndex: selectedKey.value === k && typeof turn.slotAfterId === "number"
-          ? slotAfterIndexFromAnchor(messages.value, turn.slotAfterId)
+          ? slotAfterIndexFromAnchor(messages.value, turn.slotAfterId, turn.peerTriggerMessageId)
           : matchingPending?.turn?.slotAfterIndex
             ?? (selectedKey.value === k ? messages.value.length - 1 : -1),
       };
@@ -897,6 +912,7 @@ export const useChatStore = defineStore("chat", () => {
       // A background turn must retain it so selecting that session later can place
       // the pre-buffered live reply back after its triggering persisted prompt.
       if (typeof e.slotAfterId === "number") live.slotAfterId = e.slotAfterId;
+      if (e.peerOrigin?.requestMessageId) live.peerTriggerMessageId = e.peerOrigin.requestMessageId;
       // Scheduled turns have no optimistic bubble; drained queue turns use queueItemId
       // to move their existing bubble. Other clients can add the carried prompt here.
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
@@ -994,14 +1010,25 @@ export const useChatStore = defineStore("chat", () => {
           });
         } else {
           const direction = e.message.direction === "sent" ? "out" : "in";
-          messages.value.push({
+          const row: ChatMessage = {
             instanceId: event.instanceId,
             sessionAlias: e.sessionAlias,
             direction,
             text: e.message.content,
             createdAt: new Date(e.message.createdAt).toISOString(),
             structured: markRaw({ agentMessage: e.message }),
-          });
+          };
+          const live = liveTurns.value[bufKey(event.instanceId, e.sessionAlias)];
+          if (direction === "in" && live?.peerTriggerMessageId === e.message.messageId) {
+            const at = Math.min(
+              Math.max((live.slotAfterIndex ?? messages.value.length - 1) + 1, 0),
+              messages.value.length,
+            );
+            messages.value.splice(at, 0, row);
+            live.slotAfterIndex = at;
+          } else {
+            messages.value.push(row);
+          }
         }
         touchTranscript();
       } else {

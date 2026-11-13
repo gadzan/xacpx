@@ -10,6 +10,7 @@ import SubagentStepCard from "./SubagentStepCard.vue";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import {
   deriveTurnPresentation,
+  hasCollapsibleTrace,
   tallyTrace,
   type TraceTally,
   type TurnPresentationPlan,
@@ -86,16 +87,9 @@ watch(
 
 onBeforeUnmount(cancelPresentationFrame);
 
-const lastProcessPartIndex = computed(() =>
-  props.parts.findLastIndex(
-    (part) =>
-      part.type === "tool"
-      || (part.type === "reasoning" && part.text.trim().length > 0),
-  ),
+const collapsible = computed(
+  () => props.collapseTrace === true && hasCollapsibleTrace(props.parts),
 );
-
-const hasTrace = computed(() => lastProcessPartIndex.value >= 0);
-const collapsible = computed(() => props.collapseTrace === true && hasTrace.value);
 // Keyed rows remember toggles in the module set (survives hub history convergence,
 // which replaces the message row and rebuilds this component); anonymous rows fall
 // back to component-local state — lost on rebuild, but they have no stable identity.

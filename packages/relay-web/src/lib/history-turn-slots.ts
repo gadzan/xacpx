@@ -11,6 +11,12 @@ export function isAssistantOutRow(row: SlottableMessage): boolean {
   return row.direction === "out" && row.structured?.agentMessage === undefined;
 }
 
+function isPeerTriggerRow(row: SlottableMessage, triggerMessageId: string | undefined): boolean {
+  return triggerMessageId !== undefined
+    && row.structured?.agentMessage?.direction === "received"
+    && row.structured.agentMessage.messageId === triggerMessageId;
+}
+
 function isSlotAfterId(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
@@ -22,13 +28,22 @@ function isSlotAfterId(value: unknown): value is number {
  * Live path uses transcript index at turn-start; this is for history/seed/snapshot
  * where rows carry Hub ids. Do not infer this from wall clocks.
  */
-export function slotAfterIndexFromAnchor(messages: SlottableMessage[], slotAfterId: number): number {
-  let idx = -1;
+export function slotAfterIndexFromAnchor(
+  messages: SlottableMessage[],
+  slotAfterId: number,
+  peerTriggerMessageId?: string,
+): number {
+  let anchorIdx = -1;
   for (let i = 0; i < messages.length; i++) {
     const id = messages[i]!.id;
-    if (typeof id === "number" && id <= slotAfterId) idx = i;
+    if (typeof id === "number" && id <= slotAfterId) anchorIdx = i;
   }
-  return idx;
+  if (peerTriggerMessageId === undefined) return anchorIdx;
+  let triggerIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (isPeerTriggerRow(messages[i]!, peerTriggerMessageId)) { triggerIdx = i; break; }
+  }
+  return Math.max(anchorIdx, triggerIdx);
 }
 
 /**
@@ -51,11 +66,14 @@ export function placeTurnsInSlots<T extends SlottableMessage>(rows: T[]): T[] {
       continue;
     }
     const anchor = row.slotAfterId;
+    const triggerMessageId = row.structured?.peerTriggerMessageId;
     const movers: T[] = [];
     for (let j = 0; j < i; j++) {
       const prev = out[j]!;
       if (typeof prev.id !== "number") continue;
-      if (prev.id > anchor) movers.push(prev);
+      if (prev.id <= anchor) continue;
+      if (isPeerTriggerRow(prev, triggerMessageId)) continue;
+      movers.push(prev);
     }
     if (movers.length === 0) {
       i += 1;

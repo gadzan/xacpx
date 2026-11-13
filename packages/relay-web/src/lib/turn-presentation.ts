@@ -76,6 +76,13 @@ export function anchoredAgentMessageIds(parts: TurnPartDto[]): Set<string> {
   return ids;
 }
 
+/** Shared with MessageList so the peer-chip line and TurnParts' fold cannot disagree. */
+export function hasCollapsibleTrace(parts: TurnPartDto[] | undefined): boolean {
+  return parts?.some(
+    (part) => part.type === "tool" || (part.type === "reasoning" && part.text.trim().length > 0),
+  ) ?? false;
+}
+
 function decorateActivities(
   timelineActivities: readonly TimelineActivity[],
 ): DecoratedActivity[] {

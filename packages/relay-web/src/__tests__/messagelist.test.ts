@@ -13,6 +13,7 @@ import ToolCallPanel from "../components/ToolCallPanel.vue";
 import ToolStepCard from "../components/ToolStepCard.vue";
 import CopyButton from "../components/CopyButton.vue";
 import TurnParts from "../components/TurnParts.vue";
+import { expandedTraces } from "../lib/trace-expansion";
 
 // StreamMarkdown (rendered for "out" messages) reads useThemeStore() to re-hydrate mermaid
 // diagrams on theme change, so every mount here needs an active Pinia instance.
@@ -1527,6 +1528,181 @@ describe("thinking bubble", () => {
     // The one live slot sits after the newest prompt, not on the earlier turn.
     expect(wrapper.findAll('[data-test="msg-streaming"]')).toHaveLength(1);
     expect(wrapper.find('[data-test="msg-streaming"] [data-test="live-working"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+});
+
+function peerTurn(opts: {
+  startedAt: number;
+  triggerMessageId: string;
+  sentMessageId?: string;
+}): ChatMessage {
+  return msg({
+    direction: "out",
+    text: "reply",
+    status: "done",
+    startedAt: opts.startedAt,
+    createdAt: new Date(opts.startedAt + 5_000).toISOString(),
+    structured: {
+      peerTriggerMessageId: opts.triggerMessageId,
+      parts: [
+        { type: "text", text: "reply" },
+        ...(opts.sentMessageId
+          ? [{ type: "tool" as const, step: sendStep("send-1", opts.sentMessageId) }]
+          : []),
+      ],
+    },
+  });
+}
+
+describe("turn peer slot", () => {
+  it("summarizes a collapsed turn as ←/→ chips and folds the cards away", () => {
+    const turn = peerTurn({ startedAt: 11_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_recv"), turn, sentCard("m_sent")], liveTurn: null },
+    });
+
+    const chips = wrapper.findAll('[data-test="turn-peer-chip"]');
+    expect(chips.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
+    expect(chips.map((c) => c.attributes("data-arrow"))).toEqual(["left", "right"]);
+    expect(chips.map((c) => c.text())).toEqual(["Worker A", "Worker B"]);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("expanding restores the received card at the turn top and the sent card after its step", () => {
+    expandedTraces.add("i1:s1:t:12000");
+    try {
+      const turn = peerTurn({ startedAt: 12_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
+      const wrapper = mount(MessageList, {
+        props: { messages: [receivedCard("m_recv"), turn, sentCard("m_sent")], liveTurn: null },
+      });
+
+      expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
+      const trigger = wrapper.find('[data-test="turn-peer-trigger"]');
+      expect(trigger.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
+      expect(wrapper.find('[data-test="msg-out"] [data-test="turn-peer-trigger"]').exists()).toBe(false);
+      const cards = wrapper.findAll('[data-test="agent-message-card"]');
+      expect(cards.map((c) => c.attributes("data-direction"))).toEqual(["received", "sent"]);
+      wrapper.unmount();
+    } finally {
+      expandedTraces.delete("i1:s1:t:12000");
+    }
+  });
+
+  it("clicking the chip line expands the turn", async () => {
+    const turn = peerTurn({ startedAt: 13_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_recv"), turn, sentCard("m_sent")], liveTurn: null },
+    });
+    await wrapper.find('[data-test="turn-peer-summary"]').trigger("click");
+    expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
+    expect(wrapper.find('[data-test="turn-peer-trigger"]').exists()).toBe(true);
+    wrapper.unmount();
+    expandedTraces.delete("i1:s1:t:13000");
+  });
+
+  it("suppresses only the owned card and keeps an unowned one standalone in the same transcript", () => {
+    const turn = peerTurn({ startedAt: 16_000, triggerMessageId: "m_owned" });
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [receivedCard("m_orphan"), receivedCard("m_owned"), turn],
+        liveTurn: null,
+      },
+    });
+    const cards = wrapper.findAll('[data-test="agent-message-card"]');
+    const standalone = cards.filter((card) => !card.element.closest('[data-test="turn-peer-trigger"]'));
+    expect(standalone).toHaveLength(1);
+    expect(standalone[0]!.text()).toContain("m_orphan");
+    expect(wrapper.find('[data-test="turn-peer-trigger"]').text()).toContain("m_owned");
+    wrapper.unmount();
+  });
+});
+
+describe("turn peer slot — sent only", () => {
+  it("summarizes a human turn's sent peer message as a → chip while folded", () => {
+    const turn = msg({
+      direction: "out",
+      text: "done",
+      status: "done",
+      startedAt: 14_000,
+      createdAt: new Date(14_000 + 5_000).toISOString(),
+      structured: {
+        parts: [
+          { type: "text", text: "done" },
+          { type: "tool", step: sendStep("send-1", "m_sent") },
+        ],
+      },
+    });
+    const wrapper = mount(MessageList, {
+      props: { messages: [sentCard("m_sent"), turn], liveTurn: null },
+    });
+    const chips = wrapper.findAll('[data-test="turn-peer-chip"]');
+    expect(chips.map((c) => [c.attributes("data-direction"), c.attributes("data-arrow"), c.text()]))
+      .toEqual([["sent", "right", "Worker B"]]);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
+    wrapper.unmount();
+  });
+});
+
+describe("turn peer slot — failed turn", () => {
+  it("keeps the error ring on the reply and the trigger card outside it", () => {
+    const turn = msg({
+      direction: "out",
+      text: "boom",
+      status: "error",
+      failed: true,
+      startedAt: 15_000,
+      createdAt: new Date(15_000 + 5_000).toISOString(),
+      structured: {
+        peerTriggerMessageId: "m_recv",
+        turnStatus: "error",
+        parts: [
+          { type: "text", text: "boom" },
+          { type: "tool", step: sendStep("send-1") },
+        ],
+      },
+    });
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_recv"), turn], liveTurn: null },
+    });
+    expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
+    expect(wrapper.find('[data-test="turn-peer-trigger"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-peer-trigger"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="msg-out"]').classes()).toContain("ring-danger/40");
+    wrapper.unmount();
+  });
+});
+
+describe("turn peer slot — redelivered trigger", () => {
+  it("renders the shared trigger card once, in the first turn that owns it", () => {
+    const first = peerTurn({ startedAt: 20_000, triggerMessageId: "m_shared" });
+    const second = peerTurn({ startedAt: 30_000, triggerMessageId: "m_shared" });
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_shared"), first, second], liveTurn: null },
+    });
+    const slots = wrapper.findAll('[data-test="turn-peer-trigger"]');
+    expect(slots).toHaveLength(1);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+});
+
+describe("turn peer slot — card separated from its turn", () => {
+  it("keeps the card in its own place when another row arrived before the turn started", () => {
+    const turn = peerTurn({ startedAt: 22_000, triggerMessageId: "m_trigger" });
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [receivedCard("m_trigger"), receivedCard("m_other"), turn],
+        liveTurn: null,
+      },
+    });
+    expect(wrapper.findAll('[data-test="turn-peer-trigger"]')).toHaveLength(0);
+    const cards = wrapper.findAll('[data-test="agent-message-card"]');
+    expect(cards.map((card) => card.text())).toEqual([
+      expect.stringContaining("m_trigger"),
+      expect.stringContaining("m_other"),
+    ]);
     wrapper.unmount();
   });
 });

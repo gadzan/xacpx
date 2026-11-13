@@ -235,6 +235,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     slotAfterId: number;
     /** Connector-local receive-order seq at turn-start; maps to `slotAfterId` after restart. */
     startedAfterSeq?: number;
+    peerTriggerMessageId?: string;
     truncated?: boolean;
     notification?: TurnNotificationContext;
     /** Product-owned Conversation join. sessionAlias is legacy plumbing when set. */
@@ -407,6 +408,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         status: a.text ? "streaming" : "working",
         startedAt: a.startedAt,
         ...(typeof a.slotAfterId === "number" ? { slotAfterId: a.slotAfterId } : {}),
+        ...(a.peerTriggerMessageId ? { peerTriggerMessageId: a.peerTriggerMessageId } : {}),
         ...(a.conversation ? { conversation: a.conversation } : {}),
         // A mirror-capped turn stays capped: web must never certify its
         // partial trace as the complete final answer.
@@ -672,6 +674,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 startedAt,
                 slotAfterId: slot!.slotAfterId,
                 ...(slot!.startedAfterSeq !== undefined ? { startedAfterSeq: slot!.startedAfterSeq } : {}),
+                ...(event.peerOrigin?.requestMessageId
+                  ? { peerTriggerMessageId: event.peerOrigin.requestMessageId }
+                  : {}),
                 ...(notification ? { notification } : {}),
                 ...(event.conversation ? { conversation: event.conversation } : {}),
               });
@@ -710,6 +715,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const a = turnBuffers.get(k);
             turnBuffers.delete(k);
             const promptRequestId = a?.notification?.promptRequestId;
+            const peerTriggerMessageId = a?.peerTriggerMessageId ?? event.peerOrigin?.requestMessageId;
             const flush = (): void => {
               if (!a) {
                 // No buffer (e.g. hub restarted mid-turn and the offline sweep dropped it).
@@ -729,10 +735,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   startedAfterSeq: event.startedAfterSeq,
                   startedAt: event.startedAt,
                 });
+                const trigger = peerTriggerMessageId ? { peerTriggerMessageId } : {};
                 if (event.text !== undefined) {
-                  appendAssistantOut(event.sessionAlias, event.text, { turnStatus: turnStatusOf(event.ok, event.cancelled) }, slot);
+                  appendAssistantOut(event.sessionAlias, event.text, { ...trigger, turnStatus: turnStatusOf(event.ok, event.cancelled) }, slot);
                 } else if (!event.ok && event.errorMessage !== undefined) {
-                  appendAssistantOut(event.sessionAlias, event.errorMessage, { turnStatus: turnStatusOf(event.ok, event.cancelled) }, slot);
+                  appendAssistantOut(event.sessionAlias, event.errorMessage, { ...trigger, turnStatus: turnStatusOf(event.ok, event.cancelled) }, slot);
                 } else {
                   logger.warn("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
                     instanceId, sessionAlias: event.sessionAlias,
@@ -764,9 +771,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               }
               if (hasStructured || text !== "" || event.ok) {
                 const turnStatus = turnStatusOf(event.ok, event.cancelled);
+                const trigger = peerTriggerMessageId ? { peerTriggerMessageId } : {};
                 const structured = hasStructured
-                  ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}), turnStatus }
-                  : { ...(a.truncated ? { truncated: true } : {}), turnStatus };
+                  ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}), ...trigger, turnStatus }
+                  : { ...(a.truncated ? { truncated: true } : {}), ...trigger, turnStatus };
                 slotAnchors.take(instanceId, event.sessionAlias, event.recoveryId);
                 appendAssistantOut(event.sessionAlias, text, structured, {
                   slotAfterId: a.slotAfterId,
@@ -1003,7 +1011,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   appendAssistantOut(
                     finished.sessionAlias,
                     text,
-                    { ...(finished.truncated ? { truncated: true } : {}), turnStatus: turnStatusOf(finished.ok, finished.cancelled) },
+                    {
+                      ...(finished.truncated ? { truncated: true } : {}),
+                      ...(finished.peerTriggerMessageId ? { peerTriggerMessageId: finished.peerTriggerMessageId } : {}),
+                      turnStatus: turnStatusOf(finished.ok, finished.cancelled),
+                    },
                     slot,
                   );
                 } else {
@@ -1118,6 +1130,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // final flush persists structured.truncated instead of a gappy reply
                 // that reads as complete.
                 ...(turn.truncated ? { truncated: true } : {}),
+                ...(turn.peerTriggerMessageId ? { peerTriggerMessageId: turn.peerTriggerMessageId } : {}),
                 ...(notification ? { notification } : {}),
                 ...(turn.conversation ? { conversation: turn.conversation } : {}),
               });

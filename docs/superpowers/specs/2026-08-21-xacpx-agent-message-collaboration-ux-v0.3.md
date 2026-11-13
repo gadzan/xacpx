@@ -194,7 +194,8 @@ AgentMessageCard
 direction = received
 ```
 
-It remains a standalone history row.
+It remains a standalone history row, with one exception added later: the card that
+admitted a turn renders at that turn's top slot (see the Gate B note).
 
 Example:
 
@@ -1351,6 +1352,13 @@ Received AgentMessageCard
 B assistant turn
 ```
 
+> Superseded for one card only. Since the v0.5 turn peer slot, the received card that
+> admitted a turn renders at that turn's top slot, as a sibling of the bubble and outside
+> its trace (`docs/relay-web-module.md`, peer 卡归回合). That takeover needs the card to
+> sit directly above the turn; a card separated by another row (a queued turn starts after
+> its card is written) stays standalone in its own place. Every other received card stays
+> standalone, matching the history above.
+
 ## Gate C — Legacy sender fallback
 
 History contains a sender AgentMessage card with no matching tool correlation.
@@ -1554,7 +1562,7 @@ The implementation must preserve:
 8. Completion result is bounded final assistant text only.
 9. Exact peer turn correlation is explicit, never inferred by timing.
 10. Sender card anchoring is explicit by messageId/tool correlation.
-11. Receiver card remains standalone.
+11. Receiver card remains standalone, except the card that admitted a turn (Gate B note).
 12. All session execution uses canonical TurnQueue serialization.
 13. Archived sessions are never silently restored by peer completion.
 14. Relay delivery retries must not duplicate completion effects.
@@ -1569,7 +1577,7 @@ This work is complete when:
 
 1. Sender Agent Message cards render directly after the corresponding `agent_send` tool call.
 2. Sender cards remain correctly positioned after refresh/history reload.
-3. Receiver cards remain standalone.
+3. Receiver cards remain standalone, except the card that admitted a turn (Gate B note).
 4. Legacy sender cards without correlation still render.
 5. `@Agent` autocomplete prioritizes:
    ```text

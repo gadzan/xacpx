@@ -525,3 +525,34 @@ test("Conversation-correlated usage and commands never enter the ordinary sessio
     commands: [{ name: "compact" }],
   }]);
 });
+
+test("a peer turn carries its trigger message id into running and finished recovery", () => {
+  const { mirror } = makeMirror(() => true, () => 1_700_000_000_000);
+  const peerOrigin = {
+    requestMessageId: "msg_peer",
+    completion: "none" as const,
+    source: { nodeId: "n1", endpointId: "sender" },
+    target: { nodeId: "n1", endpointId: "target" },
+  };
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", promptRequestId: "msg_peer", peerOrigin });
+  expect(mirror.buildStateSync(LIVE).snapshot.turns[0]).toMatchObject({ peerTriggerMessageId: "msg_peer" });
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true, peerOrigin });
+  const finished = mirror.buildStateSync(LIVE).snapshot.finishedOffline[0]!;
+  expect(finished.peerTriggerMessageId).toBe("msg_peer");
+  expect(validInstanceStateSync(mirror.buildStateSync(LIVE).snapshot)).toBe(true);
+});
+
+test("a finish the mirror never saw start still carries its peer trigger id", () => {
+  const { mirror } = makeMirror(() => true, () => 1_700_000_000_000);
+  fire(mirror, {
+    type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true, text: "ack",
+    peerOrigin: {
+      requestMessageId: "msg_peer",
+      completion: "none",
+      source: { nodeId: "n1", endpointId: "sender" },
+      target: { nodeId: "n1", endpointId: "target" },
+    },
+  });
+  const finished = mirror.buildStateSync(LIVE).snapshot.finishedOffline[0]!;
+  expect(finished.peerTriggerMessageId).toBe("msg_peer");
+});

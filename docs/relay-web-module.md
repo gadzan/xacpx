@@ -875,13 +875,42 @@ export interface LiveTurn {
   之后（触发用 received card / prompt），而不是列表底部。回合中途再来的 received card 追加到
   `messages[]`，因此出现在 live 气泡**下面**：`card1 → live turn → card2`。`parts.length === 0`
   时仍占据该槽（`live-working` 只留高度占位，运行指示在头像气泡上），避免第二张卡叠在尚未可见的 turn 上。Sent card 仍按
-  `agentMessageId` 接入 `TurnParts`（Gate A）；received card 永不抑制、永不嵌进 turn（Gate B）。
+  `agentMessageId` 接入 `TurnParts`（Gate A）；received card 永不抑制、永不嵌进 trace（Gate B
+  对“普通 received 卡”仍然成立；触发卡按下一段的 v0.5 回合槽规则渲染，是对 Gate B “receiver
+  stays standalone” 的唯一例外，见 v0.3 spec 2026-08-21 Gate B）。
   `turn-finished` 把 `out` 行 **splice 进该槽**（带 `startedAt` 作 HUD 遥测，以及 Hub
   `slotAfterId` 作插入序锚点），而不是 `push` 到末尾。`loadHistory` 对带 `slotAfterId`
   的 `out` 把 **Hub id 大于该锚点** 的 transcript 行（received card **以及** 忙时排队的
   user prompt）挪到该 `out` 之后；无 `slotAfterId` 的旧行不重排。**不以** `createdAt` /
   `startedAt` 墙钟比较决定顺序（发送端 daemon、Hub、浏览器时钟不可比）。Stick-to-bottom /
   jump-latest 在 live turn 存在时跟随 live 气泡，而不是最新一行。
+- **peer 卡归回合（v0.5 槽位）**：peer 投递先 admit 回合、再发出 received card 事件
+  （`agent-message-router` 在 `deliver()` 之后才 emit），所以正在跑的回合，触发卡的行号
+  大于它的锚点；但**排队的** peer 回合要等到真正开始才发 `turn-started`，那时卡已经落库，
+  卡反而早于锚点——两种顺序都合法，**绝不**用 id 大小推断因果。因果由 Hub 写进 `out` 行的
+  `structured.peerTriggerMessageId` 承载（`turn-finished.peerOrigin` 或缓冲区；Hub 中途重启时
+  由 `instance.state.sync` 的 `turns` / `finishedOffline` 带回来，connector 镜像在
+  `turn-started` 时记下 `peerOrigin.requestMessageId`，没见过 start 的 finish 从事件取）。
+  `placeTurnsInSlots` 把它从“可搬运行”中排除，`slotAfterIndexFromAnchor(rows, id, trigger)`
+  取触发卡与锚点中**更靠后**的那个作为槽位。
+  live turn 在 `turn-started` 记下 `peerTriggerMessageId`，迟到的触发卡插在槽位内
+  （气泡上方），历史/快照恢复走同一条因果。
+- **`MessageList` 的回合 peer 槽**：一个回合只在触发卡**紧邻其上方**时接管它（`triggerCardAbove`
+  看 `visibleMessages` 里的前一行），此时该卡不再以独立行渲染——received 触发卡渲染在
+  `TranscriptRow` 的内容列里、`msg-out` **之外**，也就是气泡上方的兄弟节点。它在
+  `msg-out` 外，所以失败回合的红色 ring 不会罩住它，它也不进 trace 的折叠。sent 卡照旧锚在
+  `agent_send` 步骤之后（Gate A）。
+  这个“紧邻”规则同时解决两个边界：分页把拥有者挡在窗口外时，卡不会被凭空抑制（下一行不是
+  它的回合就照常独立渲染）；排队回合的卡落在 `turn-started` 之前、中间又插进别的行时，卡留在
+  原位，live 与刷新后的顺序一致（不会为了塞进槽位跨过中间行）。同一个 id 被多个 `out` 行
+  携带时（at-least-once 重投且去重状态已淘汰）也只有紧邻的那一个渲染，不会出现两张。
+  回合**折叠**时两者都不出现，顶部槽改渲染一行 chip：`← Worker A` / `→ Worker B`
+  （同 peer 合并计数，点击 chip 行即展开；`expandedTraces` 是唯一状态源，所以
+  chip 与 TurnParts 的展开按钮不会打架）。**展开后**恢复真实位置：received 卡回到
+  顶部槽、sent 卡回到各自步骤后。失败回合不折叠，触发卡仍在气泡上方，只是 `msg-out`
+  继续带错误 ring——ring 来自本地 `failed` 标记，只存在于 live flush 行；刷新后读回的
+  `structured.turnStatus: "error"` 行不带 ring，卡片的槽位不受影响。未被任何可见回合
+  接管的 received 卡仍以独立行渲染（分页边界 / 投递被拒时不丢卡）。
 
 ### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）
 

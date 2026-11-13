@@ -978,3 +978,42 @@ test("recovered offline rows carry turnStatus derived from ok/cancelled", async 
   expect(runtime.messages.listBySession("a1", "i1", "failed").messages[0]!.structured?.turnStatus).toBe("error");
   runtime.close();
 });
+
+test("a recovered offline turn keeps the peer card it answered on its out row", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [{
+      sessionAlias: "backend",
+      ok: true,
+      text: "ack",
+      recoveryId: "r_peer",
+      peerTriggerMessageId: "msg_peer",
+    }],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((row) => [row.direction, row.text])).toEqual([["out", "ack"]]);
+  expect(rows[0]!.structured?.peerTriggerMessageId).toBe("msg_peer");
+  runtime.close();
+});
+
+test("a running turn restored from a sync keeps the peer card it answers", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [{
+      sessionAlias: "backend",
+      startedAt: STARTED_AT,
+      text: "partial",
+      reasoning: "",
+      steps: [],
+      parts: [{ type: "text", text: "partial" }],
+      peerTriggerMessageId: "msg_peer",
+    }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const live = runtime.stateSnapshot("i1").turns.find((turn) => turn.sessionAlias === "backend")!;
+  expect(live.peerTriggerMessageId).toBe("msg_peer");
+  runtime.close();
+});
