@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import type {
   ConversationRunDto,
   InteractionRequestDto,
   MemberTurnSummaryDto,
+  ToolStepDto,
+  TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import ConversationRunDetailContent from "../components/ConversationRunDetailContent.vue";
@@ -19,6 +22,29 @@ const participants: RoomParticipant[] = [
   { botId: "bot_a", name: "Ada", enabled: true },
   { botId: "bot_b", name: "Bob", enabled: true },
   { botId: "bot_c", name: "Cara", enabled: true },
+];
+
+const subagentParent: ToolStepDto = {
+  toolCallId: "agent-1",
+  toolName: "Task",
+  kind: "think",
+  status: "running",
+  title: "Inspect the trace",
+  isSubagent: true,
+  detail: { type: "text", text: "Search the repository." },
+};
+const subagentChild: ToolStepDto = {
+  toolCallId: "grep-1",
+  parentToolCallId: "agent-1",
+  toolName: "Grep",
+  kind: "search",
+  status: "success",
+  title: "trace drawer",
+  detail: { type: "search", query: "trace drawer", output: "src/a.ts" },
+};
+const subagentParts: TurnPartDto[] = [
+  { type: "tool", step: subagentParent },
+  { type: "tool", step: subagentChild },
 ];
 
 function run(patch: Partial<ConversationRunDto> = {}): ConversationRunDto {
@@ -234,6 +260,41 @@ describe("TraceOverlay.vue run-wide mode", () => {
     // Stop all stays in the status bar; the drawer only offers the scoped stop.
     expect(body.querySelector('[data-test="group-stop-run-button"]')).toBeNull();
     expect(body.querySelector('[data-test="run-stop-member"]')).not.toBeNull();
+    wrapper.unmount();
+  });
+
+  it("keeps the drawer open when a child dialog receives the pointerdown", async () => {
+    const wrapper = mount(TraceOverlay, {
+      attachTo: document.body,
+      props: {
+        id: "run-drawer-nested-dialog-test",
+        run: run(),
+        memberTurns: members,
+        selectedMemberTurnId: "turn_b",
+        participants,
+        capability: { cancelMember: true },
+        budget: { consumed: 3, max: 6 },
+        anchorEl: null,
+        parts: subagentParts,
+      },
+      global: { plugins: [i18n] },
+    });
+    await nextTick();
+    (document.body.querySelector('[data-test="group-trace-step-head"]') as HTMLButtonElement).click();
+    await nextTick();
+    (document.body.querySelector('[data-test="subagent-header"]') as HTMLButtonElement).click();
+    await nextTick();
+    (document.body.querySelector('[data-test="subagent-open-trace"]') as HTMLButtonElement).click();
+    await nextTick();
+    const dialog = document.body.querySelector('[data-test="subagent-trace-dialog"]');
+    expect(dialog).not.toBeNull();
+    dialog!.firstElementChild!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, composed: true }));
+    await nextTick();
+    expect(wrapper.emitted("close")).toBeUndefined();
+    dialog!.querySelector("section")!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, composed: true }));
+    await nextTick();
+    expect(wrapper.emitted("close")).toBeUndefined();
+    expect(document.body.querySelector('[data-test="group-detail-card"]')).not.toBeNull();
     wrapper.unmount();
   });
 
