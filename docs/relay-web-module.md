@@ -895,17 +895,22 @@ export interface LiveTurn {
   取触发卡与锚点中**更靠后**的那个作为槽位。
   live turn 在 `turn-started` 记下 `peerTriggerMessageId`，迟到的触发卡插在槽位内
   （气泡上方），历史/快照恢复走同一条因果。
-- **`MessageList` 的回合 peer 槽**：被回合拥有的卡不再以独立行渲染（复用 sent 卡的
-  抑制机制）——received 触发卡渲染在 `TranscriptRow` 的内容列里、`msg-out` **之外**，
-  也就是气泡上方的兄弟节点。它在 `msg-out` 外，所以失败回合的红色 ring 不会罩住它，
-  它也不进 trace 的折叠。sent 卡照旧锚在 `agent_send` 步骤之后（Gate A）。
+- **`MessageList` 的回合 peer 槽**：一个回合只在触发卡**紧邻其上方**时接管它（`triggerCardAbove`
+  看 `visibleMessages` 里的前一行），此时该卡不再以独立行渲染——received 触发卡渲染在
+  `TranscriptRow` 的内容列里、`msg-out` **之外**，也就是气泡上方的兄弟节点。它在
+  `msg-out` 外，所以失败回合的红色 ring 不会罩住它，它也不进 trace 的折叠。sent 卡照旧锚在
+  `agent_send` 步骤之后（Gate A）。
+  这个“紧邻”规则同时解决两个边界：分页把拥有者挡在窗口外时，卡不会被凭空抑制（下一行不是
+  它的回合就照常独立渲染）；排队回合的卡落在 `turn-started` 之前、中间又插进别的行时，卡留在
+  原位，live 与刷新后的顺序一致（不会为了塞进槽位跨过中间行）。同一个 id 被多个 `out` 行
+  携带时（at-least-once 重投且去重状态已淘汰）也只有紧邻的那一个渲染，不会出现两张。
   回合**折叠**时两者都不出现，顶部槽改渲染一行 chip：`← Worker A` / `→ Worker B`
   （同 peer 合并计数，点击 chip 行即展开；`expandedTraces` 是唯一状态源，所以
   chip 与 TurnParts 的展开按钮不会打架）。**展开后**恢复真实位置：received 卡回到
   顶部槽、sent 卡回到各自步骤后。失败回合不折叠，触发卡仍在气泡上方，只是 `msg-out`
   继续带错误 ring——ring 来自本地 `failed` 标记，只存在于 live flush 行；刷新后读回的
-  `structured.turnStatus: "error"` 行不带 ring，卡片的槽位不受影响。未被本页任何回合
-  拥有的 received 卡仍以独立行渲染（分页边界 / 投递被拒时不丢卡）。
+  `structured.turnStatus: "error"` 行不带 ring，卡片的槽位不受影响。未被任何可见回合
+  接管的 received 卡仍以独立行渲染（分页边界 / 投递被拒时不丢卡）。
 
 ### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）
 

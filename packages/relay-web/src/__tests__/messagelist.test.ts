@@ -1559,7 +1559,7 @@ describe("turn peer slot", () => {
   it("summarizes a collapsed turn as ←/→ chips and folds the cards away", () => {
     const turn = peerTurn({ startedAt: 11_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
     const wrapper = mount(MessageList, {
-      props: { messages: [receivedCard("m_recv"), sentCard("m_sent"), turn], liveTurn: null },
+      props: { messages: [receivedCard("m_recv"), turn, sentCard("m_sent")], liveTurn: null },
     });
 
     const chips = wrapper.findAll('[data-test="turn-peer-chip"]');
@@ -1575,7 +1575,7 @@ describe("turn peer slot", () => {
     try {
       const turn = peerTurn({ startedAt: 12_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
       const wrapper = mount(MessageList, {
-        props: { messages: [receivedCard("m_recv"), sentCard("m_sent"), turn], liveTurn: null },
+        props: { messages: [receivedCard("m_recv"), turn, sentCard("m_sent")], liveTurn: null },
       });
 
       expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
@@ -1593,7 +1593,7 @@ describe("turn peer slot", () => {
   it("clicking the chip line expands the turn", async () => {
     const turn = peerTurn({ startedAt: 13_000, triggerMessageId: "m_recv", sentMessageId: "m_sent" });
     const wrapper = mount(MessageList, {
-      props: { messages: [receivedCard("m_recv"), sentCard("m_sent"), turn], liveTurn: null },
+      props: { messages: [receivedCard("m_recv"), turn, sentCard("m_sent")], liveTurn: null },
     });
     await wrapper.find('[data-test="turn-peer-summary"]').trigger("click");
     expect(wrapper.findAll('[data-test="turn-peer-chip"]')).toHaveLength(0);
@@ -1606,7 +1606,7 @@ describe("turn peer slot", () => {
     const turn = peerTurn({ startedAt: 16_000, triggerMessageId: "m_owned" });
     const wrapper = mount(MessageList, {
       props: {
-        messages: [receivedCard("m_owned"), receivedCard("m_orphan"), turn],
+        messages: [receivedCard("m_orphan"), receivedCard("m_owned"), turn],
         liveTurn: null,
       },
     });
@@ -1684,6 +1684,25 @@ describe("turn peer slot — redelivered trigger", () => {
     const slots = wrapper.findAll('[data-test="turn-peer-trigger"]');
     expect(slots).toHaveLength(1);
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+});
+
+describe("turn peer slot — card separated from its turn", () => {
+  it("keeps the card in its own place when another row arrived before the turn started", () => {
+    const turn = peerTurn({ startedAt: 22_000, triggerMessageId: "m_trigger" });
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [receivedCard("m_trigger"), receivedCard("m_other"), turn],
+        liveTurn: null,
+      },
+    });
+    expect(wrapper.findAll('[data-test="turn-peer-trigger"]')).toHaveLength(0);
+    const cards = wrapper.findAll('[data-test="agent-message-card"]');
+    expect(cards.map((card) => card.text())).toEqual([
+      expect.stringContaining("m_trigger"),
+      expect.stringContaining("m_other"),
+    ]);
     wrapper.unmount();
   });
 });

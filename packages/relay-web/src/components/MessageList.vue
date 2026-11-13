@@ -158,21 +158,30 @@ const receivedEntryById = computed(() => {
   }
   return map;
 });
-const peerTriggerOwner = computed(() => {
-  const owners = new Map<string, ChatMessage>();
-  for (const m of props.messages) {
-    const id = m.direction === "out" ? m.structured?.peerTriggerMessageId : undefined;
-    if (id !== undefined && !owners.has(id)) owners.set(id, m);
-  }
-  return owners;
+const visibleIndexOf = computed(() => {
+  const map = new Map<ChatMessage, number>();
+  visibleMessages.value.forEach((m, i) => map.set(m, i));
+  return map;
 });
+/** A turn renders the received card only when that row sits directly above it, so a
+ *  card that arrived before an intervening row keeps its own place (matching live). */
+function triggerCardAbove(m: ChatMessage): ChatMessage | undefined {
+  const id = m.structured?.peerTriggerMessageId;
+  if (id === undefined) return undefined;
+  const at = visibleIndexOf.value.get(m);
+  if (at === undefined || at <= 0) return undefined;
+  const above = visibleMessages.value[at - 1]!;
+  const am = above.structured?.agentMessage;
+  return am?.direction === "received" && am.messageId === id ? above : undefined;
+}
 
 function isSuppressedPeerRow(m: ChatMessage): boolean {
   const am = m.structured?.agentMessage;
   if (!am) return false;
-  return am.direction === "sent"
-    ? anchoredSentMessageIds.value.has(am.messageId)
-    : peerTriggerOwner.value.has(am.messageId);
+  if (am.direction === "sent") return anchoredSentMessageIds.value.has(am.messageId);
+  const at = visibleIndexOf.value.get(m);
+  const below = at === undefined ? undefined : visibleMessages.value[at + 1];
+  return below !== undefined && triggerCardAbove(below) === m;
 }
 
 function traceCollapsedOf(m: ChatMessage): boolean {
@@ -189,9 +198,9 @@ function toggleTraceOf(m: ChatMessage): void {
 }
 
 function receivedTriggerOf(m: ChatMessage): PeerMessageHistoryEntry | undefined {
-  const id = m.structured?.peerTriggerMessageId;
-  if (id === undefined || peerTriggerOwner.value.get(id) !== m) return undefined;
-  return receivedEntryById.value.get(id);
+  const above = triggerCardAbove(m);
+  const entry = above?.structured?.agentMessage;
+  return entry?.direction === "received" ? entry : undefined;
 }
 
 interface PeerChip {
