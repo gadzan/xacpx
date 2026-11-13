@@ -62,6 +62,8 @@ function isEnoent(err: unknown): boolean {
  *  worker `status` can queue behind a cold supervisor handshake (~60s) or a stale
  *  fence discharge. Reads therefore serve this cache and refresh off-path. */
 const SESSION_METADATA_TTL_MS = 60_000;
+/** After a failed refresh, do not restart a `status` read on every watcher tick. */
+const SESSION_METADATA_RETRY_BACKOFF_MS = 5_000;
 
 interface SessionMetadataSnapshot {
   /** Worker whose lifecycle the snapshot belongs to; any rotation invalidates it. */
@@ -415,6 +417,8 @@ export interface RuntimeEngineOptions {
   /** Idle TTL in seconds for warm worker processes (plan §16). Set to 0 to disable. */
   queueOwnerTtlSeconds?: number;
   idleTtlMs?: number;
+  /** Delay before a failed metadata refresh may be retried (tests override). */
+  metadataRefreshFailureBackoffMs?: number;
   /** Optional dependency overrides for tests (e.g. Windows termination / identity mocks). */
   workerClientDeps?: RuntimeWorkerClientDeps;
   /** Override for the durable worker-ownership fence directory (tests). Defaults to `<durable root>/worker-fences`. */
@@ -686,6 +690,9 @@ export class RuntimeEngine implements BridgeEngine {
   /** Per-session model/effort snapshots served without touching the worker. */
   private readonly sessionMetadataCache = new Map<string, SessionMetadataSnapshot>();
   private readonly sessionMetadataRefreshing = new Set<string>();
+  /** Epoch ms of the last failed refresh, so watcher polls do not restart a
+   *  fast-failing `status` read once per tick. */
+  private readonly sessionMetadataRefreshFailedAt = new Map<string, number>();
 
   private assertModelRecoveryIdle(input: EngineSessionInput): void {
     if (this.recoveringModels.has(this.physicalFenceKeyForInput(input))) {
@@ -2302,16 +2309,21 @@ export class RuntimeEngine implements BridgeEngine {
   private refreshSessionMetadataInBackground(input: EngineSessionInput): void {
     const sessionKey = this.workerKey(input);
     if (this.sessionMetadataRefreshing.has(sessionKey)) return;
+    const failedAt = this.sessionMetadataRefreshFailedAt.get(sessionKey);
+    const backoff = this.options.metadataRefreshFailureBackoffMs ?? SESSION_METADATA_RETRY_BACKOFF_MS;
+    if (failedAt !== undefined && Date.now() - failedAt < backoff) return;
     this.sessionMetadataRefreshing.add(sessionKey);
     const task = (async () => {
       try {
         const snapshot = await this.readSessionMetadata(input);
+        this.sessionMetadataRefreshFailedAt.delete(sessionKey);
         if (!this.isLiveWorkerClient(sessionKey, snapshot.client)) {
-          this.sessionMetadataCache.delete(sessionKey);
+          this.dropSessionMetadata(sessionKey);
         }
       } catch {
-        // Metadata refresh is best-effort; a slow or failed worker must never
-        // surface on a read request.
+        // Metadata refresh is best-effort; back off retries so a fast failure is
+        // not restarted by every pending read.
+        this.sessionMetadataRefreshFailedAt.set(sessionKey, Date.now());
       } finally {
         this.sessionMetadataRefreshing.delete(sessionKey);
       }
@@ -2324,10 +2336,17 @@ export class RuntimeEngine implements BridgeEngine {
     const entry = this.sessionMetadataCache.get(sessionKey);
     if (!entry) return undefined;
     if (!this.isLiveWorkerClient(sessionKey, entry.client)) {
-      this.sessionMetadataCache.delete(sessionKey);
+      this.dropSessionMetadata(sessionKey);
       return undefined;
     }
     return entry;
+  }
+
+  /** Drop a snapshot together with its failed-refresh backoff: a rotated or
+   *  removed session must be able to refresh its new worker immediately. */
+  private dropSessionMetadata(sessionKey: string): void {
+    this.sessionMetadataCache.delete(sessionKey);
+    this.sessionMetadataRefreshFailedAt.delete(sessionKey);
   }
 
   private isLiveWorkerClient(sessionKey: string, client: RuntimeWorkerClient): boolean {
@@ -2348,7 +2367,7 @@ export class RuntimeEngine implements BridgeEngine {
     const client = this.manager?.get(sessionKey);
     if (!client || !this.isLiveWorkerClient(sessionKey, client)) {
       // The worker rotated; a stale snapshot would describe the wrong process.
-      this.sessionMetadataCache.delete(sessionKey);
+      this.dropSessionMetadata(sessionKey);
       return;
     }
     const previous =
@@ -2404,7 +2423,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
-    this.sessionMetadataCache.delete(key);
+    this.dropSessionMetadata(key);
     const physicalFenceKey = this.physicalFenceKeyForInput(input);
     try {
       await this.waitForAcquiringQuiescence(key);
@@ -2475,7 +2494,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
-    this.sessionMetadataCache.delete(key);
+    this.dropSessionMetadata(key);
     const physicalFenceKey = this.physicalFenceKeyForInput(input);
     try {
       // PR6: mark deleting so new enqueue is rejected (lifecycle boundary) — inside try so finally always clears
@@ -2734,7 +2753,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   async freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>> {
     const key = this.workerKey(input);
-    this.sessionMetadataCache.delete(key);
+    this.dropSessionMetadata(key);
     this.sessionCatalog.set(key, input);
     const timer = this.idleTimers.get(key);
     if (timer) {

@@ -118,6 +118,7 @@ import { TurnQueue } from "./turn-queue";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
+  DEFAULT_SESSION_INIT_TIMEOUT_MS,
   isCommandTimeoutError,
 } from "../transport/command-timeouts";
 import type { AppLogger } from "../logging/app-logger";
@@ -176,12 +177,22 @@ const MODEL_SET_SETTLE_BUDGET_MS =
  *  budget the wait ends and the next read starts a new one. */
 const SESSION_CONTROLS_READY_FIRST_POLL_MS = 500;
 const SESSION_CONTROLS_READY_MAX_POLL_MS = 4_000;
-const SESSION_CONTROLS_READY_BUDGET_MS = 30_000;
+/** A worker `status` can queue behind a 60s supervisor handshake and a 120s
+ *  session init; the wait must outlive both so a slow-but-successful refresh is
+ *  still announced. */
+const SESSION_CONTROLS_READY_BUDGET_MS = 2 * DEFAULT_SESSION_INIT_TIMEOUT_MS;
 
-function sleepMs(ms: number): Promise<void> {
+function sleepMs(ms: number): { promise: Promise<void>; cancel: () => void } {
   const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
+  const timer = setTimeout(resolve, ms);
+  timer.unref?.();
+  return {
+    promise,
+    cancel: () => {
+      clearTimeout(timer);
+      resolve();
+    },
+  };
 }
 
 function normalizeAdvertisedEffortCurrent(observed: {
@@ -642,6 +653,9 @@ export class ControlService {
   private readonly modelMutationGenerations = new Map<string, number>();
   /** One pending-catalog wait per session alias; repeated cold reads join it. */
   private readonly pendingControlAnnouncements = new Set<string>();
+  /** Cancels an in-flight wait's sleep on shutdown. */
+  private readonly pendingCatalogSleeps = new Map<string, () => void>();
+  private backgroundMaintenanceStopped = false;
   /** Fire-and-forget maintenance (timeout reconciliation, pending-catalog waits)
    *  awaited by tests/shutdown. */
   private readonly backgroundTasks = new Set<Promise<void>>();
@@ -1355,26 +1369,33 @@ export class ControlService {
     if (!readModel && !readEffort) return;
     const deadline = Date.now() + SESSION_CONTROLS_READY_BUDGET_MS;
     let wait = SESSION_CONTROLS_READY_FIRST_POLL_MS;
-    while (Date.now() < deadline) {
-      await sleepMs(wait);
+    while (Date.now() < deadline && !this.backgroundMaintenanceStopped) {
+      const sleep = sleepMs(wait);
+      this.pendingCatalogSleeps.set(sessionAlias, sleep.cancel);
+      await sleep.promise;
+      this.pendingCatalogSleeps.delete(sessionAlias);
+      if (this.backgroundMaintenanceStopped) return;
       wait = Math.min(wait * 2, SESSION_CONTROLS_READY_MAX_POLL_MS);
       // Re-resolved per round: a rotation or handoff replaces the transport
       // session, and the announcement must name the incarnation clients show.
       const session = await this.deps.sessions.getSession(sessionAlias);
       if (!session) return;
-      let pending: boolean;
+      let modelPending: boolean;
       try {
         const model = readModel ? await readModel(session) : undefined;
-        const effort =
-          model?.pending === true || !readEffort
-            ? undefined
-            : await readEffort(session);
-        pending = model?.pending === true || effort?.pending === true;
+        modelPending = model?.pending === true;
       } catch {
-        // An unreadable catalog is already the caller's error; never announce it.
+        // An unreadable model catalog is the caller's error; never announce it.
         return;
       }
-      if (pending) continue;
+      if (modelPending) continue;
+      if (readEffort) {
+        // Effort comes from the same worker snapshot; a transient effort failure
+        // must not keep the model picker disabled.
+        try {
+          await readEffort(session);
+        } catch {}
+      }
       this.deps.events.emit({
         type: "sessions-changed",
         readySessionAlias: toDisplaySessionAlias(session.alias),
@@ -1382,11 +1403,20 @@ export class ControlService {
       });
       return;
     }
-    await this.deps.logger?.debug(
-      "control.session.controls.pending_unresolved",
-      "Session controls stayed pending for the whole convergence budget; the next read restarts the wait",
-      { sessionAlias },
-    );
+    if (!this.backgroundMaintenanceStopped) {
+      await this.deps.logger?.debug(
+        "control.session.controls.pending_unresolved",
+        "Session controls stayed pending for the whole convergence budget; the next read restarts the wait",
+        { sessionAlias },
+      );
+    }
+  }
+
+  /** Stop pending-catalog waits on daemon shutdown; their sleeps must not hold
+   *  shutdown open. */
+  cancelPendingCatalogWaits(): void {
+    this.backgroundMaintenanceStopped = true;
+    for (const cancel of this.pendingCatalogSleeps.values()) cancel();
   }
 
   /** Await in-flight background maintenance (timeout reconciliation, pending catalogs). */
