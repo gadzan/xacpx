@@ -47,7 +47,11 @@ async function withMetadataWorker(entry: string, journal: string): Promise<void>
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-test-1' } }) + '\\n');",
       "      } else if (msg.method === 'setConfigOption') {",
       "        appendFileSync(JOURNAL, `set:${msg.params.key}=${msg.params.value}\\n`);",
-      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+      "        if (msg.params.value === 'boom') {",
+      "          process.stdout.write(JSON.stringify({ id: msg.id, ok: false, error: { code: 'WORKER_RPC_FAILED', message: 'setConfigOption refused' } }) + '\\n');",
+      "        } else {",
+      "          process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+      "        }",
       "      } else {",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
       "      }",
@@ -108,7 +112,10 @@ async function withEngine(
 test("a cold metadata read is unknown and never waits for the worker", async () => {
   await withEngine(async (engine, journal) => {
     const first = await engine.getSessionModel(sessionInput);
-    expect(first).toEqual({ available: [] });
+    // "unknown", not "this agent has no models": the caller must be able to tell a
+    // cold catalog apart from a real empty one, so it can announce the session once
+    // the refresh lands instead of waiting for an unrelated event (issue #524).
+    expect(first).toEqual({ available: [], pending: true });
 
     // The fire-and-forget refresh fills the cache; later reads are served from it.
     const warmed = await waitFor(async () => {
@@ -170,6 +177,37 @@ test("freeWarmProcess drops the snapshot so the next read is unknown again", asy
     });
 
     await engine.freeWarmProcess(sessionInput);
-    expect(await engine.getSessionModel(sessionInput)).toEqual({ available: [] });
+    expect(await engine.getSessionModel(sessionInput)).toEqual({ available: [], pending: true });
+  });
+}, 20_000);
+
+test("a stale snapshot is served but reported pending until the refresh lands", async () => {
+  await withEngine(async (engine) => {
+    await engine.getSessionModel({ ...sessionInput, refresh: true });
+    expect(await engine.getSessionEffort(sessionInput)).toEqual({
+      current: "medium",
+      available: ["low", "medium", "high"],
+    });
+
+    // A failed config write keeps the last known values for responsiveness but
+    // requires a re-read before they are trusted again — the same mark a turn end
+    // applies in `decActiveTurn`, which is what makes a read racing the
+    // turn-finished refresh serve a stale catalog with no way to notice.
+    await expect(
+      engine.setSessionEffort({ ...sessionInput, effort: "boom" }),
+    ).rejects.toThrow();
+
+    expect(await engine.getSessionModel(sessionInput)).toEqual({
+      current: "m1",
+      available: ["m1", "m2"],
+      pending: true,
+    });
+
+    // That read kicked a refresh; once it lands the catalog is authoritative again.
+    const fresh = await waitFor(async () => {
+      const read = await engine.getSessionModel(sessionInput);
+      return read.pending === undefined ? read : undefined;
+    });
+    expect(fresh).toEqual({ current: "m1", available: ["m1", "m2"] });
   });
 }, 20_000);

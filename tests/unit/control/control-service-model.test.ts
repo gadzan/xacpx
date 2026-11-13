@@ -878,3 +878,107 @@ test("a restore-failure fallback reports the original error when the probe also 
     control.getSessionModel("relay:acc", "backend"),
   ).rejects.toThrow("Could not restore model provider/openai/gpt-5.2");
 });
+
+// Issue #524: a cold, rotated or turn-end-stale transport snapshot answers
+// `{ available: [], pending: true }` because it refreshes off the request path.
+// The read must not leave the caller believing the agent advertises no models:
+// the service announces the session once the catalog is real, so clients re-read
+// their controls without waiting for an unrelated turn or poll.
+test("a cold pending model read announces the session when the catalog lands", async () => {
+  const { deps, events } = makeDeps();
+  let pendingReads = 2;
+  deps.transport.getSessionModel = async () => {
+    if (pendingReads > 0) {
+      pendingReads -= 1;
+      return { available: [], pending: true };
+    }
+    return {
+      current: "gpt-5.2[high]",
+      available: ["gpt-5.2[high]", "gpt-5.2[low]"],
+    };
+  };
+  const control = new ControlService(deps as never);
+
+  // The request path stays non-blocking and never leaks the pending marker to the
+  // control RPC (older Hubs do not know it).
+  await expect(
+    control.getSessionModel("relay:acc", "backend"),
+  ).resolves.toEqual({ available: [] });
+  // A second cold read joins the same wait instead of stacking another one.
+  await expect(
+    control.getSessionModel("relay:acc", "backend"),
+  ).resolves.toEqual({ available: [] });
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([
+    {
+      type: "sessions-changed",
+      readySessionAlias: "internal-backend",
+      readyTransportSession: "t",
+    },
+  ]);
+});
+
+test("a stale catalog read at turn end is announced so clients re-read it", async () => {
+  const { deps, events } = makeDeps();
+  let pendingReads = 1;
+  deps.transport.getSessionModel = async () => {
+    if (pendingReads > 0) {
+      pendingReads -= 1;
+      // What `decActiveTurn` leaves behind: the last known catalog, now stale.
+      return { current: "before-turn", available: ["before-turn"], pending: true };
+    }
+    return { current: "after-turn", available: ["after-turn"] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionModel("relay:acc", "backend"),
+  ).resolves.toEqual({ current: "before-turn", available: ["before-turn"] });
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([
+    {
+      type: "sessions-changed",
+      readySessionAlias: "internal-backend",
+      readyTransportSession: "t",
+    },
+  ]);
+});
+
+test("a pending effort read is announced by the same mechanism", async () => {
+  const { deps, events } = makeDeps();
+  let pendingReads = 1;
+  deps.transport.getSessionEffort = async () => {
+    if (pendingReads > 0) {
+      pendingReads -= 1;
+      return { available: [], pending: true };
+    }
+    return { current: "medium", available: ["low", "medium", "high"] };
+  };
+  const control = new ControlService(deps as never);
+
+  await expect(
+    control.getSessionEffort("relay:acc", "backend"),
+  ).resolves.toEqual({ available: [] });
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([
+    {
+      type: "sessions-changed",
+      readySessionAlias: "internal-backend",
+      readyTransportSession: "t",
+    },
+  ]);
+});
+
+test("a fresh catalog read never announces the session", async () => {
+  const { deps, events } = makeDeps();
+  const control = new ControlService(deps as never);
+
+  await control.getSessionModel("relay:acc", "backend");
+  await control.getSessionEffort("relay:acc", "backend");
+  await control.whenBackgroundIdle();
+
+  expect(events).toEqual([]);
+});
