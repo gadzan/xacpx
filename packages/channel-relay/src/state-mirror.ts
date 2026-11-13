@@ -363,6 +363,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         // core `event.conversation`; do not drop it just because the
         // accumulator never saw `turn-started`.
         const conversation = a?.conversation ?? event.conversation;
+        const peerTriggerMessageId = a?.peerTriggerMessageId ?? event.peerOrigin?.requestMessageId;
         pendingFinished.push({
           chatKey: a?.chatKey ?? event.chatKey,
           sessionAlias: event.sessionAlias,
@@ -374,9 +375,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a?.queueItemId !== undefined ? { queueItemId: a.queueItemId } : {}),
           ...(a?.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a?.promptRequestId !== undefined ? { promptRequestId: a.promptRequestId } : {}),
-          ...(a?.peerTriggerMessageId !== undefined
-            ? { peerTriggerMessageId: a.peerTriggerMessageId }
-            : {}),
+          ...(peerTriggerMessageId !== undefined ? { peerTriggerMessageId } : {}),
           ...(conversation ? { conversation } : {}),
           ...(a?.truncated ? { truncated: true } : {}),
           recoveryId: id,

@@ -541,3 +541,18 @@ test("a peer turn carries its trigger message id into running and finished recov
   expect(finished.peerTriggerMessageId).toBe("msg_peer");
   expect(validInstanceStateSync(mirror.buildStateSync(LIVE).snapshot)).toBe(true);
 });
+
+test("a finish the mirror never saw start still carries its peer trigger id", () => {
+  const { mirror } = makeMirror(() => true, () => 1_700_000_000_000);
+  fire(mirror, {
+    type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true, text: "ack",
+    peerOrigin: {
+      requestMessageId: "msg_peer",
+      completion: "none",
+      source: { nodeId: "n1", endpointId: "sender" },
+      target: { nodeId: "n1", endpointId: "target" },
+    },
+  });
+  const finished = mirror.buildStateSync(LIVE).snapshot.finishedOffline[0]!;
+  expect(finished.peerTriggerMessageId).toBe("msg_peer");
+});

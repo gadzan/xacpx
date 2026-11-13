@@ -999,3 +999,22 @@ test("a recovered offline turn keeps the peer card it answered on its out row", 
   expect(rows[0]!.structured?.peerTriggerMessageId).toBe("msg_peer");
   runtime.close();
 });
+
+test("a running turn restored from a sync keeps the peer card it answers", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [{
+      sessionAlias: "backend",
+      startedAt: STARTED_AT,
+      text: "partial",
+      reasoning: "",
+      steps: [],
+      parts: [{ type: "text", text: "partial" }],
+      peerTriggerMessageId: "msg_peer",
+    }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const live = runtime.stateSnapshot("i1").turns.find((turn) => turn.sessionAlias === "backend")!;
+  expect(live.peerTriggerMessageId).toBe("msg_peer");
+  runtime.close();
+});
