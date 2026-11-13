@@ -2463,6 +2463,39 @@ describe("Direct Bot Components", () => {
       expect(teardownTopic).toHaveBeenCalledWith("i1", "c1", "t2", expect.any(String), false);
     });
 
+    it("removes the deleted topic from the switcher and lands on the surviving one", async () => {
+      seedBot();
+      const directBots = useDirectBotsStore();
+      const switchTopic = vi.spyOn(directBots, "switchTopic").mockResolvedValue();
+      vi.spyOn(api, "rpc").mockImplementation(async (_instanceId: string, type: string) => {
+        if (type === "control.topics.preview") {
+          return {
+            impact: {
+              topic: directBots.topicsByConversation["i1:c1"]![1]!,
+              bindings: [], unsettledRunIds: [], indeterminateRunIds: [], abandonableRunIds: [], worktreeRunIds: [],
+              actions: { rename: true, archive: true, restore: false, teardown: true, clear: false },
+            },
+          } as never;
+        }
+        if (type === "control.topics.teardown") return { ok: true, requestId: "del-1" } as never;
+        if (type === "control.topics.list") {
+          return { topics: [directBots.topicsByConversation["i1:c1"]![0]!] } as never;
+        }
+        return {} as never;
+      });
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await wrapper.find('[data-test="topic-menu"]').trigger("click");
+      await wrapper.find('[data-test="topic-panel"]').findAll('[data-test="topic-row-more"]')[1]!.trigger("click");
+      await wrapper.find('[data-test="context-menu"]').find('[data-test="menu-delete"]').trigger("click");
+      await flushPromises();
+      await wrapper.find('[data-test="topic-confirm-submit"]').trigger("click");
+      await flushPromises();
+      expect(directBots.topicsByConversation["i1:c1"]?.map((topic) => topic.id)).toEqual(["t1"]);
+      expect(directBots.activeTopicId).toBe("t1");
+      expect(switchTopic).not.toHaveBeenCalled();
+      expect(wrapper.find('[data-test="topic-confirm"]').exists()).toBe(false);
+    });
+
     it("mobile more sheet carries nav / edit / delete, and delete is disabled for a retired bot", async () => {
       seedBot({ retired: true });
       useGroupsStore().groupsByInstance["i1"] = [

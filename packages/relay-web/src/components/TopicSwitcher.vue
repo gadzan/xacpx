@@ -136,7 +136,8 @@ function onRowMenuSelect(key: string): void {
     forkTopic?.(topic);
     return;
   }
-  if (key === "delete" || key === "clear" || key === "retry-delete") void openConfirm("delete", topic);
+  if (key === "clear") { void openConfirm("clear", topic); return; }
+  if (key === "delete" || key === "retry-delete") void openConfirm("delete", topic);
 }
 
 // A failed delete/clear keeps the confirm dialog open with its error, so only a closed
@@ -220,7 +221,7 @@ async function abandonRowUnknown(): Promise<void> {
     <ContextMenu v-if="rowMenu" :x="rowMenu.x" :y="rowMenu.y" :items="rowMenuItems"
                  @select="onRowMenuSelect" @close="rowMenu = null" />
 
-    <div v-if="confirmKind" class="fixed inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
+    <div v-if="confirmKind" data-dd-panel class="fixed inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
       <div role="dialog" aria-modal="true" data-test="topic-confirm" class="w-full max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
         <h3 class="text-base font-semibold text-fg">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearTitle") : $t("bot.topic.confirmDeleteTitle") }}</h3>
         <p class="mt-2 text-sm text-fg-muted-overlay">{{ confirmKind === "clear" ? $t("bot.topic.confirmClearBody") : $t("bot.topic.confirmDeleteBody") }}</p>
@@ -256,7 +257,7 @@ async function abandonRowUnknown(): Promise<void> {
         </div>
       </div>
     </div>
-    <div v-if="isolationTopic" class="fixed inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
+    <div v-if="isolationTopic" data-dd-panel class="fixed inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
       <div role="dialog" aria-modal="true" data-test="topic-isolation" class="w-full max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
         <h3 class="text-base font-semibold text-fg">{{ $t("bot.topic.isolationTitle") }}</h3>
         <p class="mt-2 text-sm text-fg-muted-overlay">{{ $t("bot.topic.isolationBody") }}</p>
