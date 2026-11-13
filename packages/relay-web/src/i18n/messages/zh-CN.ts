@@ -29,6 +29,8 @@ export default {
   // 统一的会话外壳（设计 §8）：时间线、状态条、轮次条和输入框 chip。
   conversation: {
     timeline: {
+      openDetailPrefix: "查看",
+      openDetailSuffix: "的过程",
       openDetail: "查看 {name} 的过程",
       unresolved: "这条回复无法归属到唯一成员回合，因此没有过程可看。",
       empty: "还没有消息，先发一条吧。",
@@ -105,12 +107,14 @@ export default {
     },
     composer: {
       mention: "提及成员",
-      discuss: "讨论",
+      discuss: "圆桌讨论",
+      discussModeOff: "开启圆桌讨论模式",
       discussHintOne: "{count} 位成员讨论 1 轮",
       discussHintMany: "{count} 位成员讨论 {rounds} 轮",
-      discussNeedsSpeakers: "讨论至少需要 2 位已启用成员",
+      discussNeedsDraft: "输入要讨论的内容，再点发送",
+      discussNeedsSpeakers: "圆桌讨论至少需要 2 位已启用成员",
       discussOverLimit: "超出上限：{speakers} 位成员 × {rounds} 轮超过 {max} 回合预算",
-      discussRoundsLabel: "讨论轮数",
+      discussRoundsLabel: "圆桌讨论轮数",
       discussRoundsHint: "轮数：{count}",
       placeholder: "发消息给 {name}",
       placeholderLead: "发消息给负责人",

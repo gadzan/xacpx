@@ -1039,7 +1039,7 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-discuss-chip"]').exists()).toBe(true);
     });
 
-    it("sends a one-round roundtable over all enabled members when discussing", async () => {
+    it("arms roundtable mode without sending, then sends the draft with Send", async () => {
       seedGroupSelection();
       useInstancesStore().instances[0]!.capabilities = [RELAY_CAPABILITIES.roundtableV1];
       const wrapper = mount(GroupComposer, {
@@ -1047,13 +1047,22 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare the options");
+      expect(wrapper.find('[data-test="group-discuss-rounds"]').exists()).toBe(false);
       await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      // Arming the mode never sends; it only reveals the round selector.
+      expect(wrapper.emitted("send")).toBeUndefined();
+      expect(wrapper.find('[data-test="group-discuss-chip"]').attributes("aria-pressed")).toBe("true");
+      expect(wrapper.find('[data-test="group-discuss-rounds"]').exists()).toBe(true);
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       // Lead first, then the remaining enabled member; one round.
       expect(wrapper.emitted("send")?.[0]).toEqual([
         "compare the options",
         [],
         { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 1 },
       ]);
+      // The mode belongs to one send.
+      expect(wrapper.find('[data-test="group-discuss-chip"]').attributes("aria-pressed")).toBe("false");
+      expect(wrapper.find('[data-test="group-discuss-rounds"]').exists()).toBe(false);
     });
 
     it("defaults the rounds selector to 1 and sends it on the wire target", async () => {
@@ -1063,10 +1072,10 @@ describe("Group Components", () => {
         props: { bots: BOTS, instanceId: "i1" },
         global: { plugins: [i18n] },
       });
-      expect(wrapper.find('[data-test="group-discuss-rounds"]').exists()).toBe(true);
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
       expect(wrapper.find('[data-test="group-discuss-rounds-1"]').attributes("aria-pressed")).toBe("true");
       await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare the options");
-      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       expect(wrapper.emitted("send")?.[0]?.[2]).toEqual(
         { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 1 },
       );
@@ -1079,10 +1088,11 @@ describe("Group Components", () => {
         props: { bots: BOTS, instanceId: "i1" },
         global: { plugins: [i18n] },
       });
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
       await wrapper.find('[data-test="group-discuss-rounds-2"]').trigger("click");
       expect(wrapper.find('[data-test="group-discuss-rounds-2"]').attributes("aria-pressed")).toBe("true");
       await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare the options");
-      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       expect(wrapper.emitted("send")?.[0]).toEqual([
         "compare the options",
         [],
@@ -1097,9 +1107,10 @@ describe("Group Components", () => {
         props: { bots: BOTS, instanceId: "i1" },
         global: { plugins: [i18n] },
       });
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
       await wrapper.find('[data-test="group-discuss-rounds-3"]').trigger("click");
       await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare the options");
-      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       expect(wrapper.emitted("send")?.[0]?.[2]).toEqual(
         { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 3 },
       );
@@ -1112,22 +1123,24 @@ describe("Group Components", () => {
         props: { bots: BOTS, instanceId: "i1" },
         global: { plugins: [i18n] },
       });
+      await first.find('[data-test="group-discuss-chip"]').trigger("click");
       await first.find('[data-test="group-discuss-rounds-2"]').trigger("click");
       first.unmount();
       const second = mount(GroupComposer, {
         props: { bots: BOTS, instanceId: "i1" },
         global: { plugins: [i18n] },
       });
+      await second.find('[data-test="group-discuss-chip"]').trigger("click");
       expect(second.find('[data-test="group-discuss-rounds-2"]').attributes("aria-pressed")).toBe("true");
       await second.find('[data-test="group-composer-textarea"]').setValue("compare again");
-      await second.find('[data-test="group-discuss-chip"]').trigger("click");
+      await second.find('[data-test="group-send-prompt-button"]').trigger("click");
       expect(second.emitted("send")?.[0]?.[2]).toEqual(
         { mode: "roundtable", botIds: ["bot_a", "bot_b"], rounds: 2 },
       );
     });
 
     it("blocks an over-limit speakers × rounds plan client-side", async () => {
-      // 9 enabled members × 3 rounds = 27 > 24: the chip must not emit.
+      // 9 enabled members × 3 rounds = 27 > 24: Send must not emit.
       const manyBots: BotSummaryDto[] = Array.from({ length: 9 }, (_, index) => ({
         id: `bot_${index}`, name: `Bot ${index}`, agent: "codex", workspace: "repo", enabled: true, updatedAt: "now",
       }));
@@ -1145,14 +1158,15 @@ describe("Group Components", () => {
         props: { bots: manyBots, instanceId: "i1" },
         global: { plugins: [i18n] },
       });
+      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
       await wrapper.find('[data-test="group-discuss-rounds-3"]').trigger("click");
       await wrapper.find('[data-test="group-composer-textarea"]').setValue("compare everything");
-      expect(wrapper.find('[data-test="group-discuss-chip"]').attributes("disabled")).toBeDefined();
-      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').attributes("disabled")).toBeDefined();
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       expect(wrapper.emitted("send")).toBeUndefined();
-      // Dropping back to 2 rounds (18 ≤ 24) re-arms the same chip.
+      // Dropping back to 2 rounds (18 ≤ 24) re-arms Send.
       await wrapper.find('[data-test="group-discuss-rounds-2"]').trigger("click");
-      await wrapper.find('[data-test="group-discuss-chip"]').trigger("click");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       expect(wrapper.emitted("send")?.[0]?.[2]).toEqual({
         mode: "roundtable",
         botIds: ["bot_0", "bot_1", "bot_2", "bot_3", "bot_4", "bot_5", "bot_6", "bot_7", "bot_8"],

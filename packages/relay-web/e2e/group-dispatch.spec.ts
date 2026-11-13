@@ -135,10 +135,11 @@ async function openGroup(page: Page) {
 
 const drawer = (page: Page) => page.locator('[data-test="group-detail-card"], [data-test="group-detail-sheet"]');
 
-test("handoffs are one timeline line each, and the Run drawer lists every member", async ({ page }) => {
+test("consecutive handoffs share one compact row, and the Run drawer lists every member", async ({ page }) => {
   await openGroup(page);
   const scroller = page.getByTestId("conversation-timeline-scroller");
   await expect(scroller.getByTestId("timeline-bot-message").first()).toContainText("Dispatching two reviews");
+  await expect(scroller.getByTestId("timeline-handoffs")).toHaveCount(1);
   await expect(scroller.getByTestId("timeline-handoff")).toHaveCount(2);
   await expect(scroller.getByTestId("timeline-handoff").nth(0)).toContainText("Lead");
   await expect(scroller.getByTestId("timeline-handoff").nth(0)).toContainText("Reviewer");

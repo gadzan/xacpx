@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { AlertCircle, ArrowRight, Clock, GitFork, MessageSquare } from "lucide-vue-next";
+import { AlertCircle, Clock, GitFork, MessageSquare } from "lucide-vue-next";
 import type { ConversationMessageDto } from "@ganglion/xacpx-relay-protocol";
 import TranscriptRow from "./TranscriptRow.vue";
 import ConversationBubble from "./ConversationBubble.vue";
@@ -12,7 +12,9 @@ import {
   participantFor,
   type RoomParticipant,
   type RoomView,
+  type TimelineActivityEntry,
   type TimelineLiveTurn,
+  type TimelineMessageEntry,
   type TimelineRow,
 } from "../lib/room-view";
 
@@ -22,8 +24,9 @@ import {
  * Speech is an ordinary bubble. A handoff is one line under its sender, never a
  * card. An activity row is the speaking position of a member without durable
  * speech — the live bubble lives here and disappears the moment the durable
- * message lands (the parent no longer hands it an overlay). A notice is one
- * light line.
+ * message lands (the parent no longer hands it an overlay). A stopped row
+ * aggregates every cancelled member turn of one Run. A notice is one light
+ * line.
  */
 const props = defineProps<{
   row: TimelineRow;
@@ -46,7 +49,6 @@ const emit = defineEmits<{
 
 const message = computed<ConversationMessageDto | null>(() =>
   props.row.kind === "message" ? props.row.entry.message : null);
-const handoff = computed(() => message.value?.handoff);
 const live = computed<TimelineLiveTurn | undefined>(() =>
   props.row.kind === "activity" ? props.row.live : undefined);
 
@@ -55,17 +57,10 @@ function speakerOf(botId: string | undefined): RoomParticipant | undefined {
 }
 
 const author = computed(() => speakerOf(message.value?.senderBotId));
-const handoffFrom = computed(() =>
-  speakerOf(message.value?.senderBotId)?.name
-  ?? message.value?.senderBotId
-  ?? "");
-const handoffTo = computed(() => {
-  const target = handoff.value?.to;
-  return speakerOf(target)?.name ?? target ?? "";
-});
 
-/** The detail target of a bot message: its exact MemberTurn when the read model
- *  proved ownership, else the Run (the drawer resolves the member). */
+/** The detail target of a bot message or activity: its exact MemberTurn when
+ *  the read model proved ownership, else the Run (the drawer resolves the
+ *  member). */
 const messageDetail = computed(() => ({
   ...(props.row.kind === "message"
     ? {
@@ -81,11 +76,27 @@ const messageDetail = computed(() => ({
     : {}),
 }));
 
-/** A handoff opens the assignment it created, not the sender that wrote it. */
-const handoffDetail = computed(() => ({
-  ...(props.row.kind === "message" && props.row.entry.runId ? { runId: props.row.entry.runId } : {}),
-  ...(handoff.value?.memberTurnId ? { memberTurnId: handoff.value.memberTurnId } : {}),
-}));
+/** A handoff is an avatar pair, and consecutive handoffs share one compact row.
+ *  The accessible label keeps the member names and assignment task the old
+ *  text line exposed. */
+function handoffView(entry: TimelineMessageEntry) {
+  const handoff = entry.message.handoff;
+  const from = speakerOf(entry.message.senderBotId);
+  const to = speakerOf(handoff?.to);
+  const label = `${from?.name ?? entry.message.senderBotId ?? "Bot"} → ${to?.name ?? handoff?.to ?? "Bot"} · ${handoff?.task ?? ""}`;
+  return {
+    key: entry.key,
+    from,
+    to,
+    label,
+    detail: {
+      ...(entry.runId ? { runId: entry.runId } : {}),
+      ...(handoff?.memberTurnId ? { memberTurnId: handoff.memberTurnId } : {}),
+    },
+  };
+}
+const handoffs = computed(() =>
+  props.row.kind === "handoffs" ? props.row.entries.map(handoffView) : []);
 
 /** Cut a fork boundary at this row. The parent owns the capability gate; the
  *  row only reflects whether the callback exists. */
@@ -99,6 +110,27 @@ const activity = computed(() => {
   const author = speakerOf(turn.botId)?.name;
   return { turn, author };
 });
+
+/** A cancelled Run collapses to one row: one avatar per distinct Bot, even when
+ *  a multi-round roundtable cancelled several turns for the same Bot. */
+const stoppedMembers = computed(() => {
+  if (props.row.kind !== "stopped") return [];
+  const byBot = new Map<string, TimelineActivityEntry>();
+  for (const turn of props.row.turns) byBot.set(turn.memberTurn.botId, turn);
+  return [...byBot.values()].map((turn) => ({
+    turn,
+    participant: speakerOf(turn.memberTurn.botId),
+  }));
+});
+const stoppedShown = computed(() => stoppedMembers.value.slice(0, 4));
+const stoppedOverflow = computed(() => stoppedMembers.value.length - stoppedShown.value.length);
+
+function activityDetail(entry: TimelineActivityEntry): { runId?: string; memberTurnId: string } {
+  return {
+    ...(entry.runId ? { runId: entry.runId } : {}),
+    memberTurnId: entry.memberTurn.id,
+  };
+}
 
 const activityStateLabel = computed(() => {
   const state = activity.value?.turn.state;
@@ -155,23 +187,45 @@ const noticeToneClass = computed(() => {
     </template>
   </TranscriptRow>
 
-  <!-- Handoff: one line under the sender, never a card. -->
+  <!-- Handoff: compact avatar pairs, consecutive assignments share one row. -->
   <div
-    v-else-if="row.kind === 'message' && handoff"
-    class="flex w-full"
+    v-else-if="row.kind === 'handoffs'"
+    data-test="timeline-handoffs"
+    class="ml-11 flex w-full flex-wrap items-center gap-1"
   >
     <button
+      v-for="handoff in handoffs"
+      :key="handoff.key"
       type="button"
       data-test="timeline-handoff"
-      class="ml-11 flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-hairline bg-surface/60 px-2 py-1 text-left text-xs text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
-      :title="$t('conversation.handoff.open', { name: handoffTo })"
-      @click="emit('openDetail', handoffDetail)"
+      class="flex items-center rounded-lg p-0.5 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      :title="handoff.label"
+      :aria-label="handoff.label"
+      @click="emit('openDetail', handoff.detail)"
     >
-      <span class="shrink-0 font-medium text-fg">{{ handoffFrom }}</span>
-      <ArrowRight :size="12" class="shrink-0" aria-hidden="true" />
-      <span class="shrink-0 font-medium text-fg">{{ handoffTo }}</span>
-      <span aria-hidden="true">·</span>
-      <span class="min-w-0 truncate">{{ handoff.task }}</span>
+      <span class="flex items-center -space-x-1.5">
+        <span class="grid rounded-full" style="box-shadow: 0 0 0 2px rgb(var(--c-bg))">
+          <BotAvatar
+            :avatar="handoff.from?.avatar"
+            :driver="handoff.from?.driver"
+            :name="handoff.from?.name"
+            :size="20"
+            static
+            :retired="handoff.from?.retired"
+          />
+        </span>
+        <span class="grid rounded-full" style="box-shadow: 0 0 0 2px rgb(var(--c-bg))">
+          <BotAvatar
+            :avatar="handoff.to?.avatar"
+            :driver="handoff.to?.driver"
+            :name="handoff.to?.name"
+            :size="20"
+            static
+            :retired="handoff.to?.retired"
+          />
+        </span>
+      </span>
+      <span class="sr-only">{{ handoff.label }}</span>
     </button>
   </div>
 
@@ -238,10 +292,19 @@ const noticeToneClass = computed(() => {
         v-if="message.runId"
         type="button"
         data-test="timeline-open-detail"
-        class="shrink-0 text-xs font-medium text-fg-muted transition-colors hover:text-fg"
+        class="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-fg-muted transition-colors hover:text-fg"
         @click="emit('openDetail', messageDetail)"
       >
-        {{ $t("conversation.timeline.openDetail", { name: author?.name ?? 'Bot' }) }}
+        <span>{{ $t("conversation.timeline.openDetailPrefix") }}</span>
+        <BotAvatar
+          :avatar="author?.avatar"
+          :driver="author?.driver"
+          :name="author?.name"
+          :size="16"
+          static
+          aria-hidden="true"
+        />
+        <span v-if="$t('conversation.timeline.openDetailSuffix')">{{ $t("conversation.timeline.openDetailSuffix") }}</span>
       </button>
     </template>
   </TranscriptRow>
@@ -300,9 +363,53 @@ const noticeToneClass = computed(() => {
         />
         <ThinkingDots v-else />
       </div>
-      <ThinkingDots v-else />
+      <ThinkingDots v-else-if="activity.turn.state !== 'failed'" />
     </div>
   </TranscriptRow>
+
+  <!-- A cancelled Run: one terminal row with each Bot's avatar, never a
+       per-member status row (and never a spinner for a terminal state). -->
+  <div
+    v-else-if="row.kind === 'stopped'"
+    data-test="timeline-stopped"
+    :data-run-id="row.runId"
+    class="ml-11 flex w-full flex-wrap items-center gap-2 py-1"
+  >
+    <div class="flex items-center -space-x-1.5">
+      <button
+        v-for="member in stoppedShown"
+        :key="member.turn.memberTurn.id"
+        type="button"
+        data-test="timeline-stopped-avatar"
+        class="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        :aria-label="$t('conversation.timeline.openDetail', { name: member.participant?.name ?? 'Bot' })"
+        :title="member.participant?.name"
+        @click="emit('openDetail', activityDetail(member.turn))"
+      >
+        <span
+          class="grid rounded-full"
+          style="box-shadow: 0 0 0 2px rgb(var(--c-bg))"
+        >
+          <BotAvatar
+            :avatar="member.participant?.avatar"
+            :driver="member.participant?.driver"
+            :name="member.participant?.name"
+            :size="20"
+            static
+            :retired="member.participant?.retired"
+          />
+        </span>
+      </button>
+      <span
+        v-if="stoppedOverflow > 0"
+        class="grid h-5 min-w-5 place-items-center rounded-full bg-surface-2 px-1 text-[10px] font-medium text-fg-muted"
+        style="box-shadow: 0 0 0 2px rgb(var(--c-bg))"
+      >+{{ stoppedOverflow }}</span>
+    </div>
+    <span data-test="timeline-stopped-state" class="text-xs text-fg-muted">
+      {{ $t("conversation.activity.cancelled") }}
+    </span>
+  </div>
 
   <!-- Notice: queued / all-pass / failed, one light line. -->
   <div

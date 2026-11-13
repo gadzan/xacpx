@@ -33,6 +33,8 @@ export default {
   conversation: {
     timeline: {
       openDetail: "Process for {name}",
+      openDetailPrefix: "Process for",
+      openDetailSuffix: " ",
       unresolved: "This reply could not be linked to one member turn, so it has no process.",
       empty: "No messages yet. Say something to start.",
       upgradeRequired: "This daemon is too old; upgrade to use the timeline.",
@@ -109,12 +111,14 @@ export default {
     },
     composer: {
       mention: "Mention a member",
-      discuss: "Discuss",
+      discuss: "Roundtable",
+      discussModeOff: "Enable roundtable mode",
       discussHintOne: "Discuss over {count} members, 1 round",
       discussHintMany: "Discuss over {count} members, {rounds} rounds",
-      discussNeedsSpeakers: "Discussion needs at least 2 enabled members",
+      discussNeedsDraft: "Type the topic, then press Send",
+      discussNeedsSpeakers: "Roundtable needs at least 2 enabled members",
       discussOverLimit: "Too large: {speakers} members × {rounds} rounds exceeds the {max} turn budget",
-      discussRoundsLabel: "Discussion rounds",
+      discussRoundsLabel: "Roundtable rounds",
       discussRoundsHint: "Rounds: {count}",
       placeholder: "Message {name}",
       placeholderLead: "Message the lead",
