@@ -33,17 +33,17 @@ export function slotAfterIndexFromAnchor(
   slotAfterId: number,
   peerTriggerMessageId?: string,
 ): number {
-  if (peerTriggerMessageId !== undefined) {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (isPeerTriggerRow(messages[i]!, peerTriggerMessageId)) return i;
-    }
-  }
-  let idx = -1;
+  let anchorIdx = -1;
   for (let i = 0; i < messages.length; i++) {
     const id = messages[i]!.id;
-    if (typeof id === "number" && id <= slotAfterId) idx = i;
+    if (typeof id === "number" && id <= slotAfterId) anchorIdx = i;
   }
-  return idx;
+  if (peerTriggerMessageId === undefined) return anchorIdx;
+  let triggerIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (isPeerTriggerRow(messages[i]!, peerTriggerMessageId)) { triggerIdx = i; break; }
+  }
+  return Math.max(anchorIdx, triggerIdx);
 }
 
 /**

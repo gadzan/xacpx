@@ -885,12 +885,14 @@ export interface LiveTurn {
   `startedAt` 墙钟比较决定顺序（发送端 daemon、Hub、浏览器时钟不可比）。Stick-to-bottom /
   jump-latest 在 live turn 存在时跟随 live 气泡，而不是最新一行。
 - **peer 卡归回合（v0.5 槽位）**：peer 投递先 admit 回合、再发出 received card 事件
-  （`agent-message-router` 在 `deliver()` 之后才 emit），所以触发卡的行号**必然大于**
-  该回合的锚点。因果上它比回复更早，因此 Hub 把同一个 id 写进 `out` 行的
-  `structured.peerTriggerMessageId`（`turn-finished.peerOrigin` 或缓冲区；Hub 中途重启时
+  （`agent-message-router` 在 `deliver()` 之后才 emit），所以正在跑的回合，触发卡的行号
+  大于它的锚点；但**排队的** peer 回合要等到真正开始才发 `turn-started`，那时卡已经落库，
+  卡反而早于锚点——两种顺序都合法，**绝不**用 id 大小推断因果。因果由 Hub 写进 `out` 行的
+  `structured.peerTriggerMessageId` 承载（`turn-finished.peerOrigin` 或缓冲区；Hub 中途重启时
   由 `instance.state.sync` 的 `turns` / `finishedOffline` 带回来，connector 镜像在
-  `turn-started` 时记下 `peerOrigin.requestMessageId`），`placeTurnsInSlots` 把它从
-  “可搬运行”中排除，`slotAfterIndexFromAnchor(rows, id, trigger)` 也优先落在该卡之后。
+  `turn-started` 时记下 `peerOrigin.requestMessageId`，没见过 start 的 finish 从事件取）。
+  `placeTurnsInSlots` 把它从“可搬运行”中排除，`slotAfterIndexFromAnchor(rows, id, trigger)`
+  取触发卡与锚点中**更靠后**的那个作为槽位。
   live turn 在 `turn-started` 记下 `peerTriggerMessageId`，迟到的触发卡插在槽位内
   （气泡上方），历史/快照恢复走同一条因果。
 - **`MessageList` 的回合 peer 槽**：被回合拥有的卡不再以独立行渲染（复用 sent 卡的

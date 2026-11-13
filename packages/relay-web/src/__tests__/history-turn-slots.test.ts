@@ -167,3 +167,11 @@ describe("placeTurnsInSlots", () => {
       .toEqual(["reply", "m_peer", "m_other"]);
   });
 });
+
+describe("slotAfterIndexFromAnchor — trigger older than the anchor", () => {
+  it("keeps the later anchor when a queued peer turn started after its card", () => {
+    const rows = [received(1, "card", 500), received(2, "later", 1_000)];
+    expect(slotAfterIndexFromAnchor(rows, 2, "card")).toBe(1);
+    expect(slotAfterIndexFromAnchor(rows, 2)).toBe(1);
+  });
+});

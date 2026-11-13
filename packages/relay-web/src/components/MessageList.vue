@@ -158,13 +158,13 @@ const receivedEntryById = computed(() => {
   }
   return map;
 });
-const ownedPeerTriggerIds = computed(() => {
-  const ids = new Set<string>();
+const peerTriggerOwner = computed(() => {
+  const owners = new Map<string, ChatMessage>();
   for (const m of props.messages) {
     const id = m.direction === "out" ? m.structured?.peerTriggerMessageId : undefined;
-    if (id !== undefined) ids.add(id);
+    if (id !== undefined && !owners.has(id)) owners.set(id, m);
   }
-  return ids;
+  return owners;
 });
 
 function isSuppressedPeerRow(m: ChatMessage): boolean {
@@ -172,7 +172,7 @@ function isSuppressedPeerRow(m: ChatMessage): boolean {
   if (!am) return false;
   return am.direction === "sent"
     ? anchoredSentMessageIds.value.has(am.messageId)
-    : ownedPeerTriggerIds.value.has(am.messageId);
+    : peerTriggerOwner.value.has(am.messageId);
 }
 
 function traceCollapsedOf(m: ChatMessage): boolean {
@@ -190,7 +190,8 @@ function toggleTraceOf(m: ChatMessage): void {
 
 function receivedTriggerOf(m: ChatMessage): PeerMessageHistoryEntry | undefined {
   const id = m.structured?.peerTriggerMessageId;
-  return id !== undefined ? receivedEntryById.value.get(id) : undefined;
+  if (id === undefined || peerTriggerOwner.value.get(id) !== m) return undefined;
+  return receivedEntryById.value.get(id);
 }
 
 interface PeerChip {

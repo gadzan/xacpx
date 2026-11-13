@@ -1673,3 +1673,17 @@ describe("turn peer slot — failed turn", () => {
     wrapper.unmount();
   });
 });
+
+describe("turn peer slot — redelivered trigger", () => {
+  it("renders the shared trigger card once, in the first turn that owns it", () => {
+    const first = peerTurn({ startedAt: 20_000, triggerMessageId: "m_shared" });
+    const second = peerTurn({ startedAt: 30_000, triggerMessageId: "m_shared" });
+    const wrapper = mount(MessageList, {
+      props: { messages: [receivedCard("m_shared"), first, second], liveTurn: null },
+    });
+    const slots = wrapper.findAll('[data-test="turn-peer-trigger"]');
+    expect(slots).toHaveLength(1);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    wrapper.unmount();
+  });
+});
