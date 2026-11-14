@@ -89,8 +89,34 @@ describe("ModelPicker", () => {
     const wrapper = mountPicker(state);
     expect(wrapper.find('[data-test="model-picker-reason"]').exists()).toBe(false);
     const control = refreshControl(wrapper);
-    expect(control.attributes("title")).toBe("Refresh models — last read failed: Enter a model now.");
+    expect(control.attributes("title")).toBe("Refresh models. Last read failed: Enter a model now.");
     expect(control.attributes("aria-label")).toBe(control.attributes("title"));
+    expect(control.classes()).toContain("text-danger");
+  });
+
+  it("carries a needs-setup recovery next to the failure instead of dropping it", () => {
+    // `discovery-available` is not a failure: the adapter is fine, nothing has
+    // been fetched yet. The tooltip must not claim a read failed, and the
+    // recovery is the only actionable next step the state carries.
+    const setup = needsSetupCapability(
+      { code: "discovery-available", message: "no saved model list" },
+      "Fetch the model list.",
+      { fetchedAt: FETCHED },
+    );
+    const wrapper = mountPicker(setup);
+    const control = refreshControl(wrapper);
+    expect(control.attributes("title")).toBe("Refresh models. No saved model list. Fetch the model list.");
+    expect(control.classes()).not.toContain("text-danger");
+  });
+
+  it("states a real read failure as a failure and then the recovery", () => {
+    const wrapper = mountPicker(errorCapability(
+      { code: "timeout", message: "the probe timed out" },
+      "Retry the model fetch.",
+      { fetchedAt: FETCHED },
+    ));
+    const control = refreshControl(wrapper);
+    expect(control.attributes("title")).toBe("Refresh models. Last read failed: the probe timed out. Retry the model fetch.");
     expect(control.classes()).toContain("text-danger");
   });
 
@@ -294,7 +320,7 @@ describe("ModelPicker state matrix", () => {
         "重试。",
         { fetchedAt: FETCHED },
       ));
-      expect(refreshControl(failed).attributes("title")).toBe("刷新模型 — 上次读取失败：离线");
+      expect(refreshControl(failed).attributes("title")).toBe("刷新模型。上次读取失败：离线。重试。");
     } finally {
       i18n.global.locale.value = previous;
     }

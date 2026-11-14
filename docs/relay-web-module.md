@@ -218,7 +218,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 Bot 对话框和新建 Session 对话框共用 `ModelPicker`。它读取 `control.agents.capabilities.get`，状态为 loading、ready、unsupported、needs-setup 或 error。默认选项和自定义 id 始终可以填写。配置里的 `modelCandidates` 标成建议，不显示成适配器结果。选中的 id 和实际生效的 id 分开显示。无效的显式 id 在运行时退回默认时显示为未生效。
 
-模型字段内嵌一个刷新图标（`data-test="model-picker-refresh"`），它是**唯一**的获取/刷新入口：没有“获取模型列表”“重试”“正在加载模型…”“列表已过期”“正在后台刷新…”这些文案条。图标在三种情况下旋转（`animate-spin`，`motion-reduce` 下停用）：owner 自己发起读取（`refreshing` prop，含模型切换后的静默重读、作用域失效重读）、daemon 报告的后台探测（`state.refreshing`）、以及冷启动的首次加载（`state.status === "loading"`）。旋转期间按钮 `disabled`，但输入框与下拉列表保持可交互——刷新时仍能选模型。列表可用但刷新失败（`reason`）或状态本身是 error 时，图标转为 danger 色，完整原因通过 `title`/`aria-label`（`capability.refreshFailed`）给出，不再挤占表单空间。
+模型字段内嵌一个刷新图标（`data-test="model-picker-refresh"`），它是**唯一**的获取/刷新入口：没有“获取模型列表”“重试”“正在加载模型…”“列表已过期”“正在后台刷新…”这些文案条。图标在三种情况下旋转（`animate-spin`，`motion-reduce` 下停用）：owner 自己发起读取（`refreshing` prop，含模型切换后的静默重读、作用域失效重读）、daemon 报告的后台探测（`state.refreshing`）、以及冷启动的首次加载（`state.status === "loading"`）。旋转期间按钮 `disabled`，但输入框与下拉列表保持可交互，刷新时仍能选模型。
+
+图标也是唯一的状态说明：tooltip 与可访问名按顺序给出三句——动作、当前状态、下一步。`discovery-available` 只表示“还没取过”，不算失败，图标保持中性；真正的读取失败（`error`、`timeout`、`transport` 等）图标转为 `text-danger`，并带上 `reason` 与 `recovery`。两个对话框在读取前置条件不满足而提前返回时必须同时清掉 `capabilityRefreshing`，否则被 fence 掉的旧读取没有机会清除它，唯一入口会一直 disabled 并旋转。列表可用但刷新失败（`reason`）或状态本身是 error 时，图标转为 danger 色，完整原因通过 `title`/`aria-label`（`capability.refreshFailed`）给出，不再挤占表单空间。
 
 Bot 的 model / effort 在保存后作用于之后接受的 Run。已有 Session 作曲器仍用 `control.session.model.set` 做即时切换，不走这条能力 RPC。
 

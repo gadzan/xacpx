@@ -101,21 +101,47 @@ const effectText = computed(() => {
     ? t("capability.effectSavedApplied", { model: current.modelId, applied: current.appliedModelId })
     : t("capability.effectSaved", { model: current.modelId });
 });
-// The refresh icon is the whole diagnostic: it tints danger when the list is a
-// failed or unverified guess, and its tooltip/accessible name carries the
-// reason. No prose above the field — a usable list says nothing at all.
-const failure = computed(() => {
+// The refresh icon is the whole diagnostic: it tints danger when a read failed
+// and its tooltip/accessible name carries the state and the next step. No prose
+// above the field, so a usable list says nothing at all.
+const refreshIssue = computed(() => {
   const state = settled.value;
-  if (!state) return "";
-  return state.status === "ready" ? state.reason?.message ?? "" : state.reason.message;
+  const reason = state?.reason;
+  if (!state || !reason) return undefined;
+  return {
+    // A preserved cache with a reason always means its re-verification failed.
+    // `discovery-available` is the one code that reports a standing condition
+    // (nothing fetched yet), not a read that was attempted and failed.
+    failed: state.status === "ready" || reason.code !== "discovery-available",
+    message: reason.message,
+    // A recovery that repeats the reason would say the same thing twice.
+    recovery: "recovery" in state && state.recovery !== reason.message ? state.recovery : "",
+  };
 });
 /** Any refresh in flight: the owner's read, the daemon's background probe, or a cold first load. */
 const spinning = computed(() =>
   props.refreshing
   || props.state.status === "loading"
   || (settled.value?.status === "ready" && settled.value.refreshing === true));
-const refreshTitle = computed(() =>
-  failure.value ? t("capability.refreshFailed", { message: failure.value }) : t("capability.refresh"));
+const refreshTitle = computed(() => {
+  const issue = refreshIssue.value;
+  if (!issue) return t("capability.refresh");
+  // The reason and the recovery are server prose with unknown punctuation, so
+  // they become whole sentences here and the locale owns only the terminator.
+  const end = t("capability.sentenceEnd");
+  const sentence = (text: string) => {
+    const body = text.trim().replace(/[.。]+$/, "");
+    if (!body) return "";
+    const first = body.charAt(0);
+    return `${/[a-z]/.test(first) ? first.toUpperCase() : first}${body.slice(1)}${end}`;
+  };
+  const detail = sentence(issue.failed
+    ? t("capability.refreshFailed", { message: issue.message })
+    : issue.message);
+  return issue.recovery
+    ? t("capability.refreshTitleWithRecovery", { detail, recovery: sentence(issue.recovery) })
+    : t("capability.refreshTitle", { detail });
+});
 
 function pickModel(modelId: string): void {
   emit("update:model", modelId);
@@ -163,7 +189,7 @@ function onRefresh(): void {
             type="button"
             data-test="model-picker-refresh"
             class="absolute right-1 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-sm transition-colors hover:bg-fg/10 disabled:opacity-50"
-            :class="failure ? 'text-danger hover:text-danger' : 'text-fg-muted hover:text-fg'"
+            :class="refreshIssue?.failed ? 'text-danger hover:text-danger' : 'text-fg-muted hover:text-fg'"
             :disabled="spinning"
             :title="refreshTitle"
             :aria-label="refreshTitle"

@@ -133,12 +133,13 @@ function normalizedModel(value: string): string | undefined {
 
 async function loadCapabilities(probe = false): Promise<void> {
   const seq = ++capabilitySeq;
-  if (!agent.value) return;
-  // Edit mode fills the workspace from the authoritative detail; stay in the
-  // loading state until it arrives instead of claiming a preview is missing.
-  // Without the dedicated-workspace default there is nothing to preview
-  // until a workspace is picked (the original behaviour).
-  if (!canRequestDedicatedWorkspace.value && !capabilityWorkspace.value) return;
+  // A superseded read cannot clear the flag (its result is fenced off), so any
+  // path that returns before fetching must clear it here. Otherwise the only
+  // fetch affordance stays disabled and spinning for good.
+  if (!agent.value || (!canRequestDedicatedWorkspace.value && !capabilityWorkspace.value)) {
+    capabilityRefreshing.value = false;
+    return;
+  }
   const previewWorkspace = capabilityWorkspace.value;
   let next: AgentCapabilityState;
   if (previewWorkspace) {

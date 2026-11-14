@@ -167,8 +167,15 @@ watch([sessionSource, agentValue, workspaceSel], () => {
 
 async function loadCapabilities(probe = false): Promise<void> {
   const seq = ++capabilitySeq;
-  if (sessionSource.value !== "new") return;
+  // A superseded read cannot clear the flag (its result is fenced off), so any
+  // path that returns before fetching must clear it here. Otherwise the only
+  // fetch affordance stays disabled and spinning for good.
+  if (sessionSource.value !== "new") {
+    capabilityRefreshing.value = false;
+    return;
+  }
   if (!agentValue.value || wsMode.value !== "existing" || !workspaceSel.value) {
+    capabilityRefreshing.value = false;
     capability.value = needsSetupCapability(
       { code: "discovery-available", message: "Choose a saved workspace before fetching models." },
       "Model discovery uses a configured workspace. A new path can still take a custom id.",

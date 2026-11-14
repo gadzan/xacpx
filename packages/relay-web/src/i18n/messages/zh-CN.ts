@@ -1330,7 +1330,10 @@ export default {
   },
   capability: {
     refresh: "刷新模型",
-    refreshFailed: "刷新模型 — 上次读取失败：{message}",
+    refreshFailed: "上次读取失败：{message}",
+    refreshTitle: "刷新模型。{detail}",
+    refreshTitleWithRecovery: "刷新模型。{detail}{recovery}",
+    sentenceEnd: "。",
     model: "模型",
     defaultModel: "默认",
     suggestion: "建议，未经适配器验证",

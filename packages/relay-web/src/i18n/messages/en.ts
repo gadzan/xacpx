@@ -1336,7 +1336,10 @@ export default {
   },
   capability: {
     refresh: "Refresh models",
-    refreshFailed: "Refresh models — last read failed: {message}",
+    refreshFailed: "Last read failed: {message}",
+    refreshTitle: "Refresh models. {detail}",
+    refreshTitleWithRecovery: "Refresh models. {detail} {recovery}",
+    sentenceEnd: ".",
     model: "Model",
     defaultModel: "Default",
     suggestion: "Suggestion, not adapter-verified",

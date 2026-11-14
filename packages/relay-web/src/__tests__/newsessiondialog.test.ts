@@ -422,6 +422,38 @@ describe("NewSessionDialog", () => {
     expect(wrapper.emitted("close")).toBeTruthy();
   });
 
+  it("stops the refresh spin when a superseded read never gets to run", async () => {
+    // The first read is still in flight when the workspace moves to a new path.
+    // That read is fenced off and the new call returns before it can fetch, so
+    // nothing would ever clear the flag: the only fetch affordance would stay
+    // disabled and spinning for the rest of the dialog's life.
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    let release: (() => void) | undefined;
+    const inFlight = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(store.getAgentCapabilities).mockImplementation(async () => {
+      await inFlight;
+      return needsSetupCapability(
+        { code: "discovery-available", message: "no saved model list" },
+        "Fetch the model list.",
+        { fetchedAt: "2026-10-09T00:00:00.000Z" },
+      );
+    });
+    await flushPromises();
+    const refresh = () => wrapper.get('[data-test="model-picker-refresh"]');
+    expect(refresh().find("svg").classes()).toContain("animate-spin");
+
+    await wrapper.get('[data-test="ns-ws-mode-path"]').trigger("click");
+    await flushPromises();
+    expect(refresh().find("svg").classes()).not.toContain("animate-spin");
+    expect(refresh().attributes("disabled")).toBeUndefined();
+    release?.();
+  });
+
   it("browse button fills the path field from the picker's confirm", async () => {
     const { wrapper } = mountDialog();
     await flushPromises();
