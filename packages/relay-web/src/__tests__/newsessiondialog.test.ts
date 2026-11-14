@@ -454,6 +454,41 @@ describe("NewSessionDialog", () => {
     release?.();
   });
 
+  it("an older read that lands last cannot clear the newer read's spin", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }, { name: "claude", driver: "claude" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    const state = readyCapability("session", [{ modelId: "gpt-a" }], {
+      fetchedAt: "2026-10-09T00:00:00.000Z",
+      efforts: { status: "unavailable" },
+    });
+    const firstGate = Promise.withResolvers<typeof state>();
+    const secondGate = Promise.withResolvers<typeof state>();
+    let calls = 0;
+    vi.mocked(store.getAgentCapabilities).mockImplementation(async () => {
+      calls += 1;
+      return calls === 1 ? firstGate.promise : secondGate.promise;
+    });
+    await flushPromises();
+    // A second read supersedes the first before either settles.
+    await wrapper.get('[data-test="ns-agent"]').trigger("click");
+    await wrapper.get('[data-value="claude"]').trigger("click");
+    await flushPromises();
+    expect(calls).toBeGreaterThan(1);
+    const spin = () => wrapper.get('[data-test="model-picker-refresh"]').find("svg").classes();
+    expect(spin()).toContain("animate-spin");
+    // The fenced older read must not turn the newer read's spinner off.
+    firstGate.resolve(state);
+    await flushPromises();
+    expect(spin()).toContain("animate-spin");
+    secondGate.resolve(state);
+    await flushPromises();
+    expect(spin()).not.toContain("animate-spin");
+  });
+
   it("browse button fills the path field from the picker's confirm", async () => {
     const { wrapper } = mountDialog();
     await flushPromises();

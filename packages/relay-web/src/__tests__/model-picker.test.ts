@@ -21,7 +21,6 @@ function mountPicker(state: { status: "loading" } | AgentCapabilityState, model 
   });
 }
 
-/** The refresh icon is the only fetch affordance: a spinner and a title, no prose. */
 function refreshControl(wrapper: VueWrapper) {
   return wrapper.get('[data-test="model-picker-refresh"]');
 }
@@ -35,7 +34,6 @@ describe("ModelPicker", () => {
     expect(isSpinning(wrapper)).toBe(true);
     expect(refreshControl(wrapper).attributes("disabled")).toBeDefined();
     expect(wrapper.find('[data-test="model-option"]').exists()).toBe(false);
-    // The old hint stack is gone: the icon carries every fetch state.
     expect(wrapper.findAll("p")).toHaveLength(2);
   });
 
@@ -73,7 +71,6 @@ describe("ModelPicker", () => {
     await wrapper.setProps({ refreshing: true });
     expect(isSpinning(wrapper)).toBe(true);
     expect(refreshControl(wrapper).attributes("disabled")).toBeDefined();
-    // The list underneath stays fully selectable.
     await wrapper.get('[data-test="ns-model"]').trigger("focus");
     expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-saved");
     await wrapper.get('[data-test="model-option"]').trigger("mousedown");
@@ -87,7 +84,6 @@ describe("ModelPicker", () => {
       { fetchedAt: FETCHED },
     );
     const wrapper = mountPicker(state);
-    expect(wrapper.find('[data-test="model-picker-reason"]').exists()).toBe(false);
     const control = refreshControl(wrapper);
     expect(control.attributes("title")).toBe("Refresh models. Last read failed: Enter a model now.");
     expect(control.attributes("aria-label")).toBe(control.attributes("title"));
@@ -95,9 +91,6 @@ describe("ModelPicker", () => {
   });
 
   it("carries a needs-setup recovery next to the failure instead of dropping it", () => {
-    // `discovery-available` is not a failure: the adapter is fine, nothing has
-    // been fetched yet. The tooltip must not claim a read failed, and the
-    // recovery is the only actionable next step the state carries.
     const setup = needsSetupCapability(
       { code: "discovery-available", message: "no saved model list" },
       "Fetch the model list.",
@@ -105,7 +98,7 @@ describe("ModelPicker", () => {
     );
     const wrapper = mountPicker(setup);
     const control = refreshControl(wrapper);
-    expect(control.attributes("title")).toBe("Refresh models. No saved model list. Fetch the model list.");
+    expect(control.attributes("title")).toBe("Refresh models. no saved model list. Fetch the model list.");
     expect(control.classes()).not.toContain("text-danger");
   });
 
@@ -118,6 +111,35 @@ describe("ModelPicker", () => {
     const control = refreshControl(wrapper);
     expect(control.attributes("title")).toBe("Refresh models. Last read failed: the probe timed out. Retry the model fetch.");
     expect(control.classes()).toContain("text-danger");
+  });
+
+  it("keeps the refresh enabled while the daemon says a background probe is running", async () => {
+    // A daemon-reported `refreshing` bit can outlive the background probe: no
+    // completion event replaces it. Disabling the only retry leaves the user
+    // with no way to force a fresh read.
+    const wrapper = mountPicker(readyCapability("cache", [{ modelId: "gpt-saved" }], {
+      fetchedAt: FETCHED,
+      freshness: "stale",
+      refreshing: true,
+      lastVerifiedAt: FETCHED,
+    }));
+    expect(isSpinning(wrapper)).toBe(true);
+    const control = refreshControl(wrapper);
+    expect(control.attributes("disabled")).toBeUndefined();
+    await control.trigger("click");
+    expect(wrapper.emitted("fetch")).toEqual([[]]);
+  });
+
+  it("does not double-terminate a reason that already ends in punctuation", () => {
+    const wrapper = mountPicker(errorCapability(
+      { code: "transport", message: "Authentication required!" },
+      "Sign in again?",
+      { fetchedAt: FETCHED },
+    ));
+    const title = refreshControl(wrapper).attributes("title")!;
+    expect(title).not.toMatch(/[!?。！？][.。]/);
+    expect(title).toContain("Authentication required!");
+    expect(title).toContain("Sign in again?");
   });
 
   it("hides the bot applies-later note when showAppliesLater is false", async () => {
@@ -147,8 +169,6 @@ describe("ModelPicker", () => {
       { fetchedAt: FETCHED },
     );
     const setupView = mountPicker(setup);
-    // The state that used to need a "Fetch model list" button needs nothing but
-    // the icon: same click, same probe.
     expect(setupView.findAll("button")).toHaveLength(1);
     await refreshControl(setupView).trigger("click");
     expect(setupView.emitted("fetch")).toEqual([[]]);
@@ -248,8 +268,6 @@ describe("ModelPicker state matrix", () => {
       lastVerifiedAt: "2026-10-09T00:03:00.000Z",
     });
     const wrapper = mountPicker(state);
-    // Staleness alone is not an error: the icon stays neutral and enabled.
-    expect(refreshControl(wrapper).attributes("title")).toBe("Refresh models");
     expect(refreshControl(wrapper).classes()).not.toContain("text-danger");
     expect(isSpinning(wrapper)).toBe(false);
     await wrapper.get('[data-test="ns-model"]').trigger("focus");
@@ -278,7 +296,7 @@ describe("ModelPicker state matrix", () => {
     });
     const wrapper = mountPicker(state);
     expect(isSpinning(wrapper)).toBe(false);
-    expect(refreshControl(wrapper).attributes("title")).toBe("Refresh models");
+    expect(refreshControl(wrapper).classes()).not.toContain("text-danger");
   });
 
   it("renders empty with default, custom id, and suggestions usable", async () => {

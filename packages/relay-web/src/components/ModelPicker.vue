@@ -12,8 +12,9 @@ const props = withDefaults(defineProps<{
   state: { status: "loading" } | AgentCapabilityState;
   model: string;
   effort: string;
-  /** The owner's read is in flight, so the refresh icon spins for it too. */
   refreshing?: boolean;
+  /** A probe that failed over a preserved list; the list stays usable. */
+  failure?: { message: string; recovery: string };
   /** Kept when a refresh cannot fetch efforts. */
   carriedEfforts?: Array<{ id: string; name: string }>;
   audience?: "bot" | "session";
@@ -101,45 +102,50 @@ const effectText = computed(() => {
     ? t("capability.effectSavedApplied", { model: current.modelId, applied: current.appliedModelId })
     : t("capability.effectSaved", { model: current.modelId });
 });
-// The refresh icon is the whole diagnostic: it tints danger when a read failed
-// and its tooltip/accessible name carries the state and the next step. No prose
-// above the field, so a usable list says nothing at all.
 const refreshIssue = computed(() => {
+  if (props.failure) {
+    return {
+      failed: true,
+      message: props.failure.message,
+      recovery: props.failure.recovery === props.failure.message ? "" : props.failure.recovery,
+    };
+  }
   const state = settled.value;
   const reason = state?.reason;
   if (!state || !reason) return undefined;
   return {
-    // A preserved cache with a reason always means its re-verification failed.
-    // `discovery-available` is the one code that reports a standing condition
-    // (nothing fetched yet), not a read that was attempted and failed.
+    // `discovery-available` reports a standing condition, not a failed read.
     failed: state.status === "ready" || reason.code !== "discovery-available",
     message: reason.message,
-    // A recovery that repeats the reason would say the same thing twice.
     recovery: "recovery" in state && state.recovery !== reason.message ? state.recovery : "",
   };
 });
-/** Any refresh in flight: the owner's read, the daemon's background probe, or a cold first load. */
 const spinning = computed(() =>
   props.refreshing
   || props.state.status === "loading"
   || (settled.value?.status === "ready" && settled.value.refreshing === true));
+// Only our own read owns `disabled`. A daemon-reported background probe can
+// outlive its completion notice, so it must not take the only retry away.
+const busy = computed(() => props.refreshing || props.state.status === "loading");
 const refreshTitle = computed(() => {
   const issue = refreshIssue.value;
   if (!issue) return t("capability.refresh");
-  // The reason and the recovery are server prose with unknown punctuation, so
-  // they become whole sentences here and the locale owns only the terminator.
   const end = t("capability.sentenceEnd");
   const sentence = (text: string) => {
-    const body = text.trim().replace(/[.。]+$/, "");
+    const body = text.trim();
     if (!body) return "";
-    const first = body.charAt(0);
-    return `${/[a-z]/.test(first) ? first.toUpperCase() : first}${body.slice(1)}${end}`;
+    // Server prose may already end a sentence, and that terminator can be
+    // followed by a closing quote or bracket. Keep it instead of doubling it.
+    const ended = /^(.*)([.!?。！？…])(["'”’»）)\]\s]*)$/u.exec(body);
+    return ended ? body : `${body}${end}`;
   };
   const detail = sentence(issue.failed
     ? t("capability.refreshFailed", { message: issue.message })
     : issue.message);
-  return issue.recovery
-    ? t("capability.refreshTitleWithRecovery", { detail, recovery: sentence(issue.recovery) })
+  if (!detail) return t("capability.refresh");
+  const recovery = sentence(issue.recovery);
+  return recovery
+    ? t("capability.refreshTitleWithRecovery", { detail, recovery })
     : t("capability.refreshTitle", { detail });
 });
 
@@ -153,11 +159,6 @@ function onCustom(event: Event): void {
 }
 function onEffort(value: string): void {
   emit("update:effort", value);
-}
-function onRefresh(): void {
-  // Busy is disabled too; this keeps a queued double click from probing twice.
-  if (spinning.value) return;
-  emit("fetch");
 }
 </script>
 
@@ -183,18 +184,17 @@ function onRefresh(): void {
             @click="dd.openMenu()"
             @input="onCustom"
           />
-          <!-- The only fetch affordance: no text button, and the field stays
-               selectable while it spins. -->
           <button
             type="button"
             data-test="model-picker-refresh"
             class="absolute right-1 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-sm transition-colors hover:bg-fg/10 disabled:opacity-50"
             :class="refreshIssue?.failed ? 'text-danger hover:text-danger' : 'text-fg-muted hover:text-fg'"
-            :disabled="spinning"
+            :aria-busy="spinning"
+            :disabled="busy"
             :title="refreshTitle"
             :aria-label="refreshTitle"
             @mousedown.prevent
-            @click.stop="onRefresh"
+            @click="emit('fetch')"
           >
             <RefreshCw :size="14" :class="{ 'animate-spin motion-reduce:animate-none': spinning }" />
           </button>

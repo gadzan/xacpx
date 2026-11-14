@@ -49,6 +49,7 @@ const capability = ref<{ status: "loading" } | AgentCapabilityState>({ status: "
 const carriedEfforts = ref<Array<{ id: string; name: string }>>([]);
 let lastSettledCapability: AgentCapabilityState | undefined;
 const capabilityRefreshing = ref(false);
+const capabilityFailure = ref<{ message: string; recovery: string } | undefined>();
 let capabilitySeq = 0;
 const submitting = ref(false);
 const error = ref("");
@@ -167,15 +168,16 @@ watch([sessionSource, agentValue, workspaceSel], () => {
 
 async function loadCapabilities(probe = false): Promise<void> {
   const seq = ++capabilitySeq;
-  // A superseded read cannot clear the flag (its result is fenced off), so any
-  // path that returns before fetching must clear it here. Otherwise the only
-  // fetch affordance stays disabled and spinning for good.
+  // Fenced-off reads never reach their own clear, so every pre-fetch return
+  // clears here or the icon spins forever.
   if (sessionSource.value !== "new") {
     capabilityRefreshing.value = false;
+    capabilityFailure.value = undefined;
     return;
   }
   if (!agentValue.value || wsMode.value !== "existing" || !workspaceSel.value) {
     capabilityRefreshing.value = false;
+    capabilityFailure.value = undefined;
     capability.value = needsSetupCapability(
       { code: "discovery-available", message: "Choose a saved workspace before fetching models." },
       "Model discovery uses a configured workspace. A new path can still take a custom id.",
@@ -183,8 +185,6 @@ async function loadCapabilities(probe = false): Promise<void> {
     );
     return;
   }
-  // Never paint the loading state over a usable list: the picker spins its
-  // refresh icon instead and stays selectable for the whole read.
   capabilityRefreshing.value = true;
   try {
     const next = await store.getAgentCapabilities(props.instanceId, {
@@ -198,10 +198,15 @@ async function loadCapabilities(probe = false): Promise<void> {
       ? picked
       : (next.status === "ready" ? next.appliedModelId : undefined);
     const merged = mergeEffortRefresh(lastSettledCapability, next, scopeId);
-    if (merged.state.status !== "error") lastSettledCapability = merged.state;
-    // A failed re-read keeps the last good list on screen instead of wiping it
-    // to an error; the refresh icon carries the failure.
-    if (merged.state.status !== "error" || !lastSettledCapability) capability.value = merged.state;
+    if (merged.state.status === "error") {
+      capabilityFailure.value = { message: merged.state.reason.message, recovery: merged.state.recovery };
+      if (lastSettledCapability) capability.value = lastSettledCapability;
+      else capability.value = merged.state;
+    } else {
+      capabilityFailure.value = undefined;
+      lastSettledCapability = merged.state;
+      capability.value = merged.state;
+    }
     carriedEfforts.value = merged.efforts?.status === "known"
       ? merged.efforts.options.map((option) => ({ id: option.id, name: option.name }))
       : [];
@@ -211,8 +216,6 @@ async function loadCapabilities(probe = false): Promise<void> {
 }
 function onModelPick(value: string): void {
   model.value = value;
-  // A committed model switch re-reads; the cache plus in-flight merge keep it
-  // cheap, and the spinner keeps the old list selectable until it lands.
   void loadCapabilities(false);
 }
 watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
@@ -221,6 +224,7 @@ watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
   if (sessionSource.value === "new") {
     lastSettledCapability = undefined;
     carriedEfforts.value = [];
+    capabilityFailure.value = undefined;
   }
   void loadCapabilities(false);
 });
@@ -416,6 +420,7 @@ async function submit(): Promise<void> {
             :show-effort="false"
             :state="capability"
             :refreshing="capabilityRefreshing"
+            :failure="capabilityFailure"
             :model="model"
             effort=""
             :carried-efforts="carriedEfforts"

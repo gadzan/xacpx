@@ -218,9 +218,9 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 
 Bot 对话框和新建 Session 对话框共用 `ModelPicker`。它读取 `control.agents.capabilities.get`，状态为 loading、ready、unsupported、needs-setup 或 error。默认选项和自定义 id 始终可以填写。配置里的 `modelCandidates` 标成建议，不显示成适配器结果。选中的 id 和实际生效的 id 分开显示。无效的显式 id 在运行时退回默认时显示为未生效。
 
-模型字段内嵌一个刷新图标（`data-test="model-picker-refresh"`），它是**唯一**的获取/刷新入口：没有“获取模型列表”“重试”“正在加载模型…”“列表已过期”“正在后台刷新…”这些文案条。图标在三种情况下旋转（`animate-spin`，`motion-reduce` 下停用）：owner 自己发起读取（`refreshing` prop，含模型切换后的静默重读、作用域失效重读）、daemon 报告的后台探测（`state.refreshing`）、以及冷启动的首次加载（`state.status === "loading"`）。旋转期间按钮 `disabled`，但输入框与下拉列表保持可交互，刷新时仍能选模型。
+模型字段内嵌一个刷新图标（`data-test="model-picker-refresh"`），它是唯一的获取/刷新入口，取代了原来的“获取模型列表”“重试”“正在加载模型…”“列表已过期”“正在后台刷新…”这些文案条。以下任一情况都会让它旋转：本对话框自己的读取（含模型切换后的重读、作用域失效重读）、daemon 报告的后台探测、冷启动的首次加载。旋转期间本对话框自己的读取会禁用按钮，输入框与下拉列表仍可交互，所以刷新时仍能选模型。
 
-图标也是唯一的状态说明：tooltip 与可访问名按顺序给出三句——动作、当前状态、下一步。`discovery-available` 只表示“还没取过”，不算失败，图标保持中性；真正的读取失败（`error`、`timeout`、`transport` 等）图标转为 `text-danger`，并带上 `reason` 与 `recovery`。两个对话框在读取前置条件不满足而提前返回时必须同时清掉 `capabilityRefreshing`，否则被 fence 掉的旧读取没有机会清除它，唯一入口会一直 disabled 并旋转。列表可用但刷新失败（`reason`）或状态本身是 error 时，图标转为 danger 色，完整原因通过 `title`/`aria-label`（`capability.refreshFailed`）给出，不再挤占表单空间。
+图标同时承担状态说明，`title` 与 `aria-label` 按“动作、当前状态、下一步”依次给出：无状态时只有动作；有 `reason` 时追加上报原因；`recovery` 与原因不同时再追加下一步。`discovery-available` 表示还没取过，非 ready 状态下图标保持中性；ready 但带 `reason`（保存列表的复核失败）以及其他失败原因码会让图标转为 danger 色。显式探测失败时保留旧列表，图标同时带上失败原因与下一步。
 
 Bot 的 model / effort 在保存后作用于之后接受的 Run。已有 Session 作曲器仍用 `control.session.model.set` 做即时切换，不走这条能力 RPC。
 
@@ -228,7 +228,7 @@ effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合�
 
 已验证的模型列表会持久化在 `state.json` 的 `capability_lists` 段（按键：agent + 工作区 cwd + 启动身份 + 鉴权材料），因此关闭再打开 Bot 编辑框、或重启 daemon 后仍会显示列表。点刷新图标永远重新探测（`probe: true`），不会直接回放旧列表；刷新失败时旧列表仍然可用，图标标红并带上 `reason`。adapter pin、command/argv、工作目录或鉴权材料变化会换键，旧列表不会被误用。
 
-Web 侧另有一层短命缓存，只用于消除重复 RPC：键为 instance + agent + workspace + bot，并发相同读取合并为一次请求。它不能替代 daemon 指纹（前端看不到 command/argv/鉴权），因此失效边界必须显式：`loadInstances`（重连快照）、实例上下线、`workspaces-changed`、`bots-changed` 无条件清理该实例；`loadFormOptions`/`loadWorkspaces` 只在 agent 名称/driver 或 workspace 名称/cwd 实际变化时清理——对话框每次打开都会重载配置，若无条件清理，跨次打开就再也命中不了缓存，PR #444 的收益会被抵消。未被事件覆盖的变更（直接改配置文件、重新登录 adapter）由 60 秒有效期和显式 Probe 兜底。写回只允许最新发出的请求生效，旧响应不能覆盖新 probe；带失败 `reason` 的 ready 只是临时告警，不进入缓存，下一次普通读取仍会询问 daemon。刷新图标在任何可用列表上都存在，作为唯一的显式刷新入口。
+Web 侧另有一层短命缓存，只用于消除重复 RPC：键为 instance + agent + workspace + bot，并发相同读取合并为一次请求。它不能替代 daemon 指纹（前端看不到 command/argv/鉴权），因此失效边界必须显式：`loadInstances`（重连快照）、实例上下线、`workspaces-changed`、`bots-changed` 无条件清理该实例；`loadFormOptions`/`loadWorkspaces` 只在 agent 名称/driver 或 workspace 名称/cwd 实际变化时清理。对话框每次打开都会重载配置，若无条件清理，跨次打开就再也命中不了缓存，PR #444 的收益会被抵消。未被事件覆盖的变更（直接改配置文件、重新登录 adapter）由 60 秒有效期和显式 Probe 兜底。写回只允许最新发出的请求生效，旧响应不能覆盖新 probe；带失败 `reason` 的 ready 只是临时告警，不进入缓存，下一次普通读取仍会询问 daemon。刷新图标在任何可用列表上都存在，作为唯一的显式刷新入口。
 
 ## 会话创建对话框（`NewSessionDialog.vue`）
 
