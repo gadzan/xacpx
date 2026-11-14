@@ -155,9 +155,10 @@ describe("Direct Bot Components", () => {
       await wrapper.get('[data-test="bot-model"]').trigger("focus");
       await wrapper.get('[data-test="model-option"][data-model-id="gpt-b"]').trigger("mousedown");
       await flushPromises();
-      // Silent: no loading flash and the old list stays selectable mid-flight.
+      // Silent: the icon spins while the read is in flight and the old list
+      // stays selectable — no loading state replaces it.
       expect(caps.mock.calls.length).toBeGreaterThan(settled);
-      expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+      expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("disabled")).toBeDefined();
       await wrapper.get('[data-test="bot-model"]').trigger("focus");
       expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-a");
       secondGate.resolve(second);
@@ -260,16 +261,16 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       // The background re-read is in flight: no loading flash, old list stays.
       expect(reads).toBe(settled + 1);
-      expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+      expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("disabled")).toBeDefined();
       brokenGate.resolve(errorCapability({ code: "transport", message: "offline" }, "Retry.", { fetchedAt: "2026-10-09T00:00:00.000Z" }));
       await flushPromises();
       // The failed background read keeps the usable list instead of wiping it.
       await wrapper.get('[data-test="bot-model"]').trigger("focus");
       expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-a");
-      expect(wrapper.find('[data-test="model-picker-reason"]').exists()).toBe(false);
+      expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("title")).toBe("Refresh models");
       // An explicit Fetch still surfaces failures and recovery.
       phase = "fresh";
-      await wrapper.get('[data-test="model-picker-fetch"]').trigger("click");
+      await wrapper.get('[data-test="model-picker-refresh"]').trigger("click");
       await flushPromises();
       expect(reads).toBe(settled + 2);
       await wrapper.get('[data-test="bot-model"]').trigger("focus");
@@ -313,7 +314,7 @@ describe("Direct Bot Components", () => {
       await wrapper.find("#bot-agent").trigger("click");
       await wrapper.find('[data-value="helper"]').trigger("click");
       await flushPromises();
-      expect(wrapper.get('[data-test="model-picker-reason"]').text()).toContain("offline");
+      expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("title")).toContain("offline");
       expect(wrapper.find('[data-test="model-picker-effort"]').element.tagName).toBe("INPUT");
     });
 
@@ -596,13 +597,15 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).not.toContain(i18n.global.t("bot.fields.instructionsHint"));
     });
 
-    it("New workspace with nothing to preview shows a single model hint", async () => {
+    it("New workspace with nothing to preview states the reason once, on the refresh icon", async () => {
       const { wrapper } = mountCreateDialog({ dedicated: true, workspaces: [] });
       await flushPromises();
-      const hints = wrapper.findAll('[data-test="model-picker-reason"], [data-test="model-picker-recovery"], [data-test="model-picker-applies-later"]');
-      expect(hints).toHaveLength(1);
-      expect(hints[0]!.attributes("data-test")).toBe("model-picker-reason");
-      expect(hints[0]!.text()).toBe(i18n.global.t("bot.fields.workspacePreviewHint"));
+      const hint = i18n.global.t("bot.fields.workspacePreviewHint");
+      expect(wrapper.findAll('[data-test="model-picker-reason"], [data-test="model-picker-recovery"]')).toHaveLength(0);
+      const title = wrapper.get('[data-test="model-picker-refresh"]').attributes("title")!;
+      expect(title).toContain(hint);
+      // Reason and recovery are identical here: the icon must not say it twice.
+      expect(title.split(hint)).toHaveLength(2);
     });
 
     it("focused name in error state uses the danger ring, not the default focus ring", async () => {

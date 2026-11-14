@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { Check } from "lucide-vue-next";
+import { Check, RefreshCw } from "lucide-vue-next";
 import type { AgentCapabilityState, CapabilityModel, SelectionEffect } from "@ganglion/xacpx-relay-protocol";
 import { classifySelection } from "@ganglion/xacpx-relay-protocol";
 import { useDropdown } from "../lib/use-dropdown";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 import { effortsForModel } from "../lib/capability-view";
-import { fmtTime } from "../lib/format";
 
 const props = withDefaults(defineProps<{
   state: { status: "loading" } | AgentCapabilityState;
   model: string;
   effort: string;
+  /** The owner's read is in flight, so the refresh icon spins for it too. */
+  refreshing?: boolean;
   /** Kept when a refresh cannot fetch efforts. */
   carriedEfforts?: Array<{ id: string; name: string }>;
   audience?: "bot" | "session";
@@ -22,6 +23,7 @@ const props = withDefaults(defineProps<{
   modelTestId?: string;
   listTestId?: string;
 }>(), {
+  refreshing: false,
   audience: "session",
   showAppliesLater: true,
   showEffort: true,
@@ -99,36 +101,21 @@ const effectText = computed(() => {
     ? t("capability.effectSavedApplied", { model: current.modelId, applied: current.appliedModelId })
     : t("capability.effectSaved", { model: current.modelId });
 });
-const reason = computed(() => {
+// The refresh icon is the whole diagnostic: it tints danger when the list is a
+// failed or unverified guess, and its tooltip/accessible name carries the
+// reason. No prose above the field — a usable list says nothing at all.
+const failure = computed(() => {
   const state = settled.value;
   if (!state) return "";
-  if (state.status === "error") return state.reason.message;
-  if (state.status === "ready") {
-    return state.reason ? t("capability.savedListUnverified", { message: state.reason.message }) : "";
-  }
-  return state.reason.message;
+  return state.status === "ready" ? state.reason?.message ?? "" : state.reason.message;
 });
-const isStale = computed(() => settled.value?.status === "ready" && settled.value.freshness === "stale");
-const isRefreshing = computed(() => settled.value?.status === "ready" && settled.value.refreshing === true);
-const staleText = computed(() => {
-  const verifiedAt = settled.value?.status === "ready" ? settled.value.lastVerifiedAt : undefined;
-  const time = fmtTime(verifiedAt);
-  return time ? t("capability.staleVerified", { time }) : t("capability.stale");
-});
-const recovery = computed(() => {
-  const state = settled.value;
-  if (!state || state.status === "error" || state.status === "ready") return "";
-  // A recovery that repeats the reason would render the same hint twice.
-  return state.recovery === reason.value ? "" : state.recovery;
-});
-const canFetch = computed(() => {
-  const state = settled.value;
-  if (!state) return false;
-  // A verified list still needs an escape hatch: the adapter command or auth
-  // may change on the machine without any event this client can observe.
-  if (state.status === "ready") return true;
-  return state.status === "needs-setup" && state.reason.code === "discovery-available";
-});
+/** Any refresh in flight: the owner's read, the daemon's background probe, or a cold first load. */
+const spinning = computed(() =>
+  props.refreshing
+  || props.state.status === "loading"
+  || (settled.value?.status === "ready" && settled.value.refreshing === true));
+const refreshTitle = computed(() =>
+  failure.value ? t("capability.refreshFailed", { message: failure.value }) : t("capability.refresh"));
 
 function pickModel(modelId: string): void {
   emit("update:model", modelId);
@@ -141,44 +128,51 @@ function onCustom(event: Event): void {
 function onEffort(value: string): void {
   emit("update:effort", value);
 }
+function onRefresh(): void {
+  // Busy is disabled too; this keeps a queued double click from probing twice.
+  if (spinning.value) return;
+  emit("fetch");
+}
 </script>
 
 <template>
   <div data-test="model-picker" class="space-y-2">
-    <p v-if="state.status === 'loading'" data-test="model-picker-loading" class="text-xs text-fg-muted">
-      {{ t("capability.loading") }}
-    </p>
-    <p v-else-if="reason" data-test="model-picker-reason" class="text-xs text-fg-muted">{{ reason }}</p>
-    <p v-if="isStale" data-test="model-picker-stale" class="text-xs text-fg-muted">{{ staleText }}</p>
-    <p v-if="isRefreshing" data-test="model-picker-refreshing" class="text-xs text-fg-muted">{{ t("capability.refreshing") }}</p>
-    <p v-if="recovery" data-test="model-picker-recovery" class="text-xs text-fg-muted">{{ recovery }}</p>
-    <div class="flex gap-2">
-      <button v-if="canFetch" type="button" data-test="model-picker-fetch" class="rounded-lg px-2 py-1 text-xs text-fg hover:bg-fg/5" @click="emit('fetch')">
-        {{ t("capability.fetch") }}
-      </button>
-      <button v-if="state.status === 'error'" type="button" data-test="model-picker-retry" class="rounded-lg px-2 py-1 text-xs text-fg hover:bg-fg/5" @click="emit('fetch')">
-        {{ t("capability.retry") }}
-      </button>
-    </div>
     <p data-test="model-picker-effect" class="text-xs text-fg-muted">{{ effectText }}</p>
     <p v-if="audience === 'bot' && showAppliesLater" data-test="model-picker-applies-later" class="text-xs text-fg-muted">{{ t("capability.appliesLater") }}</p>
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <div class="relative">
         <label class="mb-1.5 block text-xs font-medium text-fg-muted" :for="modelTestId">{{ t("capability.model") }}</label>
-        <input
-          :id="modelTestId"
-          :ref="(el) => (dd.trigger = el as HTMLElement | null)"
-          :data-test="modelTestId"
-          :value="model"
-          autocomplete="off"
-          :aria-haspopup="'listbox'"
-          :aria-expanded="dd.open"
-          :placeholder="t('capability.defaultModel')"
-          class="w-full rounded-lg bg-surface-2 px-3 py-1.5 text-sm outline-none transition-colors"
-          @focus="onFocus"
-          @click="dd.openMenu()"
-          @input="onCustom"
-        />
+        <div class="relative">
+          <input
+            :id="modelTestId"
+            :ref="(el) => (dd.trigger = el as HTMLElement | null)"
+            :data-test="modelTestId"
+            :value="model"
+            autocomplete="off"
+            :aria-haspopup="'listbox'"
+            :aria-expanded="dd.open"
+            :placeholder="t('capability.defaultModel')"
+            class="w-full rounded-lg bg-surface-2 py-1.5 pl-3 pr-9 text-sm outline-none transition-colors"
+            @focus="onFocus"
+            @click="dd.openMenu()"
+            @input="onCustom"
+          />
+          <!-- The only fetch affordance: no text button, and the field stays
+               selectable while it spins. -->
+          <button
+            type="button"
+            data-test="model-picker-refresh"
+            class="absolute right-1 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-sm transition-colors hover:bg-fg/10 disabled:opacity-50"
+            :class="failure ? 'text-danger hover:text-danger' : 'text-fg-muted hover:text-fg'"
+            :disabled="spinning"
+            :title="refreshTitle"
+            :aria-label="refreshTitle"
+            @mousedown.prevent
+            @click.stop="onRefresh"
+          >
+            <RefreshCw :size="14" :class="{ 'animate-spin motion-reduce:animate-none': spinning }" />
+          </button>
+        </div>
         <ul v-if="dd.open" :data-test="listTestId" data-dd-panel
             class="absolute z-30 mt-1 max-h-80 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
           <li>

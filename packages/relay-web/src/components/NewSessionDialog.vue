@@ -48,6 +48,7 @@ const model = ref("");
 const capability = ref<{ status: "loading" } | AgentCapabilityState>({ status: "loading" });
 const carriedEfforts = ref<Array<{ id: string; name: string }>>([]);
 let lastSettledCapability: AgentCapabilityState | undefined;
+const capabilityRefreshing = ref(false);
 let capabilitySeq = 0;
 const submitting = ref(false);
 const error = ref("");
@@ -164,7 +165,7 @@ watch([sessionSource, agentValue, workspaceSel], () => {
   }
 });
 
-async function loadCapabilities(probe = false, silent = false): Promise<void> {
+async function loadCapabilities(probe = false): Promise<void> {
   const seq = ++capabilitySeq;
   if (sessionSource.value !== "new") return;
   if (!agentValue.value || wsMode.value !== "existing" || !workspaceSel.value) {
@@ -175,34 +176,37 @@ async function loadCapabilities(probe = false, silent = false): Promise<void> {
     );
     return;
   }
-  if (!silent) capability.value = { status: "loading" };
-  const next = await store.getAgentCapabilities(props.instanceId, {
-    agent: agentValue.value,
-    workspace: workspaceSel.value,
-    ...(probe ? { probe: true } : {}),
-  });
-  if (seq !== capabilitySeq) return;
-  const picked = model.value.trim();
-  const scopeId = picked && picked.toLowerCase() !== "default"
-    ? picked
-    : (next.status === "ready" ? next.appliedModelId : undefined);
-  const merged = mergeEffortRefresh(lastSettledCapability, next, scopeId);
-  if (merged.state.status !== "error") lastSettledCapability = merged.state;
-  // A background re-read that fails keeps the last good list on screen
-  // instead of wiping it to an error; an explicit Fetch still surfaces
-  // failures. The carry below still updates, so a scope move clears it.
-  if (!silent || merged.state.status !== "error" || !lastSettledCapability) {
-    capability.value = merged.state;
+  // Never paint the loading state over a usable list: the picker spins its
+  // refresh icon instead and stays selectable for the whole read.
+  capabilityRefreshing.value = true;
+  try {
+    const next = await store.getAgentCapabilities(props.instanceId, {
+      agent: agentValue.value,
+      workspace: workspaceSel.value,
+      ...(probe ? { probe: true } : {}),
+    });
+    if (seq !== capabilitySeq) return;
+    const picked = model.value.trim();
+    const scopeId = picked && picked.toLowerCase() !== "default"
+      ? picked
+      : (next.status === "ready" ? next.appliedModelId : undefined);
+    const merged = mergeEffortRefresh(lastSettledCapability, next, scopeId);
+    if (merged.state.status !== "error") lastSettledCapability = merged.state;
+    // A failed re-read keeps the last good list on screen instead of wiping it
+    // to an error; the refresh icon carries the failure.
+    if (merged.state.status !== "error" || !lastSettledCapability) capability.value = merged.state;
+    carriedEfforts.value = merged.efforts?.status === "known"
+      ? merged.efforts.options.map((option) => ({ id: option.id, name: option.name }))
+      : [];
+  } finally {
+    if (seq === capabilitySeq) capabilityRefreshing.value = false;
   }
-  carriedEfforts.value = merged.efforts?.status === "known"
-    ? merged.efforts.options.map((option) => ({ id: option.id, name: option.name }))
-    : [];
 }
 function onModelPick(value: string): void {
   model.value = value;
   // A committed model switch re-reads; the cache plus in-flight merge keep it
-  // cheap, and silent keeps the old list up until the new read lands.
-  void loadCapabilities(false, true);
+  // cheap, and the spinner keeps the old list selectable until it lands.
+  void loadCapabilities(false);
 }
 watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
   // A new agent/workspace is a new capability scope: drop the previous
@@ -217,7 +221,7 @@ watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
 // open; anything else leaves the shown list alone.
 watch(
   () => store.capabilityEpochFor(props.instanceId, agentValue.value, workspaceSel.value),
-  () => { void loadCapabilities(false, true); },
+  () => { void loadCapabilities(false); },
 );
 
 // Turn a raw backend error into a friendlier hint. Listing an agent's native sessions
@@ -404,6 +408,7 @@ async function submit(): Promise<void> {
             audience="session"
             :show-effort="false"
             :state="capability"
+            :refreshing="capabilityRefreshing"
             :model="model"
             effort=""
             :carried-efforts="carriedEfforts"
