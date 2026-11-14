@@ -155,9 +155,8 @@ describe("Direct Bot Components", () => {
       await wrapper.get('[data-test="bot-model"]').trigger("focus");
       await wrapper.get('[data-test="model-option"][data-model-id="gpt-b"]').trigger("mousedown");
       await flushPromises();
-      // Silent: no loading flash and the old list stays selectable mid-flight.
       expect(caps.mock.calls.length).toBeGreaterThan(settled);
-      expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+      expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("disabled")).toBeDefined();
       await wrapper.get('[data-test="bot-model"]').trigger("focus");
       expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-a");
       secondGate.resolve(second);
@@ -260,20 +259,74 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       // The background re-read is in flight: no loading flash, old list stays.
       expect(reads).toBe(settled + 1);
-      expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+      expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("disabled")).toBeDefined();
       brokenGate.resolve(errorCapability({ code: "transport", message: "offline" }, "Retry.", { fetchedAt: "2026-10-09T00:00:00.000Z" }));
       await flushPromises();
       // The failed background read keeps the usable list instead of wiping it.
       await wrapper.get('[data-test="bot-model"]').trigger("focus");
       expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-a");
-      expect(wrapper.find('[data-test="model-picker-reason"]').exists()).toBe(false);
+      const afterFailure = wrapper.get('[data-test="model-picker-refresh"]');
+      expect(afterFailure.classes()).toContain("text-danger");
+      expect(afterFailure.attributes("title")).toContain("offline");
+      expect(afterFailure.attributes("title")).toContain("Retry.");
       // An explicit Fetch still surfaces failures and recovery.
       phase = "fresh";
-      await wrapper.get('[data-test="model-picker-fetch"]').trigger("click");
+      await wrapper.get('[data-test="model-picker-refresh"]').trigger("click");
       await flushPromises();
       expect(reads).toBe(settled + 2);
       await wrapper.get('[data-test="bot-model"]').trigger("focus");
       expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-new");
+    });
+
+    it("an explicit probe failure over a saved list stays visible on the icon", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [{
+        id: "i1", name: "Local", online: true, lastSeenAt: null, sessions: [],
+        agents: [{ name: "codex", driver: "codex" }],
+        workspaces: [{ name: "repo", cwd: "/repo" }], agentCatalog: [],
+      }] as never;
+      const ready = readyCapability("session", [{ modelId: "gpt-a" }], {
+        fetchedAt: "2026-10-09T00:00:00.000Z",
+      });
+      const failed = errorCapability(
+        { code: "transport", message: "the connector is offline" },
+        "Retry after reconnecting.",
+        { fetchedAt: "2026-10-09T00:00:01.000Z" },
+      );
+      vi.mocked(instances.getAgentCapabilities).mockImplementation(async (_id, input) =>
+        input.probe ? failed : ready);
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.get('[data-test="model-picker-refresh"]').trigger("click");
+      await flushPromises();
+      const control = wrapper.get('[data-test="model-picker-refresh"]');
+      expect(control.attributes("title")).toContain("the connector is offline");
+      expect(control.attributes("title")).toContain("Retry after reconnecting.");
+      expect(control.classes()).toContain("text-danger");
+      // The saved list survives the failed probe.
+      await wrapper.get('[data-test="bot-model"]').trigger("focus");
+      expect(wrapper.get('[data-test="model-option"]').attributes("data-model-id")).toBe("gpt-a");
+    });
+
+    it("clears the refresh spin when a workspace disappears under an in-flight read", async () => {
+      const { wrapper, instances } = mountCreateDialog({ dedicated: true });
+      const gate = Promise.withResolvers<unknown>();
+      vi.spyOn(instances, "getAgentCapabilities").mockReturnValue(gate.promise as never);
+      // Kick off a read with a registered workspace.
+      instances.instances[0]!.workspaces = [{ name: "repo", cwd: "/repo" }] as never;
+      await flushPromises();
+      expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("disabled")).toBeDefined();
+      // Remove every workspace: the newer read takes the no-preview branch.
+      instances.instances[0]!.workspaces = [] as never;
+      await flushPromises();
+      gate.resolve(readyCapability("session", [{ modelId: "gpt-a" }], { fetchedAt: "2026-10-09T00:00:00.000Z" }));
+      await flushPromises();
+      const control = wrapper.get('[data-test="model-picker-refresh"]');
+      expect(control.attributes("disabled")).toBeUndefined();
+      expect(control.find("svg").classes()).not.toContain("animate-spin");
     });
 
     it("does not carry the previous scope's efforts across an agent switch", async () => {
@@ -313,7 +366,7 @@ describe("Direct Bot Components", () => {
       await wrapper.find("#bot-agent").trigger("click");
       await wrapper.find('[data-value="helper"]').trigger("click");
       await flushPromises();
-      expect(wrapper.get('[data-test="model-picker-reason"]').text()).toContain("offline");
+      expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("title")).toContain("offline");
       expect(wrapper.find('[data-test="model-picker-effort"]').element.tagName).toBe("INPUT");
     });
 
@@ -434,7 +487,9 @@ describe("Direct Bot Components", () => {
         expect(instances.getAgentCapabilities).toHaveBeenCalledWith("i1", { agent: "codex", workspace: "repo" });
       } else {
         expect(instances.getAgentCapabilities).not.toHaveBeenCalled();
-        expect(wrapper.find('[data-test="model-picker-loading"]').exists()).toBe(false);
+        // The no-preview state is reported by the icon, not a prose line.
+        expect(wrapper.get('[data-test="model-picker-refresh"]').attributes("title"))
+          .toContain(i18n.global.t("bot.fields.workspacePreviewHint"));
       }
 
       await wrapper.find("#bot-name").setValue("Code Reviewer");
@@ -596,13 +651,13 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).not.toContain(i18n.global.t("bot.fields.instructionsHint"));
     });
 
-    it("New workspace with nothing to preview shows a single model hint", async () => {
+    it("New workspace with nothing to preview states the reason once, on the refresh icon", async () => {
       const { wrapper } = mountCreateDialog({ dedicated: true, workspaces: [] });
       await flushPromises();
-      const hints = wrapper.findAll('[data-test="model-picker-reason"], [data-test="model-picker-recovery"], [data-test="model-picker-applies-later"]');
-      expect(hints).toHaveLength(1);
-      expect(hints[0]!.attributes("data-test")).toBe("model-picker-reason");
-      expect(hints[0]!.text()).toBe(i18n.global.t("bot.fields.workspacePreviewHint"));
+      const hint = i18n.global.t("bot.fields.workspacePreviewHint");
+      const title = wrapper.get('[data-test="model-picker-refresh"]').attributes("title")!;
+      expect(title).toContain(hint);
+      expect(title.split(hint)).toHaveLength(2);
     });
 
     it("focused name in error state uses the danger ring, not the default focus ring", async () => {

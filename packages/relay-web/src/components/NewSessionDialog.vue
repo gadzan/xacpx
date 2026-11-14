@@ -48,6 +48,8 @@ const model = ref("");
 const capability = ref<{ status: "loading" } | AgentCapabilityState>({ status: "loading" });
 const carriedEfforts = ref<Array<{ id: string; name: string }>>([]);
 let lastSettledCapability: AgentCapabilityState | undefined;
+const capabilityRefreshing = ref(false);
+const capabilityFailure = ref<{ message: string; recovery: string } | undefined>();
 let capabilitySeq = 0;
 const submitting = ref(false);
 const error = ref("");
@@ -164,10 +166,18 @@ watch([sessionSource, agentValue, workspaceSel], () => {
   }
 });
 
-async function loadCapabilities(probe = false, silent = false): Promise<void> {
+async function loadCapabilities(probe = false): Promise<void> {
   const seq = ++capabilitySeq;
-  if (sessionSource.value !== "new") return;
+  // Fenced-off reads never reach their own clear, so every pre-fetch return
+  // clears here or the icon spins forever.
+  if (sessionSource.value !== "new") {
+    capabilityRefreshing.value = false;
+    capabilityFailure.value = undefined;
+    return;
+  }
   if (!agentValue.value || wsMode.value !== "existing" || !workspaceSel.value) {
+    capabilityRefreshing.value = false;
+    capabilityFailure.value = undefined;
     capability.value = needsSetupCapability(
       { code: "discovery-available", message: "Choose a saved workspace before fetching models." },
       "Model discovery uses a configured workspace. A new path can still take a custom id.",
@@ -175,34 +185,38 @@ async function loadCapabilities(probe = false, silent = false): Promise<void> {
     );
     return;
   }
-  if (!silent) capability.value = { status: "loading" };
-  const next = await store.getAgentCapabilities(props.instanceId, {
-    agent: agentValue.value,
-    workspace: workspaceSel.value,
-    ...(probe ? { probe: true } : {}),
-  });
-  if (seq !== capabilitySeq) return;
-  const picked = model.value.trim();
-  const scopeId = picked && picked.toLowerCase() !== "default"
-    ? picked
-    : (next.status === "ready" ? next.appliedModelId : undefined);
-  const merged = mergeEffortRefresh(lastSettledCapability, next, scopeId);
-  if (merged.state.status !== "error") lastSettledCapability = merged.state;
-  // A background re-read that fails keeps the last good list on screen
-  // instead of wiping it to an error; an explicit Fetch still surfaces
-  // failures. The carry below still updates, so a scope move clears it.
-  if (!silent || merged.state.status !== "error" || !lastSettledCapability) {
-    capability.value = merged.state;
+  capabilityRefreshing.value = true;
+  try {
+    const next = await store.getAgentCapabilities(props.instanceId, {
+      agent: agentValue.value,
+      workspace: workspaceSel.value,
+      ...(probe ? { probe: true } : {}),
+    });
+    if (seq !== capabilitySeq) return;
+    const picked = model.value.trim();
+    const scopeId = picked && picked.toLowerCase() !== "default"
+      ? picked
+      : (next.status === "ready" ? next.appliedModelId : undefined);
+    const merged = mergeEffortRefresh(lastSettledCapability, next, scopeId);
+    if (merged.state.status === "error") {
+      capabilityFailure.value = { message: merged.state.reason.message, recovery: merged.state.recovery };
+      if (lastSettledCapability) capability.value = lastSettledCapability;
+      else capability.value = merged.state;
+    } else {
+      capabilityFailure.value = undefined;
+      lastSettledCapability = merged.state;
+      capability.value = merged.state;
+    }
+    carriedEfforts.value = merged.efforts?.status === "known"
+      ? merged.efforts.options.map((option) => ({ id: option.id, name: option.name }))
+      : [];
+  } finally {
+    if (seq === capabilitySeq) capabilityRefreshing.value = false;
   }
-  carriedEfforts.value = merged.efforts?.status === "known"
-    ? merged.efforts.options.map((option) => ({ id: option.id, name: option.name }))
-    : [];
 }
 function onModelPick(value: string): void {
   model.value = value;
-  // A committed model switch re-reads; the cache plus in-flight merge keep it
-  // cheap, and silent keeps the old list up until the new read lands.
-  void loadCapabilities(false, true);
+  void loadCapabilities(false);
 }
 watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
   // A new agent/workspace is a new capability scope: drop the previous
@@ -210,6 +224,7 @@ watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
   if (sessionSource.value === "new") {
     lastSettledCapability = undefined;
     carriedEfforts.value = [];
+    capabilityFailure.value = undefined;
   }
   void loadCapabilities(false);
 });
@@ -217,7 +232,7 @@ watch([agentValue, workspaceSel, wsMode, sessionSource], () => {
 // open; anything else leaves the shown list alone.
 watch(
   () => store.capabilityEpochFor(props.instanceId, agentValue.value, workspaceSel.value),
-  () => { void loadCapabilities(false, true); },
+  () => { void loadCapabilities(false); },
 );
 
 // Turn a raw backend error into a friendlier hint. Listing an agent's native sessions
@@ -404,6 +419,8 @@ async function submit(): Promise<void> {
             audience="session"
             :show-effort="false"
             :state="capability"
+            :refreshing="capabilityRefreshing"
+            :failure="capabilityFailure"
             :model="model"
             effort=""
             :carried-efforts="carriedEfforts"

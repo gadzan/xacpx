@@ -422,6 +422,73 @@ describe("NewSessionDialog", () => {
     expect(wrapper.emitted("close")).toBeTruthy();
   });
 
+  it("stops the refresh spin when a superseded read never gets to run", async () => {
+    // The first read is still in flight when the workspace moves to a new path.
+    // That read is fenced off and the new call returns before it can fetch, so
+    // nothing would ever clear the flag: the only fetch affordance would stay
+    // disabled and spinning for the rest of the dialog's life.
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    let release: (() => void) | undefined;
+    const inFlight = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(store.getAgentCapabilities).mockImplementation(async () => {
+      await inFlight;
+      return needsSetupCapability(
+        { code: "discovery-available", message: "no saved model list" },
+        "Fetch the model list.",
+        { fetchedAt: "2026-10-09T00:00:00.000Z" },
+      );
+    });
+    await flushPromises();
+    const refresh = () => wrapper.get('[data-test="model-picker-refresh"]');
+    expect(refresh().find("svg").classes()).toContain("animate-spin");
+
+    await wrapper.get('[data-test="ns-ws-mode-path"]').trigger("click");
+    await flushPromises();
+    expect(refresh().find("svg").classes()).not.toContain("animate-spin");
+    expect(refresh().attributes("disabled")).toBeUndefined();
+    release?.();
+  });
+
+  it("an older read that lands last cannot clear the newer read's spin", async () => {
+    const { wrapper, store } = mountDialog({
+      agents: [{ name: "codex", driver: "codex" }, { name: "claude", driver: "claude" }],
+      workspaces: [{ name: "backend", cwd: "/b" }],
+      agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
+      sessions: [],
+    });
+    const state = readyCapability("session", [{ modelId: "gpt-a" }], {
+      fetchedAt: "2026-10-09T00:00:00.000Z",
+      efforts: { status: "unavailable" },
+    });
+    const firstGate = Promise.withResolvers<typeof state>();
+    const secondGate = Promise.withResolvers<typeof state>();
+    let calls = 0;
+    vi.mocked(store.getAgentCapabilities).mockImplementation(async () => {
+      calls += 1;
+      return calls === 1 ? firstGate.promise : secondGate.promise;
+    });
+    await flushPromises();
+    // A second read supersedes the first before either settles.
+    await wrapper.get('[data-test="ns-agent"]').trigger("click");
+    await wrapper.get('[data-value="claude"]').trigger("click");
+    await flushPromises();
+    expect(calls).toBeGreaterThan(1);
+    const spin = () => wrapper.get('[data-test="model-picker-refresh"]').find("svg").classes();
+    expect(spin()).toContain("animate-spin");
+    // The fenced older read must not turn the newer read's spinner off.
+    firstGate.resolve(state);
+    await flushPromises();
+    expect(spin()).toContain("animate-spin");
+    secondGate.resolve(state);
+    await flushPromises();
+    expect(spin()).not.toContain("animate-spin");
+  });
+
   it("browse button fills the path field from the picker's confirm", async () => {
     const { wrapper } = mountDialog();
     await flushPromises();

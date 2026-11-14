@@ -122,6 +122,8 @@ const errorMessage = ref<string | null>(null);
 const capability = ref<{ status: "loading" } | AgentCapabilityState>({ status: "loading" });
 const carriedEfforts = ref<Array<{ id: string; name: string }>>([]);
 let lastSettledCapability: AgentCapabilityState | undefined;
+const capabilityRefreshing = ref(false);
+const capabilityFailure = ref<{ message: string; recovery: string } | undefined>();
 let capabilitySeq = 0;
 
 function normalizedModel(value: string): string | undefined {
@@ -130,28 +132,32 @@ function normalizedModel(value: string): string | undefined {
   return trimmed;
 }
 
-async function loadCapabilities(probe = false, silent = false): Promise<void> {
+async function loadCapabilities(probe = false): Promise<void> {
   const seq = ++capabilitySeq;
-  if (!agent.value) return;
-  // Edit mode fills the workspace from the authoritative detail; stay in the
-  // loading state until it arrives instead of claiming a preview is missing.
-  // Without the dedicated-workspace default there is nothing to preview
-  // until a workspace is picked (the original behaviour).
-  if (!canRequestDedicatedWorkspace.value && !capabilityWorkspace.value) return;
+  // Fenced-off reads never reach their own clear, so every pre-fetch return
+  // clears here or the icon spins forever.
+  if (!agent.value || (!canRequestDedicatedWorkspace.value && !capabilityWorkspace.value)) {
+    capabilityRefreshing.value = false;
+    capabilityFailure.value = undefined;
+    return;
+  }
   const previewWorkspace = capabilityWorkspace.value;
   let next: AgentCapabilityState;
   if (previewWorkspace) {
-    // A background re-read keeps the old list: the picker already shows a
-    // refreshing line when the daemon reports one, and the sequence fence
-    // below drops anything a newer read superseded.
-    if (!silent) capability.value = { status: "loading" };
-    next = await instancesStore.getAgentCapabilities(props.instanceId, {
-      agent: agent.value,
-      workspace: previewWorkspace,
-      ...(props.bot ? { botId: props.bot.id } : {}),
-      ...(probe ? { probe: true } : {}),
-    });
+    capabilityRefreshing.value = true;
+    try {
+      next = await instancesStore.getAgentCapabilities(props.instanceId, {
+        agent: agent.value,
+        workspace: previewWorkspace,
+        ...(props.bot ? { botId: props.bot.id } : {}),
+        ...(probe ? { probe: true } : {}),
+      });
+    } finally {
+      if (seq === capabilitySeq) capabilityRefreshing.value = false;
+    }
   } else {
+    capabilityRefreshing.value = false;
+    capabilityFailure.value = undefined;
     // No registered workspace to probe: the dedicated workspace does not exist
     // yet, so there is nothing to discover against. One merged hint serves as
     // both reason and recovery; ModelPicker renders identical text once.
@@ -167,11 +173,13 @@ async function loadCapabilities(probe = false, silent = false): Promise<void> {
   // the previous model's options instead of carrying them over.
   const scopeId = normalizedModel(model.value) ?? (next.status === "ready" ? next.appliedModelId : undefined);
   const merged = mergeEffortRefresh(lastSettledCapability, next, scopeId);
-  if (merged.state.status !== "error") lastSettledCapability = merged.state;
-  // A background re-read that fails keeps the last good list on screen
-  // instead of wiping it to an error; an explicit Fetch still surfaces
-  // failures. The carry below still updates, so a scope move clears it.
-  if (!silent || merged.state.status !== "error" || !lastSettledCapability) {
+  if (merged.state.status === "error") {
+    capabilityFailure.value = { message: merged.state.reason.message, recovery: merged.state.recovery };
+    if (lastSettledCapability) capability.value = lastSettledCapability;
+    else capability.value = merged.state;
+  } else {
+    capabilityFailure.value = undefined;
+    lastSettledCapability = merged.state;
     capability.value = merged.state;
   }
   carriedEfforts.value = merged.efforts?.status === "known"
@@ -182,10 +190,7 @@ async function loadCapabilities(probe = false, silent = false): Promise<void> {
 function onModelPick(value: string): void {
   model.value = value;
   modelDirty.value = true;
-  // A committed model switch re-reads: effort options belong to the model in
-  // effect, and the 60s cache plus in-flight merge keep this cheap. Silent, so
-  // the old list stays up until the new read lands.
-  void loadCapabilities(false, true);
+  void loadCapabilities(false);
 }
 function onEffortPick(value: string): void {
   effort.value = value;
@@ -341,13 +346,12 @@ watch([agent, capabilityWorkspace, () => props.bot?.id], () => {
   // string matches. The loud read below replaces the list either way.
   lastSettledCapability = undefined;
   carriedEfforts.value = [];
+  capabilityFailure.value = undefined;
   void loadCapabilities(false);
 });
-// An invalidation that touches exactly this scope re-reads while the dialog is
-// open; anything else leaves the shown list alone. Silent keeps the old list.
 watch(
   () => instancesStore.capabilityEpochFor(props.instanceId, agent.value, capabilityWorkspace.value ?? "", props.bot?.id),
-  () => { void loadCapabilities(false, true); },
+  () => { void loadCapabilities(false); },
 );
 
 function retryHydrate(): void {
@@ -657,6 +661,8 @@ function describeSubmitError(err: unknown): string {
           audience="bot"
           :show-applies-later="isEditing"
           :state="capability"
+          :refreshing="capabilityRefreshing"
+          :failure="capabilityFailure"
           :model="model"
           :effort="effort"
           :carried-efforts="carriedEfforts"
