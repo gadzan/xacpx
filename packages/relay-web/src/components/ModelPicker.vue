@@ -133,7 +133,8 @@ const refreshTitle = computed(() => {
   const end = t("capability.sentenceEnd");
   const sentence = (text: string) => {
     const body = text.trim();
-    if (!body) return "";
+    // A recovery of only punctuation carries no next step, so drop it.
+    if (!/[\p{L}\p{N}]/u.test(body)) return "";
     // Server prose may already end a sentence, and that terminator can be
     // followed by a closing quote or bracket. Keep it instead of doubling it.
     const ended = /^(.*)([.!?。！？…])(["'”’»）)\]\s]*)$/u.exec(body);

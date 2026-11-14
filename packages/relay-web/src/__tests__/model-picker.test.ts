@@ -142,6 +142,16 @@ describe("ModelPicker", () => {
     expect(title).toContain("Sign in again?");
   });
 
+  it("drops a recovery made only of punctuation", () => {
+    const wrapper = mountPicker(errorCapability(
+      { code: "transport", message: "the probe timed out" },
+      "...",
+      { fetchedAt: FETCHED },
+    ));
+    const title = refreshControl(wrapper).attributes("title")!;
+    expect(title).toBe("Refresh models. Last read failed: the probe timed out.");
+  });
+
   it("hides the bot applies-later note when showAppliesLater is false", async () => {
     const wrapper = mountPicker(readyCapability("cache", [{ modelId: "m" }], { fetchedAt: FETCHED }));
     expect(wrapper.find('[data-test="model-picker-applies-later"]').exists()).toBe(true);
