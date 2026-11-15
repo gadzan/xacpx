@@ -1,4 +1,14 @@
 # Changelog
+## [relay 0.14.12-beta.22] - 2026-11-15
+
+### Added
+
+- 登录页新增「在此设备上记住 token」勾选项：勾选并登录成功后 token 存入 `localStorage["xacpx.loginToken"]`，会话 cookie 过期后再打开登录页直接预填并保持勾选；不勾选则不落盘并清掉旧值。任何账号登录成功都会先作废旧值（邀请码登录用的是另一账号的凭证），登出同样清除（#583）。
+
+### Changed
+
+- `ModelPicker` 的读取状态从字段上方的五行文案条收进字段内的刷新图标：读取中旋转，失败转 danger 色并在 `title` / `aria-label` 里带 `reason` 与可执行的 `recovery`，`discovery-available` 不再被当成「上次读取失败」。读取期间模型列表保持可选，父级改用 `capabilityRefreshing`，不再用 `{ status: "loading" }` 覆盖可用列表（#582）。
+
 ## [relay-protocol 0.6.4-beta.13] - 2026-11-13
 
 ### Added
