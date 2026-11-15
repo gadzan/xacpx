@@ -125,6 +125,13 @@ describe("LoginView", () => {
     expect(w.find<HTMLInputElement>('[data-test="remember-token"]').element.checked).toBe(false);
   });
 
+  it("removes an empty key instead of leaving an unticked, present key", () => {
+    localStorage.setItem("xacpx.loginToken", "");
+    const w = mount(LoginView);
+    expect(w.find<HTMLInputElement>('[data-test="remember-token"]').element.checked).toBe(false);
+    expect(localStorage.getItem("xacpx.loginToken")).toBeNull();
+  });
+
   it("persists the token only when the box is ticked", async () => {
     vi.spyOn(useAuthStore(), "login").mockResolvedValue(true);
     const w = mount(LoginView);

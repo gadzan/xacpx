@@ -29,6 +29,7 @@ export const useAuthStore = defineStore("auth", () => {
       // otherwise a crashed tab's stale binding could leak the previous
       // account's notifications to this one.
       await transferSubscriptionOwnership();
+      forgetToken();
       return true;
     } catch (e) {
       if (loggedIn) {
@@ -78,9 +79,6 @@ export const useAuthStore = defineStore("auth", () => {
     // Shared-machine hygiene: the next login must not be able to read cached
     // transcripts or view snapshots from IndexedDB.
     await Promise.all([dropAllTailCaches(), dropAllViewSnapshots()]);
-    // The opt-in "remember token" credential outlives a session, not a sign-out:
-    // the next person at this browser must not find the last account's token
-    // prefilled on the login form.
     forgetToken();
   }
 

@@ -10,8 +10,6 @@ const router = useRouter();
 const { t, te } = useI18n();
 const token = ref(readRememberedToken());
 const remember = ref(token.value !== "");
-// Unticking is a decision about this device, not about the next submit: drop the
-// stored token now, so abandoning the page still leaves nothing behind.
 watch(remember, (on) => { if (!on) forgetToken(); });
 const pending = ref(false);
 const revealed = ref(false);

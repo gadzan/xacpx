@@ -8,7 +8,10 @@ import { useSessionControlsStore } from "../stores/session-controls";
 import { useTasksStore } from "../stores/tasks";
 
 beforeEach(() => setActivePinia(createPinia()));
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  localStorage.clear();
+});
 
 test("login posts {token} and stores the account on success", async () => {
   const fetchMock = vi.fn(async () => new Response(JSON.stringify({ username: "admin" }), { status: 200 }));
@@ -177,6 +180,22 @@ test("logout releases subscription ownership BEFORE clearing the session", async
   expect(callOrder).toEqual(["release", "logout-post"]);
 });
 
+test("a successful login drops a remembered token from another account", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ username: "new" }), { status: 200 })));
+  localStorage.setItem("xacpx.loginToken", "rl_stale_account");
+  const auth = useAuthStore();
+  expect(await auth.login("rl_new_account")).toBe(true);
+  expect(localStorage.getItem("xacpx.loginToken")).toBeNull();
+});
+
+test("a failed login keeps the remembered token", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "invalid-token" }), { status: 401 })));
+  localStorage.setItem("xacpx.loginToken", "rl_old");
+  const auth = useAuthStore();
+  expect(await auth.login("rl_rejected")).toBe(false);
+  expect(localStorage.getItem("xacpx.loginToken")).toBe("rl_old");
+});
+
 test("logout forgets a remembered login token", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
   localStorage.setItem("xacpx.loginToken", "rl_remembered");
@@ -185,3 +204,4 @@ test("logout forgets a remembered login token", async () => {
   await auth.logout();
   expect(localStorage.getItem("xacpx.loginToken")).toBeNull();
 });
+
