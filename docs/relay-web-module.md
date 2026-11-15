@@ -29,6 +29,15 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   两份按相同 key 形状镜像。**任何新增 UI 文案必须同时加进两份目录**——
   `src/__tests__/i18n-parity.test.ts` 会断言两份 key 集合完全一致（且无空串值），缺哪份就会失败。
 
+## 登录页「记住 token」（`LoginView.vue` + `src/lib/login-token.ts`）
+
+- `localStorage["xacpx.loginToken"]` 有值即勾选，无值即未勾选：`readRememberedToken()` 同时决定输入框初值与勾选态，并把空值键一并删掉，不需要第二个存储位。
+- **落盘时机**：`auth.login` 返回 true 才 `rememberToken`，被拒的 token 不会留在设备上。取消勾选立即 `forgetToken()`（`watch(remember)`，不等提交），所以「上次记住、这次取消」不会继续自动填充；挂载时的初始 `false` 不触发该 watch，已有值不会被自己读出的初值抹掉。
+- **只有登录页会记住**：`auth.login()` 成功后一律 `forgetToken()`，登录页随后按勾选态 `rememberToken()` 重写。邀请码兑换得到的是另一个账号的凭证、没有勾选框；不在共享入口清旧值的话，会话过期后登录页会预填上一个账号的 token。登录失败不动存储。
+- **登出等于忘掉**：`auth.logout()` 成功走完后在清 IndexedDB 缓存之后调用 `forgetToken()`，与共享机器卫生同一档。会失效的是 7 天 HttpOnly 会话 cookie（`xrelay_session`），token 本身没有过期时间，一旦留在浏览器里就能换新会话，所以登出必须删。`releaseSubscriptionOwnership()` 抛错时登出按 fail-closed 中止，不作为成功登出。
+- 存储被浏览器禁用（Safari 无痕、被隔离的分区）时读写全部静默降级：丢失自动填充，不影响登录。
+- 填充发生在路由守卫判定 401 之后、表单挂载时，所以会话过期的常规路径（刷新或重新打开）直接看到预填输入框。
+
 ## 「快照 + 事件增量」模型
 
 看板状态由 REST 持久化快照和 WebSocket 有序运行态共同维护：
@@ -648,6 +657,7 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   `src/stores/tasks.ts` —— 定时/编排（loadFor/create/cancel + `applyEvent`）；
   `src/stores/notices.ts` —— notice toast 队列；`src/stores/connection.ts` —— `/ws` 在线态；
 - `src/views/LoginView.vue`、`src/views/DashboardView.vue`、`src/views/SettingsView.vue`；
+- `src/lib/login-token.ts` —— 登录页「记住 token」的 `localStorage` 读写（存储被禁用时静默降级）；
 - `src/components/InstanceTree.vue`、`ChatPane.vue`、`MessageList.vue`、`PromptInput.vue`、
   `NewSessionDialog.vue`、`ManageInstanceDialog.vue`、`WorkspacesManager.vue`、`AgentsManager.vue`、
   `TaskPanel.vue`、`ScheduledTasks.vue`、`OrchestrationTasks.vue`、`NoticeToast.vue`、`ConnectionBadge.vue`、
