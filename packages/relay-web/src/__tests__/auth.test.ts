@@ -176,3 +176,12 @@ test("logout releases subscription ownership BEFORE clearing the session", async
   expect(releaseMock).toHaveBeenCalledTimes(1);
   expect(callOrder).toEqual(["release", "logout-post"]);
 });
+
+test("logout forgets a remembered login token", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+  localStorage.setItem("xacpx.loginToken", "rl_remembered");
+  const auth = useAuthStore();
+  auth.account = { username: "alice" };
+  await auth.logout();
+  expect(localStorage.getItem("xacpx.loginToken")).toBeNull();
+});

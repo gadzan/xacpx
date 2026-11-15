@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { ApiError, api } from "../api/client";
+import { forgetToken } from "../lib/login-token";
 import { dropAll as dropAllTailCaches } from "../lib/session-tail-cache";
 import { dropAll as dropAllViewSnapshots } from "../lib/view-snapshot-cache";
 import {
@@ -77,6 +78,10 @@ export const useAuthStore = defineStore("auth", () => {
     // Shared-machine hygiene: the next login must not be able to read cached
     // transcripts or view snapshots from IndexedDB.
     await Promise.all([dropAllTailCaches(), dropAllViewSnapshots()]);
+    // The opt-in "remember token" credential outlives a session, not a sign-out:
+    // the next person at this browser must not find the last account's token
+    // prefilled on the login form.
+    forgetToken();
   }
 
   return { account, error, login, fetchMe, logout };

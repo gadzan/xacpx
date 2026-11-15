@@ -643,6 +643,7 @@ export default {
     signingIn: "登录中…",
     copyCommand: "复制命令",
     toggleVisibility: "显示或隐藏 token",
+    remember: "在此设备上记住 token",
     errors: {
       "invalid-token": "Token 无效或已被撤销。请在主机上运行 xacpx-relay add token 重新生成。",
       "request-failed": "无法连接到 relay，请检查网络后重试。",

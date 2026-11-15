@@ -647,6 +647,7 @@ export default {
     signingIn: "Signing in…",
     copyCommand: "Copy command",
     toggleVisibility: "Show or hide token",
+    remember: "Remember this token on this device",
     errors: {
       "invalid-token": "That token is invalid or has been revoked. Run xacpx-relay add token on the host to mint a new one.",
       "request-failed": "Could not reach the relay. Check the network and try again.",

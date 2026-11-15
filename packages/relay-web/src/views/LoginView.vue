@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useAuthStore } from "../stores/auth";
+import { forgetToken, readRememberedToken, rememberToken } from "../lib/login-token";
 
 const auth = useAuthStore();
 const router = useRouter();
 const { t, te } = useI18n();
-const token = ref("");
+const token = ref(readRememberedToken());
+const remember = ref(token.value !== "");
+// Unticking is a decision about this device, not about the next submit: drop the
+// stored token now, so abandoning the page still leaves nothing behind.
+watch(remember, (on) => { if (!on) forgetToken(); });
 const pending = ref(false);
 const revealed = ref(false);
 const copied = ref(false);
@@ -30,7 +35,9 @@ async function submit() {
   if (pending.value) return;
   pending.value = true;
   try {
-    if (await auth.login(token.value)) router.replace("/");
+    if (!(await auth.login(token.value))) return;
+    if (remember.value) rememberToken(token.value);
+    router.replace("/");
   } finally {
     pending.value = false;
   }
@@ -135,6 +142,17 @@ async function copyCommand() {
               </svg>
             </button>
           </div>
+
+          <label class="mt-3 flex cursor-pointer items-center gap-2 text-xs text-fg-muted">
+            <input
+              v-model="remember"
+              data-test="remember-token"
+              type="checkbox"
+              class="accent-accent"
+              :disabled="pending"
+            />
+            {{ $t("login.remember") }}
+          </label>
 
           <!-- error -->
           <p v-if="auth.error" data-test="login-error" role="alert" class="mt-3 flex items-start gap-1.5 text-xs text-danger">
