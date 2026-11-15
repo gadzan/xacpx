@@ -204,4 +204,3 @@ test("logout forgets a remembered login token", async () => {
   await auth.logout();
   expect(localStorage.getItem("xacpx.loginToken")).toBeNull();
 });
-

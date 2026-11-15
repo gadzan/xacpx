@@ -7,7 +7,6 @@ vi.mock("vue-router", () => ({ useRouter: () => ({ replace }) }));
 
 import LoginView from "../views/LoginView.vue";
 import { useAuthStore } from "../stores/auth";
-import { readRememberedToken } from "../lib/login-token";
 
 // jsdom has no navigator.clipboard by default; the copy test stubs it. Restore
 // afterwards so the stub never leaks into other test files (which may assert the
@@ -21,6 +20,7 @@ describe("LoginView", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     localStorage.clear();
     if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
     else delete (navigator as { clipboard?: unknown }).clipboard;
@@ -139,14 +139,25 @@ describe("LoginView", () => {
     await w.find('[data-test="remember-token"]').setValue(true);
     await w.find('[data-test="login-window"]').trigger("submit");
     await flushPromises();
-    expect(readRememberedToken()).toBe("rl_secret_token");
+    expect(localStorage.getItem("xacpx.loginToken")).toBe("rl_secret_token");
+  });
+
+  it("stores the submitted token after a real login clears an older one", async () => {
+    localStorage.setItem("xacpx.loginToken", "rl_old");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ username: "u" }), { status: 200 })));
+    const w = mount(LoginView);
+    await w.find('[data-test="token-input"]').setValue("rl_new");
+    await w.find('[data-test="login-window"]').trigger("submit");
+    await flushPromises();
+    expect(localStorage.getItem("xacpx.loginToken")).toBe("rl_new");
+    expect(replace).toHaveBeenCalledWith("/");
   });
 
   it("erases a previously remembered token the moment the box is unticked", async () => {
     localStorage.setItem("xacpx.loginToken", "rl_old");
     const w = mount(LoginView);
     await w.find('[data-test="remember-token"]').setValue(false);
-    expect(readRememberedToken()).toBe("");
+    expect(localStorage.getItem("xacpx.loginToken")).toBeNull();
   });
 
   it("still renders and logs in when storage access throws", async () => {
@@ -178,6 +189,6 @@ describe("LoginView", () => {
     await w.find('[data-test="remember-token"]').setValue(true);
     await w.find('[data-test="login-window"]').trigger("submit");
     await flushPromises();
-    expect(readRememberedToken()).toBe("");
+    expect(localStorage.getItem("xacpx.loginToken")).toBeNull();
   });
 });

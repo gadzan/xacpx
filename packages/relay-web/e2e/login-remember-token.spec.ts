@@ -36,6 +36,32 @@ test.describe("login: remember token", () => {
     await expect(page.getByTestId("remember-token")).toBeChecked();
   });
 
+  test("an invite sign-in drops the previous account's remembered token", async ({ page }) => {
+    const session = useExpirableSession(page);
+    await page.route("**/api/invites/redeem", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ token: "rl_new_account", username: "new" }),
+      }),
+    );
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("login-window")).toBeVisible();
+    await page.evaluate((key) => localStorage.setItem(key, "rl_stale_account"), STORAGE_KEY);
+
+    await page.goto("/invite/e2e-code", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("redeem").click();
+    session.setAuthed(true);
+    await page.getByTestId("signin").click();
+    await expect(page.getByTestId("session-row").first()).toBeVisible({ timeout: 20_000 });
+    expect(await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY)).toBeNull();
+
+    session.setAuthed(false);
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("token-input")).toHaveValue("");
+    await expect(page.getByTestId("remember-token")).not.toBeChecked();
+  });
+
   test("stores nothing when the box is left unticked", async ({ page }) => {
     const session = useExpirableSession(page);
     await page.goto("/", { waitUntil: "domcontentloaded" });
