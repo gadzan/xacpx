@@ -429,7 +429,6 @@ const mentionRows = computed<CompletionRow[]>(() =>
         ...(member.lead ? [{ text: t("group.target.lead"), tone: "accent" as const }] : []),
         ...(member.role ? [{ text: member.role }] : []),
         ...(reason ? [{ text: reason }] : []),
-        { text: member.botId, tone: "mono" as const },
       ],
       disabled: !member.enabled,
       title: reason ?? undefined,

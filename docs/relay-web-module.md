@@ -1414,3 +1414,20 @@ The sheet is an overlay — the composer neither jumps nor resizes. Note that a 
 test asserting the sheet's DOM catches it.
 
 The direct-composer store isolates drafts by instance/Conversation/Topic/Bot. A contiguous edit shifts later UTF-16 ranges and removes references touched by the edit. Send freezes original text/references/target and requestId; rejection or uncertainty preserves the draft and repeat payload. Only an accepted result clears the identical captured draft, including when the view has switched. Scope/profile/event changes fence late capability responses; snapshots and agent-commands events refresh the command projection, including ready-empty advertisements. GroupComposer and the ordinary Session composer keep their existing data sources.
+
+## Ordinary session fork entry
+
+A session row's ⋯ menu shows **Fork session** only when the instance advertises
+`session.fork.handoff.v1`. The entry proposes the next free `<alias>-fork[-N]`,
+calls `control.sessions.fork` with a fresh request id, selects the new session,
+and toasts its alias. The new session starts empty and independent; its first
+non-command prompt carries the bounded `<<<HISTORY` block from the source's
+stable head, after which the block never repeats. An instance whose source
+session is still running, has no recorded history, or lacks the capability
+shows the failure toast instead (the menu entry itself is hidden only for the
+missing capability).
+
+The fork entry holds a per-row in-flight guard, so a double click sends one
+`control.sessions.fork`. If the daemon reports a taken target alias, the entry
+reloads the instance's sessions before the next attempt, so the proposed
+`<alias>-fork[-N]` advances instead of repeating the stale name.

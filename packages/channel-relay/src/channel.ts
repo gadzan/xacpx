@@ -406,6 +406,24 @@ export function supportsDirectTopicForkMessage(control: unknown): boolean {
     sourcePoint: { type: "message", messageId: "probe" },
   }) !== null;
 }
+/**
+ * True when this instance can fork an ordinary session with a one-time
+ * handoff: the core persists fork records AND this connector's validator
+ * accepts the payload. Either half missing keeps the capability off.
+ */
+export function supportsSessionForkHandoff(control: unknown): boolean {
+  if (!control || typeof control !== "object") return false;
+  if (!("supportsSessionForkHandoff" in control)) return false;
+  const probe = control.supportsSessionForkHandoff;
+  if (typeof probe !== "function" || probe.call(control) !== true) return false;
+  if (!("forkSession" in control) || typeof control.forkSession !== "function") return false;
+  return parseControlPayload(MSG.sessionsFork, {
+    chatKey: "probe",
+    sourceAlias: "probe",
+    targetAlias: "probe",
+    requestId: "probe",
+  }) !== null;
+}
 
 /**
  * True when this instance can accept a roundtable target and return the
@@ -605,6 +623,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsConversationTimeline(control)) {
       capabilities.push(RELAY_CAPABILITIES.conversationTimelineV1);
+    }
+    if (supportsSessionForkHandoff(control)) {
+      capabilities.push(RELAY_CAPABILITIES.sessionForkHandoffV1);
     }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);

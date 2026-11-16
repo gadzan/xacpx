@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import {createHash} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import { mkdir, readdir, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../commands/workspace-name.js";
@@ -79,6 +79,7 @@ import { sanitizePublicConversationPrompt, sanitizePublicPromptInput } from "./p
 import type { ControlEventBus } from "./control-event-bus";
 import {
   readNativeSessionHistory,
+  readTransportSessionHistory,
   type NativeHistoryMessage,
 } from "../transport/native-session-history";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
@@ -101,6 +102,19 @@ import {
   type GitWorktreeCreateOptions,
   type GitWorktreeCreateResult,
 } from "./workspace-git";
+import { renderSessionForkHandoff } from "../sessions/session-fork-handoff";
+import {
+  isSqliteUniqueViolation,
+} from "../conversations/sql-driver";
+import {
+  isProductOwnedSessionAlias,
+} from "../domain/ids";
+import {
+  resolveSessionForkStrategy,
+  SessionForkError,
+  type SessionForkRecord,
+  type SessionForkStore,
+} from "../sessions/session-fork-store";
 import type {
   AgentEndpointView,
   AgentMessageTraceRecord,
@@ -336,6 +350,11 @@ export interface ControlServiceDeps {
     "listTasks" | "getTask" | "requestTaskCancellation"
   >;
   events: ControlEventBus;
+  /** Durable ordinary-session fork records + handoff text. Absent makes the
+   *  `session.fork.handoff.v1` probe fail closed. */
+  sessionForks?: SessionForkStore;
+  /** Test seam for the acpx-record history read; production uses the canonical scan. */
+  readSessionForkHistory?: typeof readTransportSessionHistory;
   // Read-only config views + a persisting workspace creator. Supplied by main.ts
   // where the live AppConfig and ConfigStore are in scope; created workspaces are
   // written back into the live config so SessionService validation sees them.
@@ -647,6 +666,9 @@ export class ControlService {
   private readonly completionPreparations = new Map<string, Promise<ConversationCompletions["commands"]>>();
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
+  /** Per-request-id fork serialization: overlapping same-id forks wait here so
+   *  the second hits the replay path instead of racing target creation. */
+  private readonly forkCreationTails = new Map<string, Promise<void>>();
   private readonly workspaceGit: WorkspaceGit;
   private readonly sessionConfigSetTails = new Map<string, Promise<void>>();
   /** Monotonic per-session model-selection generation; background reconciliation only
@@ -702,6 +724,7 @@ export class ControlService {
       events: deps.events,
       uploadStore: deps.uploadStore,
       ...(deps.sessionWarmth ? { sessionWarmth: deps.sessionWarmth } : {}),
+      ...(deps.sessionForks ? { sessionForks: deps.sessionForks } : {}),
       ...(deps.agentMessaging ? { agentMessaging: deps.agentMessaging } : {}),
       ...(resolveAgentTarget ? { resolveAgentTarget } : {}),
     });
@@ -1681,6 +1704,370 @@ export class ControlService {
       transportSession: session.transportSession,
       running: false,
       archived: false,
+    };
+  }
+
+  /**
+   * Feature probe for connectors: ordinary-session fork records and the
+   * one-time handoff are persisted here. An older core, or a test fake without
+   * a store, advertises nothing so the Web never offers a dead entry.
+   */
+  supportsSessionForkHandoff(): boolean {
+    return this.deps.sessionForks !== undefined;
+  }
+
+  /**
+   * Fork a stable ordinary session into an independent logical + transport
+   * session. The source's recorded history is rendered once into a bounded
+   * handoff; the first effective prompt of the target injects it and consumes
+   * the record. This PR resolves every fork to the portable strategy.
+   *
+   * The target inherits the source's model and effort so it runs under the
+   * same provider settings. `modeId` and `replyMode` are explicit PR1 limits
+   * (the fork starts with defaults; `createSessionWithTransport` has no mode
+   * or reply-mode parameter). `settingsPolicy` needs no inheritance: it is
+   * resolved live from the agent config, and the fork keeps the source agent.
+   */
+  async forkSession(input: {
+    chatKey: string;
+    sourceAlias: string;
+    targetAlias: string;
+    requestId: string;
+  }): Promise<ControlSessionInfo> {
+    // Overlapping same-id forks serialize here (keyed by chat scope + request
+    // id) so the second waits and then hits the replay path. The store's
+    // request-id uniqueness stays as the backstop for anything the lock cannot
+    // see (a second daemon on the same database file).
+    const tailKey = `${input.chatKey}\0${input.requestId.trim()}`;
+    return this.withForkCreationTail(tailKey, () => this.forkSessionLocked(input));
+  }
+
+  private async withForkCreationTail<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.forkCreationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prior.then(() => mine);
+    this.forkCreationTails.set(key, tail);
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.forkCreationTails.get(key) === tail) this.forkCreationTails.delete(key);
+    }
+  }
+
+  private async forkSessionLocked(input: {
+    chatKey: string;
+    sourceAlias: string;
+    targetAlias: string;
+    requestId: string;
+  }): Promise<ControlSessionInfo> {
+    const store = this.deps.sessionForks;
+    if (!store) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        "this daemon does not persist ordinary-session forks",
+      );
+    }
+    const requestId = input.requestId.trim();
+    const targetAlias = input.targetAlias.trim();
+    if (!requestId || !targetAlias) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        "a fork needs a request id and a target alias",
+      );
+    }
+
+    this.assertOrdinaryAddressedAlias(input.chatKey, input.sourceAlias);
+    const channelId = getChannelIdFromChatKey(input.chatKey);
+    const targetInternal = scopeDisplayAliasToInternal(channelId, targetAlias);
+
+    // A replay must name the same scope and requested aliases: a reused request
+    // id with a different payload is a client bug, not an idempotent retry.
+    // Empty stored aliases are pre-alias legacy rows and match anything; the
+    // logical-identity check below still applies when the source resolves.
+    // The comparison uses the requested display aliases, never the materialized
+    // target alias, so a daemon-side auto-suffix (`backend-fork` -> `backend-fork-2`)
+    // still replays.
+    const replay = store.getByRequestId(requestId);
+    const requestedSourceAlias = input.sourceAlias.trim();
+    if (replay && !this.forkReplayMatches(replay, input.chatKey, requestedSourceAlias, targetAlias)) {
+      throw new SessionForkError(
+        "session-fork-request-mismatch",
+        "this fork request id was already used with a different scope, source, or target",
+      );
+    }
+    // The source is resolved best-effort here so a replay survives source
+    // deletion: when the source is gone but the record's target still exists,
+    // the same request id returns that target instead of failing.
+    let source: ResolvedSession | null = null;
+    try {
+      source = await this.resolveControlSession(input.chatKey, input.sourceAlias);
+    } catch {
+      source = null;
+    }
+    if (source) {
+      this.assertOrdinaryAddressedAlias(input.chatKey, source.alias);
+      if (replay && source.logicalSessionId && replay.sourceSessionId !== source.logicalSessionId) {
+        throw new SessionForkError(
+          "session-fork-request-mismatch",
+          "this fork request id was already used for a different source session",
+        );
+      }
+    }
+    if (replay) {
+      if (replay.status === "pending") {
+        // The fork never completed (a crash or a resolve failure between the
+        // pending write and the resolve): remove any orphan target and the
+        // pending row, then converge to a fresh attempt below, which needs a
+        // live source.
+        await this.clearPendingForkReplay(store, replay);
+      } else {
+        return this.toControlSessionInfo(await this.resolveForkReplayTarget(replay));
+      }
+    }
+    if (!source) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        `session "${input.sourceAlias}" does not exist`,
+      );
+    }
+    const sourceSessionId = source.logicalSessionId;
+    if (!sourceSessionId) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        `session "${input.sourceAlias}" has no logical identity`,
+      );
+    }
+    if (this.deps.activeTurns.isActiveAnywhere(source.alias)) {
+      throw new SessionForkError(
+        "session-fork-unstable",
+        `session "${input.sourceAlias}" is still running; fork its latest settled state after it finishes`,
+      );
+    }
+    // A hand-crafted target alias must never mint a session in the product-owned
+    // namespace (`brt_…` aliases bypass channel scoping and join Conversation
+    // bindings to sessions by exact key).
+    if (isProductOwnedSessionAlias(targetAlias) || isProductOwnedSessionAlias(targetInternal)) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        `session "${targetAlias}" is not an ordinary session alias`,
+      );
+    }
+    if (await this.deps.sessions.getSession(targetInternal)) {
+      throw new SessionForkError(
+        "session-fork-target-exists",
+        `session "${targetAlias}" already exists; if a previous fork crashed before recording it, delete that orphan session or retry with a new request id`,
+      );
+    }
+    const strategy = resolveSessionForkStrategy({ nativeSessionFork: false });
+    if (strategy === "native") {
+      throw new SessionForkError(
+        "session-fork-native-unavailable",
+        "native session fork is not implemented in this daemon",
+      );
+    }
+
+    const history: NativeHistoryMessage[] = await (this.deps.readSessionForkHistory ?? readTransportSessionHistory)({
+      transportSession: source.transportSession,
+      cwd: source.cwd,
+      ...(source.agentCommand ? { agentCommand: source.agentCommand } : {}),
+      onDiagnostic: (diagnostic) =>
+        this.deps.logger?.debug("control.session.fork_history", diagnostic, {
+          sourceAlias: source.alias,
+        }),
+    });
+    const parentFork = store.getByForkSourceSessionId(sourceSessionId);
+    const rendered = renderSessionForkHandoff({
+      sourceTitle: source.displayName ?? toDisplaySessionAlias(source.alias),
+      agent: source.agent,
+      history,
+      ...(parentFork ? { parentFork } : {}),
+      ...(parentFork ? { parentHandoff: store.getHandoff(parentFork.id) } : {}),
+    });
+    if (!rendered.text) {
+      throw new SessionForkError(
+        "session-fork-empty-history",
+        `session "${input.sourceAlias}" has no recorded history to hand off`,
+      );
+    }
+
+    const created = await this.deps.createSessionWithTransport(
+      targetInternal,
+      source.agent,
+      source.workspace,
+      source.model,
+    );
+    const targetSessionId = created.logicalSessionId;
+    if (!targetSessionId) {
+      await this.deps.removeSessionWithTransport(created.alias).catch(() => undefined);
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        "the forked session has no logical identity",
+      );
+    }
+    const createdAt = new Date().toISOString();
+    let pendingId: string | undefined;
+    try {
+      if (source.effort) {
+        await this.deps.sessions.setSessionEffort(created.alias, source.effort);
+      }
+      let pending: SessionForkRecord;
+      try {
+        pending = store.createPending({
+          requestId,
+          chatKey: input.chatKey,
+          sourceSessionId,
+          targetSessionId,
+          sourceAlias: requestedSourceAlias,
+          targetAlias,
+          createdAt,
+        });
+      } catch (error) {
+        if (!isSqliteUniqueViolation(error)) throw error;
+        // A concurrent fork with the same request id won the record: drop
+        // this attempt's target and answer with the winner's target.
+        return this.toControlSessionInfo(
+          await this.adoptConcurrentForkWinner(store, {
+            requestId,
+            chatKey: input.chatKey,
+            sourceSessionId,
+            sourceAlias: requestedSourceAlias,
+            targetAlias,
+            createdAlias: created.alias,
+          }),
+        );
+      }
+      pendingId = pending.id;
+      store.resolvePortable({
+        forkId: pending.id,
+        handoff: {
+          text: rendered.text,
+          messageCount: rendered.messageCount,
+          omittedMessages: rendered.omittedMessages,
+        },
+        createdAt,
+      });
+    } catch (error) {
+      if (pendingId !== undefined) {
+        try {
+          store.deleteForkById(pendingId);
+        } catch {
+          /* the session removal below is the recovery that matters */
+        }
+      }
+      await this.deps.removeSessionWithTransport(created.alias).catch(() => undefined);
+      throw error;
+    }
+    this.deps.events.emit({
+      type: "sessions-changed",
+      readySessionAlias: toDisplaySessionAlias(created.alias),
+      readyTransportSession: created.transportSession,
+    });
+    return this.toControlSessionInfo(created);
+  }
+
+  /**
+   * Whether a stored fork record may answer this request as a replay. Empty
+   * stored aliases are pre-alias legacy rows and match anything; the
+   * logical-identity check at the call site still applies when the source
+   * resolves.
+   */
+  private forkReplayMatches(
+    replay: SessionForkRecord,
+    chatKey: string,
+    requestedSourceAlias: string,
+    requestedTargetAlias: string,
+  ): boolean {
+    if (replay.chatKey && replay.chatKey !== chatKey) return false;
+    if (replay.sourceAlias && replay.sourceAlias !== requestedSourceAlias) return false;
+    if (replay.targetAlias && replay.targetAlias !== requestedTargetAlias) return false;
+    return true;
+  }
+
+  /** The live target of a completed fork record, or a retry-with-new-id error. */
+  private async resolveForkReplayTarget(replay: SessionForkRecord): Promise<ResolvedSession> {
+    const alias = this.deps.sessions
+      .listAllResolvedSessions()
+      .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
+    const resolved = alias ? await this.deps.sessions.getSession(alias) : null;
+    if (!resolved) {
+      throw new SessionForkError(
+        "session-fork-target-exists",
+        "this fork request already created a session that no longer exists; retry with a new request id",
+      );
+    }
+    return resolved;
+  }
+
+  /** Remove an orphan target and pending row so the same request id converges. */
+  private async clearPendingForkReplay(store: SessionForkStore, replay: SessionForkRecord): Promise<void> {
+    const orphanAlias = this.deps.sessions
+      .listAllResolvedSessions()
+      .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
+    if (orphanAlias) {
+      await this.deps.removeSessionWithTransport(orphanAlias).catch(() => undefined);
+    }
+    try {
+      store.deleteForkById(replay.id);
+    } catch {
+      /* the fresh attempt re-reads whatever survived */
+    }
+  }
+
+  /**
+   * Adopt the winner of a same-request-id race: this attempt's target is
+   * removed and the winner's live target answers. A winner that cannot be
+   * validated (different scope, source, or target) is a client bug, not a
+   * replay; a winner that is still pending means the race is unresolved, so
+   * the caller retries the same id.
+   */
+  private async adoptConcurrentForkWinner(
+    store: SessionForkStore,
+    input: {
+      requestId: string;
+      chatKey: string;
+      sourceSessionId: string;
+      sourceAlias: string;
+      targetAlias: string;
+      createdAlias: string;
+    },
+  ): Promise<ResolvedSession> {
+    await this.deps.removeSessionWithTransport(input.createdAlias).catch(() => undefined);
+    const winner = store.getByRequestId(input.requestId);
+    if (!winner || winner.status === "pending") {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        "concurrent fork requests collided; retry with the same request id",
+      );
+    }
+    if (
+      !this.forkReplayMatches(winner, input.chatKey, input.sourceAlias, input.targetAlias)
+      || winner.sourceSessionId !== input.sourceSessionId
+    ) {
+      throw new SessionForkError(
+        "session-fork-request-mismatch",
+        "this fork request id was already used with a different scope, source, or target",
+      );
+    }
+    return this.resolveForkReplayTarget(winner);
+  }
+
+  private toControlSessionInfo(session: ResolvedSession): ControlSessionInfo {
+    return {
+      alias: toDisplaySessionAlias(session.alias),
+      agent: session.agent,
+      ...(session.driver ? { driver: session.driver } : {}),
+      workspace: session.workspace,
+      transportSession: session.transportSession,
+      running: false,
+      archived: session.archived === true,
+      ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
+      ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+      ...(session.displayName ? { displayName: session.displayName } : {}),
     };
   }
 

@@ -19,6 +19,7 @@ import {
   TURN_IDLE_TIMEOUT_REASON,
   type PeerTurnOrigin,
 } from "./turn-support";
+import { isKnownXacpxCommandText } from "../commands/command-list";
 
 export interface TurnRequest {
   groupExecutionToken?: string;
@@ -83,7 +84,7 @@ export interface TurnResult {
 export interface SessionTurnRunnerDeps
   extends Pick<
     ControlServiceDeps,
-    "agent" | "sessions" | "events" | "uploadStore" | "sessionWarmth"
+    "agent" | "sessions" | "events" | "uploadStore" | "sessionWarmth" | "sessionForks"
   > {
   resolveAgentTarget?: (handle: string) => Promise<{
     handle: string;
@@ -96,6 +97,7 @@ export interface SessionTurnRunnerDeps
     "resolveTargetByHandle" | "getPublishedEndpoints"
   >;
 }
+
 
 export function disarmUserDirectiveTags(text: string): string {
   return text
@@ -229,6 +231,21 @@ function toolEventPayloadSize(event: ToolUseEvent): number {
 
 export class SessionTurnRunner {
   constructor(private readonly deps: SessionTurnRunnerDeps) {}
+  /** Take the target's one-time portable-fork handoff and consume it. Absent
+   *  store or a known xacpx command turn leaves the window untouched. */
+  private takeForkHandoff(
+    req: TurnRequest,
+    internalAlias: string | undefined,
+    userText: string,
+  ): string | undefined {
+    const store = this.deps.sessionForks;
+    if (!store || !internalAlias || !userText.trim()) return undefined;
+    if (isKnownXacpxCommandText(userText)) return undefined;
+    const logicalSessionId =
+      this.deps.sessions.getLogicalSessionRecord?.(internalAlias)?.logical_session_id;
+    if (!logicalSessionId) return undefined;
+    return store.takeHandoff(logicalSessionId, new Date().toISOString())?.text;
+  }
 
   private async resolveMentionTarget(handle: string): Promise<{
     handle: string;
@@ -533,6 +550,8 @@ export class SessionTurnRunner {
       if (req.conversation) {
         markTrustedConversationAgentRequest(chatRequest, req.conversation);
       }
+      const forkHandoff = this.takeForkHandoff(req, internalAlias, disarmedUserText);
+      if (forkHandoff) chatRequest.text = `${forkHandoff}\n\n${chatRequest.text}`;
       const response = await this.deps.agent.chat(chatRequest);
       if (response.text && !response.silent) {
         // Transports may stream the answer and return it again: emit only the unsent

@@ -22,6 +22,7 @@ export declare const MSG: {
     readonly sessionsArchive: "control.sessions.archive";
     readonly sessionsUnarchive: "control.sessions.unarchive";
     readonly sessionsRename: "control.sessions.rename";
+    readonly sessionsFork: "control.sessions.fork";
     readonly agentsList: "control.agents.list";
     readonly workspacesList: "control.workspaces.list";
     readonly workspacesCreate: "control.workspaces.create";
@@ -427,6 +428,17 @@ export interface SessionsRenamePayload {
 export interface SessionsRenameResult {
     ok: true;
 }
+export interface SessionsForkPayload {
+    /** Server-stamped `relay:<accountId>`; scopes both aliases to that channel. */
+    chatKey: string;
+    /** The stable ordinary session whose recorded history is handed off. */
+    sourceAlias: string;
+    /** The new logical + transport session's alias. */
+    targetAlias: string;
+    /** Client-minted and reused across retries: the idempotency key. */
+    requestId: string;
+}
+export type SessionsForkResult = SessionDto;
 export interface AgentsListResult {
     agents: AgentDto[];
 }
@@ -1428,6 +1440,11 @@ export declare const RELAY_CAPABILITIES: {
      *  end. Older payload checks reject the shape with `invalid-payload`, so
      *  the Web shows only the Run-level entries until this is advertised. */
     readonly directTopicForkMessageV1: "direct.topics.fork.message.v1";
+    /** `control.sessions.fork` exists on both ends: the core persists a fork
+     *  record, renders a bounded one-time handoff, and the connector validator
+     *  accepts the payload. Without it the Web hides the ordinary-session fork
+     *  entry rather than offering an RPC an older core cannot answer. */
+    readonly sessionForkHandoffV1: "session.fork.handoff.v1";
     /** A Group Roundtable target (`mode: "roundtable"`) is accepted end to end:
      *  the connector validator and the core both implement pre-generated
      *  sequential discussion. The Web hides the "discuss" entry when absent. */
