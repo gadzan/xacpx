@@ -1,9 +1,31 @@
-# Weacpx Group Usage Guide
+# xacpx Group Usage Guide
 
-This guide covers just one thing: **when a task group's work should be cancelled, and when finished task records should be cleaned up**.  
-The descriptions below stay consistent with the current command behavior of `/help group` / `/help orchestration`.
+This guide covers two things: **when to delegate a single subtask versus when to open a task group**, and how to stop or clean up group work. The descriptions below stay consistent with the current command behavior of `/help group` / `/help orchestration`.
 
 > There is **no** `/group delete` and **no** `/groups clean`. To stop a group's unfinished work use `/group cancel <groupId>`; to clean up finished task records use `/tasks clean`.
+
+## Delegate or open a group?
+
+The current session is the coordinator. A delegated subtask runs as an independent worker session.
+
+| | Delegate one subtask | Open a task group |
+|---|---|---|
+| Command | `/dg <agent> <task>` (or `/delegate …`) | `/group new <title>`, then one `/group add <groupId> <agent> <task>` per piece |
+| Shape | One task, one worker | Several tasks, several workers |
+| Use when | The work is one well-defined piece; you want one result back | The work splits into mutually independent pieces that can run in parallel; you want to watch their progress together |
+| Approval | A delegated task can sit in `needs_confirmation` — check `/tasks`, then `/task approve <id>` or `/task reject <id>` | Same per-task approval inside the group |
+
+Rules of thumb:
+
+- **One thing → delegate.** `/dg claude Review the 3 highest-risk points of the current plan`
+- **Several independent things → group.** `/group new review-batch`, then one `/group add` per piece.
+- **Dependent things → don't parallelize them.** If B needs A's result, delegate them in order instead of putting both in one group; a group is for work that can run at the same time.
+- **You can add a delegated task to an existing group:** `/delegate <agent> --group <groupId> <task>`.
+- **A role template can shape either path:** `/delegate <agent> --role <role> <task>` or `/group add <groupId> <agent> --role <role> <task>`.
+
+### Not the same "group" as a dashboard Group Conversation
+
+The relay dashboard has a second kind of group: a Group Conversation — a persistent multi-bot conversation where members discuss in rounds (roundtable, 1–3 rounds) or work under automatic routing. That is a different system from the chat `/group` task groups above: it lives in the dashboard / Control API, not in `/group new`, and its members talk to each other (`group_send`) instead of reporting back to one coordinator session. If you want bots to discuss and collaborate with each other, use a Group Conversation; if you want parallel subtasks under your current session, use a chat task group. See [conversation-runtime.md](./conversation-runtime.md) for the conversation model.
 
 ## Remember two actions first
 
@@ -70,6 +92,10 @@ To inspect before acting, use `/groups` to see groups and their status, `/group 
 ## Examples
 
 ```text
+/dg claude Review the 3 highest-risk points of the current plan   # one thing: delegate
+/group new review-batch                                            # several independent things: group
+/group add review-batch claude Review the interface design
+/group add review-batch codex --role reviewer Review test coverage
 /group cancel review-batch   # stop the unfinished work in review-batch (group is kept)
 /tasks clean                 # remove finished tasks and stale bindings under this coordinator
 ```
