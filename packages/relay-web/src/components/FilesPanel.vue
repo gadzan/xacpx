@@ -258,13 +258,13 @@ watch(
           </button>
           <button data-test="tab-files"
                   class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
-                  :class="files.tab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  :class="files.tab === 'files' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="files.tab = 'files'">
             <FileText :size="13" />{{ $t("files.title") }}
           </button>
           <button data-test="tab-changes"
                   class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
-                  :class="files.tab === 'changes' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  :class="files.tab === 'changes' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="files.tab = 'changes'">
             <List :size="13" />{{ $t("files.changes") }}
           </button>
@@ -285,11 +285,11 @@ watch(
             <input v-model="searchInput" data-test="fs-search" :placeholder="$t(searchPlaceholder)"
                    class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-xs text-fg placeholder:text-fg-muted" @input="onSearchInput" />
             <button data-test="search-matchcase" :title="$t('files.search.matchCase')" @click="files.searchOpts.matchCase = !files.searchOpts.matchCase"
-                    class="grid h-6 w-6 place-items-center rounded-sm text-xs" :class="files.searchOpts.matchCase ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">Aa</button>
+                    class="grid h-6 w-6 place-items-center rounded-sm text-xs" :class="files.searchOpts.matchCase ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">Aa</button>
             <button data-test="search-wholeword" :title="$t('files.search.wholeWord')" @click="files.searchOpts.wholeWord = !files.searchOpts.wholeWord"
-                    class="grid h-6 w-6 place-items-center rounded-sm text-xs" :class="files.searchOpts.wholeWord ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">W</button>
+                    class="grid h-6 w-6 place-items-center rounded-sm text-xs" :class="files.searchOpts.wholeWord ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">W</button>
             <button data-test="search-regex" :title="$t('files.search.regex')" @click="files.searchOpts.regex = !files.searchOpts.regex"
-                    class="grid h-6 w-6 place-items-center rounded-sm font-mono text-xs" :class="files.searchOpts.regex ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">.*</button>
+                    class="grid h-6 w-6 place-items-center rounded-sm font-mono text-xs" :class="files.searchOpts.regex ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">.*</button>
             <button v-if="searchInput" :aria-label="$t('files.clearSearch')" class="text-fg-muted hover:text-fg" @click="clearSearch"><X :size="14" /></button>
           </div>
           <div class="flex items-center gap-1">
@@ -297,8 +297,8 @@ watch(
             <input v-model="files.searchOpts.exclude" data-test="search-exclude" :placeholder="$t('files.search.exclude')" class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-0.5 text-xs text-fg placeholder:text-fg-muted" />
           </div>
           <div class="flex items-center gap-1 text-xs">
-            <button data-test="search-mode-name" @click="files.searchOpts.mode = 'name'" class="rounded-sm px-2 py-0.5" :class="files.searchOpts.mode === 'name' ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byName") }}</button>
-            <button data-test="search-mode-content" @click="files.searchOpts.mode = 'content'" class="rounded-sm px-2 py-0.5" :class="files.searchOpts.mode === 'content' ? 'bg-accent/15 text-accent' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byContent") }}</button>
+            <button data-test="search-mode-name" @click="files.searchOpts.mode = 'name'" class="rounded-sm px-2 py-0.5" :class="files.searchOpts.mode === 'name' ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byName") }}</button>
+            <button data-test="search-mode-content" @click="files.searchOpts.mode = 'content'" class="rounded-sm px-2 py-0.5" :class="files.searchOpts.mode === 'content' ? 'bg-accent/15 text-accent-text' : 'text-fg-muted hover:bg-raised'">{{ $t("files.search.byContent") }}</button>
           </div>
         </div>
 
@@ -311,14 +311,14 @@ watch(
             <ul class="p-2 space-y-1">
               <li v-for="(h, i) in visibleHits" :key="i">
                 <button data-test="fs-hit" class="block w-full rounded-sm px-1.5 py-1 text-left hover:bg-raised" @click="openSearchResult(h.path, h.line)">
-                  <div class="truncate font-mono text-xs text-fg-muted">{{ h.path }}<span class="text-accent">:{{ h.line }}</span></div>
+                  <div class="truncate font-mono text-xs text-fg-muted">{{ h.path }}<span class="text-accent-text">:{{ h.line }}</span></div>
                   <div class="mt-0.5 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-fg-muted">
                     <template v-for="(seg, j) in segments(h.text)" :key="j"><span :data-test="seg.hit ? 'hit-mark' : null" :class="seg.hit ? 'rounded-[2px] bg-warn/30 font-semibold text-fg' : ''">{{ seg.text }}</span></template>
                   </div>
                 </button>
               </li>
             </ul>
-            <button v-if="moreHits" data-test="fs-more" class="mx-2 mb-1 block rounded-sm px-2 py-1 text-xs text-accent hover:bg-raised" @click="showMore">
+            <button v-if="moreHits" data-test="fs-more" class="mx-2 mb-1 block rounded-sm px-2 py-1 text-xs text-accent-text hover:bg-raised" @click="showMore">
               {{ $t("files.showMore", { n: Math.min(PAGE, moreHits) }) }}
             </button>
             <div v-else-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
@@ -334,7 +334,7 @@ watch(
               </li>
               <li v-if="!files.results.length && !files.searching" class="px-1.5 py-1 text-xs text-fg-muted">{{ $t("palette.noMatches") }}</li>
             </ul>
-            <button v-if="moreResults" data-test="fs-more" class="mx-2 mb-1 block rounded-sm px-2 py-1 text-xs text-accent hover:bg-raised" @click="showMore">
+            <button v-if="moreResults" data-test="fs-more" class="mx-2 mb-1 block rounded-sm px-2 py-1 text-xs text-accent-text hover:bg-raised" @click="showMore">
               {{ $t("files.showMore", { n: Math.min(PAGE, moreResults) }) }}
             </button>
             <div v-else-if="files.searchTruncated" class="px-2.5 pb-1 text-xs text-warn">{{ $t("files.showingFirstMatches") }}</div>
@@ -385,7 +385,7 @@ watch(
               <span v-else-if="gitCtx?.detached" data-test="changes-branch" class="truncate font-mono text-xs italic text-fg-muted">{{ $t("files.detached") }}</span>
               <span v-else class="text-xs font-semibold uppercase tracking-wider text-fg-muted">{{ $t("files.changes") }}</span>
               <span v-if="gitCtx?.worktree?.linked" data-test="worktree-linked"
-                    class="shrink-0 rounded-full bg-accent-soft px-1.5 py-px text-xs font-semibold uppercase tracking-wide text-accent">{{ $t("files.linked") }}</span>
+                    class="shrink-0 rounded-full bg-accent-soft px-1.5 py-px text-xs font-semibold uppercase tracking-wide text-accent-text">{{ $t("files.linked") }}</span>
               <span class="flex-1" />
               <button data-test="git-new-branch" :title="$t('files.git.newBranch')" :disabled="gitBusy"
                       class="grid h-6 w-6 place-items-center rounded-sm text-fg-muted hover:bg-raised hover:text-accent disabled:opacity-50"
@@ -424,7 +424,7 @@ watch(
                 <span class="shrink-0 font-mono text-fg">{{ tree.branch ?? $t("files.detached") }}</span>
                 <span class="min-w-0 flex-1 truncate font-mono text-fg-muted" :title="tree.path">{{ tree.path }}</span>
               </div>
-              <button data-test="git-new-worktree" class="mt-1 inline-flex items-center gap-1 rounded-sm px-1.5 py-1 text-accent hover:bg-accent-soft" @click="beginWorktreeCreate"><Plus :size="10" />{{ $t("files.git.newWorktree") }}</button>
+              <button data-test="git-new-worktree" class="mt-1 inline-flex items-center gap-1 rounded-sm px-1.5 py-1 text-accent-text hover:bg-accent-soft" @click="beginWorktreeCreate"><Plus :size="10" />{{ $t("files.git.newWorktree") }}</button>
               <div v-if="showWorktreeCreate" data-test="git-worktree-create" class="mt-1 space-y-1 rounded-sm bg-bg p-1.5">
                 <label class="flex items-center gap-1"><input v-model="worktreeCreateBranch" type="checkbox" class="accent-accent" />{{ $t("files.git.createBranch") }}</label>
                 <input v-model="worktreeBranch" data-test="git-worktree-branch" :placeholder="$t('files.git.branchName')" class="w-full rounded-sm bg-surface-2 px-2 py-1 text-fg" />
@@ -453,7 +453,7 @@ watch(
                   <span class="text-fg-muted">{{ s.items.length }}</span>
                 </button>
                 <button v-if="s.key !== 'staged'" data-test="git-stage-group" :disabled="gitBusy"
-                        class="rounded-sm px-1 py-0.5 text-xs text-accent hover:bg-accent-soft disabled:opacity-50"
+                        class="rounded-sm px-1 py-0.5 text-xs text-accent-text hover:bg-accent-soft disabled:opacity-50"
                         @click="stage(s.items.map((item) => item.path))">{{ $t("files.git.stageAll") }}</button>
               </div>
               <ul v-show="!collapsed[s.key]" class="space-y-px pt-0.5">
@@ -464,7 +464,7 @@ watch(
                     <span class="w-3 shrink-0 text-center font-mono text-xs uppercase" :class="statusBadge(f.status).cls">{{ statusBadge(f.status).label }}</span>
                     <span class="flex min-w-0 flex-1 items-baseline truncate font-mono text-xs">
                       <span v-if="splitPath(f.path).dir" class="truncate text-fg-muted">{{ splitPath(f.path).dir }}</span>
-                      <span class="shrink-0" :class="selectedDiff === f.path ? 'text-accent' : 'text-fg'">{{ splitPath(f.path).name }}</span>
+                      <span class="shrink-0" :class="selectedDiff === f.path ? 'text-accent-text' : 'text-fg'">{{ splitPath(f.path).name }}</span>
                     </span>
                   </button>
                   <button v-if="f.status !== '??'" :data-test="`git-untrack-${f.path}`" :title="$t('files.git.untrack')" :disabled="gitBusy"
@@ -477,7 +477,7 @@ watch(
                           class="shrink-0 rounded-sm px-1 py-0.5 text-xs text-fg-muted opacity-70 hover:bg-raised hover:text-fg group-hover:opacity-100 disabled:opacity-30"
                           @click.stop="unstage([f.path])">−</button>
                   <button v-else :data-test="`git-stage-${f.path}`" :title="$t('files.git.stage')" :disabled="gitBusy"
-                          class="shrink-0 rounded-sm px-1 py-0.5 text-xs text-fg-muted opacity-70 hover:bg-raised hover:text-accent group-hover:opacity-100 disabled:opacity-30"
+                          class="shrink-0 rounded-sm px-1 py-0.5 text-xs text-fg-muted opacity-70 hover:bg-raised hover:text-accent-text group-hover:opacity-100 disabled:opacity-30"
                           @click.stop="stage([f.path])">+</button>
                 </li>
               </ul>
@@ -491,7 +491,7 @@ watch(
             <div class="mt-1 flex items-center gap-1.5">
               <span class="min-w-0 flex-1 truncate text-xs text-fg-muted">{{ $t("files.git.commitStaged", { n: stagedPaths.length }) }}</span>
               <button v-if="stageablePaths.length" data-test="git-stage-all" :disabled="gitBusy"
-                      class="rounded-sm px-2 py-1 text-xs text-accent hover:bg-accent-soft disabled:opacity-50" @click="stage(stageablePaths)">{{ $t("files.git.stageAll") }}</button>
+                      class="rounded-sm px-2 py-1 text-xs text-accent-text hover:bg-accent-soft disabled:opacity-50" @click="stage(stageablePaths)">{{ $t("files.git.stageAll") }}</button>
               <button data-test="git-commit" :disabled="gitBusy || !commitMessage.trim() || !stagedPaths.length"
                       class="rounded-sm bg-accent px-2.5 py-1 text-xs font-semibold text-on-accent disabled:opacity-40" @click="commitStaged">{{ $t("files.git.commit") }}</button>
             </div>

@@ -190,7 +190,7 @@ function alwaysRendered(entry: RenderedNode): boolean {
                 <span class="block break-words [overflow-wrap:anywhere] text-sm font-medium leading-snug text-fg">
                   {{ entry.node.step.title }}
                 </span>
-                <span class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-accent">
+                <span class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-accent-text">
                   <Bot :size="12" class="shrink-0" />
                   <span>{{ $t("tools.subagent") }}</span>
                 </span>

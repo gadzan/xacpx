@@ -61,7 +61,7 @@ const emit = defineEmits<{ speakerClick: [] }>();
             v-if="speakerClickable"
             type="button"
             data-test="transcript-speaker"
-            class="text-xs font-semibold text-fg transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            class="text-xs font-semibold text-fg transition-colors hover:text-accent-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             @click.stop="emit('speakerClick')"
           >{{ speaker }}</button>
           <span v-else class="text-xs font-semibold text-fg">{{ speaker }}</span>

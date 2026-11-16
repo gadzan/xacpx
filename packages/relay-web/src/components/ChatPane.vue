@@ -171,7 +171,7 @@ onUnmounted(() => clearInterval(timer));
                 :title='$t("chat.browseFiles")'
                 @click="emit('show-files')"><Folder :size="11" class="shrink-0 text-warn" /><span>{{ currentSession.workspace }}</span></button>
         <span v-if="instance?.name" data-test="ctx-chip-instance"
-              class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><span class="font-mono text-accent">@</span><span>{{ instance.name }}</span></span>
+              class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><span class="font-mono text-accent-text">@</span><span>{{ instance.name }}</span></span>
         <span v-if="currentSession?.agent" data-test="ctx-chip-agent"
               class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm bg-surface-2 py-0.5 pl-1.5 pr-2 text-xs font-medium text-fg-muted"><Bot :size="11" class="shrink-0 text-accent" /><span>{{ currentSession.agent }}</span></span>
         <button v-if="files.gitSummary" data-test="git-summary"

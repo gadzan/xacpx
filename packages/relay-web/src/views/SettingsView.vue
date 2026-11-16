@@ -138,13 +138,13 @@ void onMounted(() => { void probeNotifications(); });
           <button
             data-test="theme-dark"
             class="rounded-sm px-3 py-1 text-sm"
-            :class="theme.mode === 'dark' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
+            :class="theme.mode === 'dark' ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fg/5'"
             @click="theme.set('dark')"
           >{{ $t("settings.dark") }}</button>
           <button
             data-test="theme-light"
             class="rounded-sm px-3 py-1 text-sm"
-            :class="theme.mode === 'light' ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
+            :class="theme.mode === 'light' ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fg/5'"
             @click="theme.set('light')"
           >{{ $t("settings.light") }}</button>
         </div>
@@ -156,7 +156,7 @@ void onMounted(() => { void probeNotifications(); });
               :key="loc"
               :data-test="`lang-${loc}`"
               class="rounded-sm px-3 py-1 text-sm"
-              :class="locale.locale === loc ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:bg-fg/5'"
+              :class="locale.locale === loc ? 'bg-accent-soft text-accent-text' : 'text-fg-muted hover:bg-fg/5'"
               @click="locale.set(loc)"
             >{{ localeLabels[loc] }}</button>
           </div>
@@ -187,7 +187,7 @@ void onMounted(() => { void probeNotifications(); });
       <p class="text-sm text-fg-muted" data-test="relay-version">
         {{ $t("settings.relayVersion", { version: relay?.current ?? "—" }) }}
       </p>
-      <p v-if="relay?.latest && relay.updateAvailable" class="mt-1 text-sm text-accent" data-test="relay-update">
+      <p v-if="relay?.latest && relay.updateAvailable" class="mt-1 text-sm text-accent-text" data-test="relay-update">
         {{ $t("settings.relayUpdateAvailable", { latest: relay?.latest }) }}
       </p>
     </section>

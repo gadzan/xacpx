@@ -467,7 +467,7 @@ async function confirmDelete(): Promise<void> {
           <button v-if="!memberWorkLoading"
                   type="button"
                   data-test="group-dialog-member-work-refresh"
-                  class="font-medium text-accent hover:underline"
+                  class="font-medium text-accent-text hover:underline"
                   @click="locateMemberWork">
             {{ $t("group.manage.refresh") }}
           </button>
@@ -578,7 +578,7 @@ async function confirmDelete(): Promise<void> {
                  data-test="group-dialog-bots-error"
                  class="flex items-center justify-between gap-2 py-2 text-xs text-danger-overlay">
               <span>{{ $t("group.manage.botsLoadFailed", { msg: catalogError }) }}</span>
-              <button type="button" class="font-medium text-accent hover:underline" @click="loadCatalog">
+              <button type="button" class="font-medium text-accent-text hover:underline" @click="loadCatalog">
                 {{ $t("common.retry") }}
               </button>
             </div>

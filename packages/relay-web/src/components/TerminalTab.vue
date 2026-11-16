@@ -524,15 +524,15 @@ onBeforeUnmount(() => {
       <button data-test="key-tab" :disabled="!canType" class="shrink-0 rounded-sm bg-bg px-2.5 py-1 font-mono text-ui text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\t')">Tab</button>
       <button data-test="key-ctrl" :disabled="!canType" :aria-pressed="ctrlArmed"
               class="shrink-0 rounded-sm bg-surface-2 px-2.5 py-1 font-mono text-ui transition-colors disabled:opacity-40"
-              :class="ctrlArmed ? 'bg-accent-soft text-accent' : 'bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
+              :class="ctrlArmed ? 'bg-accent-soft text-accent-text' : 'bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="ctrlArmed = !ctrlArmed">Ctrl</button>
       <button data-test="key-alt" :disabled="!canType" :aria-pressed="altArmed"
               class="shrink-0 rounded-sm bg-surface-2 px-2.5 py-1 font-mono text-ui transition-colors disabled:opacity-40"
-              :class="altArmed ? 'bg-accent-soft text-accent' : 'bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
+              :class="altArmed ? 'bg-accent-soft text-accent-text' : 'bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="altArmed = !altArmed">Alt</button>
       <button data-test="key-shift" :disabled="!canType" :aria-pressed="shiftArmed"
               class="shrink-0 rounded-sm bg-surface-2 px-2.5 py-1 font-mono text-ui transition-colors disabled:opacity-40"
-              :class="shiftArmed ? 'bg-accent-soft text-accent' : 'bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
+              :class="shiftArmed ? 'bg-accent-soft text-accent-text' : 'bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="shiftArmed = !shiftArmed">Shift</button>
       <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <button data-test="key-left" :disabled="!canType" :aria-label="$t('terminal.keybar.left')" class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[D')"><ChevronLeft :size="15" /></button>

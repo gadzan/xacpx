@@ -553,7 +553,7 @@ function onInput(): void {
               @pointerdown.prevent
               @click="pickRow(index)"
             >
-              <span v-if="row.kind === 'skill'" class="text-accent">{{
+              <span v-if="row.kind === 'skill'" class="text-accent-text">{{
                 $t("bot.prompt.skillCompletion")
               }}</span>
               <span class="font-medium text-fg">{{ row.label }}</span
@@ -565,7 +565,7 @@ function onInput(): void {
             <button
               v-if="more"
               type="button"
-              class="flex min-h-[46px] w-full items-center px-3 text-left text-xs text-accent"
+              class="flex min-h-[46px] w-full items-center px-3 text-left text-xs text-accent-text"
               @pointerdown.prevent
               @click="nextPage"
             >
@@ -574,7 +574,7 @@ function onInput(): void {
             <button
               v-if="status === 'error' || status === 'loading' || status === 'unavailable'"
               type="button"
-              class="flex min-h-[46px] w-full items-center px-3 text-left text-xs text-accent"
+              class="flex min-h-[46px] w-full items-center px-3 text-left text-xs text-accent-text"
               @pointerdown.prevent
               @click="refresh()"
             >
@@ -606,7 +606,7 @@ function onInput(): void {
             @pointerdown.prevent
             @click="pickRow(index)"
           >
-            <span v-if="row.kind === 'skill'" class="text-accent">{{
+            <span v-if="row.kind === 'skill'" class="text-accent-text">{{
               $t("bot.prompt.skillCompletion")
             }}</span>
             <span class="font-medium text-fg">{{ row.label }}</span
@@ -622,7 +622,7 @@ function onInput(): void {
           <button
             v-if="more"
             type="button"
-            class="px-3 py-2 text-xs text-accent"
+            class="px-3 py-2 text-xs text-accent-text"
             @pointerdown.prevent
             @click="nextPage"
           >
@@ -635,7 +635,7 @@ function onInput(): void {
               status === 'unavailable'
             "
             type="button"
-            class="px-3 py-2 text-xs text-accent"
+            class="px-3 py-2 text-xs text-accent-text"
             @pointerdown.prevent
             @click="refresh()"
           >

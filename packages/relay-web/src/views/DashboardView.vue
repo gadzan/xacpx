@@ -984,13 +984,13 @@ onUnmounted(() => {
         <div class="flex h-9 shrink-0 items-center gap-1 px-2.5">
           <button data-test="right-tab-files"
                   class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
-                  :class="rightTab === 'files' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  :class="rightTab === 'files' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'files'">
             <FileText :size="13" />{{ $t("nav.files") }}
           </button>
           <button data-test="right-tab-tasks"
                   class="flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors cursor-pointer"
-                  :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+                  :class="rightTab === 'tasks' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
                   @click="rightTab = 'tasks'">
             <List :size="13" />{{ $t("nav.tasks") }}
           </button>
@@ -1058,7 +1058,7 @@ onUnmounted(() => {
     <MobileSheet v-if="activeSheet === 'tabs'" :title='$t("mobileBar.openTabs", { n: openTabCount })' test-id="open-tabs-sheet" @close="closeSheet">
       <div v-for="item in tabSheetItems" :key="item.id" data-test="open-tab-row" :data-tab-id="item.id"
            class="flex min-h-12 items-center rounded-lg pr-1"
-           :class="item.active ? 'bg-accent-soft text-accent' : 'text-fg'">
+           :class="item.active ? 'bg-accent-soft text-accent-text' : 'text-fg'">
         <button type="button" class="flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-lg px-3 text-left text-sm"
                 @click="switchTabFromSheet(item.id)">
           <component :is="item.icon" :size="18" class="shrink-0" />

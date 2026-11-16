@@ -255,7 +255,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         <template v-if="editing">
           <span v-if="editDirty" data-test="fv-dirty-dot" class="mr-0.5 h-1.5 w-1.5 rounded-full bg-accent" aria-hidden="true" />
           <button data-test="fv-save" :disabled="saving || !editDirty" :aria-label="$t('files.save')"
-                  class="flex h-7 items-center gap-1 rounded-sm px-2 text-ui font-medium text-accent transition-colors hover:bg-accent-soft disabled:opacity-40"
+                  class="flex h-7 items-center gap-1 rounded-sm px-2 text-ui font-medium text-accent-text transition-colors hover:bg-accent-soft disabled:opacity-40"
                   @click="save()"><SaveIcon :size="14" />{{ saving ? $t("files.saving") : $t("files.save") }}</button>
           <button data-test="fv-cancel" :aria-label="$t('files.cancel')"
                   class="h-7 rounded-sm px-2 text-ui font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"

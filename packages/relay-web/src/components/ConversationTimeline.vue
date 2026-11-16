@@ -168,7 +168,7 @@ defineExpose({ scrollToBottom });
         v-if="forkSourceAvailable"
         type="button"
         data-test="topic-fork-banner-source"
-        class="font-medium text-accent underline-offset-2 hover:underline"
+        class="font-medium text-accent-text underline-offset-2 hover:underline"
         @click="emit('openSourceTopic')"
       >
         {{ $t("group.topic.forkSource") }}

@@ -238,7 +238,7 @@ export function useChangesGit(instanceId: Ref<string | null>) {
     if (value.includes("?")) return { label: "U", cls: "text-warn" };
     if (value.includes("A")) return { label: "A", cls: "text-run" };
     if (value.includes("D")) return { label: "D", cls: "text-danger" };
-    if (value.includes("R")) return { label: "R", cls: "text-accent" };
+    if (value.includes("R")) return { label: "R", cls: "text-accent-text" };
     if (value.includes("M")) return { label: "M", cls: "text-info" };
     return { label: value[0] ?? "•", cls: "text-fg-muted" };
   }

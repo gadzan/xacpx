@@ -60,7 +60,7 @@ async function create() {
     </ul>
 
     <button v-if="overflow > 0" type="button" data-test="scheduled-view-all"
-            class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-sm bg-bg px-2 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-accent-soft hover:text-accent"
+            class="mt-1.5 flex w-full items-center justify-center gap-1 rounded-sm bg-bg px-2 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-accent-soft hover:text-accent-text"
             @click="drawerOpen = true">
       {{ $t("tasks.viewAll", { count: tasks.scheduled.length }) }}
       <ChevronDown :size="12" />

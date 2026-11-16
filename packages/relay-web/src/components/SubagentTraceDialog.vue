@@ -45,7 +45,7 @@ useModalA11y(dialog, () => emit("close"));
             </div>
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-2">
-                <span class="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.14em] text-accent">
+                <span class="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-semibold uppercase tracking-[0.14em] text-accent-text">
                   {{ $t("tools.subagent") }}
                 </span>
                 <span class="inline-flex items-center gap-1 text-xs text-fg-muted">

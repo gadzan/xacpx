@@ -523,7 +523,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
             type="button"
             class="rounded-sm px-3 py-1 text-xs transition-colors"
             :class="String(hasAnswer(answers, field.key) ? answers[field.key] : '') === String(option)
-              ? 'bg-accent-soft text-accent ring-1 ring-accent'
+              ? 'bg-accent-soft text-accent-text ring-1 ring-accent'
               : 'text-fg hover:bg-surface'"
             @click="emit('answer', field.key, option)"
           >
@@ -541,7 +541,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
             :aria-pressed="isSelected(field, option.value)"
             class="rounded-md border border-border bg-surface px-3 py-2 text-sm transition-colors"
             :class="isSelected(field, option.value)
-              ? 'border-accent bg-accent-soft text-accent ring-1 ring-accent'
+              ? 'border-accent bg-accent-soft text-accent-text ring-1 ring-accent'
               : 'text-fg hover:bg-surface-2'"
             @click="onSelect(field, option.value)"
           >
@@ -560,7 +560,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
             :data-test="`interaction-multi-${option.value}`"
             class="mr-1 mb-1 rounded-sm px-2 py-1 text-xs transition-colors"
             :class="(Array.isArray(hasAnswer(answers, field.key) ? answers[field.key] : undefined) ? answers[field.key] as string[] : []).includes(option.value)
-              ? 'bg-accent-soft text-accent ring-1 ring-accent'
+              ? 'bg-accent-soft text-accent-text ring-1 ring-accent'
               : 'text-fg hover:bg-surface'"
             @click="onMultiToggle(field, option.value)"
           >

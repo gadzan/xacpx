@@ -104,7 +104,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
       type="button"
       data-test="tab-chat"
       class="flex shrink-0 items-center gap-1.5 rounded-sm px-2.5 py-1.5 text-xs transition-colors cursor-pointer"
-      :class="store.activeFor(props.sessionKey) === 'chat' ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
+      :class="store.activeFor(props.sessionKey) === 'chat' ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised'"
       @click="store.setActive(props.sessionKey, 'chat')"
     >
       <MessageSquare :size="13" />{{ $t("center.chat") }}
@@ -124,7 +124,7 @@ watch(() => store.tabsFor(props.sessionKey).length, () => nextTick(updateFades))
       style="touch-action: pan-x"
       class="flex shrink-0 items-center gap-1 rounded-sm px-2.5 py-1.5 text-xs transition cursor-pointer"
       :class="[
-        tab.id === store.activeFor(props.sessionKey) ? 'bg-accent-soft text-accent font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
+        tab.id === store.activeFor(props.sessionKey) ? 'bg-accent-soft text-accent-text font-semibold' : 'text-fg-muted font-medium hover:bg-raised',
         overId === tab.id ? 'ring-1 ring-inset ring-accent' : '',
         tab.id === draggingId ? 'scale-95 opacity-50' : '',
       ]"

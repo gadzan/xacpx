@@ -124,7 +124,7 @@ onBeforeUnmount(() => {
             class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-sm text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
             :aria-expanded="open" @click="onHeaderClick">
       <Bot :size="13" class="shrink-0 text-accent" />
-      <span class="shrink-0 font-medium text-xs text-accent">{{ $t("tools.subagent") }}</span>
+      <span class="shrink-0 font-medium text-xs text-accent-text">{{ $t("tools.subagent") }}</span>
       <span class="min-w-0 truncate font-mono text-xs text-fg-muted group-hover:text-fg">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
         <span class="font-mono text-xs text-fg-muted/70">
@@ -194,7 +194,7 @@ onBeforeUnmount(() => {
         </p>
       </template>
       <button type="button" data-test="subagent-open-trace"
-              class="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs font-medium text-accent transition-colors hover:bg-fg/5"
+              class="inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs font-medium text-accent-text transition-colors hover:bg-fg/5"
               @click="onOpenTrace">
         <ExternalLink :size="12" /> {{ $t("tools.viewFullTrace") }}
       </button>

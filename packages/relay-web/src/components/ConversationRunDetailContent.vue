@@ -74,7 +74,7 @@ function participantName(botId: string): string {
 
 function toneClass(tone: StateTone): string {
   switch (tone) {
-    case "active": return "bg-accent/[0.14] text-accent";
+    case "active": return "bg-accent/[0.14] text-accent-text";
     case "done": return "bg-run/[0.14] text-run";
     case "failed": return "bg-danger/[0.14] text-danger";
     case "waiting": return "bg-warn/[0.16] text-warn";

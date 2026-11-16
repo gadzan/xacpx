@@ -670,7 +670,7 @@ watch(
               <div class="flex min-w-0 max-w-[80%] flex-col items-end">
                 <!-- Provenance badge for a fired scheduled task: this prompt wasn't typed now. -->
                 <span v-if="schedOf(m)" data-test="msg-scheduled-badge"
-                      class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent"
+                      class="mb-1 inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-text"
                       :title="`${$t('chat.scheduledFor')} ${fmtDateTime(schedOf(m)!.executeAt)}`">
                   <Clock :size="11" />{{ $t("chat.scheduled") }}
                 </span>
@@ -685,7 +685,7 @@ watch(
               <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
                 <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
               <button type="button" data-test="msg-resend"
-                      class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
+                      class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-text transition-colors hover:bg-accent/20"
                       :title='$t("chat.resendThis")' @click="emit('resend', m)"><RotateCcw :size="11" />{{ $t("chat.resend") }}</button>
             </div>
           </div>

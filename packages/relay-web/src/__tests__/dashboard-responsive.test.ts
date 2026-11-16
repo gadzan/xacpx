@@ -178,7 +178,7 @@ test("the more sheet's Files entry opens the Files drawer on the files tab", asy
   expect(right.classes()).not.toContain("translate-x-full");
   // ...and showing the Files tab as active.
   const filesTab = wrapper.find('[data-test="right-tab-files"]');
-  expect(filesTab.classes()).toContain("text-accent");
+  expect(filesTab.classes()).toContain("text-accent-text");
   expect(filesTab.classes()).toContain("font-semibold");
   // The sheet that launched it is gone.
   expect(wrapper.find('[data-test="mobile-more-sheet"]').exists()).toBe(false);
@@ -224,7 +224,7 @@ test("tasks drawer opens via the more sheet's Tasks entry", async () => {
   await flushPromises();
   expect(right.classes()).toContain("translate-x-0");
   expect(right.classes()).not.toContain("translate-x-full");
-  expect(wrapper.find('[data-test="right-tab-tasks"]').classes()).toContain("text-accent");
+  expect(wrapper.find('[data-test="right-tab-tasks"]').classes()).toContain("text-accent-text");
 });
 
 test("backdrop click closes the open files/tasks drawer", async () => {
@@ -514,7 +514,7 @@ test("open-tabs sheet switches tabs and closes them through the guarded path", a
   expect(rows[1].attributes("data-tab-id")).toBe("file:src/a.ts");
   // The active tab is the highlighted one.
   expect(rows[1].classes()).toContain("bg-accent-soft");
-  expect(rows[1].classes()).toContain("text-accent");
+  expect(rows[1].classes()).toContain("text-accent-text");
 
   // Tapping Chat switches back and dismisses the sheet.
   await backAndSettle(() => rows[0].find("button").trigger("click"));

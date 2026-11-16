@@ -904,7 +904,7 @@ function onKeydown(e: KeyboardEvent) {
             <div class="flex min-w-0 flex-1 flex-col">
               <div class="flex min-w-0 items-center justify-between gap-2">
                 <span
-                  class="font-semibold text-accent truncate"
+                  class="font-semibold text-accent-text truncate"
                   data-test="mention-primary"
                   >@{{ agentItem.displayName }}</span
                 >

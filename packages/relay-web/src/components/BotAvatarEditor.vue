@@ -52,7 +52,7 @@ const presets = [
   { id: "gentle", avatar: character({ shape: "goutte", color: "creme", expression: "timide" }) },
 ];
 const choiceClass = (selected: boolean) => selected
-  ? "bg-accent-soft text-accent ring-1 ring-accent"
+  ? "bg-accent-soft text-accent-text ring-1 ring-accent"
   : "bg-surface-2 text-fg-muted hover:bg-raised hover:text-fg";
 const hasCharacter = computed(() => props.modelValue?.kind === "character");
 function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
@@ -100,7 +100,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
         <h3 class="text-xs font-semibold">{{ t('bot.avatar.text.title') }}</h3>
         <p class="mt-1 text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.text.notice') }}</p>
         <p data-test="avatar-retained-text" class="mt-3 whitespace-pre-wrap break-all rounded-lg bg-bg p-2 text-xs text-fg">{{ modelValue.value }}</p>
-        <button type="button" data-test="avatar-replace-text" class="mt-3 rounded-lg px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent-soft"
+        <button type="button" data-test="avatar-replace-text" class="mt-3 rounded-lg px-3 py-1.5 text-xs font-medium text-accent-text hover:bg-accent-soft"
                 @click="emit('update:modelValue', character())">{{ t('bot.avatar.text.replace') }}</button>
       </section>
       <p v-else-if="!modelValue" class="rounded-2xl bg-raised p-3 text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.defaultNotice') }}</p>
@@ -147,7 +147,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h3 class="text-xs font-semibold">{{ t('bot.avatar.expression') }}</h3>
           <button type="button" data-test="avatar-expressions-toggle" :aria-expanded="expandedExpressions" aria-controls="avatar-expression-options"
-                  class="flex items-center gap-1 text-xs text-accent hover:underline focus-visible:outline-2 focus-visible:outline-accent" @click="expandedExpressions = !expandedExpressions">
+                  class="flex items-center gap-1 text-xs text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent" @click="expandedExpressions = !expandedExpressions">
             {{ t(expandedExpressions ? 'bot.avatar.commonExpressions' : 'bot.avatar.allExpressions') }}
             <ChevronDown :size="12" :class="{ 'rotate-180': expandedExpressions }" />
           </button>
