@@ -5,8 +5,24 @@ import { createSqlDriver, type SqlDriver } from "../conversations/sql-driver";
 export type SessionForkStrategy = "pending" | "native" | "portable";
 export type SessionForkStatus = "pending" | "ready" | "consumed";
 
-export interface SessionForkSourcePoint {
-  type: "latest_stable";
+/** Where a portable fork cuts the source session's recorded history: the latest
+ *  settled head, or one recorded prompt turn (a "node") and everything up to its
+ *  reply. */
+export type SessionForkSourcePoint =
+  | { type: "latest_stable" }
+  | { type: "node"; nodeId: string };
+
+/** One recorded prompt turn of a logical session. The core mints `nodeId` when
+ *  the turn starts and records the digest of the exact prompt text it hands the
+ *  agent, so a fork can locate that turn in the acpx record later without
+ *  guessing at provider-managed message ids. */
+export interface SessionForkTurnNode {
+  nodeId: string;
+  sessionId: string;
+  /** 0-based order among this session's recorded prompt turns. */
+  sequence: number;
+  promptDigest: string;
+  createdAt: string;
 }
 
 export interface SessionForkResolution {
@@ -26,6 +42,9 @@ export interface SessionForkRecord {
   /** The chat scope that requested the fork, so a replay from another scope cannot claim it. */
   chatKey: string;
   sourcePoint: SessionForkSourcePoint;
+  /** Digest of the rendered prefix at resolve time, so a replay cannot hand off
+   *  history the source record no longer holds. Node forks only. */
+  sourceAnchor?: string;
   strategy: SessionForkStrategy;
   resolution?: SessionForkResolution;
   status: SessionForkStatus;
@@ -62,7 +81,10 @@ export class SessionForkError extends Error {
       | "session-fork-empty-history"
       | "session-fork-target-exists"
       | "session-fork-request-mismatch"
-      | "session-fork-native-unavailable",
+      | "session-fork-native-unavailable"
+      | "session-fork-node-unavailable"
+      | "session-fork-node-ambiguous"
+      | "session-fork-source-changed",
     message: string,
   ) {
     super(message);
@@ -78,6 +100,7 @@ interface ForkRow {
   target_alias: string | null;
   chat_key: string | null;
   source_point: string;
+  source_anchor: string | null;
   strategy: SessionForkStrategy;
   resolution: string | null;
   status: SessionForkStatus;
@@ -91,6 +114,19 @@ interface HandoffRow {
   omitted_messages: number;
 }
 
+interface TurnNodeRow {
+  node_id: string;
+  session_id: string;
+  sequence: number;
+  prompt_digest: string;
+  created_at: string;
+}
+
+/** A turn node older than this can no longer be forked: the acpx record keeps a
+ *  bounded window, so the prefix it describes is gone. 30 days matches the
+ *  longest practical pause between a session's turns and a fork of it. */
+const TURN_NODE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS session_forks (
   id TEXT PRIMARY KEY,
@@ -101,6 +137,7 @@ CREATE TABLE IF NOT EXISTS session_forks (
   target_alias TEXT,
   chat_key TEXT,
   source_point TEXT NOT NULL,
+  source_anchor TEXT,
   strategy TEXT NOT NULL,
   resolution TEXT,
   status TEXT NOT NULL,
@@ -114,7 +151,16 @@ CREATE TABLE IF NOT EXISTS session_fork_handoffs (
   omitted_messages INTEGER NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS session_turn_nodes (
+  node_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  prompt_digest TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS session_forks_source ON session_forks(source_session_id);
+CREATE INDEX IF NOT EXISTS session_turn_nodes_session ON session_turn_nodes(session_id, sequence);
+CREATE INDEX IF NOT EXISTS session_turn_nodes_created ON session_turn_nodes(created_at);
 `;
 
 function parseResolution(raw: string | null): SessionForkResolution | undefined {
@@ -135,8 +181,16 @@ function parseResolution(raw: string | null): SessionForkResolution | undefined 
 
 function parseSourcePoint(raw: string): SessionForkSourcePoint {
   const parsed: unknown = JSON.parse(raw);
-  if (parsed && typeof parsed === "object" && "type" in parsed && parsed.type === "latest_stable") {
-    return { type: "latest_stable" };
+  if (parsed && typeof parsed === "object" && "type" in parsed) {
+    if (parsed.type === "latest_stable") return { type: "latest_stable" };
+    if (
+      parsed.type === "node"
+      && "nodeId" in parsed
+      && typeof parsed.nodeId === "string"
+      && parsed.nodeId.length > 0
+    ) {
+      return { type: "node", nodeId: parsed.nodeId };
+    }
   }
   throw new Error("session fork record holds an unknown source point");
 }
@@ -151,11 +205,22 @@ function toRecord(row: ForkRow): SessionForkRecord {
     targetAlias: row.target_alias ?? "",
     chatKey: row.chat_key ?? "",
     sourcePoint: parseSourcePoint(row.source_point),
+    ...(row.source_anchor ? { sourceAnchor: row.source_anchor } : {}),
     strategy: row.strategy,
     ...(row.resolution ? { resolution: parseResolution(row.resolution) } : {}),
     status: row.status,
     createdAt: row.created_at,
     ...(row.consumed_at ? { consumedAt: row.consumed_at } : {}),
+  };
+}
+
+function toTurnNode(row: TurnNodeRow): SessionForkTurnNode {
+  return {
+    nodeId: row.node_id,
+    sessionId: row.session_id,
+    sequence: row.sequence,
+    promptDigest: row.prompt_digest,
+    createdAt: row.created_at,
   };
 }
 
@@ -179,6 +244,11 @@ export class SessionForkStore {
     if (!names.has("chat_key")) {
       this.sql.run("ALTER TABLE session_forks ADD COLUMN chat_key TEXT");
     }
+    // node-fork records carry the rendered prefix digest; pre-PR2 databases
+    // gain the column with NULLs (their `latest_stable` records never set it).
+    if (!names.has("source_anchor")) {
+      this.sql.run("ALTER TABLE session_forks ADD COLUMN source_anchor TEXT");
+    }
   }
 
   static async open(path: string): Promise<SessionForkStore> {
@@ -198,6 +268,7 @@ export class SessionForkStore {
     targetAlias: string;
     createdAt: string;
     sourcePoint?: SessionForkSourcePoint;
+    sourceAnchor?: string;
   }): SessionForkRecord {
     const record: SessionForkRecord = {
       id: `fork_${randomUUID()}`,
@@ -208,14 +279,15 @@ export class SessionForkStore {
       sourceAlias: input.sourceAlias,
       targetAlias: input.targetAlias,
       sourcePoint: input.sourcePoint ?? { type: "latest_stable" },
+      ...(input.sourceAnchor ? { sourceAnchor: input.sourceAnchor } : {}),
       strategy: "pending",
       status: "pending",
       createdAt: input.createdAt,
     };
     this.sql.run(
       `INSERT INTO session_forks
-        (id, request_id, chat_key, source_session_id, target_session_id, source_alias, target_alias, source_point, strategy, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, request_id, chat_key, source_session_id, target_session_id, source_alias, target_alias, source_point, source_anchor, strategy, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.requestId,
@@ -225,6 +297,7 @@ export class SessionForkStore {
         record.sourceAlias,
         record.targetAlias,
         JSON.stringify(record.sourcePoint),
+        record.sourceAnchor ?? null,
         record.strategy,
         record.status,
         record.createdAt,
@@ -270,6 +343,64 @@ export class SessionForkStore {
           omittedMessages: row.omitted_messages,
         }
       : undefined;
+  }
+
+  /**
+   * Record one prompt turn so a later node fork can find it in the acpx record.
+   * `sequence` is allocated here, inside the insert, so two turns committed
+   * back to back can never share one. Old rows are swept on every write: a
+   * turn node is worthless once the acpx record window has moved past it, and
+   * a row per turn must not accumulate forever.
+   */
+  recordTurnNode(input: {
+    nodeId: string;
+    sessionId: string;
+    promptDigest: string;
+    createdAt: string;
+  }): SessionForkTurnNode {
+    const assigned = this.sql.transaction(() => {
+      const row = this.sql.get<{ next: number | null }>(
+        "SELECT MAX(sequence) + 1 AS next FROM session_turn_nodes WHERE session_id = ?",
+        [input.sessionId],
+      );
+      const sequence = row?.next ?? 0;
+      this.sql.run(
+        `INSERT INTO session_turn_nodes
+          (node_id, session_id, sequence, prompt_digest, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [input.nodeId, input.sessionId, sequence, input.promptDigest, input.createdAt],
+      );
+      this.sql.run("DELETE FROM session_turn_nodes WHERE created_at < ?", [
+        new Date(Date.parse(input.createdAt) - TURN_NODE_RETENTION_MS).toISOString(),
+      ]);
+      return sequence;
+    }, "immediate");
+    return {
+      nodeId: input.nodeId,
+      sessionId: input.sessionId,
+      sequence: assigned,
+      promptDigest: input.promptDigest,
+      createdAt: input.createdAt,
+    };
+  }
+
+  getTurnNode(sessionId: string, nodeId: string): SessionForkTurnNode | undefined {
+    const row = this.sql.get<TurnNodeRow>(
+      "SELECT * FROM session_turn_nodes WHERE session_id = ? AND node_id = ?",
+      [sessionId, nodeId],
+    );
+    return row ? toTurnNode(row) : undefined;
+  }
+
+  /** Every recorded turn of a session, oldest first. A node fork aligns its
+   *  target against this chain. */
+  listTurnNodes(sessionId: string): SessionForkTurnNode[] {
+    return this.sql
+      .all<TurnNodeRow>(
+        "SELECT * FROM session_turn_nodes WHERE session_id = ? ORDER BY sequence ASC",
+        [sessionId],
+      )
+      .map(toTurnNode);
   }
 
   /** pending -> portable, storing the rendered handoff in the same transaction. */

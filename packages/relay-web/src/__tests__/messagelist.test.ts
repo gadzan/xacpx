@@ -1706,3 +1706,43 @@ describe("turn peer slot — card separated from its turn", () => {
     wrapper.unmount();
   });
 });
+
+describe("ordinary-session node fork entry", () => {
+  const prompt = msg({ id: 7, direction: "in", text: "fork here", nodeId: "node-7" });
+
+  it("offers the row control only for a persisted prompt with a node id and a handler", () => {
+    const handler = vi.fn();
+    const withEntry = mount(MessageList, { props: { messages: [prompt], liveTurn: null, forkNode: handler } });
+    expect(withEntry.findAll('[data-test="msg-fork-node"]')).toHaveLength(1);
+    withEntry.unmount();
+
+    const withoutCapability = mount(MessageList, { props: { messages: [prompt], liveTurn: null } });
+    expect(withoutCapability.findAll('[data-test="msg-fork-node"]')).toHaveLength(0);
+    withoutCapability.unmount();
+
+    const withoutNode = mount(MessageList, {
+      props: { messages: [{ ...prompt, nodeId: undefined }], liveTurn: null, forkNode: handler },
+    });
+    expect(withoutNode.findAll('[data-test="msg-fork-node"]')).toHaveLength(0);
+    withoutNode.unmount();
+
+    const reply = mount(MessageList, {
+      props: {
+        messages: [{ ...prompt, direction: "out" as const }],
+        liveTurn: null,
+        forkNode: handler,
+      },
+    });
+    expect(reply.findAll('[data-test="msg-fork-node"]')).toHaveLength(0);
+    reply.unmount();
+  });
+
+  it("sends the clicked row to the parent handler", async () => {
+    const handler = vi.fn();
+    const wrapper = mount(MessageList, { props: { messages: [prompt], liveTurn: null, forkNode: handler } });
+    await wrapper.find('[data-test="msg-fork-node"]').trigger("click");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]?.[0]).toMatchObject({ nodeId: "node-7", direction: "in" });
+    wrapper.unmount();
+  });
+});

@@ -426,6 +426,31 @@ export function supportsSessionForkHandoff(control: unknown): boolean {
 }
 
 /**
+ * True when this instance can fork an ordinary session at one recorded node:
+ * the head capability is present (the store, the RPC, and this validator all
+ * exist), the core records turn nodes, AND this connector's validator accepts
+ * the node source point. The base `session.fork.handoff.v1` stays unchanged:
+ * an older Web keeps the session-menu head fork either way.
+ */
+export function supportsSessionForkMessage(
+  control: unknown,
+  parse: typeof parseControlPayload = parseControlPayload,
+): boolean {
+  if (!supportsSessionForkHandoff(control)) return false;
+  if (typeof control !== "object" || control === null) return false;
+  if (!("supportsSessionForkMessage" in control)) return false;
+  const probe = control.supportsSessionForkMessage;
+  if (typeof probe !== "function" || probe.call(control) !== true) return false;
+  return parse(MSG.sessionsFork, {
+    chatKey: "probe",
+    sourceAlias: "probe",
+    targetAlias: "probe",
+    requestId: "probe",
+    sourcePoint: { type: "node", nodeId: "probe" },
+  }) !== null;
+}
+
+/**
  * True when this instance can accept a roundtable target and return the
  * corresponding history fields: the core exposes the probe AND this
  * connector's validator accepts both wire halves.
@@ -626,6 +651,9 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     if (supportsSessionForkHandoff(control)) {
       capabilities.push(RELAY_CAPABILITIES.sessionForkHandoffV1);
+    }
+    if (supportsSessionForkMessage(control)) {
+      capabilities.push(RELAY_CAPABILITIES.sessionForkMessageV1);
     }
     if (this.bootstrapDesktop()) {
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);

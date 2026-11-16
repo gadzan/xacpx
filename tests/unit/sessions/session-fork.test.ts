@@ -169,3 +169,79 @@ test("a bot row quoting a handoff keeps a single fence pair", async () => {
   expect(rendered.text).toContain("child prompt");
   store.close();
 });
+
+test("a pre-node database gains source_anchor and keeps existing latest_stable records", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "session-forks-node-")), "forks.sqlite");
+  const legacy = await createSqlDriver(path);
+  legacy.exec(`
+    CREATE TABLE session_forks (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,
+      source_session_id TEXT NOT NULL,
+      target_session_id TEXT NOT NULL UNIQUE,
+      source_alias TEXT,
+      target_alias TEXT,
+      chat_key TEXT,
+      source_point TEXT NOT NULL,
+      strategy TEXT NOT NULL,
+      resolution TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      consumed_at TEXT
+    );
+    INSERT INTO session_forks
+      (id, request_id, source_session_id, target_session_id, source_point, strategy, status, created_at)
+    VALUES ('fork_head', 'req-head', 'src', 'target', '{"type":"latest_stable"}', 'ready', 'ready', 'x');
+  `);
+  legacy.close();
+
+  const store = await SessionForkStore.open(path);
+  expect(store.getByRequestId("req-head")?.sourcePoint).toEqual({ type: "latest_stable" });
+  expect(store.getByRequestId("req-head")?.sourceAnchor).toBeUndefined();
+
+  const node = store.createPending({
+    requestId: "req-node",
+    chatKey: "relay:acct",
+    sourceSessionId: "src",
+    targetSessionId: "target-node",
+    sourceAlias: "src-alias",
+    targetAlias: "target-node-alias",
+    createdAt: "2026-11-16T00:00:00.000Z",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+    sourceAnchor: "anchor-digest",
+  });
+  expect(node.sourcePoint).toEqual({ type: "node", nodeId: "node-1" });
+  expect(node.sourceAnchor).toBe("anchor-digest");
+  expect(store.getByRequestId("req-node")).toMatchObject({
+    sourcePoint: { type: "node", nodeId: "node-1" },
+    sourceAnchor: "anchor-digest",
+  });
+  store.close();
+});
+
+test("turn nodes get ordered sequences per session and stay scoped to it", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const first = store.recordTurnNode({
+    nodeId: "node-a",
+    sessionId: "logical-a",
+    promptDigest: "digest-a",
+    createdAt: "2026-11-16T00:00:00.000Z",
+  });
+  const second = store.recordTurnNode({
+    nodeId: "node-b",
+    sessionId: "logical-a",
+    promptDigest: "digest-b",
+    createdAt: "2026-11-16T00:00:01.000Z",
+  });
+  const other = store.recordTurnNode({
+    nodeId: "node-other",
+    sessionId: "logical-b",
+    promptDigest: "digest-o",
+    createdAt: "2026-11-16T00:00:02.000Z",
+  });
+  expect([first.sequence, second.sequence, other.sequence]).toEqual([0, 1, 0]);
+  expect(store.listTurnNodes("logical-a").map((node) => node.nodeId)).toEqual(["node-a", "node-b"]);
+  expect(store.getTurnNode("logical-a", "node-b")?.promptDigest).toBe("digest-b");
+  expect(store.getTurnNode("logical-b", "node-b")).toBeUndefined();
+  store.close();
+});

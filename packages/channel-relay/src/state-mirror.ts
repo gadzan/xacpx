@@ -46,6 +46,9 @@ interface MirrorTurn {
   /** Hub-issued pre-write correlation (PromptPayload.promptRequestId); carried into
    *  the sync so the hub can tie the turn back to its pre-written inbound row. */
   promptRequestId?: string;
+  /** The core's durable prompt-turn identity (see `turn-started.nodeId`); the hub
+   *  stamps it on the inbound row so the web can fork at this exact turn. */
+  nodeId?: string;
   peerTriggerMessageId?: string;
   /** Stamped locally when the connector first saw `turn-started` — HUD telemetry
    *  only. Hub insert-order (`slotAfterId`) is the timeline identity. */
@@ -76,6 +79,9 @@ interface PendingFinishedTurn {
   scheduled?: ScheduledOriginDto;
   /** Hub-issued pre-write correlation (see MirrorTurn.promptRequestId). */
   promptRequestId?: string;
+  /** Mirrors MirrorTurn.nodeId so a turn that finished during the outage still
+   *  backfills a forkable inbound row. */
+  nodeId?: string;
   /** Peer message id the turn answered (see MirrorTurn.peerTriggerMessageId). */
   peerTriggerMessageId?: string;
   /** Exact Conversation/Run/MemberTurn join copied off the running mirror. */
@@ -278,6 +284,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(event.scheduled ? { scheduled: event.scheduled } : {}),
           ...(event.queueItemId ? { queueItemId: event.queueItemId } : {}),
           ...(event.promptRequestId !== undefined ? { promptRequestId: event.promptRequestId } : {}),
+          ...(event.nodeId !== undefined ? { nodeId: event.nodeId } : {}),
           ...(event.peerOrigin?.requestMessageId
             ? { peerTriggerMessageId: event.peerOrigin.requestMessageId }
             : {}),
@@ -373,6 +380,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a?.queueItemId !== undefined ? { queueItemId: a.queueItemId } : {}),
           ...(a?.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a?.promptRequestId !== undefined ? { promptRequestId: a.promptRequestId } : {}),
+          ...(a?.nodeId !== undefined ? { nodeId: a.nodeId } : {}),
           ...(peerTriggerMessageId !== undefined ? { peerTriggerMessageId } : {}),
           ...(conversation ? { conversation } : {}),
           ...(a?.truncated ? { truncated: true } : {}),
@@ -451,6 +459,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a.queueItemId ? { queueItemId: a.queueItemId } : {}),
           ...(a.promptRequestId !== undefined ? { promptRequestId: a.promptRequestId } : {}),
+          ...(a.nodeId !== undefined ? { nodeId: a.nodeId } : {}),
           ...(a.peerTriggerMessageId !== undefined
             ? { peerTriggerMessageId: a.peerTriggerMessageId }
             : {}),
@@ -486,6 +495,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(f.queueItemId !== undefined ? { queueItemId: f.queueItemId } : {}),
           ...(f.scheduled ? { scheduled: f.scheduled } : {}),
           ...(f.promptRequestId !== undefined ? { promptRequestId: f.promptRequestId } : {}),
+          ...(f.nodeId !== undefined ? { nodeId: f.nodeId } : {}),
           ...(f.peerTriggerMessageId !== undefined
             ? { peerTriggerMessageId: f.peerTriggerMessageId }
             : {}),

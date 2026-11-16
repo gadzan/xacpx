@@ -205,6 +205,7 @@ export default {
     tools: "个工具",
     resend: "重新发送",
     resendThis: "重新发送这条消息",
+    forkFromHere: "从此消息分叉",
     failedToSend: "发送失败",
     stopped: "已停止",
     failed: "失败",

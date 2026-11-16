@@ -345,6 +345,9 @@ export interface InstanceStateSyncPayload {
     /** Hub-issued pre-write correlation (see PromptPayload.promptRequestId); lets the
      *  hub tie this turn's prompt back to its pre-written inbound row. */
     promptRequestId?: string;
+    /** The core's durable prompt-turn identity (see `turn-started.nodeId`);
+     *  lets a hub that restarted mid-turn still stamp the inbound row. */
+    nodeId?: string;
     /** Peer message id this turn answered (`turn-started.peerOrigin`). Additive;
      *  lets a hub that restarted mid-turn restore the live bubble's slot. */
     peerTriggerMessageId?: string;
@@ -412,6 +415,9 @@ export interface InstanceStateSyncPayload {
     queueItemId?: string;
     scheduled?: ScheduledOriginDto;
     promptRequestId?: string;
+    /** Mirrors the running turn's `nodeId` so a turn that finished during the
+     *  outage still backfills a forkable inbound row. */
+    nodeId?: string;
     /** Peer message id this turn answered (`turn-started.peerOrigin`). Additive; an
      *  old hub ignores it, and absence means the old mid-turn card placement. */
     peerTriggerMessageId?: string;
@@ -523,6 +529,12 @@ export interface SessionsRenameResult {
   ok: true;
 }
 
+/** Where an ordinary-session fork cuts the source transcript: the latest stable
+ *  head, or one recorded prompt turn. `nodeId` is minted by the core when the
+ *  turn starts and carried on that turn's inbound row. */
+export type SessionForkSourcePointDto =
+  | { type: "latest_stable" }
+  | { type: "node"; nodeId: string };
 export interface SessionsForkPayload {
   /** Server-stamped `relay:<accountId>`; scopes both aliases to that channel. */
   chatKey: string;
@@ -532,6 +544,9 @@ export interface SessionsForkPayload {
   targetAlias: string;
   /** Client-minted and reused across retries: the idempotency key. */
   requestId: string;
+  /** Absent forks the latest stable head. A `node` point is only accepted when
+   *  the connector advertises `session.fork.message.v1`. */
+  sourcePoint?: SessionForkSourcePointDto;
 }
 export type SessionsForkResult = SessionDto;
 export interface AgentsListResult {
@@ -1561,6 +1576,13 @@ export const RELAY_CAPABILITIES = {
    *  accepts the payload. Without it the Web hides the ordinary-session fork
    *  entry rather than offering an RPC an older core cannot answer. */
   sessionForkHandoffV1: "session.fork.handoff.v1",
+  /** `control.sessions.fork` with a node boundary: the connector validator
+   *  accepts `sourcePoint: { type: "node", nodeId }` end to end and the core
+   *  records a node id on every prompt turn. Older payload checks reject the
+   *  shape with `invalid-payload`, so the Web keeps only the session-menu head
+   *  fork until this is advertised. Additive to `session.fork.handoff.v1`,
+   *  whose semantics stay exactly the latest-stable head. */
+  sessionForkMessageV1: "session.fork.message.v1",
   /** A Group Roundtable target (`mode: "roundtable"`) is accepted end to end:
    *  the connector validator and the core both implement pre-generated
    *  sequential discussion. The Web hides the "discuss" entry when absent. */

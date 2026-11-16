@@ -1530,3 +1530,35 @@ test("a peer finish with no buffer still stamps the trigger id from turn-finishe
   expect(rows[0]!.structured?.peerTriggerMessageId).toBe("msg_no_buffer");
   runtime.close();
 });
+
+test("a live turn-started prompt row carries the core node id for node forks", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "fork me", nodeId: "node-7" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "answer" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  const inbound = rows.find((row) => row.direction === "in");
+  expect(inbound).toMatchObject({ text: "fork me", nodeId: "node-7" });
+  expect(rows.find((row) => row.direction === "out")?.nodeId).toBeUndefined();
+  runtime.close();
+});
+
+test("a live turn-started node id lands on the promoted queued row", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  const rowId = runtime.messages.append("i1", "backend", "in", "queued prompt");
+  runtime.messages.markQueued(rowId, { instanceId: "i1", sessionAlias: "backend", queueItemId: "q-9" });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", queueItemId: "q-9", nodeId: "node-q" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "answer" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.find((row) => row.direction === "in")).toMatchObject({ text: "queued prompt", nodeId: "node-q" });
+  runtime.close();
+});

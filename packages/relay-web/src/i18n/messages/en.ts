@@ -209,6 +209,7 @@ export default {
     tools: "tools",
     resend: "Resend",
     resendThis: "Resend this message",
+    forkFromHere: "Fork from this message",
     failedToSend: "Failed to send",
     stopped: "Stopped",
     failed: "failed",

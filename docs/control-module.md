@@ -451,3 +451,34 @@ failure never replays it, and a known xacpx command turn (for example
 Connectors advertise `session.fork.handoff.v1` only when the core exposes the
 store-backed probe AND the connector validator accepts the payload. Relay Web
 shows the session menu's "Fork session" entry only for that capability.
+
+## Node-boundary ordinary-session fork (PR2)
+
+`forkSession({ chatKey, sourceAlias, targetAlias, requestId, sourcePoint? })`
+accepts `sourcePoint: { type: "node", nodeId }` in addition to the unchanged
+`latest_stable` default. A node point cuts the source's recorded history at one
+prompt turn and its reply; later source turns never reach the target.
+
+The core mints `nodeId` when a prompt turn starts (`SessionTurnRunner`) and
+records the digest of the exact prompt text it hands the agent in
+`session_turn_nodes` (same `session-forks.sqlite`). It carries the id on
+`turn-started`; the relay hub persists it on the inbound row. At fork time the
+node is located by prompt digest, never by position: a rewritten, cleared, or
+reset record fails closed with `session-fork-source-changed`, duplicate
+identical prompts without a usable ordinal fail with
+`session-fork-node-ambiguous`, and an id this core never recorded fails with
+`session-fork-node-unavailable`. Media prompts skip the ledger entry (the acpx
+record interleaves image markers into the user text, so a digest could not
+match), so those rows offer no fork control.
+
+`session_forks.source_point` stores the node point and `source_anchor` stores
+the rendered prefix digest. A pending replay re-renders the STORED source point
+and verifies the anchor, so source growth still replays while a reset or
+rewrite fails closed. A request id reused at a different node is
+`session-fork-request-mismatch`; completed-replay, target-exists, empty-history,
+unstable-source, cross-chat, and retention behavior are identical to PR1.
+
+`session.fork.handoff.v1` keeps its PR1 meaning. `session.fork.message.v1` is
+advertised only when the head capability, the core's
+`supportsSessionForkMessage()` probe, and the connector's acceptance of the
+node payload all hold, so an older end never advertises a payload it rejects.

@@ -842,6 +842,9 @@ export type ControlEventDto =
       scheduled?: ScheduledOriginDto;
       queueItemId?: string;
       promptRequestId?: string;
+      /** The core's durable identity for this prompt turn, used as a fork source
+       *  point. The hub stamps it onto the inbound row; absent from older cores. */
+      nodeId?: string;
       peerOrigin?: PeerTurnOriginDto;
       /** Connector-local per-session seq at this turn-start (receive order, not a clock). */
       startedAfterSeq?: number;

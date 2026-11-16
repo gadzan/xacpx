@@ -1431,3 +1431,23 @@ The fork entry holds a per-row in-flight guard, so a double click sends one
 `control.sessions.fork`. If the daemon reports a taken target alias, the entry
 reloads the instance's sessions before the next attempt, so the proposed
 `<alias>-fork[-N]` advances instead of repeating the stale name.
+
+### Fork at one message node
+
+When an instance advertises `session.fork.message.v1` (additive to the head
+capability), each persisted inbound transcript row that carries a core
+`nodeId` gets a fork control in its meta row ("Fork from this message"). The
+control is absent without the capability, without a `nodeId`, and on agent
+replies: the node model is a user turn plus its reply, and the hub does not
+expose the prompt's node id on the reply row.
+
+The entry calls `control.sessions.fork` with
+`sourcePoint: { type: "node", nodeId }`. The store pins one request id and
+target alias per (instance, source alias, node) while an attempt is unresolved,
+so a retry after an ambiguous failure replays the same fork; a taken target
+resets the pin and reloads the session list so the next attempt proposes the
+next free `<alias>-fork[-N]`. The pane holds one node fork at a time (double
+clicks send one RPC), selects the alias the daemon actually materialized
+(auto-suffix included), and toasts `instance.forkCreated`; typed failures such
+as `session-fork-source-changed` surface through `instance.forkFailed` without
+changing the selection. The session-menu head fork is unchanged.
