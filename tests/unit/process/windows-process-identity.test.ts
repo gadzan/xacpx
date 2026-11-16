@@ -7,6 +7,7 @@ import {
   dmtfDateTimeToFileTime,
   exactHandleIdentityMatches,
   parseCanonicalFileTime,
+  processBirthMatches,
 } from "../../../src/process/windows-process-identity";
 
 test("accepts only canonical uint64 FILETIME decimal strings", () => {
@@ -33,6 +34,20 @@ test("uses exact comparison for handle identities and nine-tick tolerance only f
   expect(cimIdentityMatchesHandle("100", "109")).toBe(true);
   expect(cimIdentityMatchesHandle("100", "110")).toBe(false);
   expect(cimIdentityMatchesHandle("01", "1")).toBe(false);
+});
+
+test("recorded-birth comparison is exact for handle reads and tolerant only for CIM reads", () => {
+  const recorded = "134384907489251763";
+  // Handle provenance: a single tick is a different process.
+  expect(processBirthMatches(recorded, recorded)).toBe(true);
+  expect(processBirthMatches(recorded, "134384907489251764")).toBe(false);
+  expect(processBirthMatches(recorded, "134392843210453732", "handle")).toBe(false);
+  // CIM provenance: Win32_Process quantizes the low FILETIME digits, so the
+  // same live process can differ by up to 9 ticks and must still read "alive".
+  expect(processBirthMatches(recorded, "134384907489251772", "cim")).toBe(true);
+  expect(processBirthMatches(recorded, "134392843210453732", "cim")).toBe(false);
+  // Unparseable either side is never a match (fail closed).
+  expect(processBirthMatches(recorded, "not-a-birth", "cim")).toBe(false);
 });
 
 test("creation order is a direct ordering check without equality tolerance", () => {

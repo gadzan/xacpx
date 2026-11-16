@@ -14,6 +14,7 @@ import {
   terminateWindowsProcessTree,
   WINDOWS_TREE_WORKER_SCRIPT,
   WINDOWS_DESCENDANTS_WORKER_SCRIPT,
+  WINDOWS_CIM_IDENTITY_WORKER_SCRIPT,
   type BatchTarget,
   type WindowsProcessIdentity,
   terminateWindowsDescendantsOf,
@@ -93,6 +94,62 @@ test("identity probes preserve missing versus unavailable", async () => {
   }) })).toEqual({
     status: "found",
     identity: { pid: 42, creationDate: "133830000000000000", executablePath: "C:\\node.exe" },
+  });
+});
+
+test("identity probe falls back to CIM when a protected pid denies the handle", async () => {
+  const actions: string[] = [];
+  const probe = await probeWindowsProcessIdentity(29048, {
+    expectedCreationDate: "134384907489251763",
+    runWorker: async (request) => {
+      actions.push(request.action);
+      if (request.action === "identity-cim") return { status: "missing", reason: "pid-reused" };
+      // A pid recycled by svchost: OpenProcess is access-denied, not "invalid".
+      return { status: "unavailable" };
+    },
+  });
+  expect(actions).toEqual(["identity", "identity-cim"]);
+  expect(probe).toEqual({ status: "missing", reason: "pid-reused" });
+});
+
+test("identity probe never consults CIM without a recorded birth, and keeps the CIM match alive", async () => {
+  const actions: string[] = [];
+  // Without the recorded birth there is nothing to compare, so the fail-closed
+  // "unavailable" stands and the fallback is not even attempted.
+  const noBirth = await probeWindowsProcessIdentity(29048, {
+    runWorker: async (request) => {
+      actions.push(request.action);
+      return { status: "unavailable" };
+    },
+  });
+  expect(actions).toEqual(["identity"]);
+  expect(noBirth).toMatchObject({ status: "unavailable" });
+
+  // A CIM birth matching the record within the ±9-tick quantization is the SAME
+  // live process: it must read found (so a live owner still refuses), carrying
+  // the cim provenance for the caller's tolerant comparison.
+  const sameProcess = await probeWindowsProcessIdentity(29048, {
+    expectedCreationDate: "134384907489251763",
+    runWorker: async (request) => request.action === "identity-cim"
+      ? {
+        status: "found",
+        identity: {
+          pid: 29048,
+          creationDate: "134384907489251768",
+          executablePath: "C:\\Windows\\System32\\svchost.exe",
+          identitySource: "cim",
+        },
+      }
+      : { status: "unavailable" },
+  });
+  expect(sameProcess).toEqual({
+    status: "found",
+    identity: {
+      pid: 29048,
+      creationDate: "134384907489251768",
+      executablePath: "C:\\Windows\\System32\\svchost.exe",
+      identitySource: "cim",
+    },
   });
 });
 
@@ -187,6 +244,7 @@ test("encoded Windows worker command lines stay below the CreateProcess ceiling"
   for (const [name, script] of [
     ["tree", WINDOWS_TREE_WORKER_SCRIPT],
     ["descendants", WINDOWS_DESCENDANTS_WORKER_SCRIPT],
+    ["cim-identity", WINDOWS_CIM_IDENTITY_WORKER_SCRIPT],
   ] as const) {
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     expect(67 + encoded.length, `${name} worker script encoded payload`).toBeLessThan(32_500);

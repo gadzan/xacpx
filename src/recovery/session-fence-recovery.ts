@@ -10,6 +10,7 @@ import { SessionService } from "../sessions/session-service";
 import { StateStore } from "../state/state-store";
 import { physicalLifecycleKeyForResolvedSession } from "../bridge/engine/runtime/physical-session-identity";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
+import { processBirthMatches } from "../process/windows-process-identity";
 import { OrphanRegistry } from "../transport/orphan-registry";
 import { queryJobContainment, windowsJobNameForGeneration } from "../process/windows-job-query";
 import { loadConfig } from "../config/load-config";
@@ -221,12 +222,20 @@ async function probeFencedSupervisorDefault(record: RuntimeWorkerFenceRecord): P
   // to create a Job, so nothing can still be waiting to create one.
   if (!record.supervisorPid) return "gone";
   try {
-    const result = await probeWindowsProcessIdentity(record.supervisorPid);
+    const result = await probeWindowsProcessIdentity(record.supervisorPid, {
+      ...(record.supervisorCreationDate ? { expectedCreationDate: record.supervisorCreationDate } : {}),
+    });
     if (result.status !== "found") return result.status === "missing" ? "gone" : "unknown";
     // A pid recorded before its birth (the claim persists the pid; the birth
     // is verified before GO) may still be the process waiting for GO.
     if (!record.supervisorCreationDate) return "alive";
-    return result.identity.creationDate === record.supervisorCreationDate ? "alive" : "gone";
+    return processBirthMatches(
+      record.supervisorCreationDate,
+      result.identity.creationDate,
+      result.identity.identitySource,
+    )
+      ? "alive"
+      : "gone";
   } catch {
     return "unknown";
   }
@@ -398,10 +407,14 @@ async function writeRecoveryAudit(path: string, record: object, replace = false)
 async function probeFencedWorkerDefault(record: RuntimeWorkerFenceRecord): Promise<FenceLiveness> {
   if (!record.pid || record.pid <= 0) return "unknown";
   try {
-    const res = await probeWindowsProcessIdentity(record.pid);
+    const res = await probeWindowsProcessIdentity(record.pid, {
+      ...(record.creationDate ? { expectedCreationDate: record.creationDate } : {}),
+    });
     if (res.status !== "found") return res.status === "missing" ? "gone" : "unknown";
     if (!record.creationDate) return "alive";
-    return res.identity.creationDate === record.creationDate ? "alive" : "gone";
+    return processBirthMatches(record.creationDate, res.identity.creationDate, res.identity.identitySource)
+      ? "alive"
+      : "gone";
   } catch {
     return "unknown";
   }
