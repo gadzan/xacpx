@@ -954,7 +954,7 @@ function onKeydown(e: KeyboardEvent) {
                   : $t("chat.model")
               }}</span>
             <ChevronDown v-if="controls.modelAvailable.length" :size="12"
-                         class="shrink-0 transition-transform" :class="modelDd.open ? 'rotate-180' : ''" />
+                         class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="modelDd.open ? 'rotate-180' : ''" />
           </button>
           <DropdownPanel v-if="controls.modelAvailable.length"
                          :dd="modelDd" width="min-w-40" placement="top"
@@ -981,7 +981,7 @@ function onKeydown(e: KeyboardEvent) {
               <span class="font-mono font-medium text-fg">{{
                 controls.effortCurrent ?? $t("chat.effort")
               }}</span>
-              <ChevronDown :size="12" class="shrink-0 transition-transform" :class="effortDd.open ? 'rotate-180' : ''" />
+              <ChevronDown :size="12" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="effortDd.open ? 'rotate-180' : ''" />
             </button>
             <DropdownPanel :dd="effortDd" width="min-w-32" placement="top"
                            :title='$t("chat.effort")' test-id="effort-menu"

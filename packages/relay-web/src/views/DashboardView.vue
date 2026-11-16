@@ -847,7 +847,7 @@ onUnmounted(() => {
            session / bot / group is open it is hidden and ← in the top bar comes back here.
            One InstanceTree instance, no second copy with diverging local state. -->
       <div data-test="column" data-drawer="left"
-           class="flex shrink-0 flex-col bg-surface transition-[width] max-lg:relative max-lg:w-full lg:static"
+           class="flex shrink-0 flex-col bg-surface transition-[width] motion-reduce:transition-none max-lg:relative max-lg:w-full lg:static"
            :class="[
              leftCollapsed ? 'lg:w-0 lg:min-w-0 lg:overflow-hidden' : 'lg:w-[232px]',
              nothingSelected ? '' : 'max-lg:hidden',
@@ -969,7 +969,7 @@ onUnmounted(() => {
            fixed `w-72` drawer width applies. -->
       <div v-if="showRightColumn"
            data-test="column" data-drawer="right"
-           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden bg-surface shadow-float transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
+           class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden bg-surface shadow-float transition-transform duration-150 ease-ui motion-reduce:transition-none pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'"
            :style="isDesktop ? { width: rightWidth + 'px' } : undefined">
         <!-- Resize handle: a thin grab strip on the panel's left edge (desktop only).

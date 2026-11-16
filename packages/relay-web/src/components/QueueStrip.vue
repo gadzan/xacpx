@@ -12,10 +12,10 @@ const chat = useChatStore();
        class="flex w-fit max-w-full self-start items-center gap-2 rounded-2xl bg-surface/95 px-3 py-1.5 backdrop-blur-md">
     <span class="shrink-0 text-xs font-medium text-fg-muted">{{ $t("chat.queuedHeader") }}</span>
     <TransitionGroup tag="div"
-        move-class="transition-transform duration-200 ease-out motion-reduce:transition-none"
-        enter-active-class="transition-all duration-200 ease-out motion-reduce:transition-none"
+        move-class="transition-transform duration-150 ease-ui motion-reduce:transition-none"
+        enter-active-class="transition-[opacity,transform] duration-150 ease-ui motion-reduce:transition-none"
         enter-from-class="opacity-0 -translate-y-1"
-        leave-active-class="transition-all duration-150 ease-in motion-reduce:transition-none absolute"
+        leave-active-class="transition-[opacity,transform] duration-150 ease-ui motion-reduce:transition-none absolute"
         leave-to-class="opacity-0 scale-95"
         class="relative flex flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
       <span v-for="item in chat.sessionQueue" :key="item.id" data-test="queue-item"

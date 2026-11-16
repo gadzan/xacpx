@@ -168,7 +168,7 @@ function alwaysRendered(entry: RenderedNode): boolean {
               </span>
               <ChevronRight
                 :size="16"
-                class="mt-0.5 shrink-0 text-fg-muted transition-transform"
+                class="mt-0.5 shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none"
                 :class="expandedKeys.has(entry.key) ? 'rotate-90' : ''"
                 aria-hidden="true"
               />
@@ -197,7 +197,7 @@ function alwaysRendered(entry: RenderedNode): boolean {
               </span>
               <ChevronRight
                 :size="16"
-                class="mt-0.5 shrink-0 text-fg-muted transition-transform"
+                class="mt-0.5 shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none"
                 :class="expandedKeys.has(entry.key) ? 'rotate-90' : ''"
                 aria-hidden="true"
               />

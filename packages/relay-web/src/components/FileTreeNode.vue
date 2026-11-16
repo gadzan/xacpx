@@ -140,7 +140,7 @@ async function onMenuSelect(key: string) {
               class="flex min-w-0 flex-1 items-center gap-1 py-0.5 pl-1 text-left"
               :style="{ paddingLeft: depth * 12 + 4 + 'px' }"
               @click="onRowClick" @contextmenu.prevent="openMenu" @pointerdown="onRowPointerDown">
-        <ChevronRight v-if="isDir" :size="12" class="shrink-0 text-fg-muted transition-transform duration-150" :class="isOpen ? 'rotate-90' : ''" />
+        <ChevronRight v-if="isDir" :size="12" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="isOpen ? 'rotate-90' : ''" />
         <span v-else class="w-3 shrink-0" />
         <component :is="isDir ? (isOpen ? FolderOpen : Folder) : iconForFile(entry.name)" :size="13"
                    class="shrink-0" :class="isDir ? 'text-warn' : 'text-fg-muted'" />

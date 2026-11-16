@@ -709,7 +709,7 @@ function handleStopAll(): void {
             @click="navDd.toggle()"
           >
             {{ $t("bot.nav.talkWith") }}
-            <ChevronDown :size="12" class="shrink-0 transition-transform" :class="navDd.open ? 'rotate-180' : ''" />
+            <ChevronDown :size="12" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="navDd.open ? 'rotate-180' : ''" />
           </button>
           <DropdownPanel :dd="navDd" width="w-64" placement="bottom-end"
                          :title='$t("bot.nav.talkWith")' test-id="direct-nav-menu" role="menu"
@@ -1005,7 +1005,7 @@ function handleStopAll(): void {
 /* Hover keeps the pane translucent: an opaque surface-2 utility would replace the
    glass fill and flash the blur off on tap. */
 .glass-btn {
-  transition: background-color 140ms ease, transform 140ms ease;
+  transition: background-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .glass-btn:hover { background-color: rgb(var(--c-surface-2) / 0.72); }
 .glass-btn:active { transform: scale(0.96); }

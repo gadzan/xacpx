@@ -169,7 +169,7 @@ async function abandonRowUnknown(): Promise<void> {
       <span class="truncate">{{ active?.title || $t("bot.topic.default") }}</span>
       <Loader2 v-if="active && executingIds.has(active.id)" :size="12" data-test="topic-pill-executing" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" :aria-label="$t('bot.topic.executing')" :title="$t('bot.topic.executing')" />
       <span v-if="active && statusLabel(active)" data-test="topic-pill-status" class="shrink-0 text-fg-muted">{{ statusLabel(active) }}</span>
-      <ChevronDown :size="12" class="shrink-0 transition-transform" :class="dd.open ? 'rotate-180' : ''" />
+      <ChevronDown :size="12" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="dd.open ? 'rotate-180' : ''" />
     </button>
 
     <!-- One panel (unified §F): popover on desktop, MobileSheet below lg. Rows are

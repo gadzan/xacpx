@@ -52,7 +52,7 @@ const completionChip = computed<CompletionChip | null>(() => {
 <template>
   <div
     data-test="agent-message-card"
-    class="conversation-row group cv-row my-2 w-full max-w-2xl rounded-2xl transition-all"
+    class="conversation-row group cv-row my-2 w-full max-w-2xl rounded-2xl transition-colors"
     :class="[
       isSent
         ? 'bg-accent-soft'

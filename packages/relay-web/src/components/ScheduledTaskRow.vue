@@ -57,7 +57,7 @@ async function cancel(id: string) {
     <!-- compact header (click to expand) + actions -->
     <div class="flex items-center gap-1 px-2 py-1.5">
       <button type="button" :data-test="`scheduled-toggle-${task.id}`" class="flex min-w-0 flex-1 items-center gap-1.5 text-left cursor-pointer" @click="open = !open">
-        <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform" :class="open ? 'rotate-90' : ''" />
+        <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="open ? 'rotate-90' : ''" />
         <span :data-test="`scheduled-status-${task.id}`" class="inline-flex shrink-0 items-center gap-1 text-xs font-medium" :class="present(task.status).cls">
           <component :is="present(task.status).icon" :size="12" :class="present(task.status).spin ? 'animate-spin motion-reduce:animate-none' : ''" />
           {{ present(task.status).label }}

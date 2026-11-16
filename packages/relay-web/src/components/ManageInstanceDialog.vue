@@ -359,7 +359,7 @@ onMounted(async () => {
                         class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         :class="routerEnabled ? 'bg-accent' : 'bg-surface-2'"
                         @click="toggleRouter">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform"
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
                         :class="routerEnabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
                 </button>
                 <p data-test="router-status" class="text-sm text-fg-muted">{{ routerStatus }}</p>
@@ -381,7 +381,7 @@ onMounted(async () => {
                         class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         :class="terminalSettings?.enabled ? 'bg-accent' : 'bg-surface-2'"
                         @click="toggleTerminal">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform"
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
                         :class="terminalSettings?.enabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
                 </button>
                 <p data-test="terminal-settings-status" class="text-sm text-fg-muted">
@@ -401,7 +401,7 @@ onMounted(async () => {
                         class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                         :class="filesSettings?.enabled ? 'bg-accent' : 'bg-surface-2'"
                         @click="toggleFiles">
-                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform"
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full transition-transform duration-150 ease-ui motion-reduce:transition-none"
                         :class="filesSettings?.enabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
                 </button>
                 <p data-test="files-settings-status" class="text-sm text-fg-muted">{{ filesStatusText }}</p>

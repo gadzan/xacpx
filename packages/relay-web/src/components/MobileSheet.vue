@@ -154,11 +154,11 @@ useModalA11y(panel, () => emit("close"), {
    short downward release after a grabber drag springs home through a
    transform-only transition — the glass blur and shadow stay out of it. */
 .sheet-panel {
-  animation: sheet-rise 280ms cubic-bezier(.32,.72,0,1);
-  transition: transform 220ms cubic-bezier(.32,.72,0,1);
+  animation: sheet-rise var(--dur-sheet) var(--ease);
+  transition: transform var(--dur-sheet) var(--ease);
 }
 .sheet-panel.sheet-dragging { transition: none; }
-.sheet-backdrop { animation: sheet-fade 150ms ease-out; }
+.sheet-backdrop { animation: sheet-fade var(--dur-base) var(--ease); }
 @keyframes sheet-rise {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }

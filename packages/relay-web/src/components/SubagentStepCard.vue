@@ -206,7 +206,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .activity-slide-enter-active,
-.activity-slide-leave-active { transition: opacity 160ms ease, transform 160ms ease; }
+.activity-slide-leave-active { transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease); }
 .activity-slide-enter-from { opacity: 0; transform: translateY(4px); }
 .activity-slide-leave-to { opacity: 0; transform: translateY(-4px); }
 @media (prefers-reduced-motion: reduce) {

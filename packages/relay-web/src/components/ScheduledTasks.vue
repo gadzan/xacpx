@@ -50,7 +50,7 @@ async function create() {
               class="ml-auto grid h-6 w-6 place-items-center rounded-sm transition-colors hover:bg-raised hover:text-fg"
               :class="composerOpen ? 'bg-raised text-fg' : 'text-fg-muted'"
               @click="composerOpen = !composerOpen">
-        <Plus :size="14" class="transition-transform" :class="composerOpen ? 'rotate-45' : ''" />
+        <Plus :size="14" class="transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="composerOpen ? 'rotate-45' : ''" />
       </button>
     </div>
 
@@ -87,9 +87,9 @@ async function create() {
          to the right edge so the sidebar stays compact. -->
     <Teleport to="body">
       <Transition
-        enter-active-class="transition-opacity duration-200 ease-out motion-reduce:transition-none"
+        enter-active-class="transition-opacity duration-150 ease-ui motion-reduce:transition-none"
         enter-from-class="opacity-0"
-        leave-active-class="transition-opacity duration-150 ease-in motion-reduce:transition-none"
+        leave-active-class="transition-opacity duration-150 ease-ui motion-reduce:transition-none"
         leave-to-class="opacity-0">
         <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-scrim backdrop-blur-sm" @click.self="navigateBack" @keydown.esc="navigateBack">
           <aside class="flex h-full w-full max-w-md flex-col bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass" role="dialog" :aria-label="$t('tasks.allScheduled')">

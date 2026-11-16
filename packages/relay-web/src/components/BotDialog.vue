@@ -540,7 +540,7 @@ function describeSubmitError(err: unknown): string {
             <button type="button" data-test="bot-avatar-quick-view"
                     :aria-label="$t('bot.avatar.quickView')"
                     aria-haspopup="dialog"
-                    class="block rounded-2xl outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent"
+                    class="block rounded-2xl outline-none transition-transform duration-150 ease-ui motion-reduce:transition-none hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent"
                     @click="avatarQuickView = true">
               <BotAvatar :avatar="avatar" :driver="avatarDriver" :name="name" :size="56" static />
             </button>

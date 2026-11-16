@@ -448,7 +448,7 @@ watch(
               <div class="flex items-center">
                 <button class="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-0.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg"
                         @click="toggleGroup(s.key)">
-                  <ChevronRight :size="11" class="shrink-0 transition-transform" :class="collapsed[s.key] ? '' : 'rotate-90'" />
+                  <ChevronRight :size="11" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="collapsed[s.key] ? '' : 'rotate-90'" />
                   <span>{{ $t(`files.${s.key}`) }}</span>
                   <span class="text-fg-muted">{{ s.items.length }}</span>
                 </button>

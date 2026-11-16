@@ -787,7 +787,7 @@ const rowSwipes = computed(() => {
                 :aria-expanded="isExpanded(inst.id)"
                 data-test="instance-header-toggle"
                 @click="toggle(inst.id)">
-          <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform duration-150" :class="isExpanded(inst.id) ? 'rotate-90' : ''" />
+          <ChevronRight :size="12" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="isExpanded(inst.id) ? 'rotate-90' : ''" />
           <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
           <span class="truncate text-ui font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
                 :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
@@ -877,7 +877,7 @@ const rowSwipes = computed(() => {
               class="bot-disabled-toggle mt-1 flex h-7 w-full items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
               @click="toggleDisabledBots(inst.id)"
             >
-              <ChevronRight :size="11" class="shrink-0 transition-transform duration-150" :class="disabledBotsOpen.has(inst.id) ? 'rotate-90' : ''" />
+              <ChevronRight :size="11" class="shrink-0 transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="disabledBotsOpen.has(inst.id) ? 'rotate-90' : ''" />
               <span>{{ $t("bot.list.disabledToggle", { count: botsWithEnabled(inst.id, false).length }) }}</span>
             </button>
             <div
@@ -1052,7 +1052,7 @@ const rowSwipes = computed(() => {
             <button data-test="group-header" :aria-expanded="!isGroupCollapsed(inst, grp.key)"
                     class="flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded-sm px-1.5 text-left transition-colors hover:bg-fg/5"
                     @click="toggleGroup(inst, grp.key)">
-              <ChevronRight :size="11" class="shrink-0 text-fg-muted transition-transform duration-150" :class="isGroupCollapsed(inst, grp.key) ? '' : 'rotate-90'" />
+              <ChevronRight :size="11" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none" :class="isGroupCollapsed(inst, grp.key) ? '' : 'rotate-90'" />
               <Folder v-if="groupModeOf(inst) === 'workspace'" :size="12" class="shrink-0 text-fg-muted" />
               <AgentIcon v-else :driver="driverForAgentName(inst, grp.key)" :title="grp.key" :size="13" />
               <span data-test="group-name" class="min-w-0 truncate text-xs font-semibold text-fg-muted">{{ grp.key }}</span>
@@ -1078,8 +1078,8 @@ const rowSwipes = computed(() => {
                  blocks. Swiping right→left translates the track left to reveal them. -->
             <div
               data-test="swipe-track"
-              class="flex touch-pan-y ease-out"
-              :class="draggingKey === `${inst.id}:${s.alias}` ? '' : 'transition-transform duration-200'"
+              class="flex touch-pan-y"
+              :class="draggingKey === `${inst.id}:${s.alias}` ? '' : 'transition-transform duration-150 ease-ui motion-reduce:transition-none'"
               :style="{ transform: rowTransform(inst.id, s) }"
               v-on="inst.online ? rowSwipes[`${inst.id}:${s.alias}`] ?? {} : {}"
             >

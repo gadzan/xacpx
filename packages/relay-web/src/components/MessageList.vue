@@ -809,7 +809,7 @@ watch(
   opacity: 0;
 }
 .enter-row {
-  animation: enter-rise 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: enter-rise 380ms var(--ease) both;
   animation-delay: var(--enter-delay, 0ms);
 }
 @keyframes enter-rise {

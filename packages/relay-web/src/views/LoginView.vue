@@ -202,7 +202,7 @@ async function copyCommand() {
    login surface no longer overrides them now that the primary action is
    accent-filled rather than green. */
 .login-arrow {
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-fast) var(--ease);
 }
 @media (prefers-reduced-motion: reduce) {
   .login-arrow {

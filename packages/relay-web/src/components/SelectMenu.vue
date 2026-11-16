@@ -84,7 +84,7 @@ function onSelect(value: string): void {
       <span class="min-w-0 truncate" :class="compact ? '' : (selectedLabel ? 'text-fg' : 'text-fg-muted')">
         {{ selectedLabel || placeholder || "Select…" }}
       </span>
-      <ChevronDown :size="compact ? 12 : 16" class="shrink-0 text-fg-muted transition-transform"
+      <ChevronDown :size="compact ? 12 : 16" class="shrink-0 text-fg-muted transition-transform duration-150 ease-ui motion-reduce:transition-none"
                    :class="[compact ? '' : 'ml-2', dd.open ? 'rotate-180' : '']" />
     </button>
     <DropdownPanel :dd="dd" :groups="dropdownGroups" :title="title ?? ariaLabel ?? placeholder"

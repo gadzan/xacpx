@@ -308,6 +308,12 @@ onUnmounted(() => clearInterval(timer));
   opacity: 0;
   transform: translateY(8px) scale(0.98);
 }
+@media (prefers-reduced-motion: reduce) {
+  .composer-layer-enter-active,
+  .composer-layer-leave-active {
+    transition: none;
+  }
+}
 /* Deliberately NO `.composer-layer-move` rule. TransitionGroup's move transition is a
    FLIP: Vue records each child's rect before the update and writes the delta as an inline
    `translate(dx,dy)`. This stack lives inside a `v-show` pane, so while the pane is hidden

@@ -249,7 +249,7 @@ function rowIcon(item: TraceLiveItem) {
  * triggers layout. `prefers-reduced-motion` turns the whole stack static. */
 .trace-live-enter-active,
 .trace-live-leave-active {
-  transition: transform 160ms ease, opacity 160ms ease;
+  transition: transform var(--dur-base) var(--ease), opacity var(--dur-base) var(--ease);
 }
 .trace-live-enter-from {
   opacity: 0;
@@ -264,7 +264,7 @@ function rowIcon(item: TraceLiveItem) {
   inset-inline: 0;
 }
 .trace-live-move {
-  transition: transform 160ms ease;
+  transition: transform var(--dur-base) var(--ease);
 }
 .trace-live--static .trace-live-enter-active,
 .trace-live--static .trace-live-leave-active,

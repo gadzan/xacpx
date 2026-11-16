@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { contrastRatio, parseCssColor } from "../lib/wcag-contrast";
@@ -171,6 +171,40 @@ describe("composer motion", () => {
       expect(transition[1]).not.toContain("backdrop");
       expect(transition[1]).not.toContain("shadow");
     }
+  });
+});
+
+describe("motion tokens", () => {
+  // WP-7: one motion vocabulary outside the composer. The composer is frozen by
+  // design (it keeps its own 200ms ease-out and its two transition-all), so the
+  // rules below are checked against every other source file.
+  const srcDir = join(here, "..");
+  const sources = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
+    .filter((f) => /\.(vue|ts|css)$/.test(f) && !f.includes("__tests__"))
+    .map((f) => ({ file: f, text: readFileSync(join(srcDir, f), "utf8") }))
+    .filter(({ file }) => file !== "components/ConversationComposer.vue");
+
+  it("declares the three duration tokens plus the shared easing", () => {
+    expect(light["--dur-fast"]).toBe("120ms");
+    expect(light["--dur-base"]).toBe("150ms");
+    expect(light["--dur-sheet"]).toBe("180ms");
+    expect(light["--ease"]).toBe("cubic-bezier(.23, 1, .32, 1)");
+    expect(tailwindConfig).toContain('ui: "cubic-bezier(.23,1,.32,1)"');
+  });
+
+  it("keeps transition-all out of every non-composer component", () => {
+    const offenders = sources.filter(({ text }) => text.includes("transition-all")).map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("guards every transform transition against reduced motion", () => {
+    // A rotate/translate that ignores prefers-reduced-motion is the gap WP-7
+    // closes. Position-only `-translate-*` utilities are geometry, not motion.
+    const offenders = sources
+      .filter(({ text }) => /transition-transform/.test(text))
+      .filter(({ text }) => !/motion-reduce:transition-none|prefers-reduced-motion/.test(text))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
   });
 });
 
