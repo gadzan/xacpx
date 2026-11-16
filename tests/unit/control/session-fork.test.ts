@@ -37,6 +37,7 @@ interface ForkTestInput {
   removed: string[];
   sources?: typeof SOURCE[];
   suffixCreated?: boolean;
+  throwOnTaken?: boolean;
   history: Array<{ role: "user" | "agent"; text: string }>;
 }
 
@@ -104,6 +105,9 @@ function controlDeps(input: ForkTestInput) {
       _workspace: string,
       model?: string,
     ) => {
+      if (input.throwOnTaken && input.created.includes(alias)) {
+        throw new Error(`session "${alias}" already exists and could not derive a free alias`);
+      }
       const actual = input.suffixCreated || input.created.includes(alias) ? `${alias}-2` : alias;
       input.created.push(actual);
       input.createdModels.push(model);
@@ -349,6 +353,9 @@ test("a replay survives a daemon-side auto-suffixed target alias", async () => {
 test("concurrent forks with the same request id converge on one target", async () => {
   const store = await SessionForkStore.openInMemory();
   const input = forkInput(store, HISTORY);
+  // The real transport throws when the alias is taken instead of suffixing,
+  // so without serialization the loser would surface a raw internal error.
+  input.throwOnTaken = true;
   const control = new ControlService(controlDeps(input) as never);
 
   const results = await Promise.all([
@@ -356,6 +363,8 @@ test("concurrent forks with the same request id converge on one target", async (
     control.forkSession({ chatKey: "relay:acct", sourceAlias: "backend", targetAlias: "backend-fork", requestId: "req-race" }),
   ]);
   expect(results.map((result) => result.alias).sort()).toEqual(["backend-fork", "backend-fork"]);
+  expect(input.created).toEqual(["relay:backend-fork"]);
+  expect(input.removed).toEqual([]);
   expect(store.getByRequestId("req-race")?.status).toBe("ready");
   store.close();
 });

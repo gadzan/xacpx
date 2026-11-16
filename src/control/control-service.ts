@@ -666,6 +666,9 @@ export class ControlService {
   private readonly completionPreparations = new Map<string, Promise<ConversationCompletions["commands"]>>();
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
+  /** Per-request-id fork serialization: overlapping same-id forks wait here so
+   *  the second hits the replay path instead of racing target creation. */
+  private readonly forkCreationTails = new Map<string, Promise<void>>();
   private readonly workspaceGit: WorkspaceGit;
   private readonly sessionConfigSetTails = new Map<string, Promise<void>>();
   /** Monotonic per-session model-selection generation; background reconciliation only
@@ -1726,6 +1729,37 @@ export class ControlService {
    * resolved live from the agent config, and the fork keeps the source agent.
    */
   async forkSession(input: {
+    chatKey: string;
+    sourceAlias: string;
+    targetAlias: string;
+    requestId: string;
+  }): Promise<ControlSessionInfo> {
+    // Overlapping same-id forks serialize here (keyed by chat scope + request
+    // id) so the second waits and then hits the replay path. The store's
+    // request-id uniqueness stays as the backstop for anything the lock cannot
+    // see (a second daemon on the same database file).
+    const tailKey = `${input.chatKey}\0${input.requestId.trim()}`;
+    return this.withForkCreationTail(tailKey, () => this.forkSessionLocked(input));
+  }
+
+  private async withForkCreationTail<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.forkCreationTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = prior.then(() => mine);
+    this.forkCreationTails.set(key, tail);
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.forkCreationTails.get(key) === tail) this.forkCreationTails.delete(key);
+    }
+  }
+
+  private async forkSessionLocked(input: {
     chatKey: string;
     sourceAlias: string;
     targetAlias: string;
