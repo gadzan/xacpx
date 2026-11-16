@@ -664,7 +664,7 @@ const worktreeRunId = computed(() => {
               @click="emit('back')"><ArrowLeft :size="20" /></button>
       <div class="glass-control flex min-w-0 shrink items-center gap-2 rounded-full py-1 pl-1 pr-3">
         <button type="button" data-test="group-avatar-button" :aria-label="$t('group.panel.title')" :title="$t('group.panel.title')"
-                class="grid h-9 w-9 shrink-0 place-items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                class="grid h-9 w-9 shrink-0 place-items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
                 @click="memberPanelOpen = true">
           <GroupAvatarStack :bots="memberBots" :instance-id="groupsStore.instanceId" :size="28" :name="group?.title ?? $t('group.nav.title')"
                             :total-count="group?.botIds.length ?? 0" :disabled-count="disabledMemberCount"
@@ -673,7 +673,15 @@ const worktreeRunId = computed(() => {
         </button>
         <span class="max-w-32 truncate text-xs font-semibold text-fg">{{ group?.title ?? $t("group.nav.title") }}</span>
       </div>
-      <div v-if="timelineSupported && isMobile && !needsFirstTopic" class="glass-control min-w-0 flex-1 rounded-full py-0.5 pl-3 pr-1">
+      <!-- NOT glass: a backdrop-filtered ancestor becomes the containing block for
+           fixed descendants and would trap TopicSwitcher's popover and row menu.
+           Only the name capsule is glass; the pill keeps its own surface. -->
+      <!-- `[&_button]:max-w-full` + `overflow-hidden` keep the trigger inside its
+           slot: it lays out wider than the flex track (127 vs 117 at 390px wide), and
+           the ⋯ disc is painted after it, so the overhang sat under a neighbour — found
+           by the 390x844 midpoint hit test. The popover is fixed-positioned, so the
+           clip does not trap it. -->
+      <div v-if="timelineSupported && isMobile && !needsFirstTopic" data-test="group-topic-slot" class="min-w-0 flex-1 overflow-hidden [&_button]:max-w-full">
         <TopicSwitcher
           :topics="groupsStore.currentTopics"
           :active-topic-id="groupsStore.activeTopicId"

@@ -1,7 +1,11 @@
 import type { Page } from "@playwright/test";
 import { test, expect, loginAndShowInstances } from "./fixtures";
 
-const SHOTS = process.env.UI_SHOTS_DIR ?? "../artifacts/ui-upgrade-b/before";
+// The pack is only written when the caller names a directory. A relative default
+// resolved against the config dir and dropped fake "before" images into
+// packages/artifacts during a plain `playwright test` run.
+const SHOTS = process.env.UI_SHOTS_DIR;
+test.skip(!SHOTS, "set UI_SHOTS_DIR to record the evidence pack");
 const THEME = process.env.UI_THEME ?? "light";
 const createdAt = "2026-11-07T00:00:00.000Z";
 const bot = { id: "b1", name: "Direct Bot", agent: "codex", workspace: "repo", enabled: true, profileRevision: 1, createdAt, updatedAt: createdAt };

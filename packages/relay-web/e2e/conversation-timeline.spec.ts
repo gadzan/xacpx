@@ -347,6 +347,42 @@ for (const testId of ["copy-button", "transcript-speaker", "timeline-open-detail
   });
 }
 
+// WP-4 also names the 390x844 CSS viewport, not just the Pixel 7 device. Same
+// helper, same four midpoints, plus the bar controls must not overlap each other.
+test("timeline and bar targets hold at 390x844", async ({ page, hub }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-mobile", "coarse pointer only");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openTimeline(page, hub, { olderPages: false });
+  for (const id of ["copy-button", "transcript-speaker", "timeline-open-detail", "timeline-handoff", "conversation-stop-all"]) {
+    await expectTouchTarget(page, id);
+  }
+  // Boxes first: an overlap between two neighbours is easier to read from the two
+  // rectangles than from a single "covered by" message. The pill sits inside its
+  // slot by design, so containment is asserted against the neighbours only.
+  const slot = await page.getByTestId("group-topic-slot").boundingBox();
+  const pillBox = await page.getByTestId("group-topic-pill").boundingBox();
+  expect(slot, "slot").not.toBeNull();
+  expect(pillBox, "pill").not.toBeNull();
+  expect(pillBox!.width, "pill fits its slot").toBeLessThanOrEqual(slot!.width);
+  const barIds = ["mobile-back", "group-avatar-button", "group-topic-pill", "mobile-group-more"];
+  const boxes: Array<{ id: string; box: { x: number; y: number; width: number; height: number } }> = [];
+  for (const id of barIds) {
+    const box = await page.getByTestId(id).first().boundingBox();
+    expect(box, id).not.toBeNull();
+    boxes.push({ id, box: box! });
+  }
+  for (let i = 0; i < boxes.length; i += 1) {
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      const a = boxes[i]!;
+      const b = boxes[j]!;
+      const overlapX = Math.min(a.box.x + a.box.width, b.box.x + b.box.width) - Math.max(a.box.x, b.box.x);
+      const overlapY = Math.min(a.box.y + a.box.height, b.box.y + b.box.height) - Math.max(a.box.y, b.box.y);
+      expect(overlapX <= 0 || overlapY <= 0, `${a.id} ${JSON.stringify(a.box)} overlaps ${b.id} ${JSON.stringify(b.box)}`).toBe(true);
+    }
+  }
+  for (const id of barIds) await expectTouchTarget(page, id);
+});
+
 // WP-12: the assignment used to live only in the title/aria-label, which a tap
 // cannot open on most phones. The visible line now carries it. The process
 // entry's tooltip bubble is covered by the Tooltip unit test (the e2e click on

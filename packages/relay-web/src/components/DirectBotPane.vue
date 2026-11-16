@@ -794,6 +794,7 @@ function handleStopAll(): void {
       banner-inset-class="mt-[calc(6rem+env(safe-area-inset-top))] lg:mt-0"
       :forked-from="directBotsStore.currentTopic?.forkedFrom ?? null"
       :fork-source-available="forkSourceAvailable"
+      :fork-message="forkMessageSupported ? openForkFromMessage : undefined"
       @open-source-topic="openForkSourceTopic"
       @open-detail="openTimelineDetail"
     >

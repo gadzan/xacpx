@@ -142,8 +142,12 @@ test.describe("mobile layout", () => {
     test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
     await page.goto("/settings");
     await expect(page.getByTestId("theme-setting")).toBeVisible();
-    for (const id of ["settings-back", "theme-dark", "theme-light", "lang-en"]) {
-      await expectTouchTarget(page, id);
+    // Both phone widths: the Pixel 7 device and the 390x844 CSS viewport WP-16 names.
+    for (const viewport of [{ width: 412, height: 839 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      for (const id of ["settings-back", "theme-dark", "theme-light", "lang-en", "logout"]) {
+        await expectTouchTarget(page, id);
+      }
     }
   });
 });

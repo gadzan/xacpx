@@ -610,9 +610,12 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     （`h-[calc(3.25rem+env(safe-area-inset-top))]`）。三条手机顶栏（会话 / Direct Bot / 群组）现在是
     同一套「悬浮玻璃控件」语言：左侧 `←` 圆钮 44（`data-test="mobile-back"`）、中间一枚
     `glass-control` 名称胶囊（会话 = `AgentIcon`，Direct = `BotAvatar` 56 头像盘，群组 = 拼合头像盘，
-    胶囊里第一行名字、第二行副标题或话题触发器）、右侧 `⋯` 圆钮 44（会话 = `data-test="mobile-more"`，
-    Bot = `mobile-bot-more`，群组 = `mobile-group-more`）。圆钮与胶囊都取自全局 `.glass-control`
-    配方（见「玻璃三档」），不再用 `bg-surface` 实心条 + `hover:bg-surface-2` 的方块按钮。
+    胶囊里只有名字），右侧 `⋯` 圆钮 44（会话 = `data-test="mobile-more"`，Bot = `mobile-bot-more`，
+    群组 = `mobile-group-more`）。圆钮与胶囊都取自全局 `.glass-control` 配方（见「玻璃三档」），
+    不再用 `bg-surface` 实心条 + `hover:bg-surface-2` 的方块按钮。群组栏的话题 pill 单独占一格，
+    **不能包在玻璃里**：`backdrop-filter` 会成为 fixed 后代的包含块，把话题弹层与行菜单困住；
+    这一格用 `overflow-hidden` + `[&_button]:max-w-full` 把触发器宽度压回轨道（否则它比轨道宽，
+    尾巴压在 `⋯` 下面）。触屏上圆钮与成员盘都是 44。
     弹出菜单仍是 `components/MobileSheet.vue`（backdrop / Esc 关闭，`useModalA11y` 负责焦点进入与归还，
     条目 ≥48px；`dd-panel` 把面板标成「打开的下拉拥有的浮层」，只有下拉 / 行菜单自己的 sheet 才开，
     见「统一下拉框」）。会话栏由 `DashboardView` 渲染；Bot 栏由 `DirectBotPane` 渲染（它自己拥有
