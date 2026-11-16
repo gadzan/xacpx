@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "../stores/chat";
-import { useInstancesStore } from "../stores/instances";
+import { supportsSessionForkMessage, useInstancesStore } from "../stores/instances";
+import { pushToast } from "../lib/use-toasts";
+import type { ChatMessage } from "../stores/chat";
 import { useFilesStore } from "../stores/files";
 import { useComposerStore } from "../stores/composer";
 import { useVirtualKeyboardInset } from "../lib/use-virtual-keyboard";
@@ -95,6 +97,35 @@ watch(
 // instance name. Branch comes from the read-only git summary (undefined until the
 // backend ever adds it to the diff result).
 const instance = computed(() => (chat.instanceId ? instances.byId(chat.instanceId) : undefined));
+
+/** Node fork is offered only when the instance advertises the node payload; the
+ *  session-menu head fork stays available independently. */
+const nodeForkSupported = computed(() => supportsSessionForkMessage(instance.value));
+// One node fork RPC at a time from this pane: a double click must not mint two
+// request ids (the store pins one id per node, but the UI must not ask twice).
+const forkingNodeId = ref<string | null>(null);
+function onForkNode(message: ChatMessage): void {
+  const instanceId = chat.instanceId;
+  const sourceAlias = chat.sessionAlias;
+  const nodeId = message.nodeId;
+  if (!instanceId || !sourceAlias || !nodeId || forkingNodeId.value !== null) return;
+  forkingNodeId.value = nodeId;
+  void (async () => {
+    try {
+      const created = await instances.forkSessionAtNode(instanceId, sourceAlias, nodeId);
+      pushToast("success", "instance.forkCreated", { alias: created.alias });
+      chat.select(instanceId, created.alias);
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : String(error);
+      if (messageText !== "session-fork-in-flight") {
+        pushToast("error", "instance.forkFailed", { msg: messageText });
+      }
+    } finally {
+      forkingNodeId.value = null;
+    }
+  })();
+}
+
 // Resolve the selected row across every list the dashboard keeps it in — NOT just
 // inst.sessions. Sleeping rows deliberately live outside that list (grouped sidebar
 // pages them into groupArchived; flat-mode archive can drop the selected row until a
@@ -228,6 +259,7 @@ onUnmounted(() => clearInterval(timer));
                    :has-more-older="chat.hasMoreOlder" :loading-older="chat.loadingOlder"
                    :loading-history="chat.loadingHistory"
                    :ensure-full="chat.ensureFullMessage"
+                   :fork-node="nodeForkSupported ? onForkNode : undefined"
                    @resend="chat.resend" @load-older="chat.loadOlder" />
     </div>
     <!-- composer area. pb uses max(1rem, safe-area-inset-bottom) so the iOS home-indicator

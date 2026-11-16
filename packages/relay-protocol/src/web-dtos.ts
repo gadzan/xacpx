@@ -76,6 +76,12 @@ export interface MessageRecordDto {
   /** Present while an inbound Web prompt is queued, so a history reload can still
    *  associate it with the later drain event. Cleared when execution starts. */
   queueItemId?: string;
+  /**
+   * The core's durable identity for this inbound prompt turn, stamped when the
+   * hub persisted the row. A node fork names it as its source point; absent on
+   * `out` rows, optimistic rows, and rows a pre-node-fork core produced.
+   */
+  nodeId?: string;
   /** Present on completed `out` turns (`toolSteps`/`reasoning`/`parts`), and on an
    *  `in` row produced by a fired scheduled task (`scheduled`, so the badge + "View"
    *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/
@@ -1087,7 +1093,7 @@ export function validControlEvent(e: unknown): boolean {
       return typeof c.chatKey === "string";
     case "turn-started":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
-        && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && optStr(c.recoveryId)
+        && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && optStr(c.nodeId) && optStr(c.recoveryId)
         && validScheduledOrigin(c.scheduled)
         && validPeerTurnOrigin(c.peerOrigin)
         && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId)
@@ -1183,6 +1189,7 @@ export function validInstanceStateSync(p: unknown): boolean {
     const turn = t as Record<string, unknown>;
     return typeof turn.sessionAlias === "string"
       && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId)
+      && optStr(turn.nodeId)
       && optStr(turn.peerTriggerMessageId)
       && validScheduledOrigin(turn.scheduled)
       && finiteNonNegative(turn.startedAt)
@@ -1223,6 +1230,7 @@ export function validInstanceStateSync(p: unknown): boolean {
       && typeof finished.ok === "boolean"
       && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt)
       && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId)
+      && optStr(finished.nodeId)
       && validScheduledOrigin(finished.scheduled)
       && (finished.cancelled === undefined || typeof finished.cancelled === "boolean")
       && (finished.truncated === undefined || typeof finished.truncated === "boolean")

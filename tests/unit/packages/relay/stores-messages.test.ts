@@ -74,3 +74,42 @@ test("getById returns one account-scoped row or null", async () => {
   expect(store.getById("a2", "i1", "backend", listed.id!)).toBeNull();
   db.close();
 });
+
+test("attachNodeId stamps the pre-written inbound row by prompt request", async () => {
+  const db = await seeded();
+  const store = new MessageStore(db);
+  store.append("i1", "backend", "in", "question", undefined, undefined, "pr-1");
+  store.attachNodeId("i1", "backend", "node-1", { promptRequestId: "pr-1" });
+  const [row] = store.listBySession("a1", "i1", "backend").messages;
+  expect(row).toMatchObject({ direction: "in", text: "question", nodeId: "node-1" });
+  db.close();
+});
+
+test("attachNodeId follows a queued prompt through promotion by queue id", async () => {
+  const db = await seeded();
+  const store = new MessageStore(db);
+  const rowId = store.append("i1", "backend", "in", "queued question");
+  store.markQueued(rowId, { instanceId: "i1", sessionAlias: "backend", queueItemId: "q-1" });
+  store.promoteQueued({ instanceId: "i1", sessionAlias: "backend", queueItemId: "q-1" });
+  store.attachNodeId("i1", "backend", "node-q", { queueItemId: "q-1" });
+  const [row] = store.listBySession("a1", "i1", "backend").messages;
+  expect(row?.nodeId).toBe("node-q");
+  db.close();
+});
+
+test("attachNodeId without a correlation stamps the newest inbound row only when it is unstamped", async () => {
+  const db = await seeded();
+  const store = new MessageStore(db);
+  store.append("i1", "backend", "in", "first");
+  store.attachNodeId("i1", "backend", "node-first");
+  store.append("i1", "backend", "in", "second");
+  store.attachNodeId("i1", "backend", "node-second");
+  // A later duplicate with no correlation must not rename an existing stamp.
+  store.attachNodeId("i1", "backend", "node-late-duplicate");
+  const rows = store.listBySession("a1", "i1", "backend").messages;
+  expect(rows.map((row) => [row.text, row.nodeId])).toEqual([
+    ["first", "node-first"],
+    ["second", "node-second"],
+  ]);
+  db.close();
+});

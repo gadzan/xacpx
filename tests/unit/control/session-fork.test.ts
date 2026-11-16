@@ -5,6 +5,7 @@ import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { SessionTurnRunner } from "../../../src/control/session-turn-runner";
 import { SessionForkStore } from "../../../src/sessions/session-fork-store";
+import { sessionForkPrefixAnchor, sessionForkPromptDigest } from "../../../src/sessions/session-fork-node";
 
 registerKnownChannelId("relay");
 
@@ -393,7 +394,12 @@ test("a product-owned target alias is refused before creation", async () => {
   store.close();
 });
 
-function runner(store: SessionForkStore, prompts: string[], failOnce = false) {
+function runner(
+  store: SessionForkStore,
+  prompts: string[],
+  failOnce = false,
+  events = createControlEventBus(),
+) {
   let calls = 0;
   return new SessionTurnRunner({
     agent: {
@@ -410,7 +416,7 @@ function runner(store: SessionForkStore, prompts: string[], failOnce = false) {
       useSession: async () => ({}),
       getLogicalSessionRecord: () => ({ logical_session_id: "logical-target" }),
     },
-    events: createControlEventBus(),
+    events,
     uploadStore: { root: "/tmp/uploads" },
     sessionForks: store,
   } as never);
@@ -486,5 +492,272 @@ test("a provider failure consumes the window so a retry never replays it", async
   expect(prompts[0]).toContain("<<<HISTORY");
   expect(prompts[1]).not.toContain("<<<HISTORY");
   expect(store.getByTargetSessionId("logical-target")?.status).toBe("consumed");
+  store.close();
+});
+
+test("a media prompt mints no node identity while a text prompt records one", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const events = createControlEventBus();
+  const started: Array<{ nodeId?: string }> = [];
+  events.subscribe((event) => {
+    if (event.type === "turn-started") started.push(event);
+  });
+  const prompts: string[] = [];
+  const turn = runner(store, prompts, false, events);
+  const signal = new AbortController().signal;
+  await turn.run({ ...RUN, text: "text question" }, signal);
+  await turn.run(
+    {
+      ...RUN,
+      text: "look at this",
+      media: [
+        {
+          id: "pic",
+          filePath: "/tmp/uploads/pic.png",
+          fileName: "pic.png",
+          mimeType: "image/png",
+          kind: "image",
+          size: 3,
+        },
+      ],
+    },
+    signal,
+  );
+  expect(started).toHaveLength(2);
+  expect(started[0]?.nodeId).toBeTruthy();
+  expect(started[1]?.nodeId).toBeUndefined();
+  const nodes = store.listTurnNodes("logical-target");
+  expect(nodes).toHaveLength(1);
+  expect(nodes[0]?.nodeId).toBe(started[0]?.nodeId ?? "");
+  store.close();
+});
+
+const TURN_HISTORY = [
+  { role: "user" as const, text: "first question" },
+  { role: "agent" as const, text: "first answer" },
+  { role: "user" as const, text: "second question" },
+  { role: "agent" as const, text: "second answer" },
+  { role: "user" as const, text: "third question" },
+  { role: "agent" as const, text: "third answer" },
+];
+
+function seedTurnNodes(store: SessionForkStore, history: typeof TURN_HISTORY): void {
+  let sequence = 0;
+  for (const message of history) {
+    if (message.role !== "user") continue;
+    store.recordTurnNode({
+      nodeId: `node-${sequence}`,
+      sessionId: "logical-src",
+      promptDigest: sessionForkPromptDigest(message.text),
+      createdAt: `2026-11-16T00:00:0${sequence}.000Z`,
+    });
+    sequence += 1;
+  }
+}
+
+test("a node fork renders only the prefix through that turn", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, [...TURN_HISTORY]);
+  seedTurnNodes(store, TURN_HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  const result = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-node",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+  });
+  expect(result.alias).toBe("backend-fork");
+  const record = store.getByTargetSessionId("logical-target")!;
+  expect(record.sourcePoint).toEqual({ type: "node", nodeId: "node-1" });
+  expect(record.sourceAnchor).toBe(sessionForkPrefixAnchor(TURN_HISTORY.slice(0, 4)));
+  const handoff = store.getHandoff(record.id)!.text;
+  expect(handoff).toContain("first question");
+  expect(handoff).toContain("second question");
+  expect(handoff).toContain("second answer");
+  expect(handoff).not.toContain("third question");
+  expect(handoff).not.toContain("third answer");
+  store.close();
+});
+
+test("a node fork replay survives source growth without creating a second session", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, [...TURN_HISTORY]);
+  seedTurnNodes(store, TURN_HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  const first = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-growth",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+  });
+  input.history.push(
+    { role: "user", text: "fourth question" },
+    { role: "agent", text: "fourth answer" },
+  );
+  const replay = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-growth",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+  });
+  expect(replay.alias).toBe(first.alias);
+  expect(input.created).toEqual(["relay:backend-fork"]);
+  store.close();
+});
+
+test("a fresh node fork after source growth still stops at the node", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const grown = [
+    ...TURN_HISTORY,
+    { role: "user" as const, text: "fourth question" },
+    { role: "agent" as const, text: "fourth answer" },
+  ];
+  const input = forkInput(store, grown);
+  seedTurnNodes(store, TURN_HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-growth-fresh",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+  });
+  const fresh = store.getByRequestId("req-growth-fresh")!;
+  const handoff = store.getHandoff(fresh.id)!.text;
+  expect(handoff).toContain("second question");
+  expect(handoff).not.toContain("fourth question");
+  store.close();
+});
+
+test("a pending node replay uses the stored source point and anchor", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, [...TURN_HISTORY]);
+  seedTurnNodes(store, TURN_HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+  store.createPending({
+    requestId: "req-pending",
+    chatKey: "relay:acct",
+    sourceSessionId: "logical-src",
+    targetSessionId: "logical-orphan",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    createdAt: "2026-11-16T00:00:00.000Z",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+    sourceAnchor: sessionForkPrefixAnchor(TURN_HISTORY.slice(0, 4)),
+  });
+  input.history.push(
+    { role: "user", text: "fourth question" },
+    { role: "agent", text: "fourth answer" },
+  );
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-pending",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+  });
+  const record = store.getByRequestId("req-pending")!;
+  expect(record.status).toBe("ready");
+  const handoff = store.getHandoff(record.id)!.text;
+  expect(handoff).toContain("second question");
+  expect(handoff).not.toContain("fourth question");
+  store.close();
+});
+
+test("a rewritten source prefix fails a node fork closed with a typed error", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, [...TURN_HISTORY]);
+  seedTurnNodes(store, TURN_HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+  store.createPending({
+    requestId: "req-rewrite",
+    chatKey: "relay:acct",
+    sourceSessionId: "logical-src",
+    targetSessionId: "logical-orphan",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    createdAt: "2026-11-16T00:00:00.000Z",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+    sourceAnchor: sessionForkPrefixAnchor(TURN_HISTORY.slice(0, 4)),
+  });
+  input.history[2] = { role: "user", text: "rewritten second question" };
+
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork",
+      requestId: "req-rewrite",
+      sourcePoint: { type: "node", nodeId: "node-1" },
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-source-changed" });
+  expect(input.created).toEqual([]);
+  store.close();
+});
+
+test("a cleared source record fails a node fork closed with a typed error", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, []);
+  seedTurnNodes(store, TURN_HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork",
+      requestId: "req-cleared",
+      sourcePoint: { type: "node", nodeId: "node-1" },
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-source-changed" });
+  store.close();
+});
+
+test("a node id the core never recorded is refused as unavailable", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, [...TURN_HISTORY]);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork",
+      requestId: "req-unknown",
+      sourcePoint: { type: "node", nodeId: "node-never" },
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-node-unavailable" });
+  store.close();
+});
+
+test("a node fork request id cannot be replayed at a different node", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, [...TURN_HISTORY]);
+  seedTurnNodes(store, TURN_HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-point",
+    sourcePoint: { type: "node", nodeId: "node-1" },
+  });
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork",
+      requestId: "req-point",
+      sourcePoint: { type: "node", nodeId: "node-2" },
+    }),
+  ).rejects.toMatchObject({ code: "session-fork-request-mismatch" });
   store.close();
 });

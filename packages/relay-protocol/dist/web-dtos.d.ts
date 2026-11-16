@@ -45,6 +45,12 @@ export interface MessageRecordDto {
     /** Present while an inbound Web prompt is queued, so a history reload can still
      *  associate it with the later drain event. Cleared when execution starts. */
     queueItemId?: string;
+    /**
+     * The core's durable identity for this inbound prompt turn, stamped when the
+     * hub persisted the row. A node fork names it as its source point; absent on
+     * `out` rows, optimistic rows, and rows a pre-node-fork core produced.
+     */
+    nodeId?: string;
     /** Present on completed `out` turns (`toolSteps`/`reasoning`/`parts`), and on an
      *  `in` row produced by a fired scheduled task (`scheduled`, so the badge + "View"
      *  jump survive a history reload). `parts` is the ordered transcript; `toolSteps`/

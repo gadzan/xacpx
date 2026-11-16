@@ -226,8 +226,17 @@ const validateSessionsRename: Validator<SessionsRenamePayload> = (p) => {
 };
 const validateSessionsFork: Validator<SessionsForkPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sourceAlias) && isStr(o.targetAlias) && isStr(o.requestId)
-    ? (o as unknown as SessionsForkPayload) : null;
+  if (!o || !isStr(o.chatKey) || !isStr(o.sourceAlias) || !isStr(o.targetAlias) || !isStr(o.requestId)) {
+    return null;
+  }
+  const point = o.sourcePoint;
+  if (
+    point !== undefined
+    && !(isObj(point) && (point.type === "latest_stable" || (point.type === "node" && isStr(point.nodeId))))
+  ) {
+    return null;
+  }
+  return o as unknown as SessionsForkPayload;
 };
 const validateWorkspacesCreate: Validator<WorkspacesCreatePayload> = (p) => {
   const o = fields(p);

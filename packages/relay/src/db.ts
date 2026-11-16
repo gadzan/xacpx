@@ -171,6 +171,7 @@ export function initSchema(db: SqlDriver): void {
       queue_fallback INTEGER NOT NULL DEFAULT 0,
       origin_queue_item_id TEXT,
       prompt_request_id TEXT,
+      node_id TEXT,
       started_at INTEGER,
       slot_after_id INTEGER,
       started_after_seq INTEGER
@@ -239,6 +240,9 @@ export function initSchema(db: SqlDriver): void {
   }
   if (!messageCols.some((c) => c.name === "prompt_request_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN prompt_request_id TEXT");
+  }
+  if (!messageCols.some((c) => c.name === "node_id")) {
+    db.exec("ALTER TABLE messages ADD COLUMN node_id TEXT");
   }
   if (!messageCols.some((c) => c.name === "started_at")) {
     db.exec("ALTER TABLE messages ADD COLUMN started_at INTEGER");

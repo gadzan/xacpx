@@ -103,6 +103,7 @@ import {
   type GitWorktreeCreateResult,
 } from "./workspace-git";
 import { renderSessionForkHandoff } from "../sessions/session-fork-handoff";
+import { resolveSessionForkNode } from "../sessions/session-fork-node";
 import {
   isSqliteUniqueViolation,
 } from "../conversations/sql-driver";
@@ -113,6 +114,7 @@ import {
   resolveSessionForkStrategy,
   SessionForkError,
   type SessionForkRecord,
+  type SessionForkSourcePoint,
   type SessionForkStore,
 } from "../sessions/session-fork-store";
 import type {
@@ -657,6 +659,37 @@ function toLifecycleOperationDto(operation: LifecycleOperation): LifecycleOperat
       : {}),
     ...(operation.workspaceCleanup ? { workspaceCleanup: operation.workspaceCleanup } : {}),
   };
+}
+
+/** Reject an unknown fork source point instead of treating it as the head: a
+ *  typo or an older client must not silently fork the latest state. */
+function normalizeSessionForkSourcePoint(point: unknown): SessionForkSourcePoint {
+  if (point === undefined) return { type: "latest_stable" };
+  if (point && typeof point === "object" && "type" in point) {
+    if (point.type === "latest_stable") return { type: "latest_stable" };
+    if (
+      point.type === "node"
+      && "nodeId" in point
+      && typeof point.nodeId === "string"
+      && point.nodeId.length > 0
+    ) {
+      return { type: "node", nodeId: point.nodeId };
+    }
+  }
+  throw new SessionForkError(
+    "session-fork-unavailable",
+    "a fork source point must be the latest stable head or one recorded node",
+  );
+}
+
+function sameSessionForkSourcePoint(
+  left: SessionForkSourcePoint,
+  right: SessionForkSourcePoint,
+): boolean {
+  if (left.type === "latest_stable" || right.type === "latest_stable") {
+    return left.type === right.type;
+  }
+  return left.nodeId === right.nodeId;
 }
 
 // Thin structured facade over core services for non-text consumers (the relay
@@ -1717,10 +1750,26 @@ export class ControlService {
   }
 
   /**
+   * Feature probe for connectors: this core records a node id + prompt digest
+   * per effective prompt and can cut a fork at one recorded turn. The store
+   * that holds both the ledger and the fork records is the gate, exactly like
+   * the head probe.
+   */
+  supportsSessionForkMessage(): boolean {
+    return this.deps.sessionForks !== undefined;
+  }
+
+  /**
    * Fork a stable ordinary session into an independent logical + transport
    * session. The source's recorded history is rendered once into a bounded
    * handoff; the first effective prompt of the target injects it and consumes
-   * the record. This PR resolves every fork to the portable strategy.
+   * the record. Every fork resolves to the portable strategy.
+   *
+   * `sourcePoint` defaults to the latest settled head. A `node` point cuts the
+   * recorded history at one prompt turn and its reply, so later source turns
+   * never reach the target; the node is located by the prompt digest recorded
+   * when that turn ran, never by position, and a reset/clear/rewrite fails
+   * closed instead of handing off a different prefix.
    *
    * The target inherits the source's model and effort so it runs under the
    * same provider settings. `modeId` and `replyMode` are explicit PR1 limits
@@ -1733,6 +1782,9 @@ export class ControlService {
     sourceAlias: string;
     targetAlias: string;
     requestId: string;
+    /** Head fork when absent. A `node` point cuts at one recorded prompt turn
+     *  and never includes later source turns. */
+    sourcePoint?: SessionForkSourcePoint;
   }): Promise<ControlSessionInfo> {
     // Overlapping same-id forks serialize here (keyed by chat scope + request
     // id) so the second waits and then hits the replay path. The store's
@@ -1764,6 +1816,7 @@ export class ControlService {
     sourceAlias: string;
     targetAlias: string;
     requestId: string;
+    sourcePoint?: SessionForkSourcePoint;
   }): Promise<ControlSessionInfo> {
     const store = this.deps.sessionForks;
     if (!store) {
@@ -1780,6 +1833,7 @@ export class ControlService {
         "a fork needs a request id and a target alias",
       );
     }
+    const requestedPoint = normalizeSessionForkSourcePoint(input.sourcePoint);
 
     this.assertOrdinaryAddressedAlias(input.chatKey, input.sourceAlias);
     const channelId = getChannelIdFromChatKey(input.chatKey);
@@ -1794,7 +1848,16 @@ export class ControlService {
     // still replays.
     const replay = store.getByRequestId(requestId);
     const requestedSourceAlias = input.sourceAlias.trim();
-    if (replay && !this.forkReplayMatches(replay, input.chatKey, requestedSourceAlias, targetAlias)) {
+    if (
+      replay
+      && !this.forkReplayMatches(
+        replay,
+        input.chatKey,
+        requestedSourceAlias,
+        targetAlias,
+        requestedPoint,
+      )
+    ) {
       throw new SessionForkError(
         "session-fork-request-mismatch",
         "this fork request id was already used with a different scope, source, or target",
@@ -1818,12 +1881,18 @@ export class ControlService {
         );
       }
     }
+    // A pending replay renders the STORED source point and verifies the anchor
+    // recorded with it; it must never fall back to the requested head.
+    let replaySourcePoint: SessionForkSourcePoint | undefined;
+    let replayAnchor: string | undefined;
     if (replay) {
       if (replay.status === "pending") {
         // The fork never completed (a crash or a resolve failure between the
         // pending write and the resolve): remove any orphan target and the
         // pending row, then converge to a fresh attempt below, which needs a
         // live source.
+        replaySourcePoint = replay.sourcePoint;
+        replayAnchor = replay.sourceAnchor;
         await this.clearPendingForkReplay(store, replay);
       } else {
         return this.toControlSessionInfo(await this.resolveForkReplayTarget(replay));
@@ -1880,11 +1949,44 @@ export class ControlService {
           sourceAlias: source.alias,
         }),
     });
+    const sourcePoint = replaySourcePoint ?? requestedPoint;
+    let renderedHistory = history;
+    let sourceAnchor: string | undefined;
+    if (sourcePoint.type === "node") {
+      if (!store.getTurnNode(sourceSessionId, sourcePoint.nodeId)) {
+        throw new SessionForkError(
+          "session-fork-node-unavailable",
+          `session "${input.sourceAlias}" has no recorded turn for this fork point; fork the latest head instead`,
+        );
+      }
+      const resolved = resolveSessionForkNode({
+        history,
+        nodes: store.listTurnNodes(sourceSessionId),
+        nodeId: sourcePoint.nodeId,
+        ...(replayAnchor !== undefined ? { expectedAnchor: replayAnchor } : {}),
+      });
+      if (!resolved.ok) {
+        if (resolved.reason === "node-ambiguous") {
+          throw new SessionForkError(
+            "session-fork-node-ambiguous",
+            `session "${input.sourceAlias}" records identical text more than once at this fork point; fork a different message`,
+          );
+        }
+        throw new SessionForkError(
+          "session-fork-source-changed",
+          resolved.reason === "node-unavailable"
+            ? `session "${input.sourceAlias}" no longer records this fork point; the source was reset or replaced`
+            : `session "${input.sourceAlias}" was reset, cleared, or rewritten at this fork point; fork the latest head instead`,
+        );
+      }
+      renderedHistory = resolved.prefix;
+      sourceAnchor = resolved.anchor;
+    }
     const parentFork = store.getByForkSourceSessionId(sourceSessionId);
     const rendered = renderSessionForkHandoff({
       sourceTitle: source.displayName ?? toDisplaySessionAlias(source.alias),
       agent: source.agent,
-      history,
+      history: renderedHistory,
       ...(parentFork ? { parentFork } : {}),
       ...(parentFork ? { parentHandoff: store.getHandoff(parentFork.id) } : {}),
     });
@@ -1925,6 +2027,8 @@ export class ControlService {
           sourceAlias: requestedSourceAlias,
           targetAlias,
           createdAt,
+          sourcePoint,
+          ...(sourceAnchor !== undefined ? { sourceAnchor } : {}),
         });
       } catch (error) {
         if (!isSqliteUniqueViolation(error)) throw error;
@@ -1937,6 +2041,7 @@ export class ControlService {
             sourceSessionId,
             sourceAlias: requestedSourceAlias,
             targetAlias,
+            sourcePoint,
             createdAlias: created.alias,
           }),
         );
@@ -1981,11 +2086,12 @@ export class ControlService {
     chatKey: string,
     requestedSourceAlias: string,
     requestedTargetAlias: string,
+    requestedSourcePoint: SessionForkSourcePoint,
   ): boolean {
     if (replay.chatKey && replay.chatKey !== chatKey) return false;
     if (replay.sourceAlias && replay.sourceAlias !== requestedSourceAlias) return false;
     if (replay.targetAlias && replay.targetAlias !== requestedTargetAlias) return false;
-    return true;
+    return sameSessionForkSourcePoint(replay.sourcePoint, requestedSourcePoint);
   }
 
   /** The live target of a completed fork record, or a retry-with-new-id error. */
@@ -2033,6 +2139,7 @@ export class ControlService {
       sourceSessionId: string;
       sourceAlias: string;
       targetAlias: string;
+      sourcePoint: SessionForkSourcePoint;
       createdAlias: string;
     },
   ): Promise<ResolvedSession> {
@@ -2045,7 +2152,13 @@ export class ControlService {
       );
     }
     if (
-      !this.forkReplayMatches(winner, input.chatKey, input.sourceAlias, input.targetAlias)
+      !this.forkReplayMatches(
+        winner,
+        input.chatKey,
+        input.sourceAlias,
+        input.targetAlias,
+        input.sourcePoint,
+      )
       || winner.sourceSessionId !== input.sourceSessionId
     ) {
       throw new SessionForkError(
