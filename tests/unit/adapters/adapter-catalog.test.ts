@@ -45,7 +45,7 @@ test("recorded preinstalled classification requires the trusted complete release
 
 test("managed adapters use tested exact defaults and accept local overrides", () => {
   expect(effectiveAdapterVersion("codex", {})).toBe("2.2.2");
-  expect(effectiveAdapterVersion("claude", {})).toBe("0.90.0");
+  expect(effectiveAdapterVersion("claude", {})).toBe("0.107.2");
   expect(effectiveAdapterVersion("codex", { codex: "1.1.2" })).toBe("1.1.2");
   expect(buildManagedAdapterCommand("codex", "1.1.2")).toBe(
     "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.2",

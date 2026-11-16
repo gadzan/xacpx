@@ -213,7 +213,7 @@ test("concurrent writers serialize and both aliases survive", async () => {
       "-y",
       "--registry=https://registry.npmjs.org",
       "--@agentclientprotocol:registry=https://registry.npmjs.org",
-      "@agentclientprotocol/claude-agent-acp@0.90.0",
+      "@agentclientprotocol/claude-agent-acp@0.107.2",
     ]);
     const otherEntry = {
       alias: otherAlias,
@@ -222,7 +222,7 @@ test("concurrent writers serialize and both aliases survive", async () => {
         "-y",
         "--registry=https://registry.npmjs.org",
         "--@agentclientprotocol:registry=https://registry.npmjs.org",
-        "@agentclientprotocol/claude-agent-acp@0.90.0",
+        "@agentclientprotocol/claude-agent-acp@0.107.2",
       ],
     };
     await Promise.all([

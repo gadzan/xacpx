@@ -17,7 +17,7 @@ export const MANAGED_ADAPTERS = {
   claude: {
     packageName: "@agentclientprotocol/claude-agent-acp",
     binName: "claude-agent-acp",
-    defaultVersion: "0.90.0",
+    defaultVersion: "0.107.2",
   },
 } as const;
 
