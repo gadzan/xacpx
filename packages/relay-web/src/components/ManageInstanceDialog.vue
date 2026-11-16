@@ -6,6 +6,7 @@ import type { ConversationRouterUpdatePayload, JevUpdatePayload } from "@ganglio
 import { useInstancesStore } from "../stores/instances";
 import { navigateBack } from "../lib/mobile-back";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import WorkspacesManager from "./WorkspacesManager.vue";
 import AgentsManager from "./AgentsManager.vue";
 
@@ -306,7 +307,7 @@ onMounted(async () => {
     ref="shell"
     panel-class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl focus:outline-none"
     labelledby="manage-instance-title"
-    data-test="manage-instance-dialog"
+    test-id="manage-instance-dialog"
     @close="emit('close')"
   >
       <header class="flex shrink-0 items-center justify-between px-5 py-3">
@@ -335,8 +336,10 @@ onMounted(async () => {
                 <input v-model="name" data-test="rename-name" :placeholder="$t('instance.renamePlaceholder')"
                        class="min-w-0 flex-1 rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                        @keyup.enter="saveName" />
-                <button data-test="rename-save" class="shrink-0 rounded-sm bg-accent px-3 py-1.5 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
-                        :disabled="renaming || !name.trim()" @click="saveName">{{ renaming ? $t("instance.renameSaving") : $t("instance.renameSave") }}</button>
+                <UiButton data-test="rename-save"
+                          :disabled="renaming || !name.trim()" @click="saveName">
+                  {{ renaming ? $t("instance.renameSaving") : $t("instance.renameSave") }}
+                </UiButton>
               </div>
             </section>
             <section class="space-y-2">
@@ -451,15 +454,13 @@ onMounted(async () => {
                 <p data-test="jev-model" class="font-mono text-xs text-fg">{{ jevSettings?.model }}</p>
               </div>
               <div class="flex flex-wrap items-center gap-2">
-                <button data-test="jev-save" type="button"
-                        class="rounded-sm bg-accent px-3 py-1.5 text-xs text-on-accent hover:bg-accent-hover disabled:opacity-50"
-                        :disabled="jevSaving || !instanceOnline" @click="saveJev">
+                <UiButton size="sm" data-test="jev-save"
+                          :disabled="jevSaving || !instanceOnline" @click="saveJev">
                   {{ jevSaving ? $t("instance.jevSaving") : $t("instance.jevSave") }}
-                </button>
-                <button data-test="jev-test" type="button"
-                        class="rounded-sm px-3 py-1.5 text-xs text-fg hover:bg-fg/5 disabled:opacity-50"
-                        :disabled="jevPanel.phase !== 'editable' || jevPanel.test.kind === 'testing' || !instanceOnline"
-                        @click="testJev">{{ $t("instance.jevTestButton") }}</button>
+                </UiButton>
+                <UiButton variant="ghost" size="sm" data-test="jev-test"
+                          :disabled="jevPanel.phase !== 'editable' || jevPanel.test.kind === 'testing' || !instanceOnline"
+                          @click="testJev">{{ $t("instance.jevTestButton") }}</UiButton>
                 <span v-if="jevTestView" data-test="jev-test-result" class="text-xs"
                       :class="jevTestView.kind === 'ok' ? 'text-success' : jevTestView.kind === 'failed' ? 'text-error' : 'text-fg-muted'">
                   {{ jevTestView.kind === 'testing' ? $t("instance.jevTesting") : jevTestView.text }}

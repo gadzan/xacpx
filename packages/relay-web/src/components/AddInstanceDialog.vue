@@ -4,6 +4,7 @@ import { Check, Copy, Loader2 } from "lucide-vue-next";
 import { api } from "../api/client";
 import { useInstancesStore } from "../stores/instances";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 
 /**
@@ -127,7 +128,7 @@ function close(): void {
   <DialogShell
     panel-class="w-full max-w-md rounded-2xl p-5"
     labelledby="add-instance-title"
-    data-test="add-instance-dialog"
+    test-id="add-instance-dialog"
     blur-class="backdrop-blur-[3px]"
     @close="emit('close')"
   >
@@ -146,23 +147,13 @@ function close(): void {
         />
         <p v-if="error" data-test="add-instance-error" class="mt-2 text-xs text-danger-text">{{ error }}</p>
         <div class="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            class="h-11 rounded-2xl px-4 text-sm font-medium text-fg-muted hover:bg-raised"
-            @click="navigateBack"
-          >
+          <UiButton variant="ghost" @click="navigateBack">
             {{ $t("common.cancel") }}
-          </button>
-          <button
-            type="button"
-            data-test="add-instance-next"
-            :disabled="busy || !name.trim()"
-            class="h-11 rounded-2xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50"
-            @click="generateToken"
-          >
+          </UiButton>
+          <UiButton data-test="add-instance-next" :disabled="busy || !name.trim()" @click="generateToken">
             <Loader2 v-if="busy" :size="14" class="animate-spin" />
             <span v-else>{{ $t("common.next") }}</span>
-          </button>
+          </UiButton>
         </div>
       </div>
 
@@ -192,22 +183,12 @@ function close(): void {
           {{ $t("settings.addInstanceNotYet") }}
         </p>
         <div class="mt-4 flex items-center justify-between gap-2">
-          <button
-            type="button"
-            data-test="add-instance-later"
-            class="h-11 rounded-2xl px-4 text-sm font-medium text-fg-muted hover:bg-raised"
-            @click="close"
-          >
+          <UiButton variant="ghost" data-test="add-instance-later" @click="close">
             {{ $t("settings.addInstanceLater") }}
-          </button>
-          <button
-            type="button"
-            data-test="add-instance-regenerate"
-            class="h-11 rounded-2xl px-4 text-sm font-medium text-fg hover:bg-raised"
-            @click="copyCommand"
-          >
+          </UiButton>
+          <UiButton variant="secondary" data-test="add-instance-regenerate" @click="copyCommand">
             {{ $t("settings.addInstanceRegenerate") }}
-          </button>
+          </UiButton>
         </div>
       </div>
 
@@ -218,14 +199,9 @@ function close(): void {
           {{ $t("settings.addInstanceConnected", { name: connectedInstance?.name ?? name }) }}
         </p>
         <div class="mt-4 flex items-center justify-end gap-2">
-          <button
-            type="button"
-            data-test="add-instance-done"
-            class="h-11 rounded-2xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
-            @click="close"
-          >
+          <UiButton data-test="add-instance-done" @click="close">
             {{ $t("settings.addInstanceDone") }}
-          </button>
+          </UiButton>
         </div>
       </div>
   </DialogShell>

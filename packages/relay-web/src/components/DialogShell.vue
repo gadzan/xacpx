@@ -22,7 +22,10 @@ const props = withDefaults(defineProps<{
   labelledby?: string;
   /** Panel classes: width, max-height, radius, padding. */
   panelClass?: string;
-  dataTest?: string;
+  /** Rendered as `data-test` on the panel (not the scrim). Named `testId` so a
+   *  literal `data-test` attribute does not fall through to the wrapper and
+   *  shadow the panel for selectors. */
+  testId?: string;
   /** Inset the scrim by the device safe area (full-height dialogs). */
   safeArea?: boolean;
   /** The rung this dialog takes on the overlay ladder (tailwind zIndex). A
@@ -82,7 +85,7 @@ defineExpose({ panel, focusChild });
       :aria-label="label"
       :aria-labelledby="labelledby"
       tabindex="-1"
-      :data-test="dataTest"
+      :data-test="testId"
       class="bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none"
       :class="panelClass"
     >

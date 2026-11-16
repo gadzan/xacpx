@@ -34,6 +34,7 @@ import MobileConnStrip from "./MobileConnStrip.vue";
 import GroupAvatarStack from "./GroupAvatarStack.vue";
 import GroupMemberPanel from "./GroupMemberPanel.vue";
 import MobileSheet from "./MobileSheet.vue";
+import UiButton from "./UiButton.vue";
 import { useIsMobile } from "../lib/use-dropdown";
 import { backInFlight } from "../lib/mobile-back";
 import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
@@ -787,15 +788,10 @@ const worktreeRunId = computed(() => {
       <MessageSquare :size="22" class="text-fg-muted" />
       <p class="text-sm font-semibold">{{ $t("group.firstTopic.title") }}</p>
       <p class="max-w-sm text-xs text-fg-muted">{{ $t(perMemberGroup ? "group.firstTopic.hintPerMember" : "group.firstTopic.hint") }}</p>
-      <button
-        type="button"
-        data-test="group-first-topic-button"
-        class="mt-1 flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent hover:opacity-90"
-        @click="newTopicDialogOpen = true"
-      >
+      <UiButton size="sm" class="mt-1" data-test="group-first-topic-button" @click="newTopicDialogOpen = true">
         <Plus :size="13" />
         <span>{{ $t("group.firstTopic.action") }}</span>
-      </button>
+      </UiButton>
     </div>
     <!-- One timeline for Group and Direct: the timeline state the upgrade gate
          above did not already claim. -->

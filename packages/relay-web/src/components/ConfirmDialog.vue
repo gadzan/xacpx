@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, watch } from "vue";
 import { AlertTriangle } from "lucide-vue-next";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
 import { navigateBack, pushModal } from "../lib/mobile-back";
+import UiButton from "./UiButton.vue";
 
 // Global host for confirm({...}) — mounted once near the app root. Teleports to body so
 // it overlays everything (including other dialogs). Esc cancels, Enter confirms.
@@ -53,13 +54,15 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           </div>
         </div>
         <div class="mt-5 flex gap-2 lg:justify-end">
-          <button data-test="confirm-cancel" type="button"
-                  class="h-11 flex-1 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg transition-colors hover:bg-fill-hover lg:h-8 lg:flex-none"
-                  @click="navigateBack">{{ pending.cancelLabel ?? $t("common.cancel") }}</button>
-          <button data-test="confirm-ok" type="button"
-                  class="h-11 flex-1 rounded-btn px-3 text-ui font-semibold transition-opacity hover:opacity-90 lg:h-8 lg:flex-none"
-                  :class="pending.tone === 'default' ? 'bg-accent text-on-accent' : 'bg-danger text-on-danger'"
-                  @click="settleConfirm(true)">{{ pending.confirmLabel ?? $t("common.confirm") }}</button>
+          <UiButton variant="secondary" mobile-block data-test="confirm-cancel" @click="navigateBack">
+            {{ pending.cancelLabel ?? $t("common.cancel") }}
+          </UiButton>
+          <UiButton
+            mobile-block
+            data-test="confirm-ok"
+            :variant="pending.tone === 'default' ? 'primary' : 'danger'"
+            @click="settleConfirm(true)"
+          >{{ pending.confirmLabel ?? $t("common.confirm") }}</UiButton>
         </div>
       </div>
     </div>

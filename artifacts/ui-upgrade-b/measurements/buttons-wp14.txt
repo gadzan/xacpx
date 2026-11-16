@@ -1,0 +1,67 @@
+WP-14 UiButton
+==============
+
+One component: src/components/UiButton.vue
+
+Variants
+--------
+primary        bg-accent text-on-accent hover:bg-accent-hover      (solid fill)
+secondary      border-hairline bg-raised text-fg hover:bg-fill-hover
+ghost          text-fg-muted hover:bg-fill-hover hover:text-fg
+danger         bg-danger text-on-danger hover:bg-danger/90          (solid fill)
+danger-ghost   text-danger-text hover:bg-danger/10                 (inline destructive entry)
+
+Sizes: sm = 28px (h-7 px-2.5 text-xs), md = 32px (h-8 px-3 text-ui). Radius rounded-btn (8px).
+mobile-block = the dialog-footer shape: full width and 44 tall below lg, compact from lg.
+Hit area: [@media(pointer:coarse)]:min-h-11 lifts the touch box to 44 without changing the
+visual height; desktop density is untouched. Measured in the WP-4 pass.
+`el` is exposed for callers that own their focus (ComposerConfirmDialog's safe default).
+
+Migrated
+--------
+AddInstanceDialog        next / later / regenerate / done   (was h-11 rounded-2xl, i.e. a third size language)
+BotDialog                cancel / save / remove-bot entry
+ComposerConfirmDialog    cancel (initial focus) / confirm
+ConfirmDialog            cancel / ok (variant from pending.tone: primary | danger)
+DesktopTab               macos connect / password connect
+DirectoryPicker          cancel / choose-current
+ForkTopicDialog          cancel / fork
+GroupDialog              delete entry / cancel / save / create-bot
+GroupPane                first-topic call to action
+GroupTopicDialog         cancel / create
+ManageInstanceDialog     rename-save, JEV save / JEV test
+NewSessionDialog         cancel / create
+NewTopicDialog           cancel / create
+SettingsView             add-instance, notifications toggle, sign out
+AgentsManager            add / cancel
+FueCallout               got-it
+
+Exceptions (deliberately not migrated)
+--------------------------------------
+ConversationComposer / GroupComposer send buttons   protected animation shell (plan 4.6)
+LoginView sign-in                                   full-width hero button with its own `login-btn` shape
+EmptySessionState "new session"                     hero CTA that doubles as a dropdown trigger ref
+ConversationInteractionForm submit/decline          restyled by WP-17 together with the option rows
+FilesPanel git create/worktree/commit               micro-forms inside a dense 12px panel
+ScheduledTasks inline composer                      same: dense inline micro-form
+Segmented toggles (theme, locale, source, ws mode, group mode, chat/terminal)
+                                                    they are selection state, not actions; they keep
+                                                    bg-accent-soft / accent fills as toggles
+
+Contrast
+--------
+Primary reuses the WP-1/2 measurements: --c-on-accent on --c-accent (both themes) and
+--c-on-danger on --c-danger for the danger variant; the ghost/danger-ghost text colors are the
+already-measured fg-muted / danger-text pairs. No new color tokens were introduced.
+
+Settings page size language
+---------------------------
+Before: add-instance was h-11 rounded-2xl, notifications was rounded-sm py-1, sign-out was a
+rounded-lg text button. After: all three are UiButton (md) with the same 8px radius, 32px height
+and text-ui scale; the danger entry uses danger-ghost.
+
+Tests
+-----
+unit: 212 files / 2982 tests green (packages/relay-web)
+typecheck: vue-tsc --noEmit clean
+settings-view.test.ts still asserts the dialog opens over a bg-scrim overlay (not a raw black).

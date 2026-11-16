@@ -7,6 +7,7 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
 import { supportsGroupDefaultRouting, supportsGroupPublicMemorySwitch, supportsGroupWorkspaceMode, supportsHandoffMemorySummary, useInstancesStore } from "../stores/instances";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { pushToast } from "../lib/use-toasts";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
@@ -384,7 +385,7 @@ async function confirmDelete(): Promise<void> {
   <DialogShell
     panel-class="flex max-h-full w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-2xl"
     labelledby="group-dialog-title"
-    data-test="group-dialog"
+    test-id="group-dialog"
     safe-area
     @close="emit('close')"
   >
@@ -582,13 +583,10 @@ async function confirmDelete(): Promise<void> {
                    data-test="group-dialog-need-bots"
                    class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-accent-soft p-3 text-xs">
                 <span class="flex-1 leading-relaxed">{{ $t("group.manage.needBots", { count: memberCandidates.length }) }}</span>
-                <button type="button"
-                        data-test="group-dialog-create-bot"
-                        class="flex shrink-0 items-center gap-1 rounded-sm bg-accent px-2 py-1 font-medium text-on-accent hover:opacity-90"
-                        @click="emit('createBot')">
+                <UiButton size="sm" data-test="group-dialog-create-bot" @click="emit('createBot')">
                   <Plus :size="12" />
                   <span>{{ $t("bot.actions.newBot") }}</span>
-                </button>
+                </UiButton>
               </div>
               <div class="max-h-56 space-y-px overflow-y-auto rounded-lg bg-bg p-1 thin-scroll">
                 <label v-for="bot in memberCandidates"
@@ -730,34 +728,24 @@ async function confirmDelete(): Promise<void> {
       </form>
 
       <div class="flex shrink-0 items-center justify-between gap-2.5 px-5 py-3">
-        <button v-if="isEditing && !isDeleting"
-                type="button"
-                data-test="group-dialog-delete"
-                :disabled="confirmingDelete || deletingNow || submitting"
-                class="flex items-center gap-1 rounded-btn px-2 py-1.5 text-xs font-medium text-danger-overlay transition-colors hover:bg-danger/10 disabled:opacity-50"
-                @click="askDelete">
+        <UiButton v-if="isEditing && !isDeleting"
+                  variant="danger-ghost"
+                  size="sm"
+                  data-test="group-dialog-delete"
+                  :disabled="confirmingDelete || deletingNow || submitting"
+                  @click="askDelete">
           <Trash2 :size="13" />
           <span>{{ $t("group.manage.delete") }}</span>
-        </button>
+        </UiButton>
         <span v-else />
         <div class="flex items-center gap-2.5">
-          <button
-            type="button"
-            class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover"
-            @click="navigateBack"
-          >
+          <UiButton variant="secondary" @click="navigateBack">
             {{ $t("common.cancel") }}
-          </button>
-          <button
-            type="button"
-            data-test="group-dialog-save"
-            :disabled="!canSave"
-            class="flex h-8 items-center gap-1.5 rounded-btn bg-accent px-4 text-ui font-semibold text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
-            @click="submit"
-          >
+          </UiButton>
+          <UiButton data-test="group-dialog-save" :disabled="!canSave" @click="submit">
             <Loader2 v-if="submitting" :size="13" class="animate-spin" />
             <span>{{ isEditing ? $t("common.save") : $t("common.create") }}</span>
-          </button>
+          </UiButton>
         </div>
       </div>
   </DialogShell>

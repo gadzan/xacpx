@@ -195,7 +195,8 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `<Teleport to="body">`，外壳保持就地可测。
 - 关闭一律 `@close="emit('close')"`，**不要**把 `navigateBack` 传给外壳：外壳本身就是层栈里的
   那一层，`navigateBack` 会回调该层的 `close`，形成自递归。
-- 其他 prop：`labelledby`/`label`（可访问名）、`data-test`（放在面板上）、`level`（叠层 rung）、
+- 其他 prop：`labelledby`/`label`（可访问名）、`test-id`（渲染成面板上的 `data-test`；名字不叫
+  `data-test` 是为了不让这个属性透传到外壳根节点上、盖住面板选择器）、`level`（叠层 rung）、
   `safe-area`（整屏对话框）、`blur-class`、`initial-focus`。`focusChild(selector)` 暴露给需要在
   挂载后移动焦点的调用方（如实例管理对话框的 tab 漫游）。
 - 未迁移：`CommandPalette`（顶部对齐、无居中面板）、`MobileSheet`（底部抽屉，自带层）、
@@ -205,6 +206,21 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - z-index 阶梯定义在 `tailwind.config.js` 的 `zIndex`：`z-sheet`(40) < `z-dialog`(50) <
   `z-dialog-nested`(60，从对话框里打开的对话框/选择器) < `z-dialog-top`(70，要压过抽屉或 sheet
   栈的对话框) < `z-confirm`(100，全局确认队列)。新的浮层从中选一档，不再写 `z-[60]` 这类裸值。
+
+## 按钮（`UiButton.vue`）
+
+主路径的实心 / 次级 / 幽灵 / 危险按钮收敛到一个组件：
+
+- `variant`：`primary`（`bg-accent` + `text-on-accent`）、`secondary`（`border-hairline` +
+  `bg-raised`）、`ghost`（`fg-muted`，hover 才上底色）、`danger`（实心 `bg-danger`）、
+  `danger-ghost`（`text-danger-text`，用于「删除 Bot / 删除群组」这类行内破坏性入口）。
+- `size`：`sm` 28 高 / `md` 32 高，圆角 `rounded-btn`(8)。`mobile-block` 是对话框页脚的形状
+  （`<lg` 全宽 44 高，`≥lg` 收紧），属于布局而非尺寸。
+- 触屏命中：`[@media(pointer:coarse)]:min-h-11` 把命中区抬到 44，视觉高度不变；桌面密度不受影响。
+- `el` 通过 `defineExpose` 暴露，给需要自己管焦点的调用方（确认框的「取消」默认焦点）。
+- 未迁移：Composer / GroupComposer 的发送按钮（动画外壳受保护，见方案 B 4.6）、登录页整宽主按钮
+  （自带 `login-btn` 形态）、以及分段控件 / 芯片（它们是切换态，不是按钮：主题、语言、source、
+  workspace 模式、分组模式）。
 
 ## Composer 的模型与 effort 控件
 

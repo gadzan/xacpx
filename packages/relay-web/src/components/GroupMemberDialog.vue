@@ -30,7 +30,7 @@ const emit = defineEmits<{
   <DialogShell
     panel-class="flex max-h-full w-full min-w-0 max-w-md flex-col overflow-hidden rounded-2xl"
     :label="props.label"
-    data-test="group-member-dialog"
+    test-id="group-member-dialog"
     @close="emit('close')"
   >
         <div class="flex shrink-0 items-center justify-between gap-2 px-5 py-3.5">

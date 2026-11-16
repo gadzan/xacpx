@@ -19,6 +19,7 @@ import {
   isDesktopNotificationsEnabled,
 } from "../lib/web-push";
 import AddInstanceDialog from "../components/AddInstanceDialog.vue";
+import UiButton from "../components/UiButton.vue";
 const auth = useAuthStore();
 const theme = useThemeStore();
 const router = useRouter();
@@ -166,13 +167,9 @@ void onMounted(() => { void probeNotifications(); });
 
     <section class="mb-6">
       <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.addInstance") }}</h2>
-      <button
-        data-test="open-add-instance"
-        class="h-11 rounded-2xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
-        @click="showAddInstance = true"
-      >
+      <UiButton data-test="open-add-instance" @click="showAddInstance = true">
         {{ $t("settings.addInstance") }}
-      </button>
+      </UiButton>
     </section>
 
     <section class="mb-6">
@@ -196,26 +193,21 @@ void onMounted(() => { void probeNotifications(); });
       <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.notifTitle") }}</h2>
       <div class="flex items-center gap-3">
         <span data-test="notif-state" class="text-sm text-fg-muted">{{ notifStateLabel }}</span>
-        <button
+        <UiButton
           v-if="notifState === 'subscribed' || notifState === 'idle' || notifState === 'server-disabled'"
           data-test="notif-toggle"
           :disabled="notifBusy"
-          class="rounded-sm bg-accent px-3 py-1 text-sm text-on-accent hover:bg-accent-hover disabled:opacity-50"
           @click="toggleNotifications"
-        >{{ notifState === "subscribed" ? $t("settings.notifDisable") : $t("settings.notifEnable") }}</button>
+        >{{ notifState === "subscribed" ? $t("settings.notifDisable") : $t("settings.notifEnable") }}</UiButton>
       </div>
       <p v-if="notifState === 'denied'" class="mt-1 text-xs text-fg-muted">{{ $t("settings.notifDeniedHint") }}</p>
       <p v-if="isIos" class="mt-1 text-xs text-fg-muted" data-test="notif-ios-hint">{{ $t("settings.notifIosHint") }}</p>
     </section>
     <section>
       <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.account") }}</h2>
-      <button
-        data-test="logout"
-        class="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger-text"
-        @click="onLogout"
-      >
+      <UiButton variant="danger-ghost" data-test="logout" @click="onLogout">
         <LogOut :size="15" />{{ $t("settings.signOut") }}
-      </button>
+      </UiButton>
     </section>
 
     <AddInstanceDialog v-if="showAddInstance" @close="showAddInstance = false" />

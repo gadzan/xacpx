@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { useDirectBotsStore } from "../stores/direct-bots";
 
@@ -52,20 +53,12 @@ async function handleCreateTopic(): Promise<void> {
           class="mb-4 h-8 w-full rounded-lg bg-surface-2 px-3 text-sm outline-none"
         />
         <div class="flex gap-2 lg:items-center lg:justify-end">
-          <button
-            type="button"
-            class="h-11 flex-1 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover lg:h-8 lg:flex-none"
-            @click="navigateBack"
-          >
+          <UiButton variant="secondary" mobile-block @click="navigateBack">
             {{ $t("common.cancel") }}
-          </button>
-          <button
-            type="submit"
-            :disabled="creatingTopic || !newTopicTitle.trim()"
-            class="h-11 flex-1 rounded-btn bg-accent px-3 text-ui font-semibold text-on-accent hover:opacity-90 disabled:opacity-50 lg:h-8 lg:flex-none"
-          >
+          </UiButton>
+          <UiButton type="submit" mobile-block :disabled="creatingTopic || !newTopicTitle.trim()">
             {{ $t("common.create") }}
-          </button>
+          </UiButton>
         </div>
       </form>
   </DialogShell>

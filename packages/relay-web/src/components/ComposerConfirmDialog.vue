@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 defineProps<{ title: string; confirmLabel: string; pending?: boolean }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
-const focusCancel = ref<HTMLButtonElement | null>(null);
+const cancelButton = ref<InstanceType<typeof UiButton> | null>(null);
 // Cancel is the safe default for a destructive confirm.
-const initialFocus = (): HTMLElement | null => focusCancel.value;
+const initialFocus = (): HTMLElement | null => cancelButton.value?.el ?? null;
 </script>
 
 <template>
@@ -20,12 +21,10 @@ const initialFocus = (): HTMLElement | null => focusCancel.value;
       <section data-composer-confirm>
         <div class="mt-3 text-sm text-fg"><slot /></div>
         <div class="mt-4 flex gap-2 lg:justify-end">
-          <button ref="focusCancel" type="button" data-test="composer-confirm-cancel"
-                  class="h-11 flex-1 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg lg:h-8 lg:flex-none"
-                  @click="emit('cancel')">{{ $t('common.cancel') }}</button>
-          <button type="button" data-test="composer-confirm-send" :disabled="pending"
-                  class="h-11 flex-1 rounded-btn bg-accent px-3 text-ui font-semibold text-on-accent disabled:opacity-50 lg:h-8 lg:flex-none"
-                  @click="emit('confirm')">{{ confirmLabel }}</button>
+          <UiButton ref="cancelButton" variant="secondary" data-test="composer-confirm-cancel"
+                    mobile-block @click="emit('cancel')">{{ $t('common.cancel') }}</UiButton>
+          <UiButton data-test="composer-confirm-send" :disabled="pending"
+                    mobile-block @click="emit('confirm')">{{ confirmLabel }}</UiButton>
         </div>
       </section>
   </DialogShell>

@@ -6,6 +6,7 @@ import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type Agent
 import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, supportsBotDedicatedWorkspaceUpdate, useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import type { BotAvatarState } from "../lib/bot-avatar-state";
@@ -695,31 +696,27 @@ function describeSubmitError(err: unknown): string {
 
       <!-- Footer -->
       <div class="flex shrink-0 items-center justify-end gap-2.5 px-5 py-3">
-        <button
+        <UiButton
           v-if="isEditing && props.bot && props.bot.retired !== true"
-          type="button"
+          variant="danger-ghost"
+          size="sm"
           data-test="bot-dialog-remove"
-          class="mr-auto rounded-btn px-3 py-1.5 text-xs font-medium text-danger-overlay transition-colors hover:bg-danger/10"
+          class="mr-auto"
           @click="removalOpen = true"
         >
           {{ $t("bot.removal.action") }}
-        </button>
-        <button
-          type="button"
-          class="h-8 rounded-btn border border-hairline bg-raised px-3 text-xs font-medium text-fg transition-colors hover:bg-fill-hover hover:text-fg"
-          @click="navigateBack"
-        >
+        </UiButton>
+        <UiButton variant="secondary" size="sm" @click="navigateBack">
           {{ $t("common.cancel") }}
-        </button>
-        <button
-          type="button"
+        </UiButton>
+        <UiButton
+          size="sm"
           :disabled="submitting || !name.trim() || nameNeedsWorkspaceChars || (isEditing && !!props.bot && !detailHydrated)"
-          class="flex h-8 items-center gap-1.5 rounded-btn bg-accent px-4 text-xs font-semibold text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
           @click="submit"
         >
           <Loader2 v-if="submitting" :size="13" class="animate-spin" />
           <span>{{ isEditing ? $t("common.save") : $t("common.create") }}</span>
-        </button>
+        </UiButton>
       </div>
       <BotAvatarQuickView v-if="avatarQuickView" :avatar="avatar" :driver="avatarDriver" :name="name"
                           @close="avatarQuickView = false" />

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { computeCalloutPlacement, type Rect } from "../lib/fue-placement";
+import UiButton from "./UiButton.vue";
 
 const props = defineProps<{ title: string; body: string; anchor?: Rect | null }>();
 const emit = defineEmits<{ dismiss: [] }>();
@@ -56,14 +57,9 @@ onBeforeUnmount(() => {
       </p>
       <p class="mt-1 text-xs text-fg-muted">{{ body }}</p>
       <div class="mt-2 flex justify-end">
-        <button
-          data-test="fue-dismiss"
-          type="button"
-          class="rounded-sm bg-accent px-2 py-1 text-xs font-medium text-on-accent hover:bg-accent-hover"
-          @click="emit('dismiss')"
-        >
+        <UiButton size="sm" data-test="fue-dismiss" @click="emit('dismiss')">
           {{ $t("fue.gotIt") }}
-        </button>
+        </UiButton>
       </div>
     </div>
   </Teleport>

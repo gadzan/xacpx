@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ConversationRunDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 
 /** The one fork call both panes share. The dialog owns the ids and the error
@@ -126,7 +127,7 @@ async function handleFork(): Promise<void> {
   <DialogShell
     panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4 lg:w-full"
     labelledby="fork-topic-title"
-    data-test="fork-topic-dialog"
+    test-id="fork-topic-dialog"
     level="top"
     @close="emit('close')"
   >
@@ -149,21 +150,17 @@ async function handleFork(): Promise<void> {
           {{ errorMessage(errorCode) }}
         </p>
         <div class="flex gap-2 lg:items-center lg:justify-end">
-          <button
-            type="button"
-            class="h-11 flex-1 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover lg:h-8 lg:flex-none"
-            @click="navigateBack"
-          >
+          <UiButton variant="secondary" mobile-block @click="navigateBack">
             {{ $t("common.cancel") }}
-          </button>
-          <button
+          </UiButton>
+          <UiButton
             type="submit"
             data-test="fork-topic-submit"
+            mobile-block
             :disabled="creating || !title.trim()"
-            class="h-11 flex-1 rounded-btn bg-accent px-3 text-ui font-semibold text-on-accent hover:opacity-90 disabled:opacity-50 lg:h-8 lg:flex-none"
           >
             {{ creating ? $t("common.loading") : $t("group.topic.forkAction") }}
-          </button>
+          </UiButton>
         </div>
       </form>
   </DialogShell>

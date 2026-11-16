@@ -5,6 +5,7 @@ import { X, Loader2, AlertTriangle, FolderOpen } from "lucide-vue-next";
 import { needsSetupCapability, type AgentCapabilityState, type NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
@@ -347,7 +348,7 @@ async function submit(): Promise<void> {
   <DialogShell
     panel-class="w-full max-w-md rounded-2xl focus:outline-none"
     labelledby="new-session-title"
-    data-test="new-session-dialog"
+    test-id="new-session-dialog"
     @close="emit('close')"
   >
       <header class="flex items-center justify-between px-5 py-3">
@@ -459,10 +460,10 @@ async function submit(): Promise<void> {
       </div>
 
       <footer class="flex justify-end gap-2 px-5 py-3">
-        <button class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover" @click="navigateBack">{{ $t("common.cancel") }}</button>
-        <button data-test="ns-create" :disabled="!canSubmit"
-                class="h-8 rounded-btn bg-accent px-4 text-ui font-semibold text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
-                @click="submit">{{ submitting ? $t("session.creatingButton") : $t("session.create") }}</button>
+        <UiButton variant="secondary" @click="navigateBack">{{ $t("common.cancel") }}</UiButton>
+        <UiButton data-test="ns-create" :disabled="!canSubmit" @click="submit">
+          {{ submitting ? $t("session.creatingButton") : $t("session.create") }}
+        </UiButton>
       </footer>
   </DialogShell>
   </Teleport>

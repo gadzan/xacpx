@@ -5,6 +5,7 @@ import { X, Folder, Home, ArrowUp, Loader2 } from "lucide-vue-next";
 import { isErrorPayload, type FsBrowseResult } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import DialogShell from "./DialogShell.vue";
+import UiButton from "./UiButton.vue";
 import { navigateBack } from "../lib/mobile-back";
 
 // System-style directory picker that browses the TARGET INSTANCE's filesystem
@@ -122,7 +123,7 @@ function onListKeydown(e: KeyboardEvent): void {
   <DialogShell
     panel-class="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl focus:outline-none"
     labelledby="dp-title"
-    data-test="dp-dialog"
+    test-id="dp-dialog"
     level="nested"
     @close="emit('close')"
   >
@@ -178,10 +179,10 @@ function onListKeydown(e: KeyboardEvent): void {
         <p v-if="error" data-test="dp-error" class="mx-5 mt-2 rounded-lg bg-danger/[0.08] px-3 py-2 text-xs text-danger-overlay">{{ error }}</p>
 
         <footer class="flex justify-end gap-2 px-5 py-3">
-          <button type="button" class="h-8 rounded-btn border border-hairline bg-raised px-3 text-ui font-medium text-fg hover:bg-fill-hover" @click="navigateBack">{{ $t("common.cancel") }}</button>
-          <button type="button" data-test="dp-confirm" :disabled="!result || loading"
-                  class="h-8 rounded-btn bg-accent px-4 text-ui font-semibold text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
-                  @click="choose">{{ $t("dirPicker.chooseCurrent") }}</button>
+          <UiButton variant="secondary" @click="navigateBack">{{ $t("common.cancel") }}</UiButton>
+          <UiButton data-test="dp-confirm" :disabled="!result || loading" @click="choose">
+            {{ $t("dirPicker.chooseCurrent") }}
+          </UiButton>
         </footer>
   </DialogShell>
   </Teleport>
