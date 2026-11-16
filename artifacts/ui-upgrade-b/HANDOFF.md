@@ -5,7 +5,7 @@
 - 仓库：https://github.com/gadzan/xacpx
 - 工作分支 / 远程（若有）：`ui-upgrade-b`，已推送；PR 为 https://github.com/gadzan/xacpx/pull/590。**未合并、未部署。**
 - base SHA：`5b89cab95ab95fd412da7341418738f369dcf289`（与审计快照一致，开跑时核对无漂移）
-- head SHA（代码）：`616e2ef8`，即把 `origin/main` 的两个新提交（`cf1f0a10` #585、`f45f76d6` #586）并入后的合并提交。之后的提交只含证据、注释清理与本文档；`git log -1` 给出分支最终 head。
+- head SHA：分支 head 由 `git log -1` 给出。代码改动止于 `c50a6c47`（`616e2ef8` 合并 `origin/main`，`c50a6c47` 收掉独立复核的七个问题）；其后的提交只动 `artifacts/ui-upgrade-b/`。
 - 相对审计快照的差异摘要：32 个提交到合并提交（其后为证据/清理提交）；`packages/relay-web` 约 113 文件 +2500/−1240；证据全在 `artifacts/ui-upgrade-b/`
 - 已完成工作包：WP-1 … WP-18，**18/18**
 - 未做或只做了部分的工作包及原因：无整包未做。偏差如下，均在证据里写明：
@@ -19,8 +19,7 @@
 
 - Node / Bun / Playwright：node v24.21.0、bun 1.4.4、@playwright/test 1.62.1（chromium）
 - 命令与结果：
-  - `bunx vitest run`（`packages/relay-web`）：**213 文件 / 2977 测试通过**（合并 `main` 后的 head，含 `main` 带来的 1 文件 / 3 测试）。基线 211 / 2969。
-  - `bunx vue-tsc --noEmit`：通过。
+  - `bunx vitest run`（`packages/relay-web`）：**213 文件 / 2989 测试通过**（合并 `main` 带来的 1 文件 / 3 测试，加上补回的 12 个 Tooltip 定位测试）。基线 211 / 2969。
   - `bunx playwright test`（两个 project 全量，在合并后的 head 上）：**187 passed / 0 failed / 51 skipped**，14.0m。skipped 全部是「只在某个 project 有意义」的用例（手机专属、或未设 `UI_SHOTS_DIR` 的取证 harness）。CI 在 PR head 上另跑一遍，见 PR 检查列表。
   - WebKit：**未运行**（无 project）。
   - 新增 / 扩展的 spec：
@@ -37,7 +36,6 @@
   5. **玻璃包住了话题触发器**：`backdrop-filter` 祖先会成为 fixed 后代的包含块，把话题弹层/行菜单困住，导致 5 个 fork 用例失败。已改为非玻璃槽位。
   6. **加空态插槽时丢了 `:fork-message` 绑定**：消息行的分叉入口消失。已恢复。
   7. **取证 harness 的相对默认路径**在普通 `playwright test` 时把假「before」图写进 `packages/artifacts/`。现在未设 `UI_SHOTS_DIR` 就整体 skip，误写目录已删除。
-- 已知失败（改代码前就有 / 新引入）：上述 7 条都是本轮引入并在本轮修掉，无遗留。
 - 合并 `main` 之后的一轮独立复核（5 条互不通气的 lane：重跑门禁、真实界面取证、diff 审计、方案合规、注释/清洁度）又找出 7 处，全部在本分支修掉：
   1. **WP-12 的过程入口仍单独占一行**：图标被 `TranscriptRow` 的 `#meta` 块级排布挤到时间戳下一行，变成一个没有标签的 16px 头像。已移进 `ConversationMeta` 的默认插槽，与时间戳、复制/分叉同一行。
   2. **抽屉里同一条失败原因打印三次**（成员行、选中成员行、过程内容）。现在只在过程内容不显示它的情况下（历史尝试、裸内核原因码）才在正文补一行，其余交给过程内容。
@@ -50,7 +48,7 @@
 
 ## 截图证据
 
-- 证据包路径：`artifacts/ui-upgrade-b/`
+- 证据包路径：`artifacts/ui-upgrade-b/`，其中 `program/STATE.md` 是本次执行的过程记录（目标、队列、每轮的 lane 与修复），不是产品取证；`measurements/`、`before/`、`after/` 才是视觉与数值证据。
 - before/after 是否同一 fixture、同一 CSS 视口：是。同一个 `e2e/ui-upgrade-before.spec.ts`、同一套 mock fixture、同一视口与 DPR；before 在 base 提交、after 在 head 提交各跑一次。
 - 矩阵覆盖：1440×900（DPR 1）与 Pixel 7 412×839（DPR 2.625），浅 / 深各一套，chromium；每个视口每套 20 张。
 - DPR 记录位置：`manifest.json` 的 `matrix.dpr`，以及 `touch-targets-wp4.jsonl` 每条记录里的 `deviceScaleFactor`。

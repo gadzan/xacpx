@@ -2,7 +2,7 @@
  "base": "5b89cab95ab95fd412da7341418738f369dcf289",
  "branch": "ui-upgrade-b",
  "head": "9b45a78fb877943ea5438eda539a125a297deb3b",
- "code_head": "616e2ef8",
+ "code_head": "c50a6c47",
  "diff_vs_audit_snapshot": "32 commits to the merge head; packages/relay-web 113 files, +2500/-1240; evidence under artifacts/ui-upgrade-b",
  "engines": {
   "bun": "1.4.4",
@@ -38,7 +38,7 @@
   "cwd": "packages/relay-web",
   "result": "213 files, 2989 tests passed",
   "wall_time_s": 187.36,
-  "head": "merge head 616e2ef8 plus the verdict-round fixes"
+  "head": "c50a6c47"
  },
  "touch": {
   "method": "each target: scrollIntoView, stable box, >=44x44, fully inside the viewport, four 2px-inset edge midpoints via document.elementFromPoint",
@@ -84,7 +84,7 @@
  },
  "worktrees": "main checkout only, isolated branch ui-upgrade-b",
  "deployment": "none: no tunnel, no firewall change, no credentials in the pack",
- "code_head_note": "merge of origin/main (cf1f0a10, f45f76d6) into ui-upgrade-b; the PR head advances with each evidence commit",
+ "code_head_note": "merge of origin/main (616e2ef8) plus the verdict-round fixes",
  "e2e": {
   "projects": [
    "chromium-desktop",

@@ -59,7 +59,7 @@ z-confirm       100   global confirm queue (ConfirmDialog, was z-[100])
 
 Verification
 ------------
-- unit: 211 files / 2977 tests green (packages/relay-web, vitest)
+- unit: 213 files / 2989 tests green (packages/relay-web, vitest)
 - typecheck: vue-tsc --noEmit clean
 - unit test updates (assertions only, no behaviour change):
   fork-topic-dialog.test.ts, group-components.test.ts: the stacking assertions now
