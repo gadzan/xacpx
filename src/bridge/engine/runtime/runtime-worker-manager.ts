@@ -7,6 +7,7 @@ import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, probeProcessGroupDefau
 import { defaultRuntimeDir } from "./worker-eof";
 import { OrphanRegistry } from "../../../transport/orphan-registry";
 import { probeWindowsProcessIdentity } from "../../../process/windows-process-tree";
+import { processBirthMatches } from "../../../process/windows-process-identity";
 import { queryJobContainment } from "../../../process/windows-job-query";
 
 /**
@@ -136,9 +137,17 @@ export class RuntimeWorkerManager {
     if ((deps?.platform ?? process.platform) === "win32" || deps?.probeWindowsIdentity) {
       if (!record.creationDate) return "unknown";
       try {
-        const res = await (deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity)(record.pid!);
+        // Name the recorded birth so a pid recycled by a PROTECTED process
+        // (OpenProcess access-denied) is still decidable: CIM proves a
+        // different birth = our worker is gone, instead of "unknown" forever.
+        const seam = deps?.probeWindowsIdentity;
+        const res = seam
+          ? await seam(record.pid!)
+          : await probeWindowsProcessIdentity(record.pid!, { expectedCreationDate: record.creationDate });
         if (res.status !== "found") return res.status === "missing" ? "gone" : "unknown";
-        return res.identity.creationDate === record.creationDate ? "alive" : "gone";
+        return processBirthMatches(record.creationDate, res.identity.creationDate, res.identity.identitySource)
+          ? "alive"
+          : "gone";
       } catch {
         return "unknown";
       }
@@ -821,9 +830,20 @@ export class RuntimeWorkerManager {
       probeSupervisor: async (current) => {
         if (!current.supervisorPid || !current.supervisorCreationDate) return "unknown";
         try {
-          const identity = await (deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity)(current.supervisorPid);
+          const seam = deps?.probeWindowsIdentity;
+          const identity = seam
+            ? await seam(current.supervisorPid)
+            : await probeWindowsProcessIdentity(current.supervisorPid, {
+              expectedCreationDate: current.supervisorCreationDate,
+            });
           if (identity.status !== "found") return identity.status === "missing" ? "gone" : "unknown";
-          return identity.identity.creationDate === current.supervisorCreationDate ? "alive" : "gone";
+          return processBirthMatches(
+            current.supervisorCreationDate,
+            identity.identity.creationDate,
+            identity.identity.identitySource,
+          )
+            ? "alive"
+            : "gone";
         } catch { return "unknown"; }
       },
       probeJobContainment: async (current) => {

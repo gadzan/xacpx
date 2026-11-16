@@ -54,6 +54,24 @@ export function exactHandleIdentityMatches(expected: unknown, actual: unknown): 
   return left !== null && right !== null && left === right;
 }
 
+/**
+ * Birth equality for a process the caller already recorded, honouring the
+ * provenance of the observed value. A handle-derived birth is EXACT; a
+ * CIM-derived one (the pid cannot be opened — a protected process now owns it)
+ * is quantized to the microsecond, so it needs the ±9-tick tolerance. Comparing
+ * a CIM birth exactly would read every live-but-unopenable owner as "replaced"
+ * and let a fence be discharged over a live worker.
+ */
+export function processBirthMatches(
+  expected: unknown,
+  actual: unknown,
+  identitySource?: "handle" | "cim",
+): boolean {
+  return identitySource === "cim"
+    ? cimIdentityMatchesHandle(expected, actual)
+    : exactHandleIdentityMatches(expected, actual);
+}
+
 export function cimIdentityMatchesHandle(cimExpected: unknown, handleActual: unknown): boolean {
   const left = parseCanonicalFileTime(cimExpected);
   const right = parseCanonicalFileTime(handleActual);

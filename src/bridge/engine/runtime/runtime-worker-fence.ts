@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import * as lockfile from "proper-lockfile";
 import { queryJobContainment, windowsJobNameForGeneration } from "../../../process/windows-job-query";
 import { probeWindowsProcessIdentity } from "../../../process/windows-process-tree";
+import { processBirthMatches } from "../../../process/windows-process-identity";
 /**
  * Per-fence-file cross-process mutex for generation CAS. Two-phase
  * acquisition: a single immediate attempt first, so deterministically
@@ -191,10 +192,18 @@ async function probeSupervisorDefault(record: RuntimeWorkerFenceRecord): Promise
     }
   }
   try {
-    const result = await probeWindowsProcessIdentity(record.supervisorPid);
+    const result = await probeWindowsProcessIdentity(record.supervisorPid, {
+      expectedCreationDate: record.supervisorCreationDate,
+    });
     if (result.status === "missing") return "gone";
     if (result.status !== "found") return "unknown";
-    return result.identity.creationDate === record.supervisorCreationDate ? "alive" : "gone";
+    return processBirthMatches(
+      record.supervisorCreationDate,
+      result.identity.creationDate,
+      result.identity.identitySource,
+    )
+      ? "alive"
+      : "gone";
   } catch {
     return "unknown";
   }

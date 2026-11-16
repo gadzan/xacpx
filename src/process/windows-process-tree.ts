@@ -117,6 +117,16 @@ export interface WindowsProcessIdentity {
   creationDate: string;
   executablePath: string;
   commandLine?: string;
+  /**
+   * Provenance of `creationDate`/`executablePath`. "handle" (default) is an
+   * exact read through an owned handle. "cim" means the handle could not be
+   * opened at all — a PID recycled by a protected process (svchost, csrss,
+   * security agents) denies OpenProcess — so the values came from
+   * Win32_Process instead. CIM zeros the low FILETIME digits, so callers must
+   * compare a "cim" birth with the ±9-tick tolerance
+   * (`cimIdentityMatchesHandle`) rather than exact equality.
+   */
+  identitySource?: "handle" | "cim";
 }
 
 export interface WindowsTokenProcess {
@@ -135,11 +145,20 @@ export interface WindowsProcessWorkerOptions {
   /** Null disables the hard-kill timer (EOF convergence relies on the in-script watchdog). */
   workerDeadlineMs?: number | null;
   runWorker?: (request: WindowsWorkerRequest, deadlineMs: number | null) => Promise<unknown>;
+  /**
+   * The canonical birth the caller already recorded for this pid. When the
+   * handle cannot be opened (protected/recycled pid), the worker compares CIM's
+   * birth against it: a different birth proves the recorded process is gone
+   * ("missing") instead of leaving the caller stuck on "unavailable" forever.
+   * Without it an unopenable pid stays "unavailable" (fail closed).
+   */
+  expectedCreationDate?: string;
 }
 
 export type WindowsWorkerRequest =
   | { action: "terminate-tree"; root: BatchTarget }
-  | { action: "identity"; pid: number }
+  | { action: "identity"; pid: number; expectedCreationDate?: string }
+  | { action: "identity-cim"; pid: number; expectedCreationDate: string }
   | { action: "token-snapshot"; token: string }
   | { action: "terminate-one-cim"; target: BatchTarget }
   | { action: "terminate-descendants-of"; parentPid: number; epcd?: string };
@@ -339,7 +358,11 @@ export async function queryWindowsProcessIdentity(
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     const value = await (options.runWorker ?? runPowerShellWorker)(
-      { action: "identity", pid },
+      {
+        action: "identity",
+        pid,
+        ...(options.expectedCreationDate !== undefined ? { expectedCreationDate: options.expectedCreationDate } : {}),
+      },
       options.workerDeadlineMs ?? 15_000,
     );
     if (!value || typeof value !== "object") return null;
@@ -355,6 +378,7 @@ export async function queryWindowsProcessIdentity(
       creationDate: String(item.creationDate),
       executablePath: item.executablePath,
       ...(typeof item.commandLine === "string" && item.commandLine ? { commandLine: item.commandLine } : {}),
+      ...(item.identitySource === "cim" ? { identitySource: "cim" as const } : {}),
     };
   } catch {
     return null;
@@ -370,13 +394,66 @@ export async function probeWindowsProcessIdentity(
     // Same budget as queryWindowsProcessIdentity: a burst of concurrent
     // PowerShell spawns costs ~5s per probe on a loaded host, so the old 5s
     // budget converted normally-slow probes into "unavailable" timeouts.
-    const value = await (options.runWorker ?? runPowerShellWorker)({ action: "identity", pid }, options.workerDeadlineMs ?? 15_000);
+    const value = await (options.runWorker ?? runPowerShellWorker)(
+      {
+        action: "identity",
+        pid,
+        ...(options.expectedCreationDate !== undefined ? { expectedCreationDate: options.expectedCreationDate } : {}),
+      },
+      options.workerDeadlineMs ?? 15_000,
+    );
     if (!value || typeof value !== "object") return { status: "unavailable", reason: "identity worker produced no JSON" };
     const item = value as Record<string, unknown>;
-    if (item.status === "missing") return { status: "missing" };
+    if (item.status === "missing") {
+      const reason = typeof item.reason === "string" && item.reason ? item.reason : undefined;
+      return reason === undefined ? { status: "missing" } : { status: "missing", reason };
+    }
     const identity = await queryWindowsProcessIdentity(pid, { ...options, runWorker: async () => value });
-    return identity ? { status: "found", identity } : { status: "unavailable", reason: "identity worker response did not decode" };
+    if (identity) return { status: "found", identity };
+    // A pid recycled by a protected process denies OpenProcess outright, so the
+    // handle path reported "unavailable". With the recorded birth in hand, CIM
+    // can still prove the recorded process is gone — otherwise every fence that
+    // names such a pid stays permanently un-dischargeable.
+    if (options.expectedCreationDate !== undefined) {
+      const viaCim = await probeIdentityViaCim(pid, options.expectedCreationDate, options);
+      if (viaCim) return viaCim;
+    }
+    return { status: "unavailable", reason: "identity worker response did not decode" };
   } catch (error) { return { status: "unavailable", reason: error instanceof Error ? error.message : String(error) }; }
+}
+
+/**
+ * CIM-only identity probe for a pid the handle path could not open. Returns
+ * null when the fallback itself cannot answer (so the caller stays fail-closed
+ * at "unavailable"); never fabricates a birth.
+ */
+async function probeIdentityViaCim(
+  pid: number,
+  expectedCreationDate: string,
+  options: WindowsProcessWorkerOptions,
+): Promise<WindowsProbeStatus | null> {
+  const deadlineMs = options.workerDeadlineMs;
+  try {
+    const value = await (options.runWorker ?? runPowerShellWorker)(
+      { action: "identity-cim", pid, expectedCreationDate },
+      deadlineMs === undefined ? 15_000 : deadlineMs,
+    );
+    if (!value || typeof value !== "object") return null;
+    const item = value as Record<string, unknown>;
+    if (item.status === "missing") {
+      const reason = typeof item.reason === "string" && item.reason ? item.reason : undefined;
+      return reason === undefined ? { status: "missing" } : { status: "missing", reason };
+    }
+    if (item.status !== "found") return null;
+    const identity = await queryWindowsProcessIdentity(pid, {
+      expectedCreationDate,
+      ...(deadlineMs === undefined ? {} : { workerDeadlineMs: deadlineMs }),
+      runWorker: async () => value,
+    });
+    return identity ? { status: "found", identity } : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function snapshotWindowsProcessesByToken(
@@ -458,7 +535,9 @@ async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: nu
     // must independently fit the CreateProcess command-line ceiling.
     const script = request.action === "terminate-descendants-of"
       ? WINDOWS_DESCENDANTS_WORKER_SCRIPT
-      : WINDOWS_TREE_WORKER_SCRIPT;
+      : request.action === "identity-cim"
+        ? WINDOWS_CIM_IDENTITY_WORKER_SCRIPT
+        : WINDOWS_TREE_WORKER_SCRIPT;
     const encodedScript = Buffer.from(script, "utf16le").toString("base64");
     const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedScript], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -492,6 +571,40 @@ async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: nu
     child.once("close", (code) => code === 0 ? finish() : finish(new Error(`Windows process worker failed (${code}): ${stderr}`)));
   });
 }
+
+// Dedicated script for the CIM identity fallback. It exists as its own script
+// (like terminate-descendants-of) because the main tree script is already at
+// the CreateProcess command-line ceiling — adding this branch there would
+// silently truncate the encoded payload.
+//
+// Why it is needed: a PID recycled by a PROTECTED process (svchost, csrss,
+// security agents) answers OpenProcess with access-denied, so the handle-based
+// identity action can only say "unavailable". Every consumer of that answer is
+// fail-closed, so a durable worker fence whose `pid` was recycled that way
+// could never prove its worker gone: hard delete / logical release failed on
+// every retry and neither the online discharge nor `xacpx session recover`
+// could lift it. CIM still enumerates protected processes, and the caller
+// already knows the birth it recorded — so comparing CIM's birth against it
+// decides the only question that matters (missing / replaced / still ours).
+export const WINDOWS_CIM_IDENTITY_WORKER_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:XACPX_PROCESS_REQUEST)) | ConvertFrom-Json
+function Emit($payload) { Write-Output ($payload | ConvertTo-Json -Depth 4 -Compress); exit 0 }
+$cim = @(Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$request.pid) -ErrorAction SilentlyContinue)
+if ($cim.Count -eq 0) { Emit @{status='missing';reason='pid-absent'} }
+if (-not $cim[0].CreationDate) { Emit @{status='unavailable';reason='no-cim-birth'} }
+$ticks = $cim[0].CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
+try {
+  $delta = [Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($ticks) - [Numerics.BigInteger]::Parse([string]$request.expectedCreationDate))
+} catch { Emit @{status='unavailable';reason='unparseable-birth'} }
+# Same ±9-tick quantization the CIM-vs-handle binding uses: a matching birth is
+# the SAME process (report found, so a live owner still refuses), anything else
+# is a recycled pid and our process is provably gone.
+if ($delta -gt 9) { Emit @{status='missing';reason='pid-reused'} }
+$image = [string]$cim[0].ExecutablePath
+if (-not $image) { Emit @{status='unavailable';reason='no-cim-image'} }
+Emit @{status='found';identity=@{pid=[int]$request.pid;creationDate=$ticks;executablePath=$image;commandLine=$cim[0].CommandLine;identitySource='cim'}}
+`;
 
 // Dedicated script for terminate-descendants-of (round 30 Blocking 3): the
 // parent identity gate needs room inside the encoded command budget. Each
