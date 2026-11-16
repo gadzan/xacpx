@@ -139,7 +139,7 @@ function pickGroup(groupId: string): void {
     <!-- Section: recent conversations (52px rows, like the sidebar's session rows). -->
     <section v-if="sessionRows.length" aria-labelledby="qs-sessions">
       <h3 id="qs-sessions" data-test="quick-switch-sessions-title"
-          class="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-fg-muted">
+          class="px-3 pb-1 pt-2 text-xs font-medium text-fg-muted">
         {{ t("quickSwitch.sessions") }}
       </h3>
       <div v-if="sessionRows.length > SEARCH_THRESHOLD" class="px-3 pb-1">
@@ -173,7 +173,7 @@ function pickGroup(groupId: string): void {
     <!-- Section: the current instance's bots (46px compact rows with their avatar). -->
     <section v-if="botRows.length" aria-labelledby="qs-bots">
       <h3 id="qs-bots" data-test="quick-switch-bots-title"
-          class="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-fg-muted">
+          class="px-3 pb-1 pt-2 text-xs font-medium text-fg-muted">
         {{ t("quickSwitch.bots") }}
       </h3>
       <div v-if="botRows.length > SEARCH_THRESHOLD" class="px-3 pb-1">
@@ -208,7 +208,7 @@ function pickGroup(groupId: string): void {
     <!-- Section: the current instance's groups (46px compact rows, Users tile + members). -->
     <section v-if="groupRows.length" aria-labelledby="qs-groups">
       <h3 id="qs-groups" data-test="quick-switch-groups-title"
-          class="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wider text-fg-muted">
+          class="px-3 pb-1 pt-2 text-xs font-medium text-fg-muted">
         {{ t("quickSwitch.groups") }}
       </h3>
       <div v-if="groupRows.length > SEARCH_THRESHOLD" class="px-3 pb-1">

@@ -194,7 +194,7 @@ function rowIcon(item: TraceLiveItem) {
       <span>{{ summary.label }}</span>
     </div>
     <template v-else>
-      <p data-test="trace-live-label" class="px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted/70">
+      <p data-test="trace-live-label" class="px-1 text-[10px] font-medium text-fg-muted">
         {{ $t("group.detail.live.label") }}
       </p>
       <TransitionGroup
@@ -229,9 +229,9 @@ function rowIcon(item: TraceLiveItem) {
                     : item.status === 'error' ? 'bg-danger' : 'bg-run'"
                   :aria-label="$t(`tools.${item.status === 'running' ? 'running' : item.status === 'error' ? 'failed' : 'finished'}`)"
                 />
-                <span v-if="item.duration" data-test="trace-live-duration" class="shrink-0 font-mono text-[11px] tabular-nums text-fg-muted/70">{{ item.duration }}</span>
+                <span v-if="item.duration" data-test="trace-live-duration" class="shrink-0 font-mono text-[11px] tabular-nums text-fg-muted">{{ item.duration }}</span>
               </span>
-              <span class="flex min-w-0 items-center gap-1 text-[11px] text-fg-muted/80">
+              <span class="flex min-w-0 items-center gap-1 text-[11px] text-fg-muted">
                 <span v-if="item.kind !== 'reasoning' && item.kind !== 'markdown'"
                       data-test="trace-live-kind" class="shrink-0">{{ $t(traceLiveTypeLabelKey(item)) }}</span>
                 <span v-if="item.preview" data-test="trace-live-preview" class="truncate">{{ item.preview }}</span>

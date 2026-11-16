@@ -79,13 +79,13 @@ function rowElapsed(s: ToolStepDto): string {
       <Wrench :size="13" class="shrink-0 text-fg-muted group-hover:text-fg" />
       <span class="text-xs font-medium text-fg-muted group-hover:text-fg">{{ $t("tools.toolSteps") }}</span>
       <FueDot v-if="showFueDot" :pulsing="fue.status.value === 'unseen'" />
-      <span v-else data-test="tool-count" class="font-mono text-xs text-fg-muted/70">{{ steps.length }}</span>
-      <span data-test="tool-summary" class="ml-1 flex items-center gap-1.5 text-xs text-fg-muted/70">
+      <span v-else data-test="tool-count" class="font-mono text-xs text-fg-muted">{{ steps.length }}</span>
+      <span data-test="tool-summary" class="ml-1 flex items-center gap-1.5 text-xs text-fg-muted">
         <span v-for="k in summary.kinds" :key="'k' + k.label" :data-test="'sum-' + k.label"
               class="inline-flex items-center gap-0.5">
           <component :is="k.icon" :size="11" /><span class="tabular-nums">{{ k.count }}</span>
         </span>
-        <span v-if="summary.statuses.length" class="text-fg-muted/50">·</span>
+        <span v-if="summary.statuses.length" class="text-fg-muted">·</span>
         <span v-for="st in summary.statuses" :key="'s' + st.label" :data-test="'sum-' + st.label"
               class="inline-flex items-center gap-0.5"
               :class="st.label === 'success' ? 'text-run' : st.label === 'error' ? 'text-danger-text' : 'text-fg-muted'">
@@ -114,7 +114,7 @@ function rowElapsed(s: ToolStepDto): string {
             <span v-if="diffStatsById.get(s.toolCallId)!.add" class="text-run font-medium">+{{ diffStatsById.get(s.toolCallId)!.add }}</span>
             <span v-if="diffStatsById.get(s.toolCallId)!.del" class="text-danger-text font-medium">−{{ diffStatsById.get(s.toolCallId)!.del }}</span>
           </span>
-          <span v-if="rowElapsed(s)" class="ml-auto shrink-0 font-mono text-xs text-fg-muted/70">{{ rowElapsed(s) }}</span>
+          <span v-if="rowElapsed(s)" class="ml-auto shrink-0 font-mono text-xs text-fg-muted">{{ rowElapsed(s) }}</span>
           <Check v-if="s.status === 'success'" data-test="step-status-success" :size="11" class="text-run/70" />
           <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="11" class="animate-spin motion-reduce:animate-none text-accent" />
           <AlertTriangle v-else data-test="step-status-error" :size="11" class="text-danger" />

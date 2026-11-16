@@ -178,6 +178,8 @@ async function openGroup(page: Page): Promise<void> {
       }; break;
       case "control.runs.list": result = { ...gscope, runs: [gdetail], activeRunId: gdetail.id, activeRun: gdetail }; break;
       case "control.runs.get": result = { run: gdetail }; break;
+      case "control.runs.details.batch": result = { runs: [gdetail], missingRunIds: [] }; break;
+      case "control.runs.trace.get": result = { memberTurnId: "turn_reviewer", attempt: 1, recordingState: "recording", events: [], nextSeq: 0, hasMore: false, attempts: [1], plan: [] }; break;
       default: return route.fallback();
     }
     await route.fulfill({ json: { result } });
@@ -193,4 +195,13 @@ test("06 group timeline with handoff and stop all", async ({ page, hub }) => {
   await openGroup(page);
   await expect(page.getByTestId("conversation-stop-all")).toBeVisible();
   await shot(page, `06-group-${THEME}`);
+});
+
+test("07 run detail drawer", async ({ page, hub }) => {
+  await setTheme(page);
+  await openGroup(page);
+  await page.getByTestId("timeline-open-detail").first().click();
+  const drawer = page.getByTestId("group-detail-card").or(page.getByTestId("group-detail-sheet"));
+  await expect(drawer).toBeVisible();
+  await shot(page, `07-drawer-${THEME}`);
 });

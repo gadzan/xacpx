@@ -940,14 +940,14 @@ function handleStopAll(): void {
 
     <!-- "Talk with" sheet: the same other-bots + groups lists as the desktop nav menu. -->
     <MobileSheet v-if="activeSheet === 'nav'" :title='$t("bot.nav.talkWith")' test-id="bot-nav-sheet" @close="closeSheet">
-      <p class="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</p>
+      <p class="px-3 pb-1 pt-2 text-xs font-medium text-fg-muted">{{ $t("bot.nav.talkWith") }}</p>
       <button v-for="other in otherBots" :key="other.id" type="button" data-test="sheet-bot-option"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
               @click="openOtherBot(other.id)">
         <span class="truncate">{{ other.name }}</span>
       </button>
       <p v-if="otherBots.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noOtherBot") }}</p>
-      <p class="px-3 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.collaborate") }}</p>
+      <p class="px-3 pb-1 pt-2 text-xs font-medium text-fg-muted">{{ $t("bot.nav.collaborate") }}</p>
       <button v-for="group in memberGroups" :key="group.id" type="button" data-test="sheet-group-option"
               class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-fg transition-colors hover:bg-surface-2"
               @click="openGroup(group.id)">

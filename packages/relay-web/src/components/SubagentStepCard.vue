@@ -127,7 +127,7 @@ onBeforeUnmount(() => {
       <span class="shrink-0 font-medium text-xs text-accent-text">{{ $t("tools.subagent") }}</span>
       <span class="min-w-0 truncate font-mono text-xs text-fg-muted group-hover:text-fg">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
-        <span class="font-mono text-xs text-fg-muted/70">
+        <span class="font-mono text-xs text-fg-muted">
           <template v-if="hasTrace">{{ $t("tools.traceCount", { count: children.length }) }}</template>
           <template v-else-if="status === 'running'">{{ $t("tools.running") }} · {{ elapsedLabel }}</template>
           <template v-else>{{ status === "error" ? $t("tools.failed") : $t("tools.finished") }}</template>
@@ -140,13 +140,13 @@ onBeforeUnmount(() => {
       </span>
     </button>
 
-    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-border/40 pl-3 py-0.5 text-xs text-fg-muted/80">
+    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-border/40 pl-3 py-0.5 text-xs text-fg-muted">
       <Transition v-if="hasTrace" name="activity-slide" mode="out-in">
         <div v-if="currentActivity" :key="currentActivity.toolCallId" class="flex min-w-0 items-center gap-2">
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="currentActivity.status === 'running' ? 'bg-accent' : currentActivity.status === 'error' ? 'bg-danger' : 'bg-run'" />
           <component :is="KIND_ICON[currentActivity.kind]" :size="12" class="shrink-0 text-fg-muted" />
           <span class="truncate font-mono text-xs text-fg-muted" :title="currentActivity.title" :dir="isPathTitle(currentActivity) ? 'rtl' : undefined">{{ currentActivity.title }}</span>
-          <span v-if="activity.length > 1" class="ml-auto shrink-0 font-mono text-xs tabular-nums text-fg-muted/70">
+          <span v-if="activity.length > 1" class="ml-auto shrink-0 font-mono text-xs tabular-nums text-fg-muted">
             {{ activityIndex % activity.length + 1 }}/{{ activity.length }}
           </span>
         </div>
@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
         <Check v-else :size="12" class="shrink-0 text-run" />
         <span v-if="detailSnippet" data-test="subagent-detail-snippet" class="truncate font-mono">{{ detailSnippet }}</span>
         <span v-else>{{ status === "running" ? $t("tools.runningNoActivityYet") : $t("tools.noRecordedActivity") }}</span>
-        <span v-if="status === 'running'" class="ml-auto shrink-0 tabular-nums text-fg-muted/70">
+        <span v-if="status === 'running'" class="ml-auto shrink-0 tabular-nums text-fg-muted">
           {{ outputText ? $t("tools.updatedAgo", { ago: heartbeatLabel }) : elapsedLabel }}
         </span>
       </div>
@@ -180,11 +180,11 @@ onBeforeUnmount(() => {
       </ol>
       <template v-else>
         <div v-if="promptText" class="mb-2.5">
-          <p class="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
+          <p class="mb-1 text-xs font-medium text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
           <p class="truncate font-mono text-xs text-fg-muted">{{ promptText }}</p>
         </div>
         <div v-if="outputText" data-test="subagent-report">
-          <p class="mb-1 text-xs font-semibold uppercase tracking-[0.12em] text-fg-muted">{{ $t("tools.report") }}</p>
+          <p class="mb-1 text-xs font-medium text-fg-muted">{{ $t("tools.report") }}</p>
           <StreamMarkdown v-if="status !== 'running'" :text="outputText" />
           <pre v-else ref="streamEl" data-test="subagent-stream"
                class="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-bg/60 p-2 font-mono text-xs leading-relaxed text-fg-muted">{{ outputText }}</pre>

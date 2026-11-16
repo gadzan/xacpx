@@ -383,7 +383,7 @@ watch(
                           @update:model-value="switchBranch" />
               <span v-else-if="gitCtx?.branch" data-test="changes-branch" class="truncate font-mono text-xs font-medium text-fg">{{ gitCtx.branch }}</span>
               <span v-else-if="gitCtx?.detached" data-test="changes-branch" class="truncate font-mono text-xs italic text-fg-muted">{{ $t("files.detached") }}</span>
-              <span v-else class="text-xs font-semibold uppercase tracking-wider text-fg-muted">{{ $t("files.changes") }}</span>
+              <span v-else class="text-xs font-medium text-fg-muted">{{ $t("files.changes") }}</span>
               <span v-if="gitCtx?.worktree?.linked" data-test="worktree-linked"
                     class="shrink-0 rounded-full bg-accent-soft px-1.5 py-px text-xs font-semibold uppercase tracking-wide text-accent-text">{{ $t("files.linked") }}</span>
               <span class="flex-1" />
@@ -446,7 +446,7 @@ watch(
           <div class="min-h-0 flex-1 overflow-y-auto thin-scroll p-2.5 space-y-2 transition-opacity" :class="files.loading ? 'opacity-50' : ''" :aria-busy="files.loading">
             <div v-for="s in changeSections" :key="s.key" data-test="change-group">
               <div class="flex items-center">
-                <button class="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-0.5 text-xs font-semibold uppercase tracking-wider text-fg-muted transition-colors hover:text-fg"
+                <button class="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-0.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg"
                         @click="toggleGroup(s.key)">
                   <ChevronRight :size="11" class="shrink-0 transition-transform" :class="collapsed[s.key] ? '' : 'rotate-90'" />
                   <span>{{ $t(`files.${s.key}`) }}</span>
@@ -501,7 +501,7 @@ watch(
         <div v-else-if="files.notGit" data-test="changes-not-git" class="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 p-6 text-center text-xs text-fg-muted">
           <GitBranch :size="20" class="text-fg-muted/60" />
           <span>{{ $t("files.notGitRepo") }}</span>
-          <span class="text-xs text-fg-muted/70">{{ $t("files.notGitRepoBody") }}</span>
+          <span class="text-xs text-fg-muted">{{ $t("files.notGitRepoBody") }}</span>
         </div>
         <div v-else-if="files.loading" data-test="changes-skeleton" aria-hidden="true" class="min-h-0 flex-1 overflow-hidden p-2.5">
           <div class="mb-2 h-3 w-16 animate-pulse rounded-sm bg-fg/10 motion-reduce:animate-none" />

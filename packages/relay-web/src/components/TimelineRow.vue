@@ -268,7 +268,7 @@ const noticeToneClass = computed(() => {
       <p
         v-if="row.entry.ownership === 'unresolved'"
         data-test="timeline-unresolved"
-        class="text-xs text-fg-muted/80"
+        class="text-xs text-fg-muted"
       >
         {{ $t("conversation.timeline.unresolved") }}
       </p>

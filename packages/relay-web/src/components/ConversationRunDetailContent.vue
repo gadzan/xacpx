@@ -174,7 +174,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
     </section>
 
     <section class="min-w-0" data-test="run-member-section">
-      <h3 class="mb-1.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-fg-muted">
+      <h3 class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-fg-muted">
         <Users :size="12" aria-hidden="true" />
         <span>{{ $t("conversation.runDetail.members") }}</span>
       </h3>
@@ -223,7 +223,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
     </section>
 
     <section v-if="interactions && interactions.length" class="min-w-0 space-y-2" data-test="run-interactions">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-muted">
+      <h3 class="text-xs font-medium text-fg-muted">
         {{ $t("conversation.runDetail.approvals") }}
       </h3>
       <div

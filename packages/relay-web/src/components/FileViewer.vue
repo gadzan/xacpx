@@ -286,9 +286,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         <div v-if="parsedDiff && parsedDiff.rows.length" data-test="fv-diff-body" class="font-mono text-ui leading-relaxed">
           <div v-for="(r, i) in parsedDiff.rows" :key="i" data-test="fv-diff-row" class="flex"
                :class="r.type === 'add' ? 'bg-run/10' : r.type === 'del' ? 'bg-danger/10' : r.type === 'hunk' ? 'bg-info/5' : ''">
-            <span class="sticky left-0 w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.oldNo ?? "" }}</span>
-            <span class="w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted/70">{{ r.newNo ?? "" }}</span>
-            <span class="w-4 shrink-0 select-none text-center" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger-text' : 'text-fg-muted/40'">{{ r.type === 'add' ? '+' : r.type === 'del' ? '-' : '' }}</span>
+            <span class="sticky left-0 w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted">{{ r.oldNo ?? "" }}</span>
+            <span class="w-12 shrink-0 select-none bg-surface px-2 text-right tabular-nums text-fg-muted">{{ r.newNo ?? "" }}</span>
+            <span class="w-4 shrink-0 select-none text-center" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger-text' : 'text-fg-muted'">{{ r.type === 'add' ? '+' : r.type === 'del' ? '-' : '' }}</span>
             <span class="whitespace-pre px-2" :class="r.type === 'hunk' ? 'text-info' : 'text-fg'">{{ r.text }}</span>
           </div>
         </div>

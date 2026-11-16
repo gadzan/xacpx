@@ -10,7 +10,7 @@ const chat = useChatStore();
        Renders nothing when the queue is empty — no v-if needed at the call site. -->
   <div v-if="chat.sessionQueue.length" data-test="queue-strip"
        class="flex w-fit max-w-full self-start items-center gap-2 rounded-2xl bg-surface/95 px-3 py-1.5 backdrop-blur-md">
-    <span class="shrink-0 text-xs font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.queuedHeader") }}</span>
+    <span class="shrink-0 text-xs font-medium text-fg-muted">{{ $t("chat.queuedHeader") }}</span>
     <TransitionGroup tag="div"
         move-class="transition-transform duration-200 ease-out motion-reduce:transition-none"
         enter-active-class="transition-all duration-200 ease-out motion-reduce:transition-none"
