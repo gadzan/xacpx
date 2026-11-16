@@ -104,7 +104,7 @@ function controlDeps(input: ForkTestInput) {
       _workspace: string,
       model?: string,
     ) => {
-      const actual = input.suffixCreated ? `${alias}-2` : alias;
+      const actual = input.suffixCreated || input.created.includes(alias) ? `${alias}-2` : alias;
       input.created.push(actual);
       input.createdModels.push(model);
       return {
@@ -116,7 +116,8 @@ function controlDeps(input: ForkTestInput) {
     },
     removeSessionWithTransport: async (alias: string) => {
       input.removed.push(alias);
-      return { wasActive: false };
+      const index = input.created.indexOf(alias);
+      if (index >= 0) input.created.splice(index, 1);
     },
     archiveSessionWithTransport: async () => {},
     unarchiveSession: async () => {},
@@ -234,7 +235,7 @@ test("a replayed request id with a different source is rejected", async () => {
       targetAlias: "other-fork",
       requestId: "req-reuse",
     }),
-  ).rejects.toThrow(/already used with a different source or target/);
+  ).rejects.toThrow(/different scope, source, or target/);
   store.close();
 });
 
@@ -256,7 +257,7 @@ test("a replayed request id with a different target alias is rejected", async ()
       targetAlias: "backend-fork-2",
       requestId: "req-reuse-target",
     }),
-  ).rejects.toThrow(/already used with a different source or target/);
+  ).rejects.toThrow(/different scope, source, or target/);
   expect(input.created).toEqual(["relay:backend-fork"]);
   store.close();
 });
@@ -345,6 +346,44 @@ test("a replay survives a daemon-side auto-suffixed target alias", async () => {
   store.close();
 });
 
+test("concurrent forks with the same request id converge on one target", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  const results = await Promise.all([
+    control.forkSession({ chatKey: "relay:acct", sourceAlias: "backend", targetAlias: "backend-fork", requestId: "req-race" }),
+    control.forkSession({ chatKey: "relay:acct", sourceAlias: "backend", targetAlias: "backend-fork", requestId: "req-race" }),
+  ]);
+  expect(results.map((result) => result.alias).sort()).toEqual(["backend-fork", "backend-fork"]);
+  expect(store.getByRequestId("req-race")?.status).toBe("ready");
+  store.close();
+});
+
+test("a different chat scope cannot replay another scope's request id", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({ chatKey: "relay:acct", sourceAlias: "backend", targetAlias: "backend-fork", requestId: "req-scope" });
+  await expect(
+    control.forkSession({ chatKey: "relay:other-acct", sourceAlias: "backend", targetAlias: "backend-fork", requestId: "req-scope" }),
+  ).rejects.toThrow(/different scope, source, or target/);
+  store.close();
+});
+
+test("a product-owned target alias is refused before creation", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await expect(
+    control.forkSession({ chatKey: "relay:acct", sourceAlias: "backend", targetAlias: "brt_evil", requestId: "req-owned" }),
+  ).rejects.toThrow(/not an ordinary session alias/);
+  expect(input.created).toEqual([]);
+  store.close();
+});
+
 function runner(store: SessionForkStore, prompts: string[], failOnce = false) {
   let calls = 0;
   return new SessionTurnRunner({
@@ -371,8 +410,11 @@ function runner(store: SessionForkStore, prompts: string[], failOnce = false) {
 function readyHandoff(store: SessionForkStore, requestId: string): void {
   const fork = store.createPending({
     requestId,
+    chatKey: "c",
     sourceSessionId: "logical-src",
     targetSessionId: "logical-target",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
     createdAt: "2026-11-16T00:00:00.000Z",
   });
   store.resolvePortable({

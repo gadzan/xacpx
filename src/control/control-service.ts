@@ -104,8 +104,15 @@ import {
 } from "./workspace-git";
 import { renderSessionForkHandoff } from "../sessions/session-fork-handoff";
 import {
+  isSqliteUniqueViolation,
+} from "../conversations/sql-driver";
+import {
+  isProductOwnedSessionAlias,
+} from "../domain/ids";
+import {
   resolveSessionForkStrategy,
   SessionForkError,
+  type SessionForkRecord,
   type SessionForkStore,
 } from "../sessions/session-fork-store";
 import type {
@@ -1744,16 +1751,19 @@ export class ControlService {
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const targetInternal = scopeDisplayAliasToInternal(channelId, targetAlias);
 
-    // A replay must name the same requested source and target aliases: a reused
-    // request id with a different payload is a client bug, not an idempotent
-    // retry. The comparison uses the requested display aliases stored on the
-    // record, never the materialized target alias, so a daemon-side auto-suffix
-    // (`backend-fork` -> `backend-fork-2`) still replays.
+    // A replay must name the same scope and requested aliases: a reused request
+    // id with a different payload is a client bug, not an idempotent retry.
+    // Empty stored aliases are pre-alias legacy rows and match anything; the
+    // logical-identity check below still applies when the source resolves.
+    // The comparison uses the requested display aliases, never the materialized
+    // target alias, so a daemon-side auto-suffix (`backend-fork` -> `backend-fork-2`)
+    // still replays.
     const replay = store.getByRequestId(requestId);
-    if (replay && (replay.sourceAlias !== input.sourceAlias.trim() || replay.targetAlias !== targetAlias)) {
+    const requestedSourceAlias = input.sourceAlias.trim();
+    if (replay && !this.forkReplayMatches(replay, input.chatKey, requestedSourceAlias, targetAlias)) {
       throw new SessionForkError(
         "session-fork-request-mismatch",
-        "this fork request id was already used with a different source or target",
+        "this fork request id was already used with a different scope, source, or target",
       );
     }
     // The source is resolved best-effort here so a replay survives source
@@ -1780,29 +1790,9 @@ export class ControlService {
         // pending write and the resolve): remove any orphan target and the
         // pending row, then converge to a fresh attempt below, which needs a
         // live source.
-        const orphanAlias = this.deps.sessions
-          .listAllResolvedSessions()
-          .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
-        if (orphanAlias) {
-          await this.deps.removeSessionWithTransport(orphanAlias).catch(() => undefined);
-        }
-        try {
-          store.deleteForkById(replay.id);
-        } catch {
-          /* the fresh attempt below re-reads whatever survived */
-        }
+        await this.clearPendingForkReplay(store, replay);
       } else {
-        const alias = this.deps.sessions
-          .listAllResolvedSessions()
-          .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
-        const resolved = alias ? await this.deps.sessions.getSession(alias) : null;
-        if (!resolved) {
-          throw new SessionForkError(
-            "session-fork-target-exists",
-            "this fork request already created a session that no longer exists; retry with a new request id",
-          );
-        }
-        return this.toControlSessionInfo(resolved);
+        return this.toControlSessionInfo(await this.resolveForkReplayTarget(replay));
       }
     }
     if (!source) {
@@ -1824,10 +1814,19 @@ export class ControlService {
         `session "${input.sourceAlias}" is still running; fork its latest settled state after it finishes`,
       );
     }
+    // A hand-crafted target alias must never mint a session in the product-owned
+    // namespace (`brt_…` aliases bypass channel scoping and join Conversation
+    // bindings to sessions by exact key).
+    if (isProductOwnedSessionAlias(targetAlias) || isProductOwnedSessionAlias(targetInternal)) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        `session "${targetAlias}" is not an ordinary session alias`,
+      );
+    }
     if (await this.deps.sessions.getSession(targetInternal)) {
       throw new SessionForkError(
         "session-fork-target-exists",
-        `session "${targetAlias}" already exists`,
+        `session "${targetAlias}" already exists; if a previous fork crashed before recording it, delete that orphan session or retry with a new request id`,
       );
     }
     const strategy = resolveSessionForkStrategy({ nativeSessionFork: false });
@@ -1882,14 +1881,32 @@ export class ControlService {
       if (source.effort) {
         await this.deps.sessions.setSessionEffort(created.alias, source.effort);
       }
-      const pending = store.createPending({
-        requestId,
-        sourceSessionId,
-        targetSessionId,
-        sourceAlias: input.sourceAlias.trim(),
-        targetAlias,
-        createdAt,
-      });
+      let pending: SessionForkRecord;
+      try {
+        pending = store.createPending({
+          requestId,
+          chatKey: input.chatKey,
+          sourceSessionId,
+          targetSessionId,
+          sourceAlias: requestedSourceAlias,
+          targetAlias,
+          createdAt,
+        });
+      } catch (error) {
+        if (!isSqliteUniqueViolation(error)) throw error;
+        // A concurrent fork with the same request id won the record: drop
+        // this attempt's target and answer with the winner's target.
+        return this.toControlSessionInfo(
+          await this.adoptConcurrentForkWinner(store, {
+            requestId,
+            chatKey: input.chatKey,
+            sourceSessionId,
+            sourceAlias: requestedSourceAlias,
+            targetAlias,
+            createdAlias: created.alias,
+          }),
+        );
+      }
       pendingId = pending.id;
       store.resolvePortable({
         forkId: pending.id,
@@ -1917,6 +1934,92 @@ export class ControlService {
       readyTransportSession: created.transportSession,
     });
     return this.toControlSessionInfo(created);
+  }
+
+  /**
+   * Whether a stored fork record may answer this request as a replay. Empty
+   * stored aliases are pre-alias legacy rows and match anything; the
+   * logical-identity check at the call site still applies when the source
+   * resolves.
+   */
+  private forkReplayMatches(
+    replay: SessionForkRecord,
+    chatKey: string,
+    requestedSourceAlias: string,
+    requestedTargetAlias: string,
+  ): boolean {
+    if (replay.chatKey && replay.chatKey !== chatKey) return false;
+    if (replay.sourceAlias && replay.sourceAlias !== requestedSourceAlias) return false;
+    if (replay.targetAlias && replay.targetAlias !== requestedTargetAlias) return false;
+    return true;
+  }
+
+  /** The live target of a completed fork record, or a retry-with-new-id error. */
+  private async resolveForkReplayTarget(replay: SessionForkRecord): Promise<ResolvedSession> {
+    const alias = this.deps.sessions
+      .listAllResolvedSessions()
+      .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
+    const resolved = alias ? await this.deps.sessions.getSession(alias) : null;
+    if (!resolved) {
+      throw new SessionForkError(
+        "session-fork-target-exists",
+        "this fork request already created a session that no longer exists; retry with a new request id",
+      );
+    }
+    return resolved;
+  }
+
+  /** Remove an orphan target and pending row so the same request id converges. */
+  private async clearPendingForkReplay(store: SessionForkStore, replay: SessionForkRecord): Promise<void> {
+    const orphanAlias = this.deps.sessions
+      .listAllResolvedSessions()
+      .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
+    if (orphanAlias) {
+      await this.deps.removeSessionWithTransport(orphanAlias).catch(() => undefined);
+    }
+    try {
+      store.deleteForkById(replay.id);
+    } catch {
+      /* the fresh attempt re-reads whatever survived */
+    }
+  }
+
+  /**
+   * Adopt the winner of a same-request-id race: this attempt's target is
+   * removed and the winner's live target answers. A winner that cannot be
+   * validated (different scope, source, or target) is a client bug, not a
+   * replay; a winner that is still pending means the race is unresolved, so
+   * the caller retries the same id.
+   */
+  private async adoptConcurrentForkWinner(
+    store: SessionForkStore,
+    input: {
+      requestId: string;
+      chatKey: string;
+      sourceSessionId: string;
+      sourceAlias: string;
+      targetAlias: string;
+      createdAlias: string;
+    },
+  ): Promise<ResolvedSession> {
+    await this.deps.removeSessionWithTransport(input.createdAlias).catch(() => undefined);
+    const winner = store.getByRequestId(input.requestId);
+    if (!winner || winner.status === "pending") {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        "concurrent fork requests collided; retry with the same request id",
+      );
+    }
+    if (
+      !this.forkReplayMatches(winner, input.chatKey, input.sourceAlias, input.targetAlias)
+      || winner.sourceSessionId !== input.sourceSessionId
+    ) {
+      throw new SessionForkError(
+        "session-fork-request-mismatch",
+        "this fork request id was already used with a different scope, source, or target",
+      );
+    }
+    return this.resolveForkReplayTarget(winner);
   }
 
   private toControlSessionInfo(session: ResolvedSession): ControlSessionInfo {

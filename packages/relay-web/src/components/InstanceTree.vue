@@ -544,8 +544,15 @@ function nextForkAlias(inst: InstanceView, sourceAlias: string): string {
   }
 }
 
+// One fork RPC at a time per row: a double click would otherwise mint two
+// request ids and two sessions. The daemon converges identical ids, but the UI
+// must not ask for two different targets in the first place.
+const forkingFor = ref<string | null>(null);
 async function onFork(inst: InstanceView, sourceAlias: string): Promise<void> {
   menuDd.closeMenu();
+  const key = `${inst.id}:${sourceAlias}`;
+  if (forkingFor.value === key) return;
+  forkingFor.value = key;
   try {
     const created = await store.forkSession(
       inst.id,
@@ -556,9 +563,16 @@ async function onFork(inst: InstanceView, sourceAlias: string): Promise<void> {
     pushToast("success", "instance.forkCreated", { alias: created.alias });
     emit("select", inst.id, created.alias);
   } catch (error) {
-    pushToast("error", "instance.forkFailed", {
-      msg: error instanceof Error ? error.message : String(error),
-    });
+    const message = error instanceof Error ? error.message : String(error);
+    // A taken target means this row's list is stale (another client forked, or
+    // the row was deleted elsewhere). Refresh before the next attempt so
+    // nextForkAlias proposes a free name instead of the same taken one.
+    if (message.includes("session-fork-target-exists") || message.includes("already exists")) {
+      await store.loadSessions(inst.id).catch(() => undefined);
+    }
+    pushToast("error", "instance.forkFailed", { msg: message });
+  } finally {
+    if (forkingFor.value === key) forkingFor.value = null;
   }
 }
 

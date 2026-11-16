@@ -427,20 +427,25 @@ ConversationPromptRequestDto and the public sanitizer whitelist optional agentMe
 
 `forkSession({ chatKey, sourceAlias, targetAlias, requestId })` forks a stable
 ordinary session into a new logical + transport session. It refuses while the
-source is running, when the target alias exists, when the request id already
-created a session, and when the source's acpx record holds no history. The
-source's recorded turns are rendered once into the 12k `<<<HISTORY` block
-(shared renderer with Direct Topic forks); a fork of an unconsumed fork carries
-its parent block.
+source is running, when the target alias exists, when the source's acpx record
+holds no history, and when the target alias is product-owned. An identical
+replay (same chat scope, requested source alias, requested target alias, and
+request id) returns the existing target, including after the source was
+deleted; a mismatched request id reuse is rejected, and a completed record
+whose target is gone asks for a new request id. The source's recorded turns are
+rendered once into the 12k `<<<HISTORY` block (shared renderer with Direct
+Topic forks); a fork of an unconsumed fork carries its parent block.
 
-The fork record (`sourceSessionId`, `targetSessionId`, `sourcePoint:
-latest_stable`, `strategy`, `resolution`, `status`, timestamps) lives in
+The fork record (`sourceSessionId`, `targetSessionId`, requested
+`sourceAlias`/`targetAlias`, `chatKey`, `sourcePoint: latest_stable`,
+`strategy`, `resolution`, `status`, timestamps) lives in
 `runtime/session-forks.sqlite`, with the handoff text in its own table — never
 in `state.json`. Records start `pending` and resolve to `portable`; PR2 may
-resolve the same shape to `native` without changing storage. `SessionTurnRunner`
-takes the handoff atomically and marks it consumed immediately before the
-provider call, so the first effective prompt injects it, a retry after a
-provider failure never replays it, and a known xacpx command turn (for example
+resolve the same shape to `native` without changing storage. A concurrent fork
+with the same request id adopts the winner's target. `SessionTurnRunner` takes
+the handoff atomically and marks it consumed immediately before the provider
+call, so the first effective prompt injects it, a retry after a provider
+failure never replays it, and a known xacpx command turn (for example
 `/status`) neither injects nor consumes it.
 
 Connectors advertise `session.fork.handoff.v1` only when the core exposes the

@@ -1,11 +1,49 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { createSqlDriver } from "../../../src/conversations/sql-driver";
 import { renderSessionForkHandoff } from "../../../src/sessions/session-fork-handoff";
 import { resolveSessionForkStrategy, SessionForkStore } from "../../../src/sessions/session-fork-store";
 
+test("a pre-alias database migrates its legacy pending row without wedging", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "session-forks-")), "forks.sqlite");
+  const legacy = await createSqlDriver(path);
+  legacy.exec(`
+    CREATE TABLE session_forks (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,
+      source_session_id TEXT NOT NULL,
+      target_session_id TEXT NOT NULL UNIQUE,
+      source_point TEXT NOT NULL,
+      strategy TEXT NOT NULL,
+      resolution TEXT,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      consumed_at TEXT
+    );
+    INSERT INTO session_forks
+      (id, request_id, source_session_id, target_session_id, source_point, strategy, status, created_at)
+    VALUES ('fork_legacy', 'req-legacy', 'src', 'target', '{"type":"latest_stable"}', 'pending', 'pending', 'x');
+  `);
+  legacy.close();
+
+  const store = await SessionForkStore.open(path);
+  expect(store.getByRequestId("req-legacy")).toMatchObject({
+    sourceAlias: "",
+    targetAlias: "",
+    chatKey: "",
+    status: "pending",
+  });
+  store.deleteForkById("fork_legacy");
+  expect(store.getByRequestId("req-legacy")).toBeUndefined();
+  store.close();
+});
 function pending(store: SessionForkStore, target: string, requestId = `req-${target}`) {
   return store.createPending({
     requestId,
+    chatKey: "relay:acct",
     sourceSessionId: "src",
     targetSessionId: target,
     sourceAlias: "src-alias",

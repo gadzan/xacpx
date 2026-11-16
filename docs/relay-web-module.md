@@ -1337,3 +1337,8 @@ stable head, after which the block never repeats. An instance whose source
 session is still running, has no recorded history, or lacks the capability
 shows the failure toast instead (the menu entry itself is hidden only for the
 missing capability).
+
+The fork entry holds a per-row in-flight guard, so a double click sends one
+`control.sessions.fork`. If the daemon reports a taken target alias, the entry
+reloads the instance's sessions before the next attempt, so the proposed
+`<alias>-fork[-N]` advances instead of repeating the stale name.

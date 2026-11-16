@@ -23,6 +23,8 @@ export interface SessionForkRecord {
   sourceAlias: string;
   /** Requested target alias in display form, for replay comparison after suffixing. */
   targetAlias: string;
+  /** The chat scope that requested the fork, so a replay from another scope cannot claim it. */
+  chatKey: string;
   sourcePoint: SessionForkSourcePoint;
   strategy: SessionForkStrategy;
   resolution?: SessionForkResolution;
@@ -74,6 +76,7 @@ interface ForkRow {
   target_session_id: string;
   source_alias: string | null;
   target_alias: string | null;
+  chat_key: string | null;
   source_point: string;
   strategy: SessionForkStrategy;
   resolution: string | null;
@@ -96,6 +99,7 @@ CREATE TABLE IF NOT EXISTS session_forks (
   target_session_id TEXT NOT NULL UNIQUE,
   source_alias TEXT,
   target_alias TEXT,
+  chat_key TEXT,
   source_point TEXT NOT NULL,
   strategy TEXT NOT NULL,
   resolution TEXT,
@@ -145,6 +149,7 @@ function toRecord(row: ForkRow): SessionForkRecord {
     targetSessionId: row.target_session_id,
     sourceAlias: row.source_alias ?? "",
     targetAlias: row.target_alias ?? "",
+    chatKey: row.chat_key ?? "",
     sourcePoint: parseSourcePoint(row.source_point),
     strategy: row.strategy,
     ...(row.resolution ? { resolution: parseResolution(row.resolution) } : {}),
@@ -171,6 +176,9 @@ export class SessionForkStore {
     if (!names.has("target_alias")) {
       this.sql.run("ALTER TABLE session_forks ADD COLUMN target_alias TEXT");
     }
+    if (!names.has("chat_key")) {
+      this.sql.run("ALTER TABLE session_forks ADD COLUMN chat_key TEXT");
+    }
   }
 
   static async open(path: string): Promise<SessionForkStore> {
@@ -183,6 +191,7 @@ export class SessionForkStore {
 
   createPending(input: {
     requestId: string;
+    chatKey: string;
     sourceSessionId: string;
     targetSessionId: string;
     sourceAlias: string;
@@ -193,6 +202,7 @@ export class SessionForkStore {
     const record: SessionForkRecord = {
       id: `fork_${randomUUID()}`,
       requestId: input.requestId,
+      chatKey: input.chatKey,
       sourceSessionId: input.sourceSessionId,
       targetSessionId: input.targetSessionId,
       sourceAlias: input.sourceAlias,
@@ -204,11 +214,12 @@ export class SessionForkStore {
     };
     this.sql.run(
       `INSERT INTO session_forks
-        (id, request_id, source_session_id, target_session_id, source_alias, target_alias, source_point, strategy, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, request_id, chat_key, source_session_id, target_session_id, source_alias, target_alias, source_point, strategy, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.requestId,
+        record.chatKey,
         record.sourceSessionId,
         record.targetSessionId,
         record.sourceAlias,

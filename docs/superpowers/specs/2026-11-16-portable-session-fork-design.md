@@ -81,3 +81,33 @@ session menu entry until the instance advertises it.
 - Suffix-tolerant replay: comparison uses the requested aliases, never the
   materialized target alias, so a daemon-side auto-suffix still replays.
 - `deleteForkById` runs both DELETEs in one transaction.
+
+## Review fixes, round 3 (against PR586 r3)
+
+- Concurrent same-request-id forks: the loser's `createPending` unique violation
+  removes its just-created target, re-reads the record, validates scope/source/
+  target, and returns the winner's target. Relay Web also holds a per-row
+  in-flight guard so a double click sends one request.
+- Legacy rows: the alias/chat columns migrate in with NULLs; empty stored
+  aliases are treated as wildcards for the replay comparison, so a pre-alias
+  pending row self-heals instead of being permanently unreplayable.
+- Cross-chat replay: `chat_key` is persisted and compared, so another chat
+  scope cannot claim a request id even with identical display aliases.
+- Product namespace: a target alias in the `brt_` namespace is refused before
+  creation, alongside the existing source ordinary-session assertion.
+- Crash window (documented limit): if the daemon dies after
+  `createSessionWithTransport` and before the pending insert, the retry sees an
+  existing target and cannot tie it to the request id. The error tells the
+  operator to delete the orphan or use a new request id. Closing this window
+  needs the record (and request id) minted before the session, which the
+  current session-creation API cannot express; PR2 can revisit.
+- Retention (deliberate): completed (ready/consumed) records and their handoff
+  text are kept after target deletion or reset as idempotency/audit
+  provenance. Reset changes the logical session id, so the handoff can never
+  fire on the replacement; the dead row is bounded by user-initiated forks and
+  is not re-injected. Pending rows are deleted.
+- Mixed-version skew (documented requirement): `chatKey` stamping is hub-side
+  while the capability is connector-side. A new connector paired with an old
+  hub advertises `session.fork.handoff.v1` but receives an unstamped RPC and
+  answers `invalid-payload`. Deploy hub and connector together; the connector
+  cannot see the hub build to gate on it.
