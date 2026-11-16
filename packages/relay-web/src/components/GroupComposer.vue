@@ -419,17 +419,20 @@ const slashRows = computed<CompletionRow[]>(() =>
 const mentionRows = computed<CompletionRow[]>(() =>
   mentionMatches.value.map((member) => {
     const bot = props.bots.find((candidate) => candidate.id === member.botId);
+    // Null when the Bot itself is runnable and only the membership is disabled:
+    // then there is no reason chip and no tooltip to show.
+    const reason = member.enabled ? null : memberUnavailableReason(bot!);
     return {
       key: member.botId,
       label: `@${member.name}`,
       trailing: [
         ...(member.lead ? [{ text: t("group.target.lead"), tone: "accent" as const }] : []),
         ...(member.role ? [{ text: member.role }] : []),
-        ...(member.enabled ? [] : [{ text: memberUnavailableReason(bot!) }]),
+        ...(reason ? [{ text: reason }] : []),
         { text: member.botId, tone: "mono" as const },
       ],
       disabled: !member.enabled,
-      title: member.enabled ? undefined : memberUnavailableReason(bot!) ?? undefined,
+      title: reason ?? undefined,
       testId: "group-mention-item",
       data: { "data-bot-id": member.botId },
     };
