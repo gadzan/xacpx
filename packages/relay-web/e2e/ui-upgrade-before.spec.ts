@@ -43,6 +43,11 @@ function directHandlers(withMessages: boolean): Record<string, unknown> {
     "control.conversations.list": { conversations: [{ id: "c1", kind: "bot", title: bot.name, botIds: [bot.id], defaultTopicId: "t1", createdAt, updatedAt: createdAt }] },
     "control.topics.list": { topics: [{ id: "t1", conversationId: "c1", title: "Default", status: "active", defaultDirect: true, createdAt, updatedAt: createdAt }] },
     "control.conversation.history": { conversationId: "c1", topicId: "t1", messages, hasMoreBefore: false, hasMoreAfter: false },
+    "control.conversation.timeline": {
+      conversationId: "c1", topicId: "t1",
+      entries: messages.map((m) => ({ kind: "message", key: `message:${m.id}`, anchorSeq: m.seq, message: m })),
+      oldestSeq: 1, newestSeq: messages.length, hasMoreBefore: false, hasMoreAfter: false,
+    },
     "control.runs.list": { runs: [] },
     "control.conversation.completions.get": {
       version: 1, scope: { conversationId: "c1", topicId: "t1", botId: "b1" }, revision: "r1",
@@ -83,6 +88,7 @@ test("02 sidebar bots", async ({ page, hub }) => {
 test("03 direct with markdown and code", async ({ page, hub }) => {
   await setTheme(page);
   await openDirect(page, true);
+  await expect(page.getByText("Review the release:").first()).toBeVisible();
   await shot(page, `03-direct-${THEME}`);
 });
 
@@ -124,6 +130,7 @@ test("09 login page forced", async ({ page, hub }) => {
 test("11 direct empty state", async ({ page, hub }) => {
   await setTheme(page);
   await openDirect(page, false);
+  await expect(page.getByText("start a conversation with this bot").first()).toBeVisible();
   await shot(page, `11-empty-${THEME}`);
 });
 
