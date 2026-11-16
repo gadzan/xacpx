@@ -111,3 +111,11 @@ session menu entry until the instance advertises it.
   hub advertises `session.fork.handoff.v1` but receives an unstamped RPC and
   answers `invalid-payload`. Deploy hub and connector together; the connector
   cannot see the hub build to gate on it.
+
+## Review fix, round 4 (against PR586 r4)
+
+- Same-request-id forks serialize on a per chat-scope+request-id tail inside
+  `ControlService`, so the loser waits and then replays the winner's target
+  instead of racing target creation (the real transport throws on a taken
+  alias before the store unique backstop can run). The store request-id
+  uniqueness stays as the backstop for anything the lock cannot see.
