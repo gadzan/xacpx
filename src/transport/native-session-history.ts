@@ -170,3 +170,67 @@ export async function readNativeSessionHistory(opts: ReadNativeHistoryOptions): 
     return [];
   }
 }
+
+export interface ReadTransportSessionHistoryOptions {
+  /** The acpx `--name` this daemon launched, i.e. `ResolvedSession.transportSession`. */
+  transportSession: string;
+  cwd?: string;
+  agentCommand?: string;
+  /** Override for the acpx sessions dir (tests). Defaults to `<acpx home>/.acpx/sessions`. */
+  sessionsDir?: string;
+  homeDir?: string;
+  /** Observability seam for scan diagnostics (unreadable dir, skipped records). */
+  onDiagnostic?: (diagnostic: string) => void;
+}
+
+/** Recover an ordinary session's prior conversation from the acpx record its
+ *  daemon launch wrote. `readNativeSessionHistory` keys on the agent session id,
+ *  which only native attaches carry; every `--name` launch also records `name`,
+ *  and `cwd` + `agentCommand` disambiguate a reused name. Best-effort: any I/O
+ *  or shape problem yields `[]`. */
+export async function readTransportSessionHistory(
+  opts: ReadTransportSessionHistoryOptions,
+): Promise<NativeHistoryMessage[]> {
+  const onDiagnostic = (diagnostic: string): void => {
+    opts.onDiagnostic?.(diagnostic);
+  };
+  try {
+    const dir = opts.sessionsDir ?? join(opts.homeDir ?? resolveAcpxHomeDir(), ".acpx", "sessions");
+    const records = await scanAcpxSessionRecords({ sessionsDir: dir, onDiagnostic });
+    const candidates = records.filter(
+      (record) =>
+        record.name === opts.transportSession
+        && (!opts.cwd || record.cwd === opts.cwd)
+        && (!opts.agentCommand || record.agentCommand === opts.agentCommand),
+    );
+    if (candidates.length === 0) {
+      onDiagnostic(
+        `no acpx record matches transport session "${opts.transportSession}" in "${dir}" (${records.length} record(s) scanned)`,
+      );
+      return [];
+    }
+    let best: NativeHistoryMessage[] = [];
+    let bestLastUsed = "";
+    for (const record of candidates) {
+      const mapped = mapAcpxMessagesToHistory(record.messages);
+      if (
+        mapped.length > best.length
+        || (mapped.length === best.length && record.lastUsedAt > bestLastUsed)
+      ) {
+        best = mapped;
+        bestLastUsed = record.lastUsedAt;
+      }
+    }
+    if (best.length === 0) {
+      onDiagnostic(
+        `acpx record(s) for transport session "${opts.transportSession}" in "${dir}" hold no mappable messages`,
+      );
+    }
+    return best;
+  } catch (error) {
+    onDiagnostic(
+      `transport session history read failed for "${opts.transportSession}": ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return [];
+  }
+}

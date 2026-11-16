@@ -124,7 +124,9 @@ const CHAT_SCOPED_TYPES = new Set<string>([
   MSG.sessionsArchive, MSG.sessionsUnarchive,
   // Rename resolves the alias within the caller's chat scope too; the connector's
   // payload validator requires chatKey, so an unstamped rename fails as invalid-payload.
-  MSG.sessionsRename,
+  // The fork validator also requires chatKey, and both aliases must resolve in
+  // the same relay:<accountId> scope as a later prompt.
+  MSG.sessionsRename, MSG.sessionsFork,
   // Model and effort get/set resolve the session within the caller's chat scope.
   MSG.sessionModelGet, MSG.sessionModelSet, MSG.sessionEffortGet, MSG.sessionEffortSet,
   // Terminal create carries sessionAlias; stamp chatKey/senderId/isOwner so the

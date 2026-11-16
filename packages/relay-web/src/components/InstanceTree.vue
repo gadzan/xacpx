@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
-import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop } from "../stores/instances";
+import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, GitFork, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
+import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop, supportsSessionForkHandoff } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
@@ -29,6 +29,7 @@ import Tooltip from "./Tooltip.vue";
 import type { GroupArchivedMode, GroupArchivedState, InstanceView } from "../stores/instances";
 import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useGroupAvatarActivity } from "../lib/group-avatar-activity";
+
 
 // Local directive: focus + select an element on mount (the rename input).
 const vFocus = {
@@ -513,12 +514,15 @@ function toggleFilterFor(instanceId: string, el: HTMLElement): void {
   filterFor.value = instanceId;
   filterDd.openMenu();
 }
-/** The ⋯ menu rows for a session (role=menu: rename, sleep/wake, delete). */
-function menuGroups(s: { alias: string; archived?: boolean }): DropdownGroup[] {
+/** The ⋯ menu rows for a session (role=menu: rename, fork, sleep/wake, delete). */
+function menuGroups(inst: InstanceView, s: { alias: string; archived?: boolean }): DropdownGroup[] {
   return [
     {
       rows: [
         { value: "rename", label: t("instance.renameSession"), icon: Pencil, testId: "action-rename" },
+        ...(supportsSessionForkHandoff(inst)
+          ? [{ value: "fork", label: t("instance.forkSession"), icon: GitFork, testId: "action-fork-session" }]
+          : []),
         s.archived
           ? { value: "unarchive", label: t("instance.unarchiveSession"), icon: ArchiveRestore, testId: "action-unarchive" }
           : { value: "archive", label: t("instance.archiveSession"), icon: Moon, testId: "action-archive" },
@@ -528,12 +532,57 @@ function menuGroups(s: { alias: string; archived?: boolean }): DropdownGroup[] {
   ];
 }
 
-/** ⋯ menu activation: rename / sleep / wake / delete for the row it serves. */
-function onMenuSelect(id: string, s: { alias: string; archived?: boolean; displayName?: string }, value: string): void {
-  if (value === "rename") startRename(id, s);
-  else if (value === "archive") void onArchive(id, s.alias);
-  else if (value === "unarchive") void onUnarchive(id, s.alias);
-  else if (value === "delete") void askDelete(id, s.alias);
+/** The next free `<alias>-fork[-N]` among this instance's loaded rows. The
+ *  daemon still rejects a collision with a sleeping row or another client. */
+function nextForkAlias(inst: InstanceView, sourceAlias: string): string {
+  const taken = new Set(inst.sessions.map((session) => session.alias));
+  const base = `${sourceAlias}-fork`;
+  if (!taken.has(base)) return base;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+// One fork RPC at a time per row: a double click would otherwise mint two
+// request ids and two sessions. The daemon converges identical ids, but the UI
+// must not ask for two different targets in the first place.
+const forkingFor = ref<string | null>(null);
+async function onFork(inst: InstanceView, sourceAlias: string): Promise<void> {
+  menuDd.closeMenu();
+  const key = `${inst.id}:${sourceAlias}`;
+  if (forkingFor.value === key) return;
+  forkingFor.value = key;
+  try {
+    const created = await store.forkSession(
+      inst.id,
+      sourceAlias,
+      nextForkAlias(inst, sourceAlias),
+      `session-fork-${crypto.randomUUID()}`,
+    );
+    pushToast("success", "instance.forkCreated", { alias: created.alias });
+    emit("select", inst.id, created.alias);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A taken target means this row's list is stale (another client forked, or
+    // the row was deleted elsewhere). Refresh before the next attempt so
+    // nextForkAlias proposes a free name instead of the same taken one.
+    if (message.includes("session-fork-target-exists") || message.includes("already exists")) {
+      await store.loadSessions(inst.id).catch(() => undefined);
+    }
+    pushToast("error", "instance.forkFailed", { msg: message });
+  } finally {
+    if (forkingFor.value === key) forkingFor.value = null;
+  }
+}
+
+/** ⋯ menu activation: rename / fork / sleep / wake / delete for the row it serves. */
+function onMenuSelect(inst: InstanceView, s: { alias: string; archived?: boolean; displayName?: string }, value: string): void {
+  if (value === "rename") startRename(inst.id, s);
+  else if (value === "fork") void onFork(inst, s.alias);
+  else if (value === "archive") void onArchive(inst.id, s.alias);
+  else if (value === "unarchive") void onUnarchive(inst.id, s.alias);
+  else if (value === "delete") void askDelete(inst.id, s.alias);
 }
 
 // Inline rename: the row currently being renamed, keyed `${instanceId}:${alias}`, plus its draft.
@@ -1187,8 +1236,8 @@ const rowSwipes = computed(() => {
             <DropdownPanel v-if="inst.online && menuDd.open && menuFor === `${inst.id}:${s.alias}`"
                            :dd="menuDd" width="w-40" placement="bottom-end" role="menu"
                            :title="rowName(inst, s, grp.key)"
-                           :groups="menuGroups(s)"
-                           @select="onMenuSelect(inst.id, s, $event)" />
+                           :groups="menuGroups(inst, s)"
+                           @select="onMenuSelect(inst, s, $event)" />
             </div>
             <!-- Grouped modes page sleeping rows per group (5 at a time) while the
                  instance-level sleeping filter is on: one load-more at the group bottom. -->

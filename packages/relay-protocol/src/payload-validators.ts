@@ -99,6 +99,7 @@ import {
   type SessionsListPayload,
   type SessionsNativeListPayload,
   type SessionsRemovePayload,
+  type SessionsForkPayload,
   type SessionsRenamePayload,
   type SessionsUnarchivePayload,
   type TerminalAttachPayload,
@@ -222,6 +223,11 @@ const validateSessionsUnarchive: Validator<SessionsUnarchivePayload> = (p) => {
 const validateSessionsRename: Validator<SessionsRenamePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.alias) && isStr(o.displayName) ? (o as unknown as SessionsRenamePayload) : null;
+};
+const validateSessionsFork: Validator<SessionsForkPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sourceAlias) && isStr(o.targetAlias) && isStr(o.requestId)
+    ? (o as unknown as SessionsForkPayload) : null;
 };
 const validateWorkspacesCreate: Validator<WorkspacesCreatePayload> = (p) => {
   const o = fields(p);
@@ -1251,7 +1257,7 @@ export const validateInteractionWithdraw: Validator<InteractionWithdrawPayload> 
 export type ControlRpcType =
   | typeof MSG.sessionsList | typeof MSG.sessionsCreate | typeof MSG.sessionsNativeList
   | typeof MSG.sessionsRemove | typeof MSG.sessionsArchive | typeof MSG.sessionsUnarchive
-  | typeof MSG.sessionsRename | typeof MSG.workspacesCreate | typeof MSG.agentsCreate
+  | typeof MSG.sessionsRename | typeof MSG.sessionsFork | typeof MSG.workspacesCreate | typeof MSG.agentsCreate
   | typeof MSG.agentsRemove | typeof MSG.workspacesRemove | typeof MSG.prompt
   | typeof MSG.promptCancel | typeof MSG.queueCancel | typeof MSG.commandExecute
   | typeof MSG.scheduledList | typeof MSG.scheduledCreate | typeof MSG.scheduledCancel
@@ -1312,6 +1318,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsArchive]: validateSessionsArchive,
   [MSG.sessionsUnarchive]: validateSessionsUnarchive,
   [MSG.sessionsRename]: validateSessionsRename,
+  [MSG.sessionsFork]: validateSessionsFork,
   [MSG.workspacesCreate]: validateWorkspacesCreate,
   [MSG.agentsCreate]: validateAgentsCreate,
   [MSG.agentsRemove]: validateAgentsRemove,
