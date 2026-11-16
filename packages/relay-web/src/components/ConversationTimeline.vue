@@ -220,7 +220,7 @@ defineExpose({ scrollToBottom });
         />
       </div>
 
-      <p v-if="error" data-test="timeline-error" class="mt-3 text-center text-xs text-danger">
+      <p v-if="error" data-test="timeline-error" class="mt-3 text-center text-xs text-danger-text">
         {{ error }}
       </p>
     </div>

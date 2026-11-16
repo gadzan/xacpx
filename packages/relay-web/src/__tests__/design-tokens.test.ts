@@ -92,6 +92,8 @@ const CONTRAST_CASES: Array<[string, string, Surface, number]> = [
   ["warn text on canvas", "--c-warn", "canvas", 4.5],
   ["warn text on raised card", "--c-warn", "raised", 4.5],
   ["danger text on raised card", "--c-danger", "raised", 4.5],
+  ["danger-text token on canvas", "--c-danger-text", "canvas", 4.5],
+  ["danger-text token on raised card", "--c-danger-text", "raised", 4.5],
   ["body text in overlay", "--c-fg", "overlay", 4.5],
   ["muted text in overlay", "--c-fg-muted-overlay", "overlay", 4.5],
   ["danger text in overlay", "--c-danger-overlay", "overlay", 4.5],
@@ -121,6 +123,12 @@ describe("design tokens", () => {
     expect(light["--c-accent"]).not.toBe(light["--c-accent-text"]);
     expect(contrastRatio(resolve(light, "--c-accent", [255, 255, 255]), resolve(light, "--c-bg", [255, 255, 255]))).toBeLessThan(4.5);
     expect(contrastRatio(resolve(light, "--c-accent-text", [255, 255, 255]), resolve(light, "--c-bg", [255, 255, 255]))).toBeGreaterThanOrEqual(4.5);
+  });
+  it("gives light danger prose a deeper colour than the solid danger", () => {
+    // #D92D20 as text on the canvas is 4.39:1, below AA. Prose uses #C4180B.
+    // The dark theme reuses #FF6961 for both roles because it clears AA as text.
+    expect(light["--c-danger"]).not.toBe(light["--c-danger-text"]);
+    expect(dark["--c-danger-text"]).toBe("255 105 97");
   });
   it("gives the dark theme a dark on-accent colour, not white", () => {
     // #409CFF with white text is 2.61:1.

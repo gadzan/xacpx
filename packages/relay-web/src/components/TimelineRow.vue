@@ -149,7 +149,7 @@ const noticeIcon = computed(() => {
 
 const noticeToneClass = computed(() => {
   if (props.row.kind !== "notice") return "text-fg-muted";
-  if (props.row.entry.tone === "failed") return "text-danger";
+  if (props.row.entry.tone === "failed") return "text-danger-text";
   return "text-fg-muted";
 });
 </script>

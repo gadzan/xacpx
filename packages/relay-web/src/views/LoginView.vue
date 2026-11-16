@@ -153,7 +153,7 @@ async function copyCommand() {
           </label>
 
           <!-- error -->
-          <p v-if="auth.error" data-test="login-error" role="alert" class="mt-3 flex items-start gap-1.5 text-xs text-danger">
+          <p v-if="auth.error" data-test="login-error" role="alert" class="mt-3 flex items-start gap-1.5 text-xs text-danger-text">
             <span class="font-bold">!</span><span>{{ errorText }}</span>
           </p>
 

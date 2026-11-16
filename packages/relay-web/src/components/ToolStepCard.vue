@@ -103,7 +103,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
         <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-xs">
           <span v-if="diffStats.add" class="text-run font-medium">+{{ diffStats.add }}</span>
-          <span v-if="diffStats.del" class="text-danger font-medium">−{{ diffStats.del }}</span>
+          <span v-if="diffStats.del" class="text-danger-text font-medium">−{{ diffStats.del }}</span>
         </span>
         <span v-if="step.durationMs !== undefined" class="font-mono text-xs text-fg-muted/70">{{ formatStepDuration(step.durationMs) }}</span>
         <span v-else-if="runningElapsed" data-test="step-elapsed" class="font-mono text-xs text-fg-muted/70">{{ runningElapsed }}</span>

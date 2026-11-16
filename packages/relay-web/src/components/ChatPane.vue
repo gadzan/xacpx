@@ -187,7 +187,7 @@ onUnmounted(() => clearInterval(timer));
       </div>
     </div>
     <div v-if="chat.error" data-test="chat-error"
-         class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger">
+         class="mx-3 mt-2 flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-danger-text">
       <AlertTriangle :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
       <div class="min-w-0 flex-1">
         <p class="max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-ui leading-relaxed">{{ modelRestore ? $t('chat.modelRestoreFailed', { model: modelRestore.modelId ?? '' }) : chat.error }}</p>
@@ -204,7 +204,7 @@ onUnmounted(() => clearInterval(timer));
          class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
       <template v-if="currentSession?.createError">
         <AlertTriangle :size="22" class="text-danger" aria-hidden="true" />
-        <p class="text-sm font-medium text-danger">{{ $t("session.startFailed") }}</p>
+        <p class="text-sm font-medium text-danger-text">{{ $t("session.startFailed") }}</p>
         <p class="max-w-sm break-words text-xs text-fg-muted">{{ currentSession.createError }}</p>
         <button data-test="booting-dismiss" class="rounded-lg px-3 py-1.5 text-xs font-medium text-fg hover:bg-fg/5"
                 @click="dismissBooting">{{ $t("common.dismiss") }}</button>

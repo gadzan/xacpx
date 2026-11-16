@@ -88,7 +88,7 @@ function rowElapsed(s: ToolStepDto): string {
         <span v-if="summary.statuses.length" class="text-fg-muted/50">·</span>
         <span v-for="st in summary.statuses" :key="'s' + st.label" :data-test="'sum-' + st.label"
               class="inline-flex items-center gap-0.5"
-              :class="st.label === 'success' ? 'text-run' : st.label === 'error' ? 'text-danger' : 'text-fg-muted'">
+              :class="st.label === 'success' ? 'text-run' : st.label === 'error' ? 'text-danger-text' : 'text-fg-muted'">
           <component :is="st.icon" :size="11"
                      :class="st.label === 'running' ? 'animate-spin motion-reduce:animate-none' : ''" /><span class="tabular-nums">{{ st.count }}</span>
         </span>
@@ -112,7 +112,7 @@ function rowElapsed(s: ToolStepDto): string {
           <span class="min-w-0 flex-1 font-mono text-xs break-all truncate" :title="s.title" :dir="isPathTitle(s) ? 'rtl' : undefined">{{ s.title }}</span>
           <span v-if="diffStatsById.get(s.toolCallId)" data-test="tool-row-diff-stats" class="flex shrink-0 items-center gap-1 font-mono text-xs">
             <span v-if="diffStatsById.get(s.toolCallId)!.add" class="text-run font-medium">+{{ diffStatsById.get(s.toolCallId)!.add }}</span>
-            <span v-if="diffStatsById.get(s.toolCallId)!.del" class="text-danger font-medium">−{{ diffStatsById.get(s.toolCallId)!.del }}</span>
+            <span v-if="diffStatsById.get(s.toolCallId)!.del" class="text-danger-text font-medium">−{{ diffStatsById.get(s.toolCallId)!.del }}</span>
           </span>
           <span v-if="rowElapsed(s)" class="ml-auto shrink-0 font-mono text-xs text-fg-muted/70">{{ rowElapsed(s) }}</span>
           <Check v-if="s.status === 'success'" data-test="step-status-success" :size="11" class="text-run/70" />

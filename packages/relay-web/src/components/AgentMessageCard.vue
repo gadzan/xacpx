@@ -37,14 +37,14 @@ const completionChip = computed<CompletionChip | null>(() => {
   const status = props.message.completionStatus;
   if (completion === "notify") {
     if (status === "completed") return { key: "agentMessage.completed", icon: CheckCircle2, cls: "text-accent-text", test: "msg-status-completed" };
-    if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger", test: "msg-status-failed" };
-    if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger", test: "msg-status-cancelled" };
+    if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger-text", test: "msg-status-failed" };
+    if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger-text", test: "msg-status-cancelled" };
     return { key: "agentMessage.waitingForCompletion", icon: Clock3, cls: "text-fg-muted", test: "msg-status-waiting", pulse: true };
   }
   // completion === "result"
   if (status === "completed") return { key: "agentMessage.resultReturned", icon: CheckCircle2, cls: "text-accent-text", test: "msg-status-result-returned" };
-  if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger", test: "msg-status-failed" };
-  if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger", test: "msg-status-cancelled" };
+  if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger-text", test: "msg-status-failed" };
+  if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger-text", test: "msg-status-cancelled" };
   return { key: "agentMessage.waitingForResult", icon: Clock3, cls: "text-fg-muted", test: "msg-status-waiting", pulse: true };
 });
 </script>
@@ -115,7 +115,7 @@ const completionChip = computed<CompletionChip | null>(() => {
           {{ $t(completionChip.key) }}
         </span>
         <template v-else>
-          <span v-if="message.status === 'failed'" data-test="msg-status-failed" class="inline-flex items-center gap-1 text-danger">
+          <span v-if="message.status === 'failed'" data-test="msg-status-failed" class="inline-flex items-center gap-1 text-danger-text">
             <AlertCircle :size="11" /> {{ $t("agentMessage.failed") }}
           </span>
           <span v-else-if="message.status === 'sending'" data-test="msg-status-sending" class="inline-flex items-center gap-1 text-fg-muted">

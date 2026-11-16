@@ -62,7 +62,7 @@ async function remove(wsName: string): Promise<void> {
 
 <template>
   <section class="space-y-3">
-    <p v-if="error" data-test="wm-error" class="rounded-sm bg-danger/[0.08] px-3 py-2 text-sm text-danger">{{ error }}</p>
+    <p v-if="error" data-test="wm-error" class="rounded-sm bg-danger/[0.08] px-3 py-2 text-sm text-danger-text">{{ error }}</p>
     <input v-if="showFilter" v-model="filter" data-test="wm-filter" :placeholder="$t('common.filter')"
            class="w-full rounded-sm bg-surface-2 px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
     <p v-if="!all.length" data-test="wm-empty" class="text-sm text-fg-muted">{{ $t("workspaces.empty") }}</p>

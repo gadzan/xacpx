@@ -30,7 +30,7 @@ async function cancel(taskId: string) {
 function statusClass(status: string): string {
   const s = status.toLowerCase();
   if (s.includes("run") || s.includes("active")) return "text-run";
-  if (s.includes("fail") || s.includes("error") || s.includes("cancel")) return "text-danger";
+  if (s.includes("fail") || s.includes("error") || s.includes("cancel")) return "text-danger-text";
   if (s.includes("wait") || s.includes("pending") || s.includes("block")) return "text-warn";
   return "text-fg-muted";
 }

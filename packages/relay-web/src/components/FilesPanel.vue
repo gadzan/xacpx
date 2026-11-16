@@ -271,7 +271,7 @@ watch(
         </div>
       </div>
 
-      <div v-if="files.error" data-test="files-error" class="shrink-0 bg-danger/10 px-2 py-1 text-xs text-danger">{{ files.error }}</div>
+      <div v-if="files.error" data-test="files-error" class="shrink-0 bg-danger/10 px-2 py-1 text-xs text-danger-text">{{ files.error }}</div>
 
       <ContextMenu v-if="rootMenu && openMenuKey === ROOT_MENU_KEY" :x="rootMenu.x" :y="rootMenu.y"
                    :items="[{ key: 'newFile', label: $t('files.menu.newFile') }, { key: 'newFolder', label: $t('files.menu.newFolder') }]"
@@ -396,7 +396,7 @@ watch(
               <div v-if="changesSummary" class="flex shrink-0 items-center gap-1.5 font-mono text-xs tabular-nums">
                 <span class="text-fg-muted">{{ changesSummary.fileCount }} {{ $t("files.filesCount") }}</span>
                 <span class="text-run">+{{ changesSummary.add }}</span>
-                <span class="text-danger">−{{ changesSummary.del }}</span>
+                <span class="text-danger-text">−{{ changesSummary.del }}</span>
               </div>
             </div>
             <div v-if="showBranchCreate" data-test="git-branch-create" class="mx-2.5 mb-1.5 space-y-1 rounded-sm bg-bg p-1.5">
@@ -438,7 +438,7 @@ watch(
               <FolderGit2 :size="11" class="shrink-0 opacity-70" />
               <span class="truncate font-mono" dir="rtl">{{ gitCtx.worktree.root }}</span>
             </div>
-            <div v-if="gitMessage" data-test="git-operation-message" class="flex items-center gap-1 px-2.5 py-1 text-xs" :class="gitMessage.ok ? 'text-fg-muted' : 'bg-danger/10 text-danger'">
+            <div v-if="gitMessage" data-test="git-operation-message" class="flex items-center gap-1 px-2.5 py-1 text-xs" :class="gitMessage.ok ? 'text-fg-muted' : 'bg-danger/10 text-danger-text'">
               <Loader2 v-if="git.operation" :size="10" class="animate-spin motion-reduce:animate-none" />
               <span class="break-all">{{ gitMessage.text }}</span>
             </div>

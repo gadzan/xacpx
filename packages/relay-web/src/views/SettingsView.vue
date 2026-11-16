@@ -211,7 +211,7 @@ void onMounted(() => { void probeNotifications(); });
       <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.account") }}</h2>
       <button
         data-test="logout"
-        class="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+        class="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger-text"
         @click="onLogout"
       >
         <LogOut :size="15" />{{ $t("settings.signOut") }}

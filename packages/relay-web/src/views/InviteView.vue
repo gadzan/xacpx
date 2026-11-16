@@ -83,7 +83,7 @@ async function signIn() {
       <div class="px-4 pb-5 pt-4">
         <!-- error state -->
         <template v-if="state === 'error'">
-          <p data-test="invite-error" role="alert" class="flex items-start gap-1.5 text-sm text-danger">
+          <p data-test="invite-error" role="alert" class="flex items-start gap-1.5 text-sm text-danger-text">
             <span class="font-bold">!</span><span>{{ $t(errorKey) }}</span>
           </p>
           <RouterLink
@@ -127,7 +127,7 @@ async function signIn() {
           </p>
           <p class="mt-2 text-xs leading-relaxed text-fg-muted">{{ $t("invite.connectorHint") }}</p>
 
-          <p v-if="auth.error" data-test="signin-error" role="alert" class="mt-3 flex items-start gap-1.5 text-xs text-danger">
+          <p v-if="auth.error" data-test="signin-error" role="alert" class="mt-3 flex items-start gap-1.5 text-xs text-danger-text">
             <span class="font-bold">!</span><span>{{ auth.error }}</span>
           </p>
 

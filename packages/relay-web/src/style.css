@@ -32,7 +32,10 @@
   --c-run-bright: 40 167 69;    /* #28A745 */
   --c-warn: 154 91 0;           /* #9A5B00 */
   --c-warn-dot: 255 149 0;      /* #FF9500 */
-  --c-danger: 217 45 32;        /* #D92D20 */
+  --c-danger: 217 45 32;        /* #D92D20 — solid fills and graphics only, never body text */
+  /* Danger TEXT. #C4180B passes 4.5 on canvas (5.48) and raised (6.03); #D92D20
+     does not clear canvas (4.39), so prose uses this token instead. */
+  --c-danger-text: 196 24 11;   /* #C4180B */
   --c-on-danger: 255 255 255;   /* text on a filled danger */
   --c-on-warn: 255 255 255;     /* text on a filled warn */
   --c-info: 0 113 227;          /* (= accent) */
@@ -115,7 +118,10 @@
   --c-run-bright: 48 209 88;
   --c-warn: 255 159 10;
   --c-warn-dot: 255 159 10;
-  --c-danger: 255 105 97;       /* #FF6961 */
+  --c-danger: 255 105 97;       /* #FF6961 — solid fills and graphics */
+  /* Danger TEXT. #FF6961 clears 4.5 on all dark surfaces (worst 5.36 on
+     raised); #FF7E76 would also pass but this reuses the solid token. */
+  --c-danger-text: 255 105 97;  /* #FF6961 */
   --c-on-danger: 42 10 8;       /* #2A0A08 */
   --c-on-warn: 11 20 34;        /* #0B1422 */
   --c-info: 64 156 255;

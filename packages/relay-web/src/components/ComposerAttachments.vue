@@ -23,7 +23,7 @@ const visible = computed(() => composer.pending.length > 0 || composer.rejection
       <button type="button" data-test="attachment-remove" :aria-label="$t('chat.attach.remove')" :title="$t('chat.attach.remove')"
         class="grid h-7 w-7 place-items-center rounded text-fg-muted hover:bg-raised" @click="composer.removeAttachment(entry.id, scopeKey)"><X :size="14" /></button>
     </div>
-    <span v-if="composer.rejection" data-test="attach-rejected" role="alert" class="w-full text-xs text-danger">
+    <span v-if="composer.rejection" data-test="attach-rejected" role="alert" class="w-full text-xs text-danger-text">
       {{ composer.rejection.reason === 'too-many' ? $t('chat.attach.tooMany') : $t('chat.attach.tooLarge', { name: composer.rejection.filename }) }}
     </span>
   </div>

@@ -150,7 +150,7 @@ function close(): void {
           class="mt-3 w-full rounded-xl bg-surface-2 px-3 py-2 text-base text-fg outline-none placeholder:text-fg-muted focus-visible:ring-2 focus-visible:ring-accent"
           @keydown.enter.prevent="generateToken"
         />
-        <p v-if="error" data-test="add-instance-error" class="mt-2 text-xs text-danger">{{ error }}</p>
+        <p v-if="error" data-test="add-instance-error" class="mt-2 text-xs text-danger-text">{{ error }}</p>
         <div class="mt-4 flex items-center justify-end gap-2">
           <button
             type="button"

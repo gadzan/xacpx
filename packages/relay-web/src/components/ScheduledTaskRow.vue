@@ -27,7 +27,7 @@ function present(status: ScheduledTaskStatusDto): Pres {
     case "pending": return { label: t("tasks.statusUpcoming"), cls: "text-fg-muted", icon: Clock };
     case "triggering": return { label: t("tasks.statusRunning"), cls: "text-run", icon: Loader2, spin: true };
     case "executed": return { label: t("tasks.statusDone"), cls: "text-run", icon: CheckCircle2 };
-    case "failed": return { label: t("tasks.statusFailed"), cls: "text-danger", icon: XCircle };
+    case "failed": return { label: t("tasks.statusFailed"), cls: "text-danger-text", icon: XCircle };
     case "missed": return { label: t("tasks.statusMissed"), cls: "text-warn", icon: AlertTriangle };
     case "cancelled": return { label: t("tasks.statusCancelled"), cls: "text-fg-muted", icon: Ban };
   }
@@ -77,7 +77,7 @@ async function cancel(id: string) {
     <div v-if="open" :data-test="`scheduled-detail-${task.id}`" class="space-y-1 px-2 py-1.5">
       <p class="whitespace-pre-wrap break-words text-ui text-fg">{{ task.message }}</p>
       <p class="font-mono text-xs tabular-nums text-fg-muted">{{ fmtDateTime(task.executeAt) }}</p>
-      <p v-if="task.status === 'failed' && task.lastError" :data-test="`scheduled-error-${task.id}`" class="rounded-sm bg-danger/10 px-2 py-1 text-xs text-danger">{{ task.lastError }}</p>
+      <p v-if="task.status === 'failed' && task.lastError" :data-test="`scheduled-error-${task.id}`" class="rounded-sm bg-danger/10 px-2 py-1 text-xs text-danger-text">{{ task.lastError }}</p>
     </div>
   </li>
 </template>

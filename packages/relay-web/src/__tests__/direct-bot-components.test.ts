@@ -2566,7 +2566,7 @@ describe("Direct Bot Components", () => {
       const del = sheet.find('[data-test="sheet-bot-delete"]');
       expect(del.attributes("disabled")).toBeDefined();
       // Danger styling stays on the delete item.
-      expect(del.classes()).toContain("text-danger");
+      expect(del.classes()).toContain("text-danger-text");
       expect(del.classes()).toContain("hover:bg-danger/10");
 
       // "Talk with" opens the same other-bots + groups lists as the desktop nav menu.

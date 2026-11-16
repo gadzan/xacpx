@@ -744,7 +744,7 @@ function handleStopAll(): void {
     </div>
 
     <!-- Error Banner if any general error -->
-    <div v-if="directBotsStore.generalErrorCode || directBotsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
+    <div v-if="directBotsStore.generalErrorCode || directBotsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
       <span>{{ directBotsStore.generalErrorCode ? $t(`bot.errors.${directBotsStore.generalErrorCode}`) : directBotsStore.generalError }}</span>
       <button type="button" @click="directBotsStore.generalError = null; directBotsStore.generalErrorCode = null">
         <X :size="14" />
@@ -859,7 +859,7 @@ function handleStopAll(): void {
       discovery). Shown whenever the timeline failed to converge — the
       composer may still be enabled, but the newest window is stale/holed. -->
     <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId"
-         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
+         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
       <span>{{ $t(`bot.errors.${directBotsStore.historyError}`) }}</span>
       <button type="button"
               class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"
@@ -931,7 +931,7 @@ function handleStopAll(): void {
       <button type="button" data-test="sheet-bot-delete"
               :disabled="bot?.retired === true"
               :title="bot?.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
-              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-danger transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
+              class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm text-danger-text transition-colors hover:bg-danger/10 hover:text-danger-text disabled:cursor-not-allowed disabled:opacity-40"
               @click="openRemoval(); closeSheet()">
         <Trash2 :size="18" class="shrink-0" />
         <span>{{ $t("bot.removal.action") }}</span>

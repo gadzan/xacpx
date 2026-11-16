@@ -106,7 +106,7 @@ function alwaysRendered(entry: RenderedNode): boolean {
         <span v-if="index > 0" aria-hidden="true" class="opacity-50">·</span>
         <span>{{ t(`turnTrace.verbs.${entry.verb}`, entry.count) }}</span>
       </template>
-      <span v-if="tally.failed > 0" class="inline-flex items-center rounded-full bg-danger/10 px-1.5 py-0.5 font-medium text-danger">
+      <span v-if="tally.failed > 0" class="inline-flex items-center rounded-full bg-danger/10 px-1.5 py-0.5 font-medium text-danger-text">
         {{ t("turnTrace.failedSteps", tally.failed) }}
       </span>
     </p>

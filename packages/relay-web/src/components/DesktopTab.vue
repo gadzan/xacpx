@@ -227,7 +227,7 @@ onBeforeUnmount(() => {
                autocomplete="off"
                :placeholder="$t('desktop.macosPassword')"
                class="w-full rounded-sm bg-surface-2 px-2 py-1 text-ui text-fg outline-none" />
-        <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-xs text-danger">
+        <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-xs text-danger-text">
           {{ $t("desktop.macosRejected") }}
         </p>
         <button data-test="desktop-macos-submit"

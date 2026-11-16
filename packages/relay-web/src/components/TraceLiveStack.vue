@@ -160,7 +160,7 @@ onBeforeUnmount(() => {
 const summary = computed(() => {
   switch (props.terminal) {
     case "done": return { label: t("group.detail.live.done"), cls: "text-run", icon: CircleCheck };
-    case "failed": return { label: t("group.detail.live.failed"), cls: "text-danger", icon: AlertTriangle };
+    case "failed": return { label: t("group.detail.live.failed"), cls: "text-danger-text", icon: AlertTriangle };
     case "cancelled": return { label: t("group.detail.live.cancelled"), cls: "text-fg-muted", icon: Ban };
     default: return null;
   }

@@ -835,7 +835,7 @@ function onKeydown(e: KeyboardEvent) {
             />
             <span class="max-w-[120px] truncate text-fg">{{ p.filename }}</span>
             <span v-if="p.status === 'uploading'" class="text-fg-muted">…</span>
-            <button v-else-if="p.status === 'error'" type="button" class="text-danger font-semibold"
+            <button v-else-if="p.status === 'error'" type="button" class="text-danger-text font-semibold"
               :aria-label="$t('common.retry')" :title="$t('common.retry')" @click="composer.retryAttachment(p.id)">↻</button>
             <button
               type="button"
@@ -851,7 +851,7 @@ function onKeydown(e: KeyboardEvent) {
         <span
           v-if="composer.rejection"
           data-test="attach-rejected"
-          class="block px-3 pt-2 text-xs text-danger"
+          class="block px-3 pt-2 text-xs text-danger-text"
         >
           {{
             composer.rejection.reason === "too-many"

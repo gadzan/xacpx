@@ -40,7 +40,7 @@ const visible = computed(
       data-test="model-banner"
       role="status"
       aria-live="polite"
-      class="fixed left-1/2 top-16 z-[55] flex w-[min(36rem,calc(100vw-2rem))] -translate-x-1/2 items-start gap-2 rounded-lg bg-surface px-3 py-2 text-xs text-danger shadow-float"
+      class="fixed left-1/2 top-16 z-[55] flex w-[min(36rem,calc(100vw-2rem))] -translate-x-1/2 items-start gap-2 rounded-lg bg-surface px-3 py-2 text-xs text-danger-text shadow-float"
     >
       <AlertCircle :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
       <span class="min-h-0 min-w-0 flex-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words">{{ message }}</span>

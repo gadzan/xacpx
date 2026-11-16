@@ -682,7 +682,7 @@ watch(
             <ConversationMeta :message="m" />
             <!-- Failed sends get a compact retry affordance on their own line below. -->
             <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
-              <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
+              <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger-text">
                 <AlertCircle :size="12" class="shrink-0" />{{ $t("chat.failedToSend") }}</span>
               <button type="button" data-test="msg-resend"
                       class="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-text transition-colors hover:bg-accent/20"
@@ -747,7 +747,7 @@ watch(
               <ConversationMeta :message="m" :parts="m.structured?.parts" :presentation="m.structured?.parts?.length ? traceSummaryOf(m).presentation : undefined">
                 <span v-if="m.structured?.truncated" data-test="msg-truncated" class="inline-flex items-center gap-1 text-xs text-warn"><TriangleAlert :size="12" /> {{ $t("chat.truncated") }}</span>
                 <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-xs text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>
-                <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-xs text-danger"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
+                <span v-if="m.failed" data-test="msg-failed" class="inline-flex items-center gap-1 text-xs text-danger-text"><AlertCircle :size="11" />{{ $t("chat.failed") }}</span>
               </ConversationMeta>
             </div>
           </TranscriptRow>

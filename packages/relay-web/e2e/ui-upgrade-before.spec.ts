@@ -126,3 +126,71 @@ test("11 direct empty state", async ({ page, hub }) => {
   await openDirect(page, false);
   await shot(page, `11-empty-${THEME}`);
 });
+
+const gscope = { conversationId: "g_ui", topicId: "t_ui" };
+const gbots = [
+  { id: "lead", name: "Ada", agent: "codex", workspace: "repo", enabled: true, updatedAt: createdAt },
+  { id: "reviewer", name: "Bob", agent: "codex", workspace: "repo", enabled: true, updatedAt: createdAt },
+];
+const ggroup = {
+  id: gscope.conversationId, kind: "group", title: "Lens team",
+  botIds: gbots.map((b) => b.id), leadBotId: "lead", createdAt, updatedAt: createdAt,
+};
+const gtopic = {
+  id: gscope.topicId, conversationId: gscope.conversationId,
+  title: "Release review", status: "active", createdAt, updatedAt: createdAt,
+};
+const gturns = [
+  { ...gscope, id: "turn_lead", runId: "run_ui", botId: "lead", batch: 1, memberIndex: 0, attempt: 1, origin: "roundtable", state: "completed", createdAt },
+  { ...gscope, id: "turn_reviewer", runId: "run_ui", botId: "reviewer", batch: 1, memberIndex: 1, attempt: 1, origin: "roundtable", state: "failed", failureReason: "connector offline", createdAt },
+];
+const gdetail = {
+  ...gscope, id: "run_ui", requestMessageId: "gm1", requestId: "req_ui", mode: "explicit",
+  shape: "roundtable", rounds: 1, leadBotId: "lead", state: "running",
+  profileRevision: 1, createdAt, startedAt: createdAt, memberTurns: gturns,
+};
+const gmessages = [
+  { ...gscope, id: "gm1", seq: 1, role: "human", content: "Review the release", createdAt },
+  { ...gscope, id: "gm2", seq: 2, role: "bot", senderBotId: "lead", memberTurnId: "turn_lead", runId: "run_ui", content: "Two risks: the lock and the rollback.", createdAt },
+  {
+    ...gscope, id: "gm3", seq: 3, role: "system", senderBotId: "lead",
+    memberTurnId: "turn_lead", runId: "run_ui", content: "",
+    handoff: { senderMemberTurnId: "turn_lead", to: "reviewer", assignmentId: "a1", memberTurnId: "turn_reviewer", task: "Check the session lock" },
+    createdAt,
+  },
+];
+
+async function openGroup(page: Page): Promise<void> {
+  await page.route("**/api/instances/i1/rpc", async (route) => {
+    const { type } = route.request().postDataJSON() as { type: string };
+    let result: unknown;
+    switch (type) {
+      case "control.bots.list": result = { bots: gbots }; break;
+      case "control.groups.list": result = { groups: [ggroup] }; break;
+      case "control.groups.get": result = { group: { ...ggroup, topics: [gtopic] } }; break;
+      case "control.topics.list": result = { topics: [gtopic] }; break;
+      case "control.conversation.history": result = { ...gscope, messages: gmessages, oldestSeq: 1, newestSeq: 3, hasMoreBefore: false, hasMoreAfter: false }; break;
+      case "control.conversation.timeline": result = {
+        ...gscope,
+        entries: gmessages.map((m) => ({ kind: "message", key: `message:${m.id}`, anchorSeq: m.seq, message: m })),
+        activeRound: { runId: "run_ui", roundIndex: 1, rounds: 1, speakerCount: 2, spoken: 1, passed: 0, activeMemberTurnId: "turn_reviewer", state: "running" },
+        oldestSeq: 1, newestSeq: 3, hasMoreBefore: false, hasMoreAfter: false,
+      }; break;
+      case "control.runs.list": result = { ...gscope, runs: [gdetail], activeRunId: gdetail.id, activeRun: gdetail }; break;
+      case "control.runs.get": result = { run: gdetail }; break;
+      default: return route.fallback();
+    }
+    await route.fulfill({ json: { result } });
+  });
+  await loginAndShowInstances(page);
+  await page.getByTestId("instance-nav-groups").click();
+  await page.getByTestId("group-row").first().getByRole("button").first().click();
+  await expect(page.getByTestId("conversation-timeline-scroller")).toBeVisible();
+}
+
+test("06 group timeline with handoff and stop all", async ({ page, hub }) => {
+  await setTheme(page);
+  await openGroup(page);
+  await expect(page.getByTestId("conversation-stop-all")).toBeVisible();
+  await shot(page, `06-group-${THEME}`);
+});

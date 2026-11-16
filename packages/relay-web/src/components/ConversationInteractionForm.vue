@@ -600,7 +600,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
       <!-- Field-level problems the renderer can see. Surfaced BEFORE Submit, while
         the form is still open: the interaction resolves on submit, so an answer
         core rejects afterwards is one the user cannot correct. -->
-      <div v-if="invalidFields.length > 0" data-test="interaction-invalid" class="text-xs text-danger">
+      <div v-if="invalidFields.length > 0" data-test="interaction-invalid" class="text-xs text-danger-text">
         <div v-for="entry in invalidFields" :key="entry.field.key">
           {{ t('bot.interaction.fieldInvalid', {
             title: entry.field.title,
@@ -613,7 +613,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
         {{ t('bot.interaction.requiredMissing', { fields: requiredMissing.map((f) => f.title).join(', ') }) }}
       </div>
 
-      <div v-if="errorCode" data-test="interaction-error" class="text-xs font-medium text-danger">
+      <div v-if="errorCode" data-test="interaction-error" class="text-xs font-medium text-danger-text">
         {{ errorCode === 'interactionGone' ? t('bot.interaction.errorGone')
           : errorCode === 'connectorOutdated' ? t('bot.interaction.errorOutdated')
           : t('bot.interaction.errorFailed') }}

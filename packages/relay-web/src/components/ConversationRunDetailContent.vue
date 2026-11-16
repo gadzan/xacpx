@@ -76,7 +76,7 @@ function toneClass(tone: StateTone): string {
   switch (tone) {
     case "active": return "bg-accent/[0.14] text-accent-text";
     case "done": return "bg-run/[0.14] text-run";
-    case "failed": return "bg-danger/[0.14] text-danger";
+    case "failed": return "bg-danger/[0.14] text-danger-text";
     case "waiting": return "bg-warn/[0.16] text-warn";
     case "idle": return "bg-surface-2 text-fg-muted";
   }
@@ -160,7 +160,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
           {{ completionReason }}
         </span>
       </div>
-      <p v-if="runFailure" data-test="run-detail-failure" class="mt-1.5 break-words text-xs text-danger">
+      <p v-if="runFailure" data-test="run-detail-failure" class="mt-1.5 break-words text-xs text-danger-text">
         {{ $t("conversation.runDetail.failure", { reason: runFailure }) }}
       </p>
       <p
@@ -214,7 +214,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
             <span
               v-if="member.failureReason"
               data-test="run-member-failure"
-              class="min-w-0 basis-full truncate text-danger"
+              class="min-w-0 basis-full truncate text-danger-text"
               :title="member.failureReason"
             >{{ member.failureReason }}</span>
           </button>
@@ -258,7 +258,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
           data-test="run-stop-member"
           :data-member-turn-id="selected.id"
           :disabled="cancelPending === true"
-          class="inline-flex shrink-0 items-center gap-1 rounded-full bg-danger/[0.14] px-2 py-1 text-xs font-medium text-danger transition-colors hover:bg-danger/20 disabled:opacity-60"
+          class="inline-flex shrink-0 items-center gap-1 rounded-full bg-danger/[0.14] px-2 py-1 text-xs font-medium text-danger-text transition-colors hover:bg-danger/20 disabled:opacity-60"
           :aria-label="$t('conversation.runDetail.stopMember', { name: participantName(selected.botId) })"
           @click="emit('stopMember', selected.id)"
         >
@@ -266,7 +266,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
           <span>{{ $t("conversation.runDetail.stopMember", { name: participantName(selected.botId) }) }}</span>
         </button>
       </div>
-      <p v-if="selectedFailure" data-test="run-member-selected-failure" class="mt-1 break-words text-xs text-danger">
+      <p v-if="selectedFailure" data-test="run-member-selected-failure" class="mt-1 break-words text-xs text-danger-text">
         {{ $t("conversation.runDetail.failure", { reason: selectedFailure }) }}
       </p>
       <GroupRunDetailContent

@@ -753,7 +753,7 @@ const worktreeRunId = computed(() => {
     </header>
 
 
-    <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
+    <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
       <span>{{ groupsStore.generalErrorCode ? $t(`bot.errors.${groupsStore.generalErrorCode}`) : groupsStore.generalError }}</span>
       <button type="button" @click="groupsStore.generalError = null; groupsStore.generalErrorCode = null">
         <X :size="14" />
@@ -847,7 +847,7 @@ const worktreeRunId = computed(() => {
       </button>
     </div>
     <div v-if="groupsStore.historyError && groupsStore.activeTopicId"
-         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
+         class="flex items-center justify-between bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger-text">
       <span>{{ groupsStore.historyErrorDetail ?? groupsStore.historyError }}</span>
       <button type="button"
               class="rounded-sm bg-raised text-fg hover:bg-surface-2 px-2 py-0.5 font-medium transition-colors"

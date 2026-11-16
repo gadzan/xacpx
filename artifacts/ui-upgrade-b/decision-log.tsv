@@ -1,2 +1,3 @@
 ts	phase	decision	why	evidence	result
 2026-11-16T03:59:23Z	baseline	locked base at audit snapshot, 28 before shots, contrast green	base equals 5b89cab, no drift	ui-upgrade-before.spec.ts, artifacts/ui-upgrade-b/before	28 shots green, unit 2969 green
+2026-11-16T04:13:02Z	wp-1	migrated 62 text-carrying text-accent to text-accent-text, kept 50 icon/form uses	text vs icon split per element, icon contrast 3.70 worst case passes 3:1	commit 077f8937, contrast-wp1.txt, after shots	unit 2969 green, e2e direct/completions/chips/timeline/dialogs/mobile green

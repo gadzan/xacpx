@@ -62,8 +62,8 @@ const outputMeta = computed(() => {
           >
             <span class="w-8 shrink-0 select-none border-r border-border px-1 text-right tabular-nums text-fg-muted/60">{{ r.oldNo ?? "" }}</span>
             <span class="w-8 shrink-0 select-none border-r border-border px-1 text-right tabular-nums text-fg-muted/60">{{ r.newNo ?? "" }}</span>
-            <span class="w-3 shrink-0 select-none text-center" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger' : 'text-fg-muted/40'">{{ r.type === 'add' ? '+' : r.type === 'del' ? '-' : '' }}</span>
-            <span class="whitespace-pre px-1" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger' : 'text-fg'">{{ r.text }}</span>
+            <span class="w-3 shrink-0 select-none text-center" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger-text' : 'text-fg-muted/40'">{{ r.type === 'add' ? '+' : r.type === 'del' ? '-' : '' }}</span>
+            <span class="whitespace-pre px-1" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger-text' : 'text-fg'">{{ r.text }}</span>
           </div>
         </div>
       </ExpandableBlock>
@@ -76,7 +76,7 @@ const outputMeta = computed(() => {
         </ExpandableBlock>
         <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-xs text-fg-muted">{{ outputMeta }}</span>
       </div>
-      <div v-if="detail.exitCode !== undefined" :class="detail.exitCode !== 0 ? 'text-danger' : 'text-fg-muted'">exit {{ detail.exitCode }}</div>
+      <div v-if="detail.exitCode !== undefined" :class="detail.exitCode !== 0 ? 'text-danger-text' : 'text-fg-muted'">exit {{ detail.exitCode }}</div>
     </template>
 
     <template v-else-if="detail.type === 'read'">

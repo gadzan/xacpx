@@ -130,7 +130,7 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
           : $t("group.run.blockedHumanUnknown") }}
       </p>
       <p v-if="memberTurn.failureReason && !historicalAttempt && !isMachineFailureReason(memberTurn.failureReason)"
-         data-test="group-member-failure" class="mt-1 break-words text-xs text-danger">
+         data-test="group-member-failure" class="mt-1 break-words text-xs text-danger-text">
         {{ memberTurn.failureReason }}
       </p>
     </div>
@@ -185,7 +185,7 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
         {{ $t("group.detail.earlierWindow") }}
       </p>
       <p v-if="traceLoading">{{ $t("group.detail.loading") }}</p>
-      <p v-if="traceError" role="alert" class="break-words text-danger">{{ traceError }}</p>
+      <p v-if="traceError" role="alert" class="break-words text-danger-text">{{ traceError }}</p>
       <div class="flex flex-wrap gap-2">
         <button v-if="traceError" type="button" data-test="group-trace-retry"
                 class="underline disabled:opacity-50" :disabled="traceLoading" @click="emit('retryTrace')">

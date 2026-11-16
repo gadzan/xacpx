@@ -44,7 +44,7 @@ const toneClass = computed(() => {
   switch (tone.value) {
     case "active": return "bg-accent/[0.14] text-accent-text";
     case "done": return "bg-run/[0.14] text-run";
-    case "failed": return "bg-danger/[0.14] text-danger";
+    case "failed": return "bg-danger/[0.14] text-danger-text";
     case "waiting": return "bg-warn/[0.16] text-warn";
     case "idle": return "bg-surface-2 text-fg-muted";
   }
@@ -119,7 +119,7 @@ const ariaLabel = computed(() =>
           v-if="stopAvailable"
           type="button"
           data-test="group-stop-run-button"
-          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-danger/[0.14] font-medium text-danger transition-colors hover:bg-danger/20 disabled:opacity-60"
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-danger/[0.14] font-medium text-danger-text transition-colors hover:bg-danger/20 disabled:opacity-60"
           :class="dense ? 'h-7 px-2 text-xs' : 'min-h-11 px-3 text-sm'"
           :disabled="stopPending === true"
           :title="$t('group.detail.stopAllMembers')"
