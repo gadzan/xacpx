@@ -26,6 +26,9 @@ export default {
         "run-bright": "rgb(var(--c-run-bright) / <alpha-value>)",
         warn: "rgb(var(--c-warn) / <alpha-value>)",
         danger: "rgb(var(--c-danger) / <alpha-value>)",
+        // Danger TEXT. One step deeper than `danger` in light mode so prose
+        // clears 4.5:1. `danger` stays for solid fills and passing graphics.
+        "danger-text": "rgb(var(--c-danger-text) / <alpha-value>)",
         // An rgba token, not an RGB triple: it composites over whatever sits
         // under it. It therefore takes no `/50` opacity modifier.
         "accent-soft": "var(--accent-soft)",
