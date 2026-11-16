@@ -284,7 +284,9 @@ test("Run-wide drawer: entries, member switch, scoped Stop, approval, budget, li
   await expect(drawer(page).getByTestId("run-detail")).toBeVisible();
   await expect(drawer(page).getByTestId("run-member-row")).toHaveCount(3);
   await expect(drawer(page).getByTestId("run-detail-budget")).toContainText("2/6 member turns");
-  await expect(drawer(page).getByTestId("run-detail-state")).toContainText("Running");
+  // One state chip per drawer: the header owns it (WP-17).
+  await expect(drawer(page).getByTestId("group-detail-state")).toContainText("Running");
+  await expect(drawer(page).getByTestId("run-detail-state")).toHaveCount(0);
   // Stop all lives in the status bar; the drawer only has the scoped stop.
   await expect(drawer(page).getByTestId("group-stop-run-button")).toHaveCount(0);
   await drawer(page).getByTestId("group-detail-close").click();

@@ -140,6 +140,12 @@ function interactionFor(requestId: string): PendingInteractionState | undefined 
   return props.interactions?.find((interaction) => interaction.request.requestId === requestId);
 }
 
+// GroupRunDetailHeader hides its state chip while a historical attempt is selected,
+// so the chip moves here for exactly that case instead of appearing twice.
+const stateShownInHeader = computed(() => props.attempt === undefined
+  || selected.value === undefined
+  || props.attempt === selected.value.attempt);
+
 function answer(requestId: string, key: string, value: InteractionValueDto): void {
   if (interactionFor(requestId)) emit("interactionAnswer", requestId, key, value);
 }
@@ -147,8 +153,11 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
 
 <template>
   <div class="flex flex-col gap-3 text-sm" data-test="run-detail">
-    <section class="rounded-2xl bg-surface/50 p-2.5" data-test="run-detail-summary">
-      <div class="flex flex-wrap items-center gap-2">
+    <!-- No card: the drawer header already carries the state chip and title, so this
+         block is the run's outcome/budget text and nothing else. The state chip is
+         rendered here ONLY for a historical attempt, where the header hides it. -->
+    <section class="space-y-1.5" data-test="run-detail-summary">
+      <div v-if="!stateShownInHeader" class="flex flex-wrap items-center gap-2">
         <span
           data-test="run-detail-state"
           :data-tone="runStateTone(run.state)"
@@ -156,20 +165,20 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
           class="inline-flex h-6 shrink-0 items-center rounded-lg px-2 text-xs font-semibold"
           :class="toneClass(runStateTone(run.state))"
         >{{ $t(runStateKey(run.state)) }}</span>
-        <span v-if="completionReason" data-test="run-detail-completion" class="min-w-0 flex-1 text-xs text-fg-muted">
-          {{ completionReason }}
-        </span>
       </div>
-      <p v-if="runFailure" data-test="run-detail-failure" class="mt-1.5 break-words text-xs text-danger-text">
+      <p v-if="completionReason" data-test="run-detail-completion" class="break-words text-xs text-fg-muted">
+        {{ completionReason }}
+      </p>
+      <p v-if="runFailure" data-test="run-detail-failure" class="break-words text-xs text-danger-text">
         {{ $t("conversation.runDetail.failure", { reason: runFailure }) }}
       </p>
       <p
         v-if="budgetLabel"
         data-test="run-detail-budget"
-        class="mt-1.5 flex flex-wrap items-center gap-x-2 text-xs text-fg-muted"
+        class="flex flex-wrap items-center gap-x-2 text-xs text-fg-muted"
       >
         <span>{{ $t(budgetLabel.key, budgetLabel.params) }}</span>
-        <span v-for="entry in budgetMeta" :key="entry" class="opacity-70">{{ entry }}</span>
+        <span v-for="entry in budgetMeta" :key="entry" class="text-fg-muted">{{ entry }}</span>
       </p>
     </section>
 
@@ -181,7 +190,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
       <p v-if="members.length === 0" data-test="run-detail-no-members" class="text-xs text-fg-muted">
         {{ $t("conversation.runDetail.noMembers") }}
       </p>
-      <ul v-else class="flex flex-col gap-1" data-test="run-member-list">
+      <ul v-else class="flex flex-col divide-y divide-hairline" data-test="run-member-list">
         <li v-for="member in members" :key="member.id">
           <button
             type="button"
@@ -190,8 +199,8 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
             :data-selected="selected?.id === member.id ? 'true' : 'false'"
             :data-state="member.state"
             :aria-pressed="selected?.id === member.id"
-            class="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 rounded-lg px-2 py-1.5 text-left text-xs transition-colors"
-            :class="selected?.id === member.id ? 'bg-accent/[0.12] text-fg' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'"
+            class="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 px-2 py-2 text-left text-xs transition-colors"
+            :class="selected?.id === member.id ? 'bg-fill-strong text-fg' : 'text-fg-muted hover:bg-fill-hover hover:text-fg'"
             @click="emit('selectMember', member.id)"
           >
             <span data-test="run-member-name" class="min-w-0 truncate font-medium text-fg">

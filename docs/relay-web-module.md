@@ -242,6 +242,13 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 `DirectBotPane` 里手机顶栏的 `.glass-btn` / `.glass-disc` / `.glass-chip` 现在只是「在 `.glass-control`
 之上补交互态与头像盘实底」的局部规则，配方本身只有一处在全局。
 
+## 设置页（`views/SettingsView.vue`）
+
+一个 raised 卡(`rounded-card border-hairline bg-raised`)装七行:外观、语言、添加实例、保留策略、
+Relay 版本、通知、账户。行高 `min-h-11`、行间 `border-t border-hairline`,标签是 12px+ 的 medium
+`text-fg`,值右对齐 `text-fg-muted`;通知的 iOS 提示与拒绝提示留在本行内整行换行。顶栏返回是对话页
+同款 `glass-control` 玻璃圆钮(44)。分段仍是深/浅两项,没有「跟随系统」。
+
 ## Composer 的模型与 effort 控件
 
 - 会话切换时 `session-controls` store 并行读取 `control.session.model.get` 与
@@ -481,6 +488,13 @@ Conversation 的 slash 列表来自现有 `agent-commands` 事件，按 `convers
 的命令。菜单只显示该 Bot 运行时广告的命令，不显示 xacpx 管理命令目录。Group 在未明确选中一名成员时
 只提示先选择成员，Enter/Tab 不发送。
 
+**空 Bot 页**：`ConversationTimeline` 的 `#empty` 插槽由 `DirectBotPane` 接管，渲染头像盘（56）、Bot 名、
+`role · workspace · agent`，以及最多 3 颗起步 chip。chip 只来自 `conversation-commands` 中当前
+`instance × conversation × topic × bot` 那一行的真实广告（即 `agent-commands` 事件 /
+`state-snapshot.conversationCommands`）；没有广告就只留提示句，绝不画假命令。点 chip 调
+`ConversationPromptInput` 暴露的 `fillDraft()`：写入 `/<name> `、光标置尾、收起补全列表，**不发送**。
+空态容器用 `min-h-full` 在滚动区内垂直居中（旧的 `my-auto` 在块级滚动容器里不生效）。
+
 **补全选择器的移动形态**：Direct（`ConversationPromptInput.vue`）与 Group（`GroupComposer.vue`）的
 斜杠 / @ 候选列表在 `<lg` 时不再用输入框上方的行内浮层，而是整体渲染进 `MobileSheet`
 （Teleport 到 `body`，`test-id` 为 `direct-cmd-sheet` / `group-cmd-sheet`），行高 `min-h-[46px]`；
@@ -521,6 +535,15 @@ Jev 路由配置收拢在“Jev 路由”折叠区，包含 endpoint、API key�
 终端不是热切换，和文件写入开关不同，原因在启动期建立的三个不变量：能力集 `terminal.rmux.recovery.v1` / `terminal.multi-view.v1` 只在握手时上报（hub 按 socket 身份落库，改能力必须重连并重新握手）；`bootstrapTerminal()` 一次完成 registry → RMUX sidecar → reconcile，`onRequest` 的路由判断读的是启动期赋值的 `this.terminal` / `terminalReady`；关闭方向还要求 durable registry 先 reaping 再销毁 sidecar（`retireRelayTerminals`），中途打断会留下 tombstone。要热切换就得让 channel 在同一进程内重建 sidecar 并重发能力，而 hub 侧握手的实例记录只在连接时更新，等于变相重启 channel——所以维持「保存即持久化、重启 channel 生效」。
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
+
+## 执行过程浮层（Run 明细）
+
+抽屉 / 手机 sheet 的头部由 `GroupRunDetailHeader` 渲染状态 chip，正文
+`ConversationRunDetailContent` 不再重复一颗：正文只在「选中的是历史尝试」这一种情况自己渲染
+（那时头部故意隐藏 chip）。成员列表是 `divide-y divide-hairline` 的行，选中用 `bg-fill-strong`，
+不再有外层卡片。`ConversationInteractionForm` 的外壳与 `.agent-bubble` 同族
+（`rounded-card` + `border-hairline` + `shadow-card` + `bg-raised`），选项用 `bg-fill-track` +
+`rounded-item`，选中是 `accent-soft` + `accent-text`，没有描边光晕与左侧色条。
 
 ## Agent 提问表单（elicitation）
 
