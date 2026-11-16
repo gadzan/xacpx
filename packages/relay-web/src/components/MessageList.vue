@@ -686,12 +686,12 @@ watch(
                 <button
                   type="button"
                   data-test="msg-fork-node"
-                  class="inline-flex items-center text-fg-muted transition-colors hover:text-accent"
+                  class="shrink-0 rounded-sm p-1 leading-[0] text-fg-muted transition-colors hover:bg-fg/5 hover:text-accent [@media(pointer:coarse)]:grid [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:place-items-center [@media(pointer:coarse)]:p-0"
                   :aria-label="$t('chat.forkFromHere')"
                   :title="$t('chat.forkFromHere')"
                   @click="forkNode(m)"
                 >
-                  <GitFork :size="12" />
+                  <GitFork :size="14" />
                 </button>
               </template>
             </ConversationMeta>

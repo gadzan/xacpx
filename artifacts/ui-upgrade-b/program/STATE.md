@@ -85,3 +85,19 @@ each fixed in one follow-up commit:
 7. HANDOFF and manifest quoted the pre-merge head and counts. Refreshed.
 
 Docs prose also lost every `WP-N` comment label and the restated prop docs.
+
+### Round 2 (delta) at c50a6c47, and the docs-only head
+
+Three delta lanes ran at `c50a6c47`:
+- `DeltaGates`: PASS. tsc clean, vitest 213 files / 2989 tests, playwright 187
+  passed / 0 failed / 51 skipped; CI's macOS job reports the same pass/skip totals.
+- `DeltaReview`: PASS on all seven fixes, with the dialog-shell hygiene proven by
+  running that spec with the env unset and seeing `git status` stay empty.
+- `DeltaProse`: ISSUES, docs only: the handoff and the wp13 measurement still
+  quoted 2977, the handoff's head line implied the fix commit carried no code
+  changes, the manifest's `unit_final.head` was prose, and one "已知失败" bullet
+  was duplicated. Fixed in `343988bf`; `git diff c50a6c47..343988bf -- packages`
+  is empty.
+
+Standing at the docs-only head: CI green required, then the operator's visual
+acceptance, then the squash merge with `--match-head-commit`. No merge has run.
