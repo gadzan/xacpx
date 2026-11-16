@@ -2,7 +2,7 @@
 //   text-[9px] [9.5px] [10px] [10.5px] [11px] [11.5px] -> text-xs  (12/18)
 //   text-[12px] [12.5px] [13px]                          -> text-ui  (13/20)
 //   text-[13.5px] [14px]                                  -> text-sm  (14/22)
-//   text-[15px] [16px]                                    -> text-base (16/24)
+//   text-[15px] [16px] [17px]                             -> text-base (16/24)
 // Any other arbitrary value is left alone and reported by the runner, so
 // `text-[#fff]`, `text-[length:14px]` and unknown sizes survive untouched.
 //
@@ -42,6 +42,7 @@ const SIZE_TOKENS = {
   "14": "text-sm",
   "15": "text-base",
   "16": "text-base",
+  "17": "text-base",
 };
 const ARBITRARY_SIZE = /^text-\[(\d+(?:\.\d+)?)px\]$/;
 

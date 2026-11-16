@@ -238,7 +238,7 @@ function reportWorkspaceCleanup(result: LifecycleOperationDto): void {
           <input v-model="deleteDedicatedWorkspace" data-test="removal-delete-workspace" type="checkbox" :disabled="freezeFlag('deleteDedicatedWorkspace')" />
           <span>
             {{ t("bot.removal.workspace") }}
-            <code data-test="removal-workspace-path" class="break-all text-[11px] opacity-70">{{ dedicatedWorkspace?.path }}</code>
+            <code data-test="removal-workspace-path" class="break-all text-xs opacity-70">{{ dedicatedWorkspace?.path }}</code>
           </span>
         </label>
         <p v-else-if="dedicatedWorkspace?.inUse && !finished" data-test="removal-workspace-in-use" class="text-xs">

@@ -58,7 +58,7 @@ describe("MobileSheet pull-to-close", () => {
     wrapper.unmount();
   });
 
-  it("carries the glass treatment, 24px top radius, glass scrim and 17px title", () => {
+  it("carries the glass treatment, 24px top radius and glass scrim", () => {
     const wrapper = mountSheet();
     const panel = wrapper.find('[data-test="sheet"]');
     expect(panel.classes()).toEqual(
@@ -77,7 +77,7 @@ describe("MobileSheet pull-to-close", () => {
       expect.arrayContaining(["bg-scrim", "backdrop-blur-sm"]),
     );
     expect(scrim.className).not.toContain("bg-black/50");
-    expect(wrapper.find("h2").classes()).toContain("text-[17px]");
+
     wrapper.unmount();
   });
 

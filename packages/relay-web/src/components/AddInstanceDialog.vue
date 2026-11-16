@@ -137,7 +137,7 @@ function close(): void {
       data-test="add-instance-dialog"
       class="glass-strong w-full max-w-md rounded-2xl p-5"
     >
-      <h3 id="add-instance-title" class="text-[17px] font-semibold text-fg">{{ $t("settings.addInstance") }}</h3>
+      <h3 id="add-instance-title" class="text-base font-semibold text-fg">{{ $t("settings.addInstance") }}</h3>
 
       <!-- Step 1: name -->
       <div v-if="step === 1" class="mt-4">

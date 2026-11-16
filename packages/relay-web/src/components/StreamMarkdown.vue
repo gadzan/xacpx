@@ -262,14 +262,15 @@ onBeforeUnmount(() => {
   color: rgb(var(--c-accent-text));
   text-decoration: underline;
 }
-/* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono 12.5px (mockup line 298) */
+/* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono. 13px is the `ui`
+   token, the same size the code block uses, so prose and code line up. */
 .stream-md code {
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));
   border-radius: 6px;
   padding: 0.1em 0.3em;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 /* Code block: concave inset — fill-track trough with a hairline edge and the
    card radius, no shadow. Font stays 13px mono (type scale owns sizes). */

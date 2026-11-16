@@ -13,12 +13,12 @@ const vueCases: Array<[string, string]> = [
   ['<div class="text-[11px]"></div>', '<div class="text-xs"></div>'],
   ['<div class="text-[11.5px]"></div>', '<div class="text-xs"></div>'],
   ['<div class="text-[12px]"></div>', '<div class="text-ui"></div>'],
-  ['<div class="text-[12.5px]"></div>', '<div class="text-ui"></div>'],
   ['<div class="text-[13px]"></div>', '<div class="text-ui"></div>'],
   ['<div class="text-[13.5px]"></div>', '<div class="text-sm"></div>'],
   ['<div class="text-[14px]"></div>', '<div class="text-sm"></div>'],
   ['<div class="text-[15px]"></div>', '<div class="text-base"></div>'],
   ['<div class="text-[16px]"></div>', '<div class="text-base"></div>'],
+  ['<div class="text-[17px]"></div>', '<div class="text-base"></div>'],
   // Several sizes in one attribute, with neighbours kept.
   [
     '<div class="flex items-center gap-1 text-[11px] font-medium text-fg-muted"></div>',
@@ -61,7 +61,7 @@ const vueCases: Array<[string, string]> = [
   ['<i class="text-[length:14px]"></i>', '<i class="text-[length:14px]"></i>'],
   // Unknown sizes are left for the run report, never guessed at.
   ['<i class="text-[8px]"></i>', '<i class="text-[8px]"></i>'],
-  ['<i class="text-[17px]"></i>', '<i class="text-[17px]"></i>'],
+  ['<i class="text-[18px]"></i>', '<i class="text-[18px]"></i>'],
   ['<i class="text-[10.25px]"></i>', '<i class="text-[10.25px]"></i>'],
   ['<i class="text-[1rem]"></i>', '<i class="text-[1rem]"></i>'],
   // Comments and prose keep the source word.

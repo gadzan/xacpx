@@ -128,7 +128,7 @@ useModalA11y(panel, () => emit("close"), {
     </div>
     <slot name="header">
       <div class="flex shrink-0 items-center justify-between gap-2 px-4 pb-1 pt-1">
-        <h2 class="min-w-0 truncate text-[17px] font-semibold text-fg">{{ title }}</h2>
+        <h2 class="min-w-0 truncate text-base font-semibold text-fg">{{ title }}</h2>
         <button v-if="showClose" type="button" data-test="sheet-close" :aria-label='$t("common.close")'
                 class="grid h-11 w-11 shrink-0 place-items-center rounded-full text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 @click="navigateBack"><X :size="18" /></button>

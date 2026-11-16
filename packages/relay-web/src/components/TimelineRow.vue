@@ -402,7 +402,7 @@ const noticeToneClass = computed(() => {
       </button>
       <span
         v-if="stoppedOverflow > 0"
-        class="grid h-5 min-w-5 place-items-center rounded-full bg-surface-2 px-1 text-[10px] font-medium text-fg-muted"
+        class="grid h-5 min-w-5 place-items-center rounded-full bg-surface-2 px-1 text-xs font-medium tabular-nums text-fg-muted"
         style="box-shadow: 0 0 0 2px rgb(var(--c-bg))"
       >+{{ stoppedOverflow }}</span>
     </div>
