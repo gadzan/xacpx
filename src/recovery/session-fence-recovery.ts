@@ -15,13 +15,14 @@ import { OrphanRegistry } from "../transport/orphan-registry";
 import { queryJobContainment, windowsJobNameForGeneration } from "../process/windows-job-query";
 import { loadConfig } from "../config/load-config";
 import { RuntimeWorkerFence, StaleFenceGenerationError } from "../bridge/engine/runtime/runtime-worker-fence";
-import type { FenceLiveness, RuntimeWorkerFenceRecord } from "../bridge/engine/runtime/runtime-worker-fence";
+import type { FenceLiveness, FencePhase, RuntimeWorkerFenceRecord } from "../bridge/engine/runtime/runtime-worker-fence";
 import type { ResolvedSession } from "../transport/types";
 import type { LogicalSession } from "../state/types";
 
 export type SessionFenceRecoveryEligibility =
   | { kind: "recoverable-terminal-proof" }
   | { kind: "recoverable-contained-proof" }
+  | { kind: "recoverable-pre-admission" }
   | { kind: "recoverable-legacy-orphan-risk" }
   | {
       kind: "refused";
@@ -66,7 +67,7 @@ export interface SessionFenceRecoveryDecision {
 }
 
 
-function resolveFenceDirForOfflineRecovery(
+export function resolveFenceDirForOfflineRecovery(
   input: { fenceDir?: string; durableDir?: string },
   home: string,
 ): string {
@@ -157,16 +158,31 @@ export async function resolveSessionFenceRecoveryTarget(input: {
   };
 }
 
+export interface SessionFenceProbes {
+  probeWorker?: (record: RuntimeWorkerFenceRecord) => FenceLiveness | Promise<FenceLiveness>;
+  residualsRemaining?: (generationId: string) => Promise<boolean>;
+  probeContainment?: (record: RuntimeWorkerFenceRecord) => Promise<SessionFenceContainment>;
+}
+
 export async function probeSessionFenceTarget(
   target: SessionFenceRecoveryTarget,
   configPath: string,
-  probes: {
-    probeWorker?: (record: RuntimeWorkerFenceRecord) => FenceLiveness | Promise<FenceLiveness>;
-    residualsRemaining?: (generationId: string) => Promise<boolean>;
-    probeContainment?: (record: RuntimeWorkerFenceRecord) => Promise<SessionFenceContainment>;
-  } = {},
+  probes: SessionFenceProbes = {},
 ): Promise<SessionFenceProbeResult> {
-  const record = target.fenceRecord;
+  return await probeFenceRecord(target.fenceRecord, configPath, probes);
+}
+
+/**
+ * Probes one durable fence record. Split out from the target path so a sweep
+ * can judge a fence whose session no longer exists in state.json — that is the
+ * common shape of the oldest residue (a killed host leaves the fence, the
+ * session row is long gone).
+ */
+export async function probeFenceRecord(
+  record: RuntimeWorkerFenceRecord,
+  configPath: string,
+  probes: SessionFenceProbes = {},
+): Promise<SessionFenceProbeResult> {
   const probeWorker = probes.probeWorker ?? probeFencedWorkerDefault;
   const worker = await probeWorker(record);
   let residualsRemaining: boolean | null = null;
@@ -268,6 +284,22 @@ export function decideSessionFenceRecovery(input: {
     if (input.probe.residualsRemaining === null) return { kind: "refused", reason: "residuals-unreadable" };
     if (input.probe.residualsRemaining) return { kind: "refused", reason: "residuals-pending" };
   }
+  // An "owned" record that never verified bootstrap and carries no Job is the
+  // pre-Job shape still found on disk. Pre-admission means no business RPC ever
+  // entered (the admission barrier makes that a hard invariant), so the worker
+  // birth is the whole proof — exactly what the online discharge already does
+  // for that record (#476). A Job-bearing pre-admission record keeps the
+  // stricter containment path below, and a claim keeps its own rule: never
+  // time-steal a claimant that might still be mid-spawn.
+  if (
+    input.record.phase === "owned"
+    && input.record.bootstrapVerified !== true
+    && input.record.jobName === undefined
+  ) {
+    if (input.probe.worker === "alive") return { kind: "refused", reason: "worker-alive" };
+    if (input.probe.worker !== "gone") return { kind: "refused", reason: "worker-unknown" };
+    return { kind: "recoverable-pre-admission" };
+  }
   // Job evidence: the supervisor must be provably gone and the Job empty or
   // absent. This covers every ownership phase — claiming (no supervisor was
   // ever authorized under the GO gate when no pid is recorded), owned (the
@@ -351,13 +383,56 @@ export async function recoverSessionFence(input: {
   if (eligibility.kind === "refused") {
     return { target: input.target, eligibility };
   }
+  const applied = await applyFenceRecovery({
+    fenceDir: input.target.fenceDir,
+    fenceKey: input.target.fenceKey,
+    fencePath: input.target.fencePath,
+    record: input.target.fenceRecord,
+    eligibility,
+    sessionAlias: input.target.alias,
+    ...(input.now ? { now: input.now } : {}),
+  });
+  if (!applied.ok) {
+    return {
+      target: input.target,
+      eligibility: { kind: "refused", reason: applied.reason },
+      ...(applied.backupPath ? { backupPath: applied.backupPath } : {}),
+    };
+  }
+  return {
+    target: input.target,
+    eligibility,
+    ...(applied.backupPath ? { backupPath: applied.backupPath } : {}),
+  };
+}
+
+export type FenceRecoveryApplyResult =
+  | { ok: true; backupPath?: string }
+  | { ok: false; reason: "generation-mismatch"; backupPath: string };
+
+/**
+ * Applies one already-decided recovery: durable backup, audit trail, generation
+ * CAS to "discharged", then retirement. Shared by the per-alias recover path and
+ * the sweep so both leave identical evidence and neither can lift a successor's
+ * fence (a lost CAS is reported, never retried blindly).
+ */
+export async function applyFenceRecovery(input: {
+  fenceDir: string;
+  fenceKey: string;
+  fencePath: string;
+  record: RuntimeWorkerFenceRecord;
+  eligibility: SessionFenceRecoveryEligibility;
+  sessionAlias: string;
+  now?: () => string;
+}): Promise<FenceRecoveryApplyResult> {
+  const fence = new RuntimeWorkerFence(input.fenceDir);
   const attemptedAt = input.now?.() ?? new Date().toISOString();
   const backupPath = join(
-    dirname(input.target.fencePath),
-    `${basename(input.target.fencePath)}.bak-${attemptedAt.replace(/[^0-9a-zA-Z-]+/g, "-")}-${randomUUID()}`,
+    dirname(input.fencePath),
+    `${basename(input.fencePath)}.bak-${attemptedAt.replace(/[^0-9a-zA-Z-]+/g, "-")}-${randomUUID()}`,
   );
   await mkdir(dirname(backupPath), { recursive: true, mode: 0o700 });
-  const original = await readFile(input.target.fencePath);
+  const original = await readFile(input.fencePath);
   const backup = await open(backupPath, "wx", 0o600);
   try {
     await backup.writeFile(original);
@@ -366,25 +441,125 @@ export async function recoverSessionFence(input: {
     await backup.close();
   }
   const auditPath = `${backupPath}.audit.json`;
-  const auditRecord = { attemptedAt, recovery: eligibility.kind, sessionAlias: input.target.alias, generation: input.expectedGeneration };
+  const auditRecord = {
+    attemptedAt,
+    recovery: input.eligibility.kind,
+    sessionAlias: input.sessionAlias,
+    generation: input.record.generation,
+  };
   await writeRecoveryAudit(auditPath, { ...auditRecord, outcome: "attempted" });
   try {
     await fence.compareAndSwap(
-      input.target.fenceKey,
-      { generation: input.expectedGeneration, from: [input.target.fenceRecord.phase] },
-      { ...input.target.fenceRecord, phase: "discharged" },
+      input.fenceKey,
+      { generation: input.record.generation, from: [input.record.phase] },
+      { ...input.record, phase: "discharged" },
     );
-    await fence.retire(input.target.fenceKey, input.expectedGeneration, "discharged");
+    await fence.retire(input.fenceKey, input.record.generation, "discharged");
   } catch (error) {
     if (!(error instanceof StaleFenceGenerationError)) throw error;
-    return { target: input.target, eligibility: { kind: "refused", reason: "generation-mismatch" }, backupPath };
+    return { ok: false, reason: "generation-mismatch", backupPath };
   }
-  const reread = await fence.read(input.target.fenceKey);
+  const reread = await fence.read(input.fenceKey);
   if (reread.kind !== "absent") {
-    throw new Error(`session fence recovery left evidence for "${input.target.fenceKey}" (${reread.kind})`);
+    throw new Error(`session fence recovery left evidence for "${input.fenceKey}" (${reread.kind})`);
   }
   await writeRecoveryAudit(auditPath, { ...auditRecord, outcome: "applied", recoveredAt: input.now?.() ?? new Date().toISOString() }, true);
-  return { target: input.target, eligibility, backupPath };
+  return { ok: true, backupPath };
+}
+
+export interface SessionFenceSweepEntry {
+  fenceKey: string;
+  generation: string | null;
+  phase: FencePhase | null;
+  pid?: number;
+  eligibility: SessionFenceRecoveryEligibility;
+  backupPath?: string;
+}
+
+/**
+ * Sweeps every durable fence in the directory instead of one alias at a time.
+ * Stale fences outlive their sessions: a hard-killed host leaves the record, the
+ * session row is deleted later, and the record is then only ever touched when
+ * some future acquire happens to hash onto the same physical key — so each one
+ * sits as a landmine for a later delete. This applies the SAME proof pipeline
+ * (and the SAME audit/backup evidence) to all of them: provable records are
+ * discharged and retired, the rest are reported with the reason they refused.
+ *
+ * `deleting` records are never touched here: they are a hard-delete admission
+ * barrier that only its own delete retry may adopt.
+ */
+export async function sweepSessionFences(input: {
+  configPath: string;
+  fenceDir: string;
+  acceptLegacyOrphanRisk?: boolean;
+  dryRun?: boolean;
+  probeFence?: (record: RuntimeWorkerFenceRecord) => Promise<SessionFenceProbeResult>;
+  now?: () => string;
+}): Promise<SessionFenceSweepEntry[]> {
+  const fence = new RuntimeWorkerFence(input.fenceDir);
+  let names: string[];
+  try {
+    names = await readdir(input.fenceDir);
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "ENOENT") return [];
+    throw error;
+  }
+  const probe = input.probeFence ?? ((record: RuntimeWorkerFenceRecord) => probeFenceRecord(record, input.configPath));
+  const entries: SessionFenceSweepEntry[] = [];
+  for (const name of names.sort()) {
+    // Live records only: recovery backups/audits and in-flight atomic writes
+    // share this directory and are not fences.
+    if (!name.endsWith(".json") || name.includes(".bak-") || name.includes(".tmp-") || name.endsWith(".audit.json")) continue;
+    const fenceKey = decodeURIComponent(name.slice(0, -".json".length));
+    const read = await fence.read(fenceKey);
+    if (read.kind === "absent") continue;
+    if (read.kind === "unreadable") {
+      entries.push({ fenceKey, generation: null, phase: null, eligibility: { kind: "refused", reason: "fence-unreadable" } });
+      continue;
+    }
+    const record = read.record;
+    if (record.phase === "deleting") {
+      entries.push({
+        fenceKey,
+        generation: record.generation,
+        phase: record.phase,
+        ...(record.pid ? { pid: record.pid } : {}),
+        eligibility: { kind: "refused", reason: "deleting" },
+      });
+      continue;
+    }
+    const eligibility = decideSessionFenceRecovery({
+      record,
+      expectedGeneration: record.generation,
+      acceptLegacyOrphanRisk: input.acceptLegacyOrphanRisk === true,
+      probe: await probe(record),
+    });
+    const entry: SessionFenceSweepEntry = {
+      fenceKey,
+      generation: record.generation,
+      phase: record.phase,
+      ...(record.pid ? { pid: record.pid } : {}),
+      eligibility,
+    };
+    if (eligibility.kind !== "refused" && input.dryRun !== true) {
+      const applied = await applyFenceRecovery({
+        fenceDir: input.fenceDir,
+        fenceKey,
+        fencePath: join(input.fenceDir, name),
+        record,
+        eligibility,
+        sessionAlias: "(no live session)",
+        ...(input.now ? { now: input.now } : {}),
+      });
+      if (applied.ok) {
+        if (applied.backupPath) entry.backupPath = applied.backupPath;
+      } else {
+        entry.eligibility = { kind: "refused", reason: applied.reason };
+      }
+    }
+    entries.push(entry);
+  }
+  return entries;
 }
 
 async function writeRecoveryAudit(path: string, record: object, replace = false): Promise<void> {

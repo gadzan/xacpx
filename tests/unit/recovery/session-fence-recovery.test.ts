@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RuntimeWorkerFence } from "../../../src/bridge/engine/runtime/runtime-worker-fence";
 import type { RuntimeWorkerFenceRecord } from "../../../src/bridge/engine/runtime/runtime-worker-fence";
-import { decideSessionFenceRecovery, probeSessionFenceTarget, recoverSessionFence, resolveSessionFenceRecoveryTarget } from "../../../src/recovery/session-fence-recovery";
+import { decideSessionFenceRecovery, probeSessionFenceTarget, recoverSessionFence, resolveSessionFenceRecoveryTarget, sweepSessionFences } from "../../../src/recovery/session-fence-recovery";
 import type { SessionFenceRecoveryTarget } from "../../../src/recovery/session-fence-recovery";
 import { windowsJobNameForGeneration } from "../../../src/process/windows-job-query";
 import { physicalFenceKeyForSession } from "../../../src/bridge/engine/runtime/physical-session-identity";
@@ -328,4 +328,82 @@ test("a successor before retire remains fenced with only an attempted recovery a
     retire.mockRestore();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("a pre-Job owned fence recovers only on a proven-gone worker", () => {
+  // The pre-Job shape still on disk: written before the supervisor/Job existed.
+  const owned = record({ phase: "owned", bootstrapVerified: false, creationDate: null, jobName: undefined });
+  const input = {
+    record: owned,
+    expectedGeneration: GENERATION,
+    probe: { worker: "gone" as const, residualsRemaining: null, containment: null },
+  };
+  expect(decideSessionFenceRecovery(input)).toEqual({ kind: "recoverable-pre-admission" });
+  for (const worker of ["alive", "unknown"] as const) {
+    expect(decideSessionFenceRecovery({ ...input, probe: { ...input.probe, worker } }).kind).toBe("refused");
+  }
+  // A verified bootstrap means a business RPC did enter: never pre-admission.
+  expect(decideSessionFenceRecovery({ ...input, record: { ...owned, bootstrapVerified: true } }).kind).toBe("refused");
+  // Job-bearing pre-admission keeps the stricter containment proof.
+  const withJob = { ...owned, jobName: windowsJobNameForGeneration(GENERATION)! };
+  expect(decideSessionFenceRecovery({ ...input, record: withJob }).kind).toBe("refused");
+  expect(decideSessionFenceRecovery({
+    ...input,
+    record: withJob,
+    probe: { ...input.probe, supervisor: "gone", containment: "absent" },
+  }).kind).toBe("recoverable-contained-proof");
+});
+
+test("sweep clears provable orphan fences, spares deleting barriers, and honors dry run", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "session-sweep-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    const legacy = record({ logicalSessionId: "key-legacy", phase: "admitted", pid: 29048 });
+    const owned = record({ logicalSessionId: "key-owned", phase: "owned", bootstrapVerified: false, creationDate: null, pid: 48848 });
+    const barrier = record({ logicalSessionId: "key-barrier", phase: "deleting", pid: 24560 });
+    const live = record({ logicalSessionId: "key-live", phase: "admitted", pid: 4242 });
+    for (const rec of [legacy, owned, barrier, live]) await fence.write(rec);
+    // Recovery artifacts share this directory and must never be read as fences.
+    await writeFile(join(dir, "key-legacy.json.bak-2026-01-01T00-00-00-000Z-dead"), "{}");
+    await writeFile(join(dir, "key-legacy.json.bak-2026-01-01T00-00-00-000Z-dead.audit.json"), "{}");
+    const probeFence = async (rec: RuntimeWorkerFenceRecord) => ({
+      worker: rec.pid === 4242 ? "alive" as const : "gone" as const,
+      // The registry read succeeded and holds nothing for these generations
+      // (null means "could not read", which correctly refuses).
+      residualsRemaining: false,
+      containment: null,
+    });
+    const verdicts = (entries: Awaited<ReturnType<typeof sweepSessionFences>>) =>
+      entries.map((entry) => [entry.fenceKey, entry.eligibility.kind === "refused" ? `refused:${entry.eligibility.reason}` : entry.eligibility.kind]);
+
+    // Dry run decides exactly the same things and writes nothing.
+    const dry = await sweepSessionFences({ configPath: join(dir, "config.json"), fenceDir: dir, acceptLegacyOrphanRisk: true, dryRun: true, probeFence });
+    expect(verdicts(dry)).toEqual([
+      ["key-barrier", "refused:deleting"],
+      ["key-legacy", "recoverable-legacy-orphan-risk"],
+      ["key-live", "refused:worker-alive"],
+      ["key-owned", "recoverable-pre-admission"],
+    ]);
+    for (const rec of [legacy, owned, barrier, live]) expect((await fence.read(rec.logicalSessionId)).kind).toBe("present");
+
+    // Without the explicit acknowledgment the legacy record stays refused while
+    // the pre-admission one (no legacy risk) is still cleared.
+    await sweepSessionFences({ configPath: join(dir, "config.json"), fenceDir: dir, probeFence });
+    expect((await fence.read("key-legacy")).kind).toBe("present");
+    expect((await fence.read("key-owned")).kind).toBe("absent");
+
+    // The owned record is already gone from the previous pass, so the second
+    // sweep only sees what is still on disk.
+    const applied = await sweepSessionFences({ configPath: join(dir, "config.json"), fenceDir: dir, acceptLegacyOrphanRisk: true, probeFence });
+    expect(verdicts(applied)).toEqual([
+      ["key-barrier", "refused:deleting"],
+      ["key-legacy", "recoverable-legacy-orphan-risk"],
+      ["key-live", "refused:worker-alive"],
+    ]);
+    expect((await fence.read("key-legacy")).kind).toBe("absent");
+    // The barrier and the live owner survive untouched.
+    expect((await fence.read("key-barrier")).kind).toBe("present");
+    expect((await fence.read("key-live")).kind).toBe("present");
+    expect((await readdir(dir)).filter((name) => name.endsWith(".audit.json")).length).toBe(3);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

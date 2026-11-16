@@ -131,3 +131,24 @@ test("recover prints the platform refusal when stderr is not provided", async ()
   expect(code).toBe(1);
   expect(output.join("\n")).toContain("requires Windows");
 });
+
+test("session CLI accepts a sweep with dry run and keeps per-alias recovery generation-guarded", () => {
+  expect(parseSessionFenceCliArgs(["recover", "--all"])).toEqual({ all: true });
+  expect(parseSessionFenceCliArgs(["recover", "--all", "--dry-run", "--accept-legacy-orphan-risk"])).toEqual({
+    all: true,
+    dryRun: true,
+    acceptLegacyOrphanRisk: true,
+  });
+  expect(parseSessionFenceCliArgs(["recover", "--all", "--fence-dir", "/tmp/fences"])).toEqual({
+    all: true,
+    fenceDir: "/tmp/fences",
+  });
+  // A sweep is generation-free by construction; an alias recovery needs one, and
+  // neither a dry run nor a bare --all means anything for the inspect path.
+  for (const args of [
+    ["recover", "--all", "--expected-generation", "gen"],
+    ["inspect", "--all"],
+    ["inspect", "backend", "--dry-run"],
+    ["recover", "--all", "--dry-run", "--dry-run"],
+  ]) expect(parseSessionFenceCliArgs(args)).toBeNull();
+});

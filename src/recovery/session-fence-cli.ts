@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+
 import { resolveRuntimeDirFromConfigPath, resolveRuntimeConsumerLockPath } from "../daemon/daemon-files";
 import { createRuntimeConsumerLock } from "../daemon/runtime-consumer-lock";
 import { setLocale, resolveLocale, t } from "../i18n";
@@ -5,13 +7,19 @@ import { resolveRuntimePaths } from "../main";
 import {
   probeSessionFenceTarget,
   recoverSessionFence,
+  resolveFenceDirForOfflineRecovery,
   resolveSessionFenceRecoveryTarget,
+  sweepSessionFences,
 } from "./session-fence-recovery";
 import type { SessionFenceRecoveryEligibility, SessionFenceRecoveryTarget } from "./session-fence-recovery";
 
 export interface SessionFenceCliArgs {
   inspect?: string;
   recover?: string;
+  /** Sweep every durable fence instead of one alias. */
+  all?: boolean;
+  /** Report the sweep's decisions without touching any fence. */
+  dryRun?: boolean;
   expectedGeneration?: string;
   acceptLegacyOrphanRisk?: boolean;
   fenceDir?: string;
@@ -21,13 +29,16 @@ export interface SessionFenceCliArgs {
 const USAGE_LINES = [
   "Usage: xacpx session inspect <alias>",
   "Usage: xacpx session recover <alias> --expected-generation <generation> [--accept-legacy-orphan-risk]",
+  "Usage: xacpx session recover --all [--dry-run] [--accept-legacy-orphan-risk]",
 ];
 
 export function parseSessionFenceCliArgs(args: string[]): SessionFenceCliArgs | null {
   const action = args[0];
-  const alias = args[1];
-  if ((action !== "inspect" && action !== "recover") || !alias || alias.startsWith("--") || alias === "inspect" || alias === "recover") return null;
-  const parsed: SessionFenceCliArgs = { [action]: alias };
+  const target = args[1];
+  if (action !== "inspect" && action !== "recover") return null;
+  const sweep = action === "recover" && target === "--all";
+  if (!sweep && (!target || target.startsWith("--") || target === "inspect" || target === "recover")) return null;
+  const parsed: SessionFenceCliArgs = sweep ? { all: true } : { [action]: target };
   const seen = new Set<string>();
   for (let index = 2; index < args.length; index++) {
     const flag = args[index]!;
@@ -38,11 +49,18 @@ export function parseSessionFenceCliArgs(args: string[]): SessionFenceCliArgs | 
       parsed.acceptLegacyOrphanRisk = true;
       continue;
     }
+    if (flag === "--dry-run") {
+      // A dry run only means something for the sweep; an alias recovery is
+      // already a single, deliberate, confirmed action.
+      if (!sweep) return null;
+      parsed.dryRun = true;
+      continue;
+    }
     if (flag !== "--expected-generation" && flag !== "--fence-dir" && flag !== "--durable-dir") return null;
     const value = args[++index];
     if (!value || !value.trim() || value.startsWith("--") || value === "inspect" || value === "recover") return null;
     if (flag === "--expected-generation") {
-      if (action !== "recover") return null;
+      if (action !== "recover" || sweep) return null;
       parsed.expectedGeneration = value;
     } else if (flag === "--fence-dir") {
       parsed.fenceDir = value;
@@ -50,7 +68,7 @@ export function parseSessionFenceCliArgs(args: string[]): SessionFenceCliArgs | 
       parsed.durableDir = value;
     }
   }
-  if (action === "recover" && !parsed.expectedGeneration) return null;
+  if (action === "recover" && !sweep && !parsed.expectedGeneration) return null;
   return parsed;
 }
 
@@ -127,24 +145,58 @@ export async function runSessionFenceCli(args: string[], deps: {
     return 1;
   }
 
-  const recoverInput = parsed.recover!;
+  const recoverInput = parsed.recover ?? "";
   const lockPath = resolveRuntimeConsumerLockPath(resolveRuntimeDirFromConfigPath(configPath));
+  // A dry run mutates nothing, so it must not require stopping a live daemon:
+  // its whole point is answering "what would a sweep do" without downtime. The
+  // report is a point-in-time snapshot, which the caller is told.
   const lock = createRuntimeConsumerLock({ lockFilePath: lockPath });
-  try {
-    await lock.acquire({
-      pid: process.pid,
-      mode: "foreground",
-      startedAt: new Date().toISOString(),
-      configPath,
-      statePath,
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    deps.stderr?.(`${t().cli.recoverLockBusy}${detail ? ` (${detail})` : ""}\n`);
-    deps.print(t().cli.recoverLockBusyHint);
-    return 1;
+  const lockHeld = parsed.dryRun !== true;
+  if (lockHeld) {
+    try {
+      await lock.acquire({
+        pid: process.pid,
+        mode: "foreground",
+        startedAt: new Date().toISOString(),
+        configPath,
+        statePath,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      deps.stderr?.(`${t().cli.recoverLockBusy}${detail ? ` (${detail})` : ""}\n`);
+      deps.print(t().cli.recoverLockBusyHint);
+      return 1;
+    }
   }
   try {
+    if (parsed.all) {
+      const fenceDir = parsed.fenceDir ?? resolveFenceDirForOfflineRecovery(
+        parsed.durableDir === undefined ? {} : { durableDir: parsed.durableDir },
+        homedir(),
+      );
+      const entries = await sweepSessionFences({
+        configPath,
+        fenceDir,
+        acceptLegacyOrphanRisk: parsed.acceptLegacyOrphanRisk === true,
+        ...(parsed.dryRun === true ? { dryRun: true } : {}),
+      });
+      for (const entry of entries) {
+        deps.print([
+          `fence: ${entry.fenceKey}`,
+          `phase: ${entry.phase ?? "(unreadable)"}`,
+          ...(entry.pid === undefined ? [] : [`pid: ${entry.pid}`]),
+          `-> ${eligibilityLine(entry.eligibility)}`,
+          ...(entry.backupPath === undefined ? [] : [`backup: ${entry.backupPath}`]),
+        ].join("  "));
+      }
+      const recovered = entries.filter((entry) => entry.eligibility.kind !== "refused").length;
+      deps.print(
+        `swept ${entries.length} fence(s): ${recovered} ` +
+          `${parsed.dryRun === true ? "recoverable (dry run, nothing written)" : "recovered"}, ` +
+          `${entries.length - recovered} refused`,
+      );
+      return 0;
+    }
     const target = await resolveSessionFenceRecoveryTarget({
       configPath,
       statePath,
@@ -177,6 +229,6 @@ export async function runSessionFenceCli(args: string[], deps: {
     if (decision.backupPath) deps.print(`fence backup: ${decision.backupPath}`);
     return 0;
   } finally {
-    await lock.release();
+    if (lockHeld) await lock.release();
   }
 }
