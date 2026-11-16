@@ -906,7 +906,6 @@ function handleRetry(): void {
               <span v-if="member.lead" class="shrink-0 text-xs text-accent">{{ $t("group.target.lead") }}</span>
               <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
               <span v-if="!member.enabled" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) }}</span>
-              <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
             </button>
           </div>
         </MobileSheet>
@@ -960,7 +959,6 @@ function handleRetry(): void {
           <span v-if="member.lead" class="shrink-0 text-xs text-accent">{{ $t("group.target.lead") }}</span>
           <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
           <span v-if="!member.enabled" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) }}</span>
-          <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
         </button>
       </div>
       </template>
