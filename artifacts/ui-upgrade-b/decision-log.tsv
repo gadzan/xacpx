@@ -1,0 +1,2 @@
+ts	phase	decision	why	evidence	result
+2026-11-16T03:59:23Z	baseline	locked base at audit snapshot, 28 before shots, contrast green	base equals 5b89cab, no drift	ui-upgrade-before.spec.ts, artifacts/ui-upgrade-b/before	28 shots green, unit 2969 green
