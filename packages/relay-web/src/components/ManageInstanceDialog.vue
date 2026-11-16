@@ -409,7 +409,7 @@ onMounted(async () => {
               <p data-test="files-settings-hint" class="text-xs text-fg-muted">{{ $t("instance.filesSettingsHint") }}</p>
               <p v-if="filesError" data-test="files-settings-error" class="text-xs text-danger-overlay">{{ filesError }}</p>
             </section>
-            <details v-if="jevEditable || jevUpgradeNotice" data-test="jev-details" class="rounded-lg border border-border/70 px-3 py-2">
+            <details v-if="jevEditable || jevUpgradeNotice" data-test="jev-details" class="rounded-lg border border-hairline px-3 py-2">
               <summary class="cursor-pointer text-sm font-semibold text-fg">{{ $t("instance.jevTitle") }}</summary>
               <p v-if="jevUpgradeNotice" data-test="jev-upgrade-notice" class="mt-2 text-xs text-fg-muted">{{ $t(jevUpgradeNotice) }}</p>
               <div v-if="jevEditable" data-test="jev-settings" class="mt-2 space-y-2">

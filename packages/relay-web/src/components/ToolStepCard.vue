@@ -114,7 +114,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
         <ChevronRight v-else-if="hasDetail" :size="12" class="shrink-0 opacity-40 group-hover:opacity-80 transition-opacity" />
       </span>
     </component>
-    <div v-if="hasDetail && open" data-test="tool-step-detail" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-1">
+    <div v-if="hasDetail && open" data-test="tool-step-detail" class="ml-2.5 my-1.5 border-l-2 border-hairline pl-3 space-y-1">
       <ToolStepDetail :step="step" :hydrating="hydrating" />
     </div>
   </div>

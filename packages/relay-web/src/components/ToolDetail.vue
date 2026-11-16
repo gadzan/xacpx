@@ -60,8 +60,8 @@ const outputMeta = computed(() => {
             class="flex"
             :class="r.type === 'add' ? 'bg-run/10' : r.type === 'del' ? 'bg-danger/10' : ''"
           >
-            <span class="w-8 shrink-0 select-none border-r border-border px-1 text-right tabular-nums text-fg-muted">{{ r.oldNo ?? "" }}</span>
-            <span class="w-8 shrink-0 select-none border-r border-border px-1 text-right tabular-nums text-fg-muted">{{ r.newNo ?? "" }}</span>
+            <span class="w-8 shrink-0 select-none border-r border-hairline px-1 text-right tabular-nums text-fg-muted">{{ r.oldNo ?? "" }}</span>
+            <span class="w-8 shrink-0 select-none border-r border-hairline px-1 text-right tabular-nums text-fg-muted">{{ r.newNo ?? "" }}</span>
             <span class="w-3 shrink-0 select-none text-center" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger-text' : 'text-fg-muted'">{{ r.type === 'add' ? '+' : r.type === 'del' ? '-' : '' }}</span>
             <span class="whitespace-pre px-1" :class="r.type === 'add' ? 'text-run' : r.type === 'del' ? 'text-danger-text' : 'text-fg'">{{ r.text }}</span>
           </div>

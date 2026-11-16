@@ -140,7 +140,7 @@ onBeforeUnmount(() => {
       </span>
     </button>
 
-    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-border/40 pl-3 py-0.5 text-xs text-fg-muted">
+    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-hairline pl-3 py-0.5 text-xs text-fg-muted">
       <Transition v-if="hasTrace" name="activity-slide" mode="out-in">
         <div v-if="currentActivity" :key="currentActivity.toolCallId" class="flex min-w-0 items-center gap-2">
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="currentActivity.status === 'running' ? 'bg-accent' : currentActivity.status === 'error' ? 'bg-danger' : 'bg-run'" />
@@ -168,8 +168,8 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else data-test="subagent-timeline" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-2">
-      <ol v-if="hasTrace" class="relative ml-1 space-y-1.5 before:absolute before:bottom-2 before:left-[7px] before:top-2 before:w-px before:bg-border">
+    <div v-else data-test="subagent-timeline" class="ml-2.5 my-1.5 border-l-2 border-hairline pl-3 space-y-2">
+      <ol v-if="hasTrace" class="relative ml-1 space-y-1.5 before:absolute before:bottom-2 before:left-[7px] before:top-2 before:w-px before:bg-hairline">
         <li v-for="child in children" :key="child.toolCallId" class="relative flex min-w-0 items-center gap-2 pl-5">
           <span class="absolute left-0 grid h-3.5 w-3.5 place-items-center rounded-full bg-surface">
             <span class="h-1.5 w-1.5 rounded-full" :class="child.status === 'running' ? 'bg-accent' : child.status === 'error' ? 'bg-danger' : 'bg-run'" />

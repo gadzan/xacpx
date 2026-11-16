@@ -44,7 +44,7 @@ function toggle(): void {
       <ChevronRight v-else :size="12" class="shrink-0 opacity-40 group-hover:opacity-80 transition-opacity" />
     </button>
     <p v-if="open" data-test="reasoning-body"
-       class="ml-2.5 my-1 border-l-2 border-border/60 pl-3 py-0.5 text-ui leading-relaxed text-fg-muted whitespace-pre-wrap">
+       class="ml-2.5 my-1 border-l-2 border-hairline pl-3 py-0.5 text-ui leading-relaxed text-fg-muted whitespace-pre-wrap">
       {{ reasoning }}
     </p>
   </div>

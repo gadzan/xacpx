@@ -388,7 +388,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
 <template>
   <div
     data-test="interaction-form"
-    class="w-full rounded-xl border border-border bg-surface p-4 shadow-sm space-y-4"
+    class="w-full rounded-xl border border-hairline bg-surface p-4 shadow-sm space-y-4"
   >
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0 flex-1 space-y-1">
@@ -539,7 +539,7 @@ function onSelect(field: InteractionFieldDto, value: string): void {
             type="button"
             :data-test="`interaction-option-${option.value}`"
             :aria-pressed="isSelected(field, option.value)"
-            class="rounded-md border border-border bg-surface px-3 py-2 text-sm transition-colors"
+            class="rounded-md border border-hairline bg-surface px-3 py-2 text-sm transition-colors"
             :class="isSelected(field, option.value)
               ? 'border-accent bg-accent-soft text-accent-text ring-1 ring-accent'
               : 'text-fg hover:bg-surface-2'"

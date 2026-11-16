@@ -678,7 +678,7 @@ function describeSubmitError(err: unknown): string {
                 v-model="enabled"
                 @change="enabledDirty = true"
                 type="checkbox"
-                class="rounded-sm border-border text-accent focus:ring-accent"
+                class="rounded-sm border-hairline text-accent focus:ring-accent"
               />
               <span class="font-medium text-xs">{{ $t("bot.fields.enabled") }}</span>
             </label>

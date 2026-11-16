@@ -534,19 +534,19 @@ onBeforeUnmount(() => {
               class="shrink-0 rounded-sm bg-surface-2 px-2.5 py-1 font-mono text-ui transition-colors disabled:opacity-40"
               :class="shiftArmed ? 'bg-accent-soft text-accent-text' : 'bg-bg text-fg-muted hover:bg-raised hover:text-fg'"
               @click="shiftArmed = !shiftArmed">Shift</button>
-      <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+      <span class="h-4 w-px shrink-0 bg-hairline" aria-hidden="true" />
       <button data-test="key-left" :disabled="!canType" :aria-label="$t('terminal.keybar.left')" class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[D')"><ChevronLeft :size="15" /></button>
       <button data-test="key-up" :disabled="!canType" :aria-label="$t('terminal.keybar.up')" class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[A')"><ChevronUp :size="15" /></button>
       <button data-test="key-down" :disabled="!canType" :aria-label="$t('terminal.keybar.down')" class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[B')"><ChevronDown :size="15" /></button>
       <button data-test="key-right" :disabled="!canType" :aria-label="$t('terminal.keybar.right')" class="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-bg text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey('\u001b[C')"><ChevronRight :size="15" /></button>
-      <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+      <span class="h-4 w-px shrink-0 bg-hairline" aria-hidden="true" />
       <button data-test="key-home" :disabled="!canType" class="shrink-0 rounded-sm bg-bg px-2.5 py-1 font-mono text-ui text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.home)">Home</button>
       <button data-test="key-end" :disabled="!canType" class="shrink-0 rounded-sm bg-bg px-2.5 py-1 font-mono text-ui text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.end)">End</button>
       <button data-test="key-pageup" class="shrink-0 rounded-sm bg-bg px-2.5 py-1 font-mono text-ui text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageUp">PgUp</button>
       <button data-test="key-pagedown" class="shrink-0 rounded-sm bg-bg px-2.5 py-1 font-mono text-ui text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="pageDown">PgDn</button>
       <button data-test="key-insert" :disabled="!canType" class="shrink-0 rounded-sm bg-bg px-2.5 py-1 font-mono text-ui text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.insert)">Ins</button>
       <button data-test="key-enter" :disabled="!canType" class="shrink-0 rounded-sm bg-bg px-2.5 py-1 font-mono text-ui text-fg-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40" @click="sendKey(KEYS.enter, { refocus: true })">Enter</button>
-      <span class="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+      <span class="h-4 w-px shrink-0 bg-hairline" aria-hidden="true" />
       <button data-test="key-copy" class="ml-auto flex shrink-0 items-center gap-1.5 rounded-sm bg-bg px-2.5 py-1 text-ui text-fg-muted transition-colors hover:bg-raised hover:text-fg" @click="copySelection">
         <Copy :size="14" />{{ $t("terminal.keybar.copy") }}
       </button>

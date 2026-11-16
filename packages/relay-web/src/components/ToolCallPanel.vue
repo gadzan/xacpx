@@ -105,7 +105,7 @@ function rowElapsed(s: ToolStepDto): string {
       :anchor="anchor"
       @dismiss="fue.dismiss()"
     />
-    <ul v-if="open" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-1">
+    <ul v-if="open" class="ml-2.5 my-1.5 border-l-2 border-hairline pl-3 space-y-1">
       <li v-for="s in steps" :key="s.toolCallId">
         <button type="button" data-test="tool-row" class="flex w-full items-center gap-1.5 py-0.5 text-left text-xs text-fg-muted hover:text-fg transition-colors" @click="toggleRow(s.toolCallId)">
           <component :is="KIND_ICON[s.kind]" :size="12" class="shrink-0 text-fg-muted" />

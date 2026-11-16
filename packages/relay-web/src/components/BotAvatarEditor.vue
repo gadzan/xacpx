@@ -168,7 +168,7 @@ function updateCharacter(change: Partial<CharacterAvatarConfig>): void {
       <div class="rounded-2xl p-3">
         <label class="flex cursor-pointer items-center gap-2 text-xs font-medium">
           <input type="checkbox" data-test="avatar-motion" :checked="hasCharacter && selectedCharacter.motion === 'auto'"
-                 class="rounded-sm border-border text-accent focus:ring-accent" @change="updateCharacter({ motion: ($event.target as HTMLInputElement).checked ? 'auto' : 'off' })" />
+                 class="rounded-sm border-hairline text-accent focus:ring-accent" @change="updateCharacter({ motion: ($event.target as HTMLInputElement).checked ? 'auto' : 'off' })" />
           {{ t('bot.avatar.motion.title') }}
         </label>
         <p class="mt-1.5 text-xs leading-relaxed text-fg-muted">{{ t('bot.avatar.motion.hint') }}</p>

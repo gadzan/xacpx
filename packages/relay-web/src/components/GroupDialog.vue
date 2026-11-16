@@ -602,7 +602,7 @@ async function confirmDelete(): Promise<void> {
                        class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-raised">
                   <input type="checkbox"
                          :checked="memberIds.includes(bot.id)"
-                         class="rounded-sm border-border text-accent focus:ring-accent"
+                         class="rounded-sm border-hairline text-accent focus:ring-accent"
                          @change="toggleMember(bot.id)" />
                   <span class="flex min-w-0 flex-1 flex-col">
                     <span class="truncate text-sm" :class="bot.enabled ? 'text-fg' : 'text-fg-muted'">
@@ -620,7 +620,7 @@ async function confirmDelete(): Promise<void> {
                        :key="id"
                        :data-test="`group-dialog-member-${id}`"
                        class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-raised">
-                  <input type="checkbox" checked class="rounded-sm border-border" @change="toggleMember(id)" />
+                  <input type="checkbox" checked class="rounded-sm border-hairline" @change="toggleMember(id)" />
                   <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">{{ id }}</span>
                 </label>
               </div>

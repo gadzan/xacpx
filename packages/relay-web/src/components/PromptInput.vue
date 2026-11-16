@@ -1013,7 +1013,7 @@ function onKeydown(e: KeyboardEvent) {
               "
             />
             <span
-              class="relative h-1 w-8 shrink-0 overflow-hidden rounded-full bg-border"
+              class="relative h-1 w-8 shrink-0 overflow-hidden rounded-full bg-fill-track"
             >
               <span
                 class="absolute inset-y-0 left-0 rounded-full"
