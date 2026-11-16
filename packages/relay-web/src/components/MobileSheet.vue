@@ -113,7 +113,7 @@ useModalA11y(panel, () => emit("close"), {
 
 <template>
   <!-- Attributes belong to the dialog, not its backdrop. -->
-  <div data-test="sheet-backdrop" class="sheet-backdrop fixed inset-0 bg-scrim backdrop-blur-sm lg:hidden" :class="zClass ?? 'z-sheet'" @click="navigateBack" />
+  <div data-test="sheet-backdrop" class="sheet-backdrop fixed inset-0 bg-scrim backdrop-blur-scrim lg:hidden" :class="zClass ?? 'z-sheet'" @click="navigateBack" />
   <div ref="panel" v-bind="$attrs" role="dialog" aria-modal="true" :aria-label="title" tabindex="-1"
        :data-dd-panel="ddPanel || undefined"
        :data-test="testId"

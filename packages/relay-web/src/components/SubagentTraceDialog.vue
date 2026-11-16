@@ -33,7 +33,7 @@ useModalA11y(dialog, () => emit("close"));
 <template>
   <Teleport to="body">
     <div class="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6" data-test="subagent-trace-dialog">
-      <div class="absolute inset-0 bg-scrim backdrop-blur-sm" @click="navigateBack" />
+      <div class="absolute inset-0 bg-scrim backdrop-blur-scrim" @click="navigateBack" />
       <section ref="dialog" role="dialog" aria-modal="true" tabindex="-1"
                aria-labelledby="subagent-trace-title"
                class="relative flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">

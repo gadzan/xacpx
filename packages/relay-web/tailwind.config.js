@@ -88,6 +88,8 @@ export default {
       },
       backdropBlur: {
         glass: "var(--glass-blur)",
+        // One blur for every dimming layer (dialog, sheet, drawer, palette).
+        scrim: "3px",
       },
       backdropSaturate: {
         glass: "var(--glass-saturate)",

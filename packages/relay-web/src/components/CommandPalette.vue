@@ -74,7 +74,7 @@ onBeforeUnmount(() => { unregister?.(); unregister = null; });
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-24 backdrop-blur-sm" data-test="command-palette" @click.self="navigateBack">
+  <div class="fixed inset-0 z-50 flex items-start justify-center bg-scrim pt-24 backdrop-blur-scrim" data-test="command-palette" @click.self="navigateBack">
     <div class="w-full max-w-lg overflow-hidden rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
       <div class="flex min-h-12 items-center gap-2 px-4">
         <Search :size="16" class="shrink-0 text-fg-muted-overlay" />

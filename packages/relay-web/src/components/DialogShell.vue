@@ -32,7 +32,7 @@ const props = withDefaults(defineProps<{
    *  dialog opened from another dialog is `nested`; one opened over a drawer
    *  or a sheet stack is `top`. */
   level?: "dialog" | "nested" | "top";
-  /** Backdrop blur: "backdrop-blur-sm" (default) or "backdrop-blur-[3px]". */
+  /** Dimming blur override; the default is the shared scrim token (3px). */
   blurClass?: string;
   /** First control to focus; defaults to the first focusable in the panel.
    *  Accepts the raw ref the caller already holds (its `.value` is usually
@@ -42,7 +42,7 @@ const props = withDefaults(defineProps<{
   panelClass: "max-h-[85vh] w-full max-w-md rounded-2xl",
   safeArea: false,
   level: "dialog",
-  blurClass: "backdrop-blur-sm",
+  blurClass: "backdrop-blur-scrim",
 });
 const emit = defineEmits<{ close: [] }>();
 

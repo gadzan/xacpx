@@ -598,10 +598,10 @@ function handleStopAll(): void {
          ANCESTOR would trap TopicSwitcher's popover — see that header's comment). -->
     <div class="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between px-2 pt-[calc(0.5rem+env(safe-area-inset-top))] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
-              class="glass-btn pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg disabled:opacity-40"
+              class="glass-control glass-btn pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg disabled:opacity-40"
               @click="emit('back')"><ArrowLeft :size="20" /></button>
-      <div class="glass-chip absolute left-1/2 top-[calc(0.875rem+env(safe-area-inset-top))] mt-[2.7rem] flex -translate-x-1/2 flex-col items-center rounded-full px-3 py-1.5">
-        <span class="glass-disc absolute -top-2 left-1/2 -mt-[2.7rem] grid h-14 w-14 -translate-x-1/2 place-items-center rounded-full">
+      <div class="glass-control glass-chip absolute left-1/2 top-[calc(0.875rem+env(safe-area-inset-top))] mt-[2.7rem] flex -translate-x-1/2 flex-col items-center rounded-full px-3 py-1.5">
+        <span class="glass-control glass-disc absolute -top-2 left-1/2 -mt-[2.7rem] grid h-14 w-14 -translate-x-1/2 place-items-center rounded-full">
           <BotAvatar :key="avatarActivityKey" :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="56"
                      :state="avatarState" :activity-key="avatarActivityKey" :observed-completion="observedCompletion"
                      :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
@@ -609,7 +609,7 @@ function handleStopAll(): void {
         <span class="max-w-36 truncate text-xs font-semibold text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</span>
       </div>
       <button type="button" data-test="mobile-bot-more" :aria-label='$t("common.more")'
-              class="glass-btn pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg"
+              class="glass-control glass-btn pointer-events-auto grid h-11 w-11 place-items-center rounded-full text-fg"
               @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
     </div>
     <!-- Parked topic trigger (<lg): see openMobileTopics. Only the TRIGGER moves
@@ -961,45 +961,21 @@ function handleStopAll(): void {
 
 <style scoped>
 /* Floating glass for the mobile identity (<lg): the back / ⋯ discs, the avatar
-   disc and the name pill share one translucent pane. The edge is a foreground
-   hairline at 6-8% alpha, not --c-border: at 1px the border token reads as a drawn
-   ring on both themes, which is what made the old chip look like outlined plastic
-   instead of glass. Depth comes from a top specular gradient plus one wide,
-   low-alpha shadow; the previous 30%-white inset highlight drew a second hard
-   edge. Scoped to the leaves themselves — a backdrop-filtered ANCESTOR would become
-   the containing block for TopicSwitcher's popover and sheets and trap them
-   inside this bar. */
-.glass-btn,
-.glass-disc,
-.glass-chip {
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.55), rgb(255 255 255 / 0) 62%),
-    rgb(var(--c-surface) / 0.88);
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
-  backdrop-filter: blur(24px) saturate(140%);
-  border: 1px solid rgb(var(--c-fg) / 0.08);
-  --glass-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 10px 24px -12px rgb(0 0 0 / 0.20);
-  box-shadow: var(--glass-shadow);
-}
+   disc and the name pill. The recipe is the global `.glass-control` (specular
+   sheen, foreground hairline, one wide low shadow) — counted once in style.css,
+   not duplicated per pane. Scoped to the leaves themselves: a backdrop-filtered
+   ANCESTOR would become the containing block for TopicSwitcher's popover and
+   sheets and trap them inside this bar. */
 /* The avatar disc is the one pane with something behind it that must not show
    through: the name pill's hairline crosses under its top half. */
 .glass-disc {
   background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.55), rgb(255 255 255 / 0) 62%),
+    var(--glass-sheen),
     rgb(var(--c-surface) / 0.94);
-}
-:global(html.dark .glass-btn),
-:global(html.dark .glass-disc),
-:global(html.dark .glass-chip) {
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.07), rgb(255 255 255 / 0) 62%),
-    rgb(var(--c-raised) / 0.88);
-  border-color: rgb(255 255 255 / 0.06);
-  --glass-shadow: 0 1px 2px rgb(0 0 0 / 0.32), 0 10px 24px -12px rgb(0 0 0 / 0.55);
 }
 :global(html.dark .glass-disc) {
   background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.07), rgb(255 255 255 / 0) 62%),
+    var(--glass-sheen),
     rgb(var(--c-raised) / 0.94);
 }
 /* Hover keeps the pane translucent: an opaque surface-2 utility would replace the
@@ -1020,7 +996,7 @@ function handleStopAll(): void {
   outline: 2px solid rgb(var(--c-accent));
   outline-offset: 2px;
   border-radius: 9999px;
-  box-shadow: var(--glass-shadow);
+  box-shadow: var(--glass-control-shadow);
 }
 
 /* The parked TopicSwitcher trigger (<lg): out of sight and out of flow, but its

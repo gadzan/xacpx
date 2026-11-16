@@ -813,24 +813,27 @@ onUnmounted(() => {
          sheet that now carries files / tasks / terminal / desktop / the open
          center tabs. Desktop keeps the global header and the chip row untouched. -->
     <div v-if="mobileSessionBar" data-test="mobile-session-bar"
-         class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1 bg-surface px-2 pt-[env(safe-area-inset-top)] lg:hidden">
+          class="flex h-[calc(3.25rem+env(safe-area-inset-top))] shrink-0 items-center gap-1.5 bg-bg px-2 pt-[env(safe-area-inset-top)] lg:hidden">
       <button type="button" data-test="mobile-back" :aria-label='$t("nav.back")' :title='$t("nav.back")' :disabled="backInFlight"
-              class="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+              class="glass-control grid h-11 w-11 shrink-0 place-items-center rounded-full text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
               @click="navigateBack"><ArrowLeft :size="20" /></button>
-      <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-2">
-        <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
-      </span>
-      <!-- The title is the quick-switch trigger (<lg): tapping it opens the
-           half-screen with recent conversations + this instance's Bots / groups
-           (design mobile.md §6.1). Desktop keeps the sidebar for navigation. -->
+      <!-- The title is the quick-switch trigger (<lg): one glass capsule holding
+           the driver icon and both title lines, the same shape as the Direct and
+           Group bars. Tapping it opens the half-screen with recent conversations
+           + this instance's Bots / groups (design mobile.md §6.1). -->
       <button type="button" data-test="mobile-session-title" :aria-label='$t("quickSwitch.title")'
-              class="flex min-h-[44px] min-w-0 flex-1 flex-col items-start text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="glass-control flex min-h-[44px] min-w-0 flex-1 items-center gap-2 rounded-full py-1 pl-1 pr-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openQuickSwitch">
-        <span class="w-full truncate text-sm font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
-        <span data-test="mobile-session-subtitle" class="w-full truncate text-xs text-fg-muted">{{ sessionSubtitle }}</span>
+        <span class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-surface-2">
+          <AgentIcon :driver="sessionDriver" :title="sessionRow?.agent" :size="18" />
+        </span>
+        <span class="flex min-w-0 flex-1 flex-col">
+          <span class="w-full truncate text-xs font-semibold text-fg">{{ sessionRow?.displayName || chat.sessionAlias }}</span>
+          <span data-test="mobile-session-subtitle" class="w-full truncate text-xs text-fg-muted">{{ sessionSubtitle }}</span>
+        </span>
       </button>
       <button type="button" data-test="mobile-more" :aria-label='$t("common.more")'
-              class="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="glass-control grid h-11 w-11 shrink-0 place-items-center rounded-full text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               @click="openSheet('more')"><MoreHorizontal :size="20" /></button>
     </div>
     <!-- Connection strip sits directly under the mobile bar (only after the connection

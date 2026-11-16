@@ -129,7 +129,6 @@ function close(): void {
     panel-class="w-full max-w-md rounded-2xl p-5"
     labelledby="add-instance-title"
     test-id="add-instance-dialog"
-    blur-class="backdrop-blur-[3px]"
     @close="emit('close')"
   >
       <h3 id="add-instance-title" class="text-base font-semibold text-fg">{{ $t("settings.addInstance") }}</h3>

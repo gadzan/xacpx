@@ -91,7 +91,7 @@ async function create() {
         enter-from-class="opacity-0"
         leave-active-class="transition-opacity duration-150 ease-ui motion-reduce:transition-none"
         leave-to-class="opacity-0">
-        <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-scrim backdrop-blur-sm" @click.self="navigateBack" @keydown.esc="navigateBack">
+        <div v-if="drawerOpen" data-test="scheduled-drawer" class="fixed inset-0 z-50 flex justify-end bg-scrim backdrop-blur-scrim" @click.self="navigateBack" @keydown.esc="navigateBack">
           <aside class="flex h-full w-full max-w-md flex-col bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass" role="dialog" :aria-label="$t('tasks.allScheduled')">
             <header class="flex items-center justify-between px-4 py-3">
               <h2 class="text-sm font-semibold text-fg">{{ $t("tasks.scheduledCount", { count: tasks.scheduled.length }) }}</h2>

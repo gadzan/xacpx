@@ -222,6 +222,26 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   （自带 `login-btn` 形态）、以及分段控件 / 芯片（它们是切换态，不是按钮：主题、语言、source、
   workspace 模式、分组模式）。
 
+## 玻璃三档（`style.css`）
+
+全站只有三套玻璃配方，定义在 `style.css` 顶部，按角色命名：
+
+| class | 用途 | 透明度 token（浅 / 深） |
+| --- | --- | --- |
+| `.glass-1` | 铬条：面板头、桌面对话头 | `--glass-bg`（.72） |
+| `.glass-2` | 浮层：composer、菜单、tooltip、toast、对话框 | `--glass-bg-strong`（.84） |
+| `.glass-control` | 小控件：手机顶栏圆钮、名称胶囊、头像盘 | `--glass-control-bg`（.88）+ `--glass-sheen` + `--glass-control-shadow` |
+
+三档共用同一个 `--glass-blur`(20px) + `--glass-saturate`；区别只有透明度与阴影，不是第二套视觉体系。
+遮罩统一 `backdrop-blur-scrim`（3px，Tailwind `backdropBlur.scrim`），对话框、sheet、抽屉、命令面板、
+确认框全用它，不再出现 `backdrop-blur-sm` / `backdrop-blur-[3px]` 混用。
+
+降级：`@supports not (backdrop-filter)` 与 `prefers-reduced-transparency: reduce` 都只改 token
+（三档一起变实色 `--c-raised`，sheen 归零），类名与数量不变；后一种情况还会去掉 `backdrop-filter`。
+
+`DirectBotPane` 里手机顶栏的 `.glass-btn` / `.glass-disc` / `.glass-chip` 现在只是「在 `.glass-control`
+之上补交互态与头像盘实底」的局部规则，配方本身只有一处在全局。
+
 ## Composer 的模型与 effort 控件
 
 - 会话切换时 `session-controls` store 并行读取 `control.session.model.get` 与
@@ -564,15 +584,18 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
     入口加了 `lg:hidden`，所以移动端行为不变，桌面不重复渲染。侧栏宽度 232px（`lg:w-[232px]`）。
   - **选中会话 / Direct Bot**：全局顶栏（品牌、连接徽标、搜索、终端/桌面/主题/设置）在 `<lg` 隐藏
     （`:class="mobileSingleBar ? 'hidden lg:flex' : 'flex'"`，纯 CSS，桌面不受影响），改为**一条 52px 顶栏**
-    （`h-[calc(3.25rem+env(safe-area-inset-top))]`）：左按钮 `←` 44px（返回首页列表，`data-test="mobile-back"`）、
-    中间头像（会话 = `AgentIcon`，Bot = `BotAvatar` 32）+ 标题（`text-base`）+ 副标题（`text-xs`：
-    `实例 · agent · 分支`，缺项跳过，不会出现前导或连续 `·`）、右侧 `⋯` 40px 打开底部弹出菜单
-    （`components/MobileSheet.vue`：`bg-raised rounded-t-[24px] shadow-float`，backdrop / Esc 关闭，
-    `useModalA11y` 负责焦点进入与归还，条目 ≥48px；`dd-panel` 把面板标成「打开的下拉拥有的浮层」，
-    只有下拉 / 行菜单自己的 sheet 才开，见「统一下拉框」）。会话栏由 `DashboardView` 渲染；Bot 栏由
-    `DirectBotPane` 渲染（它自己拥有 edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；
-    Group 栏由 `GroupPane` 渲染（副标题同样是当前话题，`⋯` 只带编辑群组条目），`DashboardView` 不再渲染
-    群组静态标题条，`mobileSingleBar` 也因此把群组选择算进去（全局顶栏在 `<lg` 让位）。
+    （`h-[calc(3.25rem+env(safe-area-inset-top))]`）。三条手机顶栏（会话 / Direct Bot / 群组）现在是
+    同一套「悬浮玻璃控件」语言：左侧 `←` 圆钮 44（`data-test="mobile-back"`）、中间一枚
+    `glass-control` 名称胶囊（会话 = `AgentIcon`，Direct = `BotAvatar` 56 头像盘，群组 = 拼合头像盘，
+    胶囊里第一行名字、第二行副标题或话题触发器）、右侧 `⋯` 圆钮 44（会话 = `data-test="mobile-more"`，
+    Bot = `mobile-bot-more`，群组 = `mobile-group-more`）。圆钮与胶囊都取自全局 `.glass-control`
+    配方（见「玻璃三档」），不再用 `bg-surface` 实心条 + `hover:bg-surface-2` 的方块按钮。
+    弹出菜单仍是 `components/MobileSheet.vue`（backdrop / Esc 关闭，`useModalA11y` 负责焦点进入与归还，
+    条目 ≥48px；`dd-panel` 把面板标成「打开的下拉拥有的浮层」，只有下拉 / 行菜单自己的 sheet 才开，
+    见「统一下拉框」）。会话栏由 `DashboardView` 渲染；Bot 栏由 `DirectBotPane` 渲染（它自己拥有
+    edit / removal / nav 状态），副标题是当前话题、可点开话题选择 sheet；Group 栏由 `GroupPane` 渲染
+    （副标题同样是当前话题，`⋯` 只带编辑群组条目），`DashboardView` 不再渲染群组静态标题条，
+    `mobileSingleBar` 也因此把群组选择算进去（全局顶栏在 `<lg` 让位）。
   - **`←` 返回**（会话 / Bot / 群组页通用）：不再直接清选择，而是弹掉浏览器历史里我们自己的条目，
     由 popstate 关掉一层（sheet → 右抽屉/全屏标签 → 首页）。没有自有条目时（冷启动 / 深链 /
     PWA 恢复）直接 `router.replace` 回首页，绝不离站。完整规则见下文「手机端返回：浏览器历史即层栈」。
