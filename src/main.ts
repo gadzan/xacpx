@@ -63,6 +63,7 @@ import {
   resolveWorkerAgentLaunch,
   shouldGuardWorkerAcpOutput,
 } from "./orchestration/worker-launch";
+import { SessionForkStore } from "./sessions/session-fork-store";
 import { ScheduledTaskScheduler } from "./scheduled/scheduled-scheduler";
 import { ScheduledTaskService } from "./scheduled/scheduled-service";
 import { buildScheduledDispatchTask } from "./scheduled/scheduled-dispatch";
@@ -595,6 +596,21 @@ export async function buildApp(
       );
     },
   });
+  // Fork provenance + the one-time handoff live outside state.json: a 12k
+  // prompt block must never ride every whole-file state save. An unavailable
+  // store only disables forking; it must not brick the daemon.
+  let sessionForks: SessionForkStore | undefined;
+  try {
+    sessionForks = await SessionForkStore.open(
+      join(resolveRuntimeDirFromConfigPath(paths.configPath), "session-forks.sqlite"),
+    );
+  } catch (error) {
+    await logger.warn(
+      "session.forks.store_unavailable",
+      "ordinary-session fork store could not be opened; forking stays disabled",
+      { message: error instanceof Error ? error.message : String(error) },
+    );
+  }
   const runtimeRoot = dirname(paths.configPath);
   // Adapter model lists survive a daemon restart through the regenerable
   // capability_lists state section. Persistence rides the same debounced
@@ -2146,6 +2162,7 @@ export async function buildApp(
       router.archiveSessionWithTransport(internalAlias),
     unarchiveSession: (internalAlias) => router.unarchiveSession(internalAlias),
     activeTurns,
+    ...(sessionForks ? { sessionForks } : {}),
     ...(sessionWarmth ? { sessionWarmth } : {}),
     botsHomeRoot: resolveBotsHome(),
     scheduled: scheduledService,
@@ -2787,6 +2804,7 @@ export async function buildApp(
           )
           .catch(() => {});
       }
+      sessionForks?.close();
       await debouncedStateStore.dispose();
       if ("dispose" in transport && typeof transport.dispose === "function") {
         // Bridge dispose waits for its subprocess to acknowledge shutdown and

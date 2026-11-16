@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import {createHash} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import { mkdir, readdir, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../commands/workspace-name.js";
@@ -79,6 +79,7 @@ import { sanitizePublicConversationPrompt, sanitizePublicPromptInput } from "./p
 import type { ControlEventBus } from "./control-event-bus";
 import {
   readNativeSessionHistory,
+  readTransportSessionHistory,
   type NativeHistoryMessage,
 } from "../transport/native-session-history";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
@@ -101,6 +102,12 @@ import {
   type GitWorktreeCreateOptions,
   type GitWorktreeCreateResult,
 } from "./workspace-git";
+import { renderSessionForkHandoff } from "../sessions/session-fork-handoff";
+import {
+  resolveSessionForkStrategy,
+  SessionForkError,
+  type SessionForkStore,
+} from "../sessions/session-fork-store";
 import type {
   AgentEndpointView,
   AgentMessageTraceRecord,
@@ -336,6 +343,11 @@ export interface ControlServiceDeps {
     "listTasks" | "getTask" | "requestTaskCancellation"
   >;
   events: ControlEventBus;
+  /** Durable ordinary-session fork records + handoff text. Absent makes the
+   *  `session.fork.handoff.v1` probe fail closed. */
+  sessionForks?: SessionForkStore;
+  /** Test seam for the acpx-record history read; production uses the canonical scan. */
+  readSessionForkHistory?: typeof readTransportSessionHistory;
   // Read-only config views + a persisting workspace creator. Supplied by main.ts
   // where the live AppConfig and ConfigStore are in scope; created workspaces are
   // written back into the live config so SessionService validation sees them.
@@ -702,6 +714,7 @@ export class ControlService {
       events: deps.events,
       uploadStore: deps.uploadStore,
       ...(deps.sessionWarmth ? { sessionWarmth: deps.sessionWarmth } : {}),
+      ...(deps.sessionForks ? { sessionForks: deps.sessionForks } : {}),
       ...(deps.agentMessaging ? { agentMessaging: deps.agentMessaging } : {}),
       ...(resolveAgentTarget ? { resolveAgentTarget } : {}),
     });
@@ -1681,6 +1694,176 @@ export class ControlService {
       transportSession: session.transportSession,
       running: false,
       archived: false,
+    };
+  }
+
+  /**
+   * Feature probe for connectors: ordinary-session fork records and the
+   * one-time handoff are persisted here. An older core, or a test fake without
+   * a store, advertises nothing so the Web never offers a dead entry.
+   */
+  supportsSessionForkHandoff(): boolean {
+    return this.deps.sessionForks !== undefined;
+  }
+
+  /**
+   * Fork a stable ordinary session into an independent logical + transport
+   * session. The source's recorded history is rendered once into a bounded
+   * handoff; the first effective prompt of the target injects it and consumes
+   * the record. This PR resolves every fork to the portable strategy.
+   */
+  async forkSession(input: {
+    chatKey: string;
+    sourceAlias: string;
+    targetAlias: string;
+    requestId: string;
+  }): Promise<ControlSessionInfo> {
+    const store = this.deps.sessionForks;
+    if (!store) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        "this daemon does not persist ordinary-session forks",
+      );
+    }
+    const requestId = input.requestId.trim();
+    const targetAlias = input.targetAlias.trim();
+    if (!requestId || !targetAlias) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        "a fork needs a request id and a target alias",
+      );
+    }
+    const replay = store.getByRequestId(requestId);
+    if (replay) {
+      const alias = this.deps.sessions
+        .listAllResolvedSessions()
+        .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
+      const resolved = alias ? await this.deps.sessions.getSession(alias) : null;
+      if (!resolved) {
+        throw new SessionForkError(
+          "session-fork-target-exists",
+          "this fork request already created a session that no longer exists",
+        );
+      }
+      return this.toControlSessionInfo(resolved);
+    }
+
+    this.assertOrdinaryAddressedAlias(input.chatKey, input.sourceAlias);
+    const source = await this.resolveControlSession(input.chatKey, input.sourceAlias);
+    if (!source) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        `session "${input.sourceAlias}" does not exist`,
+      );
+    }
+    this.assertOrdinaryAddressedAlias(input.chatKey, source.alias);
+    const sourceSessionId = source.logicalSessionId;
+    if (!sourceSessionId) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        `session "${input.sourceAlias}" has no logical identity`,
+      );
+    }
+    if (this.deps.activeTurns.isActiveAnywhere(source.alias)) {
+      throw new SessionForkError(
+        "session-fork-unstable",
+        `session "${input.sourceAlias}" is still running; fork its latest settled state after it finishes`,
+      );
+    }
+    const channelId = getChannelIdFromChatKey(input.chatKey);
+    const targetInternal = scopeDisplayAliasToInternal(channelId, targetAlias);
+    if (await this.deps.sessions.getSession(targetInternal)) {
+      throw new SessionForkError(
+        "session-fork-target-exists",
+        `session "${targetAlias}" already exists`,
+      );
+    }
+    const strategy = resolveSessionForkStrategy({ nativeSessionFork: false });
+    if (strategy === "native") {
+      throw new SessionForkError(
+        "session-fork-native-unavailable",
+        "native session fork is not implemented in this daemon",
+      );
+    }
+
+    const history: NativeHistoryMessage[] = await (this.deps.readSessionForkHistory ?? readTransportSessionHistory)({
+      transportSession: source.transportSession,
+      cwd: source.cwd,
+      ...(source.agentCommand ? { agentCommand: source.agentCommand } : {}),
+      onDiagnostic: (diagnostic) =>
+        this.deps.logger?.debug("control.session.fork_history", diagnostic, {
+          sourceAlias: source.alias,
+        }),
+    });
+    const parentFork = store.getByForkSourceSessionId(sourceSessionId);
+    const rendered = renderSessionForkHandoff({
+      sourceTitle: source.displayName ?? toDisplaySessionAlias(source.alias),
+      agent: source.agent,
+      history,
+      ...(parentFork ? { parentFork } : {}),
+      ...(parentFork ? { parentHandoff: store.getHandoff(parentFork.id) } : {}),
+    });
+    if (!rendered.text) {
+      throw new SessionForkError(
+        "session-fork-empty-history",
+        `session "${input.sourceAlias}" has no recorded history to hand off`,
+      );
+    }
+
+    const created = await this.deps.createSessionWithTransport(
+      targetInternal,
+      source.agent,
+      source.workspace,
+    );
+    const targetSessionId = created.logicalSessionId;
+    if (!targetSessionId) {
+      await this.deps.removeSessionWithTransport(created.alias).catch(() => undefined);
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        "the forked session has no logical identity",
+      );
+    }
+    const createdAt = new Date().toISOString();
+    try {
+      const pending = store.createPending({
+        requestId,
+        sourceSessionId,
+        targetSessionId,
+        createdAt,
+      });
+      store.resolvePortable({
+        forkId: pending.id,
+        handoff: {
+          text: rendered.text,
+          messageCount: rendered.messageCount,
+          omittedMessages: rendered.omittedMessages,
+        },
+        createdAt,
+      });
+    } catch (error) {
+      await this.deps.removeSessionWithTransport(created.alias).catch(() => undefined);
+      throw error;
+    }
+    this.deps.events.emit({
+      type: "sessions-changed",
+      readySessionAlias: toDisplaySessionAlias(created.alias),
+      readyTransportSession: created.transportSession,
+    });
+    return this.toControlSessionInfo(created);
+  }
+
+  private toControlSessionInfo(session: ResolvedSession): ControlSessionInfo {
+    return {
+      alias: toDisplaySessionAlias(session.alias),
+      agent: session.agent,
+      ...(session.driver ? { driver: session.driver } : {}),
+      workspace: session.workspace,
+      transportSession: session.transportSession,
+      running: false,
+      archived: session.archived === true,
+      ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
+      ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+      ...(session.displayName ? { displayName: session.displayName } : {}),
     };
   }
 

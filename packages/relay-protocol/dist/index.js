@@ -108,6 +108,7 @@ var MSG = {
   sessionsArchive: "control.sessions.archive",
   sessionsUnarchive: "control.sessions.unarchive",
   sessionsRename: "control.sessions.rename",
+  sessionsFork: "control.sessions.fork",
   agentsList: "control.agents.list",
   workspacesList: "control.workspaces.list",
   workspacesCreate: "control.workspaces.create",
@@ -281,6 +282,7 @@ var RELAY_CAPABILITIES = {
   groupTopicForkMessageV1: "group.topics.fork.message.v1",
   directTopicForkV1: "direct.topics.fork.v1",
   directTopicForkMessageV1: "direct.topics.fork.message.v1",
+  sessionForkHandoffV1: "session.fork.handoff.v1",
   roundtableV1: "conversations.roundtable.v1",
   conversationTimelineV1: "conversations.timeline.v1",
   groupWorkspaceModeV1: "groups.workspace-mode.v1",
@@ -1481,6 +1483,10 @@ var validateSessionsRename = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.alias) && isStr(o.displayName) ? o : null;
 };
+var validateSessionsFork = (p) => {
+  const o = fields(p);
+  return o && isStr(o.chatKey) && isStr(o.sourceAlias) && isStr(o.targetAlias) && isStr(o.requestId) ? o : null;
+};
 var validateWorkspacesCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.name) && isStr(o.cwd) && optStr(o.description) ? o : null;
@@ -2329,6 +2335,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsArchive]: validateSessionsArchive,
   [MSG.sessionsUnarchive]: validateSessionsUnarchive,
   [MSG.sessionsRename]: validateSessionsRename,
+  [MSG.sessionsFork]: validateSessionsFork,
   [MSG.workspacesCreate]: validateWorkspacesCreate,
   [MSG.agentsCreate]: validateAgentsCreate,
   [MSG.agentsRemove]: validateAgentsRemove,

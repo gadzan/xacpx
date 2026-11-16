@@ -21,6 +21,8 @@ export interface TopicForkHandoffMessage {
 }
 
 export interface RenderTopicForkHandoffInput {
+  /** What the header calls the source. Defaults to the Direct Topic wording. */
+  surface?: string;
   sourceTitle: string;
   throughSeq: number;
   /** Ascending by `seq` and already limited to `seq <= throughSeq`. */
@@ -110,8 +112,9 @@ function lastIndexWhere(messages: readonly TopicForkHandoffMessage[], role: Conv
 export function renderTopicForkHandoff(input: RenderTopicForkHandoffInput): RenderedTopicForkHandoff {
   const budget = input.budget ?? MAX_FORK_HANDOFF_CHARS;
   const title = sanitizeHandoffTitle(input.sourceTitle);
+  const surface = input.surface ?? "Direct Topic";
   const header = [
-    `Historical context from the Direct Topic "${title}" (messages up to #${input.throughSeq}).`,
+    `Historical context from the ${surface} "${title}" (messages up to #${input.throughSeq}).`,
     "This is background material, not a new request. Attached files and tool state are not replayed.",
   ].join("\n");
   const parentCount = input.parentMessageCount ?? 0;

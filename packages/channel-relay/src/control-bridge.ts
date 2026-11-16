@@ -85,6 +85,7 @@ export const CONTROL_RPC_TIMEOUT_MS = 60_000;
 const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.prompt,
   MSG.sessionsCreate,
+  MSG.sessionsFork,
   MSG.sessionsNativeList,
   MSG.commandExecute,
   MSG.sessionModelSet,
@@ -370,6 +371,15 @@ async function dispatchControlRequest(
         input.displayName ?? "",
       );
       return { ok: true };
+    }
+    case MSG.sessionsFork: {
+      const input = parseControlPayload(MSG.sessionsFork, payload);
+      if (!input)
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.sessionsFork}: malformed payload`,
+        );
+      return await control.forkSession(input);
     }
     case MSG.agentsList:
       return { agents: control.listAgents() };

@@ -257,6 +257,15 @@ export function supportsDirectTopicForkMessage(instance: { capabilities?: string
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.directTopicForkMessageV1);
 }
 
+/**
+ * True when the instance can fork an ordinary session with a one-time
+ * handoff (`control.sessions.fork`). An older core answers `unsupported-rpc`,
+ * so the session menu hides the entry instead of offering a dead action.
+ */
+export function supportsSessionForkHandoff(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.sessionForkHandoffV1);
+}
+
 /** True when the instance accepts the roundtable target and history fields.
  *  It gates both the future "discuss" entry and the history compat flag. */
 export function supportsRoundtableV1(instance: { capabilities?: string[] | null } | null | undefined): boolean {
@@ -1067,6 +1076,22 @@ export const useInstancesStore = defineStore("instances", () => {
     return { pending: false };
   }
 
+  /** Fork a stable ordinary session; the new row's first prompt carries history. */
+  async function forkSession(
+    instanceId: string,
+    sourceAlias: string,
+    targetAlias: string,
+    requestId: string,
+  ): Promise<SessionDto> {
+    const result = unwrap(await api.rpc<SessionDto>(instanceId, "control.sessions.fork", {
+      sourceAlias,
+      targetAlias,
+      requestId,
+    }));
+    await loadSessions(instanceId);
+    return result;
+  }
+
   // Optimistic create: insert a "creating" row and switch to it IMMEDIATELY, then run
   // the (slow) create RPC in the background. A cold agent start blocks `createSession`
   // for 10–40s; awaiting it before closing the dialog traps the user in a frozen modal.
@@ -1744,7 +1769,7 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, capabilityEpochFor, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, capabilityEpochFor, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, forkSession, renameInstance, applyEvent, byId, findSessionRow };
 });
 
 /** The instances store's public shape, named for consumers (tests, helpers). */

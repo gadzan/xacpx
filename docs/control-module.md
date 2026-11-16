@@ -422,3 +422,27 @@ The version=1 response carries public scope {conversationId, topicId, botId}, an
 Command discovery uses transport.prepareSessionCommands, shares BotRuntimeManager's lifecycle/materialization gate with real execution, coalesces identical pending queries, and creates no message or Run. A query returns loading after 10 seconds while the original preparation retains its gate until settlement; retry attaches to that preparation rather than creating a second owner. Profile, adapter context, and Topic generation invalidate cached results; stale command callbacks are fenced by command epochs. An active Run only exposes its existing correlated advertisement. A restricted logical runtime returns unavailable without replacing it with an unrestricted runtime.
 
 ConversationPromptRequestDto and the public sanitizer whitelist optional agentMentions only; stable resolved identities and execution tokens remain core-private. Old prompts with no metadata remain valid. A connector refuses nonempty references when its daemon lacks the completion API, preventing silent metadata loss. New Web clients create references only after receiving a valid version=1 capability response.
+
+## Portable ordinary-session fork (`control.sessions.fork`, PR1)
+
+`forkSession({ chatKey, sourceAlias, targetAlias, requestId })` forks a stable
+ordinary session into a new logical + transport session. It refuses while the
+source is running, when the target alias exists, when the request id already
+created a session, and when the source's acpx record holds no history. The
+source's recorded turns are rendered once into the 12k `<<<HISTORY` block
+(shared renderer with Direct Topic forks); a fork of an unconsumed fork carries
+its parent block.
+
+The fork record (`sourceSessionId`, `targetSessionId`, `sourcePoint:
+latest_stable`, `strategy`, `resolution`, `status`, timestamps) lives in
+`runtime/session-forks.sqlite`, with the handoff text in its own table — never
+in `state.json`. Records start `pending` and resolve to `portable`; PR2 may
+resolve the same shape to `native` without changing storage. `SessionTurnRunner`
+takes the handoff atomically and marks it consumed immediately before the
+provider call, so the first effective prompt injects it, a retry after a
+provider failure never replays it, and a known xacpx command turn (for example
+`/status`) neither injects nor consumes it.
+
+Connectors advertise `session.fork.handoff.v1` only when the core exposes the
+store-backed probe AND the connector validator accepts the payload. Relay Web
+shows the session menu's "Fork session" entry only for that capability.
