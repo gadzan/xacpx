@@ -504,6 +504,23 @@ describe("Group Components", () => {
       expect(off.attributes("aria-disabled")).toBe("true");
     });
 
+    it("names a member row by its product identity, never by its raw bot id", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-mention-chip"]').trigger("click");
+      const rows = wrapper.findAll('[data-test="group-mention-item"]');
+      // The raw id is routing/selection state, not something to show a reader.
+      expect(rows.map((row) => row.text().includes("bot_"))).toEqual([false, false, false]);
+      expect(rows.map((row) => row.attributes("data-bot-id"))).toEqual(["bot_a", "bot_b", "bot_off"]);
+      // The product signals beside the name survive.
+      expect(rows[0]!.text()).toContain(i18n.global.t("group.target.lead"));
+      expect(rows[0]!.text()).toContain("Reviewer");
+      expect(rows[2]!.text()).toContain("Sleeper");
+    });
+
     it("treats a member's own dedicated workspace as runnable in the mention menu", async () => {
       const groups = seedGroupSelection();
       groups.groupsByInstance["i1"] = [{ ...GROUP, botIds: ["bot_a", "bot_b", "bot_isolated"] }];
