@@ -2,11 +2,14 @@ import type { Page } from "@playwright/test";
 import { unsupportedCapability } from "@ganglion/xacpx-relay-protocol";
 import { test, expect, loginAndShowInstances } from "./fixtures";
 
-// WP-13: one dialog shell owns the scrim, the focus contract and the overlay
+// One dialog shell owns the scrim, the focus contract and the overlay
 // ladder. These run on the real app because the unit suite cannot see stacking,
 // focus restore or a Teleport out of the sidebar's transformed container.
 
-const SHOTS = process.env.UI_SHOTS_DIR ?? "../../artifacts/ui-upgrade-b/after";
+// Capture only when the caller asks for it: this spec used to write two tracked
+// files in the evidence pack on every plain run, so a gate run left the tree
+// dirty and the pack no longer matched its commit.
+const SHOTS = process.env.UI_SHOTS_DIR;
 const createdAt = "2026-11-07T00:00:00.000Z";
 
 const bot = {
@@ -128,6 +131,6 @@ for (const [name, viewport] of [["d1440", { width: 1440, height: 900 }], ["m390"
     await botDialog(page).getByTestId("bot-dialog-remove").click();
     await expect(removalDialog(page)).toBeVisible();
     await page.waitForTimeout(300);
-    await page.screenshot({ path: `${SHOTS}/${name}/20-dialog-nested-light.png`, fullPage: true });
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}/20-dialog-nested-light.png`, fullPage: true });
   });
 }

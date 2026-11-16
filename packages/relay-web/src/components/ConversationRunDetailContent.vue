@@ -18,6 +18,7 @@ import {
   runReasonKey,
   type RunBudgetView,
 } from "../lib/run-detail";
+import { isMachineFailureReason } from "../lib/failure-reason";
 import { memberStateKey, memberStateTone, runStateKey, runStateTone, type StateTone } from "../lib/run-state-label";
 import type { TraceReplayStatus } from "../lib/group-run-presentation";
 import ConversationInteractionForm from "./ConversationInteractionForm.vue";
@@ -93,6 +94,14 @@ const runFailure = computed(() => props.run.state === "failed" || props.run.stat
   ? reasonText(props.run.completionReason) ?? t("conversation.runDetail.unknownFailure")
   : undefined);
 const selectedFailure = computed(() => selected.value?.failureReason);
+// The trace prints the selected member's reason itself, except for a historical
+// attempt (the header hides the state chip there) and for a raw kernel code, which
+// it deliberately suppresses. Only those two cases need the line here, so the
+// drawer never shows the same sentence twice.
+const showSelectedFailure = computed(() => Boolean(selectedFailure.value)
+  && (!stateShownInHeader.value || isMachineFailureReason(selectedFailure.value!)));
+const selectedFailureText = computed(() => reasonText(selectedFailure.value)
+  ?? t("conversation.runDetail.unknownFailure"));
 const stopAvailable = computed(() => canStopMemberInDrawer({
   run: props.run,
   member: selected.value,
@@ -275,8 +284,8 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
           <span>{{ $t("conversation.runDetail.stopMember", { name: participantName(selected.botId) }) }}</span>
         </button>
       </div>
-      <p v-if="selectedFailure" data-test="run-member-selected-failure" class="mt-1 break-words text-xs text-danger-text">
-        {{ $t("conversation.runDetail.failure", { reason: selectedFailure }) }}
+      <p v-if="showSelectedFailure" data-test="run-member-selected-failure" class="mt-1 break-words text-xs text-danger-text">
+        {{ $t("conversation.runDetail.failure", { reason: selectedFailureText }) }}
       </p>
       <GroupRunDetailContent
         :key="`${selected.id}:${selectedAttempt}`"

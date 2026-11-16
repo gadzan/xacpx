@@ -294,31 +294,33 @@ const noticeToneClass = computed(() => {
             <GitFork :size="14" />
           </button>
         </template>
-      </ConversationMeta>
-      <!-- The process entry is an icon on the meta line: on touch the label is
-           a tap-to-show tooltip, never a second line under every bot reply. -->
-      <Tooltip
-        v-if="message.runId"
-        :text="$t('conversation.handoff.open', { name: author?.name ?? '' })"
-        placement="top"
-      >
-        <button
-          type="button"
-          data-test="timeline-open-detail"
-          :aria-label="$t('conversation.handoff.open', { name: author?.name ?? '' })"
-          class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
-          @click="emit('openDetail', messageDetail)"
+        <!-- The process entry rides the timestamp row as an icon: on touch its label
+             is a tap-to-show tooltip, and it must not become a second line under
+             every bot reply. It sits in ConversationMeta's default slot, between the
+             time and the copy/fork operations, so it stays visible without hover. -->
+        <Tooltip
+          v-if="message.runId"
+          :text="$t('conversation.handoff.open', { name: author?.name ?? '' })"
+          placement="top"
         >
-          <BotAvatar
-            :avatar="author?.avatar"
-            :driver="author?.driver"
-            :name="author?.name"
-            :size="16"
-            static
-            aria-hidden="true"
-          />
-        </button>
-      </Tooltip>
+          <button
+            type="button"
+            data-test="timeline-open-detail"
+            :aria-label="$t('conversation.handoff.open', { name: author?.name ?? '' })"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+            @click="emit('openDetail', messageDetail)"
+          >
+            <BotAvatar
+              :avatar="author?.avatar"
+              :driver="author?.driver"
+              :name="author?.name"
+              :size="16"
+              static
+              aria-hidden="true"
+            />
+          </button>
+        </Tooltip>
+      </ConversationMeta>
     </template>
   </TranscriptRow>
 

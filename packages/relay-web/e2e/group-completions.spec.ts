@@ -2,8 +2,8 @@ import type { Page } from "@playwright/test";
 import { test, expect, loginAndShowInstances } from "./fixtures";
 
 /**
- * The Group composer's @-mention list is rendered by the shared CompletionList
- * (WP-11). It is a plain suggestion list — the Group textarea is not a combobox
+ * The Group composer's @-mention list is rendered by the shared CompletionList.
+ * It is a plain suggestion list — the Group textarea is not a combobox
  * — so the rows are buttons with the member chips, and the desktop popover
  * closes on Escape and on an outside pointerdown like every other dropdown.
  */

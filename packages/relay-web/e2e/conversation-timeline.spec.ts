@@ -337,7 +337,7 @@ test("group keeps the speaker avatar at every viewport", async ({ page, hub }) =
   await expect(page.getByTestId("transcript-speaker").first()).toBeVisible();
 });
 
-// WP-4: the small controls around a turn are what thumbs miss. Each one is
+// The small controls around a turn are what thumbs miss. Each one is
 // measured at 44 and hit-tested at its four edge midpoints on the touch project.
 for (const testId of ["copy-button", "transcript-speaker", "timeline-open-detail", "timeline-handoff", "conversation-stop-all"]) {
   test(`${testId} is a 44px touch target on the timeline`, async ({ page, hub }, testInfo) => {
@@ -347,8 +347,8 @@ for (const testId of ["copy-button", "transcript-speaker", "timeline-open-detail
   });
 }
 
-// WP-4 also names the 390x844 CSS viewport, not just the Pixel 7 device. Same
-// helper, same four midpoints, plus the bar controls must not overlap each other.
+// Both phone widths matter here: the Pixel 7 device and the 390x844 CSS
+// viewport. Same helper and midpoints, plus the bar controls must not overlap.
 test("timeline and bar targets hold at 390x844", async ({ page, hub }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium-mobile", "coarse pointer only");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -383,7 +383,7 @@ test("timeline and bar targets hold at 390x844", async ({ page, hub }, testInfo)
   for (const id of barIds) await expectTouchTarget(page, id);
 });
 
-// WP-12: the assignment used to live only in the title/aria-label, which a tap
+// The assignment used to live only in the title/aria-label, which a tap
 // cannot open on most phones. The visible line now carries it. The process
 // entry's tooltip bubble is covered by the Tooltip unit test (the e2e click on
 // that icon opens the drawer, which is a different assertion).

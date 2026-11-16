@@ -36,9 +36,9 @@
  "unit_final": {
   "command": "bunx vitest run",
   "cwd": "packages/relay-web",
-  "result": "213 files, 2977 tests passed",
-  "wall_time_s": 183.96,
-  "head": "616e2ef8"
+  "result": "213 files, 2989 tests passed",
+  "wall_time_s": 187.36,
+  "head": "merge head 616e2ef8 plus the verdict-round fixes"
  },
  "touch": {
   "method": "each target: scrollIntoView, stable box, >=44x44, fully inside the viewport, four 2px-inset edge midpoints via document.elementFromPoint",
@@ -93,5 +93,30 @@
   "last_green_head": "90cee28e",
   "result": "187 passed / 0 failed / 51 skipped",
   "note": "the merged head is re-run by the verdict swarm"
- }
+ },
+ "verdict_rounds": [
+  {
+   "round": 1,
+   "head": "787fd4b1",
+   "lanes": [
+    "gates",
+    "live-surface",
+    "diff-correctness",
+    "plan-compliance",
+    "slop-comments"
+   ],
+   "gates": "tsc clean; vitest 213/2977; playwright 187 passed / 0 failed / 51 skipped",
+   "verdict": "ISSUES",
+   "found": [
+    "process entry on its own line instead of the timestamp row",
+    "member failure reason printed three times in the drawer",
+    "dialog-shell spec wrote tracked shots by default",
+    "tooltip placement suite lost in the merge",
+    "dead menu radius token with a false adoption comment",
+    "dialog exception list missing three role=dialog surfaces",
+    "stale heads and counts in HANDOFF and manifest"
+   ],
+   "resolution": "fixed in the follow-up commit; the after pack and this manifest were regenerated at that head"
+  }
+ ]
 }

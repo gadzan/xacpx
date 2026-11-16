@@ -45,9 +45,7 @@ const props = defineProps<{
   /** Set only when a combobox owns this list; enables the listbox roles. */
   listId?: string;
   ariaLabel?: string;
-  /** data-test for the list. */
   testId: string;
-  /** data-test for a row that has no testId of its own. */
   itemTestId: string;
   /** Row ids are `${itemIdPrefix}${index}` for aria-activedescendant. */
   itemIdPrefix?: string;

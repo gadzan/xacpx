@@ -46,3 +46,42 @@ pauses until released.
 Evidence
 Local pack and handoff live in `artifacts/ui-upgrade-b/` (`HANDOFF.md`,
 `manifest.json`, `decision-log.tsv`, `measurements/`, `after/`, `before/`).
+
+## Round 1 (2026-11-16, head 787fd4b1)
+
+PR https://github.com/gadzan/xacpx/pull/590, non-draft, base `main`.
+- Owner `PrOwner`: pushed the branch, opened the PR, then held for the merged head.
+- Trunk drift: `cf1f0a10` (#585, raw bot id in @ rows) and `f45f76d6` (#586,
+  session fork). `GroupComposer.vue` conflicted semantically; resolved by keeping
+  the shared `CompletionList` rows and dropping the bot-id chip, so #585's added
+  test passes on the merged tree. Merge commit `616e2ef8`.
+- Evidence follow-up `787fd4b1`: replaced the junk `13-completions.png` (it showed
+  a harness error banner) with per-viewport captures from
+  `e2e/group-completions.spec.ts`, and recorded the merged-head unit result.
+- Gates at `787fd4b1` before the round started: typecheck clean,
+  `bunx vitest run` 213 files / 2977 passed.
+- Verifier lanes at `787fd4b1`: gates, live-surface, diff-correctness,
+  plan-compliance, slop-comments. One aggregated verdict expected.
+
+### Round 1 verdict and its fix pass
+
+Verdict: ISSUES from all five lanes. The findings converged on seven defects,
+each fixed in one follow-up commit:
+
+1. The process entry sat on its own line as an unlabelled 16px avatar (WP-12's DoD
+   says the timestamp row). Moved into `ConversationMeta`'s default slot.
+2. The selected member's failure printed three times in the drawer. The body line
+   now appears only when the trace suppresses its own copy (historical attempt or
+   a raw kernel code); the list row keeps its summary.
+3. `e2e/dialog-shell.spec.ts` wrote two tracked pack files on every plain run.
+   Gated on `UI_SHOTS_DIR`, like the other writers.
+4. `tooltip.test.ts` lost the placement suite in the merge while `Tooltip.vue`
+   stayed byte-identical. Restored from `origin/main`; unit 213 / 2989.
+5. Dead `menu` radius token plus a comment claiming an adoption that never
+   happened. Token deleted, comment rewritten.
+6. WP-13's exception list omitted `BotAvatarQuickView`, `FueCallout` and
+   `MermaidViewer`; the first also bypassed the ladder (`z-[60]`, `bg-black/60`).
+   Listed, and moved onto `z-dialog-nested` / `bg-scrim`.
+7. HANDOFF and manifest quoted the pre-merge head and counts. Refreshed.
+
+Docs prose also lost every `WP-N` comment label and the restated prop docs.

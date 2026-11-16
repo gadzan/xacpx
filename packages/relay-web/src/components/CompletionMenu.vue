@@ -13,10 +13,8 @@ import MobileSheet from "./MobileSheet.vue";
 defineProps<{
   open: boolean;
   mobile: boolean;
-  /** Sheet title (the list's scene name). */
   title: string;
   sheetTestId: string;
-  /** Desktop popover height cap, e.g. "max-h-80". */
   panelClass?: string;
 }>();
 const emit = defineEmits<{ close: [] }>();

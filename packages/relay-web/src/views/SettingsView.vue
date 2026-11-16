@@ -125,8 +125,8 @@ void onMounted(() => { void probeNotifications(); });
 <template>
   <!-- Standalone full-screen route (no shared safe-area header like the dashboard has),
        so apply the notch/home-indicator insets here. body is already bg-bg, so the area
-       behind the notch stays dark. WP-16: one raised card, 44px rows, hairline between
-       rows, and the same glass ← disc the conversation bars use. -->
+       behind the notch stays dark. One raised card, 44px rows, a hairline between
+       them, and the same glass ← disc the conversation bars use. -->
   <div class="mx-auto max-w-2xl px-4 pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-[calc(1rem+env(safe-area-inset-top))]">
     <header class="mb-4 flex items-center gap-3 px-1">
       <router-link to="/" data-test="settings-back" :aria-label="$t('common.back')" :title="$t('common.back')"

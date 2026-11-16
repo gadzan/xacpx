@@ -1,7 +1,7 @@
 import { test, expect } from "./fixtures";
 
 /**
- * WP-18: code is read, not typeset. Ligatures join `!==`, `->` and `>=` into
+ * Code is read, not typeset. Ligatures join `!==`, `->` and `>=` into
  * glyphs that read as a single character. One rule turns them off for every
  * mono surface, so this asserts the computed result on the real markdown
  * renderer rather than the source text.

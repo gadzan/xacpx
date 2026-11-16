@@ -136,7 +136,7 @@ test("11 direct empty state", async ({ page, hub }) => {
   await openDirect(page, false);
   await expect(page.getByText("start a conversation with this bot").first()).toBeVisible();
   await shot(page, `11-empty-${THEME}`);
-  // WP-15 data case: the agent advertises commands for this conversation+topic, so
+  // The data case: the agent advertises commands for this conversation+topic, so
   // the empty page grows starter chips (the no-data case is the shot above).
   hub.send({
     kind: "control-event",

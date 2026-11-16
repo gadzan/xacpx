@@ -73,7 +73,7 @@ describe("MobileSheet pull-to-close", () => {
     );
     expect(panel.classes()).not.toContain("bg-raised");
     const scrim = document.querySelector('[data-test="sheet-backdrop"]') as HTMLElement;
-    // One scrim blur for every dimming layer (WP-9).
+    // One scrim blur for every dimming layer.
     expect(scrim.className.split(/\s+/)).toEqual(
       expect.arrayContaining(["bg-scrim", "backdrop-blur-scrim"]),
     );

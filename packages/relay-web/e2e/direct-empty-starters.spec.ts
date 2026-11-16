@@ -1,7 +1,7 @@
 import { test, expect, loginAndShowInstances } from "./fixtures";
 
 /**
- * WP-15: an empty Bot page names the Bot it belongs to and offers starter chips
+ * An empty Bot page names the Bot it belongs to and offers starter chips
  * from the agent's own advertisement. Two cases, both on the real app:
  *   - advertised commands  -> chips, and a tap only fills the composer
  *   - no advertisement     -> no chips, no invented commands, just the hint
@@ -109,7 +109,6 @@ test("empty Bot page offers the agent's advertised commands and a tap only fills
   const input = page.locator('textarea[role="combobox"]');
   await starters.getByRole("button", { name: "/review" }).click();
   await expect(input).toHaveValue("/review ");
-  // Filling is not sending: nothing reached the prompt RPC.
   expect(prompts).toHaveLength(0);
 });
 

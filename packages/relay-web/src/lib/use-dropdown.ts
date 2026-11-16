@@ -24,7 +24,6 @@ export interface DropdownRow {
   keepOpen?: boolean;
   /** Render a hairline divider above this row (desktop panel only). */
   separatorBefore?: boolean;
-  /** data-test hook for the row button. */
   testId?: string;
 }
 export interface DropdownGroup {

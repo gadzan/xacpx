@@ -175,7 +175,7 @@ describe("composer motion", () => {
 });
 
 describe("motion tokens", () => {
-  // WP-7: one motion vocabulary outside the composer. The composer is frozen by
+  // One motion vocabulary outside the composer. The composer is frozen by
   // design (it keeps its own 200ms ease-out and its two transition-all), so the
   // rules below are checked against every other source file.
   const srcDir = join(here, "..");
@@ -198,8 +198,8 @@ describe("motion tokens", () => {
   });
 
   it("guards every transform transition against reduced motion", () => {
-    // A rotate/translate that ignores prefers-reduced-motion is the gap WP-7
-    // closes. Position-only `-translate-*` utilities are geometry, not motion.
+    // A rotate/translate that ignores prefers-reduced-motion defeats the guard.
+    // Position-only `-translate-*` utilities are geometry, not motion.
     const offenders = sources
       .filter(({ text }) => /transition-transform/.test(text))
       .filter(({ text }) => !/motion-reduce:transition-none|prefers-reduced-motion/.test(text))

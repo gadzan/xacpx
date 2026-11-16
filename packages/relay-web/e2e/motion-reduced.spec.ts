@@ -1,7 +1,7 @@
 import { test, expect, loginAndShowInstances } from "./fixtures";
 
 /**
- * WP-7: motion is one vocabulary outside the composer, and every transform
+ * Motion is one vocabulary outside the composer, and every transform
  * transition on a non-composer control stops under `prefers-reduced-motion`.
  * The unit test guards the source text; this one reads the computed style of
  * the real app, so a utility that Tailwind never emits (a typo, a class the

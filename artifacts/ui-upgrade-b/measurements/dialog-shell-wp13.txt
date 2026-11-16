@@ -42,6 +42,10 @@ ScheduledTasks drawer  side drawer
 ImageLightbox          full-bleed black overlay, own keyboard navigation
 SubagentTraceDialog    absolute scrim inside its own container
 TopicSwitcher overlays confirm/isolation layers carrying data-dd-panel (dropdown ownership)
+BotAvatarQuickView     avatar lightbox, not a form dialog: own centred panel, now on
+                       z-dialog-nested + bg-scrim instead of z-[60] / bg-black/60
+FueCallout             inline callout anchored to its row, not centred
+MermaidViewer          image viewer with its own zoom/pan keyboard contract
 UsagePopover           popover, not a modal
 
 z-index ladder (tailwind.config.js -> theme.extend.zIndex)

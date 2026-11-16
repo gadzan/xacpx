@@ -3,15 +3,15 @@
 ## 范围
 
 - 仓库：https://github.com/gadzan/xacpx
-- 工作分支 / 远程（若有）：本地分支 `ui-upgrade-b`。**未推送、未建远程、未合并、未部署。**
+- 工作分支 / 远程（若有）：`ui-upgrade-b`，已推送；PR 为 https://github.com/gadzan/xacpx/pull/590。**未合并、未部署。**
 - base SHA：`5b89cab95ab95fd412da7341418738f369dcf289`（与审计快照一致，开跑时核对无漂移）
-- head SHA（代码）：`478929a4`。证据包与本文件在它之后的提交里（`git log -1` 即本提交）。
-- 相对审计快照的差异摘要：29 个提交（代码 head `478929a4`）；`packages/relay-web` 112 文件 +2456/−1228；证据全在 `artifacts/ui-upgrade-b/`
+- head SHA（代码）：`616e2ef8`，即把 `origin/main` 的两个新提交（`cf1f0a10` #585、`f45f76d6` #586）并入后的合并提交。之后的提交只含证据、注释清理与本文档；`git log -1` 给出分支最终 head。
+- 相对审计快照的差异摘要：32 个提交到合并提交（其后为证据/清理提交）；`packages/relay-web` 约 113 文件 +2500/−1240；证据全在 `artifacts/ui-upgrade-b/`
 - 已完成工作包：WP-1 … WP-18，**18/18**
 - 未做或只做了部分的工作包及原因：无整包未做。偏差如下，均在证据里写明：
   1. **WebKit 未测**：`packages/relay-web/playwright.config.ts` 只有 `chromium-desktop` / `chromium-mobile`，没有 webkit project。真实 Safari 完全未测。
   2. **手机截图是 Pixel 7（412×839 CSS，DPR 2.625），不是 390×844**：before 包与 after 包同一形态，所以对比有效；390×844 用**实测**覆盖（热区、顶栏控件不重叠），没有另拍一套图片。`manifest.json` 的 `matrix.stated_viewport_gap` 记了这条差别。
-  3. **`07-drawer` 没有 before 图**：抽屉场景在基线拍完之后才进 harness。before 状态以代码 `c38f4b69` 为准。
+  3. **`06-group` 与 `07-drawer` 没有 before 图**：这两个场景在基线拍完之后才进 harness。before 状态以代码 `c38f4b69` 为准；`manifest.json` 的 `shots.after_only` 列了全部只有 after 的场景。
   4. `.glass-1` 暂无使用者：三条手机顶栏按 WP-10 保留实底行 + 其上玻璃控件，没有为了凑使用点改布局。
   5. 桌面会话头仍用 `bg-glass-strong` 工具类（与 `.glass-2` 同一套 token），未强行改成类名。
 
@@ -19,9 +19,9 @@
 
 - Node / Bun / Playwright：node v24.21.0、bun 1.4.4、@playwright/test 1.62.1（chromium）
 - 命令与结果：
-  - `bunx vitest run`（`packages/relay-web`）：**212 文件 / 2974 测试通过**，159s。基线 211 / 2969。
+  - `bunx vitest run`（`packages/relay-web`）：**213 文件 / 2977 测试通过**（合并 `main` 后的 head，含 `main` 带来的 1 文件 / 3 测试）。基线 211 / 2969。
   - `bunx vue-tsc --noEmit`：通过。
-  - `bunx playwright test`（两个 project 全量，head 上）：**187 passed / 0 failed / 51 skipped**，12.2m。skipped 全部是「只在某个 project 有意义」的用例（手机专属、或未设 `UI_SHOTS_DIR` 的取证 harness）。
+  - `bunx playwright test`（两个 project 全量，在合并后的 head 上）：**187 passed / 0 failed / 51 skipped**，14.0m。skipped 全部是「只在某个 project 有意义」的用例（手机专属、或未设 `UI_SHOTS_DIR` 的取证 harness）。CI 在 PR head 上另跑一遍，见 PR 检查列表。
   - WebKit：**未运行**（无 project）。
   - 新增 / 扩展的 spec：
     - 新增 `e2e/direct-empty-starters.spec.ts`：空 Bot 页有 / 无广告两态，点 chip 只填不发（desktop + mobile）。
@@ -37,7 +37,16 @@
   5. **玻璃包住了话题触发器**：`backdrop-filter` 祖先会成为 fixed 后代的包含块，把话题弹层/行菜单困住，导致 5 个 fork 用例失败。已改为非玻璃槽位。
   6. **加空态插槽时丢了 `:fork-message` 绑定**：消息行的分叉入口消失。已恢复。
   7. **取证 harness 的相对默认路径**在普通 `playwright test` 时把假「before」图写进 `packages/artifacts/`。现在未设 `UI_SHOTS_DIR` 就整体 skip，误写目录已删除。
-- 已知失败（改代码前就有 / 新引入）：**无**。上述 7 条都是本轮引入并在本轮修掉。
+- 已知失败（改代码前就有 / 新引入）：上述 7 条都是本轮引入并在本轮修掉，无遗留。
+- 合并 `main` 之后的一轮独立复核（5 条互不通气的 lane：重跑门禁、真实界面取证、diff 审计、方案合规、注释/清洁度）又找出 7 处，全部在本分支修掉：
+  1. **WP-12 的过程入口仍单独占一行**：图标被 `TranscriptRow` 的 `#meta` 块级排布挤到时间戳下一行，变成一个没有标签的 16px 头像。已移进 `ConversationMeta` 的默认插槽，与时间戳、复制/分叉同一行。
+  2. **抽屉里同一条失败原因打印三次**（成员行、选中成员行、过程内容）。现在只在过程内容不显示它的情况下（历史尝试、裸内核原因码）才在正文补一行，其余交给过程内容。
+  3. **`dialog-shell.spec.ts` 默认往已提交的证据目录写截图**：任何一次普通 `playwright test` 都会改动仓库。已改为只在设了 `UI_SHOTS_DIR` 时写。
+  4. **`tooltip.test.ts` 合并时被砍掉一半**：`Tooltip.vue` 本身未改，但定位/翻边/贴边钳制/滚动重算/监听器回收的断言消失。已把上游那组测试原样并回来。
+  5. **`tailwind.config.js` 留了一个零调用的 `menu` 圆角 token**，注释还声称「WP-13/14 会采用」。已删 token、改注释。
+  6. **WP-13 例外清单漏了三个 `role="dialog"` 面**（`BotAvatarQuickView`、`FueCallout`、`MermaidViewer`），其中头像预览还在用字面 `z-[60]` / `bg-black/60`。已补进 `measurements/dialog-shell-wp13.txt`，并把那两处换成 `z-dialog-nested` / `bg-scrim`。
+  7. **本文件与 `manifest.json` 的 head / 提交数 / 单测数过期**（指向 `478929a4`、29 提交、212/2974），且偏差项只写了 `07-drawer` 缺 before 图。已更正，并补上 `06-group`。
+- 已知失败（改代码前就有 / 新引入）：**无**。
 
 ## 截图证据
 
