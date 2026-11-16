@@ -197,12 +197,14 @@ defineExpose({ scrollToBottom });
       <div
         v-if="!loading && rows.length === 0"
         data-test="timeline-empty"
-        class="my-auto flex flex-col items-center justify-center gap-2 py-12 text-center"
+        class="flex min-h-full flex-col items-center justify-center gap-2 py-12 text-center"
       >
-        <MessagesSquare :size="22" class="text-fg-muted" />
-        <p data-test="timeline-empty-hint" class="text-xs text-fg-muted">
-          {{ emptyHint ?? $t("conversation.timeline.empty") }}
-        </p>
+        <slot name="empty" :hint="emptyHint ?? $t('conversation.timeline.empty')">
+          <MessagesSquare :size="22" class="text-fg-muted" />
+          <p data-test="timeline-empty-hint" class="text-xs text-fg-muted">
+            {{ emptyHint ?? $t("conversation.timeline.empty") }}
+          </p>
+        </slot>
       </div>
 
       <div v-else class="mx-auto max-w-3xl space-y-5">

@@ -452,6 +452,14 @@ function onInput(): void {
   cmdActiveIdx.value = 0;
   page.value = 0;
 }
+/** Put text in the draft without sending it. The empty Bot page's starter chips
+ *  call this: a tap fills the composer so the user can edit or add to it. */
+function fillDraft(text: string): void {
+  promptText.value = text;
+  caret.value = text.length;
+  cmdDismissed.value = true;
+}
+defineExpose({ fillDraft });
 </script>
 <template>
   <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">

@@ -14,6 +14,7 @@ import {
 } from "lucide-vue-next";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
+import { useConversationCommandsStore } from "../stores/conversation-commands";
 import {
   supportsBotDedicatedWorkspaceCleanup,
   supportsConversationTimelineV1,
@@ -79,6 +80,24 @@ const emptyHint = computed<string | null>(() => {
   if (!directBotsStore.topicReady) return null;
   return t("bot.chat.emptyHint");
 });
+
+// Starter chips on an empty Bot page come from the agent's OWN advertisement for
+// this conversation+topic (`control.conversation.completions.get` results land in
+// this store, as do `agent-commands` events). No advertisement means no chips — an
+// empty page must not invent a `/review`.
+const composerRef = ref<InstanceType<typeof ConversationPromptInput> | null>(null);
+const starterCommands = computed(() => {
+  const { instanceId, activeConversationId, activeTopicId, selectedBotId } = directBotsStore;
+  if (!instanceId || !activeConversationId || !activeTopicId || !selectedBotId) return [];
+  if (bot.value?.retired || (bot.value && !bot.value.enabled)) return [];
+  return useConversationCommandsStore()
+    .commandsFor({ instanceId, conversationId: activeConversationId, topicId: activeTopicId, botId: selectedBotId })
+    .slice(0, 3);
+});
+function fillStarter(name: string): void {
+  // Same shape the completion list inserts: slash, name, one trailing space.
+  composerRef.value?.fillDraft(`/${name} `);
+}
 const instance = computed(() =>
   directBotsStore.instanceId ? instancesStore.byId(directBotsStore.instanceId) : undefined,
 );
@@ -775,10 +794,37 @@ function handleStopAll(): void {
       banner-inset-class="mt-[calc(6rem+env(safe-area-inset-top))] lg:mt-0"
       :forked-from="directBotsStore.currentTopic?.forkedFrom ?? null"
       :fork-source-available="forkSourceAvailable"
-      :fork-message="forkMessageSupported ? openForkFromMessage : undefined"
       @open-source-topic="openForkSourceTopic"
       @open-detail="openTimelineDetail"
-    />
+    >
+      <template #empty="{ hint }">
+        <!-- The empty Bot page names the Bot it belongs to: avatar disc, name, and
+             where it runs. Starter chips are the agent's advertised commands; with no
+             advertisement the page keeps just the hint. A tap fills, never sends. -->
+        <div data-test="direct-empty" class="flex flex-col items-center gap-2.5">
+          <BotAvatar :avatar="bot?.avatar" :driver="botDriver" :name="bot?.name" :size="56"
+                     :disabled="bot ? !bot.enabled : false" :retired="bot?.retired" />
+          <p data-test="direct-empty-name" class="text-sm font-semibold tracking-tight text-fg">
+            {{ bot?.name ?? $t("bot.nav.title") }}
+          </p>
+          <p v-if="bot" data-test="direct-empty-meta" class="text-xs text-fg-muted">
+            {{ [bot.role?.trim(), bot.workspace, bot.agent].filter(Boolean).join(" · ") }}
+          </p>
+          <div v-if="starterCommands.length" data-test="direct-empty-starters" class="mt-1 flex flex-wrap justify-center gap-2">
+            <button
+              v-for="command in starterCommands"
+              :key="command.name"
+              type="button"
+              :data-test="`direct-starter-${command.name}`"
+              class="rounded-pill bg-fill-track px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-fill-hover [@media(pointer:coarse)]:min-h-11"
+              :title="command.description"
+              @click="fillStarter(command.name)"
+            >/{{ command.name }}</button>
+          </div>
+          <p v-if="hint" data-test="timeline-empty-hint" class="max-w-xs text-xs text-fg-muted">{{ hint }}</p>
+        </div>
+      </template>
+    </ConversationTimeline>
     <div
       v-else
       data-test="timeline-upgrade-required"
@@ -843,6 +889,7 @@ function handleStopAll(): void {
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
+      ref="composerRef"
       :disabled="!timelineSupported || bot?.retired === true || !directBotsStore.topicReady || (!!directBotsStore.activeTopicId && directBotsStore.currentTopic?.status !== 'active')"
       :deliver="directBotsStore.sendPrompt"
     />

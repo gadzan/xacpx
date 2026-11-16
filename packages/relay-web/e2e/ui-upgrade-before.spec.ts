@@ -132,6 +132,24 @@ test("11 direct empty state", async ({ page, hub }) => {
   await openDirect(page, false);
   await expect(page.getByText("start a conversation with this bot").first()).toBeVisible();
   await shot(page, `11-empty-${THEME}`);
+  // WP-15 data case: the agent advertises commands for this conversation+topic, so
+  // the empty page grows starter chips (the no-data case is the shot above).
+  hub.send({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-commands",
+      chatKey: "direct:c1:t1",
+      sessionAlias: "s1",
+      conversation: { conversationId: "c1", topicId: "t1", botId: "b1", runId: "", memberTurnId: "" },
+      commands: [
+        { name: "review", description: "Review the working tree" },
+        { name: "ship", description: "Land the change" },
+      ],
+    },
+  } as never);
+  await expect(page.getByTestId("direct-empty-starters")).toBeVisible();
+  await shot(page, `11-empty-starters-${THEME}`);
 });
 
 const gscope = { conversationId: "g_ui", topicId: "t_ui" };
