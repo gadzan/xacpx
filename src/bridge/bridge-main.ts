@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 
 
 import {
+  normalizeBridgeAgentEnvList,
   normalizeBridgeByteLimit,
   normalizeBridgeNonInteractivePermissions,
   normalizeBridgePermissionMode,
@@ -88,6 +89,8 @@ export interface BridgeSharedConfig {
   queueOwnerTtlSeconds: number | undefined;
   acpxMaxIncomingMessageBytes: number | undefined;
   acpxTerminalMaxOutputBytes: number | undefined;
+  agentEnvAllow?: string[];
+  agentEnvBlock?: string[];
 }
 
 /**
@@ -110,6 +113,8 @@ export function resolveBridgeSharedConfig(
     ),
     acpxMaxIncomingMessageBytes: normalizeBridgeByteLimit(readEnv("BRIDGE_ACPX_MAX_MESSAGE_BYTES")),
     acpxTerminalMaxOutputBytes: normalizeBridgeByteLimit(readEnv("BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES")),
+    agentEnvAllow: normalizeBridgeAgentEnvList(readEnv("BRIDGE_AGENT_ENV_ALLOW")),
+    agentEnvBlock: normalizeBridgeAgentEnvList(readEnv("BRIDGE_AGENT_ENV_BLOCK")),
   };
 }
 
@@ -194,6 +199,10 @@ export async function runBridgeMain(): Promise<void> {
         queueOwnerTtlSeconds: bridgeConfig.queueOwnerTtlSeconds,
         acpxMaxIncomingMessageBytes: bridgeConfig.acpxMaxIncomingMessageBytes,
         acpxTerminalMaxOutputBytes: bridgeConfig.acpxTerminalMaxOutputBytes,
+        // Agent-child env policy (acpx 0.21). Absent on both sides keeps
+        // upstream's inherit-everything default.
+        ...(bridgeConfig.agentEnvAllow !== undefined ? { agentEnvAllow: bridgeConfig.agentEnvAllow } : {}),
+        ...(bridgeConfig.agentEnvBlock !== undefined ? { agentEnvBlock: bridgeConfig.agentEnvBlock } : {}),
         durableRootDir: durableRoot,
         queueDir,
         fenceDir,

@@ -237,6 +237,13 @@ export function parseConfig(
   if ("preferLocalAgents" in transport && typeof transport.preferLocalAgents !== "boolean") {
     throw new Error("transport.preferLocalAgents must be a boolean");
   }
+  for (const key of ["agentEnvAllow", "agentEnvBlock"] as const) {
+    const value = transport[key];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
+      throw new Error(`transport.${key} must be an array of non-empty environment variable names`);
+    }
+  }
 
   if (!isRecord(raw.agents)) {
     throw new Error("agents must be an object");
@@ -421,6 +428,8 @@ export function parseConfig(
       ...(typeof transport.acpxTerminalMaxOutputBytes === "number"
         ? { acpxTerminalMaxOutputBytes: transport.acpxTerminalMaxOutputBytes }
         : {}),
+      ...(Array.isArray(transport.agentEnvAllow) ? { agentEnvAllow: [...transport.agentEnvAllow] as string[] } : {}),
+      ...(Array.isArray(transport.agentEnvBlock) ? { agentEnvBlock: [...transport.agentEnvBlock] as string[] } : {}),
       type: transportType,
       permissionMode,
       nonInteractivePermissions,

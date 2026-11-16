@@ -20,6 +20,7 @@ import type {
   XacpxTurnHandle,
 } from "./runtime-contract";
 import {
+  agentEnvListIdentityKey,
   agentProcessEnvIdentityKey,
   encodeWorkerMessage,
   parseWorkerLine,
@@ -129,6 +130,10 @@ function ensureIdentityKey(p: RuntimeWorkerEnsureParams): string {
     // createAcpRuntime). A warm worker silently keeping a stale env is
     // worse than a recycle — mismatch fails closed so the Host respawns.
     agentProcessEnvIdentityKey(p.agentProcessEnv),
+    // acpx 0.21: env policy is Runtime-construction state; absent vs empty
+    // must differ, so a warm worker never keeps a stale policy.
+    agentEnvListIdentityKey(p.agentProcessEnvAllow),
+    agentEnvListIdentityKey(p.agentProcessEnvBlock),
   ]);
 }
 
@@ -276,6 +281,10 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
       // B1: child-only overlay, snapshotted by upstream at construction and
       // never persisted. Identity-bound above: a changed overlay recycles.
       ...(params.agentProcessEnv ? { agentProcessEnv: params.agentProcessEnv } : {}),
+      // acpx 0.21 agent-child env policy: forwarded only when configured so
+      // absent keeps upstream's inherit-everything default.
+      ...(params.agentProcessEnvAllow !== undefined ? { agentProcessEnvAllow: params.agentProcessEnvAllow } : {}),
+      ...(params.agentProcessEnvBlock !== undefined ? { agentProcessEnvBlock: params.agentProcessEnvBlock } : {}),
       // G9: advertise exactly what the daemon-capability plumbing allowed —
       // an empty list means the ACP agent never learns elicitation exists.
       ...(params.elicitationModes ? { elicitationModes: params.elicitationModes } : {}),

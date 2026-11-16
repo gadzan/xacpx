@@ -520,6 +520,13 @@ interface SpawnedBridgeClientOptions {
   /** Advanced acpx host ceilings (plan B5); forwarded as XACPX_BRIDGE_* env. */
   acpxMaxIncomingMessageBytes?: number | null;
   acpxTerminalMaxOutputBytes?: number | null;
+  /**
+   * ACP agent child env allowlist/blocklist (acpx 0.21 agentProcessEnvAllow/
+   * Block), forwarded as JSON arrays in XACPX_BRIDGE_* env. Omitted keys mean
+   * "not configured" and keep upstream's inherit-everything default.
+   */
+  agentEnvAllow?: string[];
+  agentEnvBlock?: string[];
   generationFilePath?: string;
   /**
    * True human permission-interaction capability (some registered channel
@@ -584,6 +591,15 @@ export function buildBridgeSpawnEnv(
       options.elicitationFormCapable === true ? "1" : "0",
     ...(options.agentOverlays && options.agentOverlays.length > 0
       ? { XACPX_BRIDGE_AGENT_OVERLAYS: JSON.stringify(options.agentOverlays) }
+      : {}),
+    // Agent-child env policy travels as JSON so an empty (meaningful)
+    // allowlist survives the env hop; absent keys stay absent, which the
+    // bridge reads as "not configured".
+    ...(Array.isArray(options.agentEnvAllow)
+      ? { XACPX_BRIDGE_AGENT_ENV_ALLOW: JSON.stringify(options.agentEnvAllow) }
+      : {}),
+    ...(Array.isArray(options.agentEnvBlock)
+      ? { XACPX_BRIDGE_AGENT_ENV_BLOCK: JSON.stringify(options.agentEnvBlock) }
       : {}),
   };
 }

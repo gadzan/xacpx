@@ -34,7 +34,7 @@ import type { RuntimeQueueRecord } from "./runtime/runtime-queue";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runtime-permission-policy";
 import { RuntimePermissionResolver, type RuntimePermissionRequest } from "./runtime/runtime-permission-resolver";
 import { narrowToAgentProcessEnvOverlay, resolveClaudeAgentProcessEnv, type ClaudeExecutionSettings } from "../../adapters/claude-settings-policy";
-import { agentProcessEnvIdentityKey } from "./runtime/runtime-worker-protocol";
+import { agentEnvListIdentityKey, agentProcessEnvIdentityKey } from "./runtime/runtime-worker-protocol";
 import type {
   RuntimeWorkerElicitationRequestPayload,
   RuntimeElicitationDecision,
@@ -406,6 +406,16 @@ export interface RuntimeEngineOptions {
    * construction identity.
    */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
+  /**
+   * ACP agent-child env allowlist/blocklist (acpx 0.21 agentProcessEnvAllow/
+   * Block). Runtime-construction policy: snapshotted by upstream at
+   * createAcpRuntime, forwarded to every worker's ensure params and part of
+   * the construction identity, so a config change recycles warm workers.
+   * Absent (both) keeps upstream's inherit-everything default; an empty
+   * allowlist is meaningful and must survive as set.
+   */
+  agentEnvAllow?: readonly string[];
+  agentEnvBlock?: readonly string[];
   /**
    * Advanced acpx host ceilings (plan B5). `null`/absent follows upstream
    * defaults. Merged into the Runtime worker HOST process env at spawn;
@@ -1384,6 +1394,10 @@ export class RuntimeEngine implements BridgeEngine {
       input.mcpCoordinatorSession ?? null,
       input.mcpSourceHandle ?? null,
       agentProcessEnvIdentityKey(agentProcessEnv),
+      // acpx 0.21: the agent-child env policy is Runtime-construction state
+      // on the engine side; a config change must recycle warm workers.
+      agentEnvListIdentityKey(this.options.agentEnvAllow),
+      agentEnvListIdentityKey(this.options.agentEnvBlock),
     ]);
   }
 
@@ -1735,6 +1749,11 @@ export class RuntimeEngine implements BridgeEngine {
       // B1: child-only overlay, resolved once above so params and the
       // identity mirror observe the same snapshot.
       ...(agentProcessEnv ? { agentProcessEnv } : {}),
+      // acpx 0.21 agent-child env policy: engine-level and constant for the
+      // engine's lifetime, forwarded to every worker so the Runtime
+      // construction and the identity mirror agree.
+      ...(this.options.agentEnvAllow !== undefined ? { agentProcessEnvAllow: this.options.agentEnvAllow } : {}),
+      ...(this.options.agentEnvBlock !== undefined ? { agentProcessEnvBlock: this.options.agentEnvBlock } : {}),
     };
   }
 
