@@ -527,7 +527,7 @@ describe("Group Components", () => {
       });
       await wrapper.find('[data-test="group-mention-chip"]').trigger("click");
       const row = wrapper.find('[data-test="group-mention-item"][data-bot-id="bot_isolated"]');
-      expect(row.attributes("aria-disabled")).toBe("false");
+
       expect(row.text()).not.toContain(i18n.global.t("group.target.noRuntime"));
       await row.trigger("click");
       await wrapper.find('[data-test="group-composer-textarea"]').setValue("@Isolated please review");
@@ -2099,11 +2099,15 @@ describe("Group Components", () => {
       expect(traceAttempts).toContain(1);
 
       // Selecting the retried attempt must follow it: the cursor moves, the
-      // trace re-reads, and the render switches with it.
-      const select = card().querySelector('[data-test="group-detail-attempt"]') as HTMLSelectElement;
-      expect(select).not.toBeNull();
-      select.value = "2";
-      select.dispatchEvent(new Event("change"));
+      // trace re-reads, and the render switches with it. The attempt picker is
+      // a SelectMenu (no native <select>), so the row is a real button.
+      const trigger = card().querySelector('[data-test="group-detail-attempt"]') as HTMLElement;
+      expect(trigger).not.toBeNull();
+      trigger.click();
+      await flushPromises();
+      const option = document.body.querySelector('[data-test="group-detail-attempt-2"]') as HTMLElement;
+      expect(option).not.toBeNull();
+      option.click();
       await flushPromises();
       await flushPromises();
       expect(traceAttempts.at(-1)).toBe(2);

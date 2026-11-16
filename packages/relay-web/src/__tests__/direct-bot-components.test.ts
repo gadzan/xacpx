@@ -2840,11 +2840,15 @@ describe("Direct Bot Components", () => {
       const card = () => document.body.querySelector('[data-test="group-detail-card"]')!;
       expect(card().textContent).toContain("Attempt 1 trace");
 
-      const select = card().querySelector('[data-test="group-detail-attempt"]') as HTMLSelectElement;
-      expect(select).not.toBeNull();
-      select.value = "2";
-      select.dispatchEvent(new Event("change"));
+      // The attempt picker is a SelectMenu (no native <select>); pick the
+      // retried attempt through its menu row and the follow must move with it.
+      const trigger = card().querySelector('[data-test="group-detail-attempt"]') as HTMLElement;
+      expect(trigger).not.toBeNull();
+      trigger.click();
       await flushPromises();
+      const option = document.body.querySelector('[data-test="group-detail-attempt-2"]') as HTMLElement;
+      expect(option).not.toBeNull();
+      option.click();
       await flushPromises();
       expect(traceAttempts.at(-1)).toBe(2);
       expect(card().textContent).toContain("Attempt 2 trace");

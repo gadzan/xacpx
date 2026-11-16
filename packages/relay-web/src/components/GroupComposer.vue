@@ -20,10 +20,12 @@ import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import ConversationComposer from "./ConversationComposer.vue";
 import ComposerAttachments from "./ComposerAttachments.vue";
 import ComposerAttachPicker from "./ComposerAttachPicker.vue";
+import CompletionList, { type CompletionRow } from "./CompletionList.vue";
+import CompletionMenu from "./CompletionMenu.vue";
 import { groupDraftKey, loadDraft, saveDraft } from "../lib/composer-drafts";
 import ComposerConfirmDialog from "./ComposerConfirmDialog.vue";
 import MobileSheet from "./MobileSheet.vue";
-import { useIsMobile } from "../lib/use-dropdown";
+import { useCompletionDismiss, useIsMobile } from "../lib/use-dropdown";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -92,6 +94,9 @@ const sendBusy = ref(false);
 const attachments = useComposerStore();
 /** Below lg the completion selector is a bottom sheet, not a popover. */
 const isMobile = useIsMobile();
+/** The composer card this menu belongs to; a pointerdown outside it dismisses. */
+const rootEl = ref<HTMLElement | null>(null);
+useCompletionDismiss(rootEl, () => cmdMenuOpen.value, () => { closeCmdMenu(); });
 /** Below Tailwind `sm` (640px) the full placeholder no longer fits one line. */
 const isNarrow = ref(typeof window !== "undefined" && window.innerWidth < 640);
 function syncNarrow(): void { isNarrow.value = window.innerWidth < 640; }
@@ -401,6 +406,35 @@ const mentionMatches = computed(() => {
 });
 /** The completion menu (slash hint, slash rows or mention rows) is showing. */
 const cmdMenuOpen = computed(() => slashHint.value || slashMatches.value.length > 0 || mentionMatches.value.length > 0);
+
+/** Both lists as shared row shapes; the row markup lives in CompletionList. */
+const slashRows = computed<CompletionRow[]>(() =>
+  slashMatches.value.map((command) => ({
+    key: command.name,
+    label: `/${command.name}`,
+    detail: command.description,
+    testId: "group-cmd-item",
+  })),
+);
+const mentionRows = computed<CompletionRow[]>(() =>
+  mentionMatches.value.map((member) => {
+    const bot = props.bots.find((candidate) => candidate.id === member.botId);
+    return {
+      key: member.botId,
+      label: `@${member.name}`,
+      trailing: [
+        ...(member.lead ? [{ text: t("group.target.lead"), tone: "accent" as const }] : []),
+        ...(member.role ? [{ text: member.role }] : []),
+        ...(member.enabled ? [] : [{ text: memberUnavailableReason(bot!) }]),
+        { text: member.botId, tone: "mono" as const },
+      ],
+      disabled: !member.enabled,
+      title: member.enabled ? undefined : memberUnavailableReason(bot!) ?? undefined,
+      testId: "group-mention-item",
+      data: { "data-bot-id": member.botId },
+    };
+  }),
+);
 
 watch([singleMemberId, () => groupsStore.currentGroup?.leadBotId], () => {
   cmdDismissed.value = false;
@@ -734,7 +768,7 @@ function handleRetry(): void {
 </script>
 
 <template>
-  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
+  <div ref="rootEl" class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2.5 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <div v-if="groupsStore.promptError" data-test="group-prompt-error" class="mb-2 flex items-center justify-between gap-2 rounded-lg bg-danger/10 px-3 py-1.5 text-xs text-danger-text">
       <span class="truncate">{{ groupsStore.promptErrorDetail ?? $t(`bot.errors.${groupsStore.promptError}`) }}</span>
       <button
@@ -857,11 +891,13 @@ function handleRetry(): void {
       <template #menus>
       <!-- Below lg the selector is a bottom sheet (rows are finger-sized); at lg
            the inline popovers above the composer stay exactly as they were. -->
-      <Teleport
-        v-if="isMobile && cmdMenuOpen"
-        to="body"
-      >
-        <MobileSheet :title="$t('bot.prompt.completions')" test-id="group-cmd-sheet" @close="closeCmdMenu">
+      <Teleport v-if="isMobile && cmdMenuOpen" to="body">
+        <MobileSheet
+          :title="$t('bot.prompt.completions')"
+          test-id="group-cmd-sheet"
+          data-completion-surface
+          @close="closeCmdMenu"
+        >
           <!-- The textarea keeps DOM focus while its list is open, so the sheet
                must not move focus on mount: this is the sheet's initial-focus
                target and is not focusable. -->
@@ -873,42 +909,24 @@ function handleRetry(): void {
           >
             {{ $t("bot.errors.slashSelectMember") }}
           </div>
-          <div v-else-if="slashMatches.length > 0" data-test="group-cmd-menu" class="w-full">
-            <button
-              v-for="(command, index) in slashMatches"
-              :key="command.name"
-              type="button"
-              data-test="group-cmd-item"
-              class="flex min-h-[46px] w-full items-center gap-2 rounded-sm px-3 text-left text-sm"
-              :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-              @pointerdown.prevent
-              @click="pickSlash(command.name)"
-            >
-              <span class="font-medium text-fg">/{{ command.name }}</span>
-              <span v-if="command.description" class="truncate text-xs text-fg-muted">{{ command.description }}</span>
-            </button>
-          </div>
-          <div v-if="mentionMatches.length > 0" data-test="group-mention-menu" class="w-full">
-            <button
-              v-for="(member, index) in mentionMatches"
-              :key="member.botId"
-              type="button"
-              data-test="group-mention-item"
-              :data-bot-id="member.botId"
-              :aria-disabled="!member.enabled"
-              :title="!member.enabled ? memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) ?? undefined : undefined"
-              class="flex min-h-[46px] w-full items-center gap-2 rounded-sm px-3 text-left text-sm"
-              :class="index === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-              @pointerdown.prevent
-              @click="pickMention(member)"
-            >
-              <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
-              <span v-if="member.lead" class="shrink-0 text-xs text-accent-text">{{ $t("group.target.lead") }}</span>
-              <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
-              <span v-if="!member.enabled" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) }}</span>
-              <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
-            </button>
-          </div>
+          <CompletionList
+            v-else-if="slashMatches.length > 0"
+            test-id="group-cmd-menu"
+            item-test-id="group-cmd-item"
+            :rows="slashRows"
+            :active-index="cmdActiveIdx"
+            mobile
+            @pick="pickSlash(slashMatches[$event]!.name)"
+          />
+          <CompletionList
+            v-if="mentionMatches.length > 0"
+            test-id="group-mention-menu"
+            item-test-id="group-mention-item"
+            :rows="mentionRows"
+            :active-index="mentionActiveIdx"
+            mobile
+            @pick="pickMention(mentionMatches[$event]!)"
+          />
         </MobileSheet>
       </Teleport>
 
@@ -920,49 +938,45 @@ function handleRetry(): void {
       >
         {{ $t("bot.errors.slashSelectMember") }}
       </div>
-      <div
-        v-else-if="!isMobile && slashMatches.length > 0"
-        data-test="group-cmd-menu"
-        class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
+      <CompletionMenu
+        v-else-if="!isMobile"
+        :open="slashMatches.length > 0"
+        :mobile="false"
+        :title="$t('bot.prompt.completions')"
+        sheet-test-id="group-cmd-sheet"
+        panel-class="max-h-56"
+        @close="closeCmdMenu"
       >
-        <button
-          v-for="(command, index) in slashMatches"
-          :key="command.name"
-          type="button"
-          data-test="group-cmd-item"
-          class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-          :class="index === cmdActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-          @mousedown.prevent="pickSlash(command.name)"
-        >
-          <span class="font-medium text-fg">/{{ command.name }}</span>
-          <span v-if="command.description" class="truncate text-xs text-fg-muted">{{ command.description }}</span>
-        </button>
-      </div>
-      <div
-        v-if="!isMobile && mentionMatches.length > 0"
-        data-test="group-mention-menu"
-        class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-lg bg-glass-strong p-1 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
+        <template #default>
+          <CompletionList
+            test-id="group-cmd-menu"
+            item-test-id="group-cmd-item"
+            :rows="slashRows"
+            :active-index="cmdActiveIdx"
+            :mobile="false"
+            @pick="pickSlash(slashMatches[$event]!.name)"
+          />
+        </template>
+      </CompletionMenu>
+      <CompletionMenu
+        :open="!isMobile && mentionMatches.length > 0"
+        :mobile="false"
+        :title="$t('bot.prompt.completions')"
+        sheet-test-id="group-mention-sheet"
+        panel-class="max-h-56"
+        @close="closeCmdMenu"
       >
-        <button
-          v-for="(member, index) in mentionMatches"
-          :key="member.botId"
-          type="button"
-          data-test="group-mention-item"
-          :data-bot-id="member.botId"
-          :aria-disabled="!member.enabled"
-          :title="!member.enabled ? memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) ?? undefined : undefined"
-          class="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm"
-          :class="index === mentionActiveIdx ? 'bg-surface-2' : 'hover:bg-surface-2'"
-          @pointerdown.prevent
-          @click="pickMention(member)"
-        >
-          <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
-          <span v-if="member.lead" class="shrink-0 text-xs text-accent-text">{{ $t("group.target.lead") }}</span>
-          <span v-if="member.role" class="shrink-0 truncate text-xs text-fg-muted">{{ member.role }}</span>
-          <span v-if="!member.enabled" class="shrink-0 text-xs text-fg-muted">{{ memberUnavailableReason(props.bots.find(bot => bot.id === member.botId)!) }}</span>
-          <span class="shrink-0 font-mono text-xs text-fg-muted">{{ member.botId }}</span>
-        </button>
-      </div>
+        <template #default>
+          <CompletionList
+            test-id="group-mention-menu"
+            item-test-id="group-mention-item"
+            :rows="mentionRows"
+            :active-index="mentionActiveIdx"
+            :mobile="false"
+            @pick="pickMention(mentionMatches[$event]!)"
+          />
+        </template>
+      </CompletionMenu>
       </template>
     </ConversationComposer>
   </div>

@@ -111,6 +111,16 @@ test("Direct cold slash and selected mention work by keyboard and touch without 
   await input.fill("/re");
   await expect(page.getByRole("option")).toContainText("/review");
   expect(prompts).toHaveLength(0);
+  // A pointerdown outside the composer dismisses the desktop popover the way
+  // the shared dropdown contract does; the half-typed text stays. Below lg the
+  // same list lives in a sheet, whose scrim / Escape / back already close it.
+  if (!info.project.name.includes("mobile")) {
+    await page.mouse.click(760, 160);
+    await expect(page.getByRole("option")).toHaveCount(0);
+    await expect(input).toHaveValue("/re");
+    await input.fill("/re");
+    await expect(page.getByRole("option")).toContainText("/review");
+  }
   await input.press("Tab");
   await expect(input).toHaveValue("/review ");
   expect(prompts).toHaveLength(0);

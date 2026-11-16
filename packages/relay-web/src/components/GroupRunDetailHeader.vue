@@ -9,6 +9,7 @@ import type {
 import { fmtTime } from "../lib/format";
 import { memberStateKey, memberStateTone, runStateKey, runStateTone, type StateTone } from "../lib/run-state-label";
 import { useLiveDuration, memberDurationClock } from "../lib/run-duration";
+import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
 
 const props = defineProps<{
   run: ConversationRunDto;
@@ -64,6 +65,15 @@ const attemptLabel = computed(() => {
   if (props.attempts && props.attempts.length > 1) return undefined;
   return selected > 1 ? t("group.detail.attempt", { attempt: selected }) : undefined;
 });
+
+/** The retried attempts as one SelectMenu group; picking one re-reads its trace. */
+const attemptGroups = computed<SelectGroup[]>(() => [{
+  options: (props.attempts ?? []).map((available) => ({
+    value: String(available),
+    label: t("group.detail.attempt", { attempt: available }),
+    testId: `group-detail-attempt-${available}`,
+  })),
+}]);
 
 const meta = computed(() => {
   const parts: string[] = [];
@@ -175,21 +185,22 @@ const ariaLabel = computed(() =>
       </template>
     </div>
 
-    <label
+    <div
       v-if="attempts && attempts.length > 1"
-      class="mt-2 inline-flex items-center gap-1.5 text-xs text-fg-muted"
+      class="mt-2 flex items-center gap-1.5 text-xs text-fg-muted"
     >
-      {{ $t("group.detail.attemptLabel") }}
-      <select
+      <label for="group-detail-attempt">{{ $t("group.detail.attemptLabel") }}</label>
+      <SelectMenu
+        id="group-detail-attempt"
         data-test="group-detail-attempt"
-        class="rounded-sm bg-surface-2 px-1.5 py-1 text-fg"
-        :value="attempt ?? memberTurn?.attempt"
-        @change="emit('attempt', Number(($event.target as HTMLSelectElement).value))"
-      >
-        <option v-for="availableAttempt in attempts" :key="availableAttempt" :value="availableAttempt">
-          {{ $t("group.detail.attempt", { attempt: availableAttempt }) }}
-        </option>
-      </select>
-    </label>
+        compact
+        placement="bottom"
+        :model-value="String(attempt ?? memberTurn?.attempt ?? '')"
+        :groups="attemptGroups"
+        :aria-label="$t('group.detail.attemptLabel')"
+        :title="$t('group.detail.attemptLabel')"
+        @update:model-value="(value) => emit('attempt', Number(value))"
+      />
+    </div>
   </header>
 </template>
