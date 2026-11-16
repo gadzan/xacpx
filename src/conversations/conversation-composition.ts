@@ -176,6 +176,7 @@ export async function createConversationRuntime(
     botRemovalPhase: (botId) => store.botRemovalPhase(botId),
     rememberBotRemovalBarrier: (botId, phase, now) => store.rememberBotRemovalBarrier(botId, phase, now),
     forgetGroupMemberMemory: (conversationId, botId) => store.deletePublicMemoryForGroupMember(conversationId, botId),
+    retainGroupMemberMemory: (conversationId, remainingBotIds) => store.retainGroupMemberMemory(conversationId, remainingBotIds),
   };
   bots.setConversationWork(botsWorkBridge);
   const productSinkRef: ConversationProductEventSink | undefined = input.onProductEvent;
@@ -279,8 +280,9 @@ export async function createConversationRuntime(
     },
   );
   runsRef = runs;
-  // RunService installs the store as the default work view; reinstall the
-  // wider bridge so membership removal also drops public memory.
+  // RunService installs the store as the default work view (the store now
+  // retains public memory to current membership). Reinstall the wider
+  // bridge so both forget and retain stay wired if those surfaces diverge.
   bots.setConversationWork(botsWorkBridge);
   const directMessaging = new DirectMessagingService({ state: input.state, bots, store, runs, ...(input.now ? {now:input.now} : {}), nodeId: input.messagingNodeId ?? "test-node" });
   runs.setMentionResolver((botId, mentions) => directMessaging.registry.mentions(botId, mentions));

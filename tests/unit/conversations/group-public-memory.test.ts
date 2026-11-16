@@ -102,3 +102,37 @@ test("public Group messages project per current member and clean with membership
   assert.deepEqual(store.listPublicMemory({ botId: "bot_b" }), []);
   store.close();
 });
+
+test("retainGroupMemberMemory keeps remaining members and drops everyone else", async () => {
+  let members = ["bot_a", "bot_b", "bot_c"];
+  const store = await SqliteConversationStore.open(":memory:", {
+    publicMemoryMembers: (conversationId, topicId) =>
+      conversationId === "group" && topicId === "topic" ? members : undefined,
+  });
+  store.acceptRequest({
+    conversationId: "group",
+    topicId: "topic",
+    requestId: "request-1",
+    botId: "bot_a",
+    content: "secret group plan",
+    profileSnapshot: member("bot_a").profileSnapshot,
+    primaryMember: member("bot_a"),
+    members: [member("bot_b"), member("bot_c")],
+    maxMemberTurns: 24,
+    now,
+  });
+  assert.deepEqual(store.listPublicMemory({ botId: "bot_c" }).map((entry) => entry.content), ["secret group plan"]);
+
+  store.retainGroupMemberMemory("group", ["bot_a", "bot_b"]);
+  assert.deepEqual(store.listPublicMemory({ botId: "bot_a" }).map((entry) => entry.content), ["secret group plan"]);
+  assert.deepEqual(store.listPublicMemory({ botId: "bot_b" }).map((entry) => entry.content), ["secret group plan"]);
+  assert.deepEqual(store.listPublicMemory({ botId: "bot_c" }), []);
+
+  store.retainGroupMemberMemory("group", ["bot_a", "bot_b"]);
+  assert.deepEqual(store.listPublicMemory({ botId: "bot_b" }).map((entry) => entry.content), ["secret group plan"]);
+
+  store.retainGroupMemberMemory("group", []);
+  assert.deepEqual(store.listPublicMemory({ botId: "bot_a" }), []);
+  assert.deepEqual(store.listPublicMemory({ botId: "bot_b" }), []);
+  store.close();
+});

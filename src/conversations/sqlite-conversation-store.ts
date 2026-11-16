@@ -1915,6 +1915,23 @@ export class SqliteConversationStore implements ConversationStore {
     );
   }
 
+  /** BotConversationWork alias so `setConversationWork(this.store)` forgets. */
+  forgetGroupMemberMemory(conversationId: string, botId: string): void {
+    this.deletePublicMemoryForGroupMember(conversationId, botId);
+  }
+
+  retainGroupMemberMemory(conversationId: string, remainingBotIds: readonly string[]): void {
+    const unique = [...new Set(remainingBotIds)];
+    if (unique.length === 0) {
+      this.sqlite.run("DELETE FROM bot_public_memory WHERE conversation_id = ?", [conversationId]);
+      return;
+    }
+    this.sqlite.run(
+      `DELETE FROM bot_public_memory WHERE conversation_id = ? AND bot_id NOT IN (${placeholders(unique.length)})`,
+      [conversationId, ...unique],
+    );
+  }
+
   deletePublicMemoryForBot(botId: string): void {
     this.sqlite.run("DELETE FROM bot_public_memory WHERE bot_id = ?", [botId]);
   }

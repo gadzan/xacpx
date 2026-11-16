@@ -282,6 +282,10 @@ export class ConversationRunService {
       // reopen as `paused`, not as a `running` Run with nothing to do and
       // nothing to replay.
       this.store.reconcilePauseIntents(this.now().toISOString());
+      // Membership lives in AppState; public memory lives in SQLite. A crash
+      // between those writes used to leak Group history into an ex-member's
+      // Direct prompt with no later heal. Align now, before the first drain.
+      this.retainGroupPublicMemoryToMembership();
       await this.dispatcher.kick();
       // PR8 crash recovery for automatic Runs: a Run that died between
       // "Router asked" and "decision committed" restarts with a durable
@@ -300,6 +304,14 @@ export class ConversationRunService {
 
   isConsumerActivated(): boolean {
     return this.activation === "activated";
+  }
+
+  /** Drop public-memory rows for Bots that are no longer members of a Group. */
+  private retainGroupPublicMemoryToMembership(): void {
+    for (const conversation of Object.values(this.state.conversations)) {
+      if (conversation.kind !== "group") continue;
+      this.store.retainGroupMemberMemory(conversation.id, conversation.botIds);
+    }
   }
 
   /** Wake pending durable work (e.g. after a Bot re-enables or a handoff).
