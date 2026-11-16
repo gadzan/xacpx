@@ -65,10 +65,20 @@ test("the Group mention list offers members, then closes on Escape and outside c
   const rows = page.getByTestId("group-mention-item");
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText("@Lead");
-  // The chips: the lead marker, the member's role slot, the stable bot id.
   await expect(page.getByTestId("group-mention-menu")).toContainText("Lead");
+  // The id is selection state, kept on the attribute for tests and pickers, and
+  // never printed as product copy (the trunk fix this row markup replaced).
   await expect(rows.first()).toHaveAttribute("data-bot-id", "lead");
+  expect(await rows.first().innerText()).not.toContain("lead");
   await expect(rows.first()).not.toHaveAttribute("role", "option");
+
+  const shots = process.env.UI_SHOTS_DIR;
+  if (shots) {
+    await page.screenshot({
+      path: `${shots}/13-completions-${info.project.name.includes("mobile") ? "m390" : "d1440"}.png`,
+      fullPage: true,
+    });
+  }
 
   await input.press("Escape");
   await expect(page.getByTestId("group-mention-menu")).toHaveCount(0);
