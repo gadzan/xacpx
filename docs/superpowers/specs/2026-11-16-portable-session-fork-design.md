@@ -65,3 +65,19 @@ session menu entry until the instance advertises it.
   Completed (ready/consumed) records are retained even after target deletion
   as idempotency and audit provenance — one small row per user-initiated
   fork — so the table cannot grow without an operator action behind it.
+
+## Review fixes, round 2 (against PR586 r2)
+
+- Row-level fence neutralization: every rendered row neutralizes literal
+  `<<<HISTORY` / `>>>END HISTORY` markers (`[HISTORY` / `END HISTORY]`), so a
+  bot echo, quote, or paste can never nest a second fence inside a row.
+- Parent carried only when absent inline: after stripping the exact injected
+  prefix, the parent block is added only when no cleaned row still contains
+  the parent text. A bot echo therefore keeps a single fence pair instead of
+  duplicating the chain context.
+- Source-deletion-tolerant replay: the record stores the requested display
+  source/target aliases; a replay compares those first, so a deleted source
+  with a live target still returns the target instead of failing.
+- Suffix-tolerant replay: comparison uses the requested aliases, never the
+  materialized target alias, so a daemon-side auto-suffix still replays.
+- `deleteForkById` runs both DELETEs in one transaction.

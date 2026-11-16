@@ -8,9 +8,26 @@ function pending(store: SessionForkStore, target: string, requestId = `req-${tar
     requestId,
     sourceSessionId: "src",
     targetSessionId: target,
+    sourceAlias: "src-alias",
+    targetAlias: `${target}-alias`,
     createdAt: "2026-11-16T00:00:00.000Z",
   });
 }
+
+test("deleting a fork removes its record and handoff text together", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const fork = pending(store, "target", "req-delete");
+  store.resolvePortable({
+    forkId: fork.id,
+    handoff: { text: "<<<HISTORY\nHuman: hi\n>>>END HISTORY", messageCount: 1, omittedMessages: 0 },
+    createdAt: "2026-11-16T00:00:01.000Z",
+  });
+  store.deleteForkById(fork.id);
+  expect(store.getByRequestId("req-delete")).toBeUndefined();
+  expect(store.getByTargetSessionId("target")).toBeUndefined();
+  expect(store.getHandoff(fork.id)).toBeUndefined();
+  store.close();
+});
 
 test("a pending fork resolves to portable and its handoff is taken exactly once", async () => {
   const store = await SessionForkStore.openInMemory();
@@ -84,5 +101,33 @@ test("a consumed parent handoff is stripped from rows and carried once as the pa
   expect(rendered.text.match(/inherited/g)?.length).toBe(1);
   expect(rendered.text).not.toContain("Human: <<<HISTORY");
   expect(rendered.text).toContain("Human: new question");
+  store.close();
+});
+
+test("a bot row quoting a handoff keeps a single fence pair", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const parent = pending(store, "child", "req-echo");
+  const parentText = "<<<HISTORY\nHuman: parent context\n>>>END HISTORY";
+  store.resolvePortable({
+    forkId: parent.id,
+    handoff: { text: parentText, messageCount: 1, omittedMessages: 0 },
+    createdAt: "2026-11-16T00:00:01.000Z",
+  });
+  store.takeHandoff("child", "2026-11-16T00:00:02.000Z");
+  const rendered = renderSessionForkHandoff({
+    sourceTitle: "child",
+    agent: "codex",
+    history: [
+      { role: "user", text: `${parentText}\n\nchild prompt` },
+      { role: "agent", text: `reply saw ${parentText} inline` },
+    ],
+    parentFork: store.getByForkSourceSessionId("child")!,
+    parentHandoff: store.getHandoff(parent.id),
+  });
+  expect(rendered.text.match(/<<<HISTORY/g)?.length).toBe(1);
+  expect(rendered.text.match(/>>>END HISTORY/g)?.length).toBe(1);
+  expect(rendered.text).not.toContain("Human: <<<HISTORY");
+  expect(rendered.text).toContain("[HISTORY");
+  expect(rendered.text).toContain("child prompt");
   store.close();
 });

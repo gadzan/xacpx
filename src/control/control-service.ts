@@ -1741,44 +1741,45 @@ export class ControlService {
     }
 
     this.assertOrdinaryAddressedAlias(input.chatKey, input.sourceAlias);
-    const source = await this.resolveControlSession(input.chatKey, input.sourceAlias);
-    if (!source) {
-      throw new SessionForkError(
-        "session-fork-unavailable",
-        `session "${input.sourceAlias}" does not exist`,
-      );
-    }
-    this.assertOrdinaryAddressedAlias(input.chatKey, source.alias);
-    const sourceSessionId = source.logicalSessionId;
-    if (!sourceSessionId) {
-      throw new SessionForkError(
-        "session-fork-unavailable",
-        `session "${input.sourceAlias}" has no logical identity`,
-      );
-    }
-    if (this.deps.activeTurns.isActiveAnywhere(source.alias)) {
-      throw new SessionForkError(
-        "session-fork-unstable",
-        `session "${input.sourceAlias}" is still running; fork its latest settled state after it finishes`,
-      );
-    }
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const targetInternal = scopeDisplayAliasToInternal(channelId, targetAlias);
 
-    // A replay must name the same source and target: a reused request id with
-    // a different payload is a client bug, not an idempotent retry.
+    // A replay must name the same requested source and target aliases: a reused
+    // request id with a different payload is a client bug, not an idempotent
+    // retry. The comparison uses the requested display aliases stored on the
+    // record, never the materialized target alias, so a daemon-side auto-suffix
+    // (`backend-fork` -> `backend-fork-2`) still replays.
     const replay = store.getByRequestId(requestId);
-    if (replay) {
-      if (replay.sourceSessionId !== sourceSessionId) {
+    if (replay && (replay.sourceAlias !== input.sourceAlias.trim() || replay.targetAlias !== targetAlias)) {
+      throw new SessionForkError(
+        "session-fork-request-mismatch",
+        "this fork request id was already used with a different source or target",
+      );
+    }
+    // The source is resolved best-effort here so a replay survives source
+    // deletion: when the source is gone but the record's target still exists,
+    // the same request id returns that target instead of failing.
+    let source: ResolvedSession | null = null;
+    try {
+      source = await this.resolveControlSession(input.chatKey, input.sourceAlias);
+    } catch {
+      source = null;
+    }
+    if (source) {
+      this.assertOrdinaryAddressedAlias(input.chatKey, source.alias);
+      if (replay && source.logicalSessionId && replay.sourceSessionId !== source.logicalSessionId) {
         throw new SessionForkError(
           "session-fork-request-mismatch",
           "this fork request id was already used for a different source session",
         );
       }
+    }
+    if (replay) {
       if (replay.status === "pending") {
         // The fork never completed (a crash or a resolve failure between the
         // pending write and the resolve): remove any orphan target and the
-        // pending row, then converge to a fresh attempt below.
+        // pending row, then converge to a fresh attempt below, which needs a
+        // live source.
         const orphanAlias = this.deps.sessions
           .listAllResolvedSessions()
           .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
@@ -1801,14 +1802,27 @@ export class ControlService {
             "this fork request already created a session that no longer exists; retry with a new request id",
           );
         }
-        if (resolved.alias !== targetInternal) {
-          throw new SessionForkError(
-            "session-fork-request-mismatch",
-            "this fork request id was already used for a different target alias",
-          );
-        }
         return this.toControlSessionInfo(resolved);
       }
+    }
+    if (!source) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        `session "${input.sourceAlias}" does not exist`,
+      );
+    }
+    const sourceSessionId = source.logicalSessionId;
+    if (!sourceSessionId) {
+      throw new SessionForkError(
+        "session-fork-unavailable",
+        `session "${input.sourceAlias}" has no logical identity`,
+      );
+    }
+    if (this.deps.activeTurns.isActiveAnywhere(source.alias)) {
+      throw new SessionForkError(
+        "session-fork-unstable",
+        `session "${input.sourceAlias}" is still running; fork its latest settled state after it finishes`,
+      );
     }
     if (await this.deps.sessions.getSession(targetInternal)) {
       throw new SessionForkError(
@@ -1872,6 +1886,8 @@ export class ControlService {
         requestId,
         sourceSessionId,
         targetSessionId,
+        sourceAlias: input.sourceAlias.trim(),
+        targetAlias,
         createdAt,
       });
       pendingId = pending.id;

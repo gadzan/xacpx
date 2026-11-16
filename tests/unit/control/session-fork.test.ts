@@ -36,6 +36,7 @@ interface ForkTestInput {
   effortApplied: Array<[string, string | undefined]>;
   removed: string[];
   sources?: typeof SOURCE[];
+  suffixCreated?: boolean;
   history: Array<{ role: "user" | "agent"; text: string }>;
 }
 
@@ -103,11 +104,12 @@ function controlDeps(input: ForkTestInput) {
       _workspace: string,
       model?: string,
     ) => {
-      input.created.push(alias);
+      const actual = input.suffixCreated ? `${alias}-2` : alias;
+      input.created.push(actual);
       input.createdModels.push(model);
       return {
         ...SOURCE,
-        alias,
+        alias: actual,
         transportSession: "acpx-fork",
         logicalSessionId: "logical-target",
       };
@@ -232,7 +234,7 @@ test("a replayed request id with a different source is rejected", async () => {
       targetAlias: "other-fork",
       requestId: "req-reuse",
     }),
-  ).rejects.toThrow(/different source session/);
+  ).rejects.toThrow(/already used with a different source or target/);
   store.close();
 });
 
@@ -254,7 +256,7 @@ test("a replayed request id with a different target alias is rejected", async ()
       targetAlias: "backend-fork-2",
       requestId: "req-reuse-target",
     }),
-  ).rejects.toThrow(/different target alias/);
+  ).rejects.toThrow(/already used with a different source or target/);
   expect(input.created).toEqual(["relay:backend-fork"]);
   store.close();
 });
@@ -290,6 +292,56 @@ test("a resolve failure removes the pending row and the target so a retry succee
   });
   expect(result.alias).toBe("backend-fork");
   expect(store.getByRequestId("req-retry")?.status).toBe("ready");
+  store.close();
+});
+
+test("a replay after source deletion still returns the existing target", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  const created = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-source-gone",
+  });
+  expect(created.alias).toBe("backend-fork");
+
+  input.sources = [];
+  const replayed = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-source-gone",
+  });
+  expect(replayed.alias).toBe("backend-fork");
+  expect(input.created).toEqual(["relay:backend-fork"]);
+  store.close();
+});
+
+test("a replay survives a daemon-side auto-suffixed target alias", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  input.suffixCreated = true;
+  const control = new ControlService(controlDeps(input) as never);
+
+  const created = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-suffix",
+  });
+  expect(created.alias).toBe("backend-fork-2");
+
+  const replayed = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-suffix",
+  });
+  expect(replayed.alias).toBe("backend-fork-2");
+  expect(input.created).toEqual(["relay:backend-fork-2"]);
   store.close();
 });
 

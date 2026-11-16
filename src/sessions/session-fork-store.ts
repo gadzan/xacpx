@@ -19,6 +19,10 @@ export interface SessionForkRecord {
   requestId: string;
   sourceSessionId: string;
   targetSessionId: string;
+  /** Requested source alias in display form, for replay comparison after suffixing. */
+  sourceAlias: string;
+  /** Requested target alias in display form, for replay comparison after suffixing. */
+  targetAlias: string;
   sourcePoint: SessionForkSourcePoint;
   strategy: SessionForkStrategy;
   resolution?: SessionForkResolution;
@@ -68,6 +72,8 @@ interface ForkRow {
   request_id: string;
   source_session_id: string;
   target_session_id: string;
+  source_alias: string | null;
+  target_alias: string | null;
   source_point: string;
   strategy: SessionForkStrategy;
   resolution: string | null;
@@ -88,6 +94,8 @@ CREATE TABLE IF NOT EXISTS session_forks (
   request_id TEXT NOT NULL UNIQUE,
   source_session_id TEXT NOT NULL,
   target_session_id TEXT NOT NULL UNIQUE,
+  source_alias TEXT,
+  target_alias TEXT,
   source_point TEXT NOT NULL,
   strategy TEXT NOT NULL,
   resolution TEXT,
@@ -135,6 +143,8 @@ function toRecord(row: ForkRow): SessionForkRecord {
     requestId: row.request_id,
     sourceSessionId: row.source_session_id,
     targetSessionId: row.target_session_id,
+    sourceAlias: row.source_alias ?? "",
+    targetAlias: row.target_alias ?? "",
     sourcePoint: parseSourcePoint(row.source_point),
     strategy: row.strategy,
     ...(row.resolution ? { resolution: parseResolution(row.resolution) } : {}),
@@ -151,6 +161,16 @@ function toRecord(row: ForkRow): SessionForkRecord {
 export class SessionForkStore {
   private constructor(private readonly sql: SqlDriver) {
     this.sql.exec(SCHEMA);
+    // Databases created before the requested-alias columns existed gain them
+    // here; fresh databases already carry them from SCHEMA.
+    const columns = this.sql.all<{ name: string }>("PRAGMA table_info(session_forks)");
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("source_alias")) {
+      this.sql.run("ALTER TABLE session_forks ADD COLUMN source_alias TEXT");
+    }
+    if (!names.has("target_alias")) {
+      this.sql.run("ALTER TABLE session_forks ADD COLUMN target_alias TEXT");
+    }
   }
 
   static async open(path: string): Promise<SessionForkStore> {
@@ -165,6 +185,8 @@ export class SessionForkStore {
     requestId: string;
     sourceSessionId: string;
     targetSessionId: string;
+    sourceAlias: string;
+    targetAlias: string;
     createdAt: string;
     sourcePoint?: SessionForkSourcePoint;
   }): SessionForkRecord {
@@ -173,6 +195,8 @@ export class SessionForkStore {
       requestId: input.requestId,
       sourceSessionId: input.sourceSessionId,
       targetSessionId: input.targetSessionId,
+      sourceAlias: input.sourceAlias,
+      targetAlias: input.targetAlias,
       sourcePoint: input.sourcePoint ?? { type: "latest_stable" },
       strategy: "pending",
       status: "pending",
@@ -180,13 +204,15 @@ export class SessionForkStore {
     };
     this.sql.run(
       `INSERT INTO session_forks
-        (id, request_id, source_session_id, target_session_id, source_point, strategy, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, request_id, source_session_id, target_session_id, source_alias, target_alias, source_point, strategy, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.requestId,
         record.sourceSessionId,
         record.targetSessionId,
+        record.sourceAlias,
+        record.targetAlias,
         JSON.stringify(record.sourcePoint),
         record.strategy,
         record.status,
@@ -315,8 +341,10 @@ export class SessionForkStore {
    *  same cardinality as the sessions they describe, so the table cannot grow
    *  without bound on its own. */
   deleteForkById(forkId: string): void {
-    this.sql.run("DELETE FROM session_fork_handoffs WHERE fork_id = ?", [forkId]);
-    this.sql.run("DELETE FROM session_forks WHERE id = ?", [forkId]);
+    this.sql.transaction(() => {
+      this.sql.run("DELETE FROM session_fork_handoffs WHERE fork_id = ?", [forkId]);
+      this.sql.run("DELETE FROM session_forks WHERE id = ?", [forkId]);
+    }, "immediate");
   }
 
   close(): void {
