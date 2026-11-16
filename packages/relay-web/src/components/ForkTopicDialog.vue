@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ConversationRunDto, TopicSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 import { navigateBack } from "../lib/mobile-back";
 
 /** The one fork call both panes share. The dialog owns the ids and the error
@@ -35,9 +35,6 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
-
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 const title = ref(`${props.sourceTopic.title} fork`);
 const errorCode = ref<string | null>(null);
@@ -126,9 +123,13 @@ async function handleFork(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-[70] flex items-center justify-center bg-scrim p-4 backdrop-blur-sm"
-       @click.self="navigateBack">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="fork-topic-title" tabindex="-1" data-test="fork-topic-dialog" class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:w-full">
+  <DialogShell
+    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4 lg:w-full"
+    labelledby="fork-topic-title"
+    data-test="fork-topic-dialog"
+    level="top"
+    @close="emit('close')"
+  >
       <h3 id="fork-topic-title" class="mb-2 text-base font-semibold text-fg">{{ $t("group.topic.forkTitle") }}</h3>
       <p class="mb-3 text-sm text-fg-muted-overlay" data-test="fork-topic-hint">{{ hint }}</p>
       <form @submit.prevent="handleFork">
@@ -165,6 +166,5 @@ async function handleFork(): Promise<void> {
           </button>
         </div>
       </form>
-    </div>
-  </div>
+  </DialogShell>
 </template>

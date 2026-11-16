@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { useDirectBotsStore } from "../stores/direct-bots";
 
@@ -9,11 +9,6 @@ const emit = defineEmits<{
 }>();
 
 const directBotsStore = useDirectBotsStore();
-
-const dialogEl = ref<HTMLElement | null>(null);
-// Mount == open, unmount == close: the shared helper registers Escape, traps
-// Tab, focuses the first field on open, and restores the trigger on close.
-useModalA11y(dialogEl, () => emit("close"));
 
 const newTopicTitle = ref("");
 const creatingTopic = ref(false);
@@ -40,9 +35,11 @@ async function handleCreateTopic(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm"
-       @click.self="navigateBack">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:w-full">
+  <DialogShell
+    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4 lg:w-full"
+    labelledby="new-topic-title"
+    @close="emit('close')"
+  >
       <h3 id="new-topic-title" class="mb-2 text-base font-semibold text-fg">{{ $t("bot.topic.createTitle") }}</h3>
       <p class="mb-3 text-sm text-fg-muted-overlay">{{ $t("bot.topic.createHint") }}</p>
       <form @submit.prevent="handleCreateTopic">
@@ -71,6 +68,5 @@ async function handleCreateTopic(): Promise<void> {
           </button>
         </div>
       </form>
-    </div>
-  </div>
+  </DialogShell>
 </template>

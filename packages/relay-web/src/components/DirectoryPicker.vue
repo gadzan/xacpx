@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { X, Folder, Home, ArrowUp, Loader2 } from "lucide-vue-next";
 import { isErrorPayload, type FsBrowseResult } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 import { navigateBack } from "../lib/mobile-back";
 
 // System-style directory picker that browses the TARGET INSTANCE's filesystem
@@ -14,9 +14,6 @@ import { navigateBack } from "../lib/mobile-back";
 const props = defineProps<{ instanceId: string; initialPath?: string }>();
 const emit = defineEmits<{ confirm: [path: string]; close: [] }>();
 const { t } = useI18n();
-
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
   if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
@@ -122,10 +119,13 @@ function onListKeydown(e: KeyboardEvent): void {
 
 <template>
   <Teleport to="body">
-    <div class="fixed inset-0 z-[60] flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
-      <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="dp-title"
-           class="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none"
-           data-test="dp-dialog">
+  <DialogShell
+    panel-class="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl focus:outline-none"
+    labelledby="dp-title"
+    data-test="dp-dialog"
+    level="nested"
+    @close="emit('close')"
+  >
         <header class="flex items-center justify-between px-5 py-3">
           <h2 id="dp-title" class="text-base font-semibold text-fg">{{ $t("dirPicker.title") }}</h2>
           <button type="button" class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label='$t("session.close")'
@@ -183,7 +183,6 @@ function onListKeydown(e: KeyboardEvent): void {
                   class="h-8 rounded-btn bg-accent px-4 text-ui font-semibold text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
                   @click="choose">{{ $t("dirPicker.chooseCurrent") }}</button>
         </footer>
-      </div>
-    </div>
+  </DialogShell>
   </Teleport>
 </template>

@@ -182,6 +182,30 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - `src/components/Tooltip.vue` —— hover 300ms / 键盘聚焦显示、触屏 2s 的提示气泡
   （`bg-fg text-bg text-xs rounded-sm px-2 py-1`），用于冷会话指示器等（SVG `title` 触屏不显示，已移除）。
 
+## 对话框外壳（`DialogShell.vue`）与叠层 z-index 阶梯
+
+居中模态共用一个外壳，替代各对话框里重复的 scrim/面板/无障碍样板：
+
+- `src/components/DialogShell.vue` —— 负责遮罩（`bg-scrim` + 模糊）、面板玻璃底、焦点陷阱、
+  `Esc`、焦点还原、安全区内边距与叠层 rung。内部复用 `use-modal-a11y`，因此对话框和手机返回手势
+  走同一个层栈：只关最上面一层。
+- 面板样式由调用方通过 `panel-class` 传入（宽度确实不同：确认框 380、表单 `md`/`xl`、外观视图
+  `3xl`），外壳只叠加底座类，避免两份冲突的 Tailwind 按样式表顺序决胜。
+- 根节点是普通元素。（不内置 `Teleport`）需要脱离侧栏 `transform` 的对话框在调用处自己包
+  `<Teleport to="body">`，外壳保持就地可测。
+- 关闭一律 `@close="emit('close')"`，**不要**把 `navigateBack` 传给外壳：外壳本身就是层栈里的
+  那一层，`navigateBack` 会回调该层的 `close`，形成自递归。
+- 其他 prop：`labelledby`/`label`（可访问名）、`data-test`（放在面板上）、`level`（叠层 rung）、
+  `safe-area`（整屏对话框）、`blur-class`、`initial-focus`。`focusChild(selector)` 暴露给需要在
+  挂载后移动焦点的调用方（如实例管理对话框的 tab 漫游）。
+- 未迁移：`CommandPalette`（顶部对齐、无居中面板）、`MobileSheet`（底部抽屉，自带层）、
+  `TraceOverlayDrawer`/`ScheduledTasks`（侧边抽屉）、`ImageLightbox`（全屏黑底、自带键盘导航）、
+  `SubagentTraceDialog`（绝对定位 scrim，位于另一套容器内）、`TopicSwitcher` 的确认/隔离浮层
+  （带 `data-dd-panel` 的下拉所有权）、`UsagePopover`。
+- z-index 阶梯定义在 `tailwind.config.js` 的 `zIndex`：`z-sheet`(40) < `z-dialog`(50) <
+  `z-dialog-nested`(60，从对话框里打开的对话框/选择器) < `z-dialog-top`(70，要压过抽屉或 sheet
+  栈的对话框) < `z-confirm`(100，全局确认队列)。新的浮层从中选一档，不再写 `z-[60]` 这类裸值。
+
 ## Composer 的模型与 effort 控件
 
 - 会话切换时 `session-controls` store 并行读取 `control.session.model.get` 与

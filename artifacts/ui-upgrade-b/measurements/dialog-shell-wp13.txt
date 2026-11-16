@@ -1,0 +1,75 @@
+WP-13 DialogShell + z-index ladder
+==================================
+
+Scope: one modal shell for the centred dialogs, plus a named overlay ladder.
+Composer animation, widths and protocols untouched. No production deployment.
+
+Shell
+-----
+src/components/DialogShell.vue (new)
+- scrim (bg-scrim + blur), panel glass, focus trap / Esc / focus restore via use-modal-a11y
+- panel styling stays with the caller (panel-class): widths differ by intent
+- root is a plain element; callers that must escape a transformed ancestor wrap
+  <Teleport to="body"> themselves (keeps the shell testable in place, and keeps
+  a stubbed Teleport in unit tests from swallowing the frame)
+- props: label | labelledby, panel-class, data-test, level, safe-area, blur-class,
+  initial-focus; expose: panel, focusChild(selector)
+- @close is the only close path. Passing navigateBack as the close handler
+  self-recurses: navigateBack closes the top layer, whose close handler is the
+  shell, which calls navigateBack again -> stack overflow.
+
+Migrated (12)
+-------------
+AddInstanceDialog            blur-[3px], was z-50, no teleport
+BotDialog                    safe-area, teleport, dynamic max-w-3xl/lg panel
+BotRemovalDialog             level=nested, no a11y wiring before (gained Esc/trap)
+ComposerConfirmDialog        initial-focus = cancel, teleport
+DirectoryPicker              level=nested, teleport
+ForkTopicDialog              level=top (above the run-detail drawer/sheet), width 380
+GroupDialog                  safe-area, teleport
+GroupMemberDialog            teleport
+GroupTopicDialog             no teleport, width 380
+ManageInstanceDialog         focusChild() for the tab roving focus, teleport
+NewSessionDialog             teleport
+NewTopicDialog               no teleport, width 380
+
+Exceptions (not migrated)
+-------------------------
+CommandPalette         top-aligned, no centred panel
+MobileSheet            bottom drawer, owns its own layer (now z-sheet)
+TraceOverlayDrawer     side drawer
+ScheduledTasks drawer  side drawer
+ImageLightbox          full-bleed black overlay, own keyboard navigation
+SubagentTraceDialog    absolute scrim inside its own container
+TopicSwitcher overlays confirm/isolation layers carrying data-dd-panel (dropdown ownership)
+UsagePopover           popover, not a modal
+
+z-index ladder (tailwind.config.js -> theme.extend.zIndex)
+----------------------------------------------------------
+z-sheet          40   MobileSheet default (was a literal z-40 in two places)
+z-dialog         50   a modal dialog
+z-dialog-nested  60   a dialog opened from a dialog (picker, removal confirm);
+                      also TraceOverlay's mobile sheet (was z-[60])
+z-dialog-top     70   must beat a drawer or sheet stack (ForkTopicDialog, was z-[70])
+z-confirm       100   global confirm queue (ConfirmDialog, was z-[100])
+
+Verification
+------------
+- unit: 211 files / 2977 tests green (packages/relay-web, vitest)
+- typecheck: vue-tsc --noEmit clean
+- unit test updates (assertions only, no behaviour change):
+  fork-topic-dialog.test.ts, group-components.test.ts: the stacking assertions now
+  read the ladder token on the overlay element the shell renders (the panel is no
+  longer the overlay).
+- probe (throwaway, deleted): Escape emits close, scrim click emits close, the layer
+  unregisters on unmount, focus returns to the opener, ArrowRight on the tablist
+  lands focus on the next tab through shell.focusChild().
+- e2e: e2e/dialog-shell.spec.ts on chromium-desktop (real app):
+  Escape closes + focus returns to the bot row; scrim click closes; nested removal
+  dialog wins elementFromPoint at the viewport centre and Escape closes only it.
+- screenshots: after/d1440/20-dialog-nested-light.png, after/m390/20-dialog-nested-light.png
+
+Pre-existing defect fixed on the way (unrelated to WP-13, surfaced by vue-tsc):
+- GroupComposer mention rows put a nullable reason string into
+  CompletionTrailing.text; the chip now renders only when there is a reason and
+  the tooltip reuses the same value instead of calling memberUnavailableReason twice.

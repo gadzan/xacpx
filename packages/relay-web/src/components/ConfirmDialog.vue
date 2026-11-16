@@ -36,7 +36,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
 <template>
   <Teleport to="body">
-    <div v-if="pending" class="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div v-if="pending" class="fixed inset-0 z-confirm flex items-center justify-center p-4">
       <div class="absolute inset-0 bg-scrim backdrop-blur-sm" data-test="confirm-scrim" @click="onScrimClick" />
       <!-- A confirm dialog has no ✕: cancel is the way out. -->
       <div role="alertdialog" aria-modal="true" data-test="confirm-dialog"

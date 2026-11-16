@@ -1,19 +1,23 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 defineProps<{ title: string; confirmLabel: string; pending?: boolean }>();
 const emit = defineEmits<{ confirm: []; cancel: [] }>();
-const dialog = ref<HTMLElement | null>(null);
 const focusCancel = ref<HTMLButtonElement | null>(null);
-useModalA11y(dialog, () => emit("cancel"), { initialFocus: () => focusCancel.value });
+// Cancel is the safe default for a destructive confirm.
+const initialFocus = (): HTMLElement | null => focusCancel.value;
 </script>
 
 <template>
   <Teleport to="body">
-    <div class="fixed inset-0 z-[70] flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="emit('cancel')">
+  <DialogShell
+    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4"
+    :label="title"
+    :initial-focus="initialFocus"
+    @close="emit('cancel')"
+  >
       <!-- A confirm dialog has no ✕: cancel is the way out. -->
-      <section ref="dialog" data-composer-confirm role="dialog" aria-modal="true" tabindex="-1" :aria-label="title"
-               class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl bg-glass-strong p-4 text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+      <section data-composer-confirm>
         <div class="mt-3 text-sm text-fg"><slot /></div>
         <div class="mt-4 flex gap-2 lg:justify-end">
           <button ref="focusCancel" type="button" data-test="composer-confirm-cancel"
@@ -24,6 +28,6 @@ useModalA11y(dialog, () => emit("cancel"), { initialFocus: () => focusCancel.val
                   @click="emit('confirm')">{{ confirmLabel }}</button>
         </div>
       </section>
-    </div>
+  </DialogShell>
   </Teleport>
 </template>

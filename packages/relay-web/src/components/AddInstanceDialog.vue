@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref } from "vue";
 import { Check, Copy, Loader2 } from "lucide-vue-next";
 import { api } from "../api/client";
 import { useInstancesStore } from "../stores/instances";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 import { navigateBack } from "../lib/mobile-back";
 
 /**
@@ -19,8 +19,6 @@ import { navigateBack } from "../lib/mobile-back";
 const emit = defineEmits<{ close: [] }>();
 
 const instancesStore = useInstancesStore();
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 type Step = 1 | 2 | 3;
 const step = ref<Step>(1);
@@ -126,17 +124,13 @@ function close(): void {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-[3px]"
-       @click.self="navigateBack">
-    <div
-      ref="dialogEl"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="add-instance-title"
-      tabindex="-1"
-      data-test="add-instance-dialog"
-      class="glass-strong w-full max-w-md rounded-2xl p-5"
-    >
+  <DialogShell
+    panel-class="w-full max-w-md rounded-2xl p-5"
+    labelledby="add-instance-title"
+    data-test="add-instance-dialog"
+    blur-class="backdrop-blur-[3px]"
+    @close="emit('close')"
+  >
       <h3 id="add-instance-title" class="text-base font-semibold text-fg">{{ $t("settings.addInstance") }}</h3>
 
       <!-- Step 1: name -->
@@ -234,6 +228,5 @@ function close(): void {
           </button>
         </div>
       </div>
-    </div>
-  </div>
+  </DialogShell>
 </template>

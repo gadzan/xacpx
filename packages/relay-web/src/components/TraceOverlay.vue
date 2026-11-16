@@ -98,7 +98,7 @@ function closeSheet(): void {
   <!-- Mobile: bottom sheet, matching the detail sheet chrome. -->
   <Teleport v-if="isMobile" to="body">
     <MobileSheet
-      :id="id" ref="sheet" height="tall" padded :show-close="false" z-class="z-[60]"
+      :id="id" ref="sheet" height="tall" padded :show-close="false" z-class="z-dialog-nested"
       test-id="group-detail-sheet"
       :title="$t('conversation.runDetail.title')"
       :data-run-id="run.id" :data-member-turn-id="selectedMember?.id" :data-attempt="attempt"

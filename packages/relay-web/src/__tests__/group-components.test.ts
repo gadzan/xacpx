@@ -1879,7 +1879,7 @@ describe("Group Components", () => {
       expect(document.body.querySelector('[data-test="group-detail-card"]')).toBeNull();
       const dialog = document.body.querySelector('[data-test="fork-topic-dialog"]');
       expect(dialog).not.toBeNull();
-      expect(dialog!.parentElement!.className).toContain("z-[70]");
+      expect(dialog!.parentElement!.className).toContain("z-dialog-top");
       rpc.mockRestore();
       wrapper.unmount();
     });

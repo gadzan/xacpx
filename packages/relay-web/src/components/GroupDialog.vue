@@ -6,7 +6,7 @@ import type { BotSummaryDto, ConversationRunStateDto, GroupSummaryDto } from "@g
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
 import { supportsGroupDefaultRouting, supportsGroupPublicMemorySwitch, supportsGroupWorkspaceMode, supportsHandoffMemorySummary, useInstancesStore } from "../stores/instances";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { pushToast } from "../lib/use-toasts";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
@@ -43,9 +43,6 @@ const supportsPublicMemorySwitch = computed(() => supportsGroupPublicMemorySwitc
 // An older core drops `defaultRouting` from the payload and never sends it
 // back, so the setting is hidden rather than silently discarded.
 const supportsDefaultRouting = computed(() => supportsGroupDefaultRouting(instancesStore.byId(props.instanceId)));
-
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 // The edit baseline is what the dialog opened with. The prop may be a live
 // store row, and diffing against a row that a remote edit already moved would
@@ -384,15 +381,13 @@ async function confirmDelete(): Promise<void> {
 <template>
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-scrim p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
-       @click.self="navigateBack">
-    <div ref="dialogEl"
-         role="dialog"
-         aria-modal="true"
-         aria-labelledby="group-dialog-title"
-         tabindex="-1"
-         data-test="group-dialog"
-         class="flex max-h-full w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-2xl bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass">
+  <DialogShell
+    panel-class="flex max-h-full w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-2xl"
+    labelledby="group-dialog-title"
+    data-test="group-dialog"
+    safe-area
+    @close="emit('close')"
+  >
       <div class="flex shrink-0 items-center justify-between px-5 py-3.5">
         <h2 id="group-dialog-title" class="text-base font-semibold text-fg">
           {{ isEditing ? $t("group.manage.editTitle") : $t("group.manage.createTitle") }}
@@ -765,7 +760,6 @@ async function confirmDelete(): Promise<void> {
           </button>
         </div>
       </div>
-    </div>
-  </div>
+  </DialogShell>
   </Teleport>
 </template>

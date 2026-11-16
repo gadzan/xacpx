@@ -102,6 +102,17 @@ export default {
         glass: "inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border)",
         "glass-float": "inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px var(--glass-border), var(--glass-shadow)",
       },
+      zIndex: {
+        // The overlay ladder. Tailwind's numeric scale stops at 50, so the
+        // stacked layers need names: a sheet sits under a dialog, a dialog
+        // opened from another dialog sits above it, and a confirm sits above
+        // both. Anything outside `fixed` positioning should not use these.
+        sheet: "40",
+        dialog: "50",
+        "dialog-nested": "60",
+        "dialog-top": "70",
+        confirm: "100",
+      },
     },
   },
   plugins: [],

@@ -4,8 +4,8 @@ import { useI18n } from "vue-i18n";
 import { X } from "lucide-vue-next";
 import type { ConversationRouterUpdatePayload, JevUpdatePayload } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
-import { useModalA11y } from "../lib/use-modal-a11y";
 import { navigateBack } from "../lib/mobile-back";
+import DialogShell from "./DialogShell.vue";
 import WorkspacesManager from "./WorkspacesManager.vue";
 import AgentsManager from "./AgentsManager.vue";
 
@@ -41,7 +41,7 @@ function onTabKeydown(e: KeyboardEvent): void {
   e.preventDefault();
   tab.value = TABS[next];
   void nextTick(() => {
-    dialogEl.value?.querySelector<HTMLElement>(`#tab-${TABS[next]}`)?.focus();
+    shell.value?.focusChild(`#tab-${TABS[next]}`);
   });
 }
 
@@ -65,10 +65,9 @@ async function saveName(): Promise<void> {
   }
 }
 
-// Accessibility (shared composable): trap focus inside the dialog, close on Esc, and
-// restore focus to whatever was focused before the dialog opened.
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
+// Dialog focus trap, Escape, and focus restore live in DialogShell; the shell
+// handle is only here to move focus between tabs.
+const shell = ref<InstanceType<typeof DialogShell> | null>(null);
 
 // Automatic collaboration. One panel model per instance from the store; the switch
 // reads the persisted `config.enabled`, never the resolved availability, because
@@ -303,9 +302,13 @@ onMounted(async () => {
   <!-- Teleport to body: the mobile instance drawer uses `transform`, which would
        otherwise trap this fixed overlay inside the narrow off-canvas drawer. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
-    <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="manage-instance-title"
-         class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none" data-test="manage-instance-dialog">
+  <DialogShell
+    ref="shell"
+    panel-class="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl focus:outline-none"
+    labelledby="manage-instance-title"
+    data-test="manage-instance-dialog"
+    @close="emit('close')"
+  >
       <header class="flex shrink-0 items-center justify-between px-5 py-3">
         <h2 id="manage-instance-title" class="truncate text-base font-semibold text-fg">{{ $t("instance.manageTitle", { name }) }}</h2>
         <button class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label="$t('instance.close')" @click="navigateBack"><X :size="16" /></button>
@@ -477,7 +480,6 @@ onMounted(async () => {
           <div v-else-if="tab === 'agents'" id="tabpanel-agents" role="tabpanel" aria-labelledby="tab-agents"><AgentsManager :instance-id="instanceId" /></div>
         </div>
       </template>
-    </div>
-  </div>
+  </DialogShell>
   </Teleport>
 </template>

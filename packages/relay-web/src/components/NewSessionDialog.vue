@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertTriangle, FolderOpen } from "lucide-vue-next";
 import { needsSetupCapability, type AgentCapabilityState, type NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
@@ -23,13 +23,6 @@ const emit = defineEmits<{ created: [alias: string]; close: [] }>();
 const { t } = useI18n();
 const store = useInstancesStore();
 const inst = computed(() => store.byId(props.instanceId));
-
-// Accessibility (shared composable): trap focus inside the dialog, close on Esc, and
-// restore focus to whatever was focused before the dialog opened. The model combobox
-// swallows Escape itself (stopPropagation) while its popup is open, so Esc there only
-// closes the popup — a second Esc closes the dialog.
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 const alias = ref("");
 const agentValue = ref("");           // chosen agent NAME or un-configured driver
@@ -351,9 +344,12 @@ async function submit(): Promise<void> {
        otherwise make this fixed overlay resolve against the drawer (narrow,
        off-canvas) instead of the viewport. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm" @click.self="navigateBack">
-    <div ref="dialogEl" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="new-session-title"
-         class="w-full max-w-md rounded-2xl bg-glass-strong shadow-glass-float backdrop-blur-glass backdrop-saturate-glass focus:outline-none" data-test="new-session-dialog">
+  <DialogShell
+    panel-class="w-full max-w-md rounded-2xl focus:outline-none"
+    labelledby="new-session-title"
+    data-test="new-session-dialog"
+    @close="emit('close')"
+  >
       <header class="flex items-center justify-between px-5 py-3">
         <h2 id="new-session-title" class="text-base font-semibold text-fg">{{ $t("session.newSession") }} <span class="font-normal text-fg-muted-overlay">· {{ instanceName }}</span></h2>
         <button class="rounded-sm p-1 text-fg-muted-overlay hover:bg-fill-hover hover:text-fg" :aria-label='$t("session.close")' @click="navigateBack"><X :size="16" /></button>
@@ -468,7 +464,6 @@ async function submit(): Promise<void> {
                 class="h-8 rounded-btn bg-accent px-4 text-ui font-semibold text-on-accent enabled:hover:bg-accent-hover disabled:opacity-40"
                 @click="submit">{{ submitting ? $t("session.creatingButton") : $t("session.create") }}</button>
       </footer>
-    </div>
-  </div>
+  </DialogShell>
   </Teleport>
 </template>

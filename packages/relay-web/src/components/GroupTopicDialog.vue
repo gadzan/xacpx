@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
@@ -14,9 +14,6 @@ const emit = defineEmits<{
 const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
 const { t } = useI18n();
-
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 const title = ref("");
 const workspace = ref("");
@@ -83,9 +80,11 @@ async function handleCreate(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-sm"
-       @click.self="navigateBack">
-    <div ref="dialogEl" role="dialog" aria-modal="true" aria-labelledby="group-topic-title" tabindex="-1" class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl bg-glass-strong p-4 shadow-glass-float backdrop-blur-glass backdrop-saturate-glass lg:w-full">
+  <DialogShell
+    panel-class="w-[calc(100vw-40px)] max-w-[380px] rounded-2xl p-4 lg:w-full"
+    labelledby="group-topic-title"
+    @close="emit('close')"
+  >
       <h3 id="group-topic-title" class="mb-2 text-base font-semibold text-fg">{{ $t("group.topic.createTitle") }}</h3>
       <p class="mb-3 text-sm text-fg-muted-overlay">{{ $t("group.topic.createHint") }}</p>
       <form @submit.prevent="handleCreate">
@@ -143,6 +142,5 @@ async function handleCreate(): Promise<void> {
           </button>
         </div>
       </form>
-    </div>
-  </div>
+  </DialogShell>
 </template>

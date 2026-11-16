@@ -5,7 +5,7 @@ import { X, Loader2, AlertCircle, ChevronLeft, Pencil } from "lucide-vue-next";
 import { copyBotAvatar, hasWorkspaceNameChars, unsupportedCapability, type AgentCapabilityState, type BotAvatarConfig, type BotDetailDto, type BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { supportsBotDedicatedWorkspace, supportsBotDedicatedWorkspaceCleanup, supportsBotDedicatedWorkspaceUpdate, useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
-import { useModalA11y } from "../lib/use-modal-a11y";
+import DialogShell from "./DialogShell.vue";
 import { navigateBack } from "../lib/mobile-back";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import type { BotAvatarState } from "../lib/bot-avatar-state";
@@ -32,9 +32,6 @@ const instancesStore = useInstancesStore();
 const directBotsStore = useDirectBotsStore();
 
 const inst = computed(() => instancesStore.byId(props.instanceId));
-
-const dialogEl = ref<HTMLElement | null>(null);
-useModalA11y(dialogEl, () => emit("close"));
 
 const isEditing = computed(() => !!props.bot);
 // The Bot's own daemon-allocated workspace. It is private: the instance never
@@ -469,15 +466,12 @@ function describeSubmitError(err: unknown): string {
 <template>
   <!-- Escape the mobile sidebar's transformed containing block. -->
   <Teleport to="body">
-  <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-scrim p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
-       @click.self="navigateBack">
-    <div ref="dialogEl"
-         role="dialog"
-         aria-modal="true"
-         :aria-labelledby="'bot-dialog-title'"
-         tabindex="-1"
-       class="relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-glass-strong text-fg shadow-glass-float backdrop-blur-glass backdrop-saturate-glass"
-       :class="view === 'appearance' ? 'max-w-3xl' : 'max-w-lg'">
+  <DialogShell
+    :panel-class="`relative flex max-h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-2xl ${view === 'appearance' ? 'max-w-3xl' : 'max-w-lg'}`"
+    labelledby="bot-dialog-title"
+    safe-area
+    @close="emit('close')"
+  >
       <!-- Header -->
       <div class="flex shrink-0 items-center justify-between gap-2 px-5 py-3.5">
         <div class="flex min-w-0 items-center gap-1.5">
@@ -729,7 +723,9 @@ function describeSubmitError(err: unknown): string {
       </div>
       <BotAvatarQuickView v-if="avatarQuickView" :avatar="avatar" :driver="avatarDriver" :name="name"
                           @close="avatarQuickView = false" />
-    </div>
+  </DialogShell>
+    <!-- Sibling, not a child: the removal dialog must not be clipped by the
+         panel's `overflow-hidden`, and it stacks one rung higher. -->
     <BotRemovalDialog
       v-if="removalOpen && props.bot"
       :bot-name="props.bot.name"
@@ -741,6 +737,5 @@ function describeSubmitError(err: unknown): string {
       @close="removalOpen = false"
       @removed="removalOpen = false; emit('close')"
     />
-  </div>
   </Teleport>
 </template>
