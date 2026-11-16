@@ -101,3 +101,19 @@ Three delta lanes ran at `c50a6c47`:
 
 Standing at the docs-only head: CI green required, then the operator's visual
 acceptance, then the squash merge with `--match-head-commit`. No merge has run.
+
+### Trunk #588 merge and the fork-button fix, head 84cede67
+
+Trunk moved to `eeac4e63` (#588, portable session fork at a recorded turn
+node) while CI watched the docs-only head. Merged as `d933e9a4`
+(no conflicts); an intersection review found one real defect: the new
+`msg-fork-node` button in `MessageList.vue` was a bare 12px icon with no
+WP-4 coarse-pointer sizing. Fixed in `84cede67` (CopyButton's h-11/w-11
+grid-centering recipe, row hover pad, icon 12 -> 14). Gates: tsc clean +
+vitest 214 files / 2997 tests at the merged head, tsc clean after the fix,
+messagelist.test.ts 86/86. The 390x844 timeline touch loops were left alone:
+they exercise the group surface, which never renders this button, so adding
+the id there would fail, not cover. Structural parity with the gated
+CopyButton recipe is the guarantee. Standing at `84cede67`: CI green
+required, then the operator's visual acceptance, then the squash merge with
+`--match-head-commit`. No merge has run.
