@@ -5,7 +5,6 @@ import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, GitFork, Link2, 
 import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop, supportsSessionForkHandoff } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
-import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useGroupsStore } from "../stores/groups";
