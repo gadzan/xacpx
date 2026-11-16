@@ -6,6 +6,7 @@ import TranscriptRow from "./TranscriptRow.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
 import BotAvatar from "./BotAvatar.vue";
+import Tooltip from "./Tooltip.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ThinkingDots from "./ThinkingDots.vue";
 import {
@@ -88,6 +89,8 @@ function handoffView(entry: TimelineMessageEntry) {
     key: entry.key,
     from,
     to,
+    toName: to?.name ?? handoff?.to ?? "Bot",
+    task: handoff?.task ?? "",
     label,
     detail: {
       ...(entry.runId ? { runId: entry.runId } : {}),
@@ -198,7 +201,7 @@ const noticeToneClass = computed(() => {
       :key="handoff.key"
       type="button"
       data-test="timeline-handoff"
-      class="flex items-center rounded-lg p-0.5 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      class="flex max-w-full items-center gap-1.5 rounded-lg p-0.5 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:px-1"
       :title="handoff.label"
       :aria-label="handoff.label"
       @click="emit('openDetail', handoff.detail)"
@@ -225,7 +228,11 @@ const noticeToneClass = computed(() => {
           />
         </span>
       </span>
-      <span class="sr-only">{{ handoff.label }}</span>
+      <!-- The task used to live only in the title/aria-label, which a thumb
+           can never reveal. Visible, truncated, 12px muted. -->
+      <span data-test="timeline-handoff-text" class="min-w-0 max-w-[min(60vw,24rem)] truncate text-xs text-fg-muted">
+        → {{ handoff.toName }}<span v-if="handoff.task"> · {{ handoff.task }}</span>
+      </span>
     </button>
   </div>
 
@@ -288,24 +295,30 @@ const noticeToneClass = computed(() => {
           </button>
         </template>
       </ConversationMeta>
-      <button
+      <!-- The process entry is an icon on the meta line: on touch the label is
+           a tap-to-show tooltip, never a second line under every bot reply. -->
+      <Tooltip
         v-if="message.runId"
-        type="button"
-        data-test="timeline-open-detail"
-        class="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-fg-muted transition-colors hover:text-fg"
-        @click="emit('openDetail', messageDetail)"
+        :text="$t('conversation.handoff.open', { name: author?.name ?? '' })"
+        placement="top"
       >
-        <span>{{ $t("conversation.timeline.openDetailPrefix") }}</span>
-        <BotAvatar
-          :avatar="author?.avatar"
-          :driver="author?.driver"
-          :name="author?.name"
-          :size="16"
-          static
-          aria-hidden="true"
-        />
-        <span v-if="$t('conversation.timeline.openDetailSuffix')">{{ $t("conversation.timeline.openDetailSuffix") }}</span>
-      </button>
+        <button
+          type="button"
+          data-test="timeline-open-detail"
+          :aria-label="$t('conversation.handoff.open', { name: author?.name ?? '' })"
+          class="grid h-7 w-7 shrink-0 place-items-center rounded-sm text-fg-muted transition-colors hover:bg-fill-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+          @click="emit('openDetail', messageDetail)"
+        >
+          <BotAvatar
+            :avatar="author?.avatar"
+            :driver="author?.driver"
+            :name="author?.name"
+            :size="16"
+            static
+            aria-hidden="true"
+          />
+        </button>
+      </Tooltip>
     </template>
   </TranscriptRow>
 

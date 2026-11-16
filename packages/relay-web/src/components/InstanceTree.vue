@@ -741,7 +741,7 @@ const rowSwipes = computed(() => {
         <button
           type="button"
           data-test="instance-nav-sessions"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
           :class="navMode === 'sessions' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
           @click="setMode('sessions')"
         >
@@ -751,7 +751,7 @@ const rowSwipes = computed(() => {
         <button
           type="button"
           data-test="instance-nav-bots"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
           :class="navMode === 'bots' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
           @click="setMode('bots')"
         >
@@ -761,7 +761,7 @@ const rowSwipes = computed(() => {
         <button
           type="button"
           data-test="instance-nav-groups"
-          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors"
+          class="flex h-6 min-w-0 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-medium transition-colors [@media(pointer:coarse)]:h-11"
           :class="navMode === 'groups' ? 'bg-raised font-semibold text-fg shadow-press' : 'text-fg-muted hover:bg-fill-hover'"
           @click="setMode('groups')"
         >

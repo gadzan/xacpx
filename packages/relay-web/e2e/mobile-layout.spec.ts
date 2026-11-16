@@ -1,4 +1,4 @@
-import { expect, test, loginAndShowInstances } from "./fixtures";
+import { expect, test, loginAndShowInstances, expectTouchTarget } from "./fixtures";
 
 // Mobile layout (redesign PR4 §5.1 / §5.2 / §5.4 / §5.5). Desktop behaviour is asserted by
 // the chromium-desktop project and the unit suites; these checks are viewport-specific, so
@@ -33,33 +33,32 @@ test.describe("mobile layout", () => {
     await hub.stopAccepting();
     await expect(page.getByTestId("conn-strip")).toBeVisible();
 
-    // (3) Touch targets: the bar's icon buttons and the sheet's close button are >= 40px,
-    //     the composer's primary action is >= 44px.
+    // (3) Touch targets: the bar's icon buttons and the sheet's close button are >= 44px,
+    //     the composer's primary action is >= 44px. Measured on the box, then hit-tested
+    //     at the four edge midpoints so a pseudo-element or an overlapping neighbour
+    //     cannot pass for a real target.
     for (const id of ["mobile-back", "mobile-more"]) {
-      const box = await page.getByTestId(id).boundingBox();
-      expect(box, id).not.toBeNull();
-      expect(box!.width, id).toBeGreaterThanOrEqual(40);
-      expect(box!.height, id).toBeGreaterThanOrEqual(40);
+      await expectTouchTarget(page, id);
     }
     await page.getByTestId("mobile-more").click();
     await expect(page.getByTestId("mobile-more-sheet")).toBeVisible();
-    const sheetClose = await page.getByTestId("sheet-close").boundingBox();
-    expect(sheetClose!.width).toBeGreaterThanOrEqual(40);
-    expect(sheetClose!.height).toBeGreaterThanOrEqual(40);
+    await expectTouchTarget(page, "sheet-close");
     // The open-tabs sheet is reachable and its rows are comfortable targets.
     await page.getByTestId("sheet-open-tabs").click();
     await expect(page.getByTestId("open-tabs-sheet")).toBeVisible();
     const chatRow = await page.getByTestId("open-tab-row").first().boundingBox();
     expect(chatRow!.height).toBeGreaterThanOrEqual(48);
+    // Close the sheet: the composer behind it is covered by the backdrop, so a
+    // hit test there would measure the sheet, not the send button.
+    await page.getByTestId("sheet-close").click();
+    await expect(page.getByTestId("open-tabs-sheet")).toHaveCount(0);
 
     // (4) The composer textarea is 16px, so iOS does not auto-zoom on focus (pinch-zoom
     //     itself is allowed again — see index.html).
     const textarea = page.getByTestId("composer-send").locator("xpath=ancestor::form[1]").locator("textarea");
     const fontSize = await textarea.evaluate((el) => getComputedStyle(el).fontSize);
     expect(fontSize).toBe("16px");
-    const send = await page.getByTestId("composer-send").boundingBox();
-    expect(send!.width).toBeGreaterThanOrEqual(44);
-    expect(send!.height).toBeGreaterThanOrEqual(44);
+    await expectTouchTarget(page, "composer-send");
   });
 
   test("more sheet opens files full-screen, and sheets never stack", async ({ page }, testInfo) => {
@@ -137,5 +136,14 @@ test.describe("mobile layout", () => {
     await page.getByTestId("fab-new-session").click();
     await expect(page.getByTestId("new-session-dialog")).toBeVisible();
     await expect(page.getByTestId("fab-instance-sheet")).toHaveCount(0);
+  });
+
+  test("settings segments and the back link are 44px targets", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "chromium-mobile", "mobile viewport only");
+    await page.goto("/settings");
+    await expect(page.getByTestId("theme-setting")).toBeVisible();
+    for (const id of ["settings-back", "theme-dark", "theme-light", "lang-en"]) {
+      await expectTouchTarget(page, id);
+    }
   });
 });

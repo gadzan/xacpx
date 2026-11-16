@@ -196,9 +196,10 @@ describe("ConversationTimeline.vue", () => {
     expect(wrapper.findAll('[data-test="timeline-handoffs"]')).toHaveLength(1);
     const handoff = wrapper.find('[data-test="timeline-handoff"]');
     expect(handoff.exists()).toBe(true);
-    expect(handoff.text()).toContain("Ada");
-    expect(handoff.text()).toContain("Bob");
-    expect(handoff.text()).toContain("check the lock");
+    // The visible line names the receiver and the task, so a phone shows the
+    // assignment without a hover. The sender is in the accessible label.
+    expect(handoff.find('[data-test="timeline-handoff-text"]').text()).toBe("→ Bob · check the lock");
+    expect(handoff.attributes("aria-label")).toContain("Ada");
     // The compact pair draws both Bots and keeps no card chrome.
     expect(handoff.findAll('[data-test="bot-avatar"]')).toHaveLength(2);
     expect(handoff.classes()).not.toContain("border");

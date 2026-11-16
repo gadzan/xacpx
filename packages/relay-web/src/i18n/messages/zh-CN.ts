@@ -29,8 +29,6 @@ export default {
   // 统一的会话外壳（设计 §8）：时间线、状态条、轮次条和输入框 chip。
   conversation: {
     timeline: {
-      openDetailPrefix: "查看",
-      openDetailSuffix: "的过程",
       openDetail: "查看 {name} 的过程",
       unresolved: "这条回复无法归属到唯一成员回合，因此没有过程可看。",
       empty: "还没有消息，先发一条吧。",

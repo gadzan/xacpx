@@ -7,7 +7,7 @@ import type {
   MemberTurnSummaryDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
-import { test, expect, loginAndShowInstances } from "./fixtures";
+import { test, expect, loginAndShowInstances, expectTouchTarget } from "./fixtures";
 
 /**
  * The single conversation shell (design §8) end to end: one timeline, one
@@ -337,6 +337,30 @@ test("group keeps the speaker avatar at every viewport", async ({ page, hub }) =
   await expect(page.getByTestId("transcript-speaker").first()).toBeVisible();
 });
 
+// WP-4: the small controls around a turn are what thumbs miss. Each one is
+// measured at 44 and hit-tested at its four edge midpoints on the touch project.
+for (const testId of ["copy-button", "transcript-speaker", "timeline-open-detail", "timeline-handoff", "conversation-stop-all"]) {
+  test(`${testId} is a 44px touch target on the timeline`, async ({ page, hub }, testInfo) => {
+    test.skip(testInfo.project.name !== "chromium-mobile", "coarse pointer only");
+    await openTimeline(page, hub, { olderPages: false });
+    await expectTouchTarget(page, testId);
+  });
+}
+
+// WP-12: the assignment used to live only in the title/aria-label, which a tap
+// cannot open on most phones. The visible line now carries it. The process
+// entry's tooltip bubble is covered by the Tooltip unit test (the e2e click on
+// that icon opens the drawer, which is a different assertion).
+test("handoff names the receiver and task on the line, on a phone", async ({ page, hub }, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium-mobile", "coarse pointer only");
+  await openTimeline(page, hub, { olderPages: false });
+
+  const text = page.getByTestId("timeline-handoff-text").first();
+  await expect(text).toBeVisible();
+  await expect(text).toContainText("Bob");
+  await expect(text).toContainText("Check the session lock");
+});
+
 
 test("one timeline: handoff line, round strip, Stop all, detail drawer, no console errors", async ({ page, hub }) => {
   const errors = watchConsoleErrors(page);
@@ -346,9 +370,10 @@ test("one timeline: handoff line, round strip, Stop all, detail drawer, no conso
   await expect(page.locator('[data-test="timeline-bot-message"]')).toHaveCount(1);
   const handoffLine = page.locator('[data-test="timeline-handoff"]');
   await expect(handoffLine).toBeVisible();
-  await expect(handoffLine).toContainText("Ada");
-  await expect(handoffLine).toContainText("Bob");
-  await expect(handoffLine).toContainText("Check the session lock");
+  // Visible text names the receiver and the task; the sender is in the label.
+  await expect(page.getByTestId("timeline-handoff-text")).toContainText("Bob");
+  await expect(page.getByTestId("timeline-handoff-text")).toContainText("Check the session lock");
+  await expect(handoffLine).toHaveAttribute("aria-label", /Ada → Bob/);
 
   // Status bar: current speaker, counts, Stop all.
   await expect(page.getByTestId("conversation-status-bar")).toBeVisible();

@@ -1,0 +1,53 @@
+WP-4 touch targets (44x44, hit-tested)
+=====================================
+
+Rule applied: on coarse pointers the hit box grows to at least 44x44 through real
+layout (`[@media(pointer:coarse)]:min-h-11` / `min-w-11` / `h-11 w-11`), never
+through a pseudo-element. Desktop density is unchanged because the variants only
+match `pointer: coarse`.
+
+Measured on the real app (chromium-mobile, Pixel 7: 412x839 viewport, DPR 2.625),
+recorded in touch-targets-wp4.jsonl. Every target was hit-tested at its four edge
+midpoints with document.elementFromPoint, so the assertion is "the point really
+reaches this control", not "a rectangle of this size exists".
+
+  copy-button              44x44     4/4 midpoints hit
+  transcript-speaker       44x44     4/4
+  timeline-open-detail    380x44     4/4
+  timeline-handoff         44x44     4/4
+  conversation-stop-all    77x44     4/4
+  mobile-back              44x44     4/4
+  mobile-more              44x44     4/4   (was h-10 w-10 = 40)
+  sheet-close              44x44     4/4
+  composer-send            44x44     4/4
+  settings-back            51x44     4/4   (was ~22 tall)
+  theme-dark               55x44     4/4   (was ~30 tall)
+  theme-light              57x44     4/4
+  lang-en                  70x44     4/4
+
+Changes and the layout cost, stated plainly
+------------------------------------------
+- CopyButton (24x24 before): grows to a 44x44 box on coarse pointers, so message
+  meta rows on touch gain up to 20px of height.
+- transcript-speaker / timeline-handoff / timeline-open-detail / conversation-stop-all:
+  min-h-11 (+ min-w-11 for the icon-sized ones). Timeline rows on touch are taller;
+  the visual text size is unchanged.
+- instance-nav-sessions / -bots / -groups (sidebar segmented control): h-6 -> 44 on
+  coarse pointers. The sidebar is a desktop drawer surface on phones, but the
+  segments stay reachable when the drawer opens.
+- settings theme/language segments and the ← back link: min-h-11 on coarse pointers;
+  the page grows vertically by a few pixels per control.
+- mobile-more: 40 -> 44 (bar stays 52).
+- Nothing above overlaps a neighbour: neighbours in each measured row are separated
+  by a flex gap of 8-12px, and the elementFromPoint checks would fail if a neighbour
+  covered an edge midpoint.
+
+Gate
+----
+- e2e/mobile-layout.spec.ts: the old >= 40 bar/sheet gate is now >= 44 AND
+  midpoint-tested via expectTouchTarget (e2e/fixtures.ts). The helper waits for the
+  box to stop moving first, because a sheet enters with a transform and a
+  measure-then-test across the animation compares two positions.
+- e2e/conversation-timeline.spec.ts: five mobile-only tests, one per timeline control.
+- Settings route: theme/language segments + back link covered by a new mobile test.
+- Result: 19 mobile e2e tests green (touch + layout + timeline), 0 skipped.

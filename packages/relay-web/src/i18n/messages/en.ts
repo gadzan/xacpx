@@ -33,8 +33,6 @@ export default {
   conversation: {
     timeline: {
       openDetail: "Process for {name}",
-      openDetailPrefix: "Process for",
-      openDetailSuffix: " ",
       unresolved: "This reply could not be linked to one member turn, so it has no process.",
       empty: "No messages yet. Say something to start.",
       upgradeRequired: "This daemon is too old; upgrade to use the timeline.",

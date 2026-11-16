@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { test as base, expect, type Page } from "@playwright/test";
 import { startMockHub, type MockHub } from "./mock-hub";
 
@@ -78,6 +79,52 @@ export async function loginAndShowInstances(page: Page): Promise<void> {
   await expect(sessionRow).toBeVisible({ timeout: 30_000 });
 }
 
+/**
+ * A hit box counts only if it is at least 44x44 AND every one of its four edge
+ * midpoints resolves back to the control. The midpoint taps are what catch a
+ * pseudo-element expansion (not part of the box) or a neighbour's overlay.
+ */
+export async function expectTouchTarget(page: Page, testId: string, min = 44): Promise<void> {
+  const el = page.getByTestId(testId).first();
+  await expect(el, testId).toBeVisible();
+  // A sheet or a toast enters with a transform. Measuring mid-flight and then
+  // hit-testing a moment later would compare two different positions, so wait
+  // for the box to stop moving first.
+  let box = await el.boundingBox();
+  for (let i = 0; i < 20; i += 1) {
+    await page.waitForTimeout(50);
+    const next = await el.boundingBox();
+    if (next && box && next.x === box.x && next.y === box.y && next.width === box.width && next.height === box.height) break;
+    box = next;
+  }
+  expect(box, testId).not.toBeNull();
+  expect(box!.width, `${testId} width`).toBeGreaterThanOrEqual(min);
+  expect(box!.height, `${testId} height`).toBeGreaterThanOrEqual(min);
+  const points: Array<[number, number]> = [
+    [box!.width / 2, 2],
+    [box!.width / 2, box!.height - 2],
+    [2, box!.height / 2],
+    [box!.width - 2, box!.height / 2],
+  ];
+  const record = {
+    testId,
+    viewport: page.viewportSize(),
+    deviceScaleFactor: await page.evaluate(() => window.devicePixelRatio),
+    box,
+    midpoints: points.map(([dx, dy]) => ({ dx, dy, hit: testId })),
+  };
+  for (const [dx, dy] of points) {
+    const hits = await page.evaluate(
+      ({ id, x, y }) => document.elementFromPoint(x, y)?.closest(`[data-test="${id}"]`) !== null,
+      { id: testId, x: box!.x + dx, y: box!.y + dy },
+    );
+    expect(hits, `${testId} at +${dx},+${dy}`).toBe(true);
+  }
+  // Evidence pack: TOUCH_RECORD=<path> appends one JSON line per measured target.
+  if (process.env.TOUCH_RECORD) {
+    appendFileSync(process.env.TOUCH_RECORD, `${JSON.stringify(record)}\n`);
+  }
+}
 export async function loginAndOpenTerminal(page: Page): Promise<void> {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   // /api/me is stubbed as authenticated, so the login page is usually skipped.
