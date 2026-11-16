@@ -1711,6 +1711,12 @@ export class ControlService {
    * session. The source's recorded history is rendered once into a bounded
    * handoff; the first effective prompt of the target injects it and consumes
    * the record. This PR resolves every fork to the portable strategy.
+   *
+   * The target inherits the source's model and effort so it runs under the
+   * same provider settings. `modeId` and `replyMode` are explicit PR1 limits
+   * (the fork starts with defaults; `createSessionWithTransport` has no mode
+   * or reply-mode parameter). `settingsPolicy` needs no inheritance: it is
+   * resolved live from the agent config, and the fork keeps the source agent.
    */
   async forkSession(input: {
     chatKey: string;
@@ -1732,20 +1738,6 @@ export class ControlService {
         "session-fork-unavailable",
         "a fork needs a request id and a target alias",
       );
-    }
-    const replay = store.getByRequestId(requestId);
-    if (replay) {
-      const alias = this.deps.sessions
-        .listAllResolvedSessions()
-        .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
-      const resolved = alias ? await this.deps.sessions.getSession(alias) : null;
-      if (!resolved) {
-        throw new SessionForkError(
-          "session-fork-target-exists",
-          "this fork request already created a session that no longer exists",
-        );
-      }
-      return this.toControlSessionInfo(resolved);
     }
 
     this.assertOrdinaryAddressedAlias(input.chatKey, input.sourceAlias);
@@ -1772,6 +1764,52 @@ export class ControlService {
     }
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const targetInternal = scopeDisplayAliasToInternal(channelId, targetAlias);
+
+    // A replay must name the same source and target: a reused request id with
+    // a different payload is a client bug, not an idempotent retry.
+    const replay = store.getByRequestId(requestId);
+    if (replay) {
+      if (replay.sourceSessionId !== sourceSessionId) {
+        throw new SessionForkError(
+          "session-fork-request-mismatch",
+          "this fork request id was already used for a different source session",
+        );
+      }
+      if (replay.status === "pending") {
+        // The fork never completed (a crash or a resolve failure between the
+        // pending write and the resolve): remove any orphan target and the
+        // pending row, then converge to a fresh attempt below.
+        const orphanAlias = this.deps.sessions
+          .listAllResolvedSessions()
+          .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
+        if (orphanAlias) {
+          await this.deps.removeSessionWithTransport(orphanAlias).catch(() => undefined);
+        }
+        try {
+          store.deleteForkById(replay.id);
+        } catch {
+          /* the fresh attempt below re-reads whatever survived */
+        }
+      } else {
+        const alias = this.deps.sessions
+          .listAllResolvedSessions()
+          .find((session) => session.logicalSessionId === replay.targetSessionId)?.alias;
+        const resolved = alias ? await this.deps.sessions.getSession(alias) : null;
+        if (!resolved) {
+          throw new SessionForkError(
+            "session-fork-target-exists",
+            "this fork request already created a session that no longer exists; retry with a new request id",
+          );
+        }
+        if (resolved.alias !== targetInternal) {
+          throw new SessionForkError(
+            "session-fork-request-mismatch",
+            "this fork request id was already used for a different target alias",
+          );
+        }
+        return this.toControlSessionInfo(resolved);
+      }
+    }
     if (await this.deps.sessions.getSession(targetInternal)) {
       throw new SessionForkError(
         "session-fork-target-exists",
@@ -1814,6 +1852,7 @@ export class ControlService {
       targetInternal,
       source.agent,
       source.workspace,
+      source.model,
     );
     const targetSessionId = created.logicalSessionId;
     if (!targetSessionId) {
@@ -1824,13 +1863,18 @@ export class ControlService {
       );
     }
     const createdAt = new Date().toISOString();
+    let pendingId: string | undefined;
     try {
+      if (source.effort) {
+        await this.deps.sessions.setSessionEffort(created.alias, source.effort);
+      }
       const pending = store.createPending({
         requestId,
         sourceSessionId,
         targetSessionId,
         createdAt,
       });
+      pendingId = pending.id;
       store.resolvePortable({
         forkId: pending.id,
         handoff: {
@@ -1841,6 +1885,13 @@ export class ControlService {
         createdAt,
       });
     } catch (error) {
+      if (pendingId !== undefined) {
+        try {
+          store.deleteForkById(pendingId);
+        } catch {
+          /* the session removal below is the recovery that matters */
+        }
+      }
       await this.deps.removeSessionWithTransport(created.alias).catch(() => undefined);
       throw error;
     }

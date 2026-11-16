@@ -6,8 +6,8 @@ import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { SessionTurnRunner } from "../../../src/control/session-turn-runner";
 import { SessionForkStore } from "../../../src/sessions/session-fork-store";
 
-
 registerKnownChannelId("relay");
+
 const SOURCE = {
   alias: "relay:backend",
   agent: "codex",
@@ -17,33 +17,94 @@ const SOURCE = {
   transportSession: "acpx-backend",
   displayName: "Backend",
   logicalSessionId: "logical-src",
+  model: "gpt-5.2[high]",
+  effort: "high",
 };
 
-function controlDeps(input: {
+const OTHER = {
+  ...SOURCE,
+  alias: "relay:other",
+  displayName: "Other",
+  logicalSessionId: "logical-other",
+  transportSession: "acpx-other",
+};
+
+interface ForkTestInput {
   store: SessionForkStore;
   created: string[];
+  createdModels: Array<string | undefined>;
+  effortApplied: Array<[string, string | undefined]>;
+  removed: string[];
+  sources?: typeof SOURCE[];
   history: Array<{ role: "user" | "agent"; text: string }>;
-}) {
+}
+
+function forkInput(
+  store: SessionForkStore,
+  history: Array<{ role: "user" | "agent"; text: string }>,
+): ForkTestInput {
+  return {
+    store,
+    created: [],
+    createdModels: [],
+    effortApplied: [],
+    removed: [],
+    history,
+  };
+}
+
+function controlDeps(input: ForkTestInput) {
   const events = createControlEventBus();
   return {
     agent: { chat: async () => ({ text: "" }) },
     sessions: {
-      listAllResolvedSessions: () => [SOURCE],
-      getSession: async (alias: string) =>
-        alias === SOURCE.alias
-          ? SOURCE
-          : input.created.includes(alias)
-            ? { ...SOURCE, alias, logicalSessionId: "logical-target", transportSession: "acpx-fork" }
-            : null,
-      resolveAliasForChat: async (_chatKey: string, alias: string) => alias.startsWith("relay:") ? alias : `relay:${alias}`,
-      getLogicalSessionRecord: (alias: string) =>
-        alias.endsWith("backend") ? { logical_session_id: "logical-src" } : undefined,
+      listAllResolvedSessions: () => [
+        ...(input.sources ?? [SOURCE]),
+        ...input.created.map((alias) => ({
+          ...SOURCE,
+          alias,
+          logicalSessionId: "logical-target",
+          transportSession: "acpx-fork",
+        })),
+      ],
+      getSession: async (alias: string) => {
+        const source = (input.sources ?? [SOURCE]).find(
+          (candidate) => candidate.alias === alias,
+        );
+        if (source) return source;
+        const created = input.created.find((entry) => entry === alias);
+        return created && !input.removed.includes(created)
+          ? {
+              ...SOURCE,
+              alias,
+              logicalSessionId: "logical-target",
+              transportSession: "acpx-fork",
+            }
+          : null;
+      },
+      resolveAliasForChat: async (_chatKey: string, alias: string) =>
+        alias.startsWith("relay:") ? alias : `relay:${alias}`,
+      getLogicalSessionRecord: (alias: string) => {
+        const source = (input.sources ?? [SOURCE]).find(
+          (candidate) => candidate.alias === alias,
+        );
+        return source ? { logical_session_id: source.logicalSessionId } : undefined;
+      },
       getResolvedSessionByInternalAlias: () => undefined,
       useSession: async () => ({}),
       removeSession: async () => ({ wasActive: false }),
+      setSessionEffort: async (alias: string, effort: string | undefined) => {
+        input.effortApplied.push([alias, effort]);
+      },
     },
-    createSessionWithTransport: async (alias: string) => {
+    createSessionWithTransport: async (
+      alias: string,
+      _agent: string,
+      _workspace: string,
+      model?: string,
+    ) => {
       input.created.push(alias);
+      input.createdModels.push(model);
       return {
         ...SOURCE,
         alias,
@@ -51,30 +112,53 @@ function controlDeps(input: {
         logicalSessionId: "logical-target",
       };
     },
-    removeSessionWithTransport: async () => ({ wasActive: false }),
+    removeSessionWithTransport: async (alias: string) => {
+      input.removed.push(alias);
+      return { wasActive: false };
+    },
     archiveSessionWithTransport: async () => {},
     unarchiveSession: async () => {},
     listNativeSessions: async () => [],
     attachNativeSessionWithTransport: async () => SOURCE,
     activeTurns: { isActiveAnywhere: () => false },
-    scheduled: { listPending: () => [], createTask: async () => { throw new Error("unused"); }, cancelPending: async () => false },
-    orchestration: { listTasks: async () => [], getTask: async () => null, requestTaskCancellation: async () => { throw new Error("unused"); } },
+    scheduled: {
+      listPending: () => [],
+      createTask: async () => {
+        throw new Error("unused");
+      },
+      cancelPending: async () => false,
+    },
+    orchestration: {
+      listTasks: async () => [],
+      getTask: async () => null,
+      requestTaskCancellation: async () => {
+        throw new Error("unused");
+      },
+    },
     events,
-    agents: { list: () => [], catalog: () => [], create: async () => { throw new Error("unused"); }, remove: async () => {} },
-    workspaces: { list: () => [], create: async () => { throw new Error("unused"); } },
+    agents: {
+      list: () => [],
+      catalog: () => [],
+      create: async () => {
+        throw new Error("unused");
+      },
+      remove: async () => {},
+    },
+    workspaces: { list: () => [], create: async () => ({ name: "x", cwd: "/x" }) },
     sessionForks: input.store,
     readSessionForkHistory: async () => input.history,
   };
 }
 
+const HISTORY = [
+  { role: "user" as const, text: "past question" },
+  { role: "agent" as const, text: "past answer" },
+];
+
 test("forking a stable session stores a portable handoff for the new logical session", async () => {
   const store = await SessionForkStore.openInMemory();
-  const created: string[] = [];
-  const history = [
-    { role: "user" as const, text: "past question" },
-    { role: "agent" as const, text: "past answer" },
-  ];
-  const control = new ControlService(controlDeps({ store, created, history }) as never);
+  const input = forkInput(store, HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
 
   expect(control.supportsSessionForkHandoff()).toBe(true);
   const result = await control.forkSession({
@@ -83,7 +167,7 @@ test("forking a stable session stores a portable handoff for the new logical ses
     targetAlias: "backend-fork",
     requestId: "req-1",
   });
-  expect(created).toEqual(["relay:backend-fork"]);
+  expect(input.created).toEqual(["relay:backend-fork"]);
   expect(result.alias).toBe("backend-fork");
   const record = store.getByTargetSessionId("logical-target")!;
   expect(record.strategy).toBe("portable");
@@ -96,18 +180,116 @@ test("forking a stable session stores a portable handoff for the new logical ses
   store.close();
 });
 
-test("an empty source history refuses the fork before creating a session", async () => {
+test("the forked session inherits the source model and effort", async () => {
   const store = await SessionForkStore.openInMemory();
-  const created: string[] = [];
-  const control = new ControlService(controlDeps({ store, created, history: [] }) as never);
+  const input = forkInput(store, HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
 
-  await expect(control.forkSession({
+  await control.forkSession({
     chatKey: "relay:acct",
     sourceAlias: "backend",
     targetAlias: "backend-fork",
-    requestId: "req-empty",
-  })).rejects.toThrow(/no recorded history/);
-  expect(created).toEqual([]);
+    requestId: "req-model",
+  });
+  expect(input.createdModels).toEqual(["gpt-5.2[high]"]);
+  expect(input.effortApplied).toEqual([["relay:backend-fork", "high"]]);
+  store.close();
+});
+
+test("an empty source history refuses the fork before creating a session", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, []);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork",
+      requestId: "req-empty",
+    }),
+  ).rejects.toThrow(/no recorded history/);
+  expect(input.created).toEqual([]);
+  store.close();
+});
+
+test("a replayed request id with a different source is rejected", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  input.sources = [SOURCE, OTHER];
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-reuse",
+  });
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "other",
+      targetAlias: "other-fork",
+      requestId: "req-reuse",
+    }),
+  ).rejects.toThrow(/different source session/);
+  store.close();
+});
+
+test("a replayed request id with a different target alias is rejected", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-reuse-target",
+  });
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork-2",
+      requestId: "req-reuse-target",
+    }),
+  ).rejects.toThrow(/different target alias/);
+  expect(input.created).toEqual(["relay:backend-fork"]);
+  store.close();
+});
+
+test("a resolve failure removes the pending row and the target so a retry succeeds", async () => {
+  const store = await SessionForkStore.openInMemory();
+  const input = forkInput(store, HISTORY);
+  const control = new ControlService(controlDeps(input) as never);
+
+  const resolve = store.resolvePortable.bind(store);
+  let calls = 0;
+  store.resolvePortable = ((args: Parameters<typeof resolve>[0]) => {
+    calls += 1;
+    if (calls === 1) throw new Error("resolve boom");
+    return resolve(args);
+  }) as typeof store.resolvePortable;
+
+  await expect(
+    control.forkSession({
+      chatKey: "relay:acct",
+      sourceAlias: "backend",
+      targetAlias: "backend-fork",
+      requestId: "req-retry",
+    }),
+  ).rejects.toThrow(/resolve boom/);
+  expect(store.getByRequestId("req-retry")).toBeUndefined();
+
+  const result = await control.forkSession({
+    chatKey: "relay:acct",
+    sourceAlias: "backend",
+    targetAlias: "backend-fork",
+    requestId: "req-retry",
+  });
+  expect(result.alias).toBe("backend-fork");
+  expect(store.getByRequestId("req-retry")?.status).toBe("ready");
   store.close();
 });
 
@@ -143,12 +325,21 @@ function readyHandoff(store: SessionForkStore, requestId: string): void {
   });
   store.resolvePortable({
     forkId: fork.id,
-    handoff: { text: "<<<HISTORY\nHuman: old\n>>>END HISTORY", messageCount: 1, omittedMessages: 0 },
+    handoff: {
+      text: "<<<HISTORY\nHuman: old\n>>>END HISTORY",
+      messageCount: 1,
+      omittedMessages: 0,
+    },
     createdAt: "2026-11-16T00:00:01.000Z",
   });
 }
 
-const RUN = { chatKey: "c", sessionAlias: "backend-fork", senderId: "u", turnOrigin: "human" as const };
+const RUN = {
+  chatKey: "c",
+  sessionAlias: "backend-fork",
+  senderId: "u",
+  turnOrigin: "human" as const,
+};
 
 test("only the first effective prompt carries the handoff", async () => {
   const store = await SessionForkStore.openInMemory();

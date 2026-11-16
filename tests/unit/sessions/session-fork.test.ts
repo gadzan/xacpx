@@ -64,7 +64,7 @@ test("the rendered handoff is bounded and a fork-of-fork carries its parent bloc
   store.close();
 });
 
-test("a consumed parent handoff is not duplicated when the child already recorded it", async () => {
+test("a consumed parent handoff is stripped from rows and carried once as the parent block", async () => {
   const store = await SessionForkStore.openInMemory();
   const parent = pending(store, "child", "req-parent");
   const parentText = "<<<HISTORY\nHuman: inherited\n>>>END HISTORY";
@@ -82,5 +82,7 @@ test("a consumed parent handoff is not duplicated when the child already recorde
     parentHandoff: store.getHandoff(parent.id),
   });
   expect(rendered.text.match(/inherited/g)?.length).toBe(1);
+  expect(rendered.text).not.toContain("Human: <<<HISTORY");
+  expect(rendered.text).toContain("Human: new question");
   store.close();
 });

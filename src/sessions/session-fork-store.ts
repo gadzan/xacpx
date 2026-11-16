@@ -55,6 +55,7 @@ export class SessionForkError extends Error {
       | "session-fork-unstable"
       | "session-fork-empty-history"
       | "session-fork-target-exists"
+      | "session-fork-request-mismatch"
       | "session-fork-native-unavailable",
     message: string,
   ) {
@@ -304,6 +305,18 @@ export class SessionForkStore {
       );
       return { forkId: row.id, text: handoff.text };
     }, "immediate");
+  }
+
+  /** Delete a fork record and its handoff text. Used to clean up a pending row
+   *  when the fork never completed, so a retry with the same request id can
+   *  converge instead of wedging on an orphan row. Completed (ready/consumed)
+   *  records are retained as idempotency and audit provenance even after their
+   *  target session is deleted: one small row per user-initiated fork, the
+   *  same cardinality as the sessions they describe, so the table cannot grow
+   *  without bound on its own. */
+  deleteForkById(forkId: string): void {
+    this.sql.run("DELETE FROM session_fork_handoffs WHERE fork_id = ?", [forkId]);
+    this.sql.run("DELETE FROM session_forks WHERE id = ?", [forkId]);
   }
 
   close(): void {

@@ -43,3 +43,25 @@ the block; a provider failure cannot re-inject on retry; command turns
 advertises nothing. The connector requires that probe and its own payload
 validator before publishing `session.fork.handoff.v1`. Relay Web hides the
 session menu entry until the instance advertises it.
+
+## Review fixes (against PR586 r1)
+
+- Model/effort inheritance: the fork passes `source.model` into
+  `createSessionWithTransport` and applies `source.effort` via
+  `setSessionEffort` before the record resolves, so the target runs under the
+  same provider settings. `modeId`/`replyMode` are explicit PR1 limits (no
+  creation-path parameter); `settingsPolicy` inherits automatically (resolved
+  live from the shared agent config).
+- No nested HISTORY rows: the renderer strips the known parent-handoff prefix
+  from the child's recorded rows before rendering and re-carries it once as
+  the parent block, preserving the chain without a transcript-in-a-row.
+- Request-id replay is strict: same id with a different source or target
+  alias is rejected (`session-fork-request-mismatch`); source resolution now
+  precedes the replay lookup, so a replay is only meaningful while the source
+  still exists.
+- Pending-row recovery: a resolve failure deletes the pending row and removes
+  the just-created target, so the same request id retries cleanly. A crash
+  between the pending write and the resolve converges the same way on retry.
+  Completed (ready/consumed) records are retained even after target deletion
+  as idempotency and audit provenance — one small row per user-initiated
+  fork — so the table cannot grow without an operator action behind it.
