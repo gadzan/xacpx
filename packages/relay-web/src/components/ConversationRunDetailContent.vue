@@ -147,7 +147,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
 
 <template>
   <div class="flex flex-col gap-3 text-sm" data-test="run-detail">
-    <section class="rounded-xl bg-surface/50 p-2.5" data-test="run-detail-summary">
+    <section class="rounded-2xl bg-surface/50 p-2.5" data-test="run-detail-summary">
       <div class="flex flex-wrap items-center gap-2">
         <span
           data-test="run-detail-state"
@@ -200,7 +200,7 @@ function answer(requestId: string, key: string, value: InteractionValueDto): voi
             <span
               data-test="run-member-state"
               :data-tone="memberStateTone(member.state)"
-              class="shrink-0 rounded px-1.5 py-0.5"
+              class="shrink-0 rounded-sm px-1.5 py-0.5"
               :class="toneClass(memberStateTone(member.state))"
             >{{ $t(memberStateKey(member.state)) }}</span>
             <span data-test="run-member-origin" class="shrink-0">{{ $t(memberOriginKey(member.origin)) }}</span>

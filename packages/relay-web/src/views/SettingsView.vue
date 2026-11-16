@@ -168,7 +168,7 @@ void onMounted(() => { void probeNotifications(); });
       <h2 class="mb-2 text-ui font-semibold text-fg-muted">{{ $t("settings.addInstance") }}</h2>
       <button
         data-test="open-add-instance"
-        class="h-11 rounded-xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
+        class="h-11 rounded-2xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
         @click="showAddInstance = true"
       >
         {{ $t("settings.addInstance") }}

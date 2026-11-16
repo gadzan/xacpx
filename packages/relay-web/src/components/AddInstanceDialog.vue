@@ -147,14 +147,14 @@ function close(): void {
           type="text"
           data-test="add-instance-name"
           :placeholder="$t('settings.instanceNamePlaceholder')"
-          class="mt-3 w-full rounded-xl bg-surface-2 px-3 py-2 text-base text-fg outline-none placeholder:text-fg-muted focus-visible:ring-2 focus-visible:ring-accent"
+          class="mt-3 w-full rounded-2xl bg-surface-2 px-3 py-2 text-base text-fg outline-none placeholder:text-fg-muted focus-visible:ring-2 focus-visible:ring-accent"
           @keydown.enter.prevent="generateToken"
         />
         <p v-if="error" data-test="add-instance-error" class="mt-2 text-xs text-danger-text">{{ error }}</p>
         <div class="mt-4 flex items-center justify-end gap-2">
           <button
             type="button"
-            class="h-11 rounded-xl px-4 text-sm font-medium text-fg-muted hover:bg-raised"
+            class="h-11 rounded-2xl px-4 text-sm font-medium text-fg-muted hover:bg-raised"
             @click="navigateBack"
           >
             {{ $t("common.cancel") }}
@@ -163,7 +163,7 @@ function close(): void {
             type="button"
             data-test="add-instance-next"
             :disabled="busy || !name.trim()"
-            class="h-11 rounded-xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50"
+            class="h-11 rounded-2xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover disabled:opacity-50"
             @click="generateToken"
           >
             <Loader2 v-if="busy" :size="14" class="animate-spin" />
@@ -179,7 +179,7 @@ function close(): void {
           {{ $t("settings.addInstanceWaiting") }}
         </p>
         <div class="mt-3 flex items-start gap-2">
-          <code class="min-w-0 flex-1 break-all rounded-xl bg-surface-2 p-3 text-xs text-fg" data-test="add-instance-command">
+          <code class="min-w-0 flex-1 break-all rounded-2xl bg-surface-2 p-3 text-xs text-fg" data-test="add-instance-command">
             {{ command }}
           </code>
           <button
@@ -187,7 +187,7 @@ function close(): void {
             data-test="add-instance-copy"
             :aria-label="$t('settings.copyCommand')"
             :title="$t('settings.copyCommand')"
-            class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-surface-2 text-fg transition-colors hover:bg-raised"
+            class="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-surface-2 text-fg transition-colors hover:bg-raised"
             @click="copyCommand"
           >
             <Check v-if="copied" :size="16" class="text-run" />
@@ -201,7 +201,7 @@ function close(): void {
           <button
             type="button"
             data-test="add-instance-later"
-            class="h-11 rounded-xl px-4 text-sm font-medium text-fg-muted hover:bg-raised"
+            class="h-11 rounded-2xl px-4 text-sm font-medium text-fg-muted hover:bg-raised"
             @click="close"
           >
             {{ $t("settings.addInstanceLater") }}
@@ -209,7 +209,7 @@ function close(): void {
           <button
             type="button"
             data-test="add-instance-regenerate"
-            class="h-11 rounded-xl px-4 text-sm font-medium text-fg hover:bg-raised"
+            class="h-11 rounded-2xl px-4 text-sm font-medium text-fg hover:bg-raised"
             @click="copyCommand"
           >
             {{ $t("settings.addInstanceRegenerate") }}
@@ -227,7 +227,7 @@ function close(): void {
           <button
             type="button"
             data-test="add-instance-done"
-            class="h-11 rounded-xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
+            class="h-11 rounded-2xl bg-accent px-4 text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
             @click="close"
           >
             {{ $t("settings.addInstanceDone") }}

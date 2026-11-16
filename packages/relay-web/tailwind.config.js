@@ -63,6 +63,11 @@ export default {
         card: "12px",
         dialog: "16px",
         item: "5px",
+        // Aliases completing the §4.4 token table. `menu` shares lg's 10px,
+        // `pill` is the 999px capsule. No mass migration to these names now;
+        // dialogs and buttons adopt them in WP-13 / WP-14.
+        menu: "10px",
+        pill: "999px",
       },
       fontSize: {
         xs: ["12px", "18px"],

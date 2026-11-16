@@ -114,7 +114,7 @@ const terminalState = computed<"done" | "failed" | "cancelled" | null>(() => {
     />
     <div v-if="memberTurn" class="min-w-0">
       <details v-if="hasBrief" data-test="group-member-brief" class="mt-2 text-xs text-fg-muted">
-        <summary class="cursor-pointer rounded-md py-1 font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent">
+        <summary class="cursor-pointer rounded-sm py-1 font-medium outline-none focus-visible:ring-2 focus-visible:ring-accent">
           {{ $t("group.detail.brief") }}
         </summary>
         <div class="mt-1.5 space-y-1.5 rounded-lg bg-surface/50 p-2.5">
