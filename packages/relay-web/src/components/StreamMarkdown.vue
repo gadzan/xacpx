@@ -263,7 +263,8 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 /* Inline code: bg-surface rounded-sm px-1 py-0.5 font-mono. 13px is the `ui`
-   token, the same size the code block uses, so prose and code line up. */
+   token, the same size the code block uses, so prose and code line up.
+   Code ligatures are off for every mono surface (see style.css). */
 .stream-md code {
   background: rgb(var(--c-surface));
   color: rgb(var(--c-fg));

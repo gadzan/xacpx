@@ -330,6 +330,15 @@ select:not([data-ring="container"]):not([aria-invalid="true"]):focus-visible {
   .stream-md.caret:has(> hr:last-child)::after { animation: none !important; }
 }
 
+/* Code is read, not typeset: JetBrains Mono ligatures turn `!==` into a single
+   glyph that reads as `≠`, and `->`/`>=`/`|>` into shapes that look like
+   different operators. Every code surface (markdown fences and inline code,
+   the diff rows, tool output, the CodeMirror editor) is mono, so one rule
+   covers them and no component has to remember. */
+code, pre, .font-mono, .cm-scroller, .cm-content {
+  font-variant-ligatures: none;
+}
+
 /* Transient flash when jumping to a line (content-search hit). The decoration is removed
    after ~1.5s by the CodeEditor timer; the animation fades the background over that window. */
 .cm-flash-line { animation: cm-flash-fade 1.5s ease-out; }
