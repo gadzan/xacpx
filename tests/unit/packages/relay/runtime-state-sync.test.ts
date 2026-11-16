@@ -1017,3 +1017,44 @@ test("a running turn restored from a sync keeps the peer card it answers", async
   expect(live.peerTriggerMessageId).toBe("msg_peer");
   runtime.close();
 });
+
+test("a running turn restored from a sync stamps its node id on the inbound row", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [{
+      sessionAlias: "backend",
+      startedAt: STARTED_AT,
+      prompt: "offline question",
+      nodeId: "node-sync",
+      text: "partial",
+      reasoning: "",
+      steps: [],
+    }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const inbound = runtime.messages.listBySession("a1", "i1", "backend").messages
+    .find((row) => row.direction === "in");
+  expect(inbound).toMatchObject({ text: "offline question", nodeId: "node-sync" });
+  runtime.close();
+});
+
+test("a finished-offline turn backfills a forkable inbound row with its node id", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [],
+    usage: [], commands: [],
+    finishedOffline: [{
+      sessionAlias: "backend",
+      ok: true,
+      text: "offline answer",
+      prompt: "offline question",
+      nodeId: "node-finished",
+    }],
+  });
+  const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(rows.filter((row) => row.direction === "in")).toEqual([
+    expect.objectContaining({ text: "offline question", nodeId: "node-finished" }),
+  ]);
+  expect(rows.find((row) => row.direction === "out")?.text).toBe("offline answer");
+  runtime.close();
+});

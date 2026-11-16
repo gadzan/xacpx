@@ -1,5 +1,6 @@
 import { bindDirectExecutionMetadata } from "../conversations/group-execution-metadata";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { ControlServiceDeps } from "./control-service";
 import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
 import { bindGroupExecutionMetadata, GroupExecutionOutcomeUnknownError } from "../conversations/group-execution-metadata";
@@ -20,6 +21,7 @@ import {
   type PeerTurnOrigin,
 } from "./turn-support";
 import { isKnownXacpxCommandText } from "../commands/command-list";
+import { sessionForkPromptDigest } from "../sessions/session-fork-node";
 
 export interface TurnRequest {
   groupExecutionToken?: string;
@@ -325,6 +327,17 @@ export class SessionTurnRunner {
       const bound = await this.deps.sessions.getSession(internalAlias).catch(() => null);
       if (bound) this.deps.sessionWarmth.markWarm(bound);
     }
+
+    // Node-fork identity: minted only when this daemon records turn nodes, and
+    // carried to the hub so the web can name this exact prompt as a fork point.
+    // A turn with no logical identity gets none, so no row ever offers an id
+    // this core cannot resolve. Media prompts get none either: the acpx record
+    // interleaves image markers into the user text, so the recorded digest
+    // could never match and the row would offer a fork that always fails.
+    const nodeSessionId = this.deps.sessionForks && internalAlias
+      ? this.deps.sessions.getLogicalSessionRecord?.(internalAlias)?.logical_session_id
+      : undefined;
+    const nodeId = nodeSessionId && (req.media?.length ?? 0) === 0 ? randomUUID() : undefined;
     this.deps.events.emit({
       type: "turn-started",
       chatKey: req.chatKey,
@@ -333,6 +346,7 @@ export class SessionTurnRunner {
       ...(req.turnStarted?.scheduled ? { scheduled: req.turnStarted.scheduled } : {}),
       ...(req.turnStarted?.queueItemId ? { queueItemId: req.turnStarted.queueItemId } : {}),
       ...(req.turnStarted?.promptRequestId ? { promptRequestId: req.turnStarted.promptRequestId } : {}),
+      ...(nodeId ? { nodeId } : {}),
       ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
       ...(req.conversation ? { conversation: req.conversation } : {}),
     });
@@ -552,6 +566,22 @@ export class SessionTurnRunner {
       }
       const forkHandoff = this.takeForkHandoff(req, internalAlias, disarmedUserText);
       if (forkHandoff) chatRequest.text = `${forkHandoff}\n\n${chatRequest.text}`;
+      if (nodeId && nodeSessionId) {
+        // Recorded AFTER every server-side prompt transformation (mentions,
+        // handoff injection) so the digest is of the exact text the acpx record
+        // stores. `nodeId` is only minted for text prompts, so the media skip
+        // lives in one place.
+        try {
+          this.deps.sessionForks?.recordTurnNode({
+            nodeId,
+            sessionId: nodeSessionId,
+            promptDigest: sessionForkPromptDigest(chatRequest.text),
+            createdAt: new Date().toISOString(),
+          });
+        } catch {
+          /* node fork stays unavailable for this turn; the head fork still works */
+        }
+      }
       const response = await this.deps.agent.chat(chatRequest);
       if (response.text && !response.silent) {
         // Transports may stream the answer and return it again: emit only the unsent

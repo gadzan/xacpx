@@ -14,6 +14,7 @@ interface MessageRow {
   structured: string | null;
   attachments: string | null;
   queue_item_id: string | null;
+  node_id: string | null;
   started_at: number | null;
   slot_after_id: number | null;
   started_after_seq: number | null;
@@ -40,6 +41,7 @@ function toDto(r: MessageRow): MessageRecordDto {
     text: r.text,
     createdAt: r.created_at,
     ...(r.queue_item_id ? { queueItemId: r.queue_item_id } : {}),
+    ...(r.node_id ? { nodeId: r.node_id } : {}),
     ...(typeof r.started_at === "number" ? { startedAt: r.started_at } : {}),
     ...(typeof r.slot_after_id === "number" ? { slotAfterId: r.slot_after_id } : {}),
     ...(typeof r.started_after_seq === "number" ? { startedAfterSeq: r.started_after_seq } : {}),
@@ -293,6 +295,49 @@ export class MessageStore {
     return row?.id;
   }
 
+  /**
+   * Stamp the core's prompt-turn id on the inbound row it belongs to. Correlations
+   * are resolved against the row's CURRENT coordinates: a queued prompt's id moves
+   * on promotion and its `prompt_request_id` is consumed, so a bare request id can
+   * point at nothing by the time execution starts. Without a correlation the
+   * caller just reconciled THIS turn's prompt and the newest inbound row is it; the
+   * fallback therefore never overwrites an existing node id, so a duplicate
+   * delivery cannot stamp a newer turn's row.
+   */
+  attachNodeId(
+    instanceId: string,
+    sessionAlias: string,
+    nodeId: string,
+    correlation: { promptRequestId?: string; queueItemId?: string } = {},
+  ): void {
+    const lookup = (where: string, value: string): number | undefined =>
+      this.db.get<{ id: number }>(
+        `SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? AND direction = 'in' AND ${where} = ? ORDER BY id DESC LIMIT 1`,
+        [instanceId, sessionAlias, value],
+      )?.id;
+    const rowId =
+      (correlation.queueItemId !== undefined
+        ? lookup("origin_queue_item_id", correlation.queueItemId)
+          ?? lookup("queue_item_id", correlation.queueItemId)
+        : undefined)
+      ?? (correlation.promptRequestId !== undefined
+        ? lookup("prompt_request_id", correlation.promptRequestId)
+        : undefined);
+    if (rowId !== undefined) {
+      this.db.run("UPDATE messages SET node_id = ? WHERE id = ?", [nodeId, rowId]);
+      return;
+    }
+    this.db.run(
+      `UPDATE messages SET node_id = ?
+       WHERE id = (
+         SELECT id FROM messages
+         WHERE instance_id = ? AND session_alias = ? AND direction = 'in'
+         ORDER BY id DESC LIMIT 1
+       ) AND node_id IS NULL`,
+      [nodeId, instanceId, sessionAlias],
+    );
+  }
+
   /** Promote a KNOWN inbound row (found via promptRequestId) to its execution position
    *  and record the executed queue association — the row was pre-written without a
    *  queue marker, so promoteQueued() could not find it. Session-scoped; returns
@@ -328,7 +373,7 @@ export class MessageStore {
     const before = opts.before ?? null;
     // Fetch one extra row to detect whether older history remains, then drop it.
     const rows = this.db.all<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at, m.slot_after_id, m.started_after_seq
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.node_id, m.started_at, m.slot_after_id, m.started_after_seq
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
          AND m.queue_item_id IS NULL
@@ -395,7 +440,7 @@ export class MessageStore {
     id: number,
   ): MessageRecordDto | null {
     const row = this.db.get<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at, m.slot_after_id, m.started_after_seq
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.node_id, m.started_at, m.slot_after_id, m.started_after_seq
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ? AND m.id = ?`,
       [accountId, instanceId, sessionAlias, id],

@@ -508,38 +508,62 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         const last = rows[rows.length - 1];
         return last?.direction === "in" && last.text === prompt;
       };
-      const reconcileInboundPrompt = (
+      const reconcileInboundPromptRow = (
         sessionAlias: string,
         opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string },
         liveFallback: boolean,
-      ): void => {
+      ): "appended" | "correlated" | "unchanged" => {
         if (opts.queueItemId) {
           const correlation = { instanceId, sessionAlias, queueItemId: opts.queueItemId };
           const state = messages.queuedState(correlation);
-          if (state === "pending") { messages.promoteQueued(correlation); return; }
-          if (state === "fallback") { messages.finalizeQueuedFallback(correlation); return; }
-          if (state === "executed") return; // already promoted/finalized — the row exists
+          if (state === "pending") {
+            return messages.promoteQueued(correlation) ? "correlated" : "unchanged";
+          }
+          if (state === "fallback") {
+            messages.finalizeQueuedFallback(correlation);
+            return "correlated";
+          }
+          if (state === "executed") return "correlated"; // already promoted/finalized — the row exists
           // absent: try the pre-write correlation before fabricating a row
           if (opts.promptRequestId) {
             const rowId = messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId);
-            if (rowId !== undefined && messages.promoteQueuedRow(rowId, correlation)) return;
+            if (rowId !== undefined && messages.promoteQueuedRow(rowId, correlation)) return "correlated";
           }
           if (opts.prompt) {
             if (liveFallback) messages.appendQueuedFallback(correlation, opts.prompt);
             else messages.appendExecutedQueuedFallback(correlation, opts.prompt);
+            return "appended";
           }
-          return;
+          return "unchanged";
         }
         if (opts.promptRequestId) {
           // Pre-written web prompt with no queue marker: the row already exists — do
           // not duplicate it (the queue response may have been lost entirely).
-          if (messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId) !== undefined) return;
+          if (messages.findByPromptRequest(instanceId, sessionAlias, opts.promptRequestId) !== undefined) {
+            return "correlated";
+          }
         }
         if (opts.prompt !== undefined) {
-          if (opts.scheduled && messages.hasScheduledInbound(instanceId, sessionAlias, opts.scheduled.taskId)) return;
-          if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) return;
+          if (opts.scheduled && messages.hasScheduledInbound(instanceId, sessionAlias, opts.scheduled.taskId)) return "unchanged";
+          if (!opts.scheduled && hasTrailingPrompt(sessionAlias, opts.prompt)) return "unchanged";
           messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
+          return "appended";
         }
+        return "unchanged";
+      };
+      const reconcileInboundPrompt = (
+        sessionAlias: string,
+        opts: { prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string; nodeId?: string },
+        liveFallback: boolean,
+      ): void => {
+        const outcome = reconcileInboundPromptRow(sessionAlias, opts, liveFallback);
+        // A deduped replay did not touch this turn's row: it may leave an older
+        // row's stamp alone, but it must never overwrite a newer turn's node id.
+        if (!opts.nodeId || outcome === "unchanged") return;
+        messages.attachNodeId(instanceId, sessionAlias, opts.nodeId, {
+          ...(opts.promptRequestId !== undefined ? { promptRequestId: opts.promptRequestId } : {}),
+          ...(opts.queueItemId !== undefined ? { queueItemId: opts.queueItemId } : {}),
+        });
       };
       const rememberAnchor = (sessionAlias: string, slot: OutSlot, recoveryId?: string): void => {
         slotAnchors.put({
@@ -656,7 +680,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               db.transaction(() => {
                 reconcileInboundPrompt(
                   event.sessionAlias,
-                  { prompt: event.prompt, queueItemId: event.queueItemId, scheduled: event.scheduled, promptRequestId: event.promptRequestId },
+                  { prompt: event.prompt, queueItemId: event.queueItemId, scheduled: event.scheduled, promptRequestId: event.promptRequestId, nodeId: event.nodeId },
                   true,
                 );
                 slot = snapshotSlotAfterReconcile(event.sessionAlias, {
@@ -996,7 +1020,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   reconcileInboundPrompt(
                     finished.sessionAlias,
                     {
-                      prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled, promptRequestId: finished.promptRequestId,
+                      prompt: finished.prompt, queueItemId: finished.queueItemId, scheduled: finished.scheduled, promptRequestId: finished.promptRequestId, nodeId: finished.nodeId,
                     },
                     false,
                   );
@@ -1070,7 +1094,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             for (const turn of sync.turns) {
               reconcileInboundPrompt(
                 turn.sessionAlias,
-                { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled, promptRequestId: turn.promptRequestId },
+                { prompt: turn.prompt, queueItemId: turn.queueItemId, scheduled: turn.scheduled, promptRequestId: turn.promptRequestId, nodeId: turn.nodeId },
                 false,
               );
             }

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ArchiveRestore, Ban, Bot, Check, ChevronRight, Folder, GitFork, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users, Filter } from "lucide-vue-next";
-import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop, supportsSessionForkHandoff } from "../stores/instances";
+import { useInstancesStore, groupArchivedKey, nextSessionForkAlias, parseGroupArchivedKey, supportsBotDedicatedWorkspaceCleanup, supportsDesktop, supportsSessionForkHandoff } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
@@ -532,18 +532,6 @@ function menuGroups(inst: InstanceView, s: { alias: string; archived?: boolean }
   ];
 }
 
-/** The next free `<alias>-fork[-N]` among this instance's loaded rows. The
- *  daemon still rejects a collision with a sleeping row or another client. */
-function nextForkAlias(inst: InstanceView, sourceAlias: string): string {
-  const taken = new Set(inst.sessions.map((session) => session.alias));
-  const base = `${sourceAlias}-fork`;
-  if (!taken.has(base)) return base;
-  for (let index = 2; ; index += 1) {
-    const candidate = `${base}-${index}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-}
-
 // One fork RPC at a time per row: a double click would otherwise mint two
 // request ids and two sessions. The daemon converges identical ids, but the UI
 // must not ask for two different targets in the first place.
@@ -557,7 +545,7 @@ async function onFork(inst: InstanceView, sourceAlias: string): Promise<void> {
     const created = await store.forkSession(
       inst.id,
       sourceAlias,
-      nextForkAlias(inst, sourceAlias),
+      nextSessionForkAlias(inst.sessions, sourceAlias),
       `session-fork-${crypto.randomUUID()}`,
     );
     pushToast("success", "instance.forkCreated", { alias: created.alias });

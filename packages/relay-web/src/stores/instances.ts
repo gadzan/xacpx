@@ -266,6 +266,35 @@ export function supportsSessionForkHandoff(instance: { capabilities?: string[] |
   return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.sessionForkHandoffV1);
 }
 
+/**
+ * True when the instance accepts a node boundary on an ordinary-session fork.
+ * Additive to the head capability: an older core/connector advertises only
+ * `session.fork.handoff.v1`, so the message-row entry stays hidden while the
+ * session-menu head fork keeps working.
+ */
+export function supportsSessionForkMessage(instance: { capabilities?: string[] | null } | null | undefined): boolean {
+  return (instance?.capabilities ?? []).includes(RELAY_CAPABILITIES.sessionForkMessageV1);
+}
+
+/** The next free `<alias>-fork[-N]` among the rows the sidebar has loaded. The
+ *  daemon still rejects a collision with a sleeping row or another client. */
+export function nextSessionForkAlias(
+  sessions: ReadonlyArray<{ alias: string }>,
+  sourceAlias: string,
+): string {
+  const taken = new Set(sessions.map((session) => session.alias));
+  const base = `${sourceAlias}-fork`;
+  if (!taken.has(base)) return base;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** Request id + target pinned per node while an attempt is unresolved. */
+const nodeForkRequests = new Map<string, { requestId: string; targetAlias: string }>();
+const nodeForkInFlight = new Set<string>();
+
 /** True when the instance accepts the roundtable target and history fields.
  *  It gates both the future "discuss" entry and the history compat flag. */
 export function supportsRoundtableV1(instance: { capabilities?: string[] | null } | null | undefined): boolean {
@@ -1092,6 +1121,51 @@ export const useInstancesStore = defineStore("instances", () => {
     return result;
   }
 
+  /**
+   * Fork an ordinary session at one recorded prompt turn. The request id and the
+   * target alias are pinned per (instance, source, node) while an attempt is
+   * unresolved: a retry after an ambiguous failure replays the same fork instead
+   * of minting a second session. A taken target is the one failure that resets
+   * both — the stored request names that target, so replaying it could never
+   * succeed.
+   */
+  async function forkSessionAtNode(
+    instanceId: string,
+    sourceAlias: string,
+    nodeId: string,
+  ): Promise<SessionDto> {
+    const key = `${instanceId}\0${sourceAlias}\0${nodeId}`;
+    if (nodeForkInFlight.has(key)) throw new Error("session-fork-in-flight");
+    nodeForkInFlight.add(key);
+    try {
+      const inst = byId(instanceId);
+      const pinned = nodeForkRequests.get(key);
+      const targetAlias = pinned?.targetAlias ?? nextSessionForkAlias(inst?.sessions ?? [], sourceAlias);
+      const requestId = pinned?.requestId ?? `session-fork-${crypto.randomUUID()}`;
+      nodeForkRequests.set(key, { targetAlias, requestId });
+      try {
+        const result = unwrap(await api.rpc<SessionDto>(instanceId, "control.sessions.fork", {
+          sourceAlias,
+          targetAlias,
+          requestId,
+          sourcePoint: { type: "node", nodeId },
+        }));
+        nodeForkRequests.delete(key);
+        await loadSessions(instanceId);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("session-fork-target-exists") || message.includes("already exists")) {
+          nodeForkRequests.delete(key);
+          await loadSessions(instanceId).catch(() => undefined);
+        }
+        throw error;
+      }
+    } finally {
+      nodeForkInFlight.delete(key);
+    }
+  }
+
   // Optimistic create: insert a "creating" row and switch to it IMMEDIATELY, then run
   // the (slow) create RPC in the background. A cold agent start blocks `createSession`
   // for 10–40s; awaiting it before closing the dialog traps the user in a frozen modal.
@@ -1769,7 +1843,7 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, capabilityEpochFor, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, forkSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, capabilityEpochFor, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, jevPanelById, jevPanelFor, loadJevSettings, saveJevSettings, setJevSaveState, setJevTestState, testJevConnection, terminalSettingsFor, loadTerminalSettings, updateTerminalSettings, filesSettingsFor, loadFilesSettings, updateFilesSettings, removeSession, archiveSession, unarchiveSession, renameSession, forkSession, forkSessionAtNode, renameInstance, applyEvent, byId, findSessionRow };
 });
 
 /** The instances store's public shape, named for consumers (tests, helpers). */

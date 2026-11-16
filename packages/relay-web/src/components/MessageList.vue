@@ -8,7 +8,7 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import ConversationBubble from "./ConversationBubble.vue";
 import ConversationMeta from "./ConversationMeta.vue";
-import { AlertCircle, ArrowLeft, ArrowRight, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
+import { AlertCircle, ArrowLeft, ArrowRight, CircleStop, Clock, GitFork, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import TranscriptRow from "./TranscriptRow.vue";
 import LiveTurnAvatar from "./LiveTurnAvatar.vue";
@@ -23,7 +23,7 @@ import {
 } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../lib/turn-layout";
 import { expandedTraces } from "../lib/trace-expansion";
-const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
+const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void>; forkNode?: (message: ChatMessage) => void }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
 // While a turn is in progress the live row body renders the ThinkingDots bubble
@@ -679,7 +679,22 @@ watch(
             </div>
             <!-- Meta + retry live outside the max-w-[80%] column: iOS Safari paint-clips
                  the column at its bubble width, cutting a wider time row. -->
-            <ConversationMeta :message="m" />
+            <ConversationMeta :message="m">
+              <!-- Node fork: only a persisted prompt row with a core node id, and
+                   only when the parent proved the instance advertises the payload. -->
+              <template v-if="forkNode && m.nodeId" #operations>
+                <button
+                  type="button"
+                  data-test="msg-fork-node"
+                  class="inline-flex items-center text-fg-muted transition-colors hover:text-accent"
+                  :aria-label="$t('chat.forkFromHere')"
+                  :title="$t('chat.forkFromHere')"
+                  @click="forkNode(m)"
+                >
+                  <GitFork :size="12" />
+                </button>
+              </template>
+            </ConversationMeta>
             <!-- Failed sends get a compact retry affordance on their own line below. -->
             <div v-if="m.failed" class="mt-1.5 flex items-center gap-2">
               <span data-test="msg-failed" class="inline-flex items-center gap-1 text-xs font-medium text-danger">
