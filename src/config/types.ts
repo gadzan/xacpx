@@ -86,6 +86,22 @@ export interface TransportConfig {
    */
   acpxMaxIncomingMessageBytes?: number | null;
   acpxTerminalMaxOutputBytes?: number | null;
+  /**
+   * Environment names ACP agent children (and acpx command probes / ACP
+   * terminals) may inherit from the daemon (acpx 0.21 `agentProcessEnvAllow`).
+   * When set — including an empty array — children inherit only process
+   * essentials, these names and `ACPX_AUTH_*` grants; absent keeps upstream's
+   * inherit-everything default. Applies to the Runtime engine lane only: the
+   * acpx CLI lane spawns acpx directly and has no equivalent flags.
+   */
+  agentEnvAllow?: string[];
+  /**
+   * Environment names withheld from ACP agent children, applied after
+   * `agentEnvAllow` (acpx 0.21 `agentProcessEnvBlock`). Absent withholds
+   * nothing. Same Runtime-lane-only scope as `agentEnvAllow`; the per-agent
+   * Claude `agentProcessEnv` overlay still applies on top of both.
+   */
+  agentEnvBlock?: string[];
 }
 
 export interface TerminalConfig {

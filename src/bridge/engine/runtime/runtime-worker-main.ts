@@ -20,6 +20,7 @@ import type {
   XacpxTurnHandle,
 } from "./runtime-contract";
 import {
+  agentEnvListIdentityKey,
   agentProcessEnvIdentityKey,
   encodeWorkerMessage,
   parseWorkerLine,
@@ -41,6 +42,11 @@ import { parseSessionEffortRecord } from "../../../transport/session-effort";
 import { parseXacpxPermissionPolicy } from "./runtime-permission-policy";
 import { RuntimeAgentLeaseStore, createAgentLifecycleHooks } from "./runtime-agent-lease";
 import { RuntimePermissionResolver, readToolInputFromReq, type RuntimePermissionConfig, type RuntimePermissionRequest } from "./runtime-permission-resolver";
+import {
+  OFFERED_PERMISSION_KINDS,
+  readOfferedPermissionOptions,
+  toUpstreamPermissionDecision,
+} from "./runtime-permission-decision";
 import { ELICITATION_RPC_TIMEOUT_MS } from "../../../interactions/elicitation-interaction-broker.js";
 import { bindElicitationAbort } from "./elicitation-abort-binding";
 
@@ -124,6 +130,10 @@ function ensureIdentityKey(p: RuntimeWorkerEnsureParams): string {
     // createAcpRuntime). A warm worker silently keeping a stale env is
     // worse than a recycle — mismatch fails closed so the Host respawns.
     agentProcessEnvIdentityKey(p.agentProcessEnv),
+    // acpx 0.21: env policy is Runtime-construction state; absent vs empty
+    // must differ, so a warm worker never keeps a stale policy.
+    agentEnvListIdentityKey(p.agentProcessEnvAllow),
+    agentEnvListIdentityKey(p.agentProcessEnvBlock),
   ]);
 }
 
@@ -271,13 +281,18 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
       // B1: child-only overlay, snapshotted by upstream at construction and
       // never persisted. Identity-bound above: a changed overlay recycles.
       ...(params.agentProcessEnv ? { agentProcessEnv: params.agentProcessEnv } : {}),
+      // acpx 0.21 agent-child env policy: forwarded only when configured so
+      // absent keeps upstream's inherit-everything default.
+      ...(params.agentProcessEnvAllow !== undefined ? { agentProcessEnvAllow: params.agentProcessEnvAllow } : {}),
+      ...(params.agentProcessEnvBlock !== undefined ? { agentProcessEnvBlock: params.agentProcessEnvBlock } : {}),
       // G9: advertise exactly what the daemon-capability plumbing allowed —
       // an empty list means the ACP agent never learns elicitation exists.
       ...(params.elicitationModes ? { elicitationModes: params.elicitationModes } : {}),
       ...(mcpServers ? { mcpServers } : {}),
       onPermissionRequest: async (req, ctx) => {
+        const offered = readOfferedPermissionOptions(req.raw);
         const snap = state.permissionSnapshot;
-        if (!snap) return { outcome: "reject_once" };
+        if (!snap) return toUpstreamPermissionDecision("reject_once", offered);
         let evaluated: { outcome: "allow_once" | "reject_once" | "needs_interaction" };
         try {
           evaluated = resolver.evaluate(snap, req as unknown as RuntimePermissionRequest, {
@@ -285,16 +300,16 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
             interactiveAvailable: true,
           });
         } catch {
-          return { outcome: "reject_once" };
+          return toUpstreamPermissionDecision("reject_once", offered);
         }
-        if (evaluated.outcome === "allow_once") return { outcome: "allow_once" };
-        if (evaluated.outcome === "reject_once") return { outcome: "reject_once" };
-        if (ctx.signal.aborted) return { outcome: "reject_once" };
+        if (evaluated.outcome === "allow_once") return toUpstreamPermissionDecision("allow_once", offered);
+        if (evaluated.outcome === "reject_once") return toUpstreamPermissionDecision("reject_once", offered);
+        if (ctx.signal.aborted) return toUpstreamPermissionDecision("reject_once", offered);
         // Interaction stays non-interactive without an exact-turn route.
         // Scheduled/peer/orchestration/internal prompts carry no interaction
         // id and must fail closed here, never generating a synthetic route.
         const activeInteractionId = state.activeInteractionId;
-        if (!activeInteractionId) return { outcome: "reject_once" };
+        if (!activeInteractionId) return toUpstreamPermissionDecision("reject_once", offered);
         // UUID: broker pending is daemon-global keyed by requestId, so the
         // id space must not collide under same-millisecond bursts.
         const requestId = randomUUID();
@@ -320,17 +335,9 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
         // envelope (which would summarize as `sessionId: ...` instead of the
         // command/path the user is actually approving).
         const rawInput = readToolInputFromReq(req as unknown as RuntimePermissionRequest);
-        const availableOutcomes = (() => {
-          const options = rawValue?.options;
-          if (!Array.isArray(options)) return undefined;
-          const kinds = new Set<string>();
-          for (const option of options) {
-            const record = asRecord(option);
-            if (record && typeof record.kind === "string") kinds.add(record.kind);
-          }
-          const valid = ["allow_once", "allow_always", "reject_once", "reject_always", "cancel"].filter((k) => kinds.has(k));
-          return valid.length > 0 ? valid as Array<"allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel"> : undefined;
-        })();
+        const availableOutcomes = offered.length > 0
+          ? OFFERED_PERMISSION_KINDS.filter((k) => offered.some((option) => option.kind === k))
+          : undefined;
         const payload: RuntimeWorkerPermissionRequestPayload = {
           logicalSessionId: state.ensureParams?.logicalSessionId ?? params.logicalSessionId ?? state.ensureParams?.sessionKey ?? params.sessionKey,
           sessionKey: state.ensureParams?.sessionKey ?? params.sessionKey,
@@ -362,11 +369,11 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
           const decision = await raceWithTimeout(pending, 125_000, () => new Error("host permission timeout"));
           const outcome = decision.outcome;
           if (outcome !== "allow_once" && outcome !== "allow_always" && outcome !== "reject_once" && outcome !== "reject_always" && outcome !== "cancel") {
-            return { outcome: "reject_once" };
+            return toUpstreamPermissionDecision("reject_once", offered);
           }
-          return { outcome } as { outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" };
+          return toUpstreamPermissionDecision(outcome, offered);
         } catch {
-          return { outcome: "reject_once" };
+          return toUpstreamPermissionDecision("reject_once", offered);
         } finally {
           state.pendingPermissions.delete(requestId);
         }

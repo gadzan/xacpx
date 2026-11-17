@@ -829,6 +829,12 @@ export async function buildApp(
                         config.transport.sessionInitTimeoutMs,
                     }
                   : {}),
+                ...(Array.isArray(config.transport.agentEnvAllow)
+                  ? { agentEnvAllow: config.transport.agentEnvAllow }
+                  : {}),
+                ...(Array.isArray(config.transport.agentEnvBlock)
+                  ? { agentEnvBlock: config.transport.agentEnvBlock }
+                  : {}),
                 ...(deps.orphanRegistry
                   ? {
                       generationFilePath: join(

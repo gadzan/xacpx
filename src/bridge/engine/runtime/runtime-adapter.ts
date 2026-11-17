@@ -111,6 +111,15 @@ export interface CreateXacpxRuntimeAdapterOptions {
    */
   agentProcessEnv?: Record<string, string>;
   /**
+   * Agent-child env allow/block lists (acpx 0.21 agentProcessEnvAllow/Block).
+   * Snapshotted by upstream at construction and applied to agent children,
+   * command probes and ACP terminals. Omitted on both keeps upstream's
+   * inherit-everything default; an empty allowlist is meaningful (essentials
+   * only). Explicit agentProcessEnv grants still apply on top.
+   */
+  agentProcessEnvAllow?: readonly string[];
+  agentProcessEnvBlock?: readonly string[];
+  /**
    * Agent-root lifecycle observer (plan B2, acpx 0.15 processLifecycle).
    * Awaited admission boundary: rejecting onBeforeSpawn/onSpawned aborts
    * startup (upstream terminates a spawned-but-rejected child itself).
@@ -215,6 +224,10 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
     permissionMode: options.permissionMode,
     // B1: child-only overlay for every agent child this Runtime owns.
     ...(options.agentProcessEnv ? { agentProcessEnv: options.agentProcessEnv } : {}),
+    // acpx 0.21 agent-child env policy: omitted when unconfigured so the
+    // upstream inherit-everything default stays in force.
+    ...(options.agentProcessEnvAllow !== undefined ? { agentProcessEnvAllow: options.agentProcessEnvAllow } : {}),
+    ...(options.agentProcessEnvBlock !== undefined ? { agentProcessEnvBlock: options.agentProcessEnvBlock } : {}),
     // Truthful capability only: the daemon decides which ACP elicitation
     // modes xacpx can actually render. Empty ⇒ no capability is advertised
     // and upstream refuses elicitation locally instead of routing to a

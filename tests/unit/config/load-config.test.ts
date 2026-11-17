@@ -1527,3 +1527,31 @@ test("rejects invalid host ceilings fail-closed", () => {
     expect(() => parseConfig({ transport, agents: {}, workspaces: {} })).toThrow("byte count");
   }
 });
+
+test("passes agent env allow/block lists through, keeping an empty allowlist meaningful", () => {
+  const configured = parseConfig({
+    transport: { agentEnvAllow: ["ANTHROPIC_API_KEY"], agentEnvBlock: ["XACPX_WECHAT_SESSION"] },
+    agents: {},
+    workspaces: {},
+  });
+  expect(configured.transport.agentEnvAllow).toEqual(["ANTHROPIC_API_KEY"]);
+  expect(configured.transport.agentEnvBlock).toEqual(["XACPX_WECHAT_SESSION"]);
+  const emptyAllow = parseConfig({ transport: { agentEnvAllow: [] }, agents: {}, workspaces: {} });
+  expect(emptyAllow.transport.agentEnvAllow).toEqual([]);
+  const unset = parseConfig({ transport: {}, agents: {}, workspaces: {} });
+  expect(unset.transport.agentEnvAllow).toBeUndefined();
+  expect(unset.transport.agentEnvBlock).toBeUndefined();
+});
+
+test("rejects agent env lists that are not arrays of non-empty names", () => {
+  for (const transport of [
+    { agentEnvAllow: "ANTHROPIC_API_KEY" },
+    { agentEnvAllow: ["OK", ""] },
+    { agentEnvAllow: ["OK", 7] },
+    { agentEnvBlock: [null] },
+  ]) {
+    expect(() => parseConfig({ transport, agents: {}, workspaces: {} })).toThrow(
+      /transport\.agentEnv(Allow|Block) must be an array of non-empty environment variable names/,
+    );
+  }
+});

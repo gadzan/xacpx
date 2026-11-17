@@ -52,6 +52,14 @@ export interface RuntimeWorkerEnsureParams {
    * as received.
    */
   agentProcessEnv?: Record<string, string>;
+  /**
+   * Agent-child env allow/block lists (acpx 0.21). Runtime-construction
+   * policy forwarded verbatim to createAcpRuntime; absent keeps upstream's
+   * inherit-everything default, empty is meaningful. Part of the
+   * construction identity via agentEnvListIdentityKey.
+   */
+  agentProcessEnvAllow?: readonly string[];
+  agentProcessEnvBlock?: readonly string[];
   /** Host-assigned worker generation identity. */
   workerGeneration?: string;
   /**
@@ -81,6 +89,19 @@ export function agentProcessEnvIdentityKey(
   }
   const entries = Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return JSON.stringify(entries);
+}
+
+/**
+ * Stable identity fragment for an agent env allow/block list. Absent and
+ * empty are different policies (inherit-everything vs essentials-only), so
+ * the fragment must distinguish them; order is normalized because upstream
+ * membership tests are order-independent.
+ */
+export function agentEnvListIdentityKey(
+  list: readonly string[] | undefined,
+): string | null {
+  if (list === undefined) return null;
+  return JSON.stringify([...list].sort());
 }
 export interface RuntimeWorkerPromptParams {
   text: string;

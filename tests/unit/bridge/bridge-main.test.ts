@@ -146,3 +146,24 @@ test("processBridgeInput rethrows a request or write failure after in-flight wor
   expect(writes).toEqual([]);
   expect(input.closed()).toBe(true);
 });
+
+test("resolveBridgeSharedConfig carries agent env lists, keeping an empty allowlist set", () => {
+  const configured = resolveBridgeSharedConfig((name) =>
+    name === "BRIDGE_AGENT_ENV_ALLOW" ? '["ANTHROPIC_API_KEY"]'
+    : name === "BRIDGE_AGENT_ENV_BLOCK" ? '["XACPX_WECHAT_SESSION"]'
+    : undefined,
+  );
+  expect(configured.agentEnvAllow).toEqual(["ANTHROPIC_API_KEY"]);
+  expect(configured.agentEnvBlock).toEqual(["XACPX_WECHAT_SESSION"]);
+  const emptyAllow = resolveBridgeSharedConfig((name) =>
+    name === "BRIDGE_AGENT_ENV_ALLOW" ? "[]" : undefined,
+  );
+  expect(emptyAllow.agentEnvAllow).toEqual([]);
+  const unset = resolveBridgeSharedConfig(() => undefined);
+  expect(unset.agentEnvAllow).toBeUndefined();
+  expect(unset.agentEnvBlock).toBeUndefined();
+  const malformed = resolveBridgeSharedConfig((name) =>
+    name === "BRIDGE_AGENT_ENV_BLOCK" ? '["A", 3]' : undefined,
+  );
+  expect(malformed.agentEnvBlock).toBeUndefined();
+});

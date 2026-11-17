@@ -47,3 +47,25 @@ export function normalizeBridgeByteLimit(value: string | undefined): number | un
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
+
+/**
+ * Bridge-side agent-child env list normalizer (acpx 0.21). Daemon config is
+ * validated at parse time, so this stays lenient like its siblings: absent or
+ * malformed input means "not configured" (upstream inherit-everything), never
+ * a guess. An empty array is meaningful and passes through as set.
+ */
+export function normalizeBridgeAgentEnvList(value: string | undefined): string[] | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
+    return undefined;
+  }
+  return parsed as string[];
+}

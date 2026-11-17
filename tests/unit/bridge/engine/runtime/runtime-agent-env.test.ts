@@ -7,7 +7,7 @@ import type { EngineSessionInput } from "../../../../../src/bridge/engine/bridge
 import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
 
-import { agentProcessEnvIdentityKey } from "../../../../../src/bridge/engine/runtime/runtime-worker-protocol";
+import { agentEnvListIdentityKey, agentProcessEnvIdentityKey } from "../../../../../src/bridge/engine/runtime/runtime-worker-protocol";
 
 /**
  * PR B1 gate: Runtime child env parity via acpx 0.15 agentProcessEnv.
@@ -21,14 +21,20 @@ const MARKER_VAR = "XACPX_TEST_MARKER";
 async function runMarkerTurn(
   stateDir: string,
   sessionKey: string,
-  agentProcessEnv?: Record<string, string>,
+  env: {
+    agentProcessEnv?: Record<string, string>;
+    agentProcessEnvAllow?: readonly string[];
+    agentProcessEnvBlock?: readonly string[];
+  } = {},
 ): Promise<string> {
   const adapter = createXacpxRuntimeAdapter({
     stateDir,
     permissionMode: "approve-all",
     nonInteractivePermissions: "deny",
     agentOverrides: { marker: [process.execPath, MARKER_AGENT] },
-    ...(agentProcessEnv ? { agentProcessEnv } : {}),
+    ...(env.agentProcessEnv ? { agentProcessEnv: env.agentProcessEnv } : {}),
+    ...(env.agentProcessEnvAllow !== undefined ? { agentProcessEnvAllow: env.agentProcessEnvAllow } : {}),
+    ...(env.agentProcessEnvBlock !== undefined ? { agentProcessEnvBlock: env.agentProcessEnvBlock } : {}),
   });
   const handle = await adapter.ensure({ sessionKey, agent: "marker", cwd: stateDir });
   const turn = adapter.startTurn({ handle, text: "go" });
@@ -69,7 +75,7 @@ test("cold first launch receives the child-only overlay", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "xacpx-agent-env-"));
   try {
     const value = `envval-${Date.now().toString(36)}`;
-    const text = await runMarkerTurn(stateDir, "env-cold", { [MARKER_VAR]: value });
+    const text = await runMarkerTurn(stateDir, "env-cold", { agentProcessEnv: { [MARKER_VAR]: value } });
     expect(text).toContain(`marker=${value}`);
   } finally {
     if (saved !== undefined) process.env[MARKER_VAR] = saved;
@@ -168,7 +174,7 @@ async function writeEnvCaptureWorker(entry: string): Promise<void> {
       "    let msg; try { msg = JSON.parse(line); } catch { continue; }",
       "    if (msg.method === 'ensure') {",
       "      const params = msg.params ?? {};",
-      "      fs.appendFileSync(captureFile, JSON.stringify({ generation: params.workerGeneration ?? null, agentProcessEnv: params.agentProcessEnv ?? null }) + '\\n');",
+      "      fs.appendFileSync(captureFile, JSON.stringify({ generation: params.workerGeneration ?? null, agentProcessEnv: params.agentProcessEnv ?? null, agentProcessEnvAllow: params.agentProcessEnvAllow ?? null, agentProcessEnvBlock: params.agentProcessEnvBlock ?? null }) + '\\n');",
       "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: params.sessionKey } }) + '\\n');",
       "    } else if (msg.method === 'shutdown') {",
       "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { quiesced: true } }) + '\\n');",
@@ -487,3 +493,119 @@ test("explicit overlay clear beats a stale persisted flag", async () => {
     await rm(stateDir, { recursive: true, force: true });
   }
 }, 120_000);
+
+test("agentEnvListIdentityKey distinguishes absent from empty and normalizes order", () => {
+  expect(agentEnvListIdentityKey(undefined)).toBeNull();
+  expect(agentEnvListIdentityKey([])).not.toBeNull();
+  expect(agentEnvListIdentityKey([])).not.toBe(agentEnvListIdentityKey(undefined));
+  expect(agentEnvListIdentityKey(["A", "B"])).toBe(agentEnvListIdentityKey(["B", "A"]));
+  expect(agentEnvListIdentityKey(["A"])).not.toBe(agentEnvListIdentityKey(["A", "B"]));
+});
+
+const POLICY_PROBE_VAR = "XACPX_ENV_POLICY_PROBE";
+
+async function runPolicyProbeTurn(
+  stateDir: string,
+  sessionKey: string,
+  policy: { agentProcessEnvAllow?: readonly string[]; agentProcessEnvBlock?: readonly string[] },
+): Promise<string> {
+  const saved = process.env[POLICY_PROBE_VAR];
+  process.env[POLICY_PROBE_VAR] = "parent-secret";
+  try {
+    return await runMarkerTurn(stateDir, sessionKey, {
+      // The overlay redirects the marker at the parent-owned variable, so the
+      // reply reports whether that name reached the agent child.
+      agentProcessEnv: { MARKER_VAR: POLICY_PROBE_VAR },
+      ...policy,
+    });
+  } finally {
+    if (saved === undefined) delete process.env[POLICY_PROBE_VAR];
+    else process.env[POLICY_PROBE_VAR] = saved;
+  }
+}
+
+test("agent children inherit the daemon env when no policy is configured", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "xacpx-agent-env-base-"));
+  try {
+    const text = await runPolicyProbeTurn(stateDir, "env-policy-base", {});
+    expect(text).toContain("marker=parent-secret");
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("agentProcessEnvBlock withholds the named variable from the agent child", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "xacpx-agent-env-block-"));
+  try {
+    const text = await runPolicyProbeTurn(stateDir, "env-policy-block", { agentProcessEnvBlock: [POLICY_PROBE_VAR] });
+    expect(text).toContain("marker=<unset>");
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("agentProcessEnvAllow keeps the named variable and an empty list keeps only essentials", async () => {
+  const allowDir = await mkdtemp(join(tmpdir(), "xacpx-agent-env-allow-"));
+  const emptyDir = await mkdtemp(join(tmpdir(), "xacpx-agent-env-empty-"));
+  try {
+    const allowed = await runPolicyProbeTurn(allowDir, "env-policy-allow", { agentProcessEnvAllow: [POLICY_PROBE_VAR] });
+    expect(allowed).toContain("marker=parent-secret");
+    const empty = await runPolicyProbeTurn(emptyDir, "env-policy-empty", { agentProcessEnvAllow: [] });
+    expect(empty).toContain("marker=<unset>");
+  } finally {
+    await rm(allowDir, { recursive: true, force: true });
+    await rm(emptyDir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("engine forwards the env policy to the worker and leaves it absent when unset", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-env-policy-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    const capture = join(dir, "ensures.ndjson");
+    await writeEnvCaptureWorker(entry);
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      fenceDir: join(dir, "wf"),
+      durableRootDir: join(dir, "durable"),
+      workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
+      agentEnvAllow: ["ANTHROPIC_API_KEY"],
+      agentEnvBlock: [],
+    });
+    await engine.ensureSession(engineSessionInput);
+    await engine.shutdown().catch(() => {});
+    const lines = (await readFile(capture, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.length).toBe(1);
+    expect(lines[0].agentProcessEnvAllow).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(lines[0].agentProcessEnvBlock).toEqual([]);
+    const recorded = engine["lastConstructionIdentity"].get("logical-env-1");
+    const expected = engine["constructionIdentityForInput"](engineSessionInput, lines[0].agentProcessEnv ?? undefined);
+    expect(recorded).toBe(expected);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("an unconfigured env policy stays absent end to end", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-env-policy-off-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    const capture = join(dir, "ensures.ndjson");
+    await writeEnvCaptureWorker(entry);
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      fenceDir: join(dir, "wf"),
+      durableRootDir: join(dir, "durable"),
+      workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
+    });
+    await engine.ensureSession(engineSessionInput);
+    await engine.shutdown().catch(() => {});
+    const lines = (await readFile(capture, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines[0].agentProcessEnvAllow).toBeNull();
+    expect(lines[0].agentProcessEnvBlock).toBeNull();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);

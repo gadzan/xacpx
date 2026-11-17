@@ -10,6 +10,7 @@ import {
   manageBridgeChild,
 } from "../../../../src/transport/acpx-bridge/acpx-bridge-client";
 import {
+  normalizeBridgeAgentEnvList,
   normalizeBridgeByteLimit,
   normalizeBridgePermissionPolicy,
   normalizeBridgeSessionInitTimeoutMs,
@@ -819,4 +820,18 @@ describe("bridge spawn env elicitation capability", () => {
     expect(env.XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("1");
     expect(env.XACPX_BRIDGE_ELICITATION_FORM_CAPABLE).toBe("0");
   });
+});
+
+test("carries agent env lists through the bridge spawn env and round-trips them", () => {
+  const env = buildBridgeSpawnEnv({
+    agentEnvAllow: ["ANTHROPIC_API_KEY"],
+    agentEnvBlock: ["XACPX_WECHAT_SESSION"],
+  });
+
+  expect(normalizeBridgeAgentEnvList(env.XACPX_BRIDGE_AGENT_ENV_ALLOW)).toEqual(["ANTHROPIC_API_KEY"]);
+  expect(normalizeBridgeAgentEnvList(env.XACPX_BRIDGE_AGENT_ENV_BLOCK)).toEqual(["XACPX_WECHAT_SESSION"]);
+  const emptyAllow = buildBridgeSpawnEnv({ agentEnvAllow: [] });
+  expect(normalizeBridgeAgentEnvList(emptyAllow.XACPX_BRIDGE_AGENT_ENV_ALLOW)).toEqual([]);
+  expect("XACPX_BRIDGE_AGENT_ENV_ALLOW" in buildBridgeSpawnEnv({})).toBe(false);
+  expect("XACPX_BRIDGE_AGENT_ENV_BLOCK" in buildBridgeSpawnEnv({})).toBe(false);
 });
