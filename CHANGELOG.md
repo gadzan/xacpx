@@ -1,4 +1,55 @@
 # Changelog
+## [relay-protocol 0.6.4-beta.14] - 2026-11-17
+
+### Added
+
+- 会话分叉的两个能力位：`session.fork.handoff.v1`（头部分叉，附一次性可移植交接）与 `session.fork.message.v1`（在指定轮次节点分叉），均带 payload 校验器，旧核心 / 旧连接器不会收到自己会拒收的载荷（#586、#588）。
+- `MessageRecordDto.nodeId`：核心为每条生效 prompt 铸的持久节点 id，随 `turn-started` 下发、由 hub 落库、由 Relay Web 回传为 `sourcePoint: { type: "node", nodeId }`（#588）。
+
+## [relay 0.14.12-beta.23] - 2026-11-17
+
+### Added
+
+- 会话分叉入口：会话菜单可对稳定头部分叉，消息行可对带 `nodeId` 的持久 prompt 节点分叉；均以能力位把关，同一节点重试复用同一请求 id 与目标别名，双击只发一次 RPC，失败以带类型的 toast 呈现（#586、#588）。
+
+### Changed
+
+- Relay Web 按方案 B 完成 UI / 样式升级（WP-1 … WP-18）：设计 token 收敛（前景 / 强调 / 危险文字改为实色语义 token，发丝边替换实色 `--c-border`，字号与圆角回到阶梯）、居中对齐的弹层统一走 `DialogShell`（含遮罩、焦点陷阱、安全区与 z 轴阶梯）、菜单与 select 收敛为一个 `SelectMenu` / `DropdownPanel`、会话时间线与输入区共享行组件、群聊抽屉与运行详情去重、设置页分行结构统一；触屏下高频控件命中区提升到 44×44 且互不重叠，桌面密度保持不变（#590）。
+- 空 Bot 页的起步 chip 只取 agent 自己广播的命令；有草稿时 chip 隐藏，点击只填入并聚焦输入框，从不隐式发送（#590）。
+
+### Fixed
+
+- 群聊 `@` 补全列表不再把裸 bot id（`bot_…`）当可见文本印在成员行末尾；`data-bot-id` 仍保留给路由与选择器（#585）。
+- 消息行的过程入口改为 14px 线性图标并回到时间戳同一行；时间与复制按钮与气泡左缘对齐；抽屉里同一条失败原因不再打印三次（#590、#588）。
+
+## [channel-relay 0.7.8-beta.18] - 2026-11-17
+
+### Added
+
+- 连接器广播并校验会话分叉能力：`session.fork.handoff.v1` 保持原义，`session.fork.message.v1` 仅在头部分叉、核心探针与连接器校验三方都接受时才宣布；状态镜像持久化 `node_id`，`control.sessions.fork` 按节点分叉时只回放到该轮回复为止（#586、#588）。
+
+## [0.24.10-beta.18] - 2026-11-17
+
+### Added
+
+- 可移植会话分叉：分叉稳定会话会创建独立逻辑 + 传输会话，其第一条生效 prompt 携带由源 acpx 记录渲染的有界 `<<<HISTORY` 交接块；交接文本存独立 SQLite（`runtime/session-forks.sqlite`），从不进入 `state.json`；同请求 id 的分叉串行并回放胜者目标，`<<<HISTORY` 围栏按行中和，便于分叉的分叉（#586）。
+- 指定轮次节点分叉：核心为每条生效 prompt 铸持久 `nodeId` 并记录它交给 agent 的 prompt 摘要，按摘要而非位置定位节点；源增长仍可回放，而 reset / `/clear` / 改写一律以带类型的错误失败关闭（`session-fork-source-changed`、`session-fork-node-ambiguous`、`session-fork-node-unavailable`）；媒体 prompt 不铸 id，其行不显示注定失败的分叉点（#588）。
+- 内置 acpx 升级到 0.22.0，并接入它新增的内置 agent 模板（#592）；托管 claude adapter 固定到 0.107.2（#593）。
+
+### Fixed
+
+- 守护进程不再把自身环境变量带进 agent 子进程，权限选项按精确值匹配，避免同样的策略在不同 shell 下解析出不同行为（#594）。
+- 受保护 pid 的 worker 以「出生身份已消失」为终止判据，并清理陈旧围栏，避免重启后误杀或无主清理（#589）。
+- 重试与启动时丢弃已退出成员的公开记忆，避免旧上下文串进新回复（#584）。
+
+## [channel-feishu 0.8.7-beta.18] - 2026-11-17
+
+- 跟随 core 重新发布，使其 `peerDependencies` 下限指向本版 core；无用户可见行为变化。
+
+## [channel-discord 0.8.7-beta.18] - 2026-11-17
+
+- 跟随 core 重新发布，使其 `peerDependencies` 下限指向本版 core；无用户可见行为变化。
+
 ## [relay 0.14.12-beta.22] - 2026-11-15
 
 ### Added
