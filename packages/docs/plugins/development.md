@@ -14,7 +14,7 @@ Recommended directory layout:
 
 ```
 my-channel/
-├── package.json           # name, peerDependencies: { xacpx: ">=0.3.x" }
+├── package.json           # name, peerDependencies: { xacpx: ">=0.24.10-beta.18" }
 ├── tsconfig.json
 ├── README.md
 ├── src/
@@ -40,7 +40,7 @@ Key `package.json` fields:
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
   },
   "files": ["dist", "README.md"],
-  "peerDependencies": { "xacpx": ">=0.3.3" },
+  "peerDependencies": { "xacpx": ">=0.24.10-beta.18" },
   "peerDependenciesMeta": { "xacpx": { "optional": true } }
 }
 ```

@@ -5,7 +5,7 @@
 > 的 `@xterm/xterm` 依赖 + `packages/relay-web/src/lib/terminal-adapter.ts`）。
 > 凡本文提到 ghostty 的地方（§3 adapter 竞态、§4 非目标、§ 文件清单、§ recovery bytes、
 > §16 ghostty-web adapter 修正）都以 `@xterm/xterm` + FitAddon 为准；
-> 当前渲染实现的权威描述见 [`docs/relay-web-module.md`](../relay-web-module.md)（“终端渲染用 `@xterm/xterm`”一节）。
+> 当前渲染实现的权威描述见 [`docs/relay-web-module.md`](../../relay-web-module.md)（“终端渲染用 `@xterm/xterm`”一节）。
 >
 > **跨进程租约 adopt 已被移除（2026-11 复核）**：本文 §9 与 §12.1 中“`stop()` 不得 release lease、
 > 让新进程在 TTL 内 adopt 所有合法 live resource”的 lease-adopt 模型，被

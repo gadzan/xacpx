@@ -6,7 +6,7 @@
 > - 本文描述“任务绑定的是创建时的当前会话，用户之后切换会话不影响投递目标”；实际默认 `defaultMode: "temp"`
 >   （`src/config/load-config.ts`：触发时新建一次性会话），`bind` 才绑定到创建时会话。
 >
-> 命令行为以 [`docs/later-command.md`](../later-command.md) 为准；本文保留为交互设计记录。
+> 命令行为以 [`docs/later-command.md`](../../later-command.md) 为准；本文保留为交互设计记录。
 
 日期：2026-05-23
 状态：已确认，待实现计划
