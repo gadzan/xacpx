@@ -71,7 +71,9 @@ test("official pinned acpx queue stays healthy behind the xacpx ACP output guard
     };
 
     const acpxPackage = JSON.parse(await readFile(join(process.cwd(), "node_modules", "acpx", "package.json"))) as { version?: string };
-    expect(acpxPackage.version?.startsWith("0.19.")).toBe(true);
+    // 0.22.0 keeps the guard contract (queue stays healthy behind the guard);
+    // the window stays explicit so a future pin bump re-decides consciously.
+    expect(acpxPackage.version?.startsWith("0.19.") || acpxPackage.version?.startsWith("0.22.")).toBe(true);
     transport = new AcpxCliTransport({
       command: ACPX,
       permissionMode: "approve-all",
